@@ -1,0 +1,285 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene web demo — selector-core v2
+#
+# This demo exercises the current design direction:
+#   - HTML is ordinary Gene node data until render time.
+#   - Calls are callable-first: (f x y).
+#   - Receiver style is explicit with ~: (x ~ f y) => (f x y).
+#   - Slash selectors are the traversal/access abstraction.
+#   - Streams/generators power lazy processing.
+#   - recoverable errors use ^errors + try/catch/ensure.
+#   - runtime capabilities are ordinary values; no MVP ^effects rows.
+#   - ^impl requests manual protocol impls; ^derive invokes protocol-local derive.
+# =============================================================================
+
+(mod web-demo
+  @doc "HTML is just nodes; routes are discovered with selectors and streams")
+
+(import net/http [Request Response serve])
+(import io [write_line])
+(import html [escape])
+(import str [join])
+(import std/stream [to_stream to_pairs_stream map filter take each into])
+(import std/node [head props body meta declarations])
+(import std/parse [parse_int ParseError])
+
+# -----------------------------------------------------------------------------
+# Protocols and derivation
+# -----------------------------------------------------------------------------
+
+(protocol HasLabel
+  (message label [self : Self] : Str)
+
+  # Protocol-local derivation. A type may request this with ^derive [HasLabel].
+  # The generated impl expects the target type to have a ^name prop.
+  (derive [t : Type, req]
+    `(impl HasLabel %t
+       (message label [self] : Str
+         (to-str self/name)))))
+
+(protocol ToHtml
+  (message to_html [self : Self] : Node))
+
+# -----------------------------------------------------------------------------
+# Typed domain data
+# -----------------------------------------------------------------------------
+
+(type MenuItem
+  @doc "one drink on the menu"
+  ^props {^name Str ^price Int ^tag Str ^featured? Bool}
+  ^impl [ToHtml]
+  ^derive [Clone ToJson HasLabel])
+
+(type NotFound
+  ^props {^path Str})
+
+(var menu : (List MenuItem)
+  [(MenuItem ^name "Espresso"     ^price 3 ^tag "classic" ^featured true)
+   (MenuItem ^name "Cortado"      ^price 4 ^tag "milk"    ^featured false)
+   (MenuItem ^name "Cold Brew"    ^price 5 ^tag "iced"    ^featured true)
+   (MenuItem ^name "Matcha Latte" ^price 6 ^tag "green"   ^featured false)])
+
+(var css """
+  body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}
+  .wrap{max-width:720px;margin:40px auto;padding:0 20px}
+  .card{padding:20px 24px;border-radius:14px;margin:16px 0;background:#fff}
+  .muted{opacity:.65;font-size:.85em}
+  .badge{padding:2px 10px;border-radius:999px;background:#e4e4e7}
+  table{border-collapse:collapse;width:100%}
+  td,th{border-bottom:1px solid #eee;padding:8px;text-align:left}
+""")
+
+# -----------------------------------------------------------------------------
+# HTML as node data
+# -----------------------------------------------------------------------------
+
+(var nav
+  `(nav ^class "card"
+     (a ^href "/" "home")
+     " · "
+     (a ^href "/greet?name=Ada&style=formal" "formal greeting")
+     " · "
+     (a ^href "/menu?limit=3" "menu")
+     " · "
+     (a ^href "/featured" "featured")))
+
+(fn page [title : Str, content : Node] : Node
+  `(html
+     (head
+       (title %title)
+       (style %css))
+     (body
+       (main ^class "wrap"
+         (header
+           (h1 "Gene web demo")
+           %nav)
+         %content
+         (footer
+           (p ^class "muted"
+             "Rendered at the edge. Until then this page was data."))))))
+
+(fn error_page [code : Str, msg : Str] : Node
+  (page code
+    `(section ^class "card"
+       (h2 %code)
+       (p %msg))))
+
+(impl ToHtml MenuItem
+  (message to_html [self] : Node
+    `(tr
+       (td %(label self))
+       (td %$"$${self/price}")
+       (td (span ^class "badge" %self/tag)))))
+
+# -----------------------------------------------------------------------------
+# Streams and generators
+# -----------------------------------------------------------------------------
+
+(fn menu_rows* [items : (List MenuItem), limit : Int] : (Stream Node Never)
+  (var i 0)
+  (var n (min limit items/size))
+  (while (< i n)
+    (yield (items/%i ~ to_html))
+    (set i (+ i 1))))
+
+(fn featured_cards* [items : (List MenuItem)] : (Stream Node Never)
+  (for item items
+    (if item/featured
+      (yield `(article ^class "card"
+                (h3 %(label item))
+                (p %$"${item/tag} · $${item/price}")))
+      (yield void)))) # streams skip void
+
+# -----------------------------------------------------------------------------
+# Route handlers. Routes are ordinary @meta on fn declarations.
+# -----------------------------------------------------------------------------
+
+(fn home [req : Request] : Node
+  @route "/"
+  (page "Home"
+    `(section ^class "card"
+       (h2 "Try it")
+       (form ^method "get" ^action "/greet"
+         (p (label "Name: ")
+            (input ^name "name" ^value "Ada"))
+         (p (label "Style: ")
+            (input ^name "style" ^value "casual"))
+         (button "Greet me")))))
+
+(fn greet [req : Request] : Node
+  @route "/greet"
+  (var name  (or req/params/name  "stranger"))
+  (var style (or req/params/style "casual"))
+  (var line
+    (match style
+      (when "formal"
+        $"Good day, ${name}.")
+      (when "excited"
+        $"HEY ${name}!!! 🎉")
+      (else
+        $"hey ${name} 👋")))
+  (page $"Greeting · ${name}"
+    `(section ^class %$"card ${style}"
+       (h2 %line)
+       (p ^class "muted" %$"name=${name} · style=${style}"))))
+
+(fn menu_limit [req : Request] : Int
+  ^errors []
+  (try
+    (parse_int (or req/params/limit "10"))
+  catch (ParseError _...)
+    10))
+
+(fn menu_page [req : Request] : Node
+  @route "/menu"
+  (var n : Int (menu_limit req))
+  (var rows ((menu_rows* menu n) ~ into []))
+  (page "Menu"
+    `(section ^class "card"
+       (h2 "Menu")
+       (table
+         (tr (th "Item") (th "Price") (th "Tag"))
+         %rows...))))
+
+(fn featured [req : Request] : Node
+  @route "/featured"
+  (var cards ((featured_cards* menu) ~ into []))
+  (page "Featured"
+    `(section
+       (h2 "Featured drinks")
+       %cards...)))
+
+# -----------------------------------------------------------------------------
+# Module introspection with selectors + streams, not query.
+# -----------------------------------------------------------------------------
+
+(fn routed? [decl : Node] : Bool
+  (not (= decl/%meta/route void)))
+
+(fn route_entry [decl : Node] : (List Any)
+  (match decl
+    (when (fn name _...)
+      [decl/%meta/route (resolve name)])
+    (else
+      void)))
+
+(var routes : (Map Str Fn)
+  (this-mod/%declarations/%to_stream
+    ~ filter routed?
+    ; ~ map route_entry
+    ; ~ into {}))
+
+# -----------------------------------------------------------------------------
+# Rendering: one edge converts node data to HTML text.
+# -----------------------------------------------------------------------------
+
+(fn render_attr [pair] : Str
+  (var [k, v] pair)
+  (if (= v void)
+    ""
+    $" ${(to-str k)}=\"${(escape (to-str v))}\""))
+
+(fn render_attrs [n : Node] : Str
+  (n/%props/%to_pairs_stream
+    ~ map render_attr
+    ; ~ into []
+    ; ~ join ""))
+
+(fn render_children [n : Node] : Str
+  (n/%body/%to_stream
+    ~ map render
+    ; ~ into []
+    ; ~ join ""))
+
+(fn render_node [n : Node] : Str
+  (var tag (to-str (n ~ head)))
+  ($ "<" tag (render_attrs n) ">"
+     (render_children n)
+     "</" tag ">"))
+
+(fn render [x] : Str
+  (match x
+    (when (s : Str)
+      (escape s))
+    (when (n : Node)
+      (render_node n))
+    (else
+      (escape (to-str x)))))
+
+# -----------------------------------------------------------------------------
+# The app is pure ordinary code. Request validation is a gradual typed boundary.
+# -----------------------------------------------------------------------------
+
+(fn app [raw_req] : Str
+  (var req : Request raw_req) # Any -> Request checked at typed boundary
+  (render
+    (try
+      (do
+        (var path (or req/path "/"))
+        (var handler routes/%path)
+        (if (= handler void)
+          (fail (NotFound ^path path))
+          (handler req)))
+    catch (NotFound ^path p)
+      (error_page "404" $"No route for ${p}.")
+    catch (ParseError _...)
+      (error_page "400" "Bad parameter — limit must be an integer.")
+    ensure
+      nil)))
+
+# -----------------------------------------------------------------------------
+# Main receives runtime capability values. Static ^effects checking is post-MVP.
+# -----------------------------------------------------------------------------
+
+(fn main [^server : Http/Server, ^out : Io/Write] : Nil
+  (routes/%to_pairs_stream
+    ~ each (fn [pair]
+      (var [p, _] pair)
+      (write_line out $"route: ${p}")))
+  (write_line out "listening → http://127.0.0.1:8088")
+  (serve server ^port 8088
+    (fn [raw_req]
+      (Response
+        ^status 200
+        (app raw_req)))))
