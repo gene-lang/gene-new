@@ -261,6 +261,28 @@ proc selectorLiteral(parts: openArray[Value]): Value =
     body[i] = part
   newNode(newSym("select"), body = body)
 
+proc isUnquoteSegment(v: Value): bool =
+  v.kind == vkNode and v.head.isSymbol("unquote")
+
+proc compileSelector(c: var Compiler, parts: openArray[Value]) =
+  var dynamic = false
+  for part in parts:
+    if part.isUnquoteSegment:
+      dynamic = true
+      break
+  if not dynamic:
+    c.emitConst selectorLiteral(parts)
+    return
+
+  for part in parts:
+    if part.isUnquoteSegment:
+      if part.body.len != 1:
+        raise newException(GeneError, "selector unquote requires one expression")
+      compileExpr(c, part.body[0])
+    else:
+      c.emitConst part
+  discard c.emit(opMakeSelector, parts.len)
+
 proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
   if parts.len == 0:
@@ -269,7 +291,7 @@ proc compilePath(c: var Compiler, node: Value) =
   if parts.len == 1:
     compileExpr(c, parts[0])
     return
-  c.emitConst selectorLiteral(parts.toOpenArray(1, parts.high))
+  compileSelector(c, parts.toOpenArray(1, parts.high))
   compileExpr(c, parts[0])
   discard c.emit(opCall, 1)
 
@@ -306,7 +328,7 @@ proc compileNode(c: var Compiler, node: Value) =
       c.emitConst(if node.body.len >= 1: node.body[0] else: NIL)
       return
     of "select":
-      c.emitConst selectorLiteral(node.body)
+      compileSelector(c, node.body)
       return
     of "path":
       compilePath(c, node)

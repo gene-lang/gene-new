@@ -221,6 +221,12 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       for i, key in inst.names:
         entries[key] = values[i]
       stack.add newMap(entries, inst.flag)
+    of opMakeSelector:
+      var body = newSeq[Value](inst.intArg)
+      if inst.intArg > 0:
+        for i in countdown(inst.intArg - 1, 0):
+          body[i] = stack.pop()
+      stack.add newNode(newSym("select"), body = body)
     of opMakeFn:
       let proto = chunk.functions[inst.intArg]
       stack.add newFunction(proto.name, proto.params, proto, scope)
@@ -270,6 +276,15 @@ proc isSymbol(v: Value, name: string): bool =
 
 proc isSelector(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("select")
+
+proc isSelectorStage(v: Value): bool =
+  case v.kind
+  of vkFunction, vkNativeFn:
+    true
+  of vkNode:
+    v.isSelector
+  else:
+    false
 
 proc lookupIndex(items: openArray[Value], rawIndex: int64): Value =
   var idx = rawIndex
@@ -325,7 +340,11 @@ proc staticLookup(target, segment: Value): Value =
 proc applySelector(selector, target: Value): Value =
   result = target
   for segment in selector.body:
-    result = staticLookup(result, segment)
+    result =
+      if segment.isSelectorStage:
+        applyCall(segment, @[result], NamedArgs())
+      else:
+        staticLookup(result, segment)
     if result.kind == vkVoid:
       return VOID
 

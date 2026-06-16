@@ -59,6 +59,15 @@ suite "compiler — GIR emission":
     check proto.restParam == "tail"
     check proto.namedParams.len == 0
 
+  test "emits runtime construction for dynamic selectors":
+    let chunk = compileSource("/%field")
+    check chunk.instructions.len == 3
+    check chunk.instructions[0].op == opLoadName
+    check chunk.instructions[0].name == "field"
+    check chunk.instructions[1].op == opMakeSelector
+    check chunk.instructions[1].intArg == 1
+    check chunk.instructions[2].op == opReturn
+
   test "emits optional and default parameter specs":
     let fnChunk = compileSource("(fn f [x y? ^scale = (+ x 1)] [x y scale])")
     let proto = fnChunk.functions[0]
@@ -250,6 +259,21 @@ suite "vm — selectors":
   test "selector calls validate their call envelope":
     expect GeneError: discard runStr("(/name)")
     expect GeneError: discard runStr("(/name ^unused 1 {^name \"Ada\"})")
+
+suite "vm — dynamic selectors":
+  test "dynamic selector keys are evaluated":
+    ck "(var field \"name\") (var user {^name \"Ada\"}) user/%field", "\"Ada\""
+    ck "(var field (quote name)) (var user {^name \"Ada\"}) user/%field", "\"Ada\""
+  test "dynamic selector indexes are evaluated":
+    ck "(var i 1) (var xs [10 20 30]) xs/%i", "20"
+  test "selector values capture dynamic segments":
+    ck "(var field \"name\") (var get /%field) (set field \"age\") (get {^name \"Ada\" ^age 37})",
+       "\"Ada\""
+  test "explicit select can capture dynamic segments":
+    ck "(var field \"name\") (var get (select %field)) (get {^name \"Ada\"})",
+       "\"Ada\""
+  test "callable dynamic segments act as selector stages":
+    ck "(var stage not) (var s /%stage) (s false)", "true"
 
 suite "vm — printer view of callables":
   test "functions print a display form":

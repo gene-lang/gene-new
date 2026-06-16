@@ -15,6 +15,7 @@ type
     opPop
     opMakeList
     opMakeMap
+    opMakeSelector
     opMakeFn
     opCall
     opJumpIfFalse

@@ -102,6 +102,14 @@ proc main() =
     let v = run(selectorChunk, selectorScope)
     checksum = checksum + v.intVal
 
+  let dynamicSelectorScope = newGlobalScope()
+  dynamicSelectorScope.define("field", newStr("age"))
+  dynamicSelectorScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), dynamicSelectorScope))
+  let dynamicSelectorChunk = compileSource("user/%field")
+  bench("vm.dynamic_selector_path.compiled_chunk", 500_000, i):
+    let v = run(dynamicSelectorChunk, dynamicSelectorScope)
+    checksum = checksum + v.intVal
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):
