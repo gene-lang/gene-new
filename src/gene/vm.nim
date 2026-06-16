@@ -29,12 +29,37 @@ proc assign*(scope: Scope, name: string, v: Value) =
     s = s.parent
   raise newException(GeneError, "set of undefined symbol: " & name)
 
+type
+  NamedArgs = object
+    names: seq[string]
+    values: seq[Value]
+
+proc len(named: NamedArgs): int =
+  named.names.len
+
+proc hasArg(named: NamedArgs, name: string): bool =
+  for key in named.names:
+    if key == name: return true
+  false
+
+proc getArg(named: NamedArgs, name: string): Value =
+  for i, key in named.names:
+    if key == name: return named.values[i]
+  raise newException(GeneError, "missing named argument: " & name)
+
+proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value
+
 # ---------------------------------------------------------------------------
 # Built-in functions
 # ---------------------------------------------------------------------------
 
 proc isNumber(v: Value): bool = v.kind == vkInt or v.kind == vkFloat
 proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intVal.float64 else: v.floatVal)
+proc isSymbol(v: Value, name: string): bool =
+  v.kind == vkSymbol and v.symVal == name
+
+proc isSelector(v: Value): bool =
+  v.kind == vkNode and v.head.isSymbol("select")
 
 proc requireNums(name: string, args: openArray[Value]) =
   for a in args:
@@ -143,6 +168,187 @@ proc biMeta(args: openArray[Value]): Value {.nimcall.} =
   requireOne("meta", args)
   newMap(metaOf(args[0]))
 
+proc copyItems(items: openArray[Value]): seq[Value] =
+  result = newSeq[Value](items.len)
+  for i, item in items:
+    result[i] = item
+
+proc copyEntries(entries: PropTable): PropTable =
+  result = initOrderedTable[string, Value]()
+  for key, val in entries:
+    result[key] = val
+
+proc keySegment(name: string, segment: Value): string =
+  case segment.kind
+  of vkSymbol:
+    segment.symVal
+  of vkString:
+    segment.strVal
+  else:
+    raise newException(GeneError,
+      name & " expects a symbol/string path segment, got " & $segment.kind)
+
+proc readIndex(items: openArray[Value], rawIndex: int64): Value =
+  var idx = rawIndex
+  if idx < 0:
+    idx = int64(items.len) + idx
+  if idx < 0 or idx >= int64(items.len):
+    return VOID
+  items[int(idx)]
+
+proc updateIndex(name: string, itemsLen: int, rawIndex: int64): int =
+  var idx = rawIndex
+  if idx < 0:
+    idx = int64(itemsLen) + idx
+  if idx < 0 or idx >= int64(itemsLen):
+    raise newException(GeneError, name & " index out of range: " & $rawIndex)
+  int(idx)
+
+proc selectorPath(name: string, path: Value): seq[Value] =
+  if not path.isSelector:
+    raise newException(GeneError, name & " expects a selector path")
+  if path.body.len == 0:
+    raise newException(GeneError, name & " expects a non-empty selector path")
+  for segment in path.body:
+    case segment.kind
+    of vkInt, vkSymbol, vkString:
+      result.add segment
+    else:
+      raise newException(GeneError,
+        name & " cannot update through selector stage: " & $segment.kind)
+
+proc readUpdateChild(name: string, target, segment: Value): Value =
+  case target.kind
+  of vkMap:
+    target.mapEntries.getOrDefault(keySegment(name, segment), VOID)
+  of vkList:
+    if segment.kind != vkInt:
+      raise newException(GeneError, name & " expects an integer list path segment")
+    readIndex(target.listItems, segment.intVal)
+  of vkNode:
+    case segment.kind
+    of vkInt:
+      readIndex(target.body, segment.intVal)
+    of vkSymbol, vkString:
+      let key = keySegment(name, segment)
+      if target.props.hasKey(key):
+        target.props[key]
+      else:
+        case key
+        of "head": target.head
+        of "props": newMap(copyEntries(target.props))
+        of "body": newList(copyItems(target.body))
+        of "meta": newMap(copyEntries(target.meta))
+        else: VOID
+    else:
+      VOID
+  else:
+    raise newException(GeneError,
+      name & " cannot update through " & $target.kind)
+
+proc writeUpdateChild(name: string, target, segment, value: Value): Value =
+  case target.kind
+  of vkMap:
+    var entries = copyEntries(target.mapEntries)
+    let key = keySegment(name, segment)
+    if value.kind == vkVoid:
+      entries.del(key)
+    else:
+      entries[key] = value
+    newMap(entries, target.mapImmutable)
+  of vkList:
+    if segment.kind != vkInt:
+      raise newException(GeneError, name & " expects an integer list path segment")
+    var items = copyItems(target.listItems)
+    items[updateIndex(name, items.len, segment.intVal)] =
+      if value.kind == vkVoid: NIL else: value
+    newList(items, target.listImmutable)
+  of vkNode:
+    var props = copyEntries(target.props)
+    var body = copyItems(target.body)
+    var meta = copyEntries(target.meta)
+    case segment.kind
+    of vkInt:
+      body[updateIndex(name, body.len, segment.intVal)] =
+        if value.kind == vkVoid: NIL else: value
+    of vkSymbol, vkString:
+      let key = keySegment(name, segment)
+      if target.props.hasKey(key) or key notin ["head", "props", "body", "meta"]:
+        if value.kind == vkVoid:
+          props.del(key)
+        else:
+          props[key] = value
+      else:
+        case key
+        of "head":
+          if value.kind == vkVoid:
+            raise newException(GeneError, name & " cannot remove a node head")
+          return newNode(value, props, body, meta, target.nodeImmutable)
+        of "props":
+          if value.kind == vkVoid:
+            props = initOrderedTable[string, Value]()
+          elif value.kind == vkMap:
+            props = copyEntries(value.mapEntries)
+          else:
+            raise newException(GeneError, name & " /props expects a map value")
+        of "body":
+          if value.kind == vkVoid:
+            body = @[]
+          elif value.kind == vkList:
+            body = copyItems(value.listItems)
+          else:
+            raise newException(GeneError, name & " /body expects a list value")
+        of "meta":
+          if value.kind == vkVoid:
+            meta = initOrderedTable[string, Value]()
+          elif value.kind == vkMap:
+            meta = copyEntries(value.mapEntries)
+          else:
+            raise newException(GeneError, name & " /meta expects a map value")
+        else:
+          discard
+    else:
+      raise newException(GeneError,
+        name & " cannot update through selector stage: " & $segment.kind)
+    newNode(target.head, props, body, meta, target.nodeImmutable)
+  else:
+    raise newException(GeneError,
+      name & " cannot update through " & $target.kind)
+
+proc assocAt(name: string, target: Value, path: openArray[Value],
+             pos: int, value: Value): Value =
+  let segment = path[pos]
+  if pos == path.high:
+    return writeUpdateChild(name, target, segment, value)
+  let child = readUpdateChild(name, target, segment)
+  if child.kind == vkVoid:
+    raise newException(GeneError, name & " missing intermediate path segment")
+  writeUpdateChild(name, target, segment, assocAt(name, child, path, pos + 1, value))
+
+proc updateAt(name: string, target: Value, path: openArray[Value],
+              pos: int, updater: Value): Value =
+  let segment = path[pos]
+  if pos == path.high:
+    let current = readUpdateChild(name, target, segment)
+    let nextValue = applyCall(updater, @[current], NamedArgs())
+    return writeUpdateChild(name, target, segment, nextValue)
+  let child = readUpdateChild(name, target, segment)
+  if child.kind == vkVoid:
+    raise newException(GeneError, name & " missing intermediate path segment")
+  writeUpdateChild(name, target, segment, updateAt(name, child, path, pos + 1, updater))
+
+proc biAssocIn(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "assoc-in expects 3 arguments, got " & $args.len)
+  let path = selectorPath("assoc-in", args[1])
+  assocAt("assoc-in", args[0], path, 0, args[2])
+
+proc biUpdateIn(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "update-in expects 3 arguments, got " & $args.len)
+  let path = selectorPath("update-in", args[1])
+  updateAt("update-in", args[0], path, 0, args[2])
+
 proc displayStr(v: Value): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString: v.strVal else: print(v)
@@ -176,6 +382,8 @@ proc newGlobalScope*(): Scope =
   result.define("props", newNativeFn("props", biProps))
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
+  result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
+  result.define("update-in", newNativeFn("update-in", biUpdateIn))
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 
@@ -188,26 +396,6 @@ proc pop(stack: var seq[Value]): Value =
     raise newException(GeneError, "VM stack underflow")
   result = stack[^1]
   stack.setLen(stack.len - 1)
-
-type
-  NamedArgs = object
-    names: seq[string]
-    values: seq[Value]
-
-proc len(named: NamedArgs): int =
-  named.names.len
-
-proc hasArg(named: NamedArgs, name: string): bool =
-  for key in named.names:
-    if key == name: return true
-  false
-
-proc getArg(named: NamedArgs, name: string): Value =
-  for i, key in named.names:
-    if key == name: return named.values[i]
-  raise newException(GeneError, "missing named argument: " & name)
-
-proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value
 
 proc run*(chunk: Chunk, scope: Scope): Value =
   var stack: seq[Value]
@@ -294,12 +482,6 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
     run(defaultValue.defaultChunk, scope)
   else:
     VOID
-
-proc isSymbol(v: Value, name: string): bool =
-  v.kind == vkSymbol and v.symVal == name
-
-proc isSelector(v: Value): bool =
-  v.kind == vkNode and v.head.isSymbol("select")
 
 proc isSelectorStage(v: Value): bool =
   case v.kind

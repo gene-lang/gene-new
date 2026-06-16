@@ -55,8 +55,9 @@ participates in equality or hashing.
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
   special forms, positional/named/rest/default function arguments, static and
-  dynamic selector/slash-path access, closures, recursion, and built-ins
-  (`+ - * / < > <= >= = not head props body meta print println`).
+  dynamic selector/slash-path access, functional selector updates, closures,
+  recursion, and built-ins (`+ - * / < > <= >= = not head props body meta
+  assoc-in update-in print println`).
 
 ## Quick start
 

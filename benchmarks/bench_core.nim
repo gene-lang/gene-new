@@ -118,6 +118,13 @@ proc main() =
     let v = run(projectionStageChunk, projectionStageScope)
     checksum = checksum + v.intVal
 
+  let assocScope = newGlobalScope()
+  assocScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), assocScope))
+  let assocChunk = compileSource("(assoc-in user /age 38)")
+  bench("vm.assoc_in.compiled_chunk", 250_000, i):
+    let v = run(assocChunk, assocScope)
+    checksum = checksum + v.mapEntries["age"].intVal
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):

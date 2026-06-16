@@ -297,6 +297,41 @@ suite "vm — node projection built-ins":
     expect GeneError: discard runStr("(props)")
     expect GeneError: discard runStr("(body 1 2)")
 
+suite "vm — functional selector updates":
+  test "assoc-in updates maps without mutating the original":
+    ck "(var user {^name \"Ada\" ^age 37}) (var user2 (assoc-in user /age 38)) (+ (* user/age 100) user2/age)",
+       "3738"
+    ck "(assoc-in {^name \"Ada\"} /city \"Raleigh\")",
+       "{^name \"Ada\" ^city \"Raleigh\"}"
+  test "assoc-in updates lists and node bodies":
+    ck "(assoc-in [10 20 30] /1 99)", "[10 99 30]"
+    ck "(assoc-in [10 20 30] /-1 99)", "[10 20 99]"
+    ck "(assoc-in (quote (user ^name \"Ada\" 10 20)) /1 99)",
+       "(user ^name \"Ada\" 10 99)"
+  test "assoc-in preserves immutable container class":
+    ck "(assoc-in #{^age 37} /age 38)", "#{^age 38}"
+    ck "(assoc-in #[10 20] /1 99)", "#[10 99]"
+  test "assoc-in writes void as delete for maps and nil for positions":
+    ck "(assoc-in {^name \"Ada\" ^age 37} /age void)", "{^name \"Ada\"}"
+    ck "(assoc-in (quote (user ^name \"Ada\" 10 20)) /0 void)",
+       "(user ^name \"Ada\" nil 20)"
+    ck "(assoc-in [10 20] /1 void)", "[10 nil]"
+  test "assoc-in updates nested existing paths":
+    ck "(var user {^address {^city \"Durham\"}}) (assoc-in user /address/city \"Raleigh\")",
+       "{^address {^city \"Raleigh\"}}"
+    ck "(var user (quote (user ^address (addr ^city \"Durham\")))) (assoc-in user /address/city \"Raleigh\")",
+       "(user ^address (addr ^city \"Raleigh\"))"
+  test "update-in applies a callable to the selected value":
+    ck "(var user {^score 2}) (update-in user /score (fn [x] (+ x 1)))",
+       "{^score 3}"
+    ck "(var n (quote (user ^name \"Ada\"))) (update-in {^n n} /n /name)",
+       "{^n \"Ada\"}"
+  test "functional updates reject unsupported paths":
+    expect GeneError: discard runStr("(assoc-in {^name \"Ada\"} /address/city \"Raleigh\")")
+    expect GeneError: discard runStr("(assoc-in [1] /2 9)")
+    expect GeneError: discard runStr("(assoc-in 1 /x 2)")
+    expect GeneError: discard runStr("(update-in {^score 1} /score 1)")
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous
