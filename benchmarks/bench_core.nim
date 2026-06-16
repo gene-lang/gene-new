@@ -10,6 +10,8 @@
 import gene/[equality, printer, reader, types]
 import std/[monotimes, strutils, tables, times]
 
+var positiveZeroInput {.volatile.}: float64 = 0.0
+
 template bench(name: string, iterations: int, loopVar: untyped, body: untyped) =
   block:
     var checksum {.inject.} = 0'i64
@@ -26,13 +28,17 @@ template bench(name: string, iterations: int, loopVar: untyped, body: untyped) =
          " ops/s, checksum=", checksum, ")"
 
 proc main() =
+  bench("value.small_int.construct", 20_000_000, i):
+    let v = newInt(int64(i and 0xffff))
+    checksum = checksum + int64(v.bits and 0xffff'u64)
+
   bench("value.small_int.construct_access", 2_000_000, i):
     let v = newInt(int64(i and 0xffff))
     checksum = checksum + v.intVal
 
-  bench("value.zero_float.cached_access", 2_000_000, i):
-    let v = newFloat(0.0)
-    if v.kind == vkFloat:
+  bench("value.zero_float.immediate_access", 2_000_000, i):
+    let v = newFloat(positiveZeroInput)
+    if v.kind == vkFloat and v.floatVal == positiveZeroInput:
       checksum = checksum + 1
 
   let nodeHead = newSym("item")

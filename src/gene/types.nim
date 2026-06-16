@@ -2,8 +2,8 @@
 ##
 ## Values are represented as a 64-bit NaN-box. The all-zero bit pattern is
 ## `nil`, non-zero non-boxed float64 values are stored directly, and reserved
-## quiet-NaN payloads encode void/bool/small-int/char immediates or an index
-## into the current process-local heap table.
+## quiet-NaN payloads encode void/bool/small-int/char/positive-zero-float
+## immediates or an index into the current process-local heap table.
 ##
 ## TODO(vm-memory): Heap slots are handle-indirected but not reclaimed yet, and
 ## heap reads currently take a global lock because seq growth can move the slot
@@ -67,6 +67,7 @@ type
     bkBool,
     bkInt,
     bkChar,
+    bkFloatZero,
     bkHeap
 
 const
@@ -83,16 +84,16 @@ var heapValues: seq[HeapValue]
 var heapLock: Lock
 initLock(heapLock)
 
-proc isBoxed(v: Value): bool =
+proc isBoxed(v: Value): bool {.inline.} =
   v.bits == 0 or (v.bits and BoxPrefixMask) == BoxPrefix
 
-proc payload(v: Value): uint64 =
+proc payload(v: Value): uint64 {.inline.} =
   v.bits and PayloadMask
 
-proc boxKind(v: Value): BoxKind =
+proc boxKind(v: Value): BoxKind {.inline.} =
   BoxKind((v.bits shr BoxKindShift) and 0xf'u64)
 
-proc makeBox(k: BoxKind, payload = 0'u64): Value =
+proc makeBox(k: BoxKind, payload = 0'u64): Value {.inline.} =
   Value(bits: BoxPrefix or (uint64(ord(k)) shl BoxKindShift) or
               (payload and PayloadMask))
 
@@ -124,10 +125,10 @@ proc floatToBits(f: float64): uint64 {.inline.} =
 proc bitsToFloat(bits: uint64): float64 {.inline.} =
   cast[float64](bits)
 
-proc encodeSmallInt(v: int64): uint64 =
+proc encodeSmallInt(v: int64): uint64 {.inline.} =
   uint64(v) and PayloadMask
 
-proc decodeSmallInt(bits: uint64): int64 =
+proc decodeSmallInt(bits: uint64): int64 {.inline.} =
   let raw = bits and PayloadMask
   if (raw and SmallIntSignBit) != 0:
     -int64(((not raw) and PayloadMask) + 1'u64)
@@ -143,7 +144,6 @@ let
   VOID* = makeBox(bkVoid)
   TRUE* = makeBox(bkBool, 1)
   FALSE* = makeBox(bkBool, 0)
-  ZERO_FLOAT = addHeap(HeapValue(kind: vkFloat, floatVal: 0.0))
 
 # ---------------------------------------------------------------------------
 # Introspection accessors
@@ -151,10 +151,10 @@ let
 # dedicated update APIs rather than mutating seq/table values returned here.
 # ---------------------------------------------------------------------------
 
-proc isHeapBacked*(v: Value): bool =
+proc isHeapBacked*(v: Value): bool {.inline.} =
   v.isBoxed and v.boxKind == bkHeap
 
-proc kind*(v: Value): ValueKind =
+proc kind*(v: Value): ValueKind {.inline.} =
   if not v.isBoxed:
     return vkFloat
   case v.boxKind
@@ -163,17 +163,18 @@ proc kind*(v: Value): ValueKind =
   of bkBool: vkBool
   of bkInt: vkInt
   of bkChar: vkChar
+  of bkFloatZero: vkFloat
   of bkHeap: v.heapObj.kind
 
-proc isNil*(v: Value): bool =
+proc isNil*(v: Value): bool {.inline.} =
   v.kind == vkNil
 
-proc boolVal*(v: Value): bool =
+proc boolVal*(v: Value): bool {.inline.} =
   if v.boxKind != bkBool:
     raise newException(FieldDefect, "value is not a Bool")
   v.payload != 0
 
-proc intVal*(v: Value): int64 =
+proc intVal*(v: Value): int64 {.inline.} =
   if not v.isBoxed:
     raise newException(FieldDefect, "value is not an Int")
   case v.boxKind
@@ -185,9 +186,11 @@ proc intVal*(v: Value): int64 =
   else:
     raise newException(FieldDefect, "value is not an Int")
 
-proc floatVal*(v: Value): float64 =
+proc floatVal*(v: Value): float64 {.inline.} =
   if not v.isBoxed:
     return bitsToFloat(v.bits)
+  if v.boxKind == bkFloatZero:
+    return 0.0
   if v.boxKind == bkHeap:
     let obj = v.heapObj
     if obj.kind == vkFloat:
@@ -200,7 +203,7 @@ proc strVal*(v: Value): string =
     raise newException(FieldDefect, "value is not a String")
   obj.strVal
 
-proc charVal*(v: Value): Rune =
+proc charVal*(v: Value): Rune {.inline.} =
   if not v.isBoxed or v.boxKind != bkChar:
     raise newException(FieldDefect, "value is not a Char")
   Rune(int32(v.payload and 0xffffffff'u64))
@@ -269,16 +272,16 @@ proc nodeImmutable*(v: Value): bool =
 # Constructors
 # ---------------------------------------------------------------------------
 
-proc newInt*(v: int64): Value =
+proc newInt*(v: int64): Value {.inline.} =
   if v >= SmallIntMin and v <= SmallIntMax:
-    makeBox(bkInt, encodeSmallInt(v))
+    Value(bits: BoxPrefix or (uint64(ord(bkInt)) shl BoxKindShift) or encodeSmallInt(v))
   else:
     addHeap(HeapValue(kind: vkInt, intVal: v))
 
-proc newFloat*(v: float64): Value =
+proc newFloat*(v: float64): Value {.inline.} =
   var bits = floatToBits(v)
   if bits == 0:
-    return ZERO_FLOAT
+    return makeBox(bkFloatZero)
   if (bits and BoxPrefixMask) == BoxPrefix:
     return addHeap(HeapValue(kind: vkFloat, floatVal: v))
   Value(bits: bits)
@@ -286,13 +289,13 @@ proc newFloat*(v: float64): Value =
 proc newStr*(v: string): Value =
   addHeap(HeapValue(kind: vkString, strVal: v))
 
-proc newChar*(r: Rune): Value =
+proc newChar*(r: Rune): Value {.inline.} =
   makeBox(bkChar, uint64(int32(r)) and 0xffffffff'u64)
 
 proc newSym*(v: string): Value =
   addHeap(HeapValue(kind: vkSymbol, symVal: v))
 
-proc newBool*(v: bool): Value =
+proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
 proc newList*(items: seq[Value] = @[], immutable = false): Value =
@@ -338,7 +341,7 @@ proc metaOf*(v: Value): PropTable =
 # Truthiness (design Section 1.6): false, nil, void are falsy.
 # ---------------------------------------------------------------------------
 
-proc isTruthy*(v: Value): bool =
+proc isTruthy*(v: Value): bool {.inline.} =
   case v.kind
   of vkNil, vkVoid: false
   of vkBool: v.boolVal

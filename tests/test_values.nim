@@ -36,11 +36,11 @@ suite "value — NaN boxing":
     check not x.isHeapBacked
     check x.floatVal == 3.5
 
-  test "positive zero float uses a cached heap handle because zero bits mean nil":
+  test "positive zero float is boxed immediate because zero bits mean nil":
     let x = newFloat(0.0)
     let y = newFloat(0.0)
     check x.kind == vkFloat
-    check x.isHeapBacked
+    check not x.isHeapBacked
     check x.floatVal == 0.0
     check x.bits == y.bits
 
