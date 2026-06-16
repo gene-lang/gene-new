@@ -1,11 +1,47 @@
-import gene/[types, eval, printer]
+import gene/[compiler, gir, printer, types, vm]
 import std/unittest
 
 template ck(src, expected: string) =
-  ## Evaluate a program string and compare its printed result.
-  check evalStr(src).print() == expected
+  ## Compile and run a program string, then compare its printed result.
+  check run(compileSource(src), newGlobalScope()).print() == expected
 
-suite "eval — literals and self-evaluation":
+template runStr(src: string): Value =
+  run(compileSource(src), newGlobalScope())
+
+suite "compiler — GIR emission":
+  test "emits a callable-first bytecode sequence":
+    let chunk = compileSource("(+ 1 2)")
+    check chunk.instructions.len == 5
+    check chunk.instructions[0].op == opLoadName
+    check chunk.instructions[0].name == "+"
+    check chunk.instructions[1].op == opPushConst
+    check chunk.constants[chunk.instructions[1].intArg].intVal == 1
+    check chunk.instructions[2].op == opPushConst
+    check chunk.constants[chunk.instructions[2].intArg].intVal == 2
+    check chunk.instructions[3].op == opCall
+    check chunk.instructions[3].intArg == 2
+    check chunk.instructions[4].op == opReturn
+
+  test "emits nested function prototypes":
+    let chunk = compileSource("(fn inc [x] (+ x 1))")
+    check chunk.functions.len == 1
+    check chunk.instructions.len == 2
+    check chunk.instructions[0].op == opMakeFn
+    check chunk.instructions[1].op == opReturn
+
+    let proto = chunk.functions[0]
+    check proto.name == "inc"
+    check proto.params == @["x"]
+    check proto.chunk.instructions.len == 5
+    check proto.chunk.instructions[0].op == opLoadName
+    check proto.chunk.instructions[0].name == "+"
+    check proto.chunk.instructions[^1].op == opReturn
+
+  test "compile errors use the runtime error channel":
+    expect GeneError: discard compileSource("(var)")
+    expect GeneError: discard compileSource("(fn missing-params 1)")
+
+suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
     ck "42", "42"
     ck "3.5", "3.5"
@@ -22,7 +58,7 @@ suite "eval — literals and self-evaluation":
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
 
-suite "eval — arithmetic":
+suite "vm — arithmetic":
   test "addition":
     ck "(+ 1 2 3)", "6"
   test "subtraction and negation":
@@ -36,11 +72,11 @@ suite "eval — arithmetic":
     ck "(+ 1 2.5)", "3.5"
     ck "(/ 7.0 2)", "3.5"
   test "division by zero raises":
-    expect GeneError: discard evalStr("(/ 1 0)")
+    expect GeneError: discard runStr("(/ 1 0)")
   test "non-numbers raise":
-    expect GeneError: discard evalStr("(+ 1 \"x\")")
+    expect GeneError: discard runStr("(+ 1 \"x\")")
 
-suite "eval — comparison and logic":
+suite "vm — comparison and logic":
   test "ordering is chained":
     ck "(< 1 2 3)", "true"
     ck "(< 1 3 2)", "false"
@@ -54,7 +90,7 @@ suite "eval — comparison and logic":
     ck "(not nil)", "true"
     ck "(not 1)", "false"
 
-suite "eval — special forms":
+suite "vm — special forms":
   test "do returns last":
     ck "(do 1 2 3)", "3"
     ck "(do)", "nil"
@@ -75,17 +111,17 @@ suite "eval — special forms":
   test "set reassigns an existing binding":
     ck "(var x 1) (set x 99) x", "99"
   test "set on an undefined name raises":
-    expect GeneError: discard evalStr("(set nope 1)")
+    expect GeneError: discard runStr("(set nope 1)")
   test "undefined symbol raises":
-    expect GeneError: discard evalStr("nope")
+    expect GeneError: discard runStr("nope")
 
-suite "eval — functions and closures":
+suite "vm — functions and closures":
   test "anonymous function application":
     ck "((fn [x] (+ x 1)) 41)", "42"
   test "named function in scope":
     ck "(var add (fn [a b] (+ a b))) (add 3 4)", "7"
   test "arity mismatch raises":
-    expect GeneError: discard evalStr("((fn [x] x) 1 2)")
+    expect GeneError: discard runStr("((fn [x] x) 1 2)")
   test "closures capture their environment":
     ck "(var adder (fn [a] (fn [b] (+ a b)))) ((adder 10) 5)", "15"
   test "lexical capture is by reference to the defining scope":
@@ -93,10 +129,10 @@ suite "eval — functions and closures":
   test "recursion via a var-bound self reference":
     ck "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
   test "calling a non-callable raises":
-    expect GeneError: discard evalStr("(1 2 3)")
+    expect GeneError: discard runStr("(1 2 3)")
 
-suite "eval — printer view of callables":
+suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous
     ck "(fn double [x] (* x 2))", "(fn double)"  # named form sets the name
-    check evalStr("+").print() == "(native-fn +)"
+    check runStr("+").print() == "(native-fn +)"

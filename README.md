@@ -11,10 +11,10 @@ concurrency, and a stable native ABI — is described in
 
 > **Status: early implementation.** This repository provides the **reader**
 > (parser), the **NaN-boxed value model**, the **printer** (canonical round-trip
-> output), and a **tree-walking evaluator** (arithmetic, `if`/`do`/`var`/`set`,
-> functions, and closures). It is a direct AST interpreter, not yet the bytecode
-> VM the design ultimately targets (§17). The design in `docs/design.md` is the
-> target, not the current feature set. APIs and the language surface are unstable.
+> output), and an initial **compiler → GIR → bytecode VM** pipeline (arithmetic,
+> `if`/`do`/`var`/`set`, functions, and closures). The design in
+> `docs/design.md` is the target, not the current feature set. APIs and the
+> language surface are unstable.
 
 ## The node
 
@@ -51,9 +51,10 @@ participates in equality or hashing.
   scalar/heap-aware `same?`; a matching `hash`.
 - **Printer** (`src/gene/printer.nim`) — prints a value back to canonical Gene
   source that re-reads to a structurally equal value.
-- **Evaluator** (`src/gene/eval.nim`) — callable-first tree-walking interpreter
-  (design §3): self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/
-  `fn`/`quote` special forms, closures, recursion, and built-ins
+- **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
+  `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
+  self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
+  special forms, closures, recursion, and built-ins
   (`+ - * / < > <= >= = not print println`).
 
 ## Quick start
@@ -93,7 +94,9 @@ src/
     types.nim         NaN-boxed Value model + constructors/accessors
     equality.nim      equal / same / hash
     printer.nim       node values -> canonical Gene source
-    eval.nim          tree-walking evaluator + built-ins
+    compiler.nim      node values -> GIR bytecode chunks
+    gir.nim           bytecode instructions + function prototypes
+    vm.nim            stack VM + runtime built-ins
 docs/design.md        full language design (the target)
 examples/web_demo.gene  end-to-end design showcase (not yet runnable)
 tests/                unit tests + executable language specs

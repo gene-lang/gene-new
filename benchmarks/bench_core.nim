@@ -7,7 +7,7 @@
 ## Run:
 ##   nimble perf
 
-import gene/[equality, printer, reader, types]
+import gene/[compiler, equality, printer, reader, types, vm]
 import std/[monotimes, strutils, tables, times]
 
 var positiveZeroInput {.volatile.}: float64 = 0.0
@@ -62,6 +62,17 @@ proc main() =
   bench("printer.web_demo.forms", 1_000, i):
     for f in demoForms:
       checksum = checksum + int64(f.print().len)
+
+  let simpleProgram = "(+ 1 2 3 4)"
+  bench("compiler.simple_call.source_to_gir", 100_000, i):
+    let chunk = compileSource(simpleProgram)
+    checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
+
+  let simpleChunk = compileSource(simpleProgram)
+  let simpleScope = newGlobalScope()
+  bench("vm.simple_call.compiled_chunk", 500_000, i):
+    let v = run(simpleChunk, simpleScope)
+    checksum = checksum + v.intVal
 
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")

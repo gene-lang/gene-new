@@ -6,7 +6,7 @@
 ##   gene parse <file>   read and print canonical forms (no execution)
 
 import std/[os]
-import gene/[reader, printer, eval]
+import gene/[compiler, printer, reader, types, vm]
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -24,7 +24,7 @@ proc readSourceFile(path: string): string =
 
 proc cmdEval(src: string) =
   try:
-    echo evalStr(src).print()
+    echo run(compileSource(src), newGlobalScope()).print()
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)
@@ -35,7 +35,7 @@ proc cmdEval(src: string) =
 proc cmdRun(path: string) =
   let src = readSourceFile(path)
   try:
-    discard evalAll(src, newGlobalScope())
+    discard run(compileSource(src), newGlobalScope())
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)

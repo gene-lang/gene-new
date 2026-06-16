@@ -6,9 +6,9 @@
 ##   * top 16 bits < 0xFFF1             -> an IEEE float64 stored directly
 ##   * top 16 bits in 0xFFF1..0xFFF6    -> a void/bool/small-int/char/+0.0/symbol
 ##                                         immediate (no allocation)
-##   * top 16 bits in 0xFFF8..0xFFFC    -> a *managed* heap pointer (string, list,
-##                                         map, node, or large int) carried in the
-##                                         low 48 bits
+##   * top 16 bits >= 0xFFF8            -> a *managed* heap pointer (string, list,
+##                                         map, node, function, native function, or
+##                                         large int) carried in the low 48 bits
 ##
 ## Managed objects are manually heap-allocated and reference counted. Each starts
 ## with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks
@@ -29,6 +29,8 @@ when not (defined(gcOrc) or defined(gcArc)):
   {.error: "gene/types requires --mm:orc or --mm:arc (see nim.cfg)".}
 
 type
+  GeneError* = object of CatchableError
+
   ValueKind* = enum
     vkNil       ## explicit absence (`nil` : Nil)
     vkVoid      ## no-value / skip / delete (`void` : Void)
@@ -138,8 +140,12 @@ type
     body: seq[Value]
     meta: PropTable
 
-  ## Lexical environment for the evaluator (a Nim ORC ref, so scope cycles are
-  ## collectable). A first-class `Env` (design §11.1) is a later, richer concept.
+  ## Opaque compiled function body used by runtime function values.
+  FunctionCode* = ref object of RootObj
+
+  ## Lexical environment for the VM (a Nim ORC ref, so scope cycles are
+  ## collectable). A first-class `Env` (design Section 11.1) is a later, richer
+  ## concept.
   Scope* = ref object
     parent*: Scope
     vars*: Table[string, Value]
@@ -151,7 +157,7 @@ type
     refCount: int
     name: string
     params: seq[string]
-    fbody: seq[Value]
+    code: FunctionCode
     scope: Scope
 
   GeneNativeFn = object
@@ -392,10 +398,10 @@ proc fnParams*(v: Value): lent seq[string] =
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).params
 
-proc fnBody*(v: Value): lent seq[Value] =
+proc fnCode*(v: Value): FunctionCode =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
-  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).fbody
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).code
 
 proc fnScope*(v: Value): Scope =
   if v.tagOf != FUNCTION_TAG:
@@ -487,12 +493,12 @@ proc newNode*(head: Value,
   boxPtr(NODE_TAG, p)
 
 proc newFunction*(name: string, params: sink seq[string],
-                  body: sink seq[Value], scope: Scope): Value =
+                  code: FunctionCode, scope: Scope): Value =
   let p = createObj(GeneFunction)
   p.refCount = 1
   p.name = name
   p.params = params
-  p.fbody = body
+  p.code = code
   p.scope = scope
   boxPtr(FUNCTION_TAG, p)
 
