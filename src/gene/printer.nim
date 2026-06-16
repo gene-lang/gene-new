@@ -4,7 +4,7 @@
 ## stored (source) order. Immutable containers use their `#`-prefix. The
 ## output re-reads to a structurally equal value (AST-level round-trip).
 
-import std/[unicode, tables]
+import std/[strutils, unicode, tables]
 import ./types
 
 proc print*(v: Value): string
@@ -28,6 +28,21 @@ proc printFloat(f: float64): string =
      'n' notin result and 'i' notin result:
     result.add ".0"
 
+proc escapeChar(r: Rune): string =
+  let code = int32(r)
+  case code
+  of int32(ord('\n')): "\\n"
+  of int32(ord('\r')): "\\r"
+  of int32(ord('\t')): "\\t"
+  of 0: "\\0"
+  of int32(ord('\\')): "\\\\"
+  of int32(ord('\'')): "\\'"
+  else:
+    if code < 0x20 or code == 0x7f:
+      "\\u" & toHex(int(code), 4)
+    else:
+      $r
+
 proc printProps(sb: var string, props: PropTable, sigil: string) =
   for k, val in props:
     sb.add ' '
@@ -47,7 +62,7 @@ proc print*(v: Value): string =
   of vkInt:    $v.intVal
   of vkFloat:  printFloat(v.floatVal)
   of vkString: escapeStr(v.strVal)
-  of vkChar:   "'" & $v.charVal & "'"
+  of vkChar:   "'" & escapeChar(v.charVal) & "'"
   of vkSymbol: v.symVal
   of vkList:
     var sb = if v.listImmutable: "#[" else: "["

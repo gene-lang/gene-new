@@ -110,14 +110,17 @@ See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 
 - Non-NaN `float64` values are stored directly.
 - The all-zero bit pattern is `nil`, so a zero-initialized `Value` is `nil`.
-- Reserved quiet-NaN payloads encode `void` / `bool` / small-int / `char`
-  immediates, or a handle into a process-local heap table for compound values
-  (large ints, strings, symbols, lists, maps, nodes).
+- Reserved NaN tags encode `void` / `bool` / small-int / `char` / `+0.0` /
+  symbol immediates (allocation-free), or a heap pointer for compound values
+  (large ints, strings, lists, maps, nodes).
 
-`sizeof(Value) == sizeof(uint64)`. Scalar paths stay allocation-free where
-possible. The heap table is currently append-only and handle-indirected; a
-non-moving arena with reclamation is planned before the VM allocates in hot
-loops (see the `TODO(vm-memory)` note in `src/gene/types.nim`).
+`sizeof(Value) == sizeof(uint64)`. Compound values are manually heap-allocated
+with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks drive
+reference counting automatically, so values free at count 0 — no global table, no
+per-read lock, no leak. Symbols are interned to immediate ids. Build with
+`-d:geneRcStats` to expose `liveManaged` for retain/release auditing. (RC is
+non-atomic for the single-threaded MVP; see `TODO(vm-shared-rc)` in
+`src/gene/types.nim` for the planned per-object atomic-on-publish upgrade.)
 
 ## License
 

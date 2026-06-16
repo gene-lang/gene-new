@@ -1,5 +1,6 @@
 import gene/reader
 import gene/printer
+import gene/types
 import std/unittest
 
 template check_read(src: string, expected: string) =
@@ -18,6 +19,33 @@ suite "reader — atoms and containers":
   test "bool false":         check_read("false",      "false")
   test "nil":                check_read("nil",        "nil")
   test "string":             check_read("\"hello\"",  "\"hello\"")
+
+suite "reader — char literals":
+  test "ASCII char":
+    let v = read("'a'")
+    check v.kind == vkChar
+    check int32(v.charVal) == int32(ord('a'))
+    check v.print() == "'a'"
+
+  test "escaped chars":
+    check int32(read("'\\n'").charVal) == int32(ord('\n'))
+    check read("'\\n'").print() == "'\\n'"
+    check int32(read("'\\\\'").charVal) == int32(ord('\\'))
+    check read("'\\\\'").print() == "'\\\\'"
+    check int32(read("'\\''").charVal) == int32(ord('\''))
+    check read("'\\''").print() == "'\\''"
+
+  test "UTF-8 scalar char":
+    let v = read("'é'")
+    check v.kind == vkChar
+    check int32(v.charVal) == 0x00e9
+    check v.print() == "'é'"
+
+  test "Unicode escape char":
+    check int32(read("'\\u00E9'").charVal) == 0x00e9
+    check read("'\\u00E9'").print() == "'é'"
+    check int32(read("'\\U0001F600'").charVal) == 0x1f600
+    check read("'\\u{1F600}'").print() == "'😀'"
 
 suite "reader — sugars":
   test "pipe folding":       check_read("(a; b; c)",    "(((a) b) c)")
@@ -101,8 +129,15 @@ suite "reader — malformed input is rejected":
     expect ReadError: discard read("$\"hello ${name\"")
   test "char literal with extra chars":
     expect ReadError: discard read("'ab'")
+  test "empty char literal":
+    expect ReadError: discard read("''")
   test "unterminated char literal":
     expect ReadError: discard read("'a")
+  test "char literal with multiple Unicode scalars":
+    expect ReadError: discard read("'é'")
+  test "invalid Unicode char escape":
+    expect ReadError: discard read("'\\uD800'")
+    expect ReadError: discard read("'\\U00110000'")
   test "stray closing paren":
     expect ReadError: discard read(")")
   test "stray closing bracket":

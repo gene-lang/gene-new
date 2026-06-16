@@ -55,6 +55,101 @@ proc advance(r: var Reader) =
       r.col += 1
     r.pos += 1
 
+proc advanceBytes(r: var Reader, count: int) =
+  for _ in 0 ..< count:
+    r.advance()
+
+proc hexValue(c: char): int =
+  case c
+  of '0'..'9': ord(c) - ord('0')
+  of 'a'..'f': ord(c) - ord('a') + 10
+  of 'A'..'F': ord(c) - ord('A') + 10
+  else: -1
+
+proc isUnicodeScalar(code: int): bool =
+  code >= 0 and code <= 0x10ffff and not (code >= 0xd800 and code <= 0xdfff)
+
+proc parseFixedUnicodeEscape(r: var Reader, digits: int): Rune =
+  var code = 0
+  for _ in 0 ..< digits:
+    if r.pos >= r.src.len:
+      raise newException(ReadError, "unterminated Unicode character escape")
+    let value = hexValue(r.nextChar())
+    if value < 0:
+      raise newException(ReadError, "invalid Unicode character escape")
+    code = code * 16 + value
+    r.advance()
+  if not isUnicodeScalar(code):
+    raise newException(ReadError, "Unicode character escape is not a scalar value")
+  Rune(int32(code))
+
+proc parseBracedUnicodeEscape(r: var Reader): Rune =
+  r.advance() # consume {
+  var code = 0
+  var digits = 0
+  while r.pos < r.src.len and r.nextChar() != '}':
+    let value = hexValue(r.nextChar())
+    if value < 0:
+      raise newException(ReadError, "invalid Unicode character escape")
+    code = code * 16 + value
+    digits += 1
+    if digits > 6:
+      raise newException(ReadError, "Unicode character escape is too large")
+    r.advance()
+  if r.pos >= r.src.len or r.nextChar() != '}':
+    raise newException(ReadError, "unterminated Unicode character escape")
+  r.advance() # consume }
+  if digits == 0 or not isUnicodeScalar(code):
+    raise newException(ReadError, "Unicode character escape is not a scalar value")
+  Rune(int32(code))
+
+proc parseCharEscape(r: var Reader): Rune =
+  if r.pos >= r.src.len:
+    raise newException(ReadError, "unterminated character literal")
+  let esc = r.nextChar()
+  r.advance()
+  case esc
+  of 'n': Rune(int32(ord('\n')))
+  of 'r': Rune(int32(ord('\r')))
+  of 't': Rune(int32(ord('\t')))
+  of '0': Rune(0)
+  of '\\': Rune(int32(ord('\\')))
+  of '\'': Rune(int32(ord('\'')))
+  of '"': Rune(int32(ord('"')))
+  of 'u':
+    if r.pos < r.src.len and r.nextChar() == '{':
+      r.parseBracedUnicodeEscape()
+    else:
+      r.parseFixedUnicodeEscape(4)
+  of 'U':
+    r.parseFixedUnicodeEscape(8)
+  else:
+    raise newException(ReadError, "unknown character escape")
+
+proc parseCharLiteral(r: var Reader): string =
+  r.advance() # consume opening '
+  if r.pos >= r.src.len:
+    raise newException(ReadError, "unterminated character literal")
+  if r.nextChar() == '\'':
+    raise newException(ReadError, "empty character literal")
+
+  let ch =
+    if r.nextChar() == '\\':
+      r.advance()
+      r.parseCharEscape()
+    else:
+      if r.nextChar() in {'\n', '\r'}:
+        raise newException(ReadError, "unterminated character literal")
+      let width = runeLenAt(r.src, r.pos)
+      let decoded = runeAt(r.src, r.pos)
+      r.advanceBytes(width)
+      decoded
+
+  if r.pos >= r.src.len or r.nextChar() != '\'':
+    raise newException(ReadError, "character literal must contain one Unicode scalar value")
+  r.advance()
+  ch.toUTF8()
+
 proc tokenize(r: var Reader) =
   while r.pos < r.src.len:
     let c = r.nextChar()
@@ -193,24 +288,7 @@ proc tokenize(r: var Reader) =
 
       r.tokens.add Token(kind: tkString, lexeme: lexeme, line: startLine, col: startCol)
     of '\'':
-      # Char literal
-      r.advance()
-      if r.pos >= r.src.len:
-        raise newException(ReadError, "unterminated character literal")
-      var lexeme = ""
-      if r.nextChar() == '\\':
-        r.advance()
-        lexeme.add '\\'
-        if r.pos >= r.src.len:
-          raise newException(ReadError, "unterminated character literal")
-        lexeme.add r.nextChar()
-        r.advance()
-      else:
-        lexeme.add r.nextChar()
-        r.advance()
-      if r.nextChar() != '\'':
-        raise newException(ReadError, "unterminated character literal (expected closing ')")
-      r.advance()
+      let lexeme = r.parseCharLiteral()
       r.tokens.add Token(kind: tkChar, lexeme: lexeme, line: startLine, col: startCol)
     else:
       # Atoms: numbers, symbols
@@ -453,7 +531,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkInt: return newInt(parseInt(tok.lexeme))
   of tkFloat: return newFloat(parseFloat(tok.lexeme))
   of tkString: return newStr(tok.lexeme)
-  of tkChar: return newChar(Rune(tok.lexeme[0]))
+  of tkChar: return newChar(runeAt(tok.lexeme, 0))
   of tkSymbol:
     case tok.lexeme
     of "true": return TRUE

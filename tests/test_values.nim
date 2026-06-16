@@ -75,3 +75,28 @@ suite "value — equality":
     check same(newInt(1'i64 shl 50), newInt(1'i64 shl 50))
     check same(newStr("x"), newStr("x"))
     check not same(newList(@[newInt(1)]), newList(@[newInt(1)]))
+
+suite "value — reference counting":
+  # Managed values are manually heap-allocated and refcounted via Value's
+  # =copy/=sink/=dup/=destroy hooks. This stress builds and drops nested, aliased
+  # structures; it catches double-frees/corruption always, and (under
+  # -d:geneRcStats) proves retain/release balance to zero.
+  proc buildDrop() =
+    var props = initOrderedTable[string, Value]()
+    props["name"] = newStr("a-heap-allocated-string")
+    let shared = newStr("shared")              # aliased -> refCount 2
+    let n = newNode(newSym("user"), props = props,
+                    body = @[shared, shared,
+                             newList(@[newInt(1), newInt(1'i64 shl 50)]),
+                             newMap(props)])
+    check n.head.symVal == "user"
+    check n.body[0].strVal == "shared"
+    check n.body[2].listItems[1].intVal == (1'i64 shl 50)
+
+  test "build/drop nested aliased structures does not crash or leak":
+    when defined(geneRcStats):
+      check liveManaged == 0
+    for _ in 0 ..< 20_000:
+      buildDrop()
+    when defined(geneRcStats):
+      check liveManaged == 0   # retain/release balanced after all drops

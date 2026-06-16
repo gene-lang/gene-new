@@ -1,17 +1,32 @@
 ## Canonical value / node model for Gene (design Section 1).
 ##
-## Values are represented as a 64-bit NaN-box. The all-zero bit pattern is
-## `nil`, non-zero non-boxed float64 values are stored directly, and reserved
-## quiet-NaN payloads encode void/bool/small-int/char/positive-zero-float
-## immediates or an index into the current process-local heap table.
+## Values are represented as a 64-bit NaN-box (`Value.bits`):
 ##
-## TODO(vm-memory): Heap slots are handle-indirected but not reclaimed yet, and
-## heap reads currently take a global lock because seq growth can move the slot
-## table. Before the VM allocates in hot loops, replace this append-only table
-## with a non-moving segmented/generational handle arena that supports lock-free
-## reads plus tracing/reclamation or a free-list with stale-handle detection.
+##   * `bits == 0`                      -> `nil` (so a zero-initialized Value is nil)
+##   * top 16 bits < 0xFFF1             -> an IEEE float64 stored directly
+##   * top 16 bits in 0xFFF1..0xFFF6    -> a void/bool/small-int/char/+0.0/symbol
+##                                         immediate (no allocation)
+##   * top 16 bits in 0xFFF8..0xFFFC    -> a *managed* heap pointer (string, list,
+##                                         map, node, or large int) carried in the
+##                                         low 48 bits
+##
+## Managed objects are manually heap-allocated and reference counted. Each starts
+## with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks
+## drive retain/release automatically, so values free at count 0 — no global table,
+## no per-read lock, no leak. (Adopted from the older Gene runtime.)
+##
+## TODO(vm-shared-rc): RC is non-atomic and assumes single-threaded mutation, which
+## matches the current MVP. When the M:N scheduler lands, give each managed object a
+## per-object `shared` flag and switch to atomic inc/dec only for published values
+## (see `(freeze)`), keeping thread-local objects on the cheap path.
 
 import std/[locks, tables, unicode]
+
+# Manual reference counting (below) relies on ARC/ORC move semantics and runs
+# =copy/=sink/=dup/=destroy over raw alloc0 objects holding GC-managed fields.
+# A --mm:refc build would mismanage those fields, so fail fast instead.
+when not (defined(gcOrc) or defined(gcArc)):
+  {.error: "gene/types requires --mm:orc or --mm:arc (see nim.cfg)".}
 
 type
   ValueKind* = enum
@@ -30,139 +45,187 @@ type
   Value* = object
     bits*: uint64
 
+const
+  TAG_SHIFT = 48
+  PAYLOAD_MASK = 0x0000_FFFF_FFFF_FFFF'u64
+
+  # Immediate tags (no allocation, no refcount).
+  VOID_TAG      = 0xFFF1'u64
+  BOOL_TAG      = 0xFFF2'u64
+  INT_TAG       = 0xFFF3'u64
+  CHAR_TAG      = 0xFFF4'u64
+  FLOATZERO_TAG = 0xFFF5'u64
+  SYMBOL_TAG    = 0xFFF6'u64
+
+  # Managed tags (heap pointer in payload, refcounted). All >= MANAGED_MIN so the
+  # lifecycle hooks can test "needs refcount" with a single shift+compare.
+  MANAGED_MIN   = 0xFFF8'u64
+  STRING_TAG    = 0xFFF8'u64
+  LIST_TAG      = 0xFFF9'u64
+  MAP_TAG       = 0xFFFA'u64
+  NODE_TAG      = 0xFFFB'u64
+  INT64_TAG     = 0xFFFC'u64
+
+  # A float whose raw bits land in tag space (0xFFF1.. negative NaNs) is folded to
+  # this canonical quiet NaN, which lives below tag space and stores directly.
+  CANONICAL_NAN = 0x7FF8_0000_0000_0000'u64
+
+  SMALL_INT_MIN = -(1'i64 shl 47)
+  SMALL_INT_MAX = (1'i64 shl 47) - 1
+  INT_SIGN_BIT  = 0x0000_8000_0000_0000'u64
+
+# ---------------------------------------------------------------------------
+# Value lifecycle hooks (must precede any Value-containing type so the managed
+# heap objects below pick up these hooks, not an implicitly-generated one).
+# ---------------------------------------------------------------------------
+
+proc rcRetain(bits: uint64) {.raises: [].}
+proc rcRelease(bits: uint64) {.raises: [].}
+
+proc `=destroy`(v: Value) {.inline.} =
+  if (v.bits shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRelease(v.bits)
+
+proc `=copy`(dest: var Value, src: Value) {.inline.} =
+  if dest.bits == src.bits: return
+  if (src.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRetain(src.bits)
+  if (dest.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRelease(dest.bits)
+  dest.bits = src.bits
+
+proc `=sink`(dest: var Value, src: Value) {.inline.} =
+  if (dest.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRelease(dest.bits)
+  dest.bits = src.bits
+
+proc `=dup`(src: Value): Value {.inline.} =
+  if (src.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRetain(src.bits)
+  result.bits = src.bits
+
+type
   ## Props and meta are symbol-keyed ordered maps. Keys are the bare symbol
   ## text (without the leading `^`/`@`). Order is preserved for deterministic
   ## printing per design Section 18.
   PropTable* = OrderedTable[string, Value]
 
-  HeapValue = ref HeapValueObj
-  HeapValueObj = object
-    case kind: ValueKind
-    of vkInt:
-      intVal: int64
-    of vkFloat:
-      floatVal: float64
-    of vkString:
-      strVal: string
-    of vkSymbol:
-      symVal: string
-    of vkList:
-      listItems: seq[Value]
-      listImmutable: bool
-    of vkMap:
-      mapEntries: PropTable
-      mapImmutable: bool
-    of vkNode:
-      head: Value
-      props: PropTable
-      body: seq[Value]
-      meta: PropTable
-      nodeImmutable: bool
-    of vkNil, vkVoid, vkBool, vkChar:
-      discard
+  # Managed heap objects. Manually allocated (alloc0 / dealloc); each begins with
+  # a refCount header used by retain/release.
+  GeneString = object
+    refCount: int
+    s: string
 
-  BoxKind = enum
-    bkNil,
-    bkVoid,
-    bkBool,
-    bkInt,
-    bkChar,
-    bkFloatZero,
-    bkHeap
+  GeneInt64 = object
+    refCount: int
+    i: int64
 
-const
-  BoxPrefix = 0x7ffc000000000000'u64
-  BoxPrefixMask = 0xffff000000000000'u64
-  BoxKindShift = 44
-  PayloadBits = 44
-  PayloadMask = 0x00000fffffffffff'u64
-  SmallIntSignBit = 1'u64 shl (PayloadBits - 1)
-  SmallIntMin = -(1'i64 shl (PayloadBits - 1))
-  SmallIntMax = (1'i64 shl (PayloadBits - 1)) - 1
+  GeneList = object
+    refCount: int
+    immutable: bool
+    items: seq[Value]
 
-var heapValues: seq[HeapValue]
-var heapLock: Lock
-var internLock: Lock
-var internedNames = initTable[string, string]()
-var internedSymbols = initTable[string, Value]()
-initLock(heapLock)
+  GeneMap = object
+    refCount: int
+    immutable: bool
+    entries: PropTable
+
+  GeneNode = object
+    refCount: int
+    immutable: bool
+    head: Value
+    props: PropTable
+    body: seq[Value]
+    meta: PropTable
+
+# ---------------------------------------------------------------------------
+# Interning (symbols are immediate indices; prop-key strings are deduplicated)
+# ---------------------------------------------------------------------------
+
+var
+  symbolNames: seq[string]              # symbol id -> text
+  symbolIds: Table[string, int]         # text -> symbol id
+  internedNames: Table[string, string]  # deduped prop-key strings
+  internLock: Lock
 initLock(internLock)
 
-proc isBoxed(v: Value): bool {.inline.} =
-  v.bits == 0 or (v.bits and BoxPrefixMask) == BoxPrefix
+# ---------------------------------------------------------------------------
+# Low-level box helpers
+# ---------------------------------------------------------------------------
 
-proc payload(v: Value): uint64 {.inline.} =
-  v.bits and PayloadMask
+template tagOf(v: Value): uint64 = v.bits shr TAG_SHIFT
 
-proc boxKind(v: Value): BoxKind {.inline.} =
-  BoxKind((v.bits shr BoxKindShift) and 0xf'u64)
+proc isManaged(v: Value): bool {.inline.} =
+  (v.bits shr TAG_SHIFT) >= MANAGED_MIN
 
-proc makeBox(k: BoxKind, payload = 0'u64): Value {.inline.} =
-  Value(bits: BoxPrefix or (uint64(ord(k)) shl BoxKindShift) or
-              (payload and PayloadMask))
+proc isImmediateFloat(v: Value): bool {.inline.} =
+  ## True when the bits decode as an IEEE float64 stored directly.
+  v.bits != 0 and (v.bits shr TAG_SHIFT) < VOID_TAG
 
-proc addHeap(obj: HeapValue): Value =
-  acquire(heapLock)
-  try:
-    if heapValues.len > int(PayloadMask):
-      raise newException(OverflowDefect, "Gene heap value table exhausted")
-    heapValues.add obj
-    result = makeBox(bkHeap, uint64(heapValues.high))
-  finally:
-    release(heapLock)
+proc mkImm(tag: uint64, payload = 0'u64): Value {.inline.} =
+  Value(bits: (tag shl TAG_SHIFT) or (payload and PAYLOAD_MASK))
 
-proc internNameLocked(v: string): string =
-  if internedNames.hasKey(v):
-    return internedNames[v]
-  internedNames[v] = v
-  internedNames[v]
+proc boxPtr(tag: uint64, p: pointer): Value {.inline.} =
+  Value(bits: (tag shl TAG_SHIFT) or (cast[uint64](p) and PAYLOAD_MASK))
 
-proc internName*(v: string): string =
-  acquire(internLock)
-  try:
-    result = internNameLocked(v)
-  finally:
-    release(internLock)
+when defined(geneRcStats):
+  # Opt-in diagnostic: counts live managed (heap, refcounted) objects so tests can
+  # assert that retain/release balance. Zero cost unless `-d:geneRcStats` is set.
+  var liveManaged*: int
+  template trackAlloc = inc liveManaged
+  template trackFree = dec liveManaged
+else:
+  template trackAlloc = discard
+  template trackFree = discard
 
-proc internSymbol(v: string): Value =
-  acquire(internLock)
-  try:
-    result = internedSymbols.getOrDefault(v)
-    if result.bits != 0:
-      return
-    let name = internNameLocked(v)
-    result = addHeap(HeapValue(kind: vkSymbol, symVal: name))
-    internedSymbols[name] = result
-  finally:
-    release(internLock)
-
-proc heapObj(v: Value): HeapValue =
-  if not v.isBoxed or v.boxKind != bkHeap:
-    raise newException(FieldDefect, "value is not heap-backed")
-  let idx = int(v.payload)
-  acquire(heapLock)
-  try:
-    if idx < 0 or idx >= heapValues.len:
-      raise newException(IndexDefect, "invalid heap value index")
-    result = heapValues[idx]
-  finally:
-    release(heapLock)
-
-proc floatToBits(f: float64): uint64 {.inline.} =
-  cast[uint64](f)
-
-proc bitsToFloat(bits: uint64): float64 {.inline.} =
-  cast[float64](bits)
+proc createObj(T: typedesc): ptr T {.inline.} =
+  trackAlloc()
+  cast[ptr T](alloc0(sizeof(T)))
 
 proc encodeSmallInt(v: int64): uint64 {.inline.} =
-  uint64(v) and PayloadMask
+  uint64(v) and PAYLOAD_MASK
 
 proc decodeSmallInt(bits: uint64): int64 {.inline.} =
-  let raw = bits and PayloadMask
-  if (raw and SmallIntSignBit) != 0:
-    -int64(((not raw) and PayloadMask) + 1'u64)
+  let raw = bits and PAYLOAD_MASK
+  if (raw and INT_SIGN_BIT) != 0:
+    cast[int64](raw or not PAYLOAD_MASK)   # sign-extend bits 48..63
   else:
-    int64(raw)
+    cast[int64](raw)
+
+# ---------------------------------------------------------------------------
+# Reference counting bodies
+# ---------------------------------------------------------------------------
+
+proc rcRetain(bits: uint64) =
+  case bits shr TAG_SHIFT
+  of STRING_TAG: inc cast[ptr GeneString](bits and PAYLOAD_MASK).refCount
+  of INT64_TAG:  inc cast[ptr GeneInt64](bits and PAYLOAD_MASK).refCount
+  of LIST_TAG:   inc cast[ptr GeneList](bits and PAYLOAD_MASK).refCount
+  of MAP_TAG:    inc cast[ptr GeneMap](bits and PAYLOAD_MASK).refCount
+  of NODE_TAG:   inc cast[ptr GeneNode](bits and PAYLOAD_MASK).refCount
+  else: discard
+
+proc rcRelease(bits: uint64) =
+  let payload = bits and PAYLOAD_MASK
+  if payload == 0: return
+  case bits shr TAG_SHIFT
+  of STRING_TAG:
+    let p = cast[ptr GeneString](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of INT64_TAG:
+    let p = cast[ptr GeneInt64](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of LIST_TAG:
+    let p = cast[ptr GeneList](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of MAP_TAG:
+    let p = cast[ptr GeneMap](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of NODE_TAG:
+    let p = cast[ptr GeneNode](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  else: discard
 
 # ---------------------------------------------------------------------------
 # Singletons
@@ -170,9 +233,9 @@ proc decodeSmallInt(bits: uint64): int64 {.inline.} =
 
 let
   NIL* = Value(bits: 0)
-  VOID* = makeBox(bkVoid)
-  TRUE* = makeBox(bkBool, 1)
-  FALSE* = makeBox(bkBool, 0)
+  VOID* = mkImm(VOID_TAG)
+  TRUE* = mkImm(BOOL_TAG, 1)
+  FALSE* = mkImm(BOOL_TAG, 0)
 
 # ---------------------------------------------------------------------------
 # Introspection accessors
@@ -181,167 +244,191 @@ let
 # ---------------------------------------------------------------------------
 
 proc isHeapBacked*(v: Value): bool {.inline.} =
-  v.isBoxed and v.boxKind == bkHeap
+  v.isManaged
 
 proc kind*(v: Value): ValueKind {.inline.} =
-  if not v.isBoxed:
-    return vkFloat
-  case v.boxKind
-  of bkNil: vkNil
-  of bkVoid: vkVoid
-  of bkBool: vkBool
-  of bkInt: vkInt
-  of bkChar: vkChar
-  of bkFloatZero: vkFloat
-  of bkHeap: v.heapObj.kind
+  if v.bits == 0: return vkNil
+  let tag = v.bits shr TAG_SHIFT
+  if tag < VOID_TAG: return vkFloat   # direct float (incl. +/-Inf, canonical NaN)
+  case tag
+  of VOID_TAG: vkVoid
+  of BOOL_TAG: vkBool
+  of INT_TAG: vkInt
+  of CHAR_TAG: vkChar
+  of FLOATZERO_TAG: vkFloat
+  of SYMBOL_TAG: vkSymbol
+  of STRING_TAG: vkString
+  of INT64_TAG: vkInt
+  of LIST_TAG: vkList
+  of MAP_TAG: vkMap
+  of NODE_TAG: vkNode
+  else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
-  v.kind == vkNil
+  v.bits == 0
 
 proc boolVal*(v: Value): bool {.inline.} =
-  if v.boxKind != bkBool:
+  if v.tagOf != BOOL_TAG:
     raise newException(FieldDefect, "value is not a Bool")
-  v.payload != 0
+  (v.bits and PAYLOAD_MASK) != 0
 
 proc intVal*(v: Value): int64 {.inline.} =
-  if not v.isBoxed:
-    raise newException(FieldDefect, "value is not an Int")
-  case v.boxKind
-  of bkInt: decodeSmallInt(v.payload)
-  of bkHeap:
-    let obj = v.heapObj
-    if obj.kind == vkInt: obj.intVal
-    else: raise newException(FieldDefect, "value is not an Int")
-  else:
-    raise newException(FieldDefect, "value is not an Int")
+  case v.bits shr TAG_SHIFT
+  of INT_TAG: decodeSmallInt(v.bits)
+  of INT64_TAG: cast[ptr GeneInt64](v.bits and PAYLOAD_MASK).i
+  else: raise newException(FieldDefect, "value is not an Int")
 
 proc floatVal*(v: Value): float64 {.inline.} =
-  if not v.isBoxed:
-    return bitsToFloat(v.bits)
-  if v.boxKind == bkFloatZero:
+  if v.isImmediateFloat:
+    return cast[float64](v.bits)
+  if v.tagOf == FLOATZERO_TAG:
     return 0.0
-  if v.boxKind == bkHeap:
-    let obj = v.heapObj
-    if obj.kind == vkFloat:
-      return obj.floatVal
   raise newException(FieldDefect, "value is not a Float")
 
 proc strVal*(v: Value): lent string =
-  let obj = v.heapObj
-  if obj.kind != vkString:
+  if v.tagOf != STRING_TAG:
     raise newException(FieldDefect, "value is not a String")
-  obj.strVal
+  cast[ptr GeneString](v.bits and PAYLOAD_MASK).s
 
 proc charVal*(v: Value): Rune {.inline.} =
-  if not v.isBoxed or v.boxKind != bkChar:
+  if v.tagOf != CHAR_TAG:
     raise newException(FieldDefect, "value is not a Char")
-  Rune(int32(v.payload and 0xffffffff'u64))
+  Rune(int32(v.bits and 0xffffffff'u64))
 
 proc symVal*(v: Value): lent string =
-  let obj = v.heapObj
-  if obj.kind != vkSymbol:
+  if v.tagOf != SYMBOL_TAG:
     raise newException(FieldDefect, "value is not a Symbol")
-  obj.symVal
+  symbolNames[int(v.bits and PAYLOAD_MASK)]
 
 proc listItems*(v: Value): lent seq[Value] =
-  let obj = v.heapObj
-  if obj.kind != vkList:
+  if v.tagOf != LIST_TAG:
     raise newException(FieldDefect, "value is not a List")
-  obj.listItems
+  cast[ptr GeneList](v.bits and PAYLOAD_MASK).items
 
 proc listImmutable*(v: Value): bool =
-  let obj = v.heapObj
-  if obj.kind != vkList:
+  if v.tagOf != LIST_TAG:
     raise newException(FieldDefect, "value is not a List")
-  obj.listImmutable
+  cast[ptr GeneList](v.bits and PAYLOAD_MASK).immutable
 
 proc mapEntries*(v: Value): lent PropTable =
-  let obj = v.heapObj
-  if obj.kind != vkMap:
+  if v.tagOf != MAP_TAG:
     raise newException(FieldDefect, "value is not a Map")
-  obj.mapEntries
+  cast[ptr GeneMap](v.bits and PAYLOAD_MASK).entries
 
 proc mapImmutable*(v: Value): bool =
-  let obj = v.heapObj
-  if obj.kind != vkMap:
+  if v.tagOf != MAP_TAG:
     raise newException(FieldDefect, "value is not a Map")
-  obj.mapImmutable
+  cast[ptr GeneMap](v.bits and PAYLOAD_MASK).immutable
 
 proc head*(v: Value): Value =
-  let obj = v.heapObj
-  if obj.kind != vkNode:
+  if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
-  obj.head
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).head
 
 proc props*(v: Value): lent PropTable =
-  let obj = v.heapObj
-  if obj.kind != vkNode:
+  if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
-  obj.props
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).props
 
 proc body*(v: Value): lent seq[Value] =
-  let obj = v.heapObj
-  if obj.kind != vkNode:
+  if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
-  obj.body
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).body
 
 proc meta*(v: Value): lent PropTable =
-  let obj = v.heapObj
-  if obj.kind != vkNode:
+  if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
-  obj.meta
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).meta
 
 proc nodeImmutable*(v: Value): bool =
-  let obj = v.heapObj
-  if obj.kind != vkNode:
+  if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
-  obj.nodeImmutable
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).immutable
 
 # ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
 
 proc newInt*(v: int64): Value {.inline.} =
-  if v >= SmallIntMin and v <= SmallIntMax:
-    Value(bits: BoxPrefix or (uint64(ord(bkInt)) shl BoxKindShift) or encodeSmallInt(v))
+  if v >= SMALL_INT_MIN and v <= SMALL_INT_MAX:
+    mkImm(INT_TAG, encodeSmallInt(v))
   else:
-    addHeap(HeapValue(kind: vkInt, intVal: v))
+    let p = createObj(GeneInt64)
+    p.refCount = 1
+    p.i = v
+    boxPtr(INT64_TAG, p)
 
 proc newFloat*(v: float64): Value {.inline.} =
-  var bits = floatToBits(v)
-  if bits == 0:
-    return makeBox(bkFloatZero)
-  if (bits and BoxPrefixMask) == BoxPrefix:
-    return addHeap(HeapValue(kind: vkFloat, floatVal: v))
-  Value(bits: bits)
+  let raw = cast[uint64](v)
+  if raw == 0:
+    return mkImm(FLOATZERO_TAG)            # +0.0 (raw 0 is reserved for nil)
+  if (raw shr TAG_SHIFT) >= VOID_TAG:
+    return Value(bits: CANONICAL_NAN)      # negative NaN colliding with tag space
+  Value(bits: raw)
 
 proc newStr*(v: sink string): Value =
-  addHeap(HeapValue(kind: vkString, strVal: v))
+  let p = createObj(GeneString)
+  p.refCount = 1
+  p.s = v
+  boxPtr(STRING_TAG, p)
 
 proc newChar*(r: Rune): Value {.inline.} =
-  makeBox(bkChar, uint64(int32(r)) and 0xffffffff'u64)
+  mkImm(CHAR_TAG, uint64(int32(r)) and 0xffffffff'u64)
 
 proc newSym*(v: string): Value =
-  internSymbol(v)
+  acquire(internLock)
+  try:
+    var id = symbolIds.getOrDefault(v, -1)
+    if id < 0:
+      id = symbolNames.len
+      symbolNames.add v
+      symbolIds[v] = id
+    result = mkImm(SYMBOL_TAG, uint64(id))
+  finally:
+    release(internLock)
 
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
 proc newList*(items: sink seq[Value] = @[], immutable = false): Value =
-  addHeap(HeapValue(kind: vkList, listItems: items, listImmutable: immutable))
+  let p = createObj(GeneList)
+  p.refCount = 1
+  p.immutable = immutable
+  p.items = items
+  boxPtr(LIST_TAG, p)
 
 proc newMap*(entries: sink PropTable = initOrderedTable[string, Value](),
              immutable = false): Value =
-  addHeap(HeapValue(kind: vkMap, mapEntries: entries, mapImmutable: immutable))
+  let p = createObj(GeneMap)
+  p.refCount = 1
+  p.immutable = immutable
+  p.entries = entries
+  boxPtr(MAP_TAG, p)
 
 proc newNode*(head: Value,
               props: sink PropTable = initOrderedTable[string, Value](),
               body: sink seq[Value] = @[],
               meta: sink PropTable = initOrderedTable[string, Value](),
               immutable = false): Value =
-  addHeap(HeapValue(kind: vkNode, head: head,
-                    props: props, body: body, meta: meta,
-                    nodeImmutable: immutable))
+  let p = createObj(GeneNode)
+  p.refCount = 1
+  p.immutable = immutable
+  p.head = head
+  p.props = props
+  p.body = body
+  p.meta = meta
+  boxPtr(NODE_TAG, p)
+
+proc internName*(v: string): string =
+  ## Deduplicate a prop-key string so identical keys share storage.
+  acquire(internLock)
+  try:
+    result = internedNames.getOrDefault(v)
+    if result.len == 0 and v.len != 0:
+      internedNames[v] = v
+      result = v
+  finally:
+    release(internLock)
 
 # ---------------------------------------------------------------------------
 # Node projections (design Section 1.2 / 1.3). Scalars are fixpoints.
