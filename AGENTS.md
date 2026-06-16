@@ -4,13 +4,17 @@ Performance is a core requirement for this repository. Treat value layout,
 reader hot paths, allocation behavior, and future VM stack/dispatch code as
 performance-sensitive by default.
 
-Before finishing code changes, run:
+Before every commit, run:
 
 ```bash
 nimble test
 nimble spec
 nimble perf
 ```
+
+If benchmark output gets worse, do not hide it. Include the before/after
+numbers and the reason the regression is acceptable or unavoidable in the
+commit message. If the regression is avoidable, fix it before committing.
 
 For broad or risky changes, run the combined command:
 

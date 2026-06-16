@@ -33,6 +33,10 @@ type
 
   ReadError* = object of CatchableError
 
+proc initReader(src: string): Reader =
+  Reader(src: src, line: 1, col: 1,
+         tokens: newSeqOfCap[Token](min(src.len + 1, 4096)))
+
 proc isSymbolChar(c: char): bool =
   c notin {'(', ')', '[', ']', '{', '}', ' ', '\t', '\n', '\r', ',', ';', '\"', '\'', '`', '#'}
 
@@ -126,10 +130,10 @@ proc tokenize(r: var Reader) =
         r.tokens.add Token(kind: tkDotDotDot, lexeme: "...", line: startLine, col: startCol)
       else:
         # Fallback to symbol if it's just a dot or something else
-        var lexeme = ""
+        let start = r.pos
         while r.pos < r.src.len and isSymbolChar(r.nextChar()):
-          lexeme.add r.nextChar()
           r.advance()
+        let lexeme = r.src[start ..< r.pos]
         r.tokens.add Token(kind: tkSymbol, lexeme: lexeme, line: startLine, col: startCol)
     of '\"':
       # String literal
@@ -210,10 +214,10 @@ proc tokenize(r: var Reader) =
       r.tokens.add Token(kind: tkChar, lexeme: lexeme, line: startLine, col: startCol)
     else:
       # Atoms: numbers, symbols
-      var lexeme = ""
+      let start = r.pos
       while r.pos < r.src.len and isSymbolChar(r.nextChar()):
-        lexeme.add r.nextChar()
         r.advance()
+      let lexeme = r.src[start ..< r.pos]
       
       if lexeme.len == 0:
         r.advance() # Should not happen with isSymbolChar
@@ -237,6 +241,12 @@ proc peek(r: Reader): Token =
   else:
     result = Token(kind: tkEof)
 
+proc peekKind(r: Reader): TokenKind =
+  if r.tokIdx < r.tokens.len:
+    r.tokens[r.tokIdx].kind
+  else:
+    tkEof
+
 proc next(r: var Reader): Token =
   result = r.peek()
   if r.tokIdx < r.tokens.len:
@@ -248,11 +258,20 @@ proc skipDatumComments(r: var Reader) =
   ## Datum comments (`#_`) are spacing (design §2.2 `datum_comment`): each `#_`
   ## discards the following form and yields no AST node. Runs of `#_` stack,
   ## since `parseForm` itself skips leading datum comments before its datum.
-  while r.peek().kind == tkUnderscore:
+  while r.peekKind() == tkUnderscore:
     discard r.next()
-    if r.peek().kind in {tkEof, tkRParen, tkRBracket, tkRBrace}:
+    if r.peekKind() in {tkEof, tkRParen, tkRBracket, tkRBrace}:
       raise newException(ReadError, "#_ datum comment requires a following form")
     discard r.parseForm()
+
+proc parsePropKey(r: var Reader): string =
+  r.skipDatumComments()
+  if r.peekKind() == tkSymbol:
+    let idx = r.tokIdx
+    r.tokIdx += 1
+    return internName(r.tokens[idx].lexeme)
+  let keyForm = r.parseForm()
+  if keyForm.kind == vkSymbol: keyForm.symVal else: ""
 
 proc desugarPath(lexeme: string): Value =
   if lexeme == "/": return newSym("/")
@@ -278,9 +297,10 @@ proc parseList(r: var Reader, closing: TokenKind, immutable = false): Value =
   var items = newSeq[Value]()
   while true:
     r.skipDatumComments()
-    if r.peek().kind == closing or r.peek().kind == tkEof: break
+    let k = r.peekKind()
+    if k == closing or k == tkEof: break
     items.add r.parseForm(inList = true)
-  if r.peek().kind == tkEof:
+  if r.peekKind() == tkEof:
     raise newException(ReadError, "unexpected EOF: unclosed '['")
   discard r.next() # consume closing
   result = newList(items, immutable)
@@ -294,27 +314,28 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var first = true
   while true:
     r.skipDatumComments()
-    if r.peek().kind == closing or r.peek().kind == tkEof: break
+    let k = r.peekKind()
+    if k == closing or k == tkEof: break
     let tok = r.peek()
     case tok.kind
     of tkCaret, tkCaretCaret:
       discard r.next()
-      let keyForm = r.parseForm()
-      let key = if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+      let key = r.parsePropKey()
       var val: Value
-      if r.peek().kind in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
-         r.peek().kind in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+      let afterKey = r.peekKind()
+      if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
+         afterKey in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
         val = TRUE
       else:
         val = r.parseForm()
       props[key] = val
     of tkAt, tkAtAt:
       discard r.next()
-      let keyForm = r.parseForm()
-      let key = if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+      let key = r.parsePropKey()
       var val: Value
-      if r.peek().kind in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
-         r.peek().kind in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+      let afterKey = r.peekKind()
+      if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
+         afterKey in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
         val = TRUE
       else:
         val = r.parseForm()
@@ -338,7 +359,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       else:
         body.add form
 
-  if r.peek().kind == tkEof:
+  if r.peekKind() == tkEof:
     raise newException(ReadError, "unexpected EOF: unclosed '('")
   discard r.next()
 
@@ -366,20 +387,21 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
   var items = initOrderedTable[string, Value]()
   while true:
     r.skipDatumComments()
-    if r.peek().kind == closing or r.peek().kind == tkEof: break
+    let k = r.peekKind()
+    if k == closing or k == tkEof: break
     let tok = r.peek()
     if tok.kind in {tkCaret, tkCaretCaret}:
       discard r.next()
-    let keyForm = r.parseForm()
-    let key = if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+    let key = r.parsePropKey()
     var val: Value = NIL
-    if r.peek().kind == tkColon:
+    if r.peekKind() == tkColon:
       discard r.next()
-    if r.peek().kind != closing and r.peek().kind != tkComma:
+    let afterKey = r.peekKind()
+    if afterKey != closing and afterKey != tkComma:
       val = r.parseForm()
     items[key] = val
-    if r.peek().kind == tkComma: discard r.next()
-  if r.peek().kind == tkEof:
+    if r.peekKind() == tkComma: discard r.next()
+  if r.peekKind() == tkEof:
     raise newException(ReadError, "unexpected EOF: unclosed '{'")
   discard r.next()
   result = newMap(items, immutable)
@@ -469,7 +491,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkTilde: return newSym("~")
   of tkDotDotDot: return newSym("...")
   of tkDollar:
-    if r.peek().kind == tkString:
+    if r.peekKind() == tkString:
       let s = r.next()
       return parseInterpolatedString(s.lexeme)
     return newSym("$")
@@ -480,17 +502,17 @@ proc parseForm(r: var Reader, inList = false): Value =
   else: return NIL
 
 proc read*(src: string): Value =
-  var r = Reader(src: src, line: 1, col: 1)
+  var r = initReader(src)
   r.tokenize()
   r.skipDatumComments()
-  if r.peek().kind == tkEof: return NIL
+  if r.peekKind() == tkEof: return NIL
   return r.parseForm(inList = false)
 
 proc readAll*(src: string): seq[Value] =
   ## Read all top-level forms from src (program = { form }).
-  var r = Reader(src: src, line: 1, col: 1)
+  var r = initReader(src)
   r.tokenize()
   while true:
     r.skipDatumComments()
-    if r.peek().kind == tkEof: break
+    if r.peekKind() == tkEof: break
     result.add r.parseForm(inList = false)

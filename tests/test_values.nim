@@ -54,6 +54,12 @@ suite "value — NaN boxing":
     check n.props["name"].strVal == "Ada"
     check n.body[0].intVal == 1
 
+  test "symbols are interned":
+    let a = newSym("user")
+    let b = newSym("user")
+    check a.bits == b.bits
+    check a.symVal == "user"
+
 suite "value — equality":
   test "structural equality is meta-blind":
     var metaA = initOrderedTable[string, Value]()

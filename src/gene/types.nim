@@ -82,7 +82,11 @@ const
 
 var heapValues: seq[HeapValue]
 var heapLock: Lock
+var internLock: Lock
+var internedNames = initTable[string, string]()
+var internedSymbols = initTable[string, Value]()
 initLock(heapLock)
+initLock(internLock)
 
 proc isBoxed(v: Value): bool {.inline.} =
   v.bits == 0 or (v.bits and BoxPrefixMask) == BoxPrefix
@@ -106,6 +110,31 @@ proc addHeap(obj: HeapValue): Value =
     result = makeBox(bkHeap, uint64(heapValues.high))
   finally:
     release(heapLock)
+
+proc internNameLocked(v: string): string =
+  if internedNames.hasKey(v):
+    return internedNames[v]
+  internedNames[v] = v
+  internedNames[v]
+
+proc internName*(v: string): string =
+  acquire(internLock)
+  try:
+    result = internNameLocked(v)
+  finally:
+    release(internLock)
+
+proc internSymbol(v: string): Value =
+  acquire(internLock)
+  try:
+    result = internedSymbols.getOrDefault(v)
+    if result.bits != 0:
+      return
+    let name = internNameLocked(v)
+    result = addHeap(HeapValue(kind: vkSymbol, symVal: name))
+    internedSymbols[name] = result
+  finally:
+    release(internLock)
 
 proc heapObj(v: Value): HeapValue =
   if not v.isBoxed or v.boxKind != bkHeap:
@@ -197,7 +226,7 @@ proc floatVal*(v: Value): float64 {.inline.} =
       return obj.floatVal
   raise newException(FieldDefect, "value is not a Float")
 
-proc strVal*(v: Value): string =
+proc strVal*(v: Value): lent string =
   let obj = v.heapObj
   if obj.kind != vkString:
     raise newException(FieldDefect, "value is not a String")
@@ -208,13 +237,13 @@ proc charVal*(v: Value): Rune {.inline.} =
     raise newException(FieldDefect, "value is not a Char")
   Rune(int32(v.payload and 0xffffffff'u64))
 
-proc symVal*(v: Value): string =
+proc symVal*(v: Value): lent string =
   let obj = v.heapObj
   if obj.kind != vkSymbol:
     raise newException(FieldDefect, "value is not a Symbol")
   obj.symVal
 
-proc listItems*(v: Value): seq[Value] =
+proc listItems*(v: Value): lent seq[Value] =
   let obj = v.heapObj
   if obj.kind != vkList:
     raise newException(FieldDefect, "value is not a List")
@@ -226,7 +255,7 @@ proc listImmutable*(v: Value): bool =
     raise newException(FieldDefect, "value is not a List")
   obj.listImmutable
 
-proc mapEntries*(v: Value): PropTable =
+proc mapEntries*(v: Value): lent PropTable =
   let obj = v.heapObj
   if obj.kind != vkMap:
     raise newException(FieldDefect, "value is not a Map")
@@ -244,19 +273,19 @@ proc head*(v: Value): Value =
     raise newException(FieldDefect, "value is not a Node")
   obj.head
 
-proc props*(v: Value): PropTable =
+proc props*(v: Value): lent PropTable =
   let obj = v.heapObj
   if obj.kind != vkNode:
     raise newException(FieldDefect, "value is not a Node")
   obj.props
 
-proc body*(v: Value): seq[Value] =
+proc body*(v: Value): lent seq[Value] =
   let obj = v.heapObj
   if obj.kind != vkNode:
     raise newException(FieldDefect, "value is not a Node")
   obj.body
 
-proc meta*(v: Value): PropTable =
+proc meta*(v: Value): lent PropTable =
   let obj = v.heapObj
   if obj.kind != vkNode:
     raise newException(FieldDefect, "value is not a Node")
@@ -286,29 +315,29 @@ proc newFloat*(v: float64): Value {.inline.} =
     return addHeap(HeapValue(kind: vkFloat, floatVal: v))
   Value(bits: bits)
 
-proc newStr*(v: string): Value =
+proc newStr*(v: sink string): Value =
   addHeap(HeapValue(kind: vkString, strVal: v))
 
 proc newChar*(r: Rune): Value {.inline.} =
   makeBox(bkChar, uint64(int32(r)) and 0xffffffff'u64)
 
 proc newSym*(v: string): Value =
-  addHeap(HeapValue(kind: vkSymbol, symVal: v))
+  internSymbol(v)
 
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
-proc newList*(items: seq[Value] = @[], immutable = false): Value =
+proc newList*(items: sink seq[Value] = @[], immutable = false): Value =
   addHeap(HeapValue(kind: vkList, listItems: items, listImmutable: immutable))
 
-proc newMap*(entries: PropTable = initOrderedTable[string, Value](),
+proc newMap*(entries: sink PropTable = initOrderedTable[string, Value](),
              immutable = false): Value =
   addHeap(HeapValue(kind: vkMap, mapEntries: entries, mapImmutable: immutable))
 
 proc newNode*(head: Value,
-              props: PropTable = initOrderedTable[string, Value](),
-              body: seq[Value] = @[],
-              meta: PropTable = initOrderedTable[string, Value](),
+              props: sink PropTable = initOrderedTable[string, Value](),
+              body: sink seq[Value] = @[],
+              meta: sink PropTable = initOrderedTable[string, Value](),
               immutable = false): Value =
   addHeap(HeapValue(kind: vkNode, head: head,
                     props: props, body: body, meta: meta,

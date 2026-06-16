@@ -102,7 +102,7 @@ nimble verify   # tests + specs + benchmarks
 
 Performance is a first-class concern for this codebase — value layout, the
 reader hot paths, and allocation behavior are treated as performance-sensitive.
-See [`AGENT.md`](AGENT.md) for the conventions contributors and agents follow.
+See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 
 ## Implementation notes
 
