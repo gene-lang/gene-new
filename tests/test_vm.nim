@@ -59,12 +59,29 @@ suite "compiler — GIR emission":
     check proto.restParam == "tail"
     check proto.namedParams.len == 0
 
+  test "emits optional and default parameter specs":
+    let fnChunk = compileSource("(fn f [x y? ^scale = (+ x 1)] [x y scale])")
+    let proto = fnChunk.functions[0]
+    check proto.params == @["x", "y"]
+    check proto.paramDefaults.len == 2
+    check proto.paramDefaults[0].optional == false
+    check proto.paramDefaults[1].optional == true
+    check proto.paramDefaults[1].defaultChunk == nil
+    check proto.namedParams.len == 1
+    check proto.namedParams[0].arg == "scale"
+    check proto.namedParams[0].defaultValue.optional == true
+    check proto.namedParams[0].defaultValue.defaultChunk != nil
+
   test "compile errors use the runtime error channel":
     expect GeneError: discard compileSource("(var)")
     expect GeneError: discard compileSource("(fn missing-params 1)")
     expect GeneError: discard compileSource("(fn bad [^])")
     expect GeneError: discard compileSource("(fn bad [xs... y] y)")
     expect GeneError: discard compileSource("(fn bad [xs... ^scale] scale)")
+    expect GeneError: discard compileSource("(fn bad [x? y] y)")
+    expect GeneError: discard compileSource("(fn bad [x? ys...] ys)")
+    expect GeneError: discard compileSource("(fn bad [xs... = 1] xs)")
+    expect GeneError: discard compileSource("(fn bad [x =] x)")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
@@ -187,6 +204,28 @@ suite "vm — rest parameters":
   test "rest and named parameters compose when named params come first":
     ck "(var f (fn [head ^scale, tail...] [head scale tail])) (f ^scale 9 1 2 3)",
        "[1 9 [2 3]]"
+
+suite "vm — optional and default parameters":
+  test "omitted optional positional parameters bind void":
+    ck "(var f (fn [x?] x)) (f)", "void"
+    ck "(var f (fn [x?] x)) (f 7)", "7"
+  test "positional defaults are evaluated at call time":
+    ck "(var f (fn [x = 4] x)) (f)", "4"
+    ck "(var f (fn [x = 4] x)) (f 9)", "9"
+  test "positional defaults can reference earlier parameters":
+    ck "(var f (fn [x y = (+ x 1)] y)) (f 4)", "5"
+  test "defaults see the call-time captured scope":
+    ck "(var base 1) (var f (fn [x = base] x)) (set base 2) (f)", "2"
+  test "optional named parameters bind void when omitted":
+    ck "(var f (fn [^width?] width)) (f)", "void"
+    ck "(var f (fn [^width?] width)) (f ^width 8)", "8"
+  test "named defaults are evaluated at call time":
+    ck "(var f (fn [base ^width = (+ base 1)] width)) (f 4)", "5"
+    ck "(var f (fn [base ^width = (+ base 1)] width)) (f ^width 10 4)", "10"
+  test "custom local named defaults bind the local":
+    ck "(var f (fn [^width w = 2] w)) (f)", "2"
+  test "too many positional arguments still raise":
+    expect GeneError: discard runStr("(var f (fn [x = 1] x)) (f 1 2)")
 
 suite "vm — printer view of callables":
   test "functions print a display form":

@@ -9,6 +9,7 @@ type
 
   ParamSpecs = object
     positional: seq[string]
+    positionalDefaults: seq[ParamDefault]
     rest: string
     named: seq[NamedParam]
 
@@ -51,15 +52,26 @@ proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int) =
 proc symbolText(v: Value): string =
   if v.kind == vkSymbol: v.symVal else: ""
 
+proc compileDefaultExpr(node: Value): Chunk =
+  var c = Compiler(chunk: newChunk())
+  compileExpr(c, node)
+  discard c.emit(opReturn)
+  c.chunk
+
 proc isParamTerminator(s: string): bool =
   s.len == 0 or s in [",", "^", "^^"]
 
 proc isRestParam(s: string): bool =
   s.len > 3 and s.endsWith("...")
 
-proc skipParamAdornment(items: openArray[Value], i: var int) =
-  ## Skip MVP-ignored type annotations and default expressions. Defaults are
-  ## still treated as required parameters until the typed argument matcher lands.
+proc splitOptionalName(s: string): tuple[name: string, optional: bool] =
+  if s.len > 1 and s.endsWith("?"):
+    (s[0 .. ^2], true)
+  else:
+    (s, false)
+
+proc parseParamAdornment(items: openArray[Value], i: var int): ParamDefault =
+  ## Skip MVP-ignored type annotations and compile call-time defaults.
   while i < items.len:
     let s = items[i].symbolText
     case s
@@ -68,7 +80,11 @@ proc skipParamAdornment(items: openArray[Value], i: var int) =
       if i < items.len: inc i
     of "=":
       inc i
-      if i < items.len: inc i
+      if i >= items.len:
+        raise newException(GeneError, "parameter default requires a value")
+      result.optional = true
+      result.defaultChunk = compileDefaultExpr(items[i])
+      inc i
     else:
       break
 
@@ -80,6 +96,7 @@ proc paramSpecs(paramList: Value): ParamSpecs =
   let items = paramList.listItems
   var i = 0
   var sawRest = false
+  var sawOptionalPositional = false
   while i < items.len:
     let s = items[i].symbolText
     case s
@@ -93,30 +110,57 @@ proc paramSpecs(paramList: Value): ParamSpecs =
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise newException(GeneError, "named parameter requires a name")
-      let arg = items[i].symVal
+      var argSpec = splitOptionalName(items[i].symVal)
+      if argSpec.name.len == 0:
+        raise newException(GeneError, "named parameter requires a name")
+      let arg = argSpec.name
       inc i
       var local = arg
       if i < items.len:
         let maybeLocal = items[i].symbolText
         if not maybeLocal.isParamTerminator and maybeLocal notin [":", "="]:
-          local = maybeLocal
+          let localSpec = splitOptionalName(maybeLocal)
+          local = localSpec.name
+          if local.len == 0:
+            raise newException(GeneError, "named parameter local requires a name")
+          if localSpec.optional:
+            argSpec.optional = true
           inc i
-      result.named.add NamedParam(arg: arg, local: local)
-      skipParamAdornment(items, i)
+      var defaultValue = parseParamAdornment(items, i)
+      if argSpec.optional:
+        defaultValue.optional = true
+      result.named.add NamedParam(arg: arg, local: local, defaultValue: defaultValue)
     of ":", "=":
       raise newException(GeneError, "parameter annotation requires a parameter")
     else:
       if sawRest:
         raise newException(GeneError, "parameter cannot follow a rest parameter")
       if s.isRestParam:
+        if sawOptionalPositional:
+          raise newException(GeneError, "rest parameter cannot follow an optional positional parameter")
         result.rest = s[0 .. ^4]
         if result.rest.len == 0:
           raise newException(GeneError, "rest parameter requires a name")
         sawRest = true
+        inc i
+        if i < items.len and items[i].symbolText in [":", "="]:
+          raise newException(GeneError, "rest parameter cannot have an annotation or default")
       else:
-        result.positional.add s
-      inc i
-      skipParamAdornment(items, i)
+        let spec = splitOptionalName(s)
+        if spec.name.len == 0:
+          raise newException(GeneError, "parameter requires a name")
+        inc i
+        var defaultValue = parseParamAdornment(items, i)
+        if spec.optional:
+          defaultValue.optional = true
+        if defaultValue.optional:
+          sawOptionalPositional = true
+        elif sawOptionalPositional:
+          raise newException(GeneError, "required positional parameter cannot follow an optional positional parameter")
+        result.positional.add spec.name
+        result.positionalDefaults.add defaultValue
+        continue
+      discard parseParamAdornment(items, i)
 
 proc compileIf(c: var Compiler, node: Value) =
   let body = node.body
@@ -206,6 +250,7 @@ proc compileFn(c: var Compiler, node: Value) =
 
   let specs = paramSpecs(body[idx])
   let proto = FunctionProto(name: name, params: specs.positional,
+                            paramDefaults: specs.positionalDefaults,
                             restParam: specs.rest, namedParams: specs.named,
                             chunk: fnCompiler.chunk)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))

@@ -88,6 +88,13 @@ proc main() =
     let v = run(restChunk, restScope)
     checksum = checksum + int64(v.listItems.len)
 
+  let defaultScope = newGlobalScope()
+  defaultScope.define("scaled", run(compileSource("(fn [x y = (+ x 1)] (+ x y))"), defaultScope))
+  let defaultChunk = compileSource("(scaled 4)")
+  bench("vm.default_call.compiled_chunk", 500_000, i):
+    let v = run(defaultChunk, defaultScope)
+    checksum = checksum + v.intVal
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):

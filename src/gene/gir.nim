@@ -28,13 +28,19 @@ type
     names*: seq[string]
     flag*: bool
 
+  ParamDefault* = object
+    optional*: bool
+    defaultChunk*: Chunk
+
   NamedParam* = object
     arg*: string
     local*: string
+    defaultValue*: ParamDefault
 
   FunctionProto* = ref object of FunctionCode
     name*: string
     params*: seq[string]
+    paramDefaults*: seq[ParamDefault]
     restParam*: string
     namedParams*: seq[NamedParam]
     chunk*: Chunk

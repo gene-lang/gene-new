@@ -247,6 +247,24 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       return (if stack.len > 0: stack.pop() else: NIL)
   NIL
 
+proc positionalDefault(proto: FunctionProto, index: int): ParamDefault =
+  if index < proto.paramDefaults.len:
+    proto.paramDefaults[index]
+  else:
+    ParamDefault()
+
+proc requiredPositionalCount(proto: FunctionProto): int =
+  for i in 0 ..< proto.params.len:
+    if proto.positionalDefault(i).optional:
+      break
+    inc result
+
+proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
+  if defaultValue.defaultChunk != nil:
+    run(defaultValue.defaultChunk, scope)
+  else:
+    VOID
+
 proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
   case callee.kind
   of vkNativeFn:
@@ -260,10 +278,12 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
+    let requiredPositional = proto.requiredPositionalCount()
     if proto.restParam.len == 0:
-      if args.len != positional.len:
+      if args.len < requiredPositional or args.len > positional.len:
         raise newException(GeneError,
-          "function '" & callee.fnName & "' expects " & $positional.len &
+          "function '" & callee.fnName & "' expects " & $requiredPositional &
+          ".." & $positional.len &
           " argument(s), got " & $args.len)
     elif args.len < positional.len:
       raise newException(GeneError,
@@ -280,8 +300,18 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
           "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
     let callScope = newScope(callee.fnScope)
-    for i, p in positional:
-      callScope.define(p, args[i])
+    let providedPositional = min(args.len, positional.len)
+    for i in 0 ..< providedPositional:
+      callScope.define(positional[i], args[i])
+    for p in proto.namedParams:
+      if named.hasArg(p.arg):
+        callScope.define(p.local, named.getArg(p.arg))
+    for i in providedPositional ..< positional.len:
+      let fallback = proto.positionalDefault(i)
+      if not fallback.optional:
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' missing positional argument: " & positional[i])
+      callScope.define(positional[i], fallback.defaultValue(callScope))
     if proto.restParam.len > 0:
       var rest = newSeq[Value](args.len - positional.len)
       for i in 0 ..< rest.len:
@@ -289,9 +319,11 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
       callScope.define(proto.restParam, newList(rest))
     for p in proto.namedParams:
       if not named.hasArg(p.arg):
-        raise newException(GeneError,
-          "function '" & callee.fnName & "' missing named argument: " & p.arg)
-      callScope.define(p.local, named.getArg(p.arg))
+        if p.defaultValue.optional:
+          callScope.define(p.local, p.defaultValue.defaultValue(callScope))
+        else:
+          raise newException(GeneError,
+            "function '" & callee.fnName & "' missing named argument: " & p.arg)
     run(proto.chunk, callScope)
   else:
     raise newException(GeneError, "value is not callable: " & $callee.kind)
