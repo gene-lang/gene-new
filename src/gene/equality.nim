@@ -1,0 +1,78 @@
+## Structural equality, reference identity, and hashing (design Section 1.5).
+##
+##   (= a b)     -> `equal`: structural, meta-blind
+##   (same? a b) -> `same`:  reference identity
+##
+## Hashing follows `=`. Meta never participates in equality or hashing.
+## Mutable/immutable representation does not affect equality (e.g. [1 2 3]
+## equals #[1 2 3]).
+
+import std/[tables, hashes]
+import ./types
+
+proc equal*(a, b: Value): bool
+
+proc tablesEqual(a, b: PropTable): bool =
+  if a.len != b.len: return false
+  for k, va in a:
+    if not b.hasKey(k): return false
+    if not equal(va, b[k]): return false
+  true
+
+proc equal*(a, b: Value): bool =
+  if a.isNil or b.isNil: return a.isNil and b.isNil
+  if a.kind != b.kind:
+    return false
+  case a.kind
+  of vkNil, vkVoid: true
+  of vkBool:   a.boolVal == b.boolVal
+  of vkInt:    a.intVal == b.intVal
+  of vkFloat:  a.floatVal == b.floatVal
+  of vkString: a.strVal == b.strVal
+  of vkChar:   a.charVal == b.charVal
+  of vkSymbol: a.symVal == b.symVal
+  of vkList:
+    if a.listItems.len != b.listItems.len: return false
+    for i in 0 ..< a.listItems.len:
+      if not equal(a.listItems[i], b.listItems[i]): return false
+    true
+  of vkMap:
+    tablesEqual(a.mapEntries, b.mapEntries)
+  of vkNode:
+    # meta-blind: head + props + body only
+    if not equal(a.head, b.head): return false
+    if a.body.len != b.body.len: return false
+    for i in 0 ..< a.body.len:
+      if not equal(a.body[i], b.body[i]): return false
+    tablesEqual(a.props, b.props)
+
+proc same*(a, b: Value): bool =
+  ## Reference identity. Scalars are distinct objects unless interned.
+  cast[pointer](a) == cast[pointer](b)
+
+proc hash*(v: Value): Hash =
+  if v.isNil: return hash(0)
+  var h: Hash = hash(ord(v.kind))
+  case v.kind
+  of vkNil, vkVoid: discard
+  of vkBool:   h = h !& hash(v.boolVal)
+  of vkInt:    h = h !& hash(v.intVal)
+  of vkFloat:  h = h !& hash(v.floatVal)
+  of vkString: h = h !& hash(v.strVal)
+  of vkChar:   h = h !& hash(int32(v.charVal))
+  of vkSymbol: h = h !& hash(v.symVal)
+  of vkList:
+    for it in v.listItems: h = h !& hash(it)
+  of vkMap:
+    var acc: Hash = 0
+    for k, val in v.mapEntries:
+      acc = acc xor (hash(k) !& hash(val))   # order-independent
+    h = h !& acc
+  of vkNode:
+    h = h !& hash(v.head)
+    for it in v.body: h = h !& hash(it)
+    var acc: Hash = 0
+    for k, val in v.props:
+      acc = acc xor (hash(k) !& hash(val))
+    h = h !& acc
+  !$h

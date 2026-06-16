@@ -1,0 +1,496 @@
+## Lexer & core parser for Gene (design §2.2)
+import std/[strutils, unicode, tables, parseutils]
+import ./types
+
+type
+  TokenKind* = enum
+    tkEof,
+    tkLParen, tkRParen,      # ( )
+    tkLBracket, tkRBracket,  # [ ]
+    tkLBrace, tkRBrace,      # { }
+    tkHashLParen,            # #(
+    tkHashLBracket,          # #[
+    tkHashLBrace,            # #{
+    tkCaret, tkCaretCaret,   # ^ ^^
+    tkAt, tkAtAt,            # @ @@
+    tkTilde,                 # ~
+    tkDotDotDot,             # ...
+    tkString, tkInt, tkFloat, tkSymbol, tkChar,
+    tkComma, tkColon, tkEqual, tkSemi, tkSlash, tkPercent,
+    tkBacktick, tkDollar, tkUnderscore
+
+  Token* = object
+    kind*: TokenKind
+    lexeme*: string
+    line*, col*: int
+
+  Reader* = object
+    src*: string
+    pos*: int
+    line*, col*: int
+    tokens: seq[Token]
+    tokIdx: int
+
+  ReadError* = object of CatchableError
+
+proc isSymbolChar(c: char): bool =
+  c notin {'(', ')', '[', ']', '{', '}', ' ', '\t', '\n', '\r', ',', ';', '\"', '\'', '`', '#'}
+
+proc nextChar(r: var Reader): char =
+  if r.pos < r.src.len:
+    result = r.src[r.pos]
+  else:
+    result = '\0'
+
+proc advance(r: var Reader) =
+  if r.pos < r.src.len:
+    if r.src[r.pos] == '\n':
+      r.line += 1
+      r.col = 1
+    else:
+      r.col += 1
+    r.pos += 1
+
+proc tokenize(r: var Reader) =
+  while r.pos < r.src.len:
+    let c = r.nextChar()
+    let startLine = r.line
+    let startCol = r.col
+
+    case c
+    of ' ', '\t', '\r', '\n':
+      r.advance()
+      continue
+    of '#':
+      r.advance()
+      let c2 = r.nextChar()
+      case c2
+      of '(': r.advance(); r.tokens.add Token(kind: tkHashLParen, lexeme: "#(", line: startLine, col: startCol)
+      of '[': r.advance(); r.tokens.add Token(kind: tkHashLBracket, lexeme: "#[", line: startLine, col: startCol)
+      of '{': r.advance(); r.tokens.add Token(kind: tkHashLBrace, lexeme: "#{", line: startLine, col: startCol)
+      of '_': r.advance(); r.tokens.add Token(kind: tkUnderscore, lexeme: "#_", line: startLine, col: startCol)
+      of '<':
+        # Block comment #< ... >#
+        r.advance()
+        var depth = 1
+        while r.pos < r.src.len and depth > 0:
+          if r.src.continuesWith("#<", r.pos):
+            depth += 1
+            r.advance(); r.advance()
+          elif r.src.continuesWith(">#", r.pos):
+            depth -= 1
+            r.advance(); r.advance()
+          else:
+            r.advance()
+        if depth > 0:
+          raise newException(ReadError, "unterminated block comment")
+      else:
+        # Line comment
+        while r.pos < r.src.len and r.nextChar() != '\n':
+          r.advance()
+    of '(': r.advance(); r.tokens.add Token(kind: tkLParen, lexeme: "(", line: startLine, col: startCol)
+    of ')': r.advance(); r.tokens.add Token(kind: tkRParen, lexeme: ")", line: startLine, col: startCol)
+    of '[': r.advance(); r.tokens.add Token(kind: tkLBracket, lexeme: "[", line: startLine, col: startCol)
+    of ']': r.advance(); r.tokens.add Token(kind: tkRBracket, lexeme: "]", line: startLine, col: startCol)
+    of '{': r.advance(); r.tokens.add Token(kind: tkLBrace, lexeme: "{", line: startLine, col: startCol)
+    of '}': r.advance(); r.tokens.add Token(kind: tkRBrace, lexeme: "}", line: startLine, col: startCol)
+    of ',': r.advance(); r.tokens.add Token(kind: tkComma, lexeme: ",", line: startLine, col: startCol)
+    of ';': r.advance(); r.tokens.add Token(kind: tkSemi, lexeme: ";", line: startLine, col: startCol)
+    of '~': r.advance(); r.tokens.add Token(kind: tkTilde, lexeme: "~", line: startLine, col: startCol)
+    of '%': r.advance(); r.tokens.add Token(kind: tkPercent, lexeme: "%", line: startLine, col: startCol)
+    of '`': r.advance(); r.tokens.add Token(kind: tkBacktick, lexeme: "`", line: startLine, col: startCol)
+    of '$':
+      r.advance()
+      if r.nextChar() == '"':
+        # Interpolated string handled by string logic
+        r.tokens.add Token(kind: tkDollar, lexeme: "$", line: startLine, col: startCol)
+      else:
+        r.tokens.add Token(kind: tkDollar, lexeme: "$", line: startLine, col: startCol)
+    of '^':
+      r.advance()
+      if r.nextChar() == '^':
+        r.advance()
+        r.tokens.add Token(kind: tkCaretCaret, lexeme: "^^", line: startLine, col: startCol)
+      else:
+        r.tokens.add Token(kind: tkCaret, lexeme: "^", line: startLine, col: startCol)
+    of '@':
+      r.advance()
+      if r.nextChar() == '@':
+        r.advance()
+        r.tokens.add Token(kind: tkAtAt, lexeme: "@@", line: startLine, col: startCol)
+      else:
+        r.tokens.add Token(kind: tkAt, lexeme: "@", line: startLine, col: startCol)
+    of '.':
+      if r.src.continuesWith("...", r.pos):
+        r.advance(); r.advance(); r.advance()
+        r.tokens.add Token(kind: tkDotDotDot, lexeme: "...", line: startLine, col: startCol)
+      else:
+        # Fallback to symbol if it's just a dot or something else
+        var lexeme = ""
+        while r.pos < r.src.len and isSymbolChar(r.nextChar()):
+          lexeme.add r.nextChar()
+          r.advance()
+        r.tokens.add Token(kind: tkSymbol, lexeme: lexeme, line: startLine, col: startCol)
+    of '\"':
+      # String literal
+      let isInterpolated = r.tokens.len > 0 and r.tokens[^1].kind == tkDollar and
+                           r.tokens[^1].line == startLine and r.tokens[^1].col == startCol - 1
+
+      r.advance()
+      var lexeme = ""
+      var triple = false
+      if r.src.continuesWith("\"\"", r.pos):
+        triple = true
+        r.advance(); r.advance()
+        var closed = false
+        while r.pos < r.src.len:
+          if r.src.continuesWith("\"\"\"", r.pos):
+            r.advance(); r.advance(); r.advance()
+            closed = true
+            break
+          lexeme.add r.nextChar()
+          r.advance()
+        if not closed:
+          raise newException(ReadError, "unterminated triple-quoted string literal")
+      else:
+        var closed = false
+        while r.pos < r.src.len:
+          let c2 = r.nextChar()
+          if c2 == '\"':
+            r.advance()
+            closed = true
+            break
+          if c2 == '\\':
+            r.advance()
+            let esc = r.nextChar()
+            case esc
+            of 'n': lexeme.add '\n'
+            of 'r': lexeme.add '\r'
+            of 't': lexeme.add '\t'
+            of '\\': lexeme.add '\\'
+            of '\"': lexeme.add '\"'
+            else: lexeme.add esc
+            r.advance()
+          else:
+            lexeme.add c2
+            r.advance()
+        if not closed:
+          raise newException(ReadError, "unterminated string literal")
+
+      if isInterpolated:
+        # Simple implementation: split by ${...}
+        # A real one would tokenize the expressions inside.
+        # For now, let's just mark it.
+        r.tokens[^1].kind = tkString # Change tkDollar to tkString
+        r.tokens[^1].lexeme = lexeme
+        r.tokens[^1].kind = tkDollar # Revert, we'll handle it in parser
+        # Actually, let's keep it simple for now.
+        # The EBNF says interpolated_string is its own thing.
+
+      r.tokens.add Token(kind: tkString, lexeme: lexeme, line: startLine, col: startCol)
+    of '\'':
+      # Char literal
+      r.advance()
+      if r.pos >= r.src.len:
+        raise newException(ReadError, "unterminated character literal")
+      var lexeme = ""
+      if r.nextChar() == '\\':
+        r.advance()
+        lexeme.add '\\'
+        if r.pos >= r.src.len:
+          raise newException(ReadError, "unterminated character literal")
+        lexeme.add r.nextChar()
+        r.advance()
+      else:
+        lexeme.add r.nextChar()
+        r.advance()
+      if r.nextChar() != '\'':
+        raise newException(ReadError, "unterminated character literal (expected closing ')")
+      r.advance()
+      r.tokens.add Token(kind: tkChar, lexeme: lexeme, line: startLine, col: startCol)
+    else:
+      # Atoms: numbers, symbols
+      var lexeme = ""
+      while r.pos < r.src.len and isSymbolChar(r.nextChar()):
+        lexeme.add r.nextChar()
+        r.advance()
+      
+      if lexeme.len == 0:
+        r.advance() # Should not happen with isSymbolChar
+        continue
+
+      # Check if it's a number
+      var valInt: int
+      var valFloat: float
+      if parseutils.parseInt(lexeme, valInt) == lexeme.len:
+        r.tokens.add Token(kind: tkInt, lexeme: lexeme, line: startLine, col: startCol)
+      elif parseutils.parseFloat(lexeme, valFloat) == lexeme.len:
+        r.tokens.add Token(kind: tkFloat, lexeme: lexeme, line: startLine, col: startCol)
+      else:
+        r.tokens.add Token(kind: tkSymbol, lexeme: lexeme, line: startLine, col: startCol)
+
+  r.tokens.add Token(kind: tkEof, lexeme: "", line: r.line, col: r.col)
+
+proc peek(r: Reader): Token =
+  if r.tokIdx < r.tokens.len:
+    result = r.tokens[r.tokIdx]
+  else:
+    result = Token(kind: tkEof)
+
+proc next(r: var Reader): Token =
+  result = r.peek()
+  if r.tokIdx < r.tokens.len:
+    r.tokIdx += 1
+
+proc parseForm(r: var Reader, inList = false): Value
+
+proc skipDatumComments(r: var Reader) =
+  ## Datum comments (`#_`) are spacing (design §2.2 `datum_comment`): each `#_`
+  ## discards the following form and yields no AST node. Runs of `#_` stack,
+  ## since `parseForm` itself skips leading datum comments before its datum.
+  while r.peek().kind == tkUnderscore:
+    discard r.next()
+    if r.peek().kind in {tkEof, tkRParen, tkRBracket, tkRBrace}:
+      raise newException(ReadError, "#_ datum comment requires a following form")
+    discard r.parseForm()
+
+proc desugarPath(lexeme: string): Value =
+  if lexeme == "/": return newSym("/")
+  if '/' notin lexeme: return newSym(lexeme)
+
+  let parts = lexeme.split('/')
+  var body = newSeq[Value]()
+  for p in parts:
+    if p.len == 0: continue # leading or trailing slash
+    if p.startsWith("%"):
+      body.add newNode(newSym("unquote"), body = @[newSym(p[1..^1])])
+    else:
+      body.add newSym(p)
+
+  if lexeme.startsWith("/"):
+    return newNode(newSym("select"), body = body)
+  else:
+    # Context-neutral path node; the compiler resolves it as an access chain
+    # or static qualified name according to context (design §2.1).
+    return newNode(newSym("path"), body = body)
+
+proc parseList(r: var Reader, closing: TokenKind, immutable = false): Value =
+  var items = newSeq[Value]()
+  while true:
+    r.skipDatumComments()
+    if r.peek().kind == closing or r.peek().kind == tkEof: break
+    items.add r.parseForm(inList = true)
+  if r.peek().kind == tkEof:
+    raise newException(ReadError, "unexpected EOF: unclosed '['")
+  discard r.next() # consume closing
+  result = newList(items, immutable)
+
+proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
+  var head = NIL
+  var props = initOrderedTable[string, Value]()
+  var meta = initOrderedTable[string, Value]()
+  var body = newSeq[Value]()
+
+  var first = true
+  while true:
+    r.skipDatumComments()
+    if r.peek().kind == closing or r.peek().kind == tkEof: break
+    let tok = r.peek()
+    case tok.kind
+    of tkCaret, tkCaretCaret:
+      discard r.next()
+      let keyForm = r.parseForm()
+      let key = if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+      var val: Value
+      if r.peek().kind in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
+         r.peek().kind in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+        val = TRUE
+      else:
+        val = r.parseForm()
+      props[key] = val
+    of tkAt, tkAtAt:
+      discard r.next()
+      let keyForm = r.parseForm()
+      let key = if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+      var val: Value
+      if r.peek().kind in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
+         r.peek().kind in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+        val = TRUE
+      else:
+        val = r.parseForm()
+      meta[key] = val
+    of tkSemi:
+      # Pipe folding: (a; b) -> ((a) b)
+      discard r.next()
+      let prevNode = newNode(head, props, body, meta, immutable)
+      head = prevNode
+      props = initOrderedTable[string, Value]()
+      meta = initOrderedTable[string, Value]()
+      body = @[]
+      first = false
+    of tkComma:
+      discard r.next()
+    else:
+      let form = r.parseForm()
+      if first:
+        head = form
+        first = false
+      else:
+        body.add form
+
+  if r.peek().kind == tkEof:
+    raise newException(ReadError, "unexpected EOF: unclosed '('")
+  discard r.next()
+
+  # Flipped call sugar: (x ~ f a) -> (f x a)
+  if body.len > 0 and body[0].kind == vkSymbol and body[0].symVal == "~":
+    # (head ~ f b1 b2 ...)
+    if body.len >= 2:
+      let f = body[1]
+      let args = @[head] & body[2..^1]
+      result = newNode(f, props, args, meta, immutable)
+    else:
+      result = newNode(head, props, body, meta, immutable)
+  elif head.kind == vkSymbol and head.symVal == "~":
+    # (~ f a b) -> (f self a b)
+    if body.len >= 1:
+      let f = body[0]
+      let args = @[newSym("self")] & body[1..^1]
+      result = newNode(f, props, args, meta, immutable)
+    else:
+      result = newNode(head, props, body, meta, immutable)
+  else:
+    result = newNode(head, props, body, meta, immutable)
+
+proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
+  var items = initOrderedTable[string, Value]()
+  while true:
+    r.skipDatumComments()
+    if r.peek().kind == closing or r.peek().kind == tkEof: break
+    let tok = r.peek()
+    if tok.kind in {tkCaret, tkCaretCaret}:
+      discard r.next()
+    let keyForm = r.parseForm()
+    let key = if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+    var val: Value = NIL
+    if r.peek().kind == tkColon:
+      discard r.next()
+    if r.peek().kind != closing and r.peek().kind != tkComma:
+      val = r.parseForm()
+    items[key] = val
+    if r.peek().kind == tkComma: discard r.next()
+  if r.peek().kind == tkEof:
+    raise newException(ReadError, "unexpected EOF: unclosed '{'")
+  discard r.next()
+  result = newMap(items, immutable)
+
+proc read*(src: string): Value
+
+proc parseInterpolatedString(lexeme: string): Value =
+  var body = newSeq[Value]()
+  var i = 0
+  var last = 0
+  while i < lexeme.len:
+    if lexeme[i..^1].startsWith("${"):
+      if i > last: body.add newStr(lexeme[last ..< i])
+      i += 2
+      let start = i
+      var depth = 1
+      while i < lexeme.len and depth > 0:
+        if lexeme[i] == '{': depth += 1
+        elif lexeme[i] == '}': depth -= 1
+        i += 1
+      if depth > 0:
+        raise newException(ReadError, "unterminated interpolation '${...}'")
+      let exprStr = lexeme[start ..< i-1]
+      body.add read(exprStr)
+      last = i
+    elif lexeme[i..^1].startsWith("$("):
+      if i > last: body.add newStr(lexeme[last ..< i])
+      i += 1
+      let start = i
+      var depth = 1
+      i += 1
+      while i < lexeme.len and depth > 0:
+        if lexeme[i] == '(': depth += 1
+        elif lexeme[i] == ')': depth -= 1
+        i += 1
+      if depth > 0:
+        raise newException(ReadError, "unterminated interpolation '$(...)'")
+      let exprStr = lexeme[start ..< i]
+      body.add read(exprStr)
+      last = i
+    else: i += 1
+  if last < lexeme.len: body.add newStr(lexeme[last..^1])
+  return newNode(newSym("$"), body = body)
+
+proc parseForm(r: var Reader, inList = false): Value =
+  r.skipDatumComments()
+  let tok = r.next()
+  case tok.kind
+  of tkInt: return newInt(parseInt(tok.lexeme))
+  of tkFloat: return newFloat(parseFloat(tok.lexeme))
+  of tkString: return newStr(tok.lexeme)
+  of tkChar: return newChar(Rune(tok.lexeme[0]))
+  of tkSymbol:
+    case tok.lexeme
+    of "true": return TRUE
+    of "false": return FALSE
+    of "nil": return NIL
+    of "void": return VOID
+    else:
+      let lex = tok.lexeme
+      if not inList:
+        if lex.endsWith("..."):
+          return newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])
+        return desugarPath(lex)
+      else: return newSym(lex)
+  of tkLParen: return r.parseNode(tkRParen)
+  of tkLBracket: return r.parseList(tkRBracket)
+  of tkLBrace: return r.parseMap(tkRBrace)
+  of tkHashLParen: return r.parseNode(tkRParen, immutable = true)
+  of tkHashLBracket: return r.parseList(tkRBracket, immutable = true)
+  of tkHashLBrace: return r.parseMap(tkRBrace, immutable = true)
+  of tkBacktick:
+    let inner = r.parseForm(inList)
+    return newNode(newSym("quasiquote"), body = @[inner])
+  of tkPercent:
+    # Inside a vector the flat token stream is preserved verbatim.
+    if inList: return newSym("%")
+    let inner = r.parseForm(inList = false)
+    return newNode(newSym("unquote"), body = @[inner])
+  of tkCaret: return newSym("^")
+  of tkCaretCaret: return newSym("^^")
+  of tkAt: return newSym("@")
+  of tkAtAt: return newSym("@@")
+  of tkColon: return newSym(":")
+  of tkEqual: return newSym("=")
+  of tkComma: return newSym(",")
+  of tkTilde: return newSym("~")
+  of tkDotDotDot: return newSym("...")
+  of tkDollar:
+    if r.peek().kind == tkString:
+      let s = r.next()
+      return parseInterpolatedString(s.lexeme)
+    return newSym("$")
+  of tkRParen, tkRBracket, tkRBrace:
+    raise newException(ReadError, "unexpected closing delimiter '" & tok.lexeme & "'")
+  of tkEof:
+    raise newException(ReadError, "unexpected end of input")
+  else: return NIL
+
+proc read*(src: string): Value =
+  var r = Reader(src: src, line: 1, col: 1)
+  r.tokenize()
+  r.skipDatumComments()
+  if r.peek().kind == tkEof: return NIL
+  return r.parseForm(inList = false)
+
+proc readAll*(src: string): seq[Value] =
+  ## Read all top-level forms from src (program = { form }).
+  var r = Reader(src: src, line: 1, col: 1)
+  r.tokenize()
+  while true:
+    r.skipDatumComments()
+    if r.peek().kind == tkEof: break
+    result.add r.parseForm(inList = false)
