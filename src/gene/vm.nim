@@ -256,14 +256,19 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     callee.nativeImpl()(args)
   of vkFunction:
     let positional = callee.fnParams
-    if args.len != positional.len:
-      raise newException(GeneError,
-        "function '" & callee.fnName & "' expects " & $positional.len &
-        " argument(s), got " & $args.len)
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
+    if proto.restParam.len == 0:
+      if args.len != positional.len:
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' expects " & $positional.len &
+          " argument(s), got " & $args.len)
+    elif args.len < positional.len:
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' expects at least " & $positional.len &
+        " argument(s), got " & $args.len)
     for key in named.names:
       var found = false
       for p in proto.namedParams:
@@ -277,6 +282,11 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     let callScope = newScope(callee.fnScope)
     for i, p in positional:
       callScope.define(p, args[i])
+    if proto.restParam.len > 0:
+      var rest = newSeq[Value](args.len - positional.len)
+      for i in 0 ..< rest.len:
+        rest[i] = args[positional.len + i]
+      callScope.define(proto.restParam, newList(rest))
     for p in proto.namedParams:
       if not named.hasArg(p.arg):
         raise newException(GeneError,

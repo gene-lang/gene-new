@@ -35,6 +35,7 @@ type
   FunctionProto* = ref object of FunctionCode
     name*: string
     params*: seq[string]
+    restParam*: string
     namedParams*: seq[NamedParam]
     chunk*: Chunk
 

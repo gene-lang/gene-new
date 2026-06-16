@@ -81,6 +81,13 @@ proc main() =
     let v = run(namedChunk, namedScope)
     checksum = checksum + v.intVal
 
+  let restScope = newGlobalScope()
+  restScope.define("collect", run(compileSource("(fn [head tail...] tail)"), restScope))
+  let restChunk = compileSource("(collect 6 4 3 2)")
+  bench("vm.rest_call.compiled_chunk", 500_000, i):
+    let v = run(restChunk, restScope)
+    checksum = checksum + int64(v.listItems.len)
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):

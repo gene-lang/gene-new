@@ -1,6 +1,6 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
-import std/tables
+import std/[strutils, tables]
 import ./[gir, reader, types]
 
 type
@@ -9,6 +9,7 @@ type
 
   ParamSpecs = object
     positional: seq[string]
+    rest: string
     named: seq[NamedParam]
 
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
@@ -53,6 +54,9 @@ proc symbolText(v: Value): string =
 proc isParamTerminator(s: string): bool =
   s.len == 0 or s in [",", "^", "^^"]
 
+proc isRestParam(s: string): bool =
+  s.len > 3 and s.endsWith("...")
+
 proc skipParamAdornment(items: openArray[Value], i: var int) =
   ## Skip MVP-ignored type annotations and default expressions. Defaults are
   ## still treated as required parameters until the typed argument matcher lands.
@@ -71,10 +75,11 @@ proc skipParamAdornment(items: openArray[Value], i: var int) =
 proc paramSpecs(paramList: Value): ParamSpecs =
   ## Extract positional and named parameter bindings from an `[a ^name b]`
   ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
-  ## `^` followed by `name`.
+  ## `^` followed by `name`, and rest params appear as symbols like `xs...`.
   if paramList.kind != vkList: return
   let items = paramList.listItems
   var i = 0
+  var sawRest = false
   while i < items.len:
     let s = items[i].symbolText
     case s
@@ -83,6 +88,8 @@ proc paramSpecs(paramList: Value): ParamSpecs =
     of ",":
       inc i
     of "^", "^^":
+      if sawRest:
+        raise newException(GeneError, "named parameter cannot follow a rest parameter")
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise newException(GeneError, "named parameter requires a name")
@@ -99,7 +106,15 @@ proc paramSpecs(paramList: Value): ParamSpecs =
     of ":", "=":
       raise newException(GeneError, "parameter annotation requires a parameter")
     else:
-      result.positional.add s
+      if sawRest:
+        raise newException(GeneError, "parameter cannot follow a rest parameter")
+      if s.isRestParam:
+        result.rest = s[0 .. ^4]
+        if result.rest.len == 0:
+          raise newException(GeneError, "rest parameter requires a name")
+        sawRest = true
+      else:
+        result.positional.add s
       inc i
       skipParamAdornment(items, i)
 
@@ -191,7 +206,8 @@ proc compileFn(c: var Compiler, node: Value) =
 
   let specs = paramSpecs(body[idx])
   let proto = FunctionProto(name: name, params: specs.positional,
-                            namedParams: specs.named, chunk: fnCompiler.chunk)
+                            restParam: specs.rest, namedParams: specs.named,
+                            chunk: fnCompiler.chunk)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
 
 proc compileCall(c: var Compiler, node: Value) =

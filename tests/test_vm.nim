@@ -32,6 +32,7 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     check proto.name == "inc"
     check proto.params == @["x"]
+    check proto.restParam == ""
     check proto.namedParams.len == 0
     check proto.chunk.instructions.len == 5
     check proto.chunk.instructions[0].op == opLoadName
@@ -51,10 +52,19 @@ suite "compiler — GIR emission":
     check proto.namedParams[0].arg == "color"
     check proto.namedParams[0].local == "c"
 
+  test "emits rest parameter specs":
+    let fnChunk = compileSource("(fn collect [head tail...] [head tail])")
+    let proto = fnChunk.functions[0]
+    check proto.params == @["head"]
+    check proto.restParam == "tail"
+    check proto.namedParams.len == 0
+
   test "compile errors use the runtime error channel":
     expect GeneError: discard compileSource("(var)")
     expect GeneError: discard compileSource("(fn missing-params 1)")
     expect GeneError: discard compileSource("(fn bad [^])")
+    expect GeneError: discard compileSource("(fn bad [xs... y] y)")
+    expect GeneError: discard compileSource("(fn bad [xs... ^scale] scale)")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
@@ -161,6 +171,22 @@ suite "vm — named arguments":
     expect GeneError: discard runStr("(var draw (fn [shape ^color] [shape color])) (draw ^width 2 \"circle\")")
   test "native functions reject named arguments":
     expect GeneError: discard runStr("(+ ^base 1 2)")
+
+suite "vm — rest parameters":
+  test "rest parameter gathers extra positional args":
+    ck "(var collect (fn [head tail...] [head tail])) (collect 1 2 3 4)",
+       "[1 [2 3 4]]"
+  test "rest parameter can gather zero args":
+    ck "(var collect (fn [head tail...] [head tail])) (collect 1)",
+       "[1 []]"
+  test "rest-only functions gather all positional args":
+    ck "(var all (fn [items...] items)) (all 1 (+ 1 1) 3)",
+       "[1 2 3]"
+  test "rest parameters still require fixed positional args":
+    expect GeneError: discard runStr("(var collect (fn [head tail...] [head tail])) (collect)")
+  test "rest and named parameters compose when named params come first":
+    ck "(var f (fn [head ^scale, tail...] [head scale tail])) (f ^scale 9 1 2 3)",
+       "[1 9 [2 3]]"
 
 suite "vm — printer view of callables":
   test "functions print a display form":
