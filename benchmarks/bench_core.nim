@@ -95,6 +95,13 @@ proc main() =
     let v = run(defaultChunk, defaultScope)
     checksum = checksum + v.intVal
 
+  let selectorScope = newGlobalScope()
+  selectorScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), selectorScope))
+  let selectorChunk = compileSource("user/age")
+  bench("vm.selector_path.compiled_chunk", 500_000, i):
+    let v = run(selectorChunk, selectorScope)
+    checksum = checksum + v.intVal
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):

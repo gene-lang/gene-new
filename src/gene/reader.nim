@@ -362,7 +362,11 @@ proc desugarPath(lexeme: string): Value =
     if p.startsWith("%"):
       body.add newNode(newSym("unquote"), body = @[newSym(p[1..^1])])
     else:
-      body.add newSym(p)
+      var intVal: int
+      if parseutils.parseInt(p, intVal) == p.len:
+        body.add newInt(intVal)
+      else:
+        body.add newSym(p)
 
   if lexeme.startsWith("/"):
     return newNode(newSym("select"), body = body)

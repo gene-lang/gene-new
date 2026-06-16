@@ -54,8 +54,8 @@ participates in equality or hashing.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
-  special forms, positional/named/rest/default function arguments, closures,
-  recursion, and built-ins
+  special forms, positional/named/rest/default function arguments, static
+  selectors and slash-path access, closures, recursion, and built-ins
   (`+ - * / < > <= >= = not print println`).
 
 ## Quick start

@@ -21,6 +21,8 @@ suite "spec — reader surface from design":
   test "selector literals and context-neutral paths stay distinct":
     check_read("/user/name", "(select user name)")
     check_read("user/name", "(path user name)")
+    check_read("/users/0/name", "(select users 0 name)")
+    check_read("users/-1/name", "(path users -1 name)")
     check_read("(import net/http [Request])", "(import (path net http) [Request])")
     check_read("(fn f [^server : Http/Server] nil)",
                "(fn f [^ server : Http/Server] nil)")

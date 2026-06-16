@@ -57,7 +57,9 @@ suite "reader — sugars":
 
 suite "reader — paths":
   test "absolute path":      check_read("/user/name",   "(select user name)")
+  test "numeric selector segment": check_read("/users/0/name", "(select users 0 name)")
   test "relative path":      check_read("user/name",    "(path user name)")
+  test "negative path segment": check_read("users/-1/name", "(path users -1 name)")
   test "path with unquote":  check_read("user/%field",  "(path user (unquote field))")
   test "qualified import path stays neutral":
     check_read("(import net/http)", "(import (path net http))")

@@ -255,6 +255,24 @@ proc compileFn(c: var Compiler, node: Value) =
                             chunk: fnCompiler.chunk)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
 
+proc selectorLiteral(parts: openArray[Value]): Value =
+  var body = newSeq[Value](parts.len)
+  for i, part in parts:
+    body[i] = part
+  newNode(newSym("select"), body = body)
+
+proc compilePath(c: var Compiler, node: Value) =
+  let parts = node.body
+  if parts.len == 0:
+    c.emitConst VOID
+    return
+  if parts.len == 1:
+    compileExpr(c, parts[0])
+    return
+  c.emitConst selectorLiteral(parts.toOpenArray(1, parts.high))
+  compileExpr(c, parts[0])
+  discard c.emit(opCall, 1)
+
 proc compileCall(c: var Compiler, node: Value) =
   compileExpr(c, node.head)
   var names: seq[string]
@@ -286,6 +304,12 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "quote":
       c.emitConst(if node.body.len >= 1: node.body[0] else: NIL)
+      return
+    of "select":
+      c.emitConst selectorLiteral(node.body)
+      return
+    of "path":
+      compilePath(c, node)
       return
     else:
       discard

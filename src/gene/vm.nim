@@ -265,6 +265,70 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   else:
     VOID
 
+proc isSymbol(v: Value, name: string): bool =
+  v.kind == vkSymbol and v.symVal == name
+
+proc isSelector(v: Value): bool =
+  v.kind == vkNode and v.head.isSymbol("select")
+
+proc lookupIndex(items: openArray[Value], rawIndex: int64): Value =
+  var idx = rawIndex
+  if idx < 0:
+    idx = int64(items.len) + idx
+  if idx < 0 or idx >= int64(items.len):
+    return VOID
+  items[int(idx)]
+
+proc staticLookup(target, segment: Value): Value =
+  if target.kind == vkVoid:
+    return VOID
+  case segment.kind
+  of vkInt:
+    case target.kind
+    of vkList:
+      lookupIndex(target.listItems, segment.intVal)
+    of vkNode:
+      lookupIndex(target.body, segment.intVal)
+    else:
+      VOID
+  of vkSymbol, vkString:
+    let key = if segment.kind == vkSymbol: segment.symVal else: segment.strVal
+    case target.kind
+    of vkMap:
+      if target.mapEntries.hasKey(key): target.mapEntries[key] else: VOID
+    of vkNode:
+      if target.props.hasKey(key):
+        target.props[key]
+      else:
+        case key
+        of "head": target.head
+        of "props": newMap(target.props)
+        of "body": newList(target.body)
+        of "meta": newMap(target.meta)
+        else: VOID
+    of vkList:
+      case key
+      of "size": newInt(target.listItems.len)
+      of "empty?": newBool(target.listItems.len == 0)
+      of "first": (if target.listItems.len > 0: target.listItems[0] else: VOID)
+      of "last": (if target.listItems.len > 0: target.listItems[^1] else: VOID)
+      else: VOID
+    else:
+      VOID
+  of vkNode:
+    if segment.head.isSymbol("unquote"):
+      raise newException(GeneError, "dynamic selector stages are not implemented")
+    VOID
+  else:
+    VOID
+
+proc applySelector(selector, target: Value): Value =
+  result = target
+  for segment in selector.body:
+    result = staticLookup(result, segment)
+    if result.kind == vkVoid:
+      return VOID
+
 proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
   case callee.kind
   of vkNativeFn:
@@ -325,5 +389,13 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)
     run(proto.chunk, callScope)
+  of vkNode:
+    if not callee.isSelector:
+      raise newException(GeneError, "value is not callable: " & $callee.kind)
+    if named.len != 0:
+      raise newException(GeneError, "selector calls do not accept named arguments")
+    if args.len != 1:
+      raise newException(GeneError, "selector expects 1 argument, got " & $args.len)
+    applySelector(callee, args[0])
   else:
     raise newException(GeneError, "value is not callable: " & $callee.kind)

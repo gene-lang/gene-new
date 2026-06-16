@@ -227,6 +227,30 @@ suite "vm — optional and default parameters":
   test "too many positional arguments still raise":
     expect GeneError: discard runStr("(var f (fn [x = 1] x)) (f 1 2)")
 
+suite "vm — selectors":
+  test "selector literals are first-class values":
+    ck "/name", "(select name)"
+    ck "(var get-name /name) (get-name {^name \"Ada\"})", "\"Ada\""
+  test "expression paths apply static selectors to lexical values":
+    ck "(var user {^name \"Ada\" ^age 37}) user/name", "\"Ada\""
+    ck "(var user {^address {^city \"Raleigh\"}}) user/address/city", "\"Raleigh\""
+  test "missing selector lookup propagates void":
+    ck "(var user {^name \"Ada\"}) user/missing/name", "void"
+    ck "(var user {^name nil}) user/name", "nil"
+  test "selectors read list indexes and fixed list members":
+    ck "(var xs [10 20 30]) xs/1", "20"
+    ck "(var xs [10 20 30]) xs/-1", "30"
+    ck "(var xs [10 20 30]) xs/size", "3"
+    ck "(var xs []) xs/first", "void"
+  test "selectors read node props, body indexes, and projections":
+    ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
+    ck "(var n (quote (user ^name \"Ada\" 10 20))) n/1", "20"
+    ck "(var n (quote (user ^name \"Ada\" 10 20))) n/head", "user"
+    ck "(var n (quote (user ^name \"Ada\" 10 20))) n/body", "[10 20]"
+  test "selector calls validate their call envelope":
+    expect GeneError: discard runStr("(/name)")
+    expect GeneError: discard runStr("(/name ^unused 1 {^name \"Ada\"})")
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous
