@@ -74,6 +74,13 @@ proc main() =
     let v = run(simpleChunk, simpleScope)
     checksum = checksum + v.intVal
 
+  let namedScope = newGlobalScope()
+  namedScope.define("pick", run(compileSource("(fn [x ^scale] (+ x scale))"), namedScope))
+  let namedChunk = compileSource("(pick ^scale 4 6)")
+  bench("vm.named_call.compiled_chunk", 500_000, i):
+    let v = run(namedChunk, namedScope)
+    checksum = checksum + v.intVal
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):

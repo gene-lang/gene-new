@@ -7,6 +7,10 @@ type
   Compiler = object
     chunk: Chunk
 
+  ParamSpecs = object
+    positional: seq[string]
+    named: seq[NamedParam]
+
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           names: seq[string] = @[], flag = false): int =
   c.chunk.emit Instruction(op: op, intArg: intArg, name: name, names: names, flag: flag)
@@ -43,23 +47,61 @@ proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int) =
     if i < body.high:
       discard c.emit(opPop)
 
-proc paramNames(paramList: Value): seq[string] =
-  ## Extract positional parameter names from an `[a b c]` vector. Type
-  ## annotations (`x : T`) and separator commas are skipped for MVP.
-  if paramList.kind != vkList: return @[]
+proc symbolText(v: Value): string =
+  if v.kind == vkSymbol: v.symVal else: ""
+
+proc isParamTerminator(s: string): bool =
+  s.len == 0 or s in [",", "^", "^^"]
+
+proc skipParamAdornment(items: openArray[Value], i: var int) =
+  ## Skip MVP-ignored type annotations and default expressions. Defaults are
+  ## still treated as required parameters until the typed argument matcher lands.
+  while i < items.len:
+    let s = items[i].symbolText
+    case s
+    of ":":
+      inc i
+      if i < items.len: inc i
+    of "=":
+      inc i
+      if i < items.len: inc i
+    else:
+      break
+
+proc paramSpecs(paramList: Value): ParamSpecs =
+  ## Extract positional and named parameter bindings from an `[a ^name b]`
+  ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
+  ## `^` followed by `name`.
+  if paramList.kind != vkList: return
   let items = paramList.listItems
   var i = 0
   while i < items.len:
-    let it = items[i]
-    if it.kind == vkSymbol:
-      case it.symVal
-      of ",": inc i
-      of ":": inc i, 2
-      else:
-        result.add it.symVal
-        inc i
-    else:
+    let s = items[i].symbolText
+    case s
+    of "":
       inc i
+    of ",":
+      inc i
+    of "^", "^^":
+      inc i
+      if i >= items.len or items[i].kind != vkSymbol:
+        raise newException(GeneError, "named parameter requires a name")
+      let arg = items[i].symVal
+      inc i
+      var local = arg
+      if i < items.len:
+        let maybeLocal = items[i].symbolText
+        if not maybeLocal.isParamTerminator and maybeLocal notin [":", "="]:
+          local = maybeLocal
+          inc i
+      result.named.add NamedParam(arg: arg, local: local)
+      skipParamAdornment(items, i)
+    of ":", "=":
+      raise newException(GeneError, "parameter annotation requires a parameter")
+    else:
+      result.positional.add s
+      inc i
+      skipParamAdornment(items, i)
 
 proc compileIf(c: var Compiler, node: Value) =
   let body = node.body
@@ -147,15 +189,20 @@ proc compileFn(c: var Compiler, node: Value) =
   compileBodyFrom(fnCompiler, body, idx + 1)
   discard fnCompiler.emit(opReturn)
 
-  let proto = FunctionProto(name: name, params: paramNames(body[idx]),
-                            chunk: fnCompiler.chunk)
+  let specs = paramSpecs(body[idx])
+  let proto = FunctionProto(name: name, params: specs.positional,
+                            namedParams: specs.named, chunk: fnCompiler.chunk)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
 
 proc compileCall(c: var Compiler, node: Value) =
   compileExpr(c, node.head)
+  var names: seq[string]
+  for k, value in node.props:
+    names.add k
+    compileExpr(c, value)
   for arg in node.body:
     compileExpr(c, arg)
-  discard c.emit(opCall, node.body.len)
+  discard c.emit(opCall, node.body.len, names = names)
 
 proc compileNode(c: var Compiler, node: Value) =
   let h = node.head

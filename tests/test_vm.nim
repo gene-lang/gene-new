@@ -32,14 +32,29 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     check proto.name == "inc"
     check proto.params == @["x"]
+    check proto.namedParams.len == 0
     check proto.chunk.instructions.len == 5
     check proto.chunk.instructions[0].op == opLoadName
     check proto.chunk.instructions[0].name == "+"
     check proto.chunk.instructions[^1].op == opReturn
 
+  test "emits call prop names and named parameter specs":
+    let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")
+    check callChunk.instructions[^2].op == opCall
+    check callChunk.instructions[^2].intArg == 1
+    check callChunk.instructions[^2].names == @["color"]
+
+    let fnChunk = compileSource("(fn draw [shape ^color c] [shape c])")
+    let proto = fnChunk.functions[0]
+    check proto.params == @["shape"]
+    check proto.namedParams.len == 1
+    check proto.namedParams[0].arg == "color"
+    check proto.namedParams[0].local == "c"
+
   test "compile errors use the runtime error channel":
     expect GeneError: discard compileSource("(var)")
     expect GeneError: discard compileSource("(fn missing-params 1)")
+    expect GeneError: discard compileSource("(fn bad [^])")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
@@ -130,6 +145,22 @@ suite "vm — functions and closures":
     ck "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
+
+suite "vm — named arguments":
+  test "function calls bind node props to named parameters":
+    ck "(var draw (fn [shape ^color] [shape color])) (draw ^color \"red\" \"circle\")",
+       "[\"circle\" \"red\"]"
+  test "named argument values are evaluated":
+    ck "(var draw (fn [shape ^color] [shape color])) (draw ^color (+ 1 2) 5)",
+       "[5 3]"
+  test "named parameters can bind to a custom local":
+    ck "(var draw (fn [shape ^color c] [shape c])) (draw ^color \"blue\" \"square\")",
+       "[\"square\" \"blue\"]"
+  test "missing and unexpected named arguments raise":
+    expect GeneError: discard runStr("(var draw (fn [shape ^color] [shape color])) (draw \"circle\")")
+    expect GeneError: discard runStr("(var draw (fn [shape ^color] [shape color])) (draw ^width 2 \"circle\")")
+  test "native functions reject named arguments":
+    expect GeneError: discard runStr("(+ ^base 1 2)")
 
 suite "vm — printer view of callables":
   test "functions print a display form":

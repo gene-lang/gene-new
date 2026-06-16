@@ -28,9 +28,14 @@ type
     names*: seq[string]
     flag*: bool
 
+  NamedParam* = object
+    arg*: string
+    local*: string
+
   FunctionProto* = ref object of FunctionCode
     name*: string
     params*: seq[string]
+    namedParams*: seq[NamedParam]
     chunk*: Chunk
 
   Chunk* = ref object

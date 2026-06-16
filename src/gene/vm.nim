@@ -165,7 +165,25 @@ proc pop(stack: var seq[Value]): Value =
   result = stack[^1]
   stack.setLen(stack.len - 1)
 
-proc applyCall(callee: Value, args: seq[Value]): Value
+type
+  NamedArgs = object
+    names: seq[string]
+    values: seq[Value]
+
+proc len(named: NamedArgs): int =
+  named.names.len
+
+proc hasArg(named: NamedArgs, name: string): bool =
+  for key in named.names:
+    if key == name: return true
+  false
+
+proc getArg(named: NamedArgs, name: string): Value =
+  for i, key in named.names:
+    if key == name: return named.values[i]
+  raise newException(GeneError, "missing named argument: " & name)
+
+proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value
 
 proc run*(chunk: Chunk, scope: Scope): Value =
   var stack: seq[Value]
@@ -211,8 +229,14 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       if inst.intArg > 0:
         for i in countdown(inst.intArg - 1, 0):
           args[i] = stack.pop()
+      var named: NamedArgs
+      if inst.names.len > 0:
+        named.names = inst.names
+        named.values = newSeq[Value](inst.names.len)
+        for i in countdown(inst.names.len - 1, 0):
+          named.values[i] = stack.pop()
       let callee = stack.pop()
-      stack.add applyCall(callee, args)
+      stack.add applyCall(callee, args, named)
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:
@@ -223,23 +247,41 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       return (if stack.len > 0: stack.pop() else: NIL)
   NIL
 
-proc applyCall(callee: Value, args: seq[Value]): Value =
+proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
   case callee.kind
   of vkNativeFn:
+    if named.len != 0:
+      raise newException(GeneError,
+        "native function '" & callee.nativeFnName & "' does not accept named arguments")
     callee.nativeImpl()(args)
   of vkFunction:
-    let params = callee.fnParams
-    if args.len != params.len:
+    let positional = callee.fnParams
+    if args.len != positional.len:
       raise newException(GeneError,
-        "function '" & callee.fnName & "' expects " & $params.len &
+        "function '" & callee.fnName & "' expects " & $positional.len &
         " argument(s), got " & $args.len)
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
+    for key in named.names:
+      var found = false
+      for p in proto.namedParams:
+        if p.arg == key:
+          found = true
+          break
+      if not found:
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' got unexpected named argument: " & key)
+
     let callScope = newScope(callee.fnScope)
-    for i, p in params:
+    for i, p in positional:
       callScope.define(p, args[i])
+    for p in proto.namedParams:
+      if not named.hasArg(p.arg):
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' missing named argument: " & p.arg)
+      callScope.define(p.local, named.getArg(p.arg))
     run(proto.chunk, callScope)
   else:
     raise newException(GeneError, "value is not callable: " & $callee.kind)
