@@ -254,6 +254,8 @@ proc compileFn(c: var Compiler, node: Value) =
                             restParam: specs.rest, namedParams: specs.named,
                             chunk: fnCompiler.chunk)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
+  if name.len > 0:
+    discard c.emit(opDefineName, name = name)
 
 proc selectorLiteral(parts: openArray[Value]): Value =
   var body = newSeq[Value](parts.len)

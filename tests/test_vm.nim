@@ -25,9 +25,11 @@ suite "compiler — GIR emission":
   test "emits nested function prototypes":
     let chunk = compileSource("(fn inc [x] (+ x 1))")
     check chunk.functions.len == 1
-    check chunk.instructions.len == 2
+    check chunk.instructions.len == 3
     check chunk.instructions[0].op == opMakeFn
-    check chunk.instructions[1].op == opReturn
+    check chunk.instructions[1].op == opDefineName
+    check chunk.instructions[1].name == "inc"
+    check chunk.instructions[2].op == opReturn
 
     let proto = chunk.functions[0]
     check proto.name == "inc"
@@ -188,6 +190,8 @@ suite "vm — functions and closures":
     ck "((fn [x] (+ x 1)) 41)", "42"
   test "named function in scope":
     ck "(var add (fn [a b] (+ a b))) (add 3 4)", "7"
+  test "named function declarations bind in scope":
+    ck "(fn add [a b] (+ a b)) (add 3 4)", "7"
   test "arity mismatch raises":
     expect GeneError: discard runStr("((fn [x] x) 1 2)")
   test "closures capture their environment":
@@ -196,6 +200,8 @@ suite "vm — functions and closures":
     ck "(var x 1) (var get (fn [] x)) (set x 2) (get)", "2"
   test "recursion via a var-bound self reference":
     ck "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
+  test "recursion via a named function declaration":
+    ck "(fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)", "55"
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
 
@@ -348,6 +354,19 @@ suite "vm — functional selector updates":
     expect GeneError: discard runStr("(assoc-in [1] /2 9)")
     expect GeneError: discard runStr("(assoc-in 1 /x 2)")
     expect GeneError: discard runStr("(update-in {^score 1} /score 1)")
+
+suite "vm — entrypoint support":
+  test "top-level bindings can be looked up and called after run":
+    let scope = newGlobalScope()
+    discard run(compileSource("(fn main [args] args/0)"), scope)
+    var mainBinding: Value
+    check scope.lookupOptional("main", mainBinding)
+    check mainBinding.call(@[newList(@[newStr("Gene")])]).print() == "\"Gene\""
+
+  test "optional lookup reports missing bindings without raising":
+    let scope = newGlobalScope()
+    var missing: Value
+    check not scope.lookupOptional("main", missing)
 
 suite "vm — printer view of callables":
   test "functions print a display form":

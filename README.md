@@ -56,7 +56,8 @@ participates in equality or hashing.
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
   special forms, positional/named/rest/default function arguments, static and
   dynamic selector/slash-path access, functional selector updates, closures,
-  recursion, GIR disassembly via `gene compile`, and built-ins
+  recursion, `gene run` entrypoint invocation, GIR disassembly via
+  `gene compile`, and built-ins
   (`+ - * / < > <= >= = not head props body meta assoc-in update-in print
   println`).
 
@@ -79,9 +80,11 @@ $ ./bin/gene eval '(+ 1 2)'
 3
 $ ./bin/gene eval '(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)'
 55
-$ echo '(println "Hello," (+ 1 1))' > demo.gene
+$ echo '(fn main [args] (println "Hello," args/0) nil)' > demo.gene
 $ ./bin/gene run demo.gene
-Hello, 2
+Hello, void
+$ ./bin/gene run demo.gene Gene
+Hello, Gene
 $ ./bin/gene compile demo.gene
 constants:
   [0] "Hello,"

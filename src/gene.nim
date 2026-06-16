@@ -2,7 +2,7 @@
 ##
 ## Subcommands (a subset of design Section 18):
 ##   gene eval "<src>"   evaluate a source string, print the result
-##   gene run  <file>    load and execute a .gene file top to bottom
+##   gene run  <file>    load and execute a .gene file, then call main if present
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene compile <file> print compiled GIR bytecode (no execution)
 
@@ -14,7 +14,7 @@ proc usage() =
   echo ""
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
-  echo "  gene run <file.gene>    execute a file top to bottom"
+  echo "  gene run <file.gene> [args...] execute a file, then call main if present"
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
 
@@ -34,10 +34,40 @@ proc cmdEval(src: string) =
     stderr.writeLine "Error: " & e.msg
     quit(1)
 
-proc cmdRun(path: string) =
+proc argsList(args: openArray[string]): Value =
+  var values = newSeq[Value](args.len)
+  for i, arg in args:
+    values[i] = newStr(arg)
+  newList(values)
+
+proc commandArgs(first: int): seq[string] =
+  if first <= paramCount():
+    for i in first .. paramCount():
+      result.add paramStr(i)
+
+proc exitFromMain(value: Value) =
+  case value.kind
+  of vkNil:
+    discard
+  of vkInt:
+    quit(int(value.intVal))
+  else:
+    raise newException(GeneError,
+      "main must return nil or int, got " & $value.kind)
+
+proc cmdRun(path: string, args: openArray[string] = []) =
   let src = readSourceFile(path)
   try:
-    discard run(compileSource(src), newGlobalScope())
+    let scope = newGlobalScope()
+    discard run(compileSource(src), scope)
+    var mainBinding: Value
+    if scope.lookupOptional("main", mainBinding):
+      let result =
+        if mainBinding.kind == vkFunction and mainBinding.fnParams.len == 0:
+          mainBinding.call()
+        else:
+          mainBinding.call(@[argsList(args)])
+      exitFromMain(result)
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)
@@ -80,7 +110,7 @@ proc main() =
     if paramCount() < 2:
       stderr.writeLine "Error: 'run' needs a file path"
       quit(1)
-    cmdRun(paramStr(2))
+    cmdRun(paramStr(2), commandArgs(3))
   of "parse":
     if paramCount() < 2:
       stderr.writeLine "Error: 'parse' needs a file path"
@@ -96,7 +126,7 @@ proc main() =
   else:
     # Back-compat: a bare path argument is treated as `run`.
     if fileExists(cmd):
-      cmdRun(cmd)
+      cmdRun(cmd, commandArgs(2))
     else:
       stderr.writeLine "Unknown command: " & cmd
       usage()

@@ -17,6 +17,15 @@ proc lookup*(scope: Scope, name: string): Value =
     s = s.parent
   raise newException(GeneError, "undefined symbol: " & name)
 
+proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
+  var s = scope
+  while s != nil:
+    if s.vars.hasKey(name):
+      value = s.vars[name]
+      return true
+    s = s.parent
+  false
+
 proc define*(scope: Scope, name: string, v: Value) =
   scope.vars[name] = v
 
@@ -624,3 +633,6 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     applySelector(callee, args[0])
   else:
     raise newException(GeneError, "value is not callable: " & $callee.kind)
+
+proc call*(callee: Value, args: seq[Value] = @[]): Value =
+  applyCall(callee, args, NamedArgs())
