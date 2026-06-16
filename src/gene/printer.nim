@@ -4,7 +4,7 @@
 ## stored (source) order. Immutable containers use their `#`-prefix. The
 ## output re-reads to a structurally equal value (AST-level round-trip).
 
-import std/[strutils, unicode, tables]
+import std/[unicode, tables]
 import ./types
 
 proc print*(v: Value): string

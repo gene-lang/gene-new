@@ -1,17 +1,24 @@
 ## Canonical value / node model for Gene (design Section 1).
 ##
-## Gene has one syntactic and semantic unit: the node. Every value exposes
-## head / props / body / meta through the Node projection. Scalars are node
-## fixpoints (head = self, empty props/body/meta).
+## Values are represented as a 64-bit NaN-box. The all-zero bit pattern is
+## `nil`, non-zero non-boxed float64 values are stored directly, and reserved
+## quiet-NaN payloads encode void/bool/small-int/char immediates or an index
+## into the current process-local heap table.
+##
+## TODO(vm-memory): Heap slots are handle-indirected but not reclaimed yet, and
+## heap reads currently take a global lock because seq growth can move the slot
+## table. Before the VM allocates in hot loops, replace this append-only table
+## with a non-moving segmented/generational handle arena that supports lock-free
+## reads plus tracing/reclamation or a free-list with stale-handle detection.
 
-import std/[tables, unicode]
+import std/[locks, tables, unicode]
 
 type
   ValueKind* = enum
     vkNil       ## explicit absence (`nil` : Nil)
     vkVoid      ## no-value / skip / delete (`void` : Void)
     vkBool
-    vkInt       ## MVP: 64-bit; design Int is arbitrary precision
+    vkInt       ## MVP: 64-bit; small int64s are immediate, large int64s heap-backed
     vkFloat     ## F64 (design `Float` alias)
     vkString    ## immutable UTF-8 string
     vkChar      ## one Unicode scalar value
@@ -20,70 +27,289 @@ type
     vkMap       ## pure props / PropMap (symbol-keyed)
     vkNode      ## general node (head + props + body + meta)
 
+  Value* = object
+    bits*: uint64
+
   ## Props and meta are symbol-keyed ordered maps. Keys are the bare symbol
   ## text (without the leading `^`/`@`). Order is preserved for deterministic
   ## printing per design Section 18.
   PropTable* = OrderedTable[string, Value]
 
-  Value* = ref ValueObj
-  ValueObj* = object
-    case kind*: ValueKind
-    of vkNil, vkVoid: discard
-    of vkBool:   boolVal*:  bool
-    of vkInt:    intVal*:   int64
-    of vkFloat:  floatVal*: float64
-    of vkString: strVal*:   string
-    of vkChar:   charVal*:  Rune
-    of vkSymbol: symVal*:   string
+  HeapValue = ref HeapValueObj
+  HeapValueObj = object
+    case kind: ValueKind
+    of vkInt:
+      intVal: int64
+    of vkFloat:
+      floatVal: float64
+    of vkString:
+      strVal: string
+    of vkSymbol:
+      symVal: string
     of vkList:
-      listItems*:     seq[Value]
-      listImmutable*: bool
+      listItems: seq[Value]
+      listImmutable: bool
     of vkMap:
-      mapEntries*:    PropTable
-      mapImmutable*:  bool
+      mapEntries: PropTable
+      mapImmutable: bool
     of vkNode:
-      head*:          Value
-      props*:         PropTable
-      body*:          seq[Value]
-      meta*:          PropTable
-      nodeImmutable*: bool
+      head: Value
+      props: PropTable
+      body: seq[Value]
+      meta: PropTable
+      nodeImmutable: bool
+    of vkNil, vkVoid, vkBool, vkChar:
+      discard
+
+  BoxKind = enum
+    bkNil,
+    bkVoid,
+    bkBool,
+    bkInt,
+    bkChar,
+    bkHeap
+
+const
+  BoxPrefix = 0x7ffc000000000000'u64
+  BoxPrefixMask = 0xffff000000000000'u64
+  BoxKindShift = 44
+  PayloadBits = 44
+  PayloadMask = 0x00000fffffffffff'u64
+  SmallIntSignBit = 1'u64 shl (PayloadBits - 1)
+  SmallIntMin = -(1'i64 shl (PayloadBits - 1))
+  SmallIntMax = (1'i64 shl (PayloadBits - 1)) - 1
+
+var heapValues: seq[HeapValue]
+var heapLock: Lock
+initLock(heapLock)
+
+proc isBoxed(v: Value): bool =
+  v.bits == 0 or (v.bits and BoxPrefixMask) == BoxPrefix
+
+proc payload(v: Value): uint64 =
+  v.bits and PayloadMask
+
+proc boxKind(v: Value): BoxKind =
+  BoxKind((v.bits shr BoxKindShift) and 0xf'u64)
+
+proc makeBox(k: BoxKind, payload = 0'u64): Value =
+  Value(bits: BoxPrefix or (uint64(ord(k)) shl BoxKindShift) or
+              (payload and PayloadMask))
+
+proc addHeap(obj: HeapValue): Value =
+  acquire(heapLock)
+  try:
+    if heapValues.len > int(PayloadMask):
+      raise newException(OverflowDefect, "Gene heap value table exhausted")
+    heapValues.add obj
+    result = makeBox(bkHeap, uint64(heapValues.high))
+  finally:
+    release(heapLock)
+
+proc heapObj(v: Value): HeapValue =
+  if not v.isBoxed or v.boxKind != bkHeap:
+    raise newException(FieldDefect, "value is not heap-backed")
+  let idx = int(v.payload)
+  acquire(heapLock)
+  try:
+    if idx < 0 or idx >= heapValues.len:
+      raise newException(IndexDefect, "invalid heap value index")
+    result = heapValues[idx]
+  finally:
+    release(heapLock)
+
+proc floatToBits(f: float64): uint64 {.inline.} =
+  cast[uint64](f)
+
+proc bitsToFloat(bits: uint64): float64 {.inline.} =
+  cast[float64](bits)
+
+proc encodeSmallInt(v: int64): uint64 =
+  uint64(v) and PayloadMask
+
+proc decodeSmallInt(bits: uint64): int64 =
+  let raw = bits and PayloadMask
+  if (raw and SmallIntSignBit) != 0:
+    -int64(((not raw) and PayloadMask) + 1'u64)
+  else:
+    int64(raw)
 
 # ---------------------------------------------------------------------------
 # Singletons
 # ---------------------------------------------------------------------------
 
 let
-  NIL*  = Value(kind: vkNil)
-  VOID* = Value(kind: vkVoid)
-  TRUE*  = Value(kind: vkBool, boolVal: true)
-  FALSE* = Value(kind: vkBool, boolVal: false)
+  NIL* = Value(bits: 0)
+  VOID* = makeBox(bkVoid)
+  TRUE* = makeBox(bkBool, 1)
+  FALSE* = makeBox(bkBool, 0)
+  ZERO_FLOAT = addHeap(HeapValue(kind: vkFloat, floatVal: 0.0))
+
+# ---------------------------------------------------------------------------
+# Introspection accessors
+# These are read-only projections. Future VM/runtime mutation should use
+# dedicated update APIs rather than mutating seq/table values returned here.
+# ---------------------------------------------------------------------------
+
+proc isHeapBacked*(v: Value): bool =
+  v.isBoxed and v.boxKind == bkHeap
+
+proc kind*(v: Value): ValueKind =
+  if not v.isBoxed:
+    return vkFloat
+  case v.boxKind
+  of bkNil: vkNil
+  of bkVoid: vkVoid
+  of bkBool: vkBool
+  of bkInt: vkInt
+  of bkChar: vkChar
+  of bkHeap: v.heapObj.kind
+
+proc isNil*(v: Value): bool =
+  v.kind == vkNil
+
+proc boolVal*(v: Value): bool =
+  if v.boxKind != bkBool:
+    raise newException(FieldDefect, "value is not a Bool")
+  v.payload != 0
+
+proc intVal*(v: Value): int64 =
+  if not v.isBoxed:
+    raise newException(FieldDefect, "value is not an Int")
+  case v.boxKind
+  of bkInt: decodeSmallInt(v.payload)
+  of bkHeap:
+    let obj = v.heapObj
+    if obj.kind == vkInt: obj.intVal
+    else: raise newException(FieldDefect, "value is not an Int")
+  else:
+    raise newException(FieldDefect, "value is not an Int")
+
+proc floatVal*(v: Value): float64 =
+  if not v.isBoxed:
+    return bitsToFloat(v.bits)
+  if v.boxKind == bkHeap:
+    let obj = v.heapObj
+    if obj.kind == vkFloat:
+      return obj.floatVal
+  raise newException(FieldDefect, "value is not a Float")
+
+proc strVal*(v: Value): string =
+  let obj = v.heapObj
+  if obj.kind != vkString:
+    raise newException(FieldDefect, "value is not a String")
+  obj.strVal
+
+proc charVal*(v: Value): Rune =
+  if not v.isBoxed or v.boxKind != bkChar:
+    raise newException(FieldDefect, "value is not a Char")
+  Rune(int32(v.payload and 0xffffffff'u64))
+
+proc symVal*(v: Value): string =
+  let obj = v.heapObj
+  if obj.kind != vkSymbol:
+    raise newException(FieldDefect, "value is not a Symbol")
+  obj.symVal
+
+proc listItems*(v: Value): seq[Value] =
+  let obj = v.heapObj
+  if obj.kind != vkList:
+    raise newException(FieldDefect, "value is not a List")
+  obj.listItems
+
+proc listImmutable*(v: Value): bool =
+  let obj = v.heapObj
+  if obj.kind != vkList:
+    raise newException(FieldDefect, "value is not a List")
+  obj.listImmutable
+
+proc mapEntries*(v: Value): PropTable =
+  let obj = v.heapObj
+  if obj.kind != vkMap:
+    raise newException(FieldDefect, "value is not a Map")
+  obj.mapEntries
+
+proc mapImmutable*(v: Value): bool =
+  let obj = v.heapObj
+  if obj.kind != vkMap:
+    raise newException(FieldDefect, "value is not a Map")
+  obj.mapImmutable
+
+proc head*(v: Value): Value =
+  let obj = v.heapObj
+  if obj.kind != vkNode:
+    raise newException(FieldDefect, "value is not a Node")
+  obj.head
+
+proc props*(v: Value): PropTable =
+  let obj = v.heapObj
+  if obj.kind != vkNode:
+    raise newException(FieldDefect, "value is not a Node")
+  obj.props
+
+proc body*(v: Value): seq[Value] =
+  let obj = v.heapObj
+  if obj.kind != vkNode:
+    raise newException(FieldDefect, "value is not a Node")
+  obj.body
+
+proc meta*(v: Value): PropTable =
+  let obj = v.heapObj
+  if obj.kind != vkNode:
+    raise newException(FieldDefect, "value is not a Node")
+  obj.meta
+
+proc nodeImmutable*(v: Value): bool =
+  let obj = v.heapObj
+  if obj.kind != vkNode:
+    raise newException(FieldDefect, "value is not a Node")
+  obj.nodeImmutable
 
 # ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
 
-proc newInt*(v: int64): Value = Value(kind: vkInt, intVal: v)
-proc newFloat*(v: float64): Value = Value(kind: vkFloat, floatVal: v)
-proc newStr*(v: string): Value = Value(kind: vkString, strVal: v)
-proc newChar*(r: Rune): Value = Value(kind: vkChar, charVal: r)
-proc newSym*(v: string): Value = Value(kind: vkSymbol, symVal: v)
-proc newBool*(v: bool): Value = (if v: TRUE else: FALSE)
+proc newInt*(v: int64): Value =
+  if v >= SmallIntMin and v <= SmallIntMax:
+    makeBox(bkInt, encodeSmallInt(v))
+  else:
+    addHeap(HeapValue(kind: vkInt, intVal: v))
+
+proc newFloat*(v: float64): Value =
+  var bits = floatToBits(v)
+  if bits == 0:
+    return ZERO_FLOAT
+  if (bits and BoxPrefixMask) == BoxPrefix:
+    return addHeap(HeapValue(kind: vkFloat, floatVal: v))
+  Value(bits: bits)
+
+proc newStr*(v: string): Value =
+  addHeap(HeapValue(kind: vkString, strVal: v))
+
+proc newChar*(r: Rune): Value =
+  makeBox(bkChar, uint64(int32(r)) and 0xffffffff'u64)
+
+proc newSym*(v: string): Value =
+  addHeap(HeapValue(kind: vkSymbol, symVal: v))
+
+proc newBool*(v: bool): Value =
+  if v: TRUE else: FALSE
 
 proc newList*(items: seq[Value] = @[], immutable = false): Value =
-  Value(kind: vkList, listItems: items, listImmutable: immutable)
+  addHeap(HeapValue(kind: vkList, listItems: items, listImmutable: immutable))
 
 proc newMap*(entries: PropTable = initOrderedTable[string, Value](),
              immutable = false): Value =
-  Value(kind: vkMap, mapEntries: entries, mapImmutable: immutable)
+  addHeap(HeapValue(kind: vkMap, mapEntries: entries, mapImmutable: immutable))
 
 proc newNode*(head: Value,
               props: PropTable = initOrderedTable[string, Value](),
               body: seq[Value] = @[],
               meta: PropTable = initOrderedTable[string, Value](),
               immutable = false): Value =
-  Value(kind: vkNode, head: head,
-        props: props, body: body, meta: meta,
-        nodeImmutable: immutable)
+  addHeap(HeapValue(kind: vkNode, head: head,
+                    props: props, body: body, meta: meta,
+                    nodeImmutable: immutable))
 
 # ---------------------------------------------------------------------------
 # Node projections (design Section 1.2 / 1.3). Scalars are fixpoints.
@@ -95,14 +321,14 @@ proc headOf*(v: Value): Value =
 proc propsOf*(v: Value): PropTable =
   case v.kind
   of vkNode: v.props
-  of vkMap:  v.mapEntries
-  else:      initOrderedTable[string, Value]()
+  of vkMap: v.mapEntries
+  else: initOrderedTable[string, Value]()
 
 proc bodyOf*(v: Value): seq[Value] =
   case v.kind
   of vkNode: v.body
   of vkList: v.listItems
-  else:      @[]
+  else: @[]
 
 proc metaOf*(v: Value): PropTable =
   if v.kind == vkNode: v.meta
@@ -121,6 +347,6 @@ proc isTruthy*(v: Value): bool =
 proc isImmutable*(v: Value): bool =
   case v.kind
   of vkList: v.listImmutable
-  of vkMap:  v.mapImmutable
+  of vkMap: v.mapImmutable
   of vkNode: v.nodeImmutable
   else: false

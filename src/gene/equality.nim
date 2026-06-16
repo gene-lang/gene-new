@@ -1,7 +1,7 @@
 ## Structural equality, reference identity, and hashing (design Section 1.5).
 ##
 ##   (= a b)     -> `equal`: structural, meta-blind
-##   (same? a b) -> `same`:  reference identity
+##   (same? a b) -> `same`:  scalar value identity or heap identity
 ##
 ## Hashing follows `=`. Meta never participates in equality or hashing.
 ## Mutable/immutable representation does not affect equality (e.g. [1 2 3]
@@ -29,7 +29,7 @@ proc equal*(a, b: Value): bool =
   of vkInt:    a.intVal == b.intVal
   of vkFloat:  a.floatVal == b.floatVal
   of vkString: a.strVal == b.strVal
-  of vkChar:   a.charVal == b.charVal
+  of vkChar:   int32(a.charVal) == int32(b.charVal)
   of vkSymbol: a.symVal == b.symVal
   of vkList:
     if a.listItems.len != b.listItems.len: return false
@@ -47,8 +47,15 @@ proc equal*(a, b: Value): bool =
     tablesEqual(a.props, b.props)
 
 proc same*(a, b: Value): bool =
-  ## Reference identity. Scalars are distinct objects unless interned.
-  cast[pointer](a) == cast[pointer](b)
+  ## Scalars are representation-independent values, so small and heap-backed
+  ## ints follow the same contract. Lists, maps, and nodes use heap identity.
+  if a.kind != b.kind:
+    return false
+  case a.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol:
+    equal(a, b)
+  of vkList, vkMap, vkNode:
+    a.bits == b.bits
 
 proc hash*(v: Value): Hash =
   if v.isNil: return hash(0)

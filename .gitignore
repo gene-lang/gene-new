@@ -5,3 +5,5 @@ temp/
 
 tests/*
 !tests/*.nim
+
+benchmarks/bench_core
