@@ -1,5 +1,5 @@
 import gene/[compiler, gir, printer, types, vm]
-import std/unittest
+import std/[strutils, unittest]
 
 template ck(src, expected: string) =
   ## Compile and run a program string, then compare its printed result.
@@ -91,6 +91,23 @@ suite "compiler — GIR emission":
     expect GeneError: discard compileSource("(fn bad [x? ys...] ys)")
     expect GeneError: discard compileSource("(fn bad [xs... = 1] xs)")
     expect GeneError: discard compileSource("(fn bad [x =] x)")
+
+suite "gir — disassembly":
+  test "prints constants and instructions":
+    let dump = compileSource("(+ 1 2)").disassemble()
+    check dump.contains("constants:")
+    check dump.contains("[0] 1")
+    check dump.contains("[1] 2")
+    check dump.contains("0: opLoadName name=+")
+    check dump.contains("3: opCall argc=2")
+    check dump.contains("4: opReturn")
+
+  test "prints nested function chunks":
+    let dump = compileSource("(fn inc [x] (+ x 1))").disassemble()
+    check dump.contains("functions:")
+    check dump.contains("[0] inc params=[x]")
+    check dump.contains("0: opMakeFn fn=0")
+    check dump.contains("0: opLoadName name=+")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":

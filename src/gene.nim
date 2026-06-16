@@ -4,9 +4,10 @@
 ##   gene eval "<src>"   evaluate a source string, print the result
 ##   gene run  <file>    load and execute a .gene file top to bottom
 ##   gene parse <file>   read and print canonical forms (no execution)
+##   gene compile <file> print compiled GIR bytecode (no execution)
 
 import std/[os]
-import gene/[compiler, printer, reader, types, vm]
+import gene/[compiler, gir, printer, reader, types, vm]
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -15,6 +16,7 @@ proc usage() =
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene run <file.gene>    execute a file top to bottom"
   echo "  gene parse <file.gene>  print canonical parsed forms"
+  echo "  gene compile <file.gene> print compiled GIR bytecode"
 
 proc readSourceFile(path: string): string =
   if not fileExists(path):
@@ -52,6 +54,17 @@ proc cmdParse(path: string) =
     stderr.writeLine "Read error: " & e.msg
     quit(1)
 
+proc cmdCompile(path: string) =
+  let src = readSourceFile(path)
+  try:
+    echo compileSource(src).disassemble()
+  except ReadError as e:
+    stderr.writeLine "Read error: " & e.msg
+    quit(1)
+  except GeneError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
 proc main() =
   if paramCount() == 0:
     usage()
@@ -73,6 +86,11 @@ proc main() =
       stderr.writeLine "Error: 'parse' needs a file path"
       quit(1)
     cmdParse(paramStr(2))
+  of "compile":
+    if paramCount() < 2:
+      stderr.writeLine "Error: 'compile' needs a file path"
+      quit(1)
+    cmdCompile(paramStr(2))
   of "-h", "--help", "help":
     usage()
   else:

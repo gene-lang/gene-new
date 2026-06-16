@@ -56,8 +56,9 @@ participates in equality or hashing.
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
   special forms, positional/named/rest/default function arguments, static and
   dynamic selector/slash-path access, functional selector updates, closures,
-  recursion, and built-ins (`+ - * / < > <= >= = not head props body meta
-  assoc-in update-in print println`).
+  recursion, GIR disassembly via `gene compile`, and built-ins
+  (`+ - * / < > <= >= = not head props body meta assoc-in update-in print
+  println`).
 
 ## Quick start
 
@@ -81,16 +82,21 @@ $ ./bin/gene eval '(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))
 $ echo '(println "Hello," (+ 1 1))' > demo.gene
 $ ./bin/gene run demo.gene
 Hello, 2
+$ ./bin/gene compile demo.gene
+constants:
+  [0] "Hello,"
+  ...
 ```
 
 `gene parse <file>` prints the canonical parsed forms without executing them
-(a read → print round-trip; props print immediately after the head).
+(a read → print round-trip; props print immediately after the head). `gene
+compile <file>` prints the compiled GIR bytecode without running it.
 
 ## Project layout
 
 ```text
 src/
-  gene.nim            CLI entry point (eval / run / parse)
+  gene.nim            CLI entry point (eval / run / parse / compile)
   gene/
     reader.nim        source text  -> node values
     types.nim         NaN-boxed Value model + constructors/accessors
