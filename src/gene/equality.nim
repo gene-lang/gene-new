@@ -45,16 +45,20 @@ proc equal*(a, b: Value): bool =
     for i in 0 ..< a.body.len:
       if not equal(a.body[i], b.body[i]): return false
     tablesEqual(a.props, b.props)
+  of vkFunction, vkNativeFn:
+    # callables have identity equality
+    a.bits == b.bits
 
 proc same*(a, b: Value): bool =
   ## Scalars are representation-independent values, so small and heap-backed
-  ## ints follow the same contract. Lists, maps, and nodes use heap identity.
+  ## ints follow the same contract. Lists, maps, nodes, and callables use
+  ## heap identity.
   if a.kind != b.kind:
     return false
   case a.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol:
     equal(a, b)
-  of vkList, vkMap, vkNode:
+  of vkList, vkMap, vkNode, vkFunction, vkNativeFn:
     a.bits == b.bits
 
 proc hash*(v: Value): Hash =
@@ -82,4 +86,6 @@ proc hash*(v: Value): Hash =
     for k, val in v.props:
       acc = acc xor (hash(k) !& hash(val))
     h = h !& acc
+  of vkFunction, vkNativeFn:
+    h = h !& hash(v.bits)
   !$h

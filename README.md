@@ -9,11 +9,12 @@ streams/generators, typed recoverable errors, gradual typing, structured
 concurrency, and a stable native ABI — is described in
 [`docs/design.md`](docs/design.md).
 
-> **Status: early implementation.** This repository currently provides the
-> **reader** (parser), the **NaN-boxed value model**, and the **printer**
-> (canonical round-trip output). There is **no evaluator/VM yet** — the design
-> in `docs/design.md` is the target, not the current feature set. APIs and the
-> language surface are unstable.
+> **Status: early implementation.** This repository provides the **reader**
+> (parser), the **NaN-boxed value model**, the **printer** (canonical round-trip
+> output), and a **tree-walking evaluator** (arithmetic, `if`/`do`/`var`/`set`,
+> functions, and closures). It is a direct AST interpreter, not yet the bytecode
+> VM the design ultimately targets (§17). The design in `docs/design.md` is the
+> target, not the current feature set. APIs and the language surface are unstable.
 
 ## The node
 
@@ -50,6 +51,10 @@ participates in equality or hashing.
   scalar/heap-aware `same?`; a matching `hash`.
 - **Printer** (`src/gene/printer.nim`) — prints a value back to canonical Gene
   source that re-reads to a structurally equal value.
+- **Evaluator** (`src/gene/eval.nim`) — callable-first tree-walking interpreter
+  (design §3): self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/
+  `fn`/`quote` special forms, closures, recursion, and built-ins
+  (`+ - * / < > <= >= = not print println`).
 
 ## Quick start
 
@@ -63,28 +68,32 @@ nimble build
 nim c -o:bin/gene src/gene.nim
 ```
 
-The CLI reads a `.gene` file and prints each parsed form in canonical form
-(a read → print round-trip):
+Evaluate an expression, or run a file:
 
 ```console
-$ echo '(print "hello" ^times 3 [1 2 3] {^k 1})' > demo.gene
-$ ./bin/gene demo.gene
-(print ^times 3 "hello" [1 2 3] {^k 1})
+$ ./bin/gene eval '(+ 1 2)'
+3
+$ ./bin/gene eval '(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)'
+55
+$ echo '(println "Hello," (+ 1 1))' > demo.gene
+$ ./bin/gene run demo.gene
+Hello, 2
 ```
 
-(Props are printed immediately after the head, ahead of the body — hence the
-reordering above.)
+`gene parse <file>` prints the canonical parsed forms without executing them
+(a read → print round-trip; props print immediately after the head).
 
 ## Project layout
 
 ```text
 src/
-  gene.nim            CLI entry point (read → print)
+  gene.nim            CLI entry point (eval / run / parse)
   gene/
     reader.nim        source text  -> node values
     types.nim         NaN-boxed Value model + constructors/accessors
     equality.nim      equal / same / hash
     printer.nim       node values -> canonical Gene source
+    eval.nim          tree-walking evaluator + built-ins
 docs/design.md        full language design (the target)
 examples/web_demo.gene  end-to-end design showcase (not yet runnable)
 tests/                unit tests + executable language specs

@@ -41,6 +41,8 @@ type
     vkList      ## pure body / list
     vkMap       ## pure props / PropMap (symbol-keyed)
     vkNode      ## general node (head + props + body + meta)
+    vkFunction  ## closure: params + body + captured scope
+    vkNativeFn  ## built-in function implemented in Nim
 
   Value* = object
     bits*: uint64
@@ -65,6 +67,8 @@ const
   MAP_TAG       = 0xFFFA'u64
   NODE_TAG      = 0xFFFB'u64
   INT64_TAG     = 0xFFFC'u64
+  FUNCTION_TAG  = 0xFFFD'u64
+  NATIVE_FN_TAG = 0xFFFE'u64
 
   # A float whose raw bits land in tag space (0xFFF1.. negative NaNs) is folded to
   # this canonical quiet NaN, which lives below tag space and stores directly.
@@ -134,6 +138,27 @@ type
     body: seq[Value]
     meta: PropTable
 
+  ## Lexical environment for the evaluator (a Nim ORC ref, so scope cycles are
+  ## collectable). A first-class `Env` (design §11.1) is a later, richer concept.
+  Scope* = ref object
+    parent*: Scope
+    vars*: Table[string, Value]
+
+  ## A built-in function implemented in Nim. Positional args only for MVP.
+  NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
+
+  GeneFunction = object
+    refCount: int
+    name: string
+    params: seq[string]
+    fbody: seq[Value]
+    scope: Scope
+
+  GeneNativeFn = object
+    refCount: int
+    name: string
+    impl: NativeProc
+
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
 # ---------------------------------------------------------------------------
@@ -199,6 +224,8 @@ proc rcRetain(bits: uint64) =
   of LIST_TAG:   inc cast[ptr GeneList](bits and PAYLOAD_MASK).refCount
   of MAP_TAG:    inc cast[ptr GeneMap](bits and PAYLOAD_MASK).refCount
   of NODE_TAG:   inc cast[ptr GeneNode](bits and PAYLOAD_MASK).refCount
+  of FUNCTION_TAG:  inc cast[ptr GeneFunction](bits and PAYLOAD_MASK).refCount
+  of NATIVE_FN_TAG: inc cast[ptr GeneNativeFn](bits and PAYLOAD_MASK).refCount
   else: discard
 
 proc rcRelease(bits: uint64) =
@@ -223,6 +250,14 @@ proc rcRelease(bits: uint64) =
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of FUNCTION_TAG:
+    let p = cast[ptr GeneFunction](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of NATIVE_FN_TAG:
+    let p = cast[ptr GeneNativeFn](payload)
     dec p.refCount
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
   else: discard
@@ -262,6 +297,8 @@ proc kind*(v: Value): ValueKind {.inline.} =
   of LIST_TAG: vkList
   of MAP_TAG: vkMap
   of NODE_TAG: vkNode
+  of FUNCTION_TAG: vkFunction
+  of NATIVE_FN_TAG: vkNativeFn
   else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
@@ -345,6 +382,36 @@ proc nodeImmutable*(v: Value): bool =
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).immutable
 
+proc fnName*(v: Value): lent string =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).name
+
+proc fnParams*(v: Value): lent seq[string] =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).params
+
+proc fnBody*(v: Value): lent seq[Value] =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).fbody
+
+proc fnScope*(v: Value): Scope =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).scope
+
+proc nativeFnName*(v: Value): lent string =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).name
+
+proc nativeImpl*(v: Value): NativeProc =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).impl
+
 # ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
@@ -418,6 +485,23 @@ proc newNode*(head: Value,
   p.body = body
   p.meta = meta
   boxPtr(NODE_TAG, p)
+
+proc newFunction*(name: string, params: sink seq[string],
+                  body: sink seq[Value], scope: Scope): Value =
+  let p = createObj(GeneFunction)
+  p.refCount = 1
+  p.name = name
+  p.params = params
+  p.fbody = body
+  p.scope = scope
+  boxPtr(FUNCTION_TAG, p)
+
+proc newNativeFn*(name: string, impl: NativeProc): Value =
+  let p = createObj(GeneNativeFn)
+  p.refCount = 1
+  p.name = name
+  p.impl = impl
+  boxPtr(NATIVE_FN_TAG, p)
 
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.
