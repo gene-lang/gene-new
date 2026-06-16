@@ -275,6 +275,28 @@ suite "vm — dynamic selectors":
   test "callable dynamic segments act as selector stages":
     ck "(var stage not) (var s /%stage) (s false)", "true"
 
+suite "vm — node projection built-ins":
+  test "projection built-ins expose value anatomy":
+    ck "(head 42)", "42"
+    ck "(head (quote (user ^name \"Ada\" 10 20)))", "user"
+    ck "(props {^name \"Ada\"})", "{^name \"Ada\"}"
+    ck "(props (quote (user ^name \"Ada\" 10 20)))", "{^name \"Ada\"}"
+    ck "(body [10 20])", "[10 20]"
+    ck "(body (quote (user ^name \"Ada\" 10 20)))", "[10 20]"
+    ck "(meta (quote (user @line 7 ^name \"Ada\")))", "{^line 7}"
+  test "projection built-ins work as dynamic selector stages":
+    ck "(var user (quote (user @line 7 ^name \"Ada\" 10 20))) user/%head",
+       "user"
+    ck "(var user (quote (user @line 7 ^name \"Ada\" 10 20))) user/%props/name",
+       "\"Ada\""
+    ck "(var user (quote (user @line 7 ^name \"Ada\" 10 20))) user/%body/1",
+       "20"
+    ck "(var user (quote (user @line 7 ^name \"Ada\" 10 20))) user/%meta/line",
+       "7"
+  test "projection built-ins validate arity":
+    expect GeneError: discard runStr("(props)")
+    expect GeneError: discard runStr("(body 1 2)")
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous

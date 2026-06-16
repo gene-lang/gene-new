@@ -56,7 +56,7 @@ participates in equality or hashing.
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
   special forms, positional/named/rest/default function arguments, static and
   dynamic selector/slash-path access, closures, recursion, and built-ins
-  (`+ - * / < > <= >= = not print println`).
+  (`+ - * / < > <= >= = not head props body meta print println`).
 
 ## Quick start
 

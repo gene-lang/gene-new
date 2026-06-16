@@ -123,6 +123,26 @@ proc biNot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1: raise newException(GeneError, "not expects 1 argument")
   newBool(not isTruthy(args[0]))
 
+proc requireOne(name: string, args: openArray[Value]) =
+  if args.len != 1:
+    raise newException(GeneError, name & " expects 1 argument, got " & $args.len)
+
+proc biHead(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("head", args)
+  headOf(args[0])
+
+proc biProps(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("props", args)
+  newMap(propsOf(args[0]))
+
+proc biBody(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("body", args)
+  newList(bodyOf(args[0]))
+
+proc biMeta(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("meta", args)
+  newMap(metaOf(args[0]))
+
 proc displayStr(v: Value): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString: v.strVal else: print(v)
@@ -152,6 +172,10 @@ proc newGlobalScope*(): Scope =
   result.define(">=", newNativeFn(">=", comparison(">=", `>=`)))
   result.define("=", newNativeFn("=", biEq))
   result.define("not", newNativeFn("not", biNot))
+  result.define("head", newNativeFn("head", biHead))
+  result.define("props", newNativeFn("props", biProps))
+  result.define("body", newNativeFn("body", biBody))
+  result.define("meta", newNativeFn("meta", biMeta))
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 

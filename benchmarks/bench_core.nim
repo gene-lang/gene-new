@@ -110,6 +110,14 @@ proc main() =
     let v = run(dynamicSelectorChunk, dynamicSelectorScope)
     checksum = checksum + v.intVal
 
+  let projectionStageScope = newGlobalScope()
+  projectionStageScope.define("user",
+    run(compileSource("(quote (user ^name \"Ada\" ^age 37 10 20))"), projectionStageScope))
+  let projectionStageChunk = compileSource("user/%props/age")
+  bench("vm.selector_projection_stage.compiled_chunk", 500_000, i):
+    let v = run(projectionStageChunk, projectionStageScope)
+    checksum = checksum + v.intVal
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):
