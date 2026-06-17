@@ -40,6 +40,14 @@ suite "modules — file imports":
       "(ds ~ Stream/next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
 
+  test "file modules receive a this-mod binding":
+    writeModule("self.gene",
+      "(var x 9) " &
+      "(var ds (filter (declarations this-mod) (fn [d] (= d/name \"x\")))) " &
+      "(var decl (ds ~ Stream/next)) " &
+      "(var seen decl/value)")
+    check runProgram("(import [seen] from \"./self\") seen").print() == "9"
+
   test "a module is loaded once (cache returns the same namespace)":
     writeModule("m.gene", "(var v 1)")
     check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (= a b)").print() == "true"

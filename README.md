@@ -64,7 +64,8 @@ participates in equality or hashing.
   checks, `^impl` requirement checks, and protocol-local `^derive` execution,
   static and dynamic selector/slash-path access,
   functional selector updates, namespaces with qualified access and reflection,
-  file-based modules (`import … from "path"`) with a load-once cache and cycle detection,
+  file-based modules (`import … from "path"`) with a load-once cache, cycle
+  detection, and `this-mod` introspection binding,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/

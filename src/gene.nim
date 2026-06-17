@@ -66,6 +66,7 @@ proc cmdRun(path: string, args: openArray[string] = []) =
   try:
     initModuleContext(parentDir(absolutePath(path)))   # entry module dir = root
     let scope = newGlobalScope()
+    discard bindThisModule(scope, splitFile(path).name)
     discard run(compileSource(src), scope)
     var mainBinding: Value
     if scope.lookupOptional("main", mainBinding):

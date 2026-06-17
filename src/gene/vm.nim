@@ -749,6 +749,12 @@ proc newGlobalScope*(): Scope =
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 
+proc bindThisModule*(scope: Scope, name: string): Value =
+  ## MVP bridge until first-class Module values exist: the module root is the
+  ## namespace value whose scope holds top-level bindings.
+  result = newNamespace(name, scope)
+  scope.define("this-mod", result)
+
 # ---------------------------------------------------------------------------
 # Module loading (design §15.4/§15.6)
 # ---------------------------------------------------------------------------
@@ -1896,6 +1902,7 @@ proc loadModuleNamespace(absPath: string): Value =
   moduleLoading.incl absPath
   let src = readFile(absPath)
   let modScope = newGlobalScope()
+  result = bindThisModule(modScope, splitFile(absPath).name)
   let savedDir = currentModuleDir
   currentModuleDir = parentDir(absPath)
   try:
@@ -1903,5 +1910,4 @@ proc loadModuleNamespace(absPath: string): Value =
   finally:
     currentModuleDir = savedDir
     moduleLoading.excl absPath
-  result = newNamespace(splitFile(absPath).name, modScope)
   moduleCache[absPath] = result

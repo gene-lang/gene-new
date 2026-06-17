@@ -143,6 +143,16 @@ suite "spec — streams from design":
                " (names ~ Stream/has_next)]",
                "[\"a\" \"b\" false]")
 
+  test "this-mod exposes the current module declaration stream":
+    let scope = newGlobalScope()
+    discard bindThisModule(scope, "spec")
+    check run(compileSource("(var x 9) " &
+                            "(var ds (filter (declarations this-mod) " &
+                            "  (fn [d] (= d/name \"x\")))) " &
+                            "(var decl (ds ~ Stream/next)) " &
+                            "decl/value"),
+              scope).print() == "9"
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))
