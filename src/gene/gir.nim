@@ -20,6 +20,8 @@ type
     opMakeFn
     opMakeNamespace
     opMakeType
+    opMakeProtocol
+    opMakeImpl
     opImport
     opCall
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
@@ -89,6 +91,17 @@ type
     name*: string
     fields*: seq[TypeField]      # own (non-inherited) field schema
 
+  ProtocolProto* = ref object
+    name*: string
+    messageNames*: seq[string]
+
+  ImplMessageProto* = object
+    name*: string
+    fn*: FunctionProto
+
+  ImplProto* = ref object
+    messages*: seq[ImplMessageProto]
+
   Chunk* = ref object
     constants*: seq[Value]
     instructions*: seq[Instruction]
@@ -98,14 +111,25 @@ type
     forLoops*: seq[ForProto]
     tries*: seq[TryProto]
     typeProtos*: seq[TypeProto]
+    protocolProtos*: seq[ProtocolProto]
+    implProtos*: seq[ImplProto]
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[], tries: @[], typeProtos: @[])
+        imports: @[], forLoops: @[], tries: @[], typeProtos: @[],
+        protocolProtos: @[], implProtos: @[])
 
 proc addType*(chunk: Chunk, tp: TypeProto): int =
   result = chunk.typeProtos.len
   chunk.typeProtos.add tp
+
+proc addProtocol*(chunk: Chunk, pp: ProtocolProto): int =
+  result = chunk.protocolProtos.len
+  chunk.protocolProtos.add pp
+
+proc addImpl*(chunk: Chunk, ip: ImplProto): int =
+  result = chunk.implProtos.len
+  chunk.implProtos.add ip
 
 proc addForLoop*(chunk: Chunk, fp: ForProto): int =
   result = chunk.forLoops.len
@@ -162,6 +186,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " ns=" & $inst.intArg & " name=" & inst.name
   of opMakeType:
     result.add " type=" & $inst.intArg
+  of opMakeProtocol:
+    result.add " protocol=" & $inst.intArg
+  of opMakeImpl:
+    result.add " impl=" & $inst.intArg
   of opImport:
     result.add " import=" & $inst.intArg
   of opCall:
@@ -259,6 +287,20 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
           sels.add (if s.name == s.local: s.name else: s.name & ":" & s.local)
         desc.add " " & formatNames(sels)
       lines.add desc
+
+  if chunk.protocolProtos.len > 0:
+    lines.add indent & "protocols:"
+    for i, pp in chunk.protocolProtos:
+      lines.add indent & "  [" & $i & "] " & pp.name &
+        " messages=" & formatNames(pp.messageNames)
+
+  if chunk.implProtos.len > 0:
+    lines.add indent & "impls:"
+    for i, ip in chunk.implProtos:
+      var names: seq[string]
+      for m in ip.messages:
+        names.add m.name
+      lines.add indent & "  [" & $i & "] messages=" & formatNames(names)
 
 proc disassemble*(chunk: Chunk): string =
   var lines: seq[string]

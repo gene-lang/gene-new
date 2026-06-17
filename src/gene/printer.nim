@@ -102,3 +102,7 @@ proc print*(v: Value): string =
     "(ns " & v.nsName & ")"
   of vkType:
     "(type " & v.typeName & ")"
+  of vkProtocol:
+    "(protocol " & v.protocolName & ")"
+  of vkProtocolMessage:
+    "(message " & v.protocolMessageName & ")"

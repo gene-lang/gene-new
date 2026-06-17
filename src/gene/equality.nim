@@ -45,7 +45,7 @@ proc equal*(a, b: Value): bool =
     for i in 0 ..< a.body.len:
       if not equal(a.body[i], b.body[i]): return false
     tablesEqual(a.props, b.props)
-  of vkFunction, vkNativeFn, vkNamespace, vkType:
+  of vkFunction, vkNativeFn, vkNamespace, vkType, vkProtocol, vkProtocolMessage:
     # callables and namespaces have identity equality
     a.bits == b.bits
 
@@ -58,7 +58,8 @@ proc same*(a, b: Value): bool =
   case a.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol:
     equal(a, b)
-  of vkList, vkMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkType:
+  of vkList, vkMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkType,
+     vkProtocol, vkProtocolMessage:
     a.bits == b.bits
 
 proc hash*(v: Value): Hash =
@@ -86,6 +87,6 @@ proc hash*(v: Value): Hash =
     for k, val in v.props:
       acc = acc xor (hash(k) !& hash(val))
     h = h !& acc
-  of vkFunction, vkNativeFn, vkNamespace, vkType:
+  of vkFunction, vkNativeFn, vkNamespace, vkType, vkProtocol, vkProtocolMessage:
     h = h !& hash(v.bits)
   !$h

@@ -179,6 +179,42 @@ proc paramSpecs(paramList: Value): ParamSpecs =
         continue
       discard parseParamAdornment(items, i)
 
+proc buildFunctionProto(name: string, paramList: Value,
+                        body: openArray[Value], bodyStart: int): FunctionProto =
+  var start = bodyStart
+  var returnType = NIL
+  if start < body.len and body[start].isSymbol(":"):
+    inc start
+    if start >= body.len:
+      raise newException(GeneError, "function return annotation requires a type")
+    returnType = body[start]
+    inc start
+
+  var fnCompiler = Compiler(chunk: newChunk())
+  compileBodyFrom(fnCompiler, body, start)
+  discard fnCompiler.emit(opReturn)
+
+  let specs = paramSpecs(paramList)
+  var hasParamTypes = false
+  for t in specs.positionalTypes:
+    if t.kind != vkNil:
+      hasParamTypes = true
+      break
+  var hasNamedParamTypes = false
+  for p in specs.named:
+    if p.typeExpr.kind != vkNil:
+      hasNamedParamTypes = true
+      break
+  FunctionProto(name: name, params: specs.positional,
+                paramTypes: specs.positionalTypes,
+                hasParamTypes: hasParamTypes,
+                paramDefaults: specs.positionalDefaults,
+                restParam: specs.rest, namedParams: specs.named,
+                hasNamedParamTypes: hasNamedParamTypes,
+                returnType: returnType,
+                hasReturnType: returnType.kind != vkNil,
+                chunk: fnCompiler.chunk)
+
 proc compileIf(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
@@ -264,39 +300,7 @@ proc compileFn(c: var Compiler, node: Value) =
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
-  var bodyStart = idx + 1
-  var returnType = NIL
-  if bodyStart < body.len and body[bodyStart].isSymbol(":"):
-    inc bodyStart
-    if bodyStart >= body.len:
-      raise newException(GeneError, "fn return annotation requires a type")
-    returnType = body[bodyStart]
-    inc bodyStart
-
-  var fnCompiler = Compiler(chunk: newChunk())
-  compileBodyFrom(fnCompiler, body, bodyStart)
-  discard fnCompiler.emit(opReturn)
-
-  let specs = paramSpecs(body[idx])
-  var hasParamTypes = false
-  for t in specs.positionalTypes:
-    if t.kind != vkNil:
-      hasParamTypes = true
-      break
-  var hasNamedParamTypes = false
-  for p in specs.named:
-    if p.typeExpr.kind != vkNil:
-      hasNamedParamTypes = true
-      break
-  let proto = FunctionProto(name: name, params: specs.positional,
-                            paramTypes: specs.positionalTypes,
-                            hasParamTypes: hasParamTypes,
-                            paramDefaults: specs.positionalDefaults,
-                            restParam: specs.rest, namedParams: specs.named,
-                            hasNamedParamTypes: hasNamedParamTypes,
-                            returnType: returnType,
-                            hasReturnType: returnType.kind != vkNil,
-                            chunk: fnCompiler.chunk)
+  let proto = buildFunctionProto(name, body[idx], body, idx + 1)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if name.len > 0:
     discard c.emit(opDefineName, name = name)
@@ -548,6 +552,53 @@ proc compileType(c: var Compiler, node: Value) =
   discard c.emit(opMakeType, c.chunk.addType(TypeProto(name: name, fields: fields)))
   discard c.emit(opDefineName, name = name)
 
+proc messageName(node: Value): string =
+  if node.kind != vkNode or not node.head.isSymbol("message"):
+    raise newException(GeneError, "protocol/impl body must contain message declarations")
+  if node.body.len < 2 or node.body[0].kind != vkSymbol or node.body[1].kind != vkList:
+    raise newException(GeneError, "message requires a name and parameter vector")
+  node.body[0].symVal
+
+proc compileProtocol(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len == 0 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "protocol requires a name")
+  let name = body[0].symVal
+  var messageNames: seq[string]
+  var seen = initTable[string, bool]()
+  for i in 1 ..< body.len:
+    let message = messageName(body[i])
+    if seen.hasKey(message):
+      raise newException(GeneError, "duplicate protocol message: " & message)
+    seen[message] = true
+    messageNames.add message
+  let idx = c.chunk.addProtocol(ProtocolProto(name: name,
+                                              messageNames: messageNames))
+  discard c.emit(opMakeProtocol, idx)
+  discard c.emit(opDefineName, name = name)
+
+proc implMessageProto(node: Value): ImplMessageProto =
+  let name = messageName(node)
+  ImplMessageProto(name: name,
+                   fn: buildFunctionProto(name, node.body[1], node.body, 2))
+
+proc compileImpl(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len < 2:
+    raise newException(GeneError, "impl requires a protocol and receiver type")
+  compileExpr(c, body[0])
+  compileExpr(c, body[1])
+  var messages: seq[ImplMessageProto]
+  var seen = initTable[string, bool]()
+  for i in 2 ..< body.len:
+    let mp = implMessageProto(body[i])
+    if seen.hasKey(mp.name):
+      raise newException(GeneError, "duplicate impl message: " & mp.name)
+    seen[mp.name] = true
+    messages.add mp
+  let idx = c.chunk.addImpl(ImplProto(messages: messages))
+  discard c.emit(opMakeImpl, idx)
+
 proc compileNode(c: var Compiler, node: Value) =
   let h = node.head
   if h.kind == vkSymbol:
@@ -599,6 +650,12 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "type":
       compileType(c, node)
+      return
+    of "protocol":
+      compileProtocol(c, node)
+      return
+    of "impl":
+      compileImpl(c, node)
       return
     else:
       discard

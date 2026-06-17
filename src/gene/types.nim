@@ -56,6 +56,8 @@ type
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (module root or nested `ns`)
     vkType      ## a declared nominal type (design Section 7)
+    vkProtocol  ## a declared protocol (design Section 10)
+    vkProtocolMessage ## callable protocol message dispatcher
 
   Value* = object
     bits*: uint64
@@ -156,6 +158,11 @@ type
     body: seq[Value]
     meta: PropTable
 
+  ProtocolImpl* = object
+    protocol*: Value
+    receiver*: Value
+    messages*: Table[string, Value]
+
   ## Opaque compiled function body used by runtime function values.
   FunctionCode* = ref object of RootObj
 
@@ -165,6 +172,7 @@ type
   Scope* = ref object
     parent*: Scope
     vars*: Table[string, Value]
+    impls*: seq[ProtocolImpl]
 
   ## A built-in function implemented in Nim. Positional args only for MVP.
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
@@ -186,6 +194,8 @@ type
   ObjKind* = enum
     okNamespace
     okType
+    okProtocol
+    okProtocolMessage
 
   GeneObjectData* = ref object of RootObj
     objKind*: ObjKind
@@ -205,6 +215,14 @@ type
     optional*: bool       # `^name?` — may be omitted at construction
     typeExpr*: Value      # annotation syntax, or NIL for `Any`
     scope*: Scope         # defining scope for resolving `typeExpr`
+
+  ProtocolData = ref object of GeneObjectData
+    name: string
+    messages: OrderedTable[string, Value]
+
+  ProtocolMessageData = ref object of GeneObjectData
+    name: string
+    protocol: Value
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -361,6 +379,8 @@ proc kind*(v: Value): ValueKind {.inline.} =
     case objData(v).objKind
     of okNamespace: vkNamespace
     of okType: vkType
+    of okProtocol: vkProtocol
+    of okProtocolMessage: vkProtocolMessage
   else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
@@ -505,6 +525,26 @@ proc typeScope*(v: Value): Scope =
     raise newException(FieldDefect, "value is not a Type")
   TypeData(objData(v)).scope
 
+proc protocolName*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  ProtocolData(objData(v)).name
+
+proc protocolMessages*(v: Value): lent OrderedTable[string, Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  ProtocolData(objData(v)).messages
+
+proc protocolMessageName*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+    raise newException(FieldDefect, "value is not a ProtocolMessage")
+  ProtocolMessageData(objData(v)).name
+
+proc protocolMessageProtocol*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+    raise newException(FieldDefect, "value is not a ProtocolMessage")
+  ProtocolMessageData(objData(v)).protocol
+
 # ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
@@ -613,6 +653,19 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     fields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
                      scope: scope))
+
+proc newProtocolMessage*(protocol: Value, name: string): Value =
+  boxObject(ProtocolMessageData(objKind: okProtocolMessage,
+                                name: name,
+                                protocol: protocol))
+
+proc newProtocol*(name: string, messageNames: openArray[string]): Value =
+  var messages = initOrderedTable[string, Value]()
+  let data = ProtocolData(objKind: okProtocol, name: name, messages: messages)
+  let protocol = boxObject(data)
+  for messageName in messageNames:
+    data.messages[messageName] = newProtocolMessage(protocol, messageName)
+  protocol
 
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.

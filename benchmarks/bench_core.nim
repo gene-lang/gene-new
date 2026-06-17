@@ -89,6 +89,17 @@ proc main() =
     let v = run(typedChunk, typedScope)
     checksum = checksum + v.intVal
 
+  let protocolScope = newGlobalScope()
+  discard run(compileSource(
+    "(protocol ToInt (message to_int [self] : Int)) " &
+    "(type Box ^props {^x Int}) " &
+    "(impl ToInt Box (message to_int [self] : Int self/x)) " &
+    "(var box (Box ^x 10))"), protocolScope)
+  let protocolChunk = compileSource("(to_int box)")
+  bench("vm.protocol_message.compiled_chunk", 500_000, i):
+    let v = run(protocolChunk, protocolScope)
+    checksum = checksum + v.intVal
+
   let restScope = newGlobalScope()
   restScope.define("collect", run(compileSource("(fn [head tail...] tail)"), restScope))
   let restChunk = compileSource("(collect 6 4 3 2)")

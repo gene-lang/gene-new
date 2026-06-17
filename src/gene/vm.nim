@@ -8,7 +8,7 @@ import ./[compiler, equality, gir, printer, types]
 # ---------------------------------------------------------------------------
 
 proc newScope*(parent: Scope = nil): Scope =
-  Scope(parent: parent, vars: initTable[string, Value]())
+  Scope(parent: parent, vars: initTable[string, Value](), impls: @[])
 
 proc lookup*(scope: Scope, name: string): Value =
   var s = scope
@@ -56,7 +56,8 @@ proc getArg(named: NamedArgs, name: string): Value =
     if key == name: return named.values[i]
   raise newException(GeneError, "missing named argument: " & name)
 
-proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value
+proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
+               dispatchScope: Scope = nil): Value
 
 # ---------------------------------------------------------------------------
 # Built-in functions
@@ -602,6 +603,83 @@ proc pop(stack: var seq[Value]): Value =
   result = stack[^1]
   stack.setLen(stack.len - 1)
 
+proc registerImpl(scope: Scope, protocol, receiver: Value,
+                  messages: sink Table[string, Value]) =
+  if protocol.kind != vkProtocol:
+    raise newException(GeneError, "impl target must be a protocol")
+  if receiver.kind != vkType:
+    raise newException(GeneError, "impl receiver must be a type")
+  for name in protocol.protocolMessages.keys:
+    if not messages.hasKey(name):
+      raise newException(GeneError,
+        "impl " & protocol.protocolName & " for " & receiver.typeName &
+        " is missing message: " & name)
+  for name in messages.keys:
+    if not protocol.protocolMessages.hasKey(name):
+      raise newException(GeneError,
+        "protocol " & protocol.protocolName & " has no message: " & name)
+  var s = scope
+  while s != nil:
+    for impl in s.impls:
+      if same(impl.protocol, protocol) and same(impl.receiver, receiver):
+        raise newException(GeneError,
+          "duplicate visible impl " & protocol.protocolName &
+          " for " & receiver.typeName)
+    s = s.parent
+  scope.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
+                               messages: messages)
+
+proc receiverType(value: Value): Value =
+  if value.kind == vkNode and value.head.kind == vkType:
+    value.head
+  else:
+    NIL
+
+proc scopeChainContains(scope, target: Scope): bool =
+  var s = scope
+  while s != nil:
+    if s == target:
+      return true
+    s = s.parent
+  false
+
+proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
+                            matches: var seq[Value]) =
+  var s = scope
+  while s != nil:
+    for impl in s.impls:
+      if same(impl.protocol, protocol) and same(impl.receiver, recvType):
+        if not impl.messages.hasKey(message.protocolMessageName):
+          raise newException(GeneError,
+            "impl " & protocol.protocolName & " for " & recvType.typeName &
+            " is missing message: " & message.protocolMessageName)
+        matches.add impl.messages[message.protocolMessageName]
+    s = s.parent
+
+proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
+  if scope == nil:
+    raise newException(GeneError,
+      "protocol message '" & message.protocolMessageName &
+      "' has no visible implementation scope")
+  let protocol = message.protocolMessageProtocol
+  let recvType = receiver.receiverType
+  if recvType.kind != vkType:
+    raise newException(GeneError,
+      "protocol message '" & message.protocolMessageName &
+      "' requires a typed receiver")
+  var matches: seq[Value]
+  collectProtocolMatches(scope, protocol, recvType, message, matches)
+  let definingScope = recvType.typeScope
+  if definingScope != nil and not scope.scopeChainContains(definingScope):
+    collectProtocolMatches(definingScope, protocol, recvType, message, matches)
+  if matches.len == 0:
+    raise newException(GeneError,
+      "missing impl " & protocol.protocolName & " for " & recvType.typeName)
+  if matches.len > 1:
+    raise newException(GeneError,
+      "ambiguous impl " & protocol.protocolName & " for " & recvType.typeName)
+  matches[0]
+
 proc run*(chunk: Chunk, scope: Scope): Value =
   var stack: seq[Value]
   var ip = 0
@@ -653,6 +731,22 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       if parent.kind != vkNil and parent.kind != vkType:
         raise newException(GeneError, "type ^is must be a type")
       stack.add newType(proto.name, parent, proto.fields, scope)
+    of opMakeProtocol:
+      let proto = chunk.protocolProtos[inst.intArg]
+      let protocol = newProtocol(proto.name, proto.messageNames)
+      for _, message in protocol.protocolMessages:
+        scope.define(message.protocolMessageName, message)
+      stack.add protocol
+    of opMakeImpl:
+      let proto = chunk.implProtos[inst.intArg]
+      let receiver = stack.pop()
+      let protocol = stack.pop()
+      var messages = initTable[string, Value]()
+      for message in proto.messages:
+        messages[message.name] =
+          newFunction(message.fn.name, message.fn.params, message.fn, scope)
+      scope.registerImpl(protocol, receiver, messages)
+      stack.add NIL
     of opMakeNamespace:
       # Run the ns body in a fresh child scope; its bindings become the
       # namespace's exports. Bind the namespace in the enclosing scope.
@@ -696,7 +790,7 @@ proc run*(chunk: Chunk, scope: Scope): Value =
         for i in countdown(inst.names.len - 1, 0):
           named.values[i] = stack.pop()
       let callee = stack.pop()
-      stack.add applyCall(callee, args, named)
+      stack.add applyCall(callee, args, named, scope)
     of opMatchBind:
       let target = stack.pop()
       var binds = initTable[string, Value]()
@@ -844,10 +938,14 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   of "Fn", "Function":
     (true, value.kind == vkFunction)
   of "Callable":
-    (true, value.kind in {vkFunction, vkNativeFn, vkType} or
+    (true, value.kind in {vkFunction, vkNativeFn, vkType, vkProtocolMessage} or
       (value.kind == vkNode and value.isSelector))
   of "Type":
     (true, value.kind == vkType)
+  of "Protocol":
+    (true, value.kind == vkProtocol)
+  of "ProtocolMessage":
+    (true, value.kind == vkProtocolMessage)
   of "Namespace":
     (true, value.kind == vkNamespace)
   else:
@@ -967,6 +1065,8 @@ proc staticLookup(target, segment: Value): Value =
     of vkNamespace:
       # Qualified access reads the namespace's own exports (not its parent chain).
       target.nsScope.vars.getOrDefault(key, VOID)
+    of vkProtocol:
+      target.protocolMessages.getOrDefault(key, VOID)
     else:
       VOID
   of vkNode:
@@ -987,7 +1087,8 @@ proc applySelector(selector, target: Value): Value =
     if result.kind == vkVoid:
       return VOID
 
-proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
+proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
+               dispatchScope: Scope = nil): Value =
   case callee.kind
   of vkNativeFn:
     if named.len != 0:
@@ -1092,6 +1193,12 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
       if not known:
         raise newException(GeneError, callee.typeName & " has no field '" & key & "'")
     newNode(callee, props = props)
+  of vkProtocolMessage:
+    if args.len == 0:
+      raise newException(GeneError,
+        "protocol message '" & callee.protocolMessageName & "' expects a receiver")
+    let implFn = resolveProtocolMessage(dispatchScope, callee, args[0])
+    applyCall(implFn, args, named, dispatchScope)
   of vkNode:
     if not callee.isSelector:
       raise newException(GeneError, "value is not callable: " & $callee.kind)
