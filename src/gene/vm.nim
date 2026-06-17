@@ -390,6 +390,8 @@ proc newGlobalScope*(): Scope =
   result = newScope()
   let errorProtocol = newProtocol("Error", [])
   result.define("Error", errorProtocol)
+  let sendProtocol = newProtocol("Send", [])
+  result.define("Send", sendProtocol)
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,

@@ -14,6 +14,9 @@ suite "protocols — declarations and dispatch":
     ck "(protocol ToName (message to_name [self] : Str)) to_name",
        "(message to_name)"
 
+  test "built-in Send is a marker protocol":
+    ck "Send", "(protocol Send)"
+
   test "impl message dispatches on the receiver nominal type":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &
@@ -60,10 +63,18 @@ suite "protocols — declarations and dispatch":
        "(to_name (User ^name \"Ada\"))",
        "\"Ada\""
 
+  test "types can require manual Send impls":
+    ck "(type Token ^props {^id Int} ^impl [Send]) " &
+       "(impl Send Token) " &
+       "(var t (Token ^id 7)) t/id",
+       "7"
+
   test "missing type ^impl requirements are rejected at scope completion":
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type User ^props {^name Str} ^impl [ToName])")
+    expect GeneError:
+      discard runStr("(type Token ^props {^id Int} ^impl [Send])")
 
   test "type ^impl entries must resolve to protocols":
     expect GeneError:
