@@ -59,6 +59,11 @@ suite "spec — templates from design":
     check_eval("(var body [(quote (p \"a\")) (quote (p \"b\"))]) `(div %body...)",
                "(div (p \"a\") (p \"b\"))")
 
+suite "spec — strings from design":
+  test "dollar interpolation calls to-str-style display conversion":
+    check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
+    check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &

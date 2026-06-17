@@ -400,6 +400,16 @@ proc displayStr(v: Value): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString: v.strVal else: print(v)
 
+proc biToStr(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("to-str", args)
+  newStr(displayStr(args[0]))
+
+proc biDollar(args: openArray[Value]): Value {.nimcall.} =
+  var resultStr = ""
+  for arg in args:
+    resultStr.add displayStr(arg)
+  newStr(resultStr)
+
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
   let v = if args.len >= 1: args[0] else: newStr("panic")
   var e: ref GenePanic
@@ -468,6 +478,8 @@ proc newGlobalScope*(): Scope =
   result.define("props", newNativeFn("props", biProps))
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
+  result.define("to-str", newNativeFn("to-str", biToStr))
+  result.define("$", newNativeFn("$", biDollar))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
   cellScope.define("get", newNativeFn("Cell/get", biCellGet))

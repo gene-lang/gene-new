@@ -144,6 +144,19 @@ suite "vm — literals and self-evaluation":
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
 
+suite "vm — strings and interpolation":
+  test "to-str converts values to display text":
+    ck "[(to-str \"Ada\") (to-str (quote (user ^name \"Ada\")))]",
+       "[\"Ada\" \"(user ^name \\\"Ada\\\")\"]"
+
+  test "dollar concatenates display text":
+    ck "(var concat $) (concat \"name=\" \"Ada\" \" score=\" 10)",
+       "\"name=Ada score=10\""
+
+  test "interpolated strings execute through dollar":
+    ck "(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\""
+    ck "$\"sum = $(+ 1 2)\"", "\"sum = 3\""
+
 suite "vm — quasiquote templates":
   test "quasiquote evaluates unquoted body values":
     ck "(var name \"Ada\") `(hello %name)", "(hello \"Ada\")"
