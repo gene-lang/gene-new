@@ -110,6 +110,10 @@ suite "compiler — GIR emission":
     expect GeneError: discard compileSource("(fn bad [xs... = 1] xs)")
     expect GeneError: discard compileSource("(fn bad [x =] x)")
 
+  test "leading flipped calls require lexical self":
+    expect GeneError: discard compileSource("(~ + 1)")
+    ck "(fn inc [self] (~ + 1)) (inc 2)", "3"
+
 suite "gir — disassembly":
   test "prints constants and instructions":
     let dump = compileSource("(+ 1 2)").disassemble()
@@ -146,6 +150,7 @@ suite "vm — literals and self-evaluation":
     ck "(quote (x ^a void ^b 1 @m void @n 2))", "(x @n 2 ^b 1)"
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
+    ck "(quote (~ f a))", "(~ f a)"
 
 suite "vm — strings and interpolation":
   test "to-str converts values to display text":

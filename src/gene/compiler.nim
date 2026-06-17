@@ -6,6 +6,7 @@ import ./[gir, reader, types]
 type
   Compiler = object
     chunk: Chunk
+    selfAvailable: bool
 
   ParamSpecs = object
     positional: seq[string]
@@ -36,6 +37,31 @@ proc isSymbol(v: Value, name: string): bool =
 
 proc compileExpr(c: var Compiler, node: Value)
 
+proc childCompiler(c: Compiler): Compiler =
+  Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable)
+
+proc patternBindsSelf(pattern: Value): bool =
+  case pattern.kind
+  of vkSymbol:
+    return pattern.symVal == "self"
+  of vkList:
+    for item in pattern.listItems:
+      if patternBindsSelf(item):
+        return true
+  of vkMap:
+    for _, value in pattern.mapEntries:
+      if patternBindsSelf(value):
+        return true
+  of vkNode:
+    for _, value in pattern.props:
+      if patternBindsSelf(value):
+        return true
+    for item in pattern.body:
+      if patternBindsSelf(item):
+        return true
+  else:
+    return false
+
 proc compileBody(c: var Compiler, body: openArray[Value]) =
   if body.len == 0:
     c.emitConst NIL
@@ -63,11 +89,14 @@ proc compileDefaultExpr(node: Value): Chunk =
   discard c.emit(opReturn)
   c.chunk
 
-proc compileSubBody(forms: openArray[Value]): Chunk =
-  var c = Compiler(chunk: newChunk())
-  compileBody(c, forms)            # empty -> nil
-  discard c.emit(opReturn)
-  c.chunk
+proc compileSubBody(c: Compiler, forms: openArray[Value],
+                    pattern: Value = NIL): Chunk =
+  var child = c.childCompiler()
+  if patternBindsSelf(pattern):
+    child.selfAvailable = true
+  compileBody(child, forms)            # empty -> nil
+  discard child.emit(opReturn)
+  child.chunk
 
 proc isParamTerminator(s: string): bool =
   s.len == 0 or s in [",", "^", "^^"]
@@ -190,7 +219,7 @@ proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: i
     compileExpr(c, errorType)
     inc result.count
 
-proc buildFunctionProto(name: string, paramList: Value,
+proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
                         checksErrors = false,
                         errorTypeCount = 0): FunctionProto =
@@ -203,11 +232,17 @@ proc buildFunctionProto(name: string, paramList: Value,
     returnType = body[start]
     inc start
 
-  var fnCompiler = Compiler(chunk: newChunk())
+  let specs = paramSpecs(paramList)
+  var fnCompiler = c.childCompiler()
+  if "self" in specs.positional or specs.rest == "self":
+    fnCompiler.selfAvailable = true
+  for p in specs.named:
+    if p.local == "self":
+      fnCompiler.selfAvailable = true
+      break
   compileBodyFrom(fnCompiler, body, start)
   discard fnCompiler.emit(opReturn)
 
-  let specs = paramSpecs(paramList)
   var hasParamTypes = false
   for t in specs.positionalTypes:
     if t.kind != vkNil:
@@ -295,8 +330,12 @@ proc compileVar(c: var Compiler, node: Value) =
     c.emitConst NIL
   if body[0].kind == vkSymbol:
     discard c.emit(opDefineName, name = body[0].symVal)
+    if body[0].symVal == "self":
+      c.selfAvailable = true
   else:
     discard c.emit(opMatchBind, c.chunk.addConst(body[0]))  # destructuring
+    if patternBindsSelf(body[0]):
+      c.selfAvailable = true
 
 proc compileSet(c: var Compiler, node: Value) =
   let body = node.body
@@ -316,7 +355,7 @@ proc compileFn(c: var Compiler, node: Value) =
     raise newException(GeneError, "fn requires a parameter vector")
 
   let errorRow = compileErrorRow(c, node)
-  let proto = buildFunctionProto(name, body[idx], body, idx + 1,
+  let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
@@ -400,7 +439,7 @@ proc compileNs(c: var Compiler, node: Value) =
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "ns requires a name")
   let name = body[0].symVal
-  var nsCompiler = Compiler(chunk: newChunk())
+  var nsCompiler = c.childCompiler()
   compileBodyFrom(nsCompiler, body, 1)
   discard nsCompiler.emit(opReturn)
   let idx = c.chunk.addSubchunk(nsCompiler.chunk)
@@ -583,6 +622,21 @@ proc compileCall(c: var Compiler, node: Value) =
     compileExpr(c, arg)
   discard c.emit(opCall, node.body.len, names = names)
 
+proc compileLeadingSelfCall(c: var Compiler, node: Value) =
+  if node.body.len == 0:
+    raise newException(GeneError, "`~` requires a callable")
+  if not c.selfAvailable:
+    raise newException(GeneError, "leading `~` requires lexical self")
+  compileExpr(c, node.body[0])
+  var names: seq[string]
+  for k, value in node.props:
+    names.add k
+    compileExpr(c, value)
+  compileExpr(c, newSym("self"))
+  for i in 1 ..< node.body.len:
+    compileExpr(c, node.body[i])
+  discard c.emit(opCall, node.body.len, names = names)
+
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
@@ -601,9 +655,10 @@ proc compileMatch(c: var Compiler, node: Value) =
       for j in 1 ..< clause.body.len:
         branchBody.add clause.body[j]
       mp.clauses.add MatchClause(pattern: clause.body[0],
-                                  body: compileSubBody(branchBody))
+                                  body: c.compileSubBody(branchBody,
+                                                         clause.body[0]))
     of "else":
-      mp.elseBody = compileSubBody(clause.body)
+      mp.elseBody = c.compileSubBody(clause.body)
       break
     else:
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
@@ -627,7 +682,9 @@ proc compileFor(c: var Compiler, node: Value) =
   if body.len < 2:
     raise newException(GeneError, "for requires a pattern and a collection")
   compileExpr(c, body[1])                   # collection on the stack
-  var bodyCompiler = Compiler(chunk: newChunk())
+  var bodyCompiler = c.childCompiler()
+  if patternBindsSelf(body[0]):
+    bodyCompiler.selfAvailable = true
   compileBodyFrom(bodyCompiler, body, 2)
   discard bodyCompiler.emit(opReturn)
   let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
@@ -642,7 +699,7 @@ proc compileTry(c: var Compiler, node: Value) =
   while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
     tryForms.add body[i]
     inc i
-  let tp = TryProto(body: compileSubBody(tryForms))
+  let tp = TryProto(body: c.compileSubBody(tryForms))
   while i < body.len and body[i].isSymbol("catch"):
     inc i
     if i >= body.len:
@@ -653,14 +710,15 @@ proc compileTry(c: var Compiler, node: Value) =
     while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
       recovery.add body[i]
       inc i
-    tp.catches.add CatchClause(pattern: pattern, body: compileSubBody(recovery))
+    tp.catches.add CatchClause(pattern: pattern,
+                               body: c.compileSubBody(recovery, pattern))
   if i < body.len and body[i].isSymbol("ensure"):
     inc i
     var ensureForms: seq[Value]
     while i < body.len:
       ensureForms.add body[i]
       inc i
-    tp.ensureBody = compileSubBody(ensureForms)
+    tp.ensureBody = c.compileSubBody(ensureForms)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
 proc compileFail(c: var Compiler, node: Value) =
@@ -749,7 +807,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
         raise newException(GeneError, "protocol has duplicate derive form")
       if body[i].body.len == 0 or body[i].body[0].kind != vkList:
         raise newException(GeneError, "derive requires a parameter vector")
-      deriveFn = buildFunctionProto(name & "/derive", body[i].body[0],
+      deriveFn = buildFunctionProto(c, name & "/derive", body[i].body[0],
                                     body[i].body, 1)
       continue
     let message = messageName(body[i])
@@ -767,7 +825,7 @@ proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
   let name = messageName(node)
   let errorRow = compileErrorRow(c, node)
   ImplMessageProto(name: name,
-                   fn: buildFunctionProto(name, node.body[1], node.body, 2,
+                   fn: buildFunctionProto(c, name, node.body[1], node.body, 2,
                                           checksErrors = errorRow.checks,
                                           errorTypeCount = errorRow.count))
 
@@ -803,6 +861,9 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "set":
       compileSet(c, node)
+      return
+    of "~":
+      compileLeadingSelfCall(c, node)
       return
     of "fn":
       compileFn(c, node)

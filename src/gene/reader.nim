@@ -464,13 +464,9 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     else:
       result = newNode(head, props, body, meta, immutable)
   elif head.kind == vkSymbol and head.symVal == "~":
-    # (~ f a b) -> (f self a b)
-    if body.len >= 1:
-      let f = body[0]
-      let args = @[newSym("self")] & body[1..^1]
-      result = newNode(f, props, args, meta, immutable)
-    else:
-      result = newNode(head, props, body, meta, immutable)
+    # Keep omitted-self flipped calls distinct; the compiler inserts `self`
+    # only when that lexical binding is available.
+    result = newNode(head, props, body, meta, immutable)
   else:
     result = newNode(head, props, body, meta, immutable)
 
