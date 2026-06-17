@@ -155,6 +155,11 @@ proc biEq(args: openArray[Value]): Value {.nimcall.} =
     if not equal(args[i-1], args[i]): return FALSE
   TRUE
 
+proc biSame(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
+  newBool(same(args[0], args[1]))
+
 proc biNot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1: raise newException(GeneError, "not expects 1 argument")
   newBool(not isTruthy(args[0]))
@@ -473,6 +478,7 @@ proc newGlobalScope*(): Scope =
   result.define("<=", newNativeFn("<=", comparison("<=", `<=`)))
   result.define(">=", newNativeFn(">=", comparison(">=", `>=`)))
   result.define("=", newNativeFn("=", biEq))
+  result.define("same?", newNativeFn("same?", biSame))
   result.define("not", newNativeFn("not", biNot))
   result.define("head", newNativeFn("head", biHead))
   result.define("props", newNativeFn("props", biProps))

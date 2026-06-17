@@ -71,8 +71,8 @@ participates in equality or hashing.
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, first-class `Cell` mutable references, quasiquote templates with runtime `unquote`/splicing, first-class `Env` values with explicit `eval node ^in env`,
   `gene run` entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
-  (`+ - * / < > <= >= = not $ to-str head props body meta assoc-in update-in
-  panic cell Cell/get Cell/set Cell/swap Cell/update print println`).
+  (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
+  update-in panic cell Cell/get Cell/set Cell/swap Cell/update print println`).
 
 ## Quick start
 

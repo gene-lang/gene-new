@@ -223,6 +223,12 @@ suite "vm — comparison and logic":
     ck "(= 2 2)", "true"
     ck "(= [1 2] [1 2])", "true"
     ck "(= 1 2)", "false"
+  test "same compares scalar values and heap identity":
+    ck "(same? 2 2)", "true"
+    ck "(same? \"x\" \"x\")", "true"
+    ck "(same? [1 2] [1 2])", "false"
+    ck "(var xs [1 2]) (same? xs xs)", "true"
+    expect GeneError: discard runStr("(same? 1)")
   test "not":
     ck "(not false)", "true"
     ck "(not nil)", "true"
