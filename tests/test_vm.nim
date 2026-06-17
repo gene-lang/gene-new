@@ -470,6 +470,22 @@ suite "vm — namespaces":
     expect GeneError: discard runStr("(ns m (var secret 1)) secret")
   test "namespaces compare by identity":
     ck "(ns m (var a 1)) (= m m)", "true"
+  test "namespace reflection exposes bindings and lookup":
+    ck "(ns m (var b 2) (var a 1)) [(Namespace/lookup m \"a\") (Namespace/lookup m \"missing\")]",
+       "[1 void]"
+    ck "(ns m (var b 2) (var a 1)) (Namespace/bindings m)",
+       "{^a 1 ^b 2}"
+  test "declarations exposes namespace bindings as a stream":
+    ck "(ns m (var b 2) (var a 1)) " &
+       "(var names m/%declarations/name) " &
+       "[(names ~ Stream/next) (names ~ Stream/next) (names ~ Stream/has_next)]",
+       "[\"a\" \"b\" false]"
+    ck "(ns m (var a 1)) (var ds (Namespace/declarations m)) (ds ~ Stream/next)",
+       "(Declaration ^name \"a\" ^kind \"Int\" ^value 1)"
+  test "namespace reflection operations require namespaces":
+    expect GeneError: discard runStr("(declarations [1])")
+    expect GeneError: discard runStr("(Namespace/bindings [1])")
+    expect GeneError: discard runStr("(Namespace/lookup [1] \"a\")")
 
 suite "vm — env and eval":
   test "env values are opaque display values":

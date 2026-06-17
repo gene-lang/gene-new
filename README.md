@@ -63,8 +63,8 @@ participates in equality or hashing.
   nominal message dispatch, parent-type implementation applicability, ambiguity
   checks, `^impl` requirement checks, and protocol-local `^derive` execution,
   static and dynamic selector/slash-path access,
-  functional selector updates, namespaces with qualified access, file-based
-  modules (`import … from "path"`) with a load-once cache and cycle detection,
+  functional selector updates, namespaces with qualified access and reflection,
+  file-based modules (`import … from "path"`) with a load-once cache and cycle detection,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
@@ -75,6 +75,7 @@ participates in equality or hashing.
   (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
   update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
   AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
+  declarations Namespace/bindings Namespace/lookup Namespace/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
   Stream/next Stream/close print println`).
 

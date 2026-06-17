@@ -135,6 +135,14 @@ suite "spec — streams from design":
                " (names ~ Stream/has_next)]",
                "[\"Ada\" \"Bob\" false]")
 
+  test "declarations is an ordinary stream selector stage":
+    check_eval("(ns m (var b 2) (var a 1)) " &
+               "(var names m/%declarations/name) " &
+               "[(names ~ Stream/next) " &
+               " (names ~ Stream/next) " &
+               " (names ~ Stream/has_next)]",
+               "[\"a\" \"b\" false]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

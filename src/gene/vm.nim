@@ -1,6 +1,6 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[os, sets, strutils, tables]
+import std/[algorithm, os, sets, strutils, tables]
 import ./[compiler, equality, gir, printer, types]
 
 # ---------------------------------------------------------------------------
@@ -263,6 +263,10 @@ proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
     raise newException(GeneError, name & " expects a Stream")
 
+proc requireNamespace(name: string, value: Value) =
+  if value.kind != vkNamespace:
+    raise newException(GeneError, name & " expects a Namespace")
+
 proc raiseEndOfStream() =
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr("end of stream")
@@ -335,6 +339,68 @@ proc keySegment(name: string, segment: Value): string =
   else:
     raise newException(GeneError,
       name & " expects a symbol/string path segment, got " & $segment.kind)
+
+proc sortedBindingNames(scope: Scope): seq[string] =
+  for key in scope.vars.keys:
+    result.add key
+  result.sort()
+
+proc declarationKind(value: Value): string =
+  case value.kind
+  of vkNil: "Nil"
+  of vkVoid: "Void"
+  of vkBool: "Bool"
+  of vkInt: "Int"
+  of vkFloat: "Float"
+  of vkString: "Str"
+  of vkChar: "Char"
+  of vkSymbol: "Sym"
+  of vkList: "List"
+  of vkMap: "Map"
+  of vkNode: "Node"
+  of vkFunction: "Fn"
+  of vkNativeFn: "NativeFn"
+  of vkNamespace: "Namespace"
+  of vkEnv: "Env"
+  of vkCell: "Cell"
+  of vkAtomicCell: "AtomicCell"
+  of vkStream: "Stream"
+  of vkType: "Type"
+  of vkProtocol: "Protocol"
+  of vkProtocolMessage: "ProtocolMessage"
+
+proc namespaceDeclarationNodes(ns: Value): seq[Value] =
+  for name in sortedBindingNames(ns.nsScope):
+    let value = ns.nsScope.vars[name]
+    var props = initOrderedTable[string, Value]()
+    props["name"] = newStr(name)
+    props["kind"] = newStr(declarationKind(value))
+    props["value"] = value
+    result.add newNode(newSym("Declaration"), props = props)
+
+proc biDeclarations(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("declarations", args)
+  requireNamespace("declarations", args[0])
+  newStream(namespaceDeclarationNodes(args[0]))
+
+proc biNamespaceBindings(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Namespace/bindings", args)
+  requireNamespace("Namespace/bindings", args[0])
+  var entries = initOrderedTable[string, Value]()
+  for name in sortedBindingNames(args[0].nsScope):
+    entries[name] = args[0].nsScope.vars[name]
+  newMap(entries)
+
+proc biNamespaceLookup(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Namespace/lookup expects 2 arguments, got " & $args.len)
+  requireNamespace("Namespace/lookup", args[0])
+  args[0].nsScope.vars.getOrDefault(keySegment("Namespace/lookup", args[1]), VOID)
+
+proc biNamespaceDeclarations(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Namespace/declarations", args)
+  requireNamespace("Namespace/declarations", args[0])
+  newStream(namespaceDeclarationNodes(args[0]))
 
 proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -658,6 +724,13 @@ proc newGlobalScope*(): Scope =
   atomicCellScope.define("compare-exchange",
     newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
+  result.define("declarations", newNativeFn("declarations", biDeclarations))
+  let namespaceScope = newScope(result)
+  namespaceScope.define("bindings", newNativeFn("Namespace/bindings", biNamespaceBindings))
+  namespaceScope.define("lookup", newNativeFn("Namespace/lookup", biNamespaceLookup))
+  namespaceScope.define("declarations",
+    newNativeFn("Namespace/declarations", biNamespaceDeclarations))
+  result.define("Namespace", newNamespace("Namespace", namespaceScope))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
   result.define("map", newNativeFn("map", biStreamMap))

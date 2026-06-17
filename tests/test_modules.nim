@@ -33,6 +33,13 @@ suite "modules — file imports":
     check runProgram("(import from \"./math\" ^as m) m/pi").print() == "3"
     check runProgram("(import from \"./math\" ^as m) (m/add 1 1)").print() == "2"
 
+  test "imported module roots expose declaration streams":
+    writeModule("decls.gene", "(var exported 7)")
+    check runProgram("(import from \"./decls\" ^as m) " &
+      "(var ds (filter (declarations m) (fn [d] (= d/name \"exported\")))) " &
+      "(ds ~ Stream/next)").print() ==
+      "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
+
   test "a module is loaded once (cache returns the same namespace)":
     writeModule("m.gene", "(var v 1)")
     check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (= a b)").print() == "true"
