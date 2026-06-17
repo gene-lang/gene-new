@@ -70,7 +70,7 @@ participates in equality or hashing.
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, first-class `Cell`/`AtomicCell` mutable references,
-  list/map-backed pull `Stream` values, quasiquote templates with runtime `unquote`/splicing, first-class `Env` values with explicit `eval node ^in env`,
+  list/map-backed pull `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, first-class `Env` values with explicit `eval node ^in env`,
   `gene run` entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
   (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
   update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell

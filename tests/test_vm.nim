@@ -357,6 +357,18 @@ suite "vm — selectors":
     expect GeneError: discard runStr("(/name)")
     expect GeneError: discard runStr("(/name ^unused 1 {^name \"Ada\"})")
 
+  test "static selector lookup maps over streams and skips void":
+    ck "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
+       "(var names users/%to_stream/name) " &
+       "[(names ~ Stream/next) (names ~ Stream/next) (names ~ Stream/has_next)]",
+       "[\"Ada\" \"Bob\" false]"
+
+  test "first-class selectors map over streams":
+    ck "(var get-name /name) " &
+       "(var names (get-name (to_stream [{^name \"Ada\"} {^name \"Bob\"}]))) " &
+       "[(names ~ Stream/next) (names ~ Stream/next) (names ~ Stream/has_next)]",
+       "[\"Ada\" \"Bob\" false]"
+
 suite "vm — dynamic selectors":
   test "dynamic selector keys are evaluated":
     ck "(var field \"name\") (var user {^name \"Ada\"}) user/%field", "\"Ada\""

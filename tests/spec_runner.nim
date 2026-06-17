@@ -127,6 +127,14 @@ suite "spec — streams from design":
                " (into (to_pairs_stream {^a 1}) {})]",
                "[3 4 false {^a 1}]")
 
+  test "selectors map static lookup over stream items":
+    check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
+               "(var names users/%to_stream/name) " &
+               "[(names ~ Stream/next) " &
+               " (names ~ Stream/next) " &
+               " (names ~ Stream/has_next)]",
+               "[\"Ada\" \"Bob\" false]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

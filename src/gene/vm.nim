@@ -1613,6 +1613,13 @@ proc lookupIndex(items: openArray[Value], rawIndex: int64): Value =
 proc staticLookup(target, segment: Value): Value =
   if target.kind == vkVoid:
     return VOID
+  if target.kind == vkStream:
+    var items: seq[Value]
+    while target.streamHasNext:
+      let item = staticLookup(target.streamNext, segment)
+      if item.kind != vkVoid:
+        items.add item
+    return newStream(items)
   case segment.kind
   of vkInt:
     case target.kind
