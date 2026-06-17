@@ -19,6 +19,7 @@ type
     opMakeSelector
     opMakeFn
     opMakeNamespace
+    opImport
     opCall
     opJumpIfFalse
     opJump
@@ -48,18 +49,35 @@ type
     namedParams*: seq[NamedParam]
     chunk*: Chunk
 
+  ImportSelection* = object
+    name*: string         # exported name in the source
+    local*: string        # local name to bind (== name unless aliased)
+
+  ImportSpec* = object
+    fromModule*: bool                 # true: `from "path"`; false: namespace path
+    modulePath*: string               # the `from "path"` string
+    nsSegments*: seq[string]          # namespace-path segments (e.g. std/stream)
+    alias*: string                    # `^as alias`, or ""
+    selections*: seq[ImportSelection]
+
   Chunk* = ref object
     constants*: seq[Value]
     instructions*: seq[Instruction]
     functions*: seq[FunctionProto]
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
+    imports*: seq[ImportSpec]
 
 proc newChunk*(): Chunk =
-  Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[])
+  Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
+        imports: @[])
 
 proc addSubchunk*(chunk: Chunk, body: Chunk): int =
   result = chunk.subchunks.len
   chunk.subchunks.add body
+
+proc addImport*(chunk: Chunk, spec: ImportSpec): int =
+  result = chunk.imports.len
+  chunk.imports.add spec
 
 proc addConst*(chunk: Chunk, value: Value): int =
   result = chunk.constants.len
@@ -98,6 +116,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
     result.add " ns=" & $inst.intArg & " name=" & inst.name
+  of opImport:
+    result.add " import=" & $inst.intArg
   of opCall:
     result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
@@ -146,6 +166,22 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
     for i, sub in chunk.subchunks:
       lines.add indent & "  [" & $i & "]"
       addDisassembly(lines, sub, indent & "    ")
+
+  if chunk.imports.len > 0:
+    lines.add indent & "imports:"
+    for i, spec in chunk.imports:
+      var src =
+        if spec.fromModule: "\"" & spec.modulePath & "\""
+        else: spec.nsSegments.join("/")
+      var desc = indent & "  [" & $i & "] " & src
+      if spec.alias.len > 0:
+        desc.add " as=" & spec.alias
+      if spec.selections.len > 0:
+        var sels: seq[string]
+        for s in spec.selections:
+          sels.add (if s.name == s.local: s.name else: s.name & ":" & s.local)
+        desc.add " " & formatNames(sels)
+      lines.add desc
 
 proc disassemble*(chunk: Chunk): string =
   var lines: seq[string]

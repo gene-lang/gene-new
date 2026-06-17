@@ -53,11 +53,12 @@ participates in equality or hashing.
   source that re-reads to a structurally equal value.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
-  self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`
-  special forms, positional/named/rest/default function arguments, static and
-  dynamic selector/slash-path access, functional selector updates, closures,
-  recursion, `gene run` entrypoint invocation, GIR disassembly via
-  `gene compile`, and built-ins
+  self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/`ns`/
+  `import`/`mod` special forms, positional/named/rest/default function arguments,
+  static and dynamic selector/slash-path access, functional selector updates,
+  namespaces with qualified access, file-based modules (`import … from "path"`)
+  with a load-once cache and cycle detection, closures, recursion, `gene run`
+  entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
   (`+ - * / < > <= >= = not head props body meta assoc-in update-in print
   println`).
 

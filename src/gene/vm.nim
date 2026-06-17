@@ -1,7 +1,7 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[strutils, tables]
-import ./[equality, gir, printer, types]
+import std/[os, sets, strutils, tables]
+import ./[compiler, equality, gir, printer, types]
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -397,6 +397,42 @@ proc newGlobalScope*(): Scope =
   result.define("println", newNativeFn("println", biPrintln))
 
 # ---------------------------------------------------------------------------
+# Module loading (design §15.4/§15.6)
+# ---------------------------------------------------------------------------
+#
+# A single-Application MVP: global cache + cycle set + current/root directories.
+# Each module gets its own global scope (fresh built-ins), so modules are
+# isolated from one another and from their importer.
+
+var
+  moduleCache: Table[string, Value]   # normalized abs path -> namespace value
+  moduleLoading: HashSet[string]      # paths mid-load, for cycle detection
+  currentModuleDir = getCurrentDir()  # dir of the module currently executing
+  packageRoot = getCurrentDir()       # root for bare and absolute "/x" paths
+
+proc initModuleContext*(entryDir: string) =
+  ## Reset the loader for a fresh program run rooted at `entryDir`.
+  moduleCache = initTable[string, Value]()
+  moduleLoading = initHashSet[string]()
+  let dir = if entryDir.len > 0: entryDir else: getCurrentDir()
+  currentModuleDir = dir
+  packageRoot = dir
+
+proc resolveModulePath(rawPath: string): string =
+  ## Normalize a `from "path"` string to a stable absolute module identity.
+  var p = rawPath
+  if splitFile(p).ext.len == 0:
+    p = p & ".gene"          # MVP extension policy
+  let base =
+    if p.startsWith("./") or p.startsWith("../"): currentModuleDir
+    else: packageRoot        # bare and leading-"/" resolve from the root
+  if p.startsWith("/"):
+    p = p[1 .. ^1]
+  normalizedPath(absolutePath(p, base))
+
+proc loadModuleNamespace(absPath: string): Value
+
+# ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
 
@@ -459,6 +495,29 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       let ns = newNamespace(inst.name, nsScope)
       scope.define(inst.name, ns)
       stack.add ns
+    of opImport:
+      let spec = chunk.imports[inst.intArg]
+      var sourceNs: Value
+      if spec.fromModule:
+        sourceNs = loadModuleNamespace(resolveModulePath(spec.modulePath))
+      else:
+        # Namespace path: resolve segments against the current scope.
+        sourceNs = scope.lookup(spec.nsSegments[0])
+        for i in 1 ..< spec.nsSegments.len:
+          if sourceNs.kind != vkNamespace:
+            raise newException(GeneError,
+              "import: '" & spec.nsSegments[0 ..< i].join("/") & "' is not a namespace")
+          sourceNs = sourceNs.nsScope.vars.getOrDefault(spec.nsSegments[i], VOID)
+      if sourceNs.kind != vkNamespace:
+        raise newException(GeneError, "import source is not a namespace")
+      if spec.alias.len > 0:
+        scope.define(spec.alias, sourceNs)
+      for sel in spec.selections:
+        let v = sourceNs.nsScope.vars.getOrDefault(sel.name, VOID)
+        if v.kind == vkVoid:
+          raise newException(GeneError, "module/namespace has no export: " & sel.name)
+        scope.define(sel.local, v)
+      stack.add NIL
     of opCall:
       var args = newSeq[Value](inst.intArg)
       if inst.intArg > 0:
@@ -647,3 +706,25 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
 
 proc call*(callee: Value, args: seq[Value] = @[]): Value =
   applyCall(callee, args, NamedArgs())
+
+proc loadModuleNamespace(absPath: string): Value =
+  ## Load, execute, and cache a module; return its root namespace. Modules run at
+  ## most once (cache) and import cycles are rejected (loading set).
+  if moduleCache.hasKey(absPath):
+    return moduleCache[absPath]
+  if absPath in moduleLoading:
+    raise newException(GeneError, "import cycle detected at " & absPath)
+  if not fileExists(absPath):
+    raise newException(GeneError, "module not found: " & absPath)
+  moduleLoading.incl absPath
+  let src = readFile(absPath)
+  let modScope = newGlobalScope()
+  let savedDir = currentModuleDir
+  currentModuleDir = parentDir(absPath)
+  try:
+    discard run(compileSource(src), modScope)
+  finally:
+    currentModuleDir = savedDir
+    moduleLoading.excl absPath
+  result = newNamespace(splitFile(absPath).name, modScope)
+  moduleCache[absPath] = result

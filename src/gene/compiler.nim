@@ -257,6 +257,78 @@ proc compileFn(c: var Compiler, node: Value) =
   if name.len > 0:
     discard c.emit(opDefineName, name = name)
 
+proc importSelections(sel: Value): seq[ImportSelection] =
+  ## Parse a single name `add` or a `[add, sub : minus]` selection list. The
+  ## reader keeps vectors as flat tokens, so `,` and `:` arrive as symbols.
+  if sel.kind == vkSymbol:
+    return @[ImportSelection(name: sel.symVal, local: sel.symVal)]
+  if sel.kind != vkList:
+    raise newException(GeneError, "import selection must be a name or [list]")
+  let items = sel.listItems
+  var i = 0
+  while i < items.len:
+    let s = items[i].symbolText
+    if s == "," or s == "":
+      inc i
+      continue
+    var local = s
+    inc i
+    if i < items.len and items[i].symbolText == ":":
+      inc i
+      if i >= items.len or items[i].kind != vkSymbol:
+        raise newException(GeneError, "import alias requires a name")
+      local = items[i].symVal
+      inc i
+    result.add ImportSelection(name: s, local: local)
+
+proc nsPathSegments(v: Value): seq[string] =
+  if v.kind == vkSymbol:
+    result.add v.symVal
+  elif v.kind == vkNode and v.head.isSymbol("path"):
+    for seg in v.body:
+      if seg.kind != vkSymbol:
+        raise newException(GeneError, "import namespace path must be symbols")
+      result.add seg.symVal
+  else:
+    raise newException(GeneError, "import source must be a namespace path or `from \"path\"`")
+
+proc compileImport(c: var Compiler, node: Value) =
+  var spec: ImportSpec
+  if node.props.hasKey("as"):
+    let a = node.props["as"]
+    if a.kind != vkSymbol:
+      raise newException(GeneError, "import ^as requires a name")
+    spec.alias = a.symVal
+  let body = node.body
+  var fromIdx = -1
+  for i, e in body:
+    if e.isSymbol("from"):
+      fromIdx = i
+      break
+  if fromIdx >= 0:
+    spec.fromModule = true
+    if fromIdx + 1 >= body.len or body[fromIdx + 1].kind != vkString:
+      raise newException(GeneError, "import: `from` requires a path string")
+    spec.modulePath = body[fromIdx + 1].strVal
+    if fromIdx == 1:
+      spec.selections = importSelections(body[0])
+    elif fromIdx > 1:
+      raise newException(GeneError, "import: malformed `from` clause")
+  else:
+    if body.len == 0:
+      raise newException(GeneError, "import requires a source")
+    spec.nsSegments = nsPathSegments(body[0])
+    if body.len >= 2:
+      spec.selections = importSelections(body[1])
+  if spec.alias.len == 0 and spec.selections.len == 0:
+    raise newException(GeneError, "import needs `^as` or a selection list")
+  discard c.emit(opImport, c.chunk.addImport(spec))
+
+proc compileMod(c: var Compiler, node: Value) =
+  ## MVP: a file is already its own module, so `(mod name body...)` just runs its
+  ## body in the current module scope. The name and `@doc` meta are ignored here.
+  compileBodyFrom(c, node.body, 1)
+
 proc compileNs(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
@@ -348,6 +420,12 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "ns":
       compileNs(c, node)
+      return
+    of "import":
+      compileImport(c, node)
+      return
+    of "mod":
+      compileMod(c, node)
       return
     else:
       discard

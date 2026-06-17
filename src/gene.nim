@@ -26,6 +26,7 @@ proc readSourceFile(path: string): string =
 
 proc cmdEval(src: string) =
   try:
+    initModuleContext(getCurrentDir())   # relative imports resolve from cwd
     echo run(compileSource(src), newGlobalScope()).print()
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
@@ -58,6 +59,7 @@ proc exitFromMain(value: Value) =
 proc cmdRun(path: string, args: openArray[string] = []) =
   let src = readSourceFile(path)
   try:
+    initModuleContext(parentDir(absolutePath(path)))   # entry module dir = root
     let scope = newGlobalScope()
     discard run(compileSource(src), scope)
     var mainBinding: Value
