@@ -4,7 +4,7 @@
 ## examples/web_demo.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[compiler, printer, reader, vm]
+import gene/[compiler, printer, reader, types, vm]
 import std/[sequtils, strutils, unittest]
 
 template check_read(src: string, expected: string) =
@@ -68,6 +68,18 @@ suite "spec — equality and identity from design":
   test "same question mark is scalar identity or heap identity":
     check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",
                "[true false true]")
+
+suite "spec — pattern destructuring from design":
+  test "match and catch bindings are branch-local":
+    expect GeneError:
+      discard run(compileSource("(match [1 2] (when [a b] (+ a b))) a"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
+                                "(impl Error Boom) " &
+                                "(try (fail (Boom ^message \"x\")) " &
+                                "catch (Boom ^message m) m) m"),
+                  newGlobalScope())
 
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":

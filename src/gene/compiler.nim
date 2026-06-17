@@ -587,9 +587,8 @@ proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "match requires a value")
-  compileExpr(c, body[0])                  # target stays on the stack
-  var endJumps: seq[int]
-  var hasElse = false
+  compileExpr(c, body[0])
+  let mp = MatchProto(clauses: @[], elseBody: nil)
   for i in 1 ..< body.len:
     let clause = body[i]
     if clause.kind != vkNode or clause.head.kind != vkSymbol:
@@ -598,24 +597,17 @@ proc compileMatch(c: var Compiler, node: Value) =
     of "when":
       if clause.body.len == 0:
         raise newException(GeneError, "when requires a pattern")
-      discard c.emit(opTryMatch, c.chunk.addConst(clause.body[0]))
-      let nextJump = c.emitJump(opJumpIfFalse)
-      discard c.emit(opPop)                # drop target before the body
-      compileBodyFrom(c, clause.body, 1)
-      endJumps.add c.emitJump(opJump)
-      c.patchJump(nextJump)
+      var branchBody: seq[Value]
+      for j in 1 ..< clause.body.len:
+        branchBody.add clause.body[j]
+      mp.clauses.add MatchClause(pattern: clause.body[0],
+                                  body: compileSubBody(branchBody))
     of "else":
-      discard c.emit(opPop)
-      compileBody(c, clause.body)
-      hasElse = true
+      mp.elseBody = compileSubBody(clause.body)
       break
     else:
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
-  if not hasElse:
-    discard c.emit(opPop)
-    discard c.emit(opMatchFail)
-  for at in endJumps:
-    c.patchJump(at)
+  discard c.emit(opMatch, c.chunk.addMatch(mp))
 
 proc compileWhile(c: var Compiler, node: Value) =
   let body = node.body

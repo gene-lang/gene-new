@@ -53,6 +53,18 @@ suite "errors — fail and catch":
        "(type ChildError ^is BaseError ^props {}) " &
        "(try (fail (ChildError ^message \"child\")) catch (BaseError ^message m) m)",
        "\"child\""
+  test "catch pattern bindings are local to the recovery branch":
+    expect GeneError:
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error Boom) " &
+                     "(try (fail (Boom ^message \"x\")) catch (Boom ^message m) m) " &
+                     "m")
+  test "catch recovery declarations are local":
+    expect GeneError:
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error Boom) " &
+                     "(try (fail (Boom ^message \"x\")) catch _ (var recovered true) recovered) " &
+                     "recovered")
 
 suite "errors — checked rows":
   test "functions may raise declared errors":

@@ -1453,6 +1453,25 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
           named.values[i] = stack.pop()
       let callee = stack.pop()
       stack.add applyCall(callee, args, named, scope)
+    of opMatch:
+      let target = stack.pop()
+      let mp = chunk.matches[inst.intArg]
+      var handled = false
+      for cl in mp.clauses:
+        var binds = initTable[string, Value]()
+        if tryMatch(cl.pattern, target, scope, binds):
+          let branchScope = newScope(scope)
+          for k, v in binds: branchScope.define(k, v)
+          stack.add run(cl.body, branchScope,
+                        validateImplRequirements = validateImplRequirements)
+          handled = true
+          break
+      if not handled:
+        if mp.elseBody != nil:
+          stack.add run(mp.elseBody, newScope(scope),
+                        validateImplRequirements = validateImplRequirements)
+        else:
+          raiseMatchError(scope, "no matching pattern")
     of opMatchBind:
       let target = stack.pop()
       var binds = initTable[string, Value]()
@@ -1460,18 +1479,6 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         raiseMatchError(scope, "destructuring pattern did not match")
       for k, v in binds: scope.define(k, v)
       stack.add target
-    of opTryMatch:
-      if stack.len == 0:
-        raise newException(GeneError, "VM stack underflow in match")
-      let target = stack[^1]                # peek; target survives for the next clause
-      var binds = initTable[string, Value]()
-      if tryMatch(chunk.constants[inst.intArg], target, scope, binds):
-        for k, v in binds: scope.define(k, v)
-        stack.add TRUE
-      else:
-        stack.add FALSE
-    of opMatchFail:
-      raiseMatchError(scope, "no matching pattern")
     of opForEach:
       let coll = stack.pop()
       let fp = chunk.forLoops[inst.intArg]
@@ -1500,8 +1507,10 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
           for cl in tp.catches:
             var binds = initTable[string, Value]()
             if tryMatch(cl.pattern, errVal, scope, binds):
-              for k, v in binds: scope.define(k, v)
-              resultVal = run(cl.body, scope, validateImplRequirements = false)
+              let catchScope = newScope(scope)
+              for k, v in binds: catchScope.define(k, v)
+              resultVal = run(cl.body, catchScope,
+                              validateImplRequirements = validateImplRequirements)
               handled = true
               break
           if not handled:

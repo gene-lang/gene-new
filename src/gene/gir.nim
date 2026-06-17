@@ -28,9 +28,8 @@ type
     opMakeImpl
     opImport
     opCall
+    opMatch           # pop target, run the first matching branch in a child scope
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
-    opTryMatch        # peek target, try a pattern, push bool
-    opMatchFail       # raise MatchError (match with no matching clause)
     opForEach         # pop a collection, run a for-loop body per item
     opTry             # run a body with catch clauses and an ensure block
     opFail            # pop an Error value and raise it through GeneError
@@ -85,6 +84,14 @@ type
     pattern*: Value              # loop-variable pattern
     body*: Chunk                 # loop body
 
+  MatchClause* = object
+    pattern*: Value
+    body*: Chunk
+
+  MatchProto* = ref object
+    clauses*: seq[MatchClause]
+    elseBody*: Chunk             # nil when there is no else branch
+
   CatchClause* = object
     pattern*: Value              # matched against the error value
     body*: Chunk
@@ -131,6 +138,7 @@ type
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
     forLoops*: seq[ForProto]
+    matches*: seq[MatchProto]
     tries*: seq[TryProto]
     listBuilds*: seq[ListBuildProto]
     nodeBuilds*: seq[NodeBuildProto]
@@ -140,7 +148,7 @@ type
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[], tries: @[], listBuilds: @[],
+        imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
         typeProtos: @[], protocolProtos: @[], implProtos: @[])
 
@@ -167,6 +175,10 @@ proc addImpl*(chunk: Chunk, ip: ImplProto): int =
 proc addForLoop*(chunk: Chunk, fp: ForProto): int =
   result = chunk.forLoops.len
   chunk.forLoops.add fp
+
+proc addMatch*(chunk: Chunk, mp: MatchProto): int =
+  result = chunk.matches.len
+  chunk.matches.add mp
 
 proc addTry*(chunk: Chunk, tp: TryProto): int =
   result = chunk.tries.len
@@ -237,7 +249,9 @@ proc formatInstruction(inst: Instruction): string =
     result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
-  of opMatchBind, opTryMatch:
+  of opMatch:
+    result.add " match=" & $inst.intArg
+  of opMatchBind:
     result.add " pattern=" & $inst.intArg
   of opForEach:
     result.add " for=" & $inst.intArg
@@ -247,7 +261,7 @@ proc formatInstruction(inst: Instruction): string =
     discard
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
-  of opPop, opReturn, opMatchFail:
+  of opPop, opReturn:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
@@ -304,6 +318,17 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
     for i, fp in chunk.forLoops:
       lines.add indent & "  [" & $i & "] pattern=" & fp.pattern.print()
       addDisassembly(lines, fp.body, indent & "    ")
+
+  if chunk.matches.len > 0:
+    lines.add indent & "matches:"
+    for i, mp in chunk.matches:
+      lines.add indent & "  [" & $i & "]"
+      for cl in mp.clauses:
+        lines.add indent & "  when " & cl.pattern.print() & ":"
+        addDisassembly(lines, cl.body, indent & "    ")
+      if mp.elseBody != nil:
+        lines.add indent & "  else:"
+        addDisassembly(lines, mp.elseBody, indent & "    ")
 
   if chunk.tries.len > 0:
     lines.add indent & "tries:"

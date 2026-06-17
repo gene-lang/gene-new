@@ -44,6 +44,15 @@ suite "match — combinators":
   test "negation matches the complement":
     ck "(match 7 (when (not 0) \"nonzero\") (else \"zero\"))", "\"nonzero\""
 
+suite "match — branch scope":
+  test "pattern bindings are local to the selected branch":
+    expect GeneError: discard runStr("(match [1 2] (when [a b] (+ a b))) a")
+  test "branch body declarations are local":
+    expect GeneError:
+      discard runStr("(match 1 (when x (var y x) y)) y")
+  test "branch bodies can update outer bindings":
+    ck "(var total 0) (match [1 2] (when [a b] (set total (+ a b)))) total", "3"
+
 suite "destructuring — var":
   test "list destructuring":
     ck "(var [x y] [10 20]) (+ x y)", "30"
