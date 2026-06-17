@@ -179,8 +179,21 @@ proc paramSpecs(paramList: Value): ParamSpecs =
         continue
       discard parseParamAdornment(items, i)
 
+proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: int] =
+  if not node.props.hasKey("errors"):
+    return
+  let row = node.props["errors"]
+  if row.kind != vkList:
+    raise newException(GeneError, "^errors must be a list")
+  result.checks = true
+  for errorType in row.listItems:
+    compileExpr(c, errorType)
+    inc result.count
+
 proc buildFunctionProto(name: string, paramList: Value,
-                        body: openArray[Value], bodyStart: int): FunctionProto =
+                        body: openArray[Value], bodyStart: int,
+                        checksErrors = false,
+                        errorTypeCount = 0): FunctionProto =
   var start = bodyStart
   var returnType = NIL
   if start < body.len and body[start].isSymbol(":"):
@@ -213,6 +226,8 @@ proc buildFunctionProto(name: string, paramList: Value,
                 hasNamedParamTypes: hasNamedParamTypes,
                 returnType: returnType,
                 hasReturnType: returnType.kind != vkNil,
+                checksErrors: checksErrors,
+                errorTypeCount: errorTypeCount,
                 chunk: fnCompiler.chunk)
 
 proc compileIf(c: var Compiler, node: Value) =
@@ -300,7 +315,10 @@ proc compileFn(c: var Compiler, node: Value) =
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
-  let proto = buildFunctionProto(name, body[idx], body, idx + 1)
+  let errorRow = compileErrorRow(c, node)
+  let proto = buildFunctionProto(name, body[idx], body, idx + 1,
+                                 checksErrors = errorRow.checks,
+                                 errorTypeCount = errorRow.count)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if name.len > 0:
     discard c.emit(opDefineName, name = name)
@@ -594,10 +612,13 @@ proc compileProtocol(c: var Compiler, node: Value) =
   discard c.emit(opMakeProtocol, idx)
   discard c.emit(opDefineName, name = name)
 
-proc implMessageProto(node: Value): ImplMessageProto =
+proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
   let name = messageName(node)
+  let errorRow = compileErrorRow(c, node)
   ImplMessageProto(name: name,
-                   fn: buildFunctionProto(name, node.body[1], node.body, 2))
+                   fn: buildFunctionProto(name, node.body[1], node.body, 2,
+                                          checksErrors = errorRow.checks,
+                                          errorTypeCount = errorRow.count))
 
 proc compileImpl(c: var Compiler, node: Value) =
   let body = node.body
@@ -608,7 +629,7 @@ proc compileImpl(c: var Compiler, node: Value) =
   var messages: seq[ImplMessageProto]
   var seen = initTable[string, bool]()
   for i in 2 ..< body.len:
-    let mp = implMessageProto(body[i])
+    let mp = implMessageProto(c, body[i])
     if seen.hasKey(mp.name):
       raise newException(GeneError, "duplicate impl message: " & mp.name)
     seen[mp.name] = true

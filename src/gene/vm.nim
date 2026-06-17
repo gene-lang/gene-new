@@ -679,6 +679,25 @@ proc isErrorValue(scope: Scope, value: Value): bool =
     return false
   scope.typeImplementsProtocol(value.head, errorProtocol)
 
+proc isErrorType(scope: Scope, typ: Value): bool =
+  if typ.kind != vkType:
+    return false
+  var errorProtocol: Value
+  if scope == nil or not scope.lookupOptional("Error", errorProtocol) or
+      errorProtocol.kind != vkProtocol:
+    return false
+  scope.typeImplementsProtocol(typ, errorProtocol)
+
+proc popCheckedErrorTypes(stack: var seq[Value], count: int,
+                          scope: Scope): seq[Value] =
+  result = newSeq[Value](count)
+  if count > 0:
+    for i in countdown(count - 1, 0):
+      let typ = stack.pop()
+      if not scope.isErrorType(typ):
+        raise newException(GeneError, "^errors entries must be Error types")
+      result[i] = typ
+
 proc raiseFailedValue(value: Value) =
   var e: ref GeneError
   new(e)
@@ -768,7 +787,9 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       stack.add newNode(newSym("select"), body = body)
     of opMakeFn:
       let proto = chunk.functions[inst.intArg]
-      stack.add newFunction(proto.name, proto.params, proto, scope)
+      let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
+      stack.add newFunction(proto.name, proto.params, proto, scope,
+                            proto.checksErrors, errorTypes)
     of opMakeType:
       let proto = chunk.typeProtos[inst.intArg]
       let parent = stack.pop()
@@ -793,12 +814,18 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       stack.add protocol
     of opMakeImpl:
       let proto = chunk.implProtos[inst.intArg]
+      var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
+      if proto.messages.len > 0:
+        for i in countdown(proto.messages.len - 1, 0):
+          messageErrorTypes[i] =
+            stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
       let receiver = stack.pop()
       let protocol = stack.pop()
       var messages = initTable[string, Value]()
-      for message in proto.messages:
+      for i, message in proto.messages:
         messages[message.name] =
-          newFunction(message.fn.name, message.fn.params, message.fn, scope)
+          newFunction(message.fn.name, message.fn.params, message.fn, scope,
+                      message.fn.checksErrors, messageErrorTypes[i])
       scope.registerImpl(protocol, receiver, messages)
       stack.add NIL
     of opMakeNamespace:
@@ -1080,6 +1107,14 @@ proc checkBoundary(where: string, typeExpr, value: Value, scope: Scope) =
   if not matchesTypeExpr(typeExpr, value, scope):
     raiseTypeError(where, typeExpr.typeExprLabel, value, scope)
 
+proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
+  if errVal.kind != vkNode or errVal.head.kind != vkType:
+    return false
+  for typ in allowed:
+    if errVal.head.isSubtypeOf(typ):
+      return true
+  false
+
 proc isSelectorStage(v: Value): bool =
   case v.kind
   of vkFunction, vkNativeFn:
@@ -1231,7 +1266,16 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
         else:
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)
-    let resultValue = run(proto.chunk, callScope)
+    var resultValue: Value
+    try:
+      resultValue = run(proto.chunk, callScope)
+    except GeneError as e:
+      if not callee.fnChecksErrors:
+        raise
+      if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
+        raise
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' raised an undeclared error")
     if proto.hasReturnType:
       checkBoundary("return from '" & callee.fnName & "'", proto.returnType,
                     resultValue, callScope)

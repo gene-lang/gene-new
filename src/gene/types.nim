@@ -184,6 +184,8 @@ type
     params: seq[string]
     code: FunctionCode
     scope: Scope
+    checksErrors: bool
+    errorTypes: seq[Value]
 
   GeneNativeFn = object
     refCount: int
@@ -486,6 +488,16 @@ proc fnScope*(v: Value): Scope =
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).scope
 
+proc fnChecksErrors*(v: Value): bool =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).checksErrors
+
+proc fnErrorTypes*(v: Value): lent seq[Value] =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorTypes
+
 proc nativeFnName*(v: Value): lent string =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
@@ -627,13 +639,17 @@ proc newNode*(head: Value,
   boxPtr(NODE_TAG, p)
 
 proc newFunction*(name: string, params: sink seq[string],
-                  code: FunctionCode, scope: Scope): Value =
+                  code: FunctionCode, scope: Scope,
+                  checksErrors = false,
+                  errorTypes: sink seq[Value] = @[]): Value =
   let p = createObj(GeneFunction)
   p.refCount = 1
   p.name = name
   p.params = params
   p.code = code
   p.scope = scope
+  p.checksErrors = checksErrors
+  p.errorTypes = errorTypes
   boxPtr(FUNCTION_TAG, p)
 
 proc newNativeFn*(name: string, impl: NativeProc): Value =

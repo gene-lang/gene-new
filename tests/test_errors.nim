@@ -44,6 +44,49 @@ suite "errors — fail and catch":
     ck "(try (fail (TypeError ^message \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
        "catch (TypeError ^message m) m)", "\"m\""
 
+suite "errors — checked rows":
+  test "functions may raise declared errors":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(fn raise-boom ^errors [Boom] [] (fail (Boom ^message \"x\"))) " &
+       "(try (raise-boom) catch (Boom ^message m) m)", "\"x\""
+
+  test "missing error row remains dynamic":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(fn raise-boom [] (fail (Boom ^message \"x\"))) " &
+       "(try (raise-boom) catch (Boom ^message m) m)", "\"x\""
+
+  test "^errors [] rejects recoverable errors":
+    expect GeneError:
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error Boom) " &
+                     "(fn quiet ^errors [] [] (fail (Boom ^message \"x\"))) " &
+                     "(quiet)")
+
+  test "undeclared recoverable errors are rejected":
+    expect GeneError:
+      discard runStr("(type AError ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error AError) " &
+                     "(type BError ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error BError) " &
+                     "(fn f ^errors [AError] [] (fail (BError ^message \"x\"))) " &
+                     "(f)")
+
+  test "^errors entries must implement Error":
+    expect GeneError:
+      discard runStr("(type NotError ^props {^message Str}) " &
+                     "(fn f ^errors [NotError] [] 1)")
+
+  test "impl message functions enforce checked rows":
+    ck "(protocol Run (message run [self])) " &
+       "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(type Job ^props {}) " &
+       "(impl Run Job " &
+       "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &
+       "(try (run (Job)) catch (Boom ^message m) m)", "\"x\""
+
 suite "errors — ensure":
   test "ensure runs on success":
     ck "(var log \"\") (try 42 ensure (set log \"ran\")) log", "\"ran\""

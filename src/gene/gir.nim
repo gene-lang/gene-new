@@ -62,6 +62,8 @@ type
     hasNamedParamTypes*: bool
     returnType*: Value
     hasReturnType*: bool
+    checksErrors*: bool
+    errorTypeCount*: int
     chunk*: Chunk
 
   ImportSelection* = object
@@ -249,6 +251,8 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         header.add " named=" & formatNames(names)
       if fn.returnType.kind != vkNil:
         header.add " return=" & fn.returnType.print()
+      if fn.checksErrors:
+        header.add " errors=" & $fn.errorTypeCount
       lines.add header
       addDisassembly(lines, fn.chunk, indent & "    ")
 
