@@ -1668,6 +1668,9 @@ proc isInstanceOfType(value, expected: Value): bool =
   value.kind == vkNode and value.head.kind == vkType and
     value.head.isSubtypeOf(expected)
 
+proc intInRange(value: Value, low, high: int64): bool {.inline.} =
+  value.kind == vkInt and value.intVal >= low and value.intVal <= high
+
 proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   case name
   of "Any":
@@ -1686,8 +1689,22 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkChar)
   of "Sym", "Symbol":
     (true, value.kind == vkSymbol)
-  of "Int", "Integer", "Fixnum", "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64":
+  of "Int", "Integer", "Fixnum", "I64":
     (true, value.kind == vkInt)
+  of "I8":
+    (true, value.intInRange(-128'i64, 127'i64))
+  of "I16":
+    (true, value.intInRange(-32768'i64, 32767'i64))
+  of "I32":
+    (true, value.intInRange(-2147483648'i64, 2147483647'i64))
+  of "U8":
+    (true, value.intInRange(0'i64, 255'i64))
+  of "U16":
+    (true, value.intInRange(0'i64, 65535'i64))
+  of "U32":
+    (true, value.intInRange(0'i64, 4294967295'i64))
+  of "U64":
+    (true, value.kind == vkInt and value.intVal >= 0)
   of "Number":
     (true, value.kind in {vkInt, vkFloat})
   of "Float", "F32", "F64":

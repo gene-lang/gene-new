@@ -69,6 +69,16 @@ suite "spec — equality and identity from design":
     check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",
                "[true false true]")
 
+suite "spec — numeric boundaries from design":
+  test "fixed-width integer annotations are range checked":
+    check_eval("(fn byte [x : U8] x) [(byte 0) (byte 255)]", "[0 255]")
+    expect GeneError:
+      discard run(compileSource("(fn byte [x : U8] x) (byte 256)"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(fn small [x : I8] x) (small -129)"),
+                  newGlobalScope())
+
 suite "spec — pattern destructuring from design":
   test "match and catch bindings are branch-local":
     expect GeneError:

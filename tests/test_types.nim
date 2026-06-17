@@ -96,6 +96,18 @@ suite "types — function boundaries":
     ck "(try (fn size [xs : (List Int)] xs/size) (size [1 \"bad\"]) " &
        "catch (TypeError ^expected e) e)", "\"(List Int)\""
 
+  test "fixed-width integer annotations range-check boundaries":
+    ck "(fn f [x : I8] x) [(f -128) (f 127)]", "[-128 127]"
+    ck "(fn f [x : U8] x) [(f 0) (f 255)]", "[0 255]"
+    expect GeneError: discard runStr("(fn f [x : I8] x) (f -129)")
+    expect GeneError: discard runStr("(fn f [x : I8] x) (f 128)")
+    expect GeneError: discard runStr("(fn f [x : U8] x) (f -1)")
+    expect GeneError: discard runStr("(fn f [x : U8] x) (f 256)")
+    expect GeneError: discard runStr("(fn f [x : I32] x) (f 2147483648)")
+    ck "(type Byte ^props {^value U8}) (var b (Byte ^value 255)) b/value", "255"
+    expect GeneError:
+      discard runStr("(type Byte ^props {^value U8}) (Byte ^value 256)")
+
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
     ck "(fn f [x : (opt Int)] x) (f nil)", "nil"
