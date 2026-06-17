@@ -207,3 +207,15 @@ suite "modules — namespace-path imports and mod":
     initModuleContext(getTempDir())
     check run(compileSource("(mod demo @doc \"hi\") (var x 7) x"),
       newGlobalScope()).print() == "7"
+
+  test "mod declarations follow MVP placement rules":
+    expect GeneError:
+      discard compileSource("(mod)")
+    expect GeneError:
+      discard compileSource("(mod \"demo\")")
+    expect GeneError:
+      discard compileSource("(mod a) (mod b)")
+    expect GeneError:
+      discard compileSource("(do (mod nested))")
+    check run(compileSource("(quote (mod data))"),
+      newGlobalScope()).print() == "(mod data)"

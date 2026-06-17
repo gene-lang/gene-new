@@ -217,6 +217,16 @@ suite "spec — streams from design":
                             "[(/value decl) (this-mod ~ Module/path)]"),
               scope).print() == "[9 nil]"
 
+suite "spec — modules from design":
+  test "explicit mod declarations are top-level and unique":
+    check_eval("(mod app) (var x 1) x", "1")
+    expect GeneError:
+      discard compileSource("(mod)")
+    expect GeneError:
+      discard compileSource("(mod a) (mod b)")
+    expect GeneError:
+      discard compileSource("(do (mod nested))")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

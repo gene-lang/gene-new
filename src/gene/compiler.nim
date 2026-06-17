@@ -7,6 +7,7 @@ type
   Compiler = object
     chunk: Chunk
     selfAvailable: bool
+    seenModDecl: bool
 
   ParamSpecs = object
     positional: seq[string]
@@ -35,7 +36,7 @@ proc patchJump(c: var Compiler, at: int) =
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
-proc compileExpr(c: var Compiler, node: Value)
+proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 
 proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable)
@@ -429,9 +430,16 @@ proc compileImport(c: var Compiler, node: Value) =
     raise newException(GeneError, "import needs `^as` or a selection list")
   discard c.emit(opImport, c.chunk.addImport(spec))
 
-proc compileMod(c: var Compiler, node: Value) =
+proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
   ## MVP: a file is already its own module, so `(mod name body...)` just runs its
   ## body in the current module scope. The name and `@doc` meta are ignored here.
+  if not allowModDecl:
+    raise newException(GeneError, "mod must be a top-level form")
+  if c.seenModDecl:
+    raise newException(GeneError, "duplicate module declaration")
+  if node.body.len == 0 or node.body[0].kind != vkSymbol:
+    raise newException(GeneError, "mod requires a name")
+  c.seenModDecl = true
   compileBodyFrom(c, node.body, 1)
 
 proc compileNs(c: var Compiler, node: Value) =
@@ -846,7 +854,7 @@ proc compileImpl(c: var Compiler, node: Value) =
   let idx = c.chunk.addImpl(ImplProto(messages: messages))
   discard c.emit(opMakeImpl, idx)
 
-proc compileNode(c: var Compiler, node: Value) =
+proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
   if h.kind == vkSymbol:
     case h.symVal
@@ -893,7 +901,7 @@ proc compileNode(c: var Compiler, node: Value) =
       compileImport(c, node)
       return
     of "mod":
-      compileMod(c, node)
+      compileMod(c, node, allowModDecl)
       return
     of "match":
       compileMatch(c, node)
@@ -923,12 +931,12 @@ proc compileNode(c: var Compiler, node: Value) =
       discard
   compileCall(c, node)
 
-proc compileExpr(c: var Compiler, node: Value) =
+proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   case node.kind
   of vkSymbol:
     discard c.emit(opLoadName, name = node.symVal)
   of vkNode:
-    compileNode(c, node)
+    compileNode(c, node, allowModDecl)
   of vkList:
     for item in node.listItems:
       compileExpr(c, item)
@@ -944,7 +952,13 @@ proc compileExpr(c: var Compiler, node: Value) =
 
 proc compileForms*(forms: openArray[Value]): Chunk =
   var c = Compiler(chunk: newChunk())
-  compileBody(c, forms)
+  if forms.len == 0:
+    c.emitConst NIL
+  else:
+    for i in 0 ..< forms.len:
+      compileExpr(c, forms[i], allowModDecl = true)
+      if i < forms.high:
+        discard c.emit(opPop)
   discard c.emit(opReturn)
   c.chunk
 
