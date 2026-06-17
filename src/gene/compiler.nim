@@ -526,6 +526,12 @@ proc compileTry(c: var Compiler, node: Value) =
     tp.ensureBody = compileSubBody(ensureForms)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
+proc compileFail(c: var Compiler, node: Value) =
+  if node.props.len != 0 or node.body.len != 1:
+    raise newException(GeneError, "fail expects one Error value")
+  compileExpr(c, node.body[0])
+  discard c.emit(opFail)
+
 proc compileType(c: var Compiler, node: Value) =
   ## (type Name ^props {^id Int ^done? Bool} ^is Parent ^impl [P]) — field
   ## annotations and required manual protocol impls are checked at runtime.
@@ -658,6 +664,9 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "try":
       compileTry(c, node)
+      return
+    of "fail":
+      compileFail(c, node)
       return
     of "type":
       compileType(c, node)

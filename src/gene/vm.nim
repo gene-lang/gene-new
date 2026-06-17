@@ -364,16 +364,6 @@ proc displayStr(v: Value): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString: v.strVal else: print(v)
 
-proc biFail(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 1:
-    raise newException(GeneError, "fail expects 1 argument")
-  var e: ref GeneError
-  new(e)
-  e.msg = "fail: " & print(args[0])
-  e.errVal = args[0]
-  e.hasErrVal = true
-  raise e
-
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
   let v = if args.len >= 1: args[0] else: newStr("panic")
   var e: ref GenePanic
@@ -398,6 +388,18 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
 
 proc newGlobalScope*(): Scope =
   result = newScope()
+  let errorProtocol = newProtocol("Error", [])
+  result.define("Error", errorProtocol)
+  var typeErrorFields: seq[TypeField]
+  for name in ["message", "where", "expected", "actual"]:
+    typeErrorFields.add TypeField(name: name, optional: false,
+                                  typeExpr: newSym("Str"), scope: result)
+  let typeError = newType("TypeError", NIL, typeErrorFields,
+                          @[errorProtocol], result)
+  result.define("TypeError", typeError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: typeError,
+                                messages: initTable[string, Value]())
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
@@ -414,7 +416,6 @@ proc newGlobalScope*(): Scope =
   result.define("meta", newNativeFn("meta", biMeta))
   result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
   result.define("update-in", newNativeFn("update-in", biUpdateIn))
-  result.define("fail", newNativeFn("fail", biFail))
   result.define("panic", newNativeFn("panic", biPanic))
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
@@ -660,6 +661,32 @@ proc scopeChainContains(scope, target: Scope): bool =
     s = s.parent
   false
 
+proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
+  if scope != nil and scope.hasVisibleImpl(protocol, typ):
+    return true
+  let definingScope = typ.typeScope
+  if definingScope != nil and
+      (scope == nil or not scope.scopeChainContains(definingScope)):
+    return definingScope.hasVisibleImpl(protocol, typ)
+  false
+
+proc isErrorValue(scope: Scope, value: Value): bool =
+  if value.kind != vkNode or value.head.kind != vkType:
+    return false
+  var errorProtocol: Value
+  if scope == nil or not scope.lookupOptional("Error", errorProtocol) or
+      errorProtocol.kind != vkProtocol:
+    return false
+  scope.typeImplementsProtocol(value.head, errorProtocol)
+
+proc raiseFailedValue(value: Value) =
+  var e: ref GeneError
+  new(e)
+  e.msg = "fail: " & print(value)
+  e.errVal = value
+  e.hasErrVal = true
+  raise e
+
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =
   var s = scope
@@ -875,6 +902,11 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         if tp.ensureBody != nil:
           discard run(tp.ensureBody, scope, validateImplRequirements = false)
       stack.add resultVal
+    of opFail:
+      let errVal = stack.pop()
+      if not scope.isErrorValue(errVal):
+        raise newException(GeneError, "fail expects an Error value")
+      raiseFailedValue(errVal)
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:
@@ -911,17 +943,22 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
 proc typeExprLabel(expr: Value): string =
   if expr.kind == vkNil: "Any" else: expr.print()
 
-proc raiseTypeError(where, expected: string, value: Value) =
+proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   let message = where & " expected " & expected & ", got " & $value.kind
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr(message)
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
   props["actual"] = newStr($value.kind)
+  var head = newSym("TypeError")
+  var typeError: Value
+  if scope != nil and scope.lookupOptional("TypeError", typeError) and
+      typeError.kind == vkType:
+    head = typeError
   var e: ref GeneError
   new(e)
   e.msg = message
-  e.errVal = newNode(newSym("TypeError"), props = props)
+  e.errVal = newNode(head, props = props)
   e.hasErrVal = true
   raise e
 
@@ -1041,7 +1078,7 @@ proc checkBoundary(where: string, typeExpr, value: Value, scope: Scope) =
   if typeExpr.kind == vkNil:
     return
   if not matchesTypeExpr(typeExpr, value, scope):
-    raiseTypeError(where, typeExpr.typeExprLabel, value)
+    raiseTypeError(where, typeExpr.typeExprLabel, value, scope)
 
 proc isSelectorStage(v: Value): bool =
   case v.kind

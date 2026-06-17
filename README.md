@@ -54,7 +54,8 @@ participates in equality or hashing.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/`ns`/
-  `import`/`mod`/`match`/`for`/`while`/`try`/`type` special forms, nominal types
+  `import`/`mod`/`match`/`for`/`while`/`try`/`fail`/`type` special forms,
+  nominal types
   with construction, schema validation, and single inheritance (`(type T ^props
   {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
   returns, and typed construction, positional/named/rest/default function
@@ -65,10 +66,11 @@ participates in equality or hashing.
   modules (`import … from "path"`) with a load-once cache and cycle detection,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
-  loops, recoverable errors (`fail`, `try/catch/ensure`, `panic`), closures,
+  loops, typed recoverable errors (`Error`, `fail`, `try/catch/ensure`), `panic`,
+  closures,
   recursion, `gene run` entrypoint invocation, GIR disassembly via `gene compile`,
   and built-ins
-  (`+ - * / < > <= >= = not head props body meta assoc-in update-in fail panic
+  (`+ - * / < > <= >= = not head props body meta assoc-in update-in panic
   print println`).
 
 ## Quick start

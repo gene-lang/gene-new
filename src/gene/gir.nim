@@ -29,6 +29,7 @@ type
     opMatchFail       # raise MatchError (match with no matching clause)
     opForEach         # pop a collection, run a for-loop body per item
     opTry             # run a body with catch clauses and an ensure block
+    opFail            # pop an Error value and raise it through GeneError
     opJumpIfFalse
     opJump
     opReturn
@@ -203,6 +204,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " for=" & $inst.intArg
   of opTry:
     result.add " try=" & $inst.intArg
+  of opFail:
+    discard
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
   of opPop, opReturn, opMatchFail:
