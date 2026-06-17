@@ -222,6 +222,8 @@ type
   NamespaceData = ref object of GeneObjectData
     name: string
     scope: Scope          # the namespace's own bindings (its exports)
+    moduleRoot: bool      # true only for this-mod / imported module roots
+    modulePath: string    # non-empty only for file-backed module roots
 
   EnvData = ref object of GeneObjectData
     parent: Value         # parent Env value, or NIL
@@ -556,6 +558,16 @@ proc nsScope*(v: Value): Scope =
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).scope
 
+proc nsModulePath*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  NamespaceData(objData(v)).modulePath
+
+proc nsIsModuleRoot*(v: Value): bool =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  NamespaceData(objData(v)).moduleRoot
+
 proc envParent*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
@@ -802,8 +814,10 @@ proc newNativeFn*(name: string, impl: NativeProc): Value =
   p.impl = impl
   boxPtr(NATIVE_FN_TAG, p)
 
-proc newNamespace*(name: string, scope: Scope): Value =
-  boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope))
+proc newNamespace*(name: string, scope: Scope, modulePath = "",
+                   moduleRoot = false): Value =
+  boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope,
+                          moduleRoot: moduleRoot, modulePath: modulePath))
 
 proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL): Value =

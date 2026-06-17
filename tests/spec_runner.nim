@@ -211,11 +211,11 @@ suite "spec — streams from design":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "spec")
     check run(compileSource("(var x 9) " &
-                            "(var ds (filter (declarations this-mod) " &
+                            "(var ds (filter (this-mod ~ Module/declarations) " &
                             "  (fn [d] (= d/name \"x\")))) " &
                             "(var decl (ds ~ Stream/next)) " &
-                            "decl/value"),
-              scope).print() == "9"
+                            "[(/value decl) (this-mod ~ Module/path)]"),
+              scope).print() == "[9 nil]"
 
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":

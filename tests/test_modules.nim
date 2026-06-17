@@ -33,10 +33,20 @@ suite "modules — file imports":
     check runProgram("(import from \"./math\" ^as m) m/pi").print() == "3"
     check runProgram("(import from \"./math\" ^as m) (m/add 1 1)").print() == "2"
 
+  test "module reflection exposes normalized file path":
+    writeModule("math.gene", "(var pi 3)")
+    let expected = normalizedPath(absolutePath("math.gene", modDir))
+    check runProgram("(import from \"./math\" ^as m) (m ~ Module/path)").strVal ==
+      expected
+
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
     check runProgram("(import from \"./decls\" ^as m) " &
       "(var ds (filter (declarations m) (fn [d] (= d/name \"exported\")))) " &
+      "(ds ~ Stream/next)").print() ==
+      "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
+    check runProgram("(import from \"./decls\" ^as m) " &
+      "(var ds (filter (m ~ Module/declarations) (fn [d] (= d/name \"exported\")))) " &
       "(ds ~ Stream/next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
 
@@ -47,6 +57,26 @@ suite "modules — file imports":
       "(var decl (ds ~ Stream/next)) " &
       "(var seen decl/value)")
     check runProgram("(import [seen] from \"./self\") seen").print() == "9"
+
+  test "this-mod exposes module reflection helpers":
+    writeModule("selfpath.gene",
+      "(var reflected [(this-mod ~ Module/path) " &
+      "                (= (this-mod ~ Module/root_namespace) this-mod)])")
+    let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
+    check reflected.listItems[0].strVal ==
+      normalizedPath(absolutePath("selfpath.gene", modDir))
+    check reflected.listItems[1].boolVal == true
+
+  test "Module annotations accept module root namespaces":
+    writeModule("math.gene", "(var pi 3)")
+    check runProgram("(import from \"./math\" ^as m) " &
+      "(fn module_path [m : Module] (m ~ Module/path)) (module_path m)").strVal ==
+      normalizedPath(absolutePath("math.gene", modDir))
+    expect GeneError:
+      discard runProgram("(fn module_id [m : Module] m) (module_id [1])")
+    expect GeneError:
+      discard runProgram("(ns local (var x 1)) " &
+        "(fn module_id [m : Module] m) (module_id local)")
 
   test "a module is loaded once (cache returns the same namespace)":
     writeModule("m.gene", "(var v 1)")

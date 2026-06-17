@@ -77,6 +77,7 @@ participates in equality or hashing.
   update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
   AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
+  Module/root_namespace Module/path Module/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
   Stream/next Stream/close print println`).
 

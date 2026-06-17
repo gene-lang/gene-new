@@ -285,6 +285,10 @@ proc requireNamespace(name: string, value: Value) =
   if value.kind != vkNamespace:
     raise newException(GeneError, name & " expects a Namespace")
 
+proc requireModule(name: string, value: Value) =
+  if value.kind != vkNamespace or not value.nsIsModuleRoot:
+    raise newException(GeneError, name & " expects a Module")
+
 proc raiseEndOfStream() =
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr("end of stream")
@@ -418,6 +422,22 @@ proc biNamespaceLookup(args: openArray[Value]): Value {.nimcall.} =
 proc biNamespaceDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Namespace/declarations", args)
   requireNamespace("Namespace/declarations", args[0])
+  newStream(namespaceDeclarationNodes(args[0]))
+
+proc biModuleRootNamespace(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Module/root_namespace", args)
+  requireModule("Module/root_namespace", args[0])
+  args[0]
+
+proc biModulePath(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Module/path", args)
+  requireModule("Module/path", args[0])
+  let path = args[0].nsModulePath
+  if path.len == 0: NIL else: newStr(path)
+
+proc biModuleDeclarations(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Module/declarations", args)
+  requireModule("Module/declarations", args[0])
   newStream(namespaceDeclarationNodes(args[0]))
 
 proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
@@ -754,6 +774,13 @@ proc buildBuiltins(): Scope =
   namespaceScope.define("declarations",
     newNativeFn("Namespace/declarations", biNamespaceDeclarations))
   result.define("Namespace", newNamespace("Namespace", namespaceScope))
+  let moduleScope = newScope(result)
+  moduleScope.define("root_namespace",
+    newNativeFn("Module/root_namespace", biModuleRootNamespace))
+  moduleScope.define("path", newNativeFn("Module/path", biModulePath))
+  moduleScope.define("declarations",
+    newNativeFn("Module/declarations", biModuleDeclarations))
+  result.define("Module", newNamespace("Module", moduleScope))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
   result.define("map", newNativeFn("map", biStreamMap))
@@ -791,12 +818,12 @@ proc newGlobalScope*(): Scope =
   ## value (issues with per-module fresh built-ins).
   newScope(builtinsScope())
 
-proc bindThisModule*(scope: Scope, name: string): Value =
+proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
   ## MVP bridge until first-class Module values exist: the module root is the
   ## namespace value whose scope holds top-level bindings. `scope` must be a
   ## module root scope (a child of the built-ins root), so its `vars` contain
   ## only this module's declarations, not the built-ins.
-  result = newNamespace(name, scope)
+  result = newNamespace(name, scope, path, moduleRoot = true)
   scope.define("this-mod", result)
 
 # ---------------------------------------------------------------------------
@@ -1799,6 +1826,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkProtocolMessage)
   of "Namespace":
     (true, value.kind == vkNamespace)
+  of "Module":
+    (true, value.kind == vkNamespace and value.nsIsModuleRoot)
   of "Env":
     (true, value.kind == vkEnv)
   of "Cell":
@@ -2129,7 +2158,7 @@ proc loadModuleNamespace(absPath: string): Value =
   moduleLoading.incl absPath
   let src = readFile(absPath)
   let modScope = newGlobalScope()
-  result = bindThisModule(modScope, splitFile(absPath).name)
+  result = bindThisModule(modScope, splitFile(absPath).name, absPath)
   let savedDir = currentModuleDir
   currentModuleDir = parentDir(absPath)
   try:
