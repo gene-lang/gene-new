@@ -400,6 +400,14 @@ proc newGlobalScope*(): Scope =
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: typeError,
                                 messages: initTable[string, Value]())
+  let matchError = newType("MatchError", NIL,
+                           @[TypeField(name: "message", optional: false,
+                                       typeExpr: newSym("Str"), scope: result)],
+                           @[errorProtocol], result)
+  result.define("MatchError", matchError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: matchError,
+                                messages: initTable[string, Value]())
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
@@ -706,6 +714,21 @@ proc raiseFailedValue(value: Value) =
   e.hasErrVal = true
   raise e
 
+proc raiseMatchError(scope: Scope, message: string) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  var head = newSym("MatchError")
+  var matchError: Value
+  if scope != nil and scope.lookupOptional("MatchError", matchError) and
+      matchError.kind == vkType:
+    head = matchError
+  var e: ref MatchError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =
   var s = scope
@@ -876,7 +899,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       let target = stack.pop()
       var binds = initTable[string, Value]()
       if not tryMatch(chunk.constants[inst.intArg], target, scope, binds):
-        raise newException(MatchError, "destructuring pattern did not match")
+        raiseMatchError(scope, "destructuring pattern did not match")
       for k, v in binds: scope.define(k, v)
       stack.add target
     of opTryMatch:
@@ -890,7 +913,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       else:
         stack.add FALSE
     of opMatchFail:
-      raise newException(MatchError, "no matching pattern")
+      raiseMatchError(scope, "no matching pattern")
     of opForEach:
       let coll = stack.pop()
       let fp = chunk.forLoops[inst.intArg]
@@ -898,7 +921,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         let loopScope = newScope(scope)
         var binds = initTable[string, Value]()
         if not tryMatch(fp.pattern, item, loopScope, binds):
-          raise newException(MatchError, "for pattern did not match an item")
+          raiseMatchError(loopScope, "for pattern did not match an item")
         for k, v in binds: loopScope.define(k, v)
         discard run(fp.body, loopScope)
       stack.add NIL

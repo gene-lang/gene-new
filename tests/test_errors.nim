@@ -29,8 +29,9 @@ suite "errors — fail and catch":
        "catch (ParseError ^line l) \"parse\" catch _ \"other\")", "\"other\""
   test "internal errors are catchable by message shape":
     ck "(try (/ 1 0) catch {^message m} m)", "\"division by zero\""
-  test "a MatchError from the body is catchable":
-    ck "(try (var [a b] [1]) catch _ \"bad\")", "\"bad\""
+  test "a MatchError from the body is catchable by type":
+    ck "(try (var [a b] [1]) catch (MatchError ^message m) m)",
+       "\"destructuring pattern did not match\""
   test "an unmatched catch re-raises":
     expect GeneError:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -86,6 +87,11 @@ suite "errors — checked rows":
        "(impl Run Job " &
        "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &
        "(try (run (Job)) catch (Boom ^message m) m)", "\"x\""
+
+  test "checked rows can declare built-in MatchError":
+    ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &
+       "(try (first-two [1]) catch (MatchError ^message m) m)",
+       "\"destructuring pattern did not match\""
 
 suite "errors — ensure":
   test "ensure runs on success":
