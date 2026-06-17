@@ -86,7 +86,8 @@ suite "protocols — declarations and dispatch":
 
   test "type ^derive requests resolve to protocols and are retained":
     let scope = newGlobalScope()
-    discard run(compileSource("(protocol Clone) (protocol ToJson) " &
+    discard run(compileSource("(protocol Clone (derive [t req] nil)) " &
+                              "(protocol ToJson (derive [t req] nil)) " &
                               "(type User ^props {^name Str} " &
                               "  ^derive [Clone (ToJson ^skip [password])])"),
                 scope)
@@ -106,10 +107,30 @@ suite "protocols — declarations and dispatch":
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type User ^props {^name Str} ^derive ToName)")
 
-  test "^derive plumbing does not satisfy manual ^impl requirements yet":
+  test "type ^derive requires a protocol-local derive form":
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
-                     "(type User ^props {^name Str} ^impl [ToName] ^derive [ToName])")
+                     "(type User ^props {^name Str} ^derive [ToName])")
+
+  test "protocol-local derive generates impls for required protocols":
+    ck "(protocol HasLabel " &
+       "  (message label [self] : Str) " &
+       "  (derive [t : Type, req] " &
+       "    `(impl HasLabel %t " &
+       "       (message label [self] : Str self/name)))) " &
+       "(type User ^props {^name Str} ^impl [HasLabel] ^derive [HasLabel]) " &
+       "(label (User ^name \"Ada\"))",
+       "\"Ada\""
+
+  test "protocol-local derive receives option-carrying requests":
+    ck "(protocol HasLabel " &
+       "  (message label [self] : Str) " &
+       "  (derive [t : Type, req] " &
+       "    `(impl HasLabel %t " &
+       "       (message label [self] : Str %req/label)))) " &
+       "(type User ^props {^name Str} ^derive [(HasLabel ^label \"generated\")]) " &
+       "(label (User ^name \"Ada\"))",
+       "\"generated\""
 
   test "message implementation return annotations are checked":
     ck "(try (protocol ToName (message to_name [self] : Str)) " &

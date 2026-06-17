@@ -686,8 +686,7 @@ proc deriveProtocolExpr(request: Value): Value =
 proc compileType(c: var Compiler, node: Value) =
   ## (type Name ^props {...} ^is Parent ^impl [P] ^derive [P]) — field
   ## annotations and protocol references are checked at runtime. Derive requests
-  ## are retained for the later protocol-local derive pass; this MVP does not
-  ## generate impls yet.
+  ## are passed to protocol-local derive forms after the type is created.
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "type requires a name")
@@ -751,14 +750,24 @@ proc compileProtocol(c: var Compiler, node: Value) =
   let name = body[0].symVal
   var messageNames: seq[string]
   var seen = initTable[string, bool]()
+  var deriveFn: FunctionProto
   for i in 1 ..< body.len:
+    if body[i].kind == vkNode and body[i].head.isSymbol("derive"):
+      if deriveFn != nil:
+        raise newException(GeneError, "protocol has duplicate derive form")
+      if body[i].body.len == 0 or body[i].body[0].kind != vkList:
+        raise newException(GeneError, "derive requires a parameter vector")
+      deriveFn = buildFunctionProto(name & "/derive", body[i].body[0],
+                                    body[i].body, 1)
+      continue
     let message = messageName(body[i])
     if seen.hasKey(message):
       raise newException(GeneError, "duplicate protocol message: " & message)
     seen[message] = true
     messageNames.add message
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
-                                              messageNames: messageNames))
+                                              messageNames: messageNames,
+                                              deriveFn: deriveFn))
   discard c.emit(opMakeProtocol, idx)
   discard c.emit(opDefineName, name = name)
 

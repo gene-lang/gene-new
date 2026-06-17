@@ -867,6 +867,30 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
   else:
     raise newException(GeneError, "node splice expects a list, map, or node")
 
+proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value
+
+proc runGeneratedDeriveDecl(scope: Scope, decl: Value) =
+  if decl.kind != vkNode:
+    raise newException(GeneError, "derive generated declarations must be nodes")
+  discard run(compileForm(decl), scope, validateImplRequirements = false)
+
+proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
+  let deriveFn = protocol.protocolDeriveFn
+  if deriveFn.kind == vkNil:
+    raise newException(GeneError,
+      "protocol " & protocol.protocolName & " has no derive form")
+  let generated = applyCall(deriveFn, @[typ, request], NamedArgs(), scope)
+  case generated.kind
+  of vkNil, vkVoid:
+    discard
+  of vkNode:
+    runGeneratedDeriveDecl(scope, generated)
+  of vkList:
+    for decl in generated.listItems:
+      runGeneratedDeriveDecl(scope, decl)
+  else:
+    raise newException(GeneError, "derive must return a declaration node or list")
+
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   var stack: seq[Value]
   var ip = 0
@@ -1004,10 +1028,16 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
                         derivedProtocols, proto.deriveRequests)
       if proto.requiredImplCount > 0:
         scope.requiredImplTypes.add typ
+      for i, protocol in derivedProtocols:
+        applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
       stack.add typ
     of opMakeProtocol:
       let proto = chunk.protocolProtos[inst.intArg]
-      let protocol = newProtocol(proto.name, proto.messageNames)
+      var deriveFn = NIL
+      if proto.deriveFn != nil:
+        deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
+                               proto.deriveFn, scope)
+      let protocol = newProtocol(proto.name, proto.messageNames, deriveFn)
       for _, message in protocol.protocolMessages:
         scope.define(message.protocolMessageName, message)
       stack.add protocol

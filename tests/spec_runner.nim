@@ -59,6 +59,17 @@ suite "spec — templates from design":
     check_eval("(var body [(quote (p \"a\")) (quote (p \"b\"))]) `(div %body...)",
                "(div (p \"a\") (p \"b\"))")
 
+suite "spec — protocol derive from design":
+  test "protocol-local derive can generate an impl":
+    check_eval("(protocol HasLabel " &
+               "  (message label [self] : Str) " &
+               "  (derive [t : Type, req] " &
+               "    `(impl HasLabel %t " &
+               "       (message label [self] : Str self/name)))) " &
+               "(type MenuItem ^props {^name Str} ^derive [HasLabel]) " &
+               "(label (MenuItem ^name \"Soup\"))",
+               "\"Soup\"")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

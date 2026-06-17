@@ -61,7 +61,7 @@ participates in equality or hashing.
   returns, and typed construction, positional/named/rest/default function
   arguments, MVP protocol declarations with `Error`/`Send` marker protocols,
   nominal message dispatch, parent-type implementation applicability, ambiguity
-  checks, `^impl` requirement checks, and `^derive` request validation/retention,
+  checks, `^impl` requirement checks, and protocol-local `^derive` execution,
   static and dynamic selector/slash-path access,
   functional selector updates, namespaces with qualified access, file-based
   modules (`import … from "path"`) with a load-once cache and cycle detection,

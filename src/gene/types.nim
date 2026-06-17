@@ -231,6 +231,7 @@ type
   ProtocolData = ref object of GeneObjectData
     name: string
     messages: OrderedTable[string, Value]
+    deriveFn: Value
 
   ProtocolMessageData = ref object of GeneObjectData
     name: string
@@ -583,6 +584,11 @@ proc protocolMessages*(v: Value): lent OrderedTable[string, Value] =
     raise newException(FieldDefect, "value is not a Protocol")
   ProtocolData(objData(v)).messages
 
+proc protocolDeriveFn*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  ProtocolData(objData(v)).deriveFn
+
 proc protocolMessageName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
     raise newException(FieldDefect, "value is not a ProtocolMessage")
@@ -719,9 +725,11 @@ proc newProtocolMessage*(protocol: Value, name: string): Value =
                                 name: name,
                                 protocol: protocol))
 
-proc newProtocol*(name: string, messageNames: openArray[string]): Value =
+proc newProtocol*(name: string, messageNames: openArray[string],
+                  deriveFn: Value = NIL): Value =
   var messages = initOrderedTable[string, Value]()
-  let data = ProtocolData(objKind: okProtocol, name: name, messages: messages)
+  let data = ProtocolData(objKind: okProtocol, name: name, messages: messages,
+                          deriveFn: deriveFn)
   let protocol = boxObject(data)
   for messageName in messageNames:
     data.messages[messageName] = newProtocolMessage(protocol, messageName)
