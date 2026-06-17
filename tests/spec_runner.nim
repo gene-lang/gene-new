@@ -90,6 +90,16 @@ suite "spec — cells from design":
                " (count ~ Cell/get)]",
                "[0 10 10 21 21]")
 
+suite "spec — atomic cells from design":
+  test "AtomicCell load, store, swap, and compare-exchange are explicit mutation":
+    check_eval("(var state (atomic-cell 0)) " &
+               "[(state ~ AtomicCell/load) " &
+               " (state ~ AtomicCell/store 1) " &
+               " (state ~ AtomicCell/swap 2) " &
+               " (state ~ AtomicCell/compare-exchange 2 3) " &
+               " (state ~ AtomicCell/load)]",
+               "[0 1 1 true 3]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

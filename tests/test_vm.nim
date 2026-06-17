@@ -525,6 +525,38 @@ suite "vm — cells":
     expect GeneError: discard runStr("(Cell/get 1)")
     expect GeneError: discard runStr("(Cell/set (cell 1))")
 
+suite "vm — atomic cells":
+  test "atomic cell values are opaque display values":
+    ck "(atomic-cell 0)", "(atomic-cell)"
+
+  test "atomic cell load, store, and swap mutate the referenced value":
+    ck "(var a (atomic-cell 0)) " &
+       "[(a ~ AtomicCell/load) (a ~ AtomicCell/store 10) " &
+       " (a ~ AtomicCell/swap 20) (a ~ AtomicCell/load)]",
+       "[0 10 10 20]"
+
+  test "atomic compare-exchange stores when the expected value matches":
+    ck "(var a (atomic-cell 2)) " &
+       "[(a ~ AtomicCell/compare-exchange 2 3) " &
+       " (a ~ AtomicCell/load) " &
+       " (a ~ AtomicCell/compare-exchange 2 4) " &
+       " (a ~ AtomicCell/load)]",
+       "[true 3 false 3]"
+
+  test "atomic cells compare by identity":
+    ck "(var a (atomic-cell 1)) (var b (atomic-cell 1)) [(= a a) (= a b)]",
+       "[true false]"
+
+  test "AtomicCell annotations accept atomic cells only":
+    ck "(fn read [a : AtomicCell] (a ~ AtomicCell/load)) (read (atomic-cell 3))",
+       "3"
+    expect GeneError:
+      discard runStr("(fn read [a : AtomicCell] a) (read (cell 3))")
+
+  test "atomic cell operations require atomic cells":
+    expect GeneError: discard runStr("(AtomicCell/load 1)")
+    expect GeneError: discard runStr("(AtomicCell/store (atomic-cell 1))")
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous

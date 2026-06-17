@@ -57,6 +57,7 @@ type
     vkNamespace ## named binding container (module root or nested `ns`)
     vkEnv       ## first-class eval environment (design Section 11.1 MVP)
     vkCell      ## first-class mutable reference (design Section 12.2)
+    vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -200,6 +201,7 @@ type
     okNamespace
     okEnv
     okCell
+    okAtomicCell
     okType
     okProtocol
     okProtocolMessage
@@ -398,6 +400,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okNamespace: vkNamespace
     of okEnv: vkEnv
     of okCell: vkCell
+    of okAtomicCell: vkAtomicCell
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -552,6 +555,16 @@ proc cellValue*(v: Value): Value =
 proc setCellValue*(v, newValue: Value) =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okCell:
     raise newException(FieldDefect, "value is not a Cell")
+  CellData(objData(v)).value = newValue
+
+proc atomicCellValue*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okAtomicCell:
+    raise newException(FieldDefect, "value is not an AtomicCell")
+  CellData(objData(v)).value
+
+proc setAtomicCellValue*(v, newValue: Value) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okAtomicCell:
+    raise newException(FieldDefect, "value is not an AtomicCell")
   CellData(objData(v)).value = newValue
 
 proc typeName*(v: Value): lent string =
@@ -719,6 +732,9 @@ proc newEnv*(bindings: sink Table[string, Value],
 
 proc newCell*(value: Value): Value =
   boxObject(CellData(objKind: okCell, value: value))
+
+proc newAtomicCell*(value: Value): Value =
+  boxObject(CellData(objKind: okAtomicCell, value: value))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,

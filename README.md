@@ -69,10 +69,12 @@ participates in equality or hashing.
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
-  recursion, first-class `Cell` mutable references, quasiquote templates with runtime `unquote`/splicing, first-class `Env` values with explicit `eval node ^in env`,
+  recursion, first-class `Cell`/`AtomicCell` mutable references, quasiquote templates with runtime `unquote`/splicing, first-class `Env` values with explicit `eval node ^in env`,
   `gene run` entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
   (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
-  update-in panic cell Cell/get Cell/set Cell/swap Cell/update print println`).
+  update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
+  AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
+  print println`).
 
 ## Quick start
 

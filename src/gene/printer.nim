@@ -104,6 +104,8 @@ proc print*(v: Value): string =
     "(env)"
   of vkCell:
     "(cell)"
+  of vkAtomicCell:
+    "(atomic-cell)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

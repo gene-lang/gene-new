@@ -220,6 +220,45 @@ proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
   args[0].setCellValue(next)
   next
 
+proc requireAtomicCell(name: string, value: Value) =
+  if value.kind != vkAtomicCell:
+    raise newException(GeneError, name & " expects an AtomicCell")
+
+proc biAtomicCell(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("atomic-cell", args)
+  newAtomicCell(args[0])
+
+proc biAtomicCellLoad(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("AtomicCell/load", args)
+  requireAtomicCell("AtomicCell/load", args[0])
+  args[0].atomicCellValue
+
+proc biAtomicCellStore(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "AtomicCell/store expects 2 arguments, got " & $args.len)
+  requireAtomicCell("AtomicCell/store", args[0])
+  args[0].setAtomicCellValue(args[1])
+  args[1]
+
+proc biAtomicCellSwap(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "AtomicCell/swap expects 2 arguments, got " & $args.len)
+  requireAtomicCell("AtomicCell/swap", args[0])
+  let old = args[0].atomicCellValue
+  args[0].setAtomicCellValue(args[1])
+  old
+
+proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "AtomicCell/compare-exchange expects 3 arguments, got " & $args.len)
+  requireAtomicCell("AtomicCell/compare-exchange", args[0])
+  if same(args[0].atomicCellValue, args[1]):
+    args[0].setAtomicCellValue(args[2])
+    TRUE
+  else:
+    FALSE
+
 proc copyItems(items: openArray[Value]): seq[Value] =
   result = newSeq[Value](items.len)
   for i, item in items:
@@ -493,6 +532,14 @@ proc newGlobalScope*(): Scope =
   cellScope.define("swap", newNativeFn("Cell/swap", biCellSwap))
   cellScope.define("update", newNativeFn("Cell/update", biCellUpdate))
   result.define("Cell", newNamespace("Cell", cellScope))
+  result.define("atomic-cell", newNativeFn("atomic-cell", biAtomicCell))
+  let atomicCellScope = newScope(result)
+  atomicCellScope.define("load", newNativeFn("AtomicCell/load", biAtomicCellLoad))
+  atomicCellScope.define("store", newNativeFn("AtomicCell/store", biAtomicCellStore))
+  atomicCellScope.define("swap", newNativeFn("AtomicCell/swap", biAtomicCellSwap))
+  atomicCellScope.define("compare-exchange",
+    newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
+  result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
   result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
   result.define("update-in", newNativeFn("update-in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
@@ -1330,6 +1377,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkEnv)
   of "Cell":
     (true, value.kind == vkCell)
+  of "AtomicCell":
+    (true, value.kind == vkAtomicCell)
   else:
     (false, false)
 
