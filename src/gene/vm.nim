@@ -179,6 +179,42 @@ proc biMeta(args: openArray[Value]): Value {.nimcall.} =
   requireOne("meta", args)
   newMap(metaOf(args[0]))
 
+proc requireCell(name: string, value: Value) =
+  if value.kind != vkCell:
+    raise newException(GeneError, name & " expects a Cell")
+
+proc biCell(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("cell", args)
+  newCell(args[0])
+
+proc biCellGet(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Cell/get", args)
+  requireCell("Cell/get", args[0])
+  args[0].cellValue
+
+proc biCellSet(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Cell/set expects 2 arguments, got " & $args.len)
+  requireCell("Cell/set", args[0])
+  args[0].setCellValue(args[1])
+  args[1]
+
+proc biCellSwap(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Cell/swap expects 2 arguments, got " & $args.len)
+  requireCell("Cell/swap", args[0])
+  let old = args[0].cellValue
+  args[0].setCellValue(args[1])
+  old
+
+proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Cell/update expects 2 arguments, got " & $args.len)
+  requireCell("Cell/update", args[0])
+  let next = applyCall(args[1], @[args[0].cellValue], NamedArgs())
+  args[0].setCellValue(next)
+  next
+
 proc copyItems(items: openArray[Value]): seq[Value] =
   result = newSeq[Value](items.len)
   for i, item in items:
@@ -432,6 +468,13 @@ proc newGlobalScope*(): Scope =
   result.define("props", newNativeFn("props", biProps))
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
+  result.define("cell", newNativeFn("cell", biCell))
+  let cellScope = newScope(result)
+  cellScope.define("get", newNativeFn("Cell/get", biCellGet))
+  cellScope.define("set", newNativeFn("Cell/set", biCellSet))
+  cellScope.define("swap", newNativeFn("Cell/swap", biCellSwap))
+  cellScope.define("update", newNativeFn("Cell/update", biCellUpdate))
+  result.define("Cell", newNamespace("Cell", cellScope))
   result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
   result.define("update-in", newNativeFn("update-in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
@@ -1267,6 +1310,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkNamespace)
   of "Env":
     (true, value.kind == vkEnv)
+  of "Cell":
+    (true, value.kind == vkCell)
   else:
     (false, false)
 

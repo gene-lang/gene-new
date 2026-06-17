@@ -56,6 +56,7 @@ type
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (module root or nested `ns`)
     vkEnv       ## first-class eval environment (design Section 11.1 MVP)
+    vkCell      ## first-class mutable reference (design Section 12.2)
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -198,6 +199,7 @@ type
   ObjKind* = enum
     okNamespace
     okEnv
+    okCell
     okType
     okProtocol
     okProtocolMessage
@@ -212,6 +214,9 @@ type
   EnvData = ref object of GeneObjectData
     parent: Value         # parent Env value, or NIL
     bindings: Table[string, Value]
+
+  CellData = ref object of GeneObjectData
+    value: Value
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -392,6 +397,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     case objData(v).objKind
     of okNamespace: vkNamespace
     of okEnv: vkEnv
+    of okCell: vkCell
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -537,6 +543,16 @@ proc envBindings*(v: Value): lent Table[string, Value] =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).bindings
+
+proc cellValue*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCell:
+    raise newException(FieldDefect, "value is not a Cell")
+  CellData(objData(v)).value
+
+proc setCellValue*(v, newValue: Value) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCell:
+    raise newException(FieldDefect, "value is not a Cell")
+  CellData(objData(v)).value = newValue
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -700,6 +716,9 @@ proc newNamespace*(name: string, scope: Scope): Value =
 proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL): Value =
   boxObject(EnvData(objKind: okEnv, parent: parent, bindings: bindings))
+
+proc newCell*(value: Value): Value =
+  boxObject(CellData(objKind: okCell, value: value))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,

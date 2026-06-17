@@ -102,6 +102,8 @@ proc print*(v: Value): string =
     "(ns " & v.nsName & ")"
   of vkEnv:
     "(env)"
+  of vkCell:
+    "(cell)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

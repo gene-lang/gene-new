@@ -472,6 +472,40 @@ suite "vm — env and eval":
        "(var f (eval (quote (fn [] x)) ^in e)) (f)",
        "10"
 
+suite "vm — cells":
+  test "cell values are opaque display values":
+    ck "(cell 0)", "(cell)"
+
+  test "cell get and set mutate the referenced value":
+    ck "(var c (cell 0)) [(c ~ Cell/get) (c ~ Cell/set 10) (c ~ Cell/get)]",
+       "[0 10 10]"
+
+  test "cell swap returns the old value":
+    ck "(var c (cell \"a\")) [(c ~ Cell/swap \"b\") (c ~ Cell/get)]",
+       "[\"a\" \"b\"]"
+
+  test "cell update applies a callable and stores the result":
+    ck "(var c (cell 1)) [(c ~ Cell/update (fn [x] (+ x 1))) (c ~ Cell/get)]",
+       "[2 2]"
+
+  test "cells compare by identity":
+    ck "(var a (cell 1)) (var b (cell 1)) [(= a a) (= a b)]",
+       "[true false]"
+
+  test "Cell annotations accept cells only":
+    ck "(fn read [c : Cell] (c ~ Cell/get)) (read (cell 3))", "3"
+    expect GeneError:
+      discard runStr("(fn read [c : Cell] c) (read 3)")
+
+  test "env eval can mutate explicitly passed cells":
+    ck "(var c (cell 0)) (var e (env ^bindings {^c c})) " &
+       "(eval (quote (c ~ Cell/set 5)) ^in e) (c ~ Cell/get)",
+       "5"
+
+  test "cell operations require cells":
+    expect GeneError: discard runStr("(Cell/get 1)")
+    expect GeneError: discard runStr("(Cell/set (cell 1))")
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous

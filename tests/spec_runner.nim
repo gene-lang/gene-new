@@ -70,6 +70,16 @@ suite "spec — protocol derive from design":
                "(label (MenuItem ^name \"Soup\"))",
                "\"Soup\"")
 
+suite "spec — cells from design":
+  test "Cell get, set, swap, and update are explicit mutation":
+    check_eval("(var count (cell 0)) " &
+               "[(count ~ Cell/get) " &
+               " (count ~ Cell/set 10) " &
+               " (count ~ Cell/swap 20) " &
+               " (count ~ Cell/update (fn [x] (+ x 1))) " &
+               " (count ~ Cell/get)]",
+               "[0 10 10 21 21]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))
