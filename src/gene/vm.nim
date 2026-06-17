@@ -1093,6 +1093,34 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
   scope.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
                                messages: messages)
 
+proc sameImplMessages(a, b: ProtocolImpl): bool =
+  if a.messages.len != b.messages.len:
+    return false
+  for name, fn in a.messages:
+    if not b.messages.hasKey(name) or not same(fn, b.messages[name]):
+      return false
+  true
+
+proc makeImplsVisible(importingScope, sourceScope: Scope) =
+  for imported in sourceScope.impls:
+    var duplicate = false
+    var s = importingScope
+    while s != nil:
+      for existing in s.impls:
+        if same(existing.protocol, imported.protocol) and
+            same(existing.receiver, imported.receiver):
+          if existing.sameImplMessages(imported):
+            duplicate = true
+            break
+          raise newException(GeneError,
+            "duplicate visible impl " & imported.protocol.protocolName &
+            " for " & imported.receiver.typeName)
+      if duplicate:
+        break
+      s = s.parent
+    if not duplicate:
+      importingScope.impls.add imported
+
 proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   var s = scope
   while s != nil:
@@ -1540,6 +1568,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
           sourceNs = sourceNs.nsScope.vars.getOrDefault(spec.nsSegments[i], VOID)
       if sourceNs.kind != vkNamespace:
         raise newException(GeneError, "import source is not a namespace")
+      scope.makeImplsVisible(sourceNs.nsScope)
       if spec.alias.len > 0:
         scope.define(spec.alias, sourceNs)
       for sel in spec.selections:

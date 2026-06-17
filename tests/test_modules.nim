@@ -57,6 +57,54 @@ suite "modules — file imports":
     writeModule("mid.gene", "(import [one] from \"./base\") (fn two [] (+ (one) (one)))")
     check runProgram("(import [two] from \"./mid\") (two)").print() == "2"
 
+  test "imported modules make extension impls visible":
+    writeModule("json.gene",
+      "(protocol ToJson (message to_json [self] : Str))")
+    writeModule("model.gene",
+      "(type User ^props {^name Str})")
+    writeModule("json_ext.gene",
+      "(import [ToJson] from \"./json\") " &
+      "(import [User] from \"./model\") " &
+      "(impl ToJson User (message to_json [self] : Str self/name))")
+    check runProgram("(import [ToJson, to_json] from \"./json\") " &
+      "(import [User] from \"./model\") " &
+      "(import from \"./json_ext\" ^as ext) " &
+      "(to_json (User ^name \"Ada\"))").print() == "\"Ada\""
+
+  test "reimporting the same extension impl is idempotent":
+    writeModule("json.gene",
+      "(protocol ToJson (message to_json [self] : Str))")
+    writeModule("model.gene",
+      "(type User ^props {^name Str})")
+    writeModule("json_ext.gene",
+      "(import [ToJson] from \"./json\") " &
+      "(import [User] from \"./model\") " &
+      "(impl ToJson User (message to_json [self] : Str self/name))")
+    check runProgram("(import [ToJson, to_json] from \"./json\") " &
+      "(import [User] from \"./model\") " &
+      "(import from \"./json_ext\" ^as ext1) " &
+      "(import from \"./json_ext\" ^as ext2) " &
+      "(to_json (User ^name \"Ada\"))").print() == "\"Ada\""
+
+  test "conflicting imported extension impls are rejected":
+    writeModule("json.gene",
+      "(protocol ToJson (message to_json [self] : Str))")
+    writeModule("model.gene",
+      "(type User ^props {^name Str})")
+    writeModule("json_ext_a.gene",
+      "(import [ToJson] from \"./json\") " &
+      "(import [User] from \"./model\") " &
+      "(impl ToJson User (message to_json [self] : Str self/name))")
+    writeModule("json_ext_b.gene",
+      "(import [ToJson] from \"./json\") " &
+      "(import [User] from \"./model\") " &
+      "(impl ToJson User (message to_json [self] : Str \"other\"))")
+    expect GeneError:
+      discard runProgram("(import [ToJson] from \"./json\") " &
+        "(import [User] from \"./model\") " &
+        "(import from \"./json_ext_a\" ^as a) " &
+        "(import from \"./json_ext_b\" ^as b)")
+
   test "package-root-relative paths (/x and bare x)":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
     check runProgram("(import [pi] from \"/math\") pi").print() == "3"
@@ -114,6 +162,16 @@ suite "modules — namespace-path imports and mod":
     initModuleContext(getTempDir())
     check run(compileSource("(ns m (var a 5)) (import m ^as mm) mm/a"),
       newGlobalScope()).print() == "5"
+
+  test "namespace imports make extension impls visible":
+    initModuleContext(getTempDir())
+    check run(compileSource(
+      "(protocol Show (message show [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(ns ext (impl Show T (message show [self] : Str \"ok\"))) " &
+      "(import ext ^as imported) " &
+      "(show (T))"),
+      newGlobalScope()).print() == "\"ok\""
 
   test "mod header runs its body":
     initModuleContext(getTempDir())
