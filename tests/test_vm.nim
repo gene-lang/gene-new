@@ -583,6 +583,32 @@ suite "vm — streams":
        "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
        "[[\"a\" 1] [\"b\" 2] false]"
 
+  test "stream map transforms pulled values":
+    ck "(var s (map (to_stream [1 2 3]) (fn [x] (* x 2)))) " &
+       "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/next) " &
+       " (s ~ Stream/has_next)]",
+       "[2 4 6 false]"
+
+  test "stream map skips void results":
+    ck "(var s (map (to_stream [1 2]) (fn [x] (if (= x 1) void x)))) " &
+       "[(s ~ Stream/next) (s ~ Stream/has_next)]",
+       "[2 false]"
+
+  test "stream filter keeps truthy predicate results":
+    ck "(var s (filter (to_stream [1 2 3]) (fn [x] (> x 1)))) " &
+       "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+       "[2 3 false]"
+
+  test "stream take limits pulled values":
+    ck "(var s (take (to_stream [1 2 3]) 2)) " &
+       "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+       "[1 2 false]"
+
+  test "stream into materializes list and map targets":
+    ck "[(into (to_stream [2 3]) [1]) " &
+       " (into (to_pairs_stream {^b 2}) {^a 1})]",
+       "[[1 2 3] {^a 1 ^b 2}]"
+
   test "stream next and peek raise EndOfStream shape":
     ck "(try (var s (to_stream [])) (s ~ Stream/next) " &
        "catch (EndOfStream ^message m) m)",
@@ -602,6 +628,12 @@ suite "vm — streams":
     expect GeneError: discard runStr("(Stream/next [1])")
     expect GeneError: discard runStr("(to_stream {^a 1})")
     expect GeneError: discard runStr("(to_pairs_stream [1])")
+    expect GeneError: discard runStr("(map [1] (fn [x] x))")
+    expect GeneError: discard runStr("(filter [1] (fn [x] true))")
+    expect GeneError: discard runStr("(take [1] 1)")
+    expect GeneError: discard runStr("(take (to_stream [1]) -1)")
+    expect GeneError: discard runStr("(into [1] [])")
+    expect GeneError: discard runStr("(into (to_stream [1]) {})")
 
 suite "vm — printer view of callables":
   test "functions print a display form":

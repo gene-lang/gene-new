@@ -115,6 +115,18 @@ suite "spec — streams from design":
                "catch (EndOfStream ^message m) m)",
                "\"end of stream\"")
 
+  test "stream helpers map, filter, take, and materialize":
+    check_eval("(var s (take " &
+               "  (filter " &
+               "    (map (to_stream [1 2 3]) (fn [x] (+ x 1))) " &
+               "    (fn [x] (> x 2))) " &
+               "  2)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next) " &
+               " (into (to_pairs_stream {^a 1}) {})]",
+               "[3 4 false {^a 1}]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

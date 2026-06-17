@@ -75,8 +75,8 @@ participates in equality or hashing.
   (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
   update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
   AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
-  to_stream to_pairs_stream Stream/has_next Stream/peek Stream/next Stream/close
-  print println`).
+  to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
+  Stream/next Stream/close print println`).
 
 ## Quick start
 

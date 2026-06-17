@@ -336,6 +336,67 @@ proc keySegment(name: string, segment: Value): string =
     raise newException(GeneError,
       name & " expects a symbol/string path segment, got " & $segment.kind)
 
+proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "map expects 2 arguments, got " & $args.len)
+  requireStream("map", args[0])
+  var items: seq[Value]
+  while args[0].streamHasNext:
+    items.add applyCall(args[1], @[args[0].streamNext], NamedArgs())
+  newStream(items)
+
+proc biStreamFilter(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "filter expects 2 arguments, got " & $args.len)
+  requireStream("filter", args[0])
+  var items: seq[Value]
+  while args[0].streamHasNext:
+    let item = args[0].streamNext
+    if applyCall(args[1], @[item], NamedArgs()).isTruthy:
+      items.add item
+  newStream(items)
+
+proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "take expects 2 arguments, got " & $args.len)
+  requireStream("take", args[0])
+  if args[1].kind != vkInt:
+    raise newException(GeneError, "take expects an Int count")
+  var remaining = args[1].intVal
+  if remaining < 0:
+    raise newException(GeneError, "take count must be non-negative")
+  var items: seq[Value]
+  while remaining > 0 and args[0].streamHasNext:
+    items.add args[0].streamNext
+    dec remaining
+  newStream(items)
+
+proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "into expects 2 arguments, got " & $args.len)
+  requireStream("into", args[0])
+  case args[1].kind
+  of vkList:
+    var items = copyItems(args[1].listItems)
+    while args[0].streamHasNext:
+      items.add args[0].streamNext
+    newList(items, args[1].listImmutable)
+  of vkMap:
+    var entries = copyEntries(args[1].mapEntries)
+    while args[0].streamHasNext:
+      let pair = args[0].streamNext
+      if pair.kind != vkList or pair.listItems.len != 2:
+        raise newException(GeneError, "into Map expects [key value] stream items")
+      let key = keySegment("into", pair.listItems[0])
+      let val = pair.listItems[1]
+      if val.kind == vkVoid:
+        entries.del(key)
+      else:
+        entries[key] = val
+    newMap(entries, args[1].mapImmutable)
+  else:
+    raise newException(GeneError, "into expects a List or Map target")
+
 proc readIndex(items: openArray[Value], rawIndex: int64): Value =
   var idx = rawIndex
   if idx < 0:
@@ -599,6 +660,10 @@ proc newGlobalScope*(): Scope =
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
+  result.define("map", newNativeFn("map", biStreamMap))
+  result.define("filter", newNativeFn("filter", biStreamFilter))
+  result.define("take", newNativeFn("take", biStreamTake))
+  result.define("into", newNativeFn("into", biStreamInto))
   let streamScope = newScope(result)
   streamScope.define("has_next", newNativeFn("Stream/has_next", biStreamHasNext))
   streamScope.define("peek", newNativeFn("Stream/peek", biStreamPeek))
