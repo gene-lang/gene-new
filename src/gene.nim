@@ -7,7 +7,7 @@
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
 
-import std/[os]
+import std/[os, tables]
 import gene/[compiler, gir, printer, reader, types, vm]
 
 proc usage() =
@@ -51,15 +51,32 @@ proc commandArgs(first: int): seq[string] =
     for i in first .. paramCount():
       result.add paramStr(i)
 
-proc exitFromMain(value: Value) =
+proc raiseMainReturnTypeError(scope: Scope, value: Value) =
+  let message = "main return expected Nil or Int, got " & $value.kind
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  props["where"] = newStr("main return")
+  props["expected"] = newStr("Nil or Int")
+  props["actual"] = newStr($value.kind)
+  var head = newSym("TypeError")
+  var typeError: Value
+  if scope.lookupOptional("TypeError", typeError) and typeError.kind == vkType:
+    head = typeError
+  var e: ref GeneError
+  new(e)
+  e.msg = "TypeError: " & message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
+proc exitFromMain(scope: Scope, value: Value) =
   case value.kind
   of vkNil:
     discard
   of vkInt:
     quit(int(value.intVal))
   else:
-    raise newException(GeneError,
-      "main must return nil or int, got " & $value.kind)
+    raiseMainReturnTypeError(scope, value)
 
 proc cmdRun(path: string, args: openArray[string] = []) =
   let src = readSourceFile(path)
@@ -76,7 +93,7 @@ proc cmdRun(path: string, args: openArray[string] = []) =
           mainBinding.call()
         else:
           mainBinding.call(@[argsList(args)])
-      exitFromMain(result)
+      exitFromMain(scope, result)
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)
