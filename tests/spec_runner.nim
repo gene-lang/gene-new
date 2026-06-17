@@ -55,6 +55,10 @@ suite "spec — templates from design":
   test "eval executes generated template nodes":
     check_eval("(var x 40) (eval `(+ %x 2) ^in (env))", "42")
 
+  test "quasiquote unquote-splicing merges generated bodies":
+    check_eval("(var body [(quote (p \"a\")) (quote (p \"b\"))]) `(div %body...)",
+               "(div (p \"a\") (p \"b\"))")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

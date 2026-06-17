@@ -839,6 +839,34 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       "ambiguous impl " & protocol.protocolName & " for " & recvType.typeName)
   matches[0]
 
+proc appendSplicedBody(target: var seq[Value], value: Value) =
+  case value.kind
+  of vkList:
+    for item in value.listItems:
+      target.add item
+  of vkNode:
+    for item in value.body:
+      target.add item
+  else:
+    raise newException(GeneError, "splice expects a list or node")
+
+proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
+                          value: Value) =
+  case value.kind
+  of vkList:
+    for item in value.listItems:
+      body.add item
+  of vkMap:
+    for key, item in value.mapEntries:
+      props[key] = item
+  of vkNode:
+    for key, item in value.props:
+      props[key] = item
+    for item in value.body:
+      body.add item
+  else:
+    raise newException(GeneError, "node splice expects a list, map, or node")
+
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   var stack: seq[Value]
   var ip = 0
@@ -866,6 +894,19 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         for i in countdown(inst.intArg - 1, 0):
           items[i] = stack.pop()
       stack.add newList(items, inst.flag)
+    of opMakeListSplice:
+      let proto = chunk.listBuilds[inst.intArg]
+      var parts = newSeq[Value](proto.splices.len)
+      if proto.splices.len > 0:
+        for i in countdown(proto.splices.len - 1, 0):
+          parts[i] = stack.pop()
+      var items: seq[Value]
+      for i, part in parts:
+        if proto.splices[i]:
+          appendSplicedBody(items, part)
+        else:
+          items.add part
+      stack.add newList(items, proto.immutable)
     of opMakeMap:
       var values = newSeq[Value](inst.intArg)
       if inst.intArg > 0:
@@ -877,10 +918,10 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       stack.add newMap(entries, inst.flag)
     of opMakeNode:
       let proto = chunk.nodeBuilds[inst.intArg]
-      var body = newSeq[Value](proto.bodyCount)
+      var bodyParts = newSeq[Value](proto.bodyCount)
       if proto.bodyCount > 0:
         for i in countdown(proto.bodyCount - 1, 0):
-          body[i] = stack.pop()
+          bodyParts[i] = stack.pop()
       var props = initOrderedTable[string, Value]()
       if proto.propNames.len > 0:
         var propValues = newSeq[Value](proto.propNames.len)
@@ -896,6 +937,12 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         for i, key in proto.metaNames:
           meta[key] = metaValues[i]
       let head = stack.pop()
+      var body: seq[Value]
+      for i, part in bodyParts:
+        if proto.bodySplices.len > 0 and proto.bodySplices[i]:
+          mergeSplicedNodePart(props, body, part)
+        else:
+          body.add part
       stack.add newNode(head, props = props, body = body, meta = meta,
                         immutable = proto.immutable)
     of opMakeSelector:

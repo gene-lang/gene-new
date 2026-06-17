@@ -436,6 +436,17 @@ proc compileEval(c: var Compiler, node: Value) =
 
 proc compileQuasiTemplate(c: var Compiler, value: Value, depth: int)
 
+proc quasiSpliceExpr(value: Value, depth: int): tuple[splice: bool, expr: Value] =
+  if depth != 1 or value.kind != vkNode or not value.head.isSymbol("unquote"):
+    return
+  if value.body.len != 1:
+    raise newException(GeneError, "unquote requires one expression")
+  let inner = value.body[0]
+  if inner.kind == vkNode and inner.head.isSymbol("..."):
+    if inner.body.len != 1:
+      raise newException(GeneError, "splice requires one expression")
+    return (true, inner.body[0])
+
 proc compileQuasiMap(c: var Compiler, value: Value, depth: int) =
   var keys: seq[string]
   for key, item in value.mapEntries:
@@ -444,9 +455,23 @@ proc compileQuasiMap(c: var Compiler, value: Value, depth: int) =
   discard c.emit(opMakeMap, keys.len, names = keys, flag = value.mapImmutable)
 
 proc compileQuasiList(c: var Compiler, value: Value, depth: int) =
+  var splices: seq[bool]
+  var hasSplice = false
   for item in value.listItems:
-    compileQuasiTemplate(c, item, depth)
-  discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
+    let splice = item.quasiSpliceExpr(depth)
+    if splice.splice:
+      compileExpr(c, splice.expr)
+      splices.add true
+      hasSplice = true
+    else:
+      compileQuasiTemplate(c, item, depth)
+      splices.add false
+  if hasSplice:
+    let idx = c.chunk.addListBuild(ListBuildProto(splices: splices,
+                                                  immutable: value.listImmutable))
+    discard c.emit(opMakeListSplice, idx)
+  else:
+    discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
 proc compileQuasiNodeParts(c: var Compiler, node: Value, depth: int) =
   compileQuasiTemplate(c, node.head, depth)
@@ -458,11 +483,22 @@ proc compileQuasiNodeParts(c: var Compiler, node: Value, depth: int) =
   for key, item in node.props:
     propNames.add key
     compileQuasiTemplate(c, item, depth)
+  var bodySplices: seq[bool]
+  var hasBodySplice = false
   for item in node.body:
-    compileQuasiTemplate(c, item, depth)
+    let splice = item.quasiSpliceExpr(depth)
+    if splice.splice:
+      compileExpr(c, splice.expr)
+      bodySplices.add true
+      hasBodySplice = true
+    else:
+      compileQuasiTemplate(c, item, depth)
+      bodySplices.add false
   let idx = c.chunk.addNodeBuild(NodeBuildProto(metaNames: metaNames,
                                                 propNames: propNames,
                                                 bodyCount: node.body.len,
+                                                bodySplices:
+                                                  (if hasBodySplice: bodySplices else: @[]),
                                                 immutable: node.nodeImmutable))
   discard c.emit(opMakeNode, idx)
 

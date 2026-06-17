@@ -78,6 +78,14 @@ suite "compiler — GIR emission":
         sawMakeNode = true
     check sawMakeNode
 
+  test "emits runtime construction for quasiquote list splices":
+    let chunk = compileSource("`[(unquote (... xs)) tail]")
+    var sawMakeListSplice = false
+    for inst in chunk.instructions:
+      if inst.op == opMakeListSplice:
+        sawMakeListSplice = true
+    check sawMakeListSplice
+
   test "emits optional and default parameter specs":
     let fnChunk = compileSource("(fn f [x y? ^scale = (+ x 1)] [x y scale])")
     let proto = fnChunk.functions[0]
@@ -148,6 +156,25 @@ suite "vm — quasiquote templates":
   test "nested quasiquote preserves inner unquote depth":
     ck "(var x 1) `(outer `(inner %x) %x)",
        "(outer (quasiquote (inner (unquote x))) 1)"
+
+  test "quasiquote splices list values into node bodies":
+    ck "(var xs [1 2]) `(items %xs... 3)", "(items 1 2 3)"
+
+  test "quasiquote splices map and node anatomy into nodes":
+    ck "(var attrs {^class \"red\" ^id \"x\"}) `(div %attrs... \"hi\")",
+       "(div ^class \"red\" ^id \"x\" \"hi\")"
+    ck "(var child (quote (span ^role \"item\" \"a\" \"b\"))) `(div %child...)",
+       "(div ^role \"item\" \"a\" \"b\")"
+
+  test "quasiquote splices list values into list literals":
+    ck "(var xs [1 2]) `[(unquote (... xs)) 3]", "[1 2 3]"
+
+  test "nested quasiquote preserves inner splice depth":
+    ck "(var xs [1 2]) `(outer `(inner %xs...))",
+       "(outer (quasiquote (inner (unquote (... xs)))))"
+
+  test "quasiquote rejects scalar splices":
+    expect GeneError: discard runStr("(var x 1) `(items %x...)")
 
   test "eval executes generated template nodes":
     ck "(var x 7) (var t `(+ %x 5)) (eval t ^in (env))", "12"

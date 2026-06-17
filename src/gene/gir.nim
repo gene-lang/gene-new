@@ -15,6 +15,7 @@ type
     opSetName
     opPop
     opMakeList
+    opMakeListSplice
     opMakeMap
     opMakeNode
     opMakeSelector
@@ -97,6 +98,11 @@ type
     metaNames*: seq[string]
     propNames*: seq[string]
     bodyCount*: int
+    bodySplices*: seq[bool]
+    immutable*: bool
+
+  ListBuildProto* = object
+    splices*: seq[bool]
     immutable*: bool
 
   TypeProto* = ref object
@@ -125,6 +131,7 @@ type
     imports*: seq[ImportSpec]
     forLoops*: seq[ForProto]
     tries*: seq[TryProto]
+    listBuilds*: seq[ListBuildProto]
     nodeBuilds*: seq[NodeBuildProto]
     typeProtos*: seq[TypeProto]
     protocolProtos*: seq[ProtocolProto]
@@ -132,8 +139,13 @@ type
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[], tries: @[], nodeBuilds: @[],
+        imports: @[], forLoops: @[], tries: @[], listBuilds: @[],
+        nodeBuilds: @[],
         typeProtos: @[], protocolProtos: @[], implProtos: @[])
+
+proc addListBuild*(chunk: Chunk, lp: ListBuildProto): int =
+  result = chunk.listBuilds.len
+  chunk.listBuilds.add lp
 
 proc addNodeBuild*(chunk: Chunk, np: NodeBuildProto): int =
   result = chunk.nodeBuilds.len
@@ -195,6 +207,8 @@ proc formatInstruction(inst: Instruction): string =
   of opMakeList:
     result.add " count=" & $inst.intArg
     if inst.flag: result.add " immutable=true"
+  of opMakeListSplice:
+    result.add " list=" & $inst.intArg
   of opMakeMap:
     result.add " count=" & $inst.intArg & " names=" & formatNames(inst.names)
     if inst.flag: result.add " immutable=true"
