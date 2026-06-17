@@ -550,9 +550,17 @@ proc compileFail(c: var Compiler, node: Value) =
   compileExpr(c, node.body[0])
   discard c.emit(opFail)
 
+proc deriveProtocolExpr(request: Value): Value =
+  if request.kind == vkNode:
+    request.head
+  else:
+    request
+
 proc compileType(c: var Compiler, node: Value) =
-  ## (type Name ^props {^id Int ^done? Bool} ^is Parent ^impl [P]) — field
-  ## annotations and required manual protocol impls are checked at runtime.
+  ## (type Name ^props {...} ^is Parent ^impl [P] ^derive [P]) — field
+  ## annotations and protocol references are checked at runtime. Derive requests
+  ## are retained for the later protocol-local derive pass; this MVP does not
+  ## generate impls yet.
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "type requires a name")
@@ -577,6 +585,19 @@ proc compileType(c: var Compiler, node: Value) =
     for protocolExpr in required.listItems:
       compileExpr(c, protocolExpr)
       inc requiredImplCount
+  var deriveProtocolCount = 0
+  var deriveRequests: seq[Value]
+  if node.props.hasKey("derive"):
+    let derived = node.props["derive"]
+    if derived.kind != vkList:
+      raise newException(GeneError, "type ^derive must be a list")
+    for request in derived.listItems:
+      let protocolExpr = deriveProtocolExpr(request)
+      if protocolExpr.kind == vkNil or protocolExpr.kind == vkVoid:
+        raise newException(GeneError, "type ^derive entries must name protocols")
+      compileExpr(c, protocolExpr)
+      deriveRequests.add request
+      inc deriveProtocolCount
   if node.props.hasKey("is"):
     compileExpr(c, node.props["is"])         # parent type value
   else:
@@ -584,7 +605,9 @@ proc compileType(c: var Compiler, node: Value) =
   discard c.emit(opMakeType,
                  c.chunk.addType(TypeProto(name: name,
                                            fields: fields,
-                                           requiredImplCount: requiredImplCount)))
+                                           requiredImplCount: requiredImplCount,
+                                           deriveProtocolCount: deriveProtocolCount,
+                                           deriveRequests: deriveRequests)))
   discard c.emit(opDefineName, name = name)
 
 proc messageName(node: Value): string =

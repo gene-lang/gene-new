@@ -73,6 +73,33 @@ suite "protocols — declarations and dispatch":
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type User ^props {^name Str} ^impl ToName)")
 
+  test "type ^derive requests resolve to protocols and are retained":
+    let scope = newGlobalScope()
+    discard run(compileSource("(protocol Clone) (protocol ToJson) " &
+                              "(type User ^props {^name Str} " &
+                              "  ^derive [Clone (ToJson ^skip [password])])"),
+                scope)
+    let user = scope.lookup("User")
+    check user.typeDerivedProtocols.len == 2
+    check user.typeDerivedProtocols[0].protocolName == "Clone"
+    check user.typeDerivedProtocols[1].protocolName == "ToJson"
+    check user.typeDeriveRequests.len == 2
+    check user.typeDeriveRequests[1].kind == vkNode
+    check user.typeDeriveRequests[1].props.len == 1
+
+  test "type ^derive entries must resolve to protocols":
+    expect GeneError:
+      discard runStr("(var NotProtocol 1) " &
+                     "(type User ^props {^name Str} ^derive [NotProtocol])")
+    expect GeneError:
+      discard runStr("(protocol ToName (message to_name [self] : Str)) " &
+                     "(type User ^props {^name Str} ^derive ToName)")
+
+  test "^derive plumbing does not satisfy manual ^impl requirements yet":
+    expect GeneError:
+      discard runStr("(protocol ToName (message to_name [self] : Str)) " &
+                     "(type User ^props {^name Str} ^impl [ToName] ^derive [ToName])")
+
   test "message implementation return annotations are checked":
     ck "(try (protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &

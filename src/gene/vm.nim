@@ -857,6 +857,13 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       let parent = stack.pop()
       if parent.kind != vkNil and parent.kind != vkType:
         raise newException(GeneError, "type ^is must be a type")
+      var derivedProtocols = newSeq[Value](proto.deriveProtocolCount)
+      if proto.deriveProtocolCount > 0:
+        for i in countdown(proto.deriveProtocolCount - 1, 0):
+          let protocol = stack.pop()
+          if protocol.kind != vkProtocol:
+            raise newException(GeneError, "type ^derive entries must be protocols")
+          derivedProtocols[i] = protocol
       var requiredProtocols = newSeq[Value](proto.requiredImplCount)
       if proto.requiredImplCount > 0:
         for i in countdown(proto.requiredImplCount - 1, 0):
@@ -864,7 +871,8 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
           if protocol.kind != vkProtocol:
             raise newException(GeneError, "type ^impl entries must be protocols")
           requiredProtocols[i] = protocol
-      let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope)
+      let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
+                        derivedProtocols, proto.deriveRequests)
       if proto.requiredImplCount > 0:
         scope.requiredImplTypes.add typ
       stack.add typ

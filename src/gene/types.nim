@@ -213,6 +213,8 @@ type
     fields: seq[TypeField]
     scope: Scope          # defining scope for resolving field type annotations
     requiredProtocols: seq[Value]
+    derivedProtocols: seq[Value]
+    deriveRequests: seq[Value]
 
   TypeField* = object
     name*: string
@@ -544,6 +546,16 @@ proc typeRequiredProtocols*(v: Value): lent seq[Value] =
     raise newException(FieldDefect, "value is not a Type")
   TypeData(objData(v)).requiredProtocols
 
+proc typeDerivedProtocols*(v: Value): lent seq[Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).derivedProtocols
+
+proc typeDeriveRequests*(v: Value): lent seq[Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).deriveRequests
+
 proc protocolName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
     raise newException(FieldDefect, "value is not a Protocol")
@@ -663,7 +675,9 @@ proc newNamespace*(name: string, scope: Scope): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
-              requiredProtocols: sink seq[Value], scope: Scope): Value =
+              requiredProtocols: sink seq[Value], scope: Scope,
+              derivedProtocols: sink seq[Value] = @[],
+              deriveRequests: sink seq[Value] = @[]): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -675,7 +689,9 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
       owned.scope = scope
     fields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
-                     scope: scope, requiredProtocols: requiredProtocols))
+                     scope: scope, requiredProtocols: requiredProtocols,
+                     derivedProtocols: derivedProtocols,
+                     deriveRequests: deriveRequests))
 
 proc newProtocolMessage*(protocol: Value, name: string): Value =
   boxObject(ProtocolMessageData(objKind: okProtocolMessage,

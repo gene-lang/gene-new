@@ -94,6 +94,8 @@ type
     name*: string
     fields*: seq[TypeField]      # own (non-inherited) field schema
     requiredImplCount*: int
+    deriveProtocolCount*: int
+    deriveRequests*: seq[Value]
 
   ProtocolProto* = ref object
     name*: string
