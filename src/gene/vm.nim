@@ -1287,7 +1287,8 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
           values[i] = stack.pop()
       var entries = initOrderedTable[string, Value]()
       for i, key in inst.names:
-        entries[key] = values[i]
+        if values[i].kind != vkVoid:
+          entries[key] = values[i]
       stack.add newMap(entries, inst.flag)
     of opMakeNode:
       let proto = chunk.nodeBuilds[inst.intArg]
@@ -1301,14 +1302,16 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         for i in countdown(proto.propNames.len - 1, 0):
           propValues[i] = stack.pop()
         for i, key in proto.propNames:
-          props[key] = propValues[i]
+          if propValues[i].kind != vkVoid:
+            props[key] = propValues[i]
       var meta = initOrderedTable[string, Value]()
       if proto.metaNames.len > 0:
         var metaValues = newSeq[Value](proto.metaNames.len)
         for i in countdown(proto.metaNames.len - 1, 0):
           metaValues[i] = stack.pop()
         for i, key in proto.metaNames:
-          meta[key] = metaValues[i]
+          if metaValues[i].kind != vkVoid:
+            meta[key] = metaValues[i]
       let head = stack.pop()
       var body: seq[Value]
       for i, part in bodyParts:
@@ -1883,10 +1886,15 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
     for f in fields:
       if named.hasArg(f.name):
         let value = named.getArg(f.name)
-        let fieldScope = if f.scope == nil: callee.typeScope else: f.scope
-        checkBoundary("field '" & f.name & "' for " & callee.typeName,
-                      f.typeExpr, value, fieldScope)
-        props[f.name] = value
+        if value.kind == vkVoid:
+          if not f.optional:
+            raise newException(GeneError,
+              "missing required field '" & f.name & "' for " & callee.typeName)
+        else:
+          let fieldScope = if f.scope == nil: callee.typeScope else: f.scope
+          checkBoundary("field '" & f.name & "' for " & callee.typeName,
+                        f.typeExpr, value, fieldScope)
+          props[f.name] = value
       elif not f.optional:
         raise newException(GeneError,
           "missing required field '" & f.name & "' for " & callee.typeName)

@@ -141,6 +141,9 @@ suite "vm — literals and self-evaluation":
     ck "[1 (+ 1 2) 3]", "[1 3 3]"
   test "map evaluates its values":
     ck "{^a (+ 1 1) ^b 3}", "{^a 2 ^b 3}"
+  test "map and node storage drops void props":
+    ck "{^a void ^b 1}", "{^b 1}"
+    ck "(quote (x ^a void ^b 1 @m void @n 2))", "(x @n 2 ^b 1)"
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
 
@@ -165,6 +168,9 @@ suite "vm — quasiquote templates":
     ck "(var h (quote button)) (var cls \"primary\") " &
        "`(%h ^class %cls {^label %cls})",
        "(button ^class \"primary\" {^label \"primary\"})"
+  test "quasiquote drops void props and map entries":
+    ck "(var skip void) `(x ^a %skip ^b 1 {^a %skip ^b 1})",
+       "(x ^b 1 {^b 1})"
 
   test "nested quasiquote preserves inner unquote depth":
     ck "(var x 1) `(outer `(inner %x) %x)",

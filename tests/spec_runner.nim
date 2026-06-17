@@ -100,6 +100,15 @@ suite "spec — atomic cells from design":
                " (state ~ AtomicCell/load)]",
                "[0 1 1 true 3]")
 
+suite "spec — void normalization from design":
+  test "void does not persist in prop storage":
+    check_eval("[{^a void ^b 1} " &
+               " (quote (x ^a void ^b 1)) " &
+               " (do (type T ^props {^a? Int}) " &
+               "     (var t (T ^a void)) " &
+               "     t/a)]",
+               "[{^b 1} (x ^b 1) void]")
+
 suite "spec — streams from design":
   test "list-backed streams expose pull operations":
     check_eval("(var s (to_stream [1 2])) " &

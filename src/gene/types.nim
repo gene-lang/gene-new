@@ -726,12 +726,25 @@ proc newList*(items: sink seq[Value] = @[], immutable = false): Value =
   p.items = items
   boxPtr(LIST_TAG, p)
 
+proc withoutVoidEntries(entries: sink PropTable): PropTable =
+  var hasVoid = false
+  for _, val in entries:
+    if val.kind == vkVoid:
+      hasVoid = true
+      break
+  if not hasVoid:
+    return entries
+  result = initOrderedTable[string, Value]()
+  for key, val in entries:
+    if val.kind != vkVoid:
+      result[key] = val
+
 proc newMap*(entries: sink PropTable = initOrderedTable[string, Value](),
              immutable = false): Value =
   let p = createObj(GeneMap)
   p.refCount = 1
   p.immutable = immutable
-  p.entries = entries
+  p.entries = withoutVoidEntries(entries)
   boxPtr(MAP_TAG, p)
 
 proc newNode*(head: Value,
@@ -743,9 +756,9 @@ proc newNode*(head: Value,
   p.refCount = 1
   p.immutable = immutable
   p.head = head
-  p.props = props
+  p.props = withoutVoidEntries(props)
   p.body = body
-  p.meta = meta
+  p.meta = withoutVoidEntries(meta)
   boxPtr(NODE_TAG, p)
 
 proc newFunction*(name: string, params: sink seq[string],
