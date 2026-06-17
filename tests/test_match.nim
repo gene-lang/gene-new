@@ -99,7 +99,7 @@ suite "loops — for":
   test "for with a destructuring pattern":
     ck "(var s 0) (for [a b] [[1 2] [3 4]] (set s (+ s (* a b)))) s", "14"
   test "for over a map yields key/value pairs":
-    ck "(var ks \"\") (for [k v] {^a 1 ^b 2} (set ks (+ 0 v))) ks", "2"
+    ck "(var pair nil) (for [k v] {^a 1} (set pair [k v])) pair", "[a 1]"
   test "for evaluates to nil":
     ck "(for x [1 2 3] x)", "nil"
   test "for over nil iterates zero times":

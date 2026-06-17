@@ -615,7 +615,7 @@ suite "vm — streams":
   test "map pairs can be streamed":
     ck "(var s (to_pairs_stream {^a 1 ^b 2})) " &
        "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
-       "[[\"a\" 1] [\"b\" 2] false]"
+       "[[a 1] [b 2] false]"
 
   test "stream map transforms pulled values":
     ck "(var s (map (to_stream [1 2 3]) (fn [x] (* x 2)))) " &

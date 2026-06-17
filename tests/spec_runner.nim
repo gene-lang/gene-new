@@ -170,8 +170,10 @@ suite "spec — streams from design":
                "[(s ~ Stream/next) " &
                " (s ~ Stream/next) " &
                " (s ~ Stream/has_next) " &
+               " (do (var pairs (to_pairs_stream {^a 1})) " &
+               "     (pairs ~ Stream/next)) " &
                " (into (to_pairs_stream {^a 1}) {})]",
-               "[3 4 false {^a 1}]")
+               "[3 4 false [a 1] {^a 1}]")
 
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &

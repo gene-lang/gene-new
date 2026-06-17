@@ -292,7 +292,7 @@ proc biToPairsStream(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "to_pairs_stream expects a Map")
   var pairs: seq[Value]
   for key, value in args[0].mapEntries:
-    pairs.add newList(@[newStr(key), value])
+    pairs.add newList(@[newSym(key), value])
   newStream(pairs)
 
 proc biStreamHasNext(args: openArray[Value]): Value {.nimcall.} =
@@ -1048,7 +1048,7 @@ proc forItems(coll: Value): seq[Value] =
   of vkNode:
     for it in coll.body: result.add it
   of vkMap:
-    for k, v in coll.mapEntries: result.add newList(@[newStr(k), v])
+    for k, v in coll.mapEntries: result.add newList(@[newSym(k), v])
   of vkStream:
     while coll.streamHasNext:
       result.add coll.streamNext
