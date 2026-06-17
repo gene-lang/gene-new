@@ -59,6 +59,9 @@ proc getArg(named: NamedArgs, name: string): Value =
 
 proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
                dispatchScope: Scope = nil): Value
+proc typeExprLabel(expr: Value): string
+proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
+proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 
 # ---------------------------------------------------------------------------
 # Built-in functions
@@ -263,6 +266,21 @@ proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
     raise newException(GeneError, name & " expects a Stream")
 
+proc checkedStreamItem(stream, item: Value, where: string): Value =
+  let itemType = stream.streamItemType
+  if itemType.kind != vkNil:
+    let itemScope = stream.streamItemScope
+    if not matchesTypeExpr(itemType, item, itemScope):
+      raiseTypeError(where, itemType.typeExprLabel, item, itemScope)
+  item
+
+proc checkedStreamPeek(stream: Value, where: string): Value =
+  checkedStreamItem(stream, stream.streamPeek, where)
+
+proc checkedStreamNext(stream: Value, where: string): Value =
+  result = checkedStreamPeek(stream, where)
+  discard stream.streamNext
+
 proc requireNamespace(name: string, value: Value) =
   if value.kind != vkNamespace:
     raise newException(GeneError, name & " expects a Namespace")
@@ -305,14 +323,14 @@ proc biStreamPeek(args: openArray[Value]): Value {.nimcall.} =
   requireStream("Stream/peek", args[0])
   if not args[0].streamHasNext:
     raiseEndOfStream()
-  args[0].streamPeek
+  checkedStreamPeek(args[0], "Stream/peek item")
 
 proc biStreamNext(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Stream/next", args)
   requireStream("Stream/next", args[0])
   if not args[0].streamHasNext:
     raiseEndOfStream()
-  args[0].streamNext
+  checkedStreamNext(args[0], "Stream/next item")
 
 proc biStreamClose(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Stream/close", args)
@@ -408,7 +426,8 @@ proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
   requireStream("map", args[0])
   var items: seq[Value]
   while args[0].streamHasNext:
-    items.add applyCall(args[1], @[args[0].streamNext], NamedArgs())
+    items.add applyCall(args[1], @[checkedStreamNext(args[0], "map item")],
+                        NamedArgs())
   newStream(items)
 
 proc biStreamFilter(args: openArray[Value]): Value {.nimcall.} =
@@ -417,7 +436,7 @@ proc biStreamFilter(args: openArray[Value]): Value {.nimcall.} =
   requireStream("filter", args[0])
   var items: seq[Value]
   while args[0].streamHasNext:
-    let item = args[0].streamNext
+    let item = checkedStreamNext(args[0], "filter item")
     if applyCall(args[1], @[item], NamedArgs()).isTruthy:
       items.add item
   newStream(items)
@@ -433,7 +452,7 @@ proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "take count must be non-negative")
   var items: seq[Value]
   while remaining > 0 and args[0].streamHasNext:
-    items.add args[0].streamNext
+    items.add checkedStreamNext(args[0], "take item")
     dec remaining
   newStream(items)
 
@@ -445,12 +464,12 @@ proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
   of vkList:
     var items = copyItems(args[1].listItems)
     while args[0].streamHasNext:
-      items.add args[0].streamNext
+      items.add checkedStreamNext(args[0], "into item")
     newList(items, args[1].listImmutable)
   of vkMap:
     var entries = copyEntries(args[1].mapEntries)
     while args[0].streamHasNext:
-      let pair = args[0].streamNext
+      let pair = checkedStreamNext(args[0], "into item")
       if pair.kind != vkList or pair.listItems.len != 2:
         raise newException(GeneError, "into Map expects [key value] stream items")
       let key = keySegment("into", pair.listItems[0])
@@ -1051,7 +1070,7 @@ proc forItems(coll: Value): seq[Value] =
     for k, v in coll.mapEntries: result.add newList(@[newSym(k), v])
   of vkStream:
     while coll.streamHasNext:
-      result.add coll.streamNext
+      result.add checkedStreamNext(coll, "for item")
   of vkNil, vkVoid:
     discard
   else:
@@ -1853,11 +1872,15 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   else:
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
 
-proc checkBoundary(where: string, typeExpr, value: Value, scope: Scope) =
+proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNil:
-    return
+    return value
   if not matchesTypeExpr(typeExpr, value, scope):
     raiseTypeError(where, typeExpr.typeExprLabel, value, scope)
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Stream") and
+      typeExpr.body.len == 2:
+    return newCheckedStream(value, typeExpr.body[0], scope)
+  value
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
   if errVal.kind != vkNode or errVal.head.kind != vkType:
@@ -1890,7 +1913,7 @@ proc staticLookup(target, segment: Value): Value =
   if target.kind == vkStream:
     var items: seq[Value]
     while target.streamHasNext:
-      let item = staticLookup(target.streamNext, segment)
+      let item = staticLookup(checkedStreamNext(target, "selector item"), segment)
       if item.kind != vkVoid:
         items.add item
     return newStream(items)
@@ -1988,16 +2011,18 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
     let callScope = newScope(callee.fnScope)
     let providedPositional = min(args.len, positional.len)
     for i in 0 ..< providedPositional:
+      var value = args[i]
       if proto.hasParamTypes and i < proto.paramTypes.len and
           proto.paramTypes[i].kind != vkNil:
-        checkBoundary("parameter '" & positional[i] & "'", proto.paramTypes[i],
-                      args[i], callScope)
-      callScope.define(positional[i], args[i])
+        value = adaptBoundary("parameter '" & positional[i] & "'",
+                              proto.paramTypes[i], value, callScope)
+      callScope.define(positional[i], value)
     for p in proto.namedParams:
       if named.hasArg(p.arg):
-        let value = named.getArg(p.arg)
+        var value = named.getArg(p.arg)
         if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
-          checkBoundary("parameter '" & p.local & "'", p.typeExpr, value, callScope)
+          value = adaptBoundary("parameter '" & p.local & "'", p.typeExpr,
+                                value, callScope)
         callScope.define(p.local, value)
     for i in providedPositional ..< positional.len:
       let fallback = proto.positionalDefault(i)
@@ -2005,11 +2030,12 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
         raise newException(GeneError,
           "function '" & callee.fnName & "' missing positional argument: " & positional[i])
       let value = fallback.defaultValue(callScope)
+      var boundValue = value
       if proto.hasParamTypes and i < proto.paramTypes.len and
           proto.paramTypes[i].kind != vkNil:
-        checkBoundary("parameter '" & positional[i] & "'", proto.paramTypes[i],
-                      value, callScope)
-      callScope.define(positional[i], value)
+        boundValue = adaptBoundary("parameter '" & positional[i] & "'",
+                                   proto.paramTypes[i], value, callScope)
+      callScope.define(positional[i], boundValue)
     if proto.restParam.len > 0:
       var rest = newSeq[Value](args.len - positional.len)
       for i in 0 ..< rest.len:
@@ -2018,9 +2044,10 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
     for p in proto.namedParams:
       if not named.hasArg(p.arg):
         if p.defaultValue.optional:
-          let value = p.defaultValue.defaultValue(callScope)
+          var value = p.defaultValue.defaultValue(callScope)
           if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
-            checkBoundary("parameter '" & p.local & "'", p.typeExpr, value, callScope)
+            value = adaptBoundary("parameter '" & p.local & "'", p.typeExpr,
+                                  value, callScope)
           callScope.define(p.local, value)
         else:
           raise newException(GeneError,
@@ -2036,8 +2063,8 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
       raise newException(GeneError,
         "function '" & callee.fnName & "' raised an undeclared error")
     if proto.hasReturnType:
-      checkBoundary("return from '" & callee.fnName & "'", proto.returnType,
-                    resultValue, callScope)
+      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+                                  proto.returnType, resultValue, callScope)
     resultValue
   of vkType:
     # Construct a typed instance: a node with the type as head, validated props.
@@ -2055,9 +2082,9 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
               "missing required field '" & f.name & "' for " & callee.typeName)
         else:
           let fieldScope = if f.scope == nil: callee.typeScope else: f.scope
-          checkBoundary("field '" & f.name & "' for " & callee.typeName,
-                        f.typeExpr, value, fieldScope)
-          props[f.name] = value
+          props[f.name] = adaptBoundary("field '" & f.name & "' for " &
+                                        callee.typeName, f.typeExpr, value,
+                                        fieldScope)
       elif not f.optional:
         raise newException(GeneError,
           "missing required field '" & f.name & "' for " & callee.typeName)

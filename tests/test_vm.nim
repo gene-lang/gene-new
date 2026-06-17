@@ -660,6 +660,17 @@ suite "vm — streams":
     ck "(fn first [s : Stream] (s ~ Stream/next)) (first (to_stream [3]))", "3"
     ck "(fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &
        "(first (to_stream [4]))", "4"
+    ck "(fn accept [s : (Stream Int Never)] 7) " &
+       "(accept (to_stream [\"bad\"]))", "7"
+    ck "(try (fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &
+       "     (first (to_stream [\"bad\"])) " &
+       "catch (TypeError ^where w) w)",
+       "\"Stream/next item\""
+    ck "(try (fn typed [s] : (Stream Int Never) s) " &
+       "     (var s (typed (to_stream [\"bad\"]))) " &
+       "     (s ~ Stream/next) " &
+       "catch (TypeError ^expected e) e)",
+       "\"Int\""
     expect GeneError:
       discard runStr("(fn first [s : Stream] s) (first [1])")
 

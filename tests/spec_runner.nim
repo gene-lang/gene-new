@@ -185,6 +185,12 @@ suite "spec — streams from design":
                " (into (to_pairs_stream {^a 1}) {})]",
                "[3 4 false [a 1] {^a 1}]")
 
+  test "typed stream boundaries check items when pulled":
+    check_eval("(try (fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &
+               "     (first (to_stream [\"bad\"])) " &
+               "catch (TypeError ^where w) w)",
+               "\"Stream/next item\"")
+
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
                "(var names users/%to_stream/name) " &

@@ -234,6 +234,9 @@ type
     items: seq[Value]
     index: int
     closed: bool
+    source: Value
+    itemType: Value
+    itemScope: Scope
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -595,6 +598,8 @@ proc skipStreamVoids(data: StreamData) =
 
 proc streamHasNext*(v: Value): bool =
   let data = streamData(v)
+  if data.source.kind == vkStream:
+    return not data.closed and data.source.streamHasNext()
   data.skipStreamVoids()
   not data.closed and data.index < data.items.len
 
@@ -602,16 +607,31 @@ proc streamPeek*(v: Value): Value =
   if not v.streamHasNext:
     raise newException(FieldDefect, "stream is exhausted")
   let data = streamData(v)
+  if data.source.kind == vkStream:
+    return data.source.streamPeek
   data.items[data.index]
 
 proc streamNext*(v: Value): Value =
   result = v.streamPeek
-  inc streamData(v).index
+  let data = streamData(v)
+  if data.source.kind == vkStream:
+    discard data.source.streamNext
+  else:
+    inc data.index
 
 proc closeStream*(v: Value) =
   let data = streamData(v)
   data.closed = true
-  data.index = data.items.len
+  if data.source.kind == vkStream:
+    data.source.closeStream()
+  else:
+    data.index = data.items.len
+
+proc streamItemType*(v: Value): Value =
+  streamData(v).itemType
+
+proc streamItemScope*(v: Value): Scope =
+  streamData(v).itemScope
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -797,6 +817,10 @@ proc newAtomicCell*(value: Value): Value =
 
 proc newStream*(items: sink seq[Value]): Value =
   boxObject(StreamData(objKind: okStream, items: items, index: 0, closed: false))
+
+proc newCheckedStream*(source, itemType: Value, itemScope: Scope): Value =
+  boxObject(StreamData(objKind: okStream, source: source, itemType: itemType,
+                       itemScope: itemScope, closed: false))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,
