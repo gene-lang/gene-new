@@ -855,6 +855,13 @@ proc patternItems(target: Value): tuple[items: seq[Value], ok: bool] =
 proc tryMatch(pat, target: Value, scope: Scope,
               binds: var Table[string, Value]): bool
 
+proc metaAsMap(target: Value): Value =
+  var entries = initOrderedTable[string, Value]()
+  if target.kind == vkNode:
+    for key, val in target.meta:
+      entries[key] = val
+  newMap(entries)
+
 proc collectPatternBindings(pat: Value, names: var HashSet[string])
 
 proc alternationBindingNames(alternatives: seq[Value]): HashSet[string] =
@@ -983,6 +990,17 @@ proc tryMatch(pat, target: Value, scope: Scope,
         if pat.body.len != 1 or pat.body[0].kind != vkSymbol:
           raise newException(GeneError, "pattern %name expects a name")
         return equal(target, scope.lookup(pat.body[0].symVal))
+      of "@":                # meta pattern plus value pattern
+        if pat.body.len != 2:
+          raise newException(GeneError,
+            "pattern (@ meta value) expects two patterns")
+        var trial = binds
+        if not tryMatch(pat.body[0], metaAsMap(target), scope, trial):
+          return false
+        if not tryMatch(pat.body[1], target, scope, trial):
+          return false
+        binds = trial
+        return true
       of "|":                # alternation
         discard alternationBindingNames(pat.body)
         for sub in pat.body:

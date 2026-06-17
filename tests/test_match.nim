@@ -34,6 +34,19 @@ suite "match — structural patterns":
     ck "(match {^type \"circle\" ^r 5} (when {^type \"circle\" ^r r} r))", "5"
   test "map pattern fails on a missing key":
     ck "(match {^a 1} (when {^b b} \"yes\") (else \"no\"))", "\"no\""
+  test "ordinary node patterns ignore meta":
+    ck "(match (quote (x @line 7 ^a 1)) (when (x ^a a) a))", "1"
+  test "meta patterns match explicit node meta":
+    ck "(match (quote (x @line 7 ^name \"Ada\")) " &
+       "(when (@ {^line l} (x ^name n)) [l n]))",
+       "[7 \"Ada\"]"
+    ck "(match (quote (x @line 7)) " &
+       "(when (@ {^line 8} x) \"bad\") (else \"ok\"))",
+       "\"ok\""
+  test "meta patterns treat scalars as empty meta":
+    ck "(match 42 (when (@ {} n) n))", "42"
+  test "meta patterns require meta and value patterns":
+    expect GeneError: discard runStr("(match 1 (when (@ {}) 1))")
 
 suite "match — combinators":
   test "alternation matches any branch":

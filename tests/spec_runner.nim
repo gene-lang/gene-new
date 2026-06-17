@@ -88,6 +88,13 @@ suite "spec — pattern destructuring from design":
     expect GeneError:
       discard run(compileSource("(match 1 (when (not x) \"no\") (else \"ok\"))"),
                   newGlobalScope())
+  test "meta patterns opt into matching meta":
+    check_eval("(match (quote (x @line 7 ^name \"Ada\")) " &
+               "  (when (@ {^line l} (x ^name n)) [l n]))",
+               "[7 \"Ada\"]")
+    check_eval("(match (quote (x @line 7 ^name \"Ada\")) " &
+               "  (when (x ^name n) n))",
+               "\"Ada\"")
 
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":

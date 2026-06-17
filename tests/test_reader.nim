@@ -52,6 +52,9 @@ suite "reader — sugars":
   test "flipped call":       check_read("(x ~ f a b)", "(f x a b)")
   test "flipped standalone": check_read("(~ f a b)",   "(f self a b)")
   test "spread":             check_read("x...",         "(... x)")
+  test "bare at can be a node head":
+    check_read("(@ {^line l} (x ^name n))", "(@ {^line l} (x ^name n))")
+    check_read("(x @line 7)", "(x @line 7)")
   test "string interpolation":
     check_read("$\"hello ${name}\"", "($ \"hello \" name)")
 

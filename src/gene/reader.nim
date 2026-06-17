@@ -412,16 +412,25 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         val = r.parseForm()
       props[key] = val
     of tkAt, tkAtAt:
-      discard r.next()
-      let key = r.parsePropKey()
-      var val: Value
-      let afterKey = r.peekKind()
-      if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
-         afterKey in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
-        val = TRUE
+      if r.tokIdx + 1 >= r.tokens.len or r.tokens[r.tokIdx + 1].kind != tkSymbol:
+        discard r.next()
+        let form = newSym(tok.lexeme)
+        if first:
+          head = form
+          first = false
+        else:
+          body.add form
       else:
-        val = r.parseForm()
-      meta[key] = val
+        discard r.next()
+        let key = r.parsePropKey()
+        var val: Value
+        let afterKey = r.peekKind()
+        if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
+           afterKey in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+          val = TRUE
+        else:
+          val = r.parseForm()
+        meta[key] = val
     of tkSemi:
       # Pipe folding: (a; b) -> ((a) b)
       discard r.next()
