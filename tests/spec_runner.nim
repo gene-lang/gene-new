@@ -117,6 +117,15 @@ suite "spec — protocol derive from design":
                "(label (MenuItem ^name \"Soup\"))",
                "\"Soup\"")
 
+  test "protocol-local derive is limited to its own impls":
+    expect GeneError:
+      discard run(compileSource("(protocol Other) " &
+                                "(protocol HasLabel " &
+                                "  (derive [t : Type, req] `(impl Other %t))) " &
+                                "(type MenuItem ^props {^name Str} " &
+                                "  ^derive [HasLabel])"),
+                  newGlobalScope())
+
 suite "spec — cells from design":
   test "Cell get, set, swap, and update are explicit mutation":
     check_eval("(var count (cell 0)) " &

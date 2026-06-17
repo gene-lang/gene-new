@@ -132,6 +132,17 @@ suite "protocols — declarations and dispatch":
        "(label (User ^name \"Ada\"))",
        "\"generated\""
 
+  test "protocol-local derive may only generate own impl declarations":
+    expect GeneError:
+      discard runStr("(protocol HasLabel " &
+                     "  (derive [t : Type, req] `(var generated 1))) " &
+                     "(type User ^props {^name Str} ^derive [HasLabel])")
+    expect GeneError:
+      discard runStr("(protocol Other) " &
+                     "(protocol HasLabel " &
+                     "  (derive [t : Type, req] `(impl Other %t))) " &
+                     "(type User ^props {^name Str} ^derive [HasLabel])")
+
   test "message implementation return annotations are checked":
     ck "(try (protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &

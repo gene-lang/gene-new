@@ -1303,9 +1303,32 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value
 
-proc runGeneratedDeriveDecl(scope: Scope, decl: Value) =
+proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
   if decl.kind != vkNode:
     raise newException(GeneError, "derive generated declarations must be nodes")
+  if not decl.head.isSymbol("impl") or decl.body.len < 2:
+    raise newException(GeneError,
+      "derive may only generate impl declarations for its own protocol")
+  let protocolExpr = decl.body[0]
+  case protocolExpr.kind
+  of vkProtocol:
+    result = protocolExpr
+  of vkSymbol:
+    if not scope.lookupOptional(protocolExpr.symVal, result):
+      raise newException(GeneError,
+        "derive generated impl protocol is undefined: " & protocolExpr.symVal)
+    if result.kind != vkProtocol:
+      raise newException(GeneError,
+        "derive generated impl target must be a protocol")
+  else:
+    raise newException(GeneError,
+      "derive generated impl must name its protocol directly")
+
+proc runGeneratedDeriveDecl(scope: Scope, protocol, decl: Value) =
+  let generatedProtocol = generatedDeriveProtocol(scope, decl)
+  if not same(generatedProtocol, protocol):
+    raise newException(GeneError,
+      "derive may only generate impl declarations for its own protocol")
   discard run(compileForm(decl), scope, validateImplRequirements = false)
 
 proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
@@ -1318,10 +1341,10 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   of vkNil, vkVoid:
     discard
   of vkNode:
-    runGeneratedDeriveDecl(scope, generated)
+    runGeneratedDeriveDecl(scope, protocol, generated)
   of vkList:
     for decl in generated.listItems:
-      runGeneratedDeriveDecl(scope, decl)
+      runGeneratedDeriveDecl(scope, protocol, decl)
   else:
     raise newException(GeneError, "derive must return a declaration node or list")
 
