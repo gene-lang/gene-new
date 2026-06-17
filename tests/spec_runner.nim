@@ -80,6 +80,14 @@ suite "spec — pattern destructuring from design":
                                 "(try (fail (Boom ^message \"x\")) " &
                                 "catch (Boom ^message m) m) m"),
                   newGlobalScope())
+  test "alternation alternatives bind the same names":
+    check_eval("(match [2 7] (when (| [1 a] [2 a]) a))", "7")
+    expect GeneError:
+      discard run(compileSource("(match [1] (when (| [a] [b]) a))"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(match 1 (when (not x) \"no\") (else \"ok\"))"),
+                  newGlobalScope())
 
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":

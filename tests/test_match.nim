@@ -39,10 +39,17 @@ suite "match — combinators":
   test "alternation matches any branch":
     ck "(match 3 (when (| 1 2 3) \"small\") (else \"big\"))", "\"small\""
     ck "(match 9 (when (| 1 2 3) \"small\") (else \"big\"))", "\"big\""
+  test "alternation branches must bind the same names":
+    ck "(match [2 7] (when (| [1 a] [2 a]) a))", "7"
+    expect GeneError: discard runStr("(match [1] (when (| [a] [b]) a))")
+    expect GeneError: discard runStr("(match [1] (when (| [a] [_]) a))")
   test "conjunction requires all and binds":
     ck "(match 5 (when (& x (| 4 5 6)) x))", "5"
   test "negation matches the complement":
     ck "(match 7 (when (not 0) \"nonzero\") (else \"zero\"))", "\"nonzero\""
+  test "negation must not bind names":
+    expect GeneError: discard runStr("(match 1 (when (not x) \"no\") (else \"ok\"))")
+    expect GeneError: discard runStr("(match 1 (when (| _ (not x)) \"no\"))")
 
 suite "match — branch scope":
   test "pattern bindings are local to the selected branch":

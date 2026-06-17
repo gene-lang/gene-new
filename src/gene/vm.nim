@@ -855,6 +855,67 @@ proc patternItems(target: Value): tuple[items: seq[Value], ok: bool] =
 proc tryMatch(pat, target: Value, scope: Scope,
               binds: var Table[string, Value]): bool
 
+proc collectPatternBindings(pat: Value, names: var HashSet[string])
+
+proc alternationBindingNames(alternatives: seq[Value]): HashSet[string] =
+  result = initHashSet[string]()
+  if alternatives.len == 0:
+    return
+  collectPatternBindings(alternatives[0], result)
+  for i in 1 ..< alternatives.len:
+    var names = initHashSet[string]()
+    collectPatternBindings(alternatives[i], names)
+    if names != result:
+      raise newException(GeneError,
+        "alternation pattern alternatives must bind the same names")
+
+proc collectPatternBindings(pat: Value, names: var HashSet[string]) =
+  case pat.kind
+  of vkSymbol:
+    if pat.symVal == "_":
+      return
+    if pat.isRestPattern:
+      let restName = pat.symVal[0 .. ^4]
+      if restName != "_":
+        names.incl restName
+    else:
+      names.incl pat.symVal
+  of vkList:
+    for item in pat.listItems:
+      collectPatternBindings(item, names)
+  of vkMap:
+    for _, valuePat in pat.mapEntries:
+      collectPatternBindings(valuePat, names)
+  of vkNode:
+    if pat.head.kind == vkSymbol:
+      case pat.head.symVal
+      of "unquote":
+        return
+      of "|":
+        for name in alternationBindingNames(pat.body):
+          names.incl name
+        return
+      of "&":
+        for sub in pat.body:
+          collectPatternBindings(sub, names)
+        return
+      of "not":
+        if pat.body.len == 1:
+          var negNames = initHashSet[string]()
+          collectPatternBindings(pat.body[0], negNames)
+          if negNames.len > 0:
+            raise newException(GeneError,
+              "pattern (not p) must not introduce bindings")
+        return
+      else:
+        discard
+    for _, valuePat in pat.props:
+      collectPatternBindings(valuePat, names)
+    for item in pat.body:
+      collectPatternBindings(item, names)
+  else:
+    discard
+
 proc matchSequence(pats, items: seq[Value], scope: Scope,
                    binds: var Table[string, Value]): bool =
   ## Positional match of a pattern sequence (commas dropped) against items,
@@ -923,6 +984,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
           raise newException(GeneError, "pattern %name expects a name")
         return equal(target, scope.lookup(pat.body[0].symVal))
       of "|":                # alternation
+        discard alternationBindingNames(pat.body)
         for sub in pat.body:
           var trial = binds
           if tryMatch(sub, target, scope, trial):
@@ -936,6 +998,11 @@ proc tryMatch(pat, target: Value, scope: Scope,
       of "not":              # negation, introduces no bindings
         if pat.body.len != 1:
           raise newException(GeneError, "pattern (not p) expects one pattern")
+        var negNames = initHashSet[string]()
+        collectPatternBindings(pat.body[0], negNames)
+        if negNames.len > 0:
+          raise newException(GeneError,
+            "pattern (not p) must not introduce bindings")
         var throwaway = binds
         return not tryMatch(pat.body[0], target, scope, throwaway)
       else: discard
