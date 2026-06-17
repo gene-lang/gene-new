@@ -557,6 +557,52 @@ suite "vm — atomic cells":
     expect GeneError: discard runStr("(AtomicCell/load 1)")
     expect GeneError: discard runStr("(AtomicCell/store (atomic-cell 1))")
 
+suite "vm — streams":
+  test "stream values are opaque display values":
+    ck "(to_stream [1 2])", "(stream)"
+
+  test "stream has_next, peek, next, and close pull values":
+    ck "(var s (to_stream [1 2])) " &
+       "[(s ~ Stream/has_next) " &
+       " (s ~ Stream/peek) " &
+       " (s ~ Stream/next) " &
+       " (s ~ Stream/peek) " &
+       " (s ~ Stream/next) " &
+       " (s ~ Stream/has_next) " &
+       " (s ~ Stream/close) " &
+       " (s ~ Stream/has_next)]",
+       "[true 1 1 2 2 false nil false]"
+
+  test "streams skip void items":
+    ck "(var s (to_stream [1 void 2])) " &
+       "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+       "[1 2 false]"
+
+  test "map pairs can be streamed":
+    ck "(var s (to_pairs_stream {^a 1 ^b 2})) " &
+       "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+       "[[\"a\" 1] [\"b\" 2] false]"
+
+  test "stream next and peek raise EndOfStream shape":
+    ck "(try (var s (to_stream [])) (s ~ Stream/next) " &
+       "catch (EndOfStream ^message m) m)",
+       "\"end of stream\""
+    ck "(try (var s (to_stream [])) (s ~ Stream/peek) " &
+       "catch (EndOfStream ^message m) m)",
+       "\"end of stream\""
+
+  test "Stream annotations accept streams only":
+    ck "(fn first [s : Stream] (s ~ Stream/next)) (first (to_stream [3]))", "3"
+    ck "(fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &
+       "(first (to_stream [4]))", "4"
+    expect GeneError:
+      discard runStr("(fn first [s : Stream] s) (first [1])")
+
+  test "stream operations require streams":
+    expect GeneError: discard runStr("(Stream/next [1])")
+    expect GeneError: discard runStr("(to_stream {^a 1})")
+    expect GeneError: discard runStr("(to_pairs_stream [1])")
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous

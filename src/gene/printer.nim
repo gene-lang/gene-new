@@ -106,6 +106,8 @@ proc print*(v: Value): string =
     "(cell)"
   of vkAtomicCell:
     "(atomic-cell)"
+  of vkStream:
+    "(stream)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

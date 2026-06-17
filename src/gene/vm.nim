@@ -259,6 +259,63 @@ proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
   else:
     FALSE
 
+proc requireStream(name: string, value: Value) =
+  if value.kind != vkStream:
+    raise newException(GeneError, name & " expects a Stream")
+
+proc raiseEndOfStream() =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr("end of stream")
+  var e: ref GeneError
+  new(e)
+  e.msg = "end of stream"
+  e.errVal = newNode(newSym("EndOfStream"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc biToStream(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("to_stream", args)
+  if args[0].kind != vkList:
+    raise newException(GeneError, "to_stream expects a List")
+  var items: seq[Value]
+  for item in args[0].listItems:
+    items.add item
+  newStream(items)
+
+proc biToPairsStream(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("to_pairs_stream", args)
+  if args[0].kind != vkMap:
+    raise newException(GeneError, "to_pairs_stream expects a Map")
+  var pairs: seq[Value]
+  for key, value in args[0].mapEntries:
+    pairs.add newList(@[newStr(key), value])
+  newStream(pairs)
+
+proc biStreamHasNext(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Stream/has_next", args)
+  requireStream("Stream/has_next", args[0])
+  newBool(args[0].streamHasNext)
+
+proc biStreamPeek(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Stream/peek", args)
+  requireStream("Stream/peek", args[0])
+  if not args[0].streamHasNext:
+    raiseEndOfStream()
+  args[0].streamPeek
+
+proc biStreamNext(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Stream/next", args)
+  requireStream("Stream/next", args[0])
+  if not args[0].streamHasNext:
+    raiseEndOfStream()
+  args[0].streamNext
+
+proc biStreamClose(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Stream/close", args)
+  requireStream("Stream/close", args[0])
+  args[0].closeStream()
+  NIL
+
 proc copyItems(items: openArray[Value]): seq[Value] =
   result = newSeq[Value](items.len)
   for i, item in items:
@@ -540,6 +597,14 @@ proc newGlobalScope*(): Scope =
   atomicCellScope.define("compare-exchange",
     newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
+  result.define("to_stream", newNativeFn("to_stream", biToStream))
+  result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
+  let streamScope = newScope(result)
+  streamScope.define("has_next", newNativeFn("Stream/has_next", biStreamHasNext))
+  streamScope.define("peek", newNativeFn("Stream/peek", biStreamPeek))
+  streamScope.define("next", newNativeFn("Stream/next", biStreamNext))
+  streamScope.define("close", newNativeFn("Stream/close", biStreamClose))
+  result.define("Stream", newNamespace("Stream", streamScope))
   result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
   result.define("update-in", newNativeFn("update-in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
@@ -726,6 +791,9 @@ proc forItems(coll: Value): seq[Value] =
     for it in coll.body: result.add it
   of vkMap:
     for k, v in coll.mapEntries: result.add newList(@[newStr(k), v])
+  of vkStream:
+    while coll.streamHasNext:
+      result.add coll.streamNext
   of vkNil, vkVoid:
     discard
   else:
@@ -1379,6 +1447,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkCell)
   of "AtomicCell":
     (true, value.kind == vkAtomicCell)
+  of "Stream":
+    (true, value.kind == vkStream)
   else:
     (false, false)
 
@@ -1427,6 +1497,14 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         for _, item in value.mapEntries:
           if not matchesTypeExpr(expr.body[0], item, scope):
             return false
+        return true
+      of "Stream":
+        if value.kind != vkStream:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 2:
+          raise newException(GeneError, "(Stream item err) expects item and error types")
         return true
       else:
         discard

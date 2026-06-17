@@ -100,6 +100,21 @@ suite "spec — atomic cells from design":
                " (state ~ AtomicCell/load)]",
                "[0 1 1 true 3]")
 
+suite "spec — streams from design":
+  test "list-backed streams expose pull operations":
+    check_eval("(var s (to_stream [1 2])) " &
+               "[(s ~ Stream/has_next) " &
+               " (s ~ Stream/peek) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next)]",
+               "[true 1 1 2 false]")
+
+  test "next on an exhausted stream raises EndOfStream":
+    check_eval("(try (var s (to_stream [])) (s ~ Stream/next) " &
+               "catch (EndOfStream ^message m) m)",
+               "\"end of stream\"")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

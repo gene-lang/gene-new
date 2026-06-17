@@ -58,6 +58,7 @@ type
     vkEnv       ## first-class eval environment (design Section 11.1 MVP)
     vkCell      ## first-class mutable reference (design Section 12.2)
     vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
+    vkStream    ## first-class pull stream (design Section 6)
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -202,6 +203,7 @@ type
     okEnv
     okCell
     okAtomicCell
+    okStream
     okType
     okProtocol
     okProtocolMessage
@@ -219,6 +221,11 @@ type
 
   CellData = ref object of GeneObjectData
     value: Value
+
+  StreamData = ref object of GeneObjectData
+    items: seq[Value]
+    index: int
+    closed: bool
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -401,6 +408,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okEnv: vkEnv
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
+    of okStream: vkStream
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -566,6 +574,36 @@ proc setAtomicCellValue*(v, newValue: Value) =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okAtomicCell:
     raise newException(FieldDefect, "value is not an AtomicCell")
   CellData(objData(v)).value = newValue
+
+proc streamData(v: Value): StreamData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okStream:
+    raise newException(FieldDefect, "value is not a Stream")
+  StreamData(objData(v))
+
+proc skipStreamVoids(data: StreamData) =
+  while not data.closed and data.index < data.items.len and
+      data.items[data.index].kind == vkVoid:
+    inc data.index
+
+proc streamHasNext*(v: Value): bool =
+  let data = streamData(v)
+  data.skipStreamVoids()
+  not data.closed and data.index < data.items.len
+
+proc streamPeek*(v: Value): Value =
+  if not v.streamHasNext:
+    raise newException(FieldDefect, "stream is exhausted")
+  let data = streamData(v)
+  data.items[data.index]
+
+proc streamNext*(v: Value): Value =
+  result = v.streamPeek
+  inc streamData(v).index
+
+proc closeStream*(v: Value) =
+  let data = streamData(v)
+  data.closed = true
+  data.index = data.items.len
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -735,6 +773,9 @@ proc newCell*(value: Value): Value =
 
 proc newAtomicCell*(value: Value): Value =
   boxObject(CellData(objKind: okAtomicCell, value: value))
+
+proc newStream*(items: sink seq[Value]): Value =
+  boxObject(StreamData(objKind: okStream, items: items, index: 0, closed: false))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,
