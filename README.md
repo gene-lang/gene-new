@@ -58,7 +58,8 @@ participates in equality or hashing.
   with construction, schema validation, and single inheritance (`(type T ^props
   {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
   returns, and typed construction, positional/named/rest/default function
-  arguments, MVP protocol declarations with nominal message dispatch,
+  arguments, MVP protocol declarations with nominal message dispatch and `^impl`
+  requirement checks,
   static and dynamic selector/slash-path access,
   functional selector updates, namespaces with qualified access, file-based
   modules (`import … from "path"`) with a load-once cache and cycle detection,

@@ -36,6 +36,26 @@ suite "protocols — declarations and dispatch":
        "(model/to_name (model/User ^name \"Ada\"))",
        "\"Ada\""
 
+  test "type ^impl requirements are checked after forward impls":
+    ck "(protocol ToName (message to_name [self] : Str)) " &
+       "(type User ^props {^name Str} ^impl [ToName]) " &
+       "(impl ToName User (message to_name [self] : Str self/name)) " &
+       "(to_name (User ^name \"Ada\"))",
+       "\"Ada\""
+
+  test "missing type ^impl requirements are rejected at scope completion":
+    expect GeneError:
+      discard runStr("(protocol ToName (message to_name [self] : Str)) " &
+                     "(type User ^props {^name Str} ^impl [ToName])")
+
+  test "type ^impl entries must resolve to protocols":
+    expect GeneError:
+      discard runStr("(var NotProtocol 1) " &
+                     "(type User ^props {^name Str} ^impl [NotProtocol])")
+    expect GeneError:
+      discard runStr("(protocol ToName (message to_name [self] : Str)) " &
+                     "(type User ^props {^name Str} ^impl ToName)")
+
   test "message implementation return annotations are checked":
     ck "(try (protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &

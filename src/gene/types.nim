@@ -173,6 +173,7 @@ type
     parent*: Scope
     vars*: Table[string, Value]
     impls*: seq[ProtocolImpl]
+    requiredImplTypes*: seq[Value]
 
   ## A built-in function implemented in Nim. Positional args only for MVP.
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
@@ -209,6 +210,7 @@ type
     parent: Value         # parent Type value, or NIL
     fields: seq[TypeField]
     scope: Scope          # defining scope for resolving field type annotations
+    requiredProtocols: seq[Value]
 
   TypeField* = object
     name*: string
@@ -525,6 +527,11 @@ proc typeScope*(v: Value): Scope =
     raise newException(FieldDefect, "value is not a Type")
   TypeData(objData(v)).scope
 
+proc typeRequiredProtocols*(v: Value): lent seq[Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).requiredProtocols
+
 proc protocolName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
     raise newException(FieldDefect, "value is not a Protocol")
@@ -640,7 +647,7 @@ proc newNamespace*(name: string, scope: Scope): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
-              scope: Scope): Value =
+              requiredProtocols: sink seq[Value], scope: Scope): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -652,7 +659,7 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
       owned.scope = scope
     fields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
-                     scope: scope))
+                     scope: scope, requiredProtocols: requiredProtocols))
 
 proc newProtocolMessage*(protocol: Value, name: string): Value =
   boxObject(ProtocolMessageData(objKind: okProtocolMessage,

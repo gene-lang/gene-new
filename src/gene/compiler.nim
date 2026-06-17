@@ -527,8 +527,8 @@ proc compileTry(c: var Compiler, node: Value) =
   discard c.emit(opTry, c.chunk.addTry(tp))
 
 proc compileType(c: var Compiler, node: Value) =
-  ## (type Name ^props {^id Int ^done? Bool} ^is Parent) — field type annotations
-  ## are read but ignored for MVP; `^impl`/`^derive`/`^body` are deferred.
+  ## (type Name ^props {^id Int ^done? Bool} ^is Parent ^impl [P]) — field
+  ## annotations and required manual protocol impls are checked at runtime.
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "type requires a name")
@@ -545,11 +545,22 @@ proc compileType(c: var Compiler, node: Value) =
       else:
         fields.add TypeField(name: key, optional: false,
                              typeExpr: schema.mapEntries[key])
+  var requiredImplCount = 0
+  if node.props.hasKey("impl"):
+    let required = node.props["impl"]
+    if required.kind != vkList:
+      raise newException(GeneError, "type ^impl must be a list")
+    for protocolExpr in required.listItems:
+      compileExpr(c, protocolExpr)
+      inc requiredImplCount
   if node.props.hasKey("is"):
     compileExpr(c, node.props["is"])         # parent type value
   else:
     c.emitConst NIL
-  discard c.emit(opMakeType, c.chunk.addType(TypeProto(name: name, fields: fields)))
+  discard c.emit(opMakeType,
+                 c.chunk.addType(TypeProto(name: name,
+                                           fields: fields,
+                                           requiredImplCount: requiredImplCount)))
   discard c.emit(opDefineName, name = name)
 
 proc messageName(node: Value): string =

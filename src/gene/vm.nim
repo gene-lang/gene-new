@@ -8,7 +8,8 @@ import ./[compiler, equality, gir, printer, types]
 # ---------------------------------------------------------------------------
 
 proc newScope*(parent: Scope = nil): Scope =
-  Scope(parent: parent, vars: initTable[string, Value](), impls: @[])
+  Scope(parent: parent, vars: initTable[string, Value](), impls: @[],
+        requiredImplTypes: @[])
 
 proc lookup*(scope: Scope, name: string): Value =
   var s = scope
@@ -629,6 +630,22 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
   scope.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
                                messages: messages)
 
+proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
+  var s = scope
+  while s != nil:
+    for impl in s.impls:
+      if same(impl.protocol, protocol) and same(impl.receiver, receiver):
+        return true
+    s = s.parent
+  false
+
+proc validateRequiredImpls(scope: Scope) =
+  for typ in scope.requiredImplTypes:
+    for protocol in typ.typeRequiredProtocols:
+      if not scope.hasVisibleImpl(protocol, typ):
+        raise newException(GeneError,
+          "type " & typ.typeName & " requires impl " & protocol.protocolName)
+
 proc receiverType(value: Value): Value =
   if value.kind == vkNode and value.head.kind == vkType:
     value.head
@@ -680,7 +697,7 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       "ambiguous impl " & protocol.protocolName & " for " & recvType.typeName)
   matches[0]
 
-proc run*(chunk: Chunk, scope: Scope): Value =
+proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   var stack: seq[Value]
   var ip = 0
   while ip < chunk.instructions.len:
@@ -730,7 +747,17 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       let parent = stack.pop()
       if parent.kind != vkNil and parent.kind != vkType:
         raise newException(GeneError, "type ^is must be a type")
-      stack.add newType(proto.name, parent, proto.fields, scope)
+      var requiredProtocols = newSeq[Value](proto.requiredImplCount)
+      if proto.requiredImplCount > 0:
+        for i in countdown(proto.requiredImplCount - 1, 0):
+          let protocol = stack.pop()
+          if protocol.kind != vkProtocol:
+            raise newException(GeneError, "type ^impl entries must be protocols")
+          requiredProtocols[i] = protocol
+      let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope)
+      if proto.requiredImplCount > 0:
+        scope.requiredImplTypes.add typ
+      stack.add typ
     of opMakeProtocol:
       let proto = chunk.protocolProtos[inst.intArg]
       let protocol = newProtocol(proto.name, proto.messageNames)
@@ -826,7 +853,7 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       var resultVal = NIL
       try:
         try:
-          resultVal = run(tp.body, scope)
+          resultVal = run(tp.body, scope, validateImplRequirements = false)
         except GeneError as e:       # recoverable; GenePanic is NOT a GeneError
           let errVal =
             if e.hasErrVal: e.errVal
@@ -839,14 +866,14 @@ proc run*(chunk: Chunk, scope: Scope): Value =
             var binds = initTable[string, Value]()
             if tryMatch(cl.pattern, errVal, scope, binds):
               for k, v in binds: scope.define(k, v)
-              resultVal = run(cl.body, scope)
+              resultVal = run(cl.body, scope, validateImplRequirements = false)
               handled = true
               break
           if not handled:
             raise                    # re-raise; the finally still runs ensure
       finally:
         if tp.ensureBody != nil:
-          discard run(tp.ensureBody, scope)
+          discard run(tp.ensureBody, scope, validateImplRequirements = false)
       stack.add resultVal
     of opJumpIfFalse:
       let cond = stack.pop()
@@ -855,8 +882,13 @@ proc run*(chunk: Chunk, scope: Scope): Value =
     of opJump:
       ip = inst.intArg
     of opReturn:
-      return (if stack.len > 0: stack.pop() else: NIL)
-  NIL
+      result = if stack.len > 0: stack.pop() else: NIL
+      if validateImplRequirements:
+        scope.validateRequiredImpls()
+      return
+  result = NIL
+  if validateImplRequirements:
+    scope.validateRequiredImpls()
 
 proc positionalDefault(proto: FunctionProto, index: int): ParamDefault =
   if index < proto.paramDefaults.len:

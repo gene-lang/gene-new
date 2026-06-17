@@ -90,6 +90,7 @@ type
   TypeProto* = ref object
     name*: string
     fields*: seq[TypeField]      # own (non-inherited) field schema
+    requiredImplCount*: int
 
   ProtocolProto* = ref object
     name*: string
