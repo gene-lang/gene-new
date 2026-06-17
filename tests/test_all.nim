@@ -5,3 +5,4 @@ include test_values
 include test_vm
 include test_modules
 include test_match
+include test_errors

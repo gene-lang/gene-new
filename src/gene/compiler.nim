@@ -58,6 +58,12 @@ proc compileDefaultExpr(node: Value): Chunk =
   discard c.emit(opReturn)
   c.chunk
 
+proc compileSubBody(forms: openArray[Value]): Chunk =
+  var c = Compiler(chunk: newChunk())
+  compileBody(c, forms)            # empty -> nil
+  discard c.emit(opReturn)
+  c.chunk
+
 proc isParamTerminator(s: string): bool =
   s.len == 0 or s in [",", "^", "^^"]
 
@@ -451,6 +457,36 @@ proc compileFor(c: var Compiler, node: Value) =
   let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
   discard c.emit(opForEach, c.chunk.addForLoop(fp))
 
+proc compileTry(c: var Compiler, node: Value) =
+  ## (try body... catch pat recovery... [catch ...] [ensure cleanup...]) — the
+  ## `catch`/`ensure` markers are bare symbols in the flat body.
+  let body = node.body
+  var i = 0
+  var tryForms: seq[Value]
+  while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
+    tryForms.add body[i]
+    inc i
+  let tp = TryProto(body: compileSubBody(tryForms))
+  while i < body.len and body[i].isSymbol("catch"):
+    inc i
+    if i >= body.len:
+      raise newException(GeneError, "catch requires a pattern")
+    let pattern = body[i]
+    inc i
+    var recovery: seq[Value]
+    while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
+      recovery.add body[i]
+      inc i
+    tp.catches.add CatchClause(pattern: pattern, body: compileSubBody(recovery))
+  if i < body.len and body[i].isSymbol("ensure"):
+    inc i
+    var ensureForms: seq[Value]
+    while i < body.len:
+      ensureForms.add body[i]
+      inc i
+    tp.ensureBody = compileSubBody(ensureForms)
+  discard c.emit(opTry, c.chunk.addTry(tp))
+
 proc compileNode(c: var Compiler, node: Value) =
   let h = node.head
   if h.kind == vkSymbol:
@@ -496,6 +532,9 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "for":
       compileFor(c, node)
+      return
+    of "try":
+      compileTry(c, node)
       return
     else:
       discard

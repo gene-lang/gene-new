@@ -31,6 +31,9 @@ proc cmdEval(src: string) =
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)
+  except GenePanic as e:
+    stderr.writeLine "Panic: " & e.msg
+    quit(1)
   except GeneError as e:
     stderr.writeLine "Error: " & e.msg
     quit(1)
@@ -73,6 +76,9 @@ proc cmdRun(path: string, args: openArray[string] = []) =
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)
+  except GenePanic as e:
+    stderr.writeLine "Panic: " & e.msg
+    quit(1)
   except GeneError as e:
     stderr.writeLine "Error: " & e.msg
     quit(1)
@@ -92,6 +98,9 @@ proc cmdCompile(path: string) =
     echo compileSource(src).disassemble()
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
+    quit(1)
+  except GenePanic as e:
+    stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
     stderr.writeLine "Error: " & e.msg

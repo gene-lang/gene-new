@@ -30,7 +30,15 @@ when not (defined(gcOrc) or defined(gcArc)):
 
 type
   GeneError* = object of CatchableError
+    ## Recoverable Gene error. `errVal` carries a `fail`ed Gene value (e.g. an
+    ## error node); `hasErrVal` distinguishes that from a plain internal error.
+    errVal*: Value
+    hasErrVal*: bool
   MatchError* = object of GeneError    ## pattern match / destructuring failure
+  GenePanic* = object of CatchableError
+    ## Unrecoverable failure (`panic`). Not caught by `try/catch`.
+    errVal*: Value
+    hasErrVal*: bool
 
   ValueKind* = enum
     vkNil       ## explicit absence (`nil` : Nil)

@@ -25,6 +25,7 @@ type
     opTryMatch        # peek target, try a pattern, push bool
     opMatchFail       # raise MatchError (match with no matching clause)
     opForEach         # pop a collection, run a for-loop body per item
+    opTry             # run a body with catch clauses and an ensure block
     opJumpIfFalse
     opJump
     opReturn
@@ -68,6 +69,15 @@ type
     pattern*: Value              # loop-variable pattern
     body*: Chunk                 # loop body
 
+  CatchClause* = object
+    pattern*: Value              # matched against the error value
+    body*: Chunk
+
+  TryProto* = ref object
+    body*: Chunk
+    catches*: seq[CatchClause]
+    ensureBody*: Chunk           # nil when there is no `ensure`
+
   Chunk* = ref object
     constants*: seq[Value]
     instructions*: seq[Instruction]
@@ -75,14 +85,19 @@ type
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
     forLoops*: seq[ForProto]
+    tries*: seq[TryProto]
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[])
+        imports: @[], forLoops: @[], tries: @[])
 
 proc addForLoop*(chunk: Chunk, fp: ForProto): int =
   result = chunk.forLoops.len
   chunk.forLoops.add fp
+
+proc addTry*(chunk: Chunk, tp: TryProto): int =
+  result = chunk.tries.len
+  chunk.tries.add tp
 
 proc addSubchunk*(chunk: Chunk, body: Chunk): int =
   result = chunk.subchunks.len
@@ -139,6 +154,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " pattern=" & $inst.intArg
   of opForEach:
     result.add " for=" & $inst.intArg
+  of opTry:
+    result.add " try=" & $inst.intArg
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
   of opPop, opReturn, opMatchFail:
@@ -189,6 +206,18 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
     for i, fp in chunk.forLoops:
       lines.add indent & "  [" & $i & "] pattern=" & fp.pattern.print()
       addDisassembly(lines, fp.body, indent & "    ")
+
+  if chunk.tries.len > 0:
+    lines.add indent & "tries:"
+    for i, tp in chunk.tries:
+      lines.add indent & "  [" & $i & "] body:"
+      addDisassembly(lines, tp.body, indent & "    ")
+      for j, cl in tp.catches:
+        lines.add indent & "  catch " & cl.pattern.print() & ":"
+        addDisassembly(lines, cl.body, indent & "    ")
+      if tp.ensureBody != nil:
+        lines.add indent & "  ensure:"
+        addDisassembly(lines, tp.ensureBody, indent & "    ")
 
   if chunk.imports.len > 0:
     lines.add indent & "imports:"

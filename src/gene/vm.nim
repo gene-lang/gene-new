@@ -362,6 +362,25 @@ proc displayStr(v: Value): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString: v.strVal else: print(v)
 
+proc biFail(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "fail expects 1 argument")
+  var e: ref GeneError
+  new(e)
+  e.msg = "fail: " & print(args[0])
+  e.errVal = args[0]
+  e.hasErrVal = true
+  raise e
+
+proc biPanic(args: openArray[Value]): Value {.nimcall.} =
+  let v = if args.len >= 1: args[0] else: newStr("panic")
+  var e: ref GenePanic
+  new(e)
+  e.msg = "panic: " & print(v)
+  e.errVal = v
+  e.hasErrVal = true
+  raise e
+
 proc biPrint(args: openArray[Value]): Value {.nimcall.} =
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
@@ -393,6 +412,8 @@ proc newGlobalScope*(): Scope =
   result.define("meta", newNativeFn("meta", biMeta))
   result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
   result.define("update-in", newNativeFn("update-in", biUpdateIn))
+  result.define("fail", newNativeFn("fail", biFail))
+  result.define("panic", newNativeFn("panic", biPanic))
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 
@@ -455,6 +476,42 @@ proc patternItems(target: Value): tuple[items: seq[Value], ok: bool] =
   else: (newSeq[Value](), false)
 
 proc tryMatch(pat, target: Value, scope: Scope,
+              binds: var Table[string, Value]): bool
+
+proc matchSequence(pats, items: seq[Value], scope: Scope,
+                   binds: var Table[string, Value]): bool =
+  ## Positional match of a pattern sequence (commas dropped) against items,
+  ## supporting a single trailing `name...` rest pattern. Used by both list
+  ## patterns and node-body patterns.
+  var ps: seq[Value]
+  for p in pats:
+    if not p.isSymbolP(","): ps.add p
+  var restIdx = -1
+  for i, p in ps:
+    if p.isRestPattern:
+      restIdx = i
+      break
+  if restIdx < 0:
+    if ps.len != items.len: return false
+    for i in 0 ..< ps.len:
+      if not tryMatch(ps[i], items[i], scope, binds): return false
+    return true
+  let before = restIdx
+  let after = ps.len - restIdx - 1
+  if items.len < before + after: return false
+  for i in 0 ..< before:
+    if not tryMatch(ps[i], items[i], scope, binds): return false
+  let restName = ps[restIdx].symVal[0 .. ^4]   # drop trailing "..."
+  if restName != "_":
+    var rest = newSeq[Value](items.len - before - after)
+    for i in 0 ..< rest.len: rest[i] = items[before + i]
+    binds[restName] = newList(rest)
+  for i in 0 ..< after:
+    if not tryMatch(ps[restIdx + 1 + i], items[items.len - after + i], scope, binds):
+      return false
+  true
+
+proc tryMatch(pat, target: Value, scope: Scope,
               binds: var Table[string, Value]): bool =
   case pat.kind
   of vkSymbol:
@@ -467,33 +524,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
   of vkList:
     let (items, ok) = patternItems(target)
     if not ok: return false
-    var ps: seq[Value]
-    for p in pat.listItems:
-      if not p.isSymbolP(","): ps.add p
-    var restIdx = -1
-    for i, p in ps:
-      if p.isRestPattern:
-        restIdx = i
-        break
-    if restIdx < 0:
-      if ps.len != items.len: return false
-      for i in 0 ..< ps.len:
-        if not tryMatch(ps[i], items[i], scope, binds): return false
-      return true
-    let before = restIdx
-    let after = ps.len - restIdx - 1
-    if items.len < before + after: return false
-    for i in 0 ..< before:
-      if not tryMatch(ps[i], items[i], scope, binds): return false
-    let restName = ps[restIdx].symVal[0 .. ^4]   # drop trailing "..."
-    if restName != "_":
-      var rest = newSeq[Value](items.len - before - after)
-      for i in 0 ..< rest.len: rest[i] = items[before + i]
-      binds[restName] = newList(rest)
-    for i in 0 ..< after:
-      if not tryMatch(ps[restIdx + 1 + i], items[items.len - after + i], scope, binds):
-        return false
-    true
+    matchSequence(pat.listItems, items, scope, binds)
   of vkMap:
     for key, vpat in pat.mapEntries:
       var fieldVal: Value
@@ -531,7 +562,14 @@ proc tryMatch(pat, target: Value, scope: Scope,
         var throwaway = binds
         return not tryMatch(pat.body[0], target, scope, throwaway)
       else: discard
-    raise newException(GeneError, "unsupported pattern: " & print(pat))
+    # General node-shape pattern `(Head ^k kp body...)`: head matched literally,
+    # props open (mentioned keys required), body matched positionally.
+    if target.kind != vkNode: return false
+    if not equal(pat.head, target.head): return false
+    for key, vpat in pat.props:
+      if not target.props.hasKey(key): return false
+      if not tryMatch(vpat, target.props[key], scope, binds): return false
+    matchSequence(pat.body, target.body, scope, binds)
   else:
     raise newException(GeneError, "unsupported pattern: " & print(pat))
 
@@ -677,6 +715,33 @@ proc run*(chunk: Chunk, scope: Scope): Value =
         for k, v in binds: loopScope.define(k, v)
         discard run(fp.body, loopScope)
       stack.add NIL
+    of opTry:
+      let tp = chunk.tries[inst.intArg]
+      var resultVal = NIL
+      try:
+        try:
+          resultVal = run(tp.body, scope)
+        except GeneError as e:       # recoverable; GenePanic is NOT a GeneError
+          let errVal =
+            if e.hasErrVal: e.errVal
+            else:
+              var props = initOrderedTable[string, Value]()
+              props["message"] = newStr(e.msg)
+              newNode(newSym("Error"), props = props)
+          var handled = false
+          for cl in tp.catches:
+            var binds = initTable[string, Value]()
+            if tryMatch(cl.pattern, errVal, scope, binds):
+              for k, v in binds: scope.define(k, v)
+              resultVal = run(cl.body, scope)
+              handled = true
+              break
+          if not handled:
+            raise                    # re-raise; the finally still runs ensure
+      finally:
+        if tp.ensureBody != nil:
+          discard run(tp.ensureBody, scope)
+      stack.add resultVal
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:
