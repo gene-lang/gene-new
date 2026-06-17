@@ -53,8 +53,8 @@ participates in equality or hashing.
   source that re-reads to a structurally equal value.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
-  self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/`ns`/
-  `import`/`mod`/`match`/`for`/`while`/`try`/`fail`/`type` special forms,
+  self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/
+  `quasiquote`/`ns`/`import`/`mod`/`match`/`for`/`while`/`try`/`fail`/`type` special forms,
   nominal types
   with construction, schema validation, and single inheritance (`(type T ^props
   {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
@@ -69,7 +69,7 @@ participates in equality or hashing.
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
-  recursion, first-class `Env` values with explicit `eval node ^in env`,
+  recursion, quasiquote templates with runtime `unquote`, first-class `Env` values with explicit `eval node ^in env`,
   `gene run` entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
   (`+ - * / < > <= >= = not head props body meta assoc-in update-in panic
   print println`).

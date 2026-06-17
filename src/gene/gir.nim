@@ -16,6 +16,7 @@ type
     opPop
     opMakeList
     opMakeMap
+    opMakeNode
     opMakeSelector
     opMakeFn
     opMakeNamespace
@@ -92,6 +93,12 @@ type
     catches*: seq[CatchClause]
     ensureBody*: Chunk           # nil when there is no `ensure`
 
+  NodeBuildProto* = object
+    metaNames*: seq[string]
+    propNames*: seq[string]
+    bodyCount*: int
+    immutable*: bool
+
   TypeProto* = ref object
     name*: string
     fields*: seq[TypeField]      # own (non-inherited) field schema
@@ -118,14 +125,19 @@ type
     imports*: seq[ImportSpec]
     forLoops*: seq[ForProto]
     tries*: seq[TryProto]
+    nodeBuilds*: seq[NodeBuildProto]
     typeProtos*: seq[TypeProto]
     protocolProtos*: seq[ProtocolProto]
     implProtos*: seq[ImplProto]
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[], tries: @[], typeProtos: @[],
-        protocolProtos: @[], implProtos: @[])
+        imports: @[], forLoops: @[], tries: @[], nodeBuilds: @[],
+        typeProtos: @[], protocolProtos: @[], implProtos: @[])
+
+proc addNodeBuild*(chunk: Chunk, np: NodeBuildProto): int =
+  result = chunk.nodeBuilds.len
+  chunk.nodeBuilds.add np
 
 proc addType*(chunk: Chunk, tp: TypeProto): int =
   result = chunk.typeProtos.len
@@ -186,6 +198,8 @@ proc formatInstruction(inst: Instruction): string =
   of opMakeMap:
     result.add " count=" & $inst.intArg & " names=" & formatNames(inst.names)
     if inst.flag: result.add " immutable=true"
+  of opMakeNode:
+    result.add " node=" & $inst.intArg
   of opMakeSelector:
     result.add " count=" & $inst.intArg
   of opMakeFn:

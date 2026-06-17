@@ -70,6 +70,14 @@ suite "compiler — GIR emission":
     check chunk.instructions[1].intArg == 1
     check chunk.instructions[2].op == opReturn
 
+  test "emits runtime construction for quasiquote nodes":
+    let chunk = compileSource("`(tag ^class %cls body)")
+    var sawMakeNode = false
+    for inst in chunk.instructions:
+      if inst.op == opMakeNode:
+        sawMakeNode = true
+    check sawMakeNode
+
   test "emits optional and default parameter specs":
     let fnChunk = compileSource("(fn f [x y? ^scale = (+ x 1)] [x y scale])")
     let proto = fnChunk.functions[0]
@@ -127,6 +135,26 @@ suite "vm — literals and self-evaluation":
     ck "{^a (+ 1 1) ^b 3}", "{^a 2 ^b 3}"
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
+
+suite "vm — quasiquote templates":
+  test "quasiquote evaluates unquoted body values":
+    ck "(var name \"Ada\") `(hello %name)", "(hello \"Ada\")"
+
+  test "quasiquote evaluates unquoted heads, props, and map values":
+    ck "(var h (quote button)) (var cls \"primary\") " &
+       "`(%h ^class %cls {^label %cls})",
+       "(button ^class \"primary\" {^label \"primary\"})"
+
+  test "nested quasiquote preserves inner unquote depth":
+    ck "(var x 1) `(outer `(inner %x) %x)",
+       "(outer (quasiquote (inner (unquote x))) 1)"
+
+  test "eval executes generated template nodes":
+    ck "(var x 7) (var t `(+ %x 5)) (eval t ^in (env))", "12"
+
+  test "malformed template forms are compile errors":
+    expect GeneError: discard compileSource("(quasiquote)")
+    expect GeneError: discard compileSource("(quasiquote (unquote))")
 
 suite "vm — arithmetic":
   test "addition":

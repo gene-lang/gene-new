@@ -4,11 +4,14 @@
 ## examples/web_demo.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[reader, printer]
+import gene/[compiler, printer, reader, vm]
 import std/[sequtils, strutils, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
+
+template check_eval(src: string, expected: string) =
+  check run(compileSource(src), newGlobalScope()).print() == expected
 
 suite "spec — reader surface from design":
   test "programs contain multiple top-level forms":
@@ -44,6 +47,13 @@ suite "spec — reader surface from design":
     expect ReadError: discard read(")")
     expect ReadError: discard read("$\"hello ${name\"")
     expect ReadError: discard read("'ab'")
+
+suite "spec — templates from design":
+  test "quasiquote unquote builds generated nodes":
+    check_eval("(var name \"Ada\") `(div %name)", "(div \"Ada\")")
+
+  test "eval executes generated template nodes":
+    check_eval("(var x 40) (eval `(+ %x 2) ^in (env))", "42")
 
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":

@@ -875,6 +875,29 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       for i, key in inst.names:
         entries[key] = values[i]
       stack.add newMap(entries, inst.flag)
+    of opMakeNode:
+      let proto = chunk.nodeBuilds[inst.intArg]
+      var body = newSeq[Value](proto.bodyCount)
+      if proto.bodyCount > 0:
+        for i in countdown(proto.bodyCount - 1, 0):
+          body[i] = stack.pop()
+      var props = initOrderedTable[string, Value]()
+      if proto.propNames.len > 0:
+        var propValues = newSeq[Value](proto.propNames.len)
+        for i in countdown(proto.propNames.len - 1, 0):
+          propValues[i] = stack.pop()
+        for i, key in proto.propNames:
+          props[key] = propValues[i]
+      var meta = initOrderedTable[string, Value]()
+      if proto.metaNames.len > 0:
+        var metaValues = newSeq[Value](proto.metaNames.len)
+        for i in countdown(proto.metaNames.len - 1, 0):
+          metaValues[i] = stack.pop()
+        for i, key in proto.metaNames:
+          meta[key] = metaValues[i]
+      let head = stack.pop()
+      stack.add newNode(head, props = props, body = body, meta = meta,
+                        immutable = proto.immutable)
     of opMakeSelector:
       var body = newSeq[Value](inst.intArg)
       if inst.intArg > 0:

@@ -434,6 +434,69 @@ proc compileEval(c: var Compiler, node: Value) =
   compileExpr(c, node.props["in"])
   discard c.emit(opEval)
 
+proc compileQuasiTemplate(c: var Compiler, value: Value, depth: int)
+
+proc compileQuasiMap(c: var Compiler, value: Value, depth: int) =
+  var keys: seq[string]
+  for key, item in value.mapEntries:
+    keys.add key
+    compileQuasiTemplate(c, item, depth)
+  discard c.emit(opMakeMap, keys.len, names = keys, flag = value.mapImmutable)
+
+proc compileQuasiList(c: var Compiler, value: Value, depth: int) =
+  for item in value.listItems:
+    compileQuasiTemplate(c, item, depth)
+  discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
+
+proc compileQuasiNodeParts(c: var Compiler, node: Value, depth: int) =
+  compileQuasiTemplate(c, node.head, depth)
+  var metaNames: seq[string]
+  for key, item in node.meta:
+    metaNames.add key
+    compileQuasiTemplate(c, item, depth)
+  var propNames: seq[string]
+  for key, item in node.props:
+    propNames.add key
+    compileQuasiTemplate(c, item, depth)
+  for item in node.body:
+    compileQuasiTemplate(c, item, depth)
+  let idx = c.chunk.addNodeBuild(NodeBuildProto(metaNames: metaNames,
+                                                propNames: propNames,
+                                                bodyCount: node.body.len,
+                                                immutable: node.nodeImmutable))
+  discard c.emit(opMakeNode, idx)
+
+proc compileQuasiNode(c: var Compiler, node: Value, depth: int) =
+  if node.head.isSymbol("unquote"):
+    if node.body.len != 1:
+      raise newException(GeneError, "unquote requires one expression")
+    if depth == 1:
+      compileExpr(c, node.body[0])
+      return
+    compileQuasiNodeParts(c, node, depth - 1)
+  elif node.head.isSymbol("quasiquote"):
+    if node.body.len != 1:
+      raise newException(GeneError, "quasiquote expects one template")
+    compileQuasiNodeParts(c, node, depth + 1)
+  else:
+    compileQuasiNodeParts(c, node, depth)
+
+proc compileQuasiTemplate(c: var Compiler, value: Value, depth: int) =
+  case value.kind
+  of vkNode:
+    compileQuasiNode(c, value, depth)
+  of vkList:
+    compileQuasiList(c, value, depth)
+  of vkMap:
+    compileQuasiMap(c, value, depth)
+  else:
+    c.emitConst value
+
+proc compileQuasiquote(c: var Compiler, node: Value) =
+  if node.body.len != 1:
+    raise newException(GeneError, "quasiquote expects one template")
+  compileQuasiTemplate(c, node.body[0], 1)
+
 proc selectorLiteral(parts: openArray[Value]): Value =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
@@ -709,6 +772,9 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "quote":
       c.emitConst(if node.body.len >= 1: node.body[0] else: NIL)
+      return
+    of "quasiquote":
+      compileQuasiquote(c, node)
       return
     of "select":
       compileSelector(c, node.body)
