@@ -21,6 +21,10 @@ type
     opMakeNamespace
     opImport
     opCall
+    opMatchBind       # pop target, destructure against a pattern (or MatchError)
+    opTryMatch        # peek target, try a pattern, push bool
+    opMatchFail       # raise MatchError (match with no matching clause)
+    opForEach         # pop a collection, run a for-loop body per item
     opJumpIfFalse
     opJump
     opReturn
@@ -60,16 +64,25 @@ type
     alias*: string                    # `^as alias`, or ""
     selections*: seq[ImportSelection]
 
+  ForProto* = ref object
+    pattern*: Value              # loop-variable pattern
+    body*: Chunk                 # loop body
+
   Chunk* = ref object
     constants*: seq[Value]
     instructions*: seq[Instruction]
     functions*: seq[FunctionProto]
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
+    forLoops*: seq[ForProto]
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[])
+        imports: @[], forLoops: @[])
+
+proc addForLoop*(chunk: Chunk, fp: ForProto): int =
+  result = chunk.forLoops.len
+  chunk.forLoops.add fp
 
 proc addSubchunk*(chunk: Chunk, body: Chunk): int =
   result = chunk.subchunks.len
@@ -122,9 +135,13 @@ proc formatInstruction(inst: Instruction): string =
     result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
+  of opMatchBind, opTryMatch:
+    result.add " pattern=" & $inst.intArg
+  of opForEach:
+    result.add " for=" & $inst.intArg
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
-  of opPop, opReturn:
+  of opPop, opReturn, opMatchFail:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
@@ -166,6 +183,12 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
     for i, sub in chunk.subchunks:
       lines.add indent & "  [" & $i & "]"
       addDisassembly(lines, sub, indent & "    ")
+
+  if chunk.forLoops.len > 0:
+    lines.add indent & "for-loops:"
+    for i, fp in chunk.forLoops:
+      lines.add indent & "  [" & $i & "] pattern=" & fp.pattern.print()
+      addDisassembly(lines, fp.body, indent & "    ")
 
   if chunk.imports.len > 0:
     lines.add indent & "imports:"

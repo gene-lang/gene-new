@@ -219,13 +219,16 @@ proc compileIf(c: var Compiler, node: Value) =
 
 proc compileVar(c: var Compiler, node: Value) =
   let body = node.body
-  if body.len == 0 or body[0].kind != vkSymbol:
-    raise newException(GeneError, "var requires a name")
+  if body.len == 0:
+    raise newException(GeneError, "var requires a name or pattern")
   if body.len >= 2:
     compileExpr(c, body[1])
   else:
     c.emitConst NIL
-  discard c.emit(opDefineName, name = body[0].symVal)
+  if body[0].kind == vkSymbol:
+    discard c.emit(opDefineName, name = body[0].symVal)
+  else:
+    discard c.emit(opMatchBind, c.chunk.addConst(body[0]))  # destructuring
 
 proc compileSet(c: var Compiler, node: Value) =
   let body = node.body
@@ -390,6 +393,64 @@ proc compileCall(c: var Compiler, node: Value) =
     compileExpr(c, arg)
   discard c.emit(opCall, node.body.len, names = names)
 
+proc compileMatch(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len == 0:
+    raise newException(GeneError, "match requires a value")
+  compileExpr(c, body[0])                  # target stays on the stack
+  var endJumps: seq[int]
+  var hasElse = false
+  for i in 1 ..< body.len:
+    let clause = body[i]
+    if clause.kind != vkNode or clause.head.kind != vkSymbol:
+      raise newException(GeneError, "match clauses must be (when ...) or (else ...)")
+    case clause.head.symVal
+    of "when":
+      if clause.body.len == 0:
+        raise newException(GeneError, "when requires a pattern")
+      discard c.emit(opTryMatch, c.chunk.addConst(clause.body[0]))
+      let nextJump = c.emitJump(opJumpIfFalse)
+      discard c.emit(opPop)                # drop target before the body
+      compileBodyFrom(c, clause.body, 1)
+      endJumps.add c.emitJump(opJump)
+      c.patchJump(nextJump)
+    of "else":
+      discard c.emit(opPop)
+      compileBody(c, clause.body)
+      hasElse = true
+      break
+    else:
+      raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
+  if not hasElse:
+    discard c.emit(opPop)
+    discard c.emit(opMatchFail)
+  for at in endJumps:
+    c.patchJump(at)
+
+proc compileWhile(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len == 0:
+    raise newException(GeneError, "while requires a condition")
+  let start = c.chunk.instructions.len
+  compileExpr(c, body[0])
+  let exitJump = c.emitJump(opJumpIfFalse)
+  compileBodyFrom(c, body, 1)
+  discard c.emit(opPop)                     # discard each iteration's body value
+  discard c.emit(opJump, start)             # loop back to the condition
+  c.patchJump(exitJump)
+  c.emitConst NIL                           # while evaluates to nil
+
+proc compileFor(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len < 2:
+    raise newException(GeneError, "for requires a pattern and a collection")
+  compileExpr(c, body[1])                   # collection on the stack
+  var bodyCompiler = Compiler(chunk: newChunk())
+  compileBodyFrom(bodyCompiler, body, 2)
+  discard bodyCompiler.emit(opReturn)
+  let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
+  discard c.emit(opForEach, c.chunk.addForLoop(fp))
+
 proc compileNode(c: var Compiler, node: Value) =
   let h = node.head
   if h.kind == vkSymbol:
@@ -426,6 +487,15 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "mod":
       compileMod(c, node)
+      return
+    of "match":
+      compileMatch(c, node)
+      return
+    of "while":
+      compileWhile(c, node)
+      return
+    of "for":
+      compileFor(c, node)
       return
     else:
       discard

@@ -433,6 +433,122 @@ proc resolveModulePath(rawPath: string): string =
 proc loadModuleNamespace(absPath: string): Value
 
 # ---------------------------------------------------------------------------
+# Pattern matching (design §8)
+# ---------------------------------------------------------------------------
+#
+# `tryMatch` walks a pattern AST against a target value, collecting bindings into
+# `binds` (committed by the caller only on success). Supported: `_` wildcard,
+# bare-name bind, scalar literal (=), `%name` (compare to a lexical value), list
+# `[a b rest...]`, map/props `{^k p}` (open), and `(| & not)`. Node-shape/type
+# patterns and typed `x : T` are deferred until the type system lands.
+
+proc isSymbolP(v: Value, name: string): bool =
+  v.kind == vkSymbol and v.symVal == name
+
+proc isRestPattern(p: Value): bool =
+  p.kind == vkSymbol and p.symVal.len > 3 and p.symVal.endsWith("...")
+
+proc patternItems(target: Value): tuple[items: seq[Value], ok: bool] =
+  case target.kind
+  of vkList: (target.listItems, true)
+  of vkNode: (target.body, true)
+  else: (newSeq[Value](), false)
+
+proc tryMatch(pat, target: Value, scope: Scope,
+              binds: var Table[string, Value]): bool =
+  case pat.kind
+  of vkSymbol:
+    let name = pat.symVal
+    if name == "_": return true            # wildcard
+    binds[name] = target                   # bind
+    true
+  of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil, vkVoid:
+    equal(pat, target)                     # literal
+  of vkList:
+    let (items, ok) = patternItems(target)
+    if not ok: return false
+    var ps: seq[Value]
+    for p in pat.listItems:
+      if not p.isSymbolP(","): ps.add p
+    var restIdx = -1
+    for i, p in ps:
+      if p.isRestPattern:
+        restIdx = i
+        break
+    if restIdx < 0:
+      if ps.len != items.len: return false
+      for i in 0 ..< ps.len:
+        if not tryMatch(ps[i], items[i], scope, binds): return false
+      return true
+    let before = restIdx
+    let after = ps.len - restIdx - 1
+    if items.len < before + after: return false
+    for i in 0 ..< before:
+      if not tryMatch(ps[i], items[i], scope, binds): return false
+    let restName = ps[restIdx].symVal[0 .. ^4]   # drop trailing "..."
+    if restName != "_":
+      var rest = newSeq[Value](items.len - before - after)
+      for i in 0 ..< rest.len: rest[i] = items[before + i]
+      binds[restName] = newList(rest)
+    for i in 0 ..< after:
+      if not tryMatch(ps[restIdx + 1 + i], items[items.len - after + i], scope, binds):
+        return false
+    true
+  of vkMap:
+    for key, vpat in pat.mapEntries:
+      var fieldVal: Value
+      case target.kind
+      of vkMap:
+        if not target.mapEntries.hasKey(key): return false
+        fieldVal = target.mapEntries[key]
+      of vkNode:
+        if not target.props.hasKey(key): return false
+        fieldVal = target.props[key]
+      else: return false
+      if not tryMatch(vpat, fieldVal, scope, binds): return false
+    true
+  of vkNode:
+    if pat.head.kind == vkSymbol:
+      case pat.head.symVal
+      of "unquote":          # %name -> compare to a lexical value
+        if pat.body.len != 1 or pat.body[0].kind != vkSymbol:
+          raise newException(GeneError, "pattern %name expects a name")
+        return equal(target, scope.lookup(pat.body[0].symVal))
+      of "|":                # alternation
+        for sub in pat.body:
+          var trial = binds
+          if tryMatch(sub, target, scope, trial):
+            binds = trial
+            return true
+        return false
+      of "&":                # conjunction
+        for sub in pat.body:
+          if not tryMatch(sub, target, scope, binds): return false
+        return true
+      of "not":              # negation, introduces no bindings
+        if pat.body.len != 1:
+          raise newException(GeneError, "pattern (not p) expects one pattern")
+        var throwaway = binds
+        return not tryMatch(pat.body[0], target, scope, throwaway)
+      else: discard
+    raise newException(GeneError, "unsupported pattern: " & print(pat))
+  else:
+    raise newException(GeneError, "unsupported pattern: " & print(pat))
+
+proc forItems(coll: Value): seq[Value] =
+  case coll.kind
+  of vkList:
+    for it in coll.listItems: result.add it
+  of vkNode:
+    for it in coll.body: result.add it
+  of vkMap:
+    for k, v in coll.mapEntries: result.add newList(@[newStr(k), v])
+  of vkNil, vkVoid:
+    discard
+  else:
+    raise newException(GeneError, "for: cannot iterate " & $coll.kind)
+
+# ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
 
@@ -531,6 +647,36 @@ proc run*(chunk: Chunk, scope: Scope): Value =
           named.values[i] = stack.pop()
       let callee = stack.pop()
       stack.add applyCall(callee, args, named)
+    of opMatchBind:
+      let target = stack.pop()
+      var binds = initTable[string, Value]()
+      if not tryMatch(chunk.constants[inst.intArg], target, scope, binds):
+        raise newException(MatchError, "destructuring pattern did not match")
+      for k, v in binds: scope.define(k, v)
+      stack.add target
+    of opTryMatch:
+      if stack.len == 0:
+        raise newException(GeneError, "VM stack underflow in match")
+      let target = stack[^1]                # peek; target survives for the next clause
+      var binds = initTable[string, Value]()
+      if tryMatch(chunk.constants[inst.intArg], target, scope, binds):
+        for k, v in binds: scope.define(k, v)
+        stack.add TRUE
+      else:
+        stack.add FALSE
+    of opMatchFail:
+      raise newException(MatchError, "no matching pattern")
+    of opForEach:
+      let coll = stack.pop()
+      let fp = chunk.forLoops[inst.intArg]
+      for item in forItems(coll):
+        let loopScope = newScope(scope)
+        var binds = initTable[string, Value]()
+        if not tryMatch(fp.pattern, item, loopScope, binds):
+          raise newException(MatchError, "for pattern did not match an item")
+        for k, v in binds: loopScope.define(k, v)
+        discard run(fp.body, loopScope)
+      stack.add NIL
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:

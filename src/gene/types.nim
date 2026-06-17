@@ -30,6 +30,7 @@ when not (defined(gcOrc) or defined(gcArc)):
 
 type
   GeneError* = object of CatchableError
+  MatchError* = object of GeneError    ## pattern match / destructuring failure
 
   ValueKind* = enum
     vkNil       ## explicit absence (`nil` : Nil)

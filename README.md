@@ -54,11 +54,14 @@ participates in equality or hashing.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/`ns`/
-  `import`/`mod` special forms, positional/named/rest/default function arguments,
-  static and dynamic selector/slash-path access, functional selector updates,
-  namespaces with qualified access, file-based modules (`import … from "path"`)
-  with a load-once cache and cycle detection, closures, recursion, `gene run`
-  entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
+  `import`/`mod`/`match`/`for`/`while` special forms, positional/named/rest/default
+  function arguments, static and dynamic selector/slash-path access, functional
+  selector updates, namespaces with qualified access, file-based modules
+  (`import … from "path"`) with a load-once cache and cycle detection, pattern
+  matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`, rest
+  patterns, `%name`, `| & not`), `for`/`while` loops, closures, recursion,
+  `gene run` entrypoint invocation, GIR disassembly via `gene compile`, and
+  built-ins
   (`+ - * / < > <= >= = not head props body meta assoc-in update-in print
   println`).
 
