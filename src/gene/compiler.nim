@@ -257,6 +257,17 @@ proc compileFn(c: var Compiler, node: Value) =
   if name.len > 0:
     discard c.emit(opDefineName, name = name)
 
+proc compileNs(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len == 0 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "ns requires a name")
+  let name = body[0].symVal
+  var nsCompiler = Compiler(chunk: newChunk())
+  compileBodyFrom(nsCompiler, body, 1)
+  discard nsCompiler.emit(opReturn)
+  let idx = c.chunk.addSubchunk(nsCompiler.chunk)
+  discard c.emit(opMakeNamespace, idx, name = name)
+
 proc selectorLiteral(parts: openArray[Value]): Value =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
@@ -334,6 +345,9 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "path":
       compilePath(c, node)
+      return
+    of "ns":
+      compileNs(c, node)
       return
     else:
       discard

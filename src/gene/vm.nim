@@ -451,6 +451,14 @@ proc run*(chunk: Chunk, scope: Scope): Value =
     of opMakeFn:
       let proto = chunk.functions[inst.intArg]
       stack.add newFunction(proto.name, proto.params, proto, scope)
+    of opMakeNamespace:
+      # Run the ns body in a fresh child scope; its bindings become the
+      # namespace's exports. Bind the namespace in the enclosing scope.
+      let nsScope = newScope(scope)
+      discard run(chunk.subchunks[inst.intArg], nsScope)
+      let ns = newNamespace(inst.name, nsScope)
+      scope.define(inst.name, ns)
+      stack.add ns
     of opCall:
       var args = newSeq[Value](inst.intArg)
       if inst.intArg > 0:
@@ -543,6 +551,9 @@ proc staticLookup(target, segment: Value): Value =
       of "first": (if target.listItems.len > 0: target.listItems[0] else: VOID)
       of "last": (if target.listItems.len > 0: target.listItems[^1] else: VOID)
       else: VOID
+    of vkNamespace:
+      # Qualified access reads the namespace's own exports (not its parent chain).
+      target.nsScope.vars.getOrDefault(key, VOID)
     else:
       VOID
   of vkNode:

@@ -368,8 +368,27 @@ suite "vm — entrypoint support":
     var missing: Value
     check not scope.lookupOptional("main", missing)
 
+suite "vm — namespaces":
+  test "ns declares a namespace and binds it":
+    ck "(ns math (var pi 3)) math", "(ns math)"
+  test "qualified access reads namespace exports":
+    ck "(ns math (var pi 3) (fn square [x] (* x x))) math/pi", "3"
+    ck "(ns math (var pi 3) (fn square [x] (* x x))) (math/square 5)", "25"
+  test "nested namespaces resolve through a qualified path":
+    ck "(ns a (ns b (var x 42))) a/b/x", "42"
+  test "ns body sees outer bindings and built-ins":
+    ck "(var base 100) (ns m (var total (+ base 1))) m/total", "101"
+  test "a missing namespace member is void":
+    ck "(ns n (var a 1)) n/nope", "void"
+  test "namespace exports do not leak into the enclosing scope":
+    expect GeneError: discard runStr("(ns m (var secret 1)) secret")
+  test "namespaces compare by identity":
+    ck "(ns m (var a 1)) (= m m)", "true"
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous
     ck "(fn double [x] (* x 2))", "(fn double)"  # named form sets the name
     check runStr("+").print() == "(native-fn +)"
+  test "namespaces print a display form":
+    ck "(ns math (var pi 3))", "(ns math)"

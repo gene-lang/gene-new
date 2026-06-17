@@ -45,6 +45,7 @@ type
     vkNode      ## general node (head + props + body + meta)
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
+    vkNamespace ## named binding container (module root or nested `ns`)
 
   Value* = object
     bits*: uint64
@@ -71,6 +72,11 @@ const
   INT64_TAG     = 0xFFFC'u64
   FUNCTION_TAG  = 0xFFFD'u64
   NATIVE_FN_TAG = 0xFFFE'u64
+  NAMESPACE_TAG = 0xFFFF'u64
+  # NOTE: 0xFFFF is the LAST managed tag (range 0xFFF8..0xFFFF = 8 kinds, all now
+  # used). The next heap kind (Stream, Cell, Task, Env, ...) must move to a generic
+  # object tag that carries its concrete kind in the object header, instead of a
+  # dedicated NaN-box tag per type.
 
   # A float whose raw bits land in tag space (0xFFF1.. negative NaNs) is folded to
   # this canonical quiet NaN, which lives below tag space and stores directly.
@@ -165,6 +171,11 @@ type
     name: string
     impl: NativeProc
 
+  GeneNamespace = object
+    refCount: int
+    name: string
+    scope: Scope          # the namespace's own bindings (its exports)
+
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
 # ---------------------------------------------------------------------------
@@ -232,6 +243,7 @@ proc rcRetain(bits: uint64) =
   of NODE_TAG:   inc cast[ptr GeneNode](bits and PAYLOAD_MASK).refCount
   of FUNCTION_TAG:  inc cast[ptr GeneFunction](bits and PAYLOAD_MASK).refCount
   of NATIVE_FN_TAG: inc cast[ptr GeneNativeFn](bits and PAYLOAD_MASK).refCount
+  of NAMESPACE_TAG: inc cast[ptr GeneNamespace](bits and PAYLOAD_MASK).refCount
   else: discard
 
 proc rcRelease(bits: uint64) =
@@ -264,6 +276,10 @@ proc rcRelease(bits: uint64) =
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
+    dec p.refCount
+    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of NAMESPACE_TAG:
+    let p = cast[ptr GeneNamespace](payload)
     dec p.refCount
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
   else: discard
@@ -305,6 +321,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
   of NODE_TAG: vkNode
   of FUNCTION_TAG: vkFunction
   of NATIVE_FN_TAG: vkNativeFn
+  of NAMESPACE_TAG: vkNamespace
   else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
@@ -418,6 +435,16 @@ proc nativeImpl*(v: Value): NativeProc =
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).impl
 
+proc nsName*(v: Value): lent string =
+  if v.tagOf != NAMESPACE_TAG:
+    raise newException(FieldDefect, "value is not a Namespace")
+  cast[ptr GeneNamespace](v.bits and PAYLOAD_MASK).name
+
+proc nsScope*(v: Value): Scope =
+  if v.tagOf != NAMESPACE_TAG:
+    raise newException(FieldDefect, "value is not a Namespace")
+  cast[ptr GeneNamespace](v.bits and PAYLOAD_MASK).scope
+
 # ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
@@ -508,6 +535,13 @@ proc newNativeFn*(name: string, impl: NativeProc): Value =
   p.name = name
   p.impl = impl
   boxPtr(NATIVE_FN_TAG, p)
+
+proc newNamespace*(name: string, scope: Scope): Value =
+  let p = createObj(GeneNamespace)
+  p.refCount = 1
+  p.name = name
+  p.scope = scope
+  boxPtr(NAMESPACE_TAG, p)
 
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.

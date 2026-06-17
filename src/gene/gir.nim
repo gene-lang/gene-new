@@ -18,6 +18,7 @@ type
     opMakeMap
     opMakeSelector
     opMakeFn
+    opMakeNamespace
     opCall
     opJumpIfFalse
     opJump
@@ -51,9 +52,14 @@ type
     constants*: seq[Value]
     instructions*: seq[Instruction]
     functions*: seq[FunctionProto]
+    subchunks*: seq[Chunk]       # bodies of `ns` declarations
 
 proc newChunk*(): Chunk =
-  Chunk(constants: @[], instructions: @[], functions: @[])
+  Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[])
+
+proc addSubchunk*(chunk: Chunk, body: Chunk): int =
+  result = chunk.subchunks.len
+  chunk.subchunks.add body
 
 proc addConst*(chunk: Chunk, value: Value): int =
   result = chunk.constants.len
@@ -90,6 +96,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " count=" & $inst.intArg
   of opMakeFn:
     result.add " fn=" & $inst.intArg
+  of opMakeNamespace:
+    result.add " ns=" & $inst.intArg & " name=" & inst.name
   of opCall:
     result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
@@ -132,6 +140,12 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         header.add " named=" & formatNames(names)
       lines.add header
       addDisassembly(lines, fn.chunk, indent & "    ")
+
+  if chunk.subchunks.len > 0:
+    lines.add indent & "namespaces:"
+    for i, sub in chunk.subchunks:
+      lines.add indent & "  [" & $i & "]"
+      addDisassembly(lines, sub, indent & "    ")
 
 proc disassemble*(chunk: Chunk): string =
   var lines: seq[string]
