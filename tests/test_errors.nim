@@ -44,6 +44,12 @@ suite "errors — fail and catch":
   test "built-in TypeError implements Error":
     ck "(try (fail (TypeError ^message \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
        "catch (TypeError ^message m) m)", "\"m\""
+  test "Error marker impls apply to child error types":
+    ck "(type BaseError ^props {^message Str} ^impl [Error]) " &
+       "(impl Error BaseError) " &
+       "(type ChildError ^is BaseError ^props {}) " &
+       "(try (fail (ChildError ^message \"child\")) catch (BaseError ^message m) m)",
+       "\"child\""
 
 suite "errors — checked rows":
   test "functions may raise declared errors":

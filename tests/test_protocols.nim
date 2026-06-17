@@ -36,6 +36,23 @@ suite "protocols — declarations and dispatch":
        "(model/to_name (model/User ^name \"Ada\"))",
        "\"Ada\""
 
+  test "parent type impl applies to child receivers":
+    ck "(protocol ToName (message to_name [self] : Str)) " &
+       "(type Animal ^props {^name Str}) " &
+       "(type Dog ^is Animal ^props {^breed Str}) " &
+       "(impl ToName Animal (message to_name [self] : Str self/name)) " &
+       "(to_name (Dog ^name \"Rex\" ^breed \"Lab\"))",
+       "\"Rex\""
+
+  test "overlapping parent and child impls are ambiguous at use":
+    expect GeneError:
+      discard runStr("(protocol ToName (message to_name [self] : Str)) " &
+                     "(type Animal ^props {^name Str}) " &
+                     "(type Dog ^is Animal ^props {^breed Str}) " &
+                     "(impl ToName Animal (message to_name [self] : Str self/name)) " &
+                     "(impl ToName Dog (message to_name [self] : Str self/breed)) " &
+                     "(to_name (Dog ^name \"Rex\" ^breed \"Lab\"))")
+
   test "type ^impl requirements are checked after forward impls":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str} ^impl [ToName]) " &

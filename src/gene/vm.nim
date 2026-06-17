@@ -464,6 +464,16 @@ proc resolveModulePath(rawPath: string): string =
 
 proc loadModuleNamespace(absPath: string): Value
 
+proc isSubtypeOf(actual, expected: Value): bool {.inline.} =
+  if expected.kind != vkType:
+    return false
+  var t = actual
+  while t.kind == vkType:
+    if t.bits == expected.bits:
+      return true
+    t = t.typeParent
+  false
+
 # ---------------------------------------------------------------------------
 # Pattern matching (design §8)
 # ---------------------------------------------------------------------------
@@ -581,7 +591,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
       # `(Task ^id id)` against a Task instance: resolve the pattern head to a type
       var resolved: Value
       if scope.lookupOptional(pat.head.symVal, resolved):
-        headOk = equal(resolved, target.head)
+        headOk = resolved.kind == vkType and target.head.isSubtypeOf(resolved)
     if not headOk: return false
     for key, vpat in pat.props:
       if not target.props.hasKey(key): return false
@@ -643,17 +653,10 @@ proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   var s = scope
   while s != nil:
     for impl in s.impls:
-      if same(impl.protocol, protocol) and same(impl.receiver, receiver):
+      if same(impl.protocol, protocol) and receiver.isSubtypeOf(impl.receiver):
         return true
     s = s.parent
   false
-
-proc validateRequiredImpls(scope: Scope) =
-  for typ in scope.requiredImplTypes:
-    for protocol in typ.typeRequiredProtocols:
-      if not scope.hasVisibleImpl(protocol, typ):
-        raise newException(GeneError,
-          "type " & typ.typeName & " requires impl " & protocol.protocolName)
 
 proc receiverType(value: Value): Value =
   if value.kind == vkNode and value.head.kind == vkType:
@@ -672,11 +675,22 @@ proc scopeChainContains(scope, target: Scope): bool =
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
   if scope != nil and scope.hasVisibleImpl(protocol, typ):
     return true
-  let definingScope = typ.typeScope
-  if definingScope != nil and
-      (scope == nil or not scope.scopeChainContains(definingScope)):
-    return definingScope.hasVisibleImpl(protocol, typ)
+  var t = typ
+  while t.kind == vkType:
+    let definingScope = t.typeScope
+    if definingScope != nil and
+        (scope == nil or not scope.scopeChainContains(definingScope)) and
+        definingScope.hasVisibleImpl(protocol, typ):
+      return true
+    t = t.typeParent
   false
+
+proc validateRequiredImpls(scope: Scope) =
+  for typ in scope.requiredImplTypes:
+    for protocol in typ.typeRequiredProtocols:
+      if not scope.typeImplementsProtocol(typ, protocol):
+        raise newException(GeneError,
+          "type " & typ.typeName & " requires impl " & protocol.protocolName)
 
 proc isErrorValue(scope: Scope, value: Value): bool =
   if value.kind != vkNode or value.head.kind != vkType:
@@ -731,15 +745,35 @@ proc raiseMatchError(scope: Scope, message: string) =
 
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =
+  for impl in scope.impls:
+    if same(impl.protocol, protocol) and recvType.isSubtypeOf(impl.receiver):
+      if not impl.messages.hasKey(message.protocolMessageName):
+        raise newException(GeneError,
+          "impl " & protocol.protocolName & " for " & impl.receiver.typeName &
+          " is missing message: " & message.protocolMessageName)
+      matches.add impl.messages[message.protocolMessageName]
+
+proc collectProtocolMatchesChain(scope: Scope, protocol, recvType, message: Value,
+                                 matches: var seq[Value]) =
   var s = scope
   while s != nil:
-    for impl in s.impls:
-      if same(impl.protocol, protocol) and same(impl.receiver, recvType):
-        if not impl.messages.hasKey(message.protocolMessageName):
-          raise newException(GeneError,
-            "impl " & protocol.protocolName & " for " & recvType.typeName &
-            " is missing message: " & message.protocolMessageName)
-        matches.add impl.messages[message.protocolMessageName]
+    collectProtocolMatches(s, protocol, recvType, message, matches)
+    s = s.parent
+
+proc hasSeenScope(seen: openArray[Scope], scope: Scope): bool =
+  for item in seen:
+    if item == scope:
+      return true
+  false
+
+proc collectProtocolMatchesExtra(scope, currentScope: Scope, protocol, recvType,
+                                 message: Value, seen: var seq[Scope],
+                                 matches: var seq[Value]) =
+  var s = scope
+  while s != nil:
+    if not currentScope.scopeChainContains(s) and not seen.hasSeenScope(s):
+      seen.add s
+      collectProtocolMatches(s, protocol, recvType, message, matches)
     s = s.parent
 
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
@@ -754,10 +788,15 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       "protocol message '" & message.protocolMessageName &
       "' requires a typed receiver")
   var matches: seq[Value]
-  collectProtocolMatches(scope, protocol, recvType, message, matches)
-  let definingScope = recvType.typeScope
-  if definingScope != nil and not scope.scopeChainContains(definingScope):
-    collectProtocolMatches(definingScope, protocol, recvType, message, matches)
+  collectProtocolMatchesChain(scope, protocol, recvType, message, matches)
+  var seenExtraScopes: seq[Scope]
+  var typ = recvType
+  while typ.kind == vkType:
+    let definingScope = typ.typeScope
+    if definingScope != nil and not scope.scopeChainContains(definingScope):
+      collectProtocolMatchesExtra(definingScope, scope, protocol, recvType, message,
+                                  seenExtraScopes, matches)
+    typ = typ.typeParent
   if matches.len == 0:
     raise newException(GeneError,
       "missing impl " & protocol.protocolName & " for " & recvType.typeName)
@@ -1011,14 +1050,6 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   e.errVal = newNode(head, props = props)
   e.hasErrVal = true
   raise e
-
-proc isSubtypeOf(actual, expected: Value): bool =
-  var t = actual
-  while t.kind == vkType:
-    if equal(t, expected):
-      return true
-    t = t.typeParent
-  false
 
 proc isInstanceOfType(value, expected: Value): bool =
   value.kind == vkNode and value.head.kind == vkType and

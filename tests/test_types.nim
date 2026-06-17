@@ -53,6 +53,10 @@ suite "types — pattern matching":
   test "instances match a node-shape pattern by type":
     ck "(type Task ^props {^id Int ^title Str}) " &
        "(match (Task ^id 7 ^title \"a\") (when (Task ^id n) n))", "7"
+  test "instances match parent type patterns":
+    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+       "(match (Dog ^name \"Rex\" ^breed \"Lab\") (when (Animal ^name n) n))",
+       "\"Rex\""
   test "a different type does not match":
     ck "(type A ^props {^x Int}) (type B ^props {^x Int}) " &
        "(match (B ^x 1) (when (A ^x v) \"a\") (else \"other\"))", "\"other\""
