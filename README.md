@@ -48,7 +48,7 @@ participates in equality or hashing.
 - **Value model** (`src/gene/types.nim`) — a 64-bit NaN-boxed `Value` (see
   [Implementation notes](#implementation-notes)).
 - **Equality & hashing** (`src/gene/equality.nim`) — structural, meta-blind `=`;
-  scalar/heap-aware `same?`; a matching `hash`.
+  scalar-value/container-identity `same?`; a matching `hash`.
 - **Printer** (`src/gene/printer.nim`) — prints a value back to canonical Gene
   source that re-reads to a structurally equal value.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,

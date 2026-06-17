@@ -128,10 +128,13 @@ Rules:
 
 ```gene
 (= a b)       # structural equality, meta-blind
-(same? a b)   # reference identity
+(same? a b)   # scalar value identity, heap/container reference identity
 ```
 
-Hashing follows `=`. Meta never changes hash keys.
+`same?` treats immutable scalar-like values such as numbers, booleans, symbols,
+characters, strings, `nil`, and `void` by value. Heap/container values such as
+lists, maps, nodes, namespaces, cells, streams, functions, types, and protocols
+compare by object identity. Hashing follows `=`. Meta never changes hash keys.
 
 ### 1.6 `nil`, `void`, and `Never`
 
