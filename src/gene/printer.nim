@@ -100,3 +100,5 @@ proc print*(v: Value): string =
     "(native-fn " & v.nativeFnName & ")"
   of vkNamespace:
     "(ns " & v.nsName & ")"
+  of vkType:
+    "(type " & v.typeName & ")"

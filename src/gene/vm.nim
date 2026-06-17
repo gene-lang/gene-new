@@ -565,7 +565,13 @@ proc tryMatch(pat, target: Value, scope: Scope,
     # General node-shape pattern `(Head ^k kp body...)`: head matched literally,
     # props open (mentioned keys required), body matched positionally.
     if target.kind != vkNode: return false
-    if not equal(pat.head, target.head): return false
+    var headOk = equal(pat.head, target.head)
+    if not headOk and pat.head.kind == vkSymbol and target.head.kind == vkType:
+      # `(Task ^id id)` against a Task instance: resolve the pattern head to a type
+      var resolved: Value
+      if scope.lookupOptional(pat.head.symVal, resolved):
+        headOk = equal(resolved, target.head)
+    if not headOk: return false
     for key, vpat in pat.props:
       if not target.props.hasKey(key): return false
       if not tryMatch(vpat, target.props[key], scope, binds): return false
@@ -641,6 +647,12 @@ proc run*(chunk: Chunk, scope: Scope): Value =
     of opMakeFn:
       let proto = chunk.functions[inst.intArg]
       stack.add newFunction(proto.name, proto.params, proto, scope)
+    of opMakeType:
+      let proto = chunk.typeProtos[inst.intArg]
+      let parent = stack.pop()
+      if parent.kind != vkNil and parent.kind != vkType:
+        raise newException(GeneError, "type ^is must be a type")
+      stack.add newType(proto.name, parent, proto.fields)
     of opMakeNamespace:
       # Run the ns body in a fresh child scope; its bindings become the
       # namespace's exports. Bind the namespace in the enclosing scope.
@@ -904,6 +916,28 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)
     run(proto.chunk, callScope)
+  of vkType:
+    # Construct a typed instance: a node with the type as head, validated props.
+    if args.len != 0:
+      raise newException(GeneError,
+        "constructing " & callee.typeName & " takes named fields only")
+    let fields = callee.typeFields
+    var props = initOrderedTable[string, Value]()
+    for f in fields:
+      if named.hasArg(f.name):
+        props[f.name] = named.getArg(f.name)
+      elif not f.optional:
+        raise newException(GeneError,
+          "missing required field '" & f.name & "' for " & callee.typeName)
+    for key in named.names:
+      var known = false
+      for f in fields:
+        if f.name == key:
+          known = true
+          break
+      if not known:
+        raise newException(GeneError, callee.typeName & " has no field '" & key & "'")
+    newNode(callee, props = props)
   of vkNode:
     if not callee.isSelector:
       raise newException(GeneError, "value is not callable: " & $callee.kind)

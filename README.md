@@ -54,8 +54,10 @@ participates in equality or hashing.
 - **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
   `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/`ns`/
-  `import`/`mod`/`match`/`for`/`while`/`try` special forms, positional/named/rest/
-  default function arguments, static and dynamic selector/slash-path access,
+  `import`/`mod`/`match`/`for`/`while`/`try`/`type` special forms, nominal types
+  with construction, schema validation, and single inheritance (`(type T ^props
+  {…} ^is Parent)`), positional/named/rest/default function arguments, static and
+  dynamic selector/slash-path access,
   functional selector updates, namespaces with qualified access, file-based
   modules (`import … from "path"`) with a load-once cache and cycle detection,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
@@ -140,7 +142,9 @@ See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 - The all-zero bit pattern is `nil`, so a zero-initialized `Value` is `nil`.
 - Reserved NaN tags encode `void` / `bool` / small-int / `char` / `+0.0` /
   symbol immediates (allocation-free), or a heap pointer for compound values
-  (large ints, strings, lists, maps, nodes).
+  (large ints, strings, lists, maps, nodes, functions). One tag (`0xFFFF`) is a
+  generic object whose concrete kind (namespace, type, …) lives in the object
+  header, so new heap kinds don't each need a NaN-box tag.
 
 `sizeof(Value) == sizeof(uint64)`. Compound values are manually heap-allocated
 with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks drive

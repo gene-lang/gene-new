@@ -55,6 +55,7 @@ type
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (module root or nested `ns`)
+    vkType      ## a declared nominal type (design Section 7)
 
   Value* = object
     bits*: uint64
@@ -81,11 +82,11 @@ const
   INT64_TAG     = 0xFFFC'u64
   FUNCTION_TAG  = 0xFFFD'u64
   NATIVE_FN_TAG = 0xFFFE'u64
-  NAMESPACE_TAG = 0xFFFF'u64
-  # NOTE: 0xFFFF is the LAST managed tag (range 0xFFF8..0xFFFF = 8 kinds, all now
-  # used). The next heap kind (Stream, Cell, Task, Env, ...) must move to a generic
-  # object tag that carries its concrete kind in the object header, instead of a
-  # dedicated NaN-box tag per type.
+  # 0xFFFF is the generic object tag: an open-ended set of heap kinds (namespace,
+  # type, and future stream/cell/task/...) that carry their concrete `ObjKind` in
+  # the object header. The payload is a GC-managed (ORC) ref; the lifecycle hooks
+  # GC_ref/GC_unref it. The dedicated tags above stay for the hot core kinds.
+  OBJECT_TAG    = 0xFFFF'u64
 
   # A float whose raw bits land in tag space (0xFFF1.. negative NaNs) is folded to
   # this canonical quiet NaN, which lives below tag space and stores directly.
@@ -180,10 +181,27 @@ type
     name: string
     impl: NativeProc
 
-  GeneNamespace = object
-    refCount: int
+  # OBJECT_TAG heap kinds. `GeneObjectData` is the GC-managed (ORC) base; each
+  # concrete kind subclasses it and `kind*` dispatches on `objKind`.
+  ObjKind* = enum
+    okNamespace
+    okType
+
+  GeneObjectData* = ref object of RootObj
+    objKind*: ObjKind
+
+  NamespaceData = ref object of GeneObjectData
     name: string
     scope: Scope          # the namespace's own bindings (its exports)
+
+  TypeData = ref object of GeneObjectData
+    name: string
+    parent: Value         # parent Type value, or NIL
+    fields: seq[TypeField]
+
+  TypeField* = object
+    name*: string
+    optional*: bool       # `^name?` — may be omitted at construction
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -214,6 +232,14 @@ proc mkImm(tag: uint64, payload = 0'u64): Value {.inline.} =
 
 proc boxPtr(tag: uint64, p: pointer): Value {.inline.} =
   Value(bits: (tag shl TAG_SHIFT) or (cast[uint64](p) and PAYLOAD_MASK))
+
+proc objData(v: Value): GeneObjectData {.inline.} =
+  cast[GeneObjectData](cast[pointer](v.bits and PAYLOAD_MASK))
+
+proc boxObject(data: GeneObjectData): Value =
+  GC_ref(data)                                   # the box holds one reference
+  Value(bits: (OBJECT_TAG shl TAG_SHIFT) or
+              (cast[uint64](cast[pointer](data)) and PAYLOAD_MASK))
 
 when defined(geneRcStats):
   # Opt-in diagnostic: counts live managed (heap, refcounted) objects so tests can
@@ -252,7 +278,7 @@ proc rcRetain(bits: uint64) =
   of NODE_TAG:   inc cast[ptr GeneNode](bits and PAYLOAD_MASK).refCount
   of FUNCTION_TAG:  inc cast[ptr GeneFunction](bits and PAYLOAD_MASK).refCount
   of NATIVE_FN_TAG: inc cast[ptr GeneNativeFn](bits and PAYLOAD_MASK).refCount
-  of NAMESPACE_TAG: inc cast[ptr GeneNamespace](bits and PAYLOAD_MASK).refCount
+  of OBJECT_TAG: GC_ref(cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK)))
   else: discard
 
 proc rcRelease(bits: uint64) =
@@ -287,10 +313,8 @@ proc rcRelease(bits: uint64) =
     let p = cast[ptr GeneNativeFn](payload)
     dec p.refCount
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
-  of NAMESPACE_TAG:
-    let p = cast[ptr GeneNamespace](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of OBJECT_TAG:
+    GC_unref(cast[GeneObjectData](cast[pointer](payload)))
   else: discard
 
 # ---------------------------------------------------------------------------
@@ -330,7 +354,10 @@ proc kind*(v: Value): ValueKind {.inline.} =
   of NODE_TAG: vkNode
   of FUNCTION_TAG: vkFunction
   of NATIVE_FN_TAG: vkNativeFn
-  of NAMESPACE_TAG: vkNamespace
+  of OBJECT_TAG:
+    case objData(v).objKind
+    of okNamespace: vkNamespace
+    of okType: vkType
   else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
@@ -445,14 +472,30 @@ proc nativeImpl*(v: Value): NativeProc =
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).impl
 
 proc nsName*(v: Value): lent string =
-  if v.tagOf != NAMESPACE_TAG:
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
-  cast[ptr GeneNamespace](v.bits and PAYLOAD_MASK).name
+  NamespaceData(objData(v)).name
 
 proc nsScope*(v: Value): Scope =
-  if v.tagOf != NAMESPACE_TAG:
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
-  cast[ptr GeneNamespace](v.bits and PAYLOAD_MASK).scope
+  NamespaceData(objData(v)).scope
+
+proc typeName*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).name
+
+proc typeParent*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).parent
+
+proc typeFields*(v: Value): seq[TypeField] =
+  ## Full field schema, parent fields first (inheritance is merged at newType).
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).fields
 
 # ---------------------------------------------------------------------------
 # Constructors
@@ -546,11 +589,16 @@ proc newNativeFn*(name: string, impl: NativeProc): Value =
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope): Value =
-  let p = createObj(GeneNamespace)
-  p.refCount = 1
-  p.name = name
-  p.scope = scope
-  boxPtr(NAMESPACE_TAG, p)
+  boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope))
+
+proc newType*(name: string, parent: Value, ownFields: seq[TypeField]): Value =
+  ## A nominal type. Single inheritance is merged eagerly: the parent's fields
+  ## come first, then this type's own fields (design Section 7.3).
+  var fields: seq[TypeField]
+  if parent.kind == vkType:
+    fields = typeFields(parent)
+  for f in ownFields: fields.add f
+  boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields))
 
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.

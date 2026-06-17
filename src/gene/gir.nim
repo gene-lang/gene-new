@@ -19,6 +19,7 @@ type
     opMakeSelector
     opMakeFn
     opMakeNamespace
+    opMakeType
     opImport
     opCall
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
@@ -78,6 +79,10 @@ type
     catches*: seq[CatchClause]
     ensureBody*: Chunk           # nil when there is no `ensure`
 
+  TypeProto* = ref object
+    name*: string
+    fields*: seq[TypeField]      # own (non-inherited) field schema
+
   Chunk* = ref object
     constants*: seq[Value]
     instructions*: seq[Instruction]
@@ -86,10 +91,15 @@ type
     imports*: seq[ImportSpec]
     forLoops*: seq[ForProto]
     tries*: seq[TryProto]
+    typeProtos*: seq[TypeProto]
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[], tries: @[])
+        imports: @[], forLoops: @[], tries: @[], typeProtos: @[])
+
+proc addType*(chunk: Chunk, tp: TypeProto): int =
+  result = chunk.typeProtos.len
+  chunk.typeProtos.add tp
 
 proc addForLoop*(chunk: Chunk, fp: ForProto): int =
   result = chunk.forLoops.len
@@ -144,6 +154,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
     result.add " ns=" & $inst.intArg & " name=" & inst.name
+  of opMakeType:
+    result.add " type=" & $inst.intArg
   of opImport:
     result.add " import=" & $inst.intArg
   of opCall:

@@ -487,6 +487,30 @@ proc compileTry(c: var Compiler, node: Value) =
     tp.ensureBody = compileSubBody(ensureForms)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
+proc compileType(c: var Compiler, node: Value) =
+  ## (type Name ^props {^id Int ^done? Bool} ^is Parent) — field type annotations
+  ## are read but ignored for MVP; `^impl`/`^derive`/`^body` are deferred.
+  let body = node.body
+  if body.len == 0 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "type requires a name")
+  let name = body[0].symVal
+  var fields: seq[TypeField]
+  if node.props.hasKey("props"):
+    let schema = node.props["props"]
+    if schema.kind != vkMap:
+      raise newException(GeneError, "type ^props must be a map")
+    for key, _ in schema.mapEntries:
+      if key.endsWith("?"):
+        fields.add TypeField(name: key[0 .. ^2], optional: true)
+      else:
+        fields.add TypeField(name: key, optional: false)
+  if node.props.hasKey("is"):
+    compileExpr(c, node.props["is"])         # parent type value
+  else:
+    c.emitConst NIL
+  discard c.emit(opMakeType, c.chunk.addType(TypeProto(name: name, fields: fields)))
+  discard c.emit(opDefineName, name = name)
+
 proc compileNode(c: var Compiler, node: Value) =
   let h = node.head
   if h.kind == vkSymbol:
@@ -535,6 +559,9 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "try":
       compileTry(c, node)
+      return
+    of "type":
+      compileType(c, node)
       return
     else:
       discard
