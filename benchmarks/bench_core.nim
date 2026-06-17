@@ -81,6 +81,14 @@ proc main() =
     let v = run(namedChunk, namedScope)
     checksum = checksum + v.intVal
 
+  let typedScope = newGlobalScope()
+  typedScope.define("typed-pick",
+    run(compileSource("(fn [x : Int ^scale : Int] : Int (+ x scale))"), typedScope))
+  let typedChunk = compileSource("(typed-pick ^scale 4 6)")
+  bench("vm.typed_call.compiled_chunk", 500_000, i):
+    let v = run(typedChunk, typedScope)
+    checksum = checksum + v.intVal
+
   let restScope = newGlobalScope()
   restScope.define("collect", run(compileSource("(fn [head tail...] tail)"), restScope))
   let restChunk = compileSource("(collect 6 4 3 2)")

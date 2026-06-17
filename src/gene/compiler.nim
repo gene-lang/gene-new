@@ -9,9 +9,14 @@ type
 
   ParamSpecs = object
     positional: seq[string]
+    positionalTypes: seq[Value]
     positionalDefaults: seq[ParamDefault]
     rest: string
     named: seq[NamedParam]
+
+  ParamAdornment = object
+    typeExpr: Value
+    defaultValue: ParamDefault
 
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           names: seq[string] = @[], flag = false): int =
@@ -76,20 +81,23 @@ proc splitOptionalName(s: string): tuple[name: string, optional: bool] =
   else:
     (s, false)
 
-proc parseParamAdornment(items: openArray[Value], i: var int): ParamDefault =
-  ## Skip MVP-ignored type annotations and compile call-time defaults.
+proc parseParamAdornment(items: openArray[Value], i: var int): ParamAdornment =
+  ## Parse type annotations and compile call-time defaults.
   while i < items.len:
     let s = items[i].symbolText
     case s
     of ":":
       inc i
-      if i < items.len: inc i
+      if i >= items.len:
+        raise newException(GeneError, "parameter annotation requires a type")
+      result.typeExpr = items[i]
+      inc i
     of "=":
       inc i
       if i >= items.len:
         raise newException(GeneError, "parameter default requires a value")
-      result.optional = true
-      result.defaultChunk = compileDefaultExpr(items[i])
+      result.defaultValue.optional = true
+      result.defaultValue.defaultChunk = compileDefaultExpr(items[i])
       inc i
     else:
       break
@@ -132,10 +140,12 @@ proc paramSpecs(paramList: Value): ParamSpecs =
           if localSpec.optional:
             argSpec.optional = true
           inc i
-      var defaultValue = parseParamAdornment(items, i)
+      var adornment = parseParamAdornment(items, i)
       if argSpec.optional:
-        defaultValue.optional = true
-      result.named.add NamedParam(arg: arg, local: local, defaultValue: defaultValue)
+        adornment.defaultValue.optional = true
+      result.named.add NamedParam(arg: arg, local: local,
+                                  typeExpr: adornment.typeExpr,
+                                  defaultValue: adornment.defaultValue)
     of ":", "=":
       raise newException(GeneError, "parameter annotation requires a parameter")
     else:
@@ -156,15 +166,16 @@ proc paramSpecs(paramList: Value): ParamSpecs =
         if spec.name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
-        var defaultValue = parseParamAdornment(items, i)
+        var adornment = parseParamAdornment(items, i)
         if spec.optional:
-          defaultValue.optional = true
-        if defaultValue.optional:
+          adornment.defaultValue.optional = true
+        if adornment.defaultValue.optional:
           sawOptionalPositional = true
         elif sawOptionalPositional:
           raise newException(GeneError, "required positional parameter cannot follow an optional positional parameter")
         result.positional.add spec.name
-        result.positionalDefaults.add defaultValue
+        result.positionalTypes.add adornment.typeExpr
+        result.positionalDefaults.add adornment.defaultValue
         continue
       discard parseParamAdornment(items, i)
 
@@ -253,14 +264,38 @@ proc compileFn(c: var Compiler, node: Value) =
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
+  var bodyStart = idx + 1
+  var returnType = NIL
+  if bodyStart < body.len and body[bodyStart].isSymbol(":"):
+    inc bodyStart
+    if bodyStart >= body.len:
+      raise newException(GeneError, "fn return annotation requires a type")
+    returnType = body[bodyStart]
+    inc bodyStart
+
   var fnCompiler = Compiler(chunk: newChunk())
-  compileBodyFrom(fnCompiler, body, idx + 1)
+  compileBodyFrom(fnCompiler, body, bodyStart)
   discard fnCompiler.emit(opReturn)
 
   let specs = paramSpecs(body[idx])
+  var hasParamTypes = false
+  for t in specs.positionalTypes:
+    if t.kind != vkNil:
+      hasParamTypes = true
+      break
+  var hasNamedParamTypes = false
+  for p in specs.named:
+    if p.typeExpr.kind != vkNil:
+      hasNamedParamTypes = true
+      break
   let proto = FunctionProto(name: name, params: specs.positional,
+                            paramTypes: specs.positionalTypes,
+                            hasParamTypes: hasParamTypes,
                             paramDefaults: specs.positionalDefaults,
                             restParam: specs.rest, namedParams: specs.named,
+                            hasNamedParamTypes: hasNamedParamTypes,
+                            returnType: returnType,
+                            hasReturnType: returnType.kind != vkNil,
                             chunk: fnCompiler.chunk)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if name.len > 0:
@@ -501,9 +536,11 @@ proc compileType(c: var Compiler, node: Value) =
       raise newException(GeneError, "type ^props must be a map")
     for key, _ in schema.mapEntries:
       if key.endsWith("?"):
-        fields.add TypeField(name: key[0 .. ^2], optional: true)
+        fields.add TypeField(name: key[0 .. ^2], optional: true,
+                             typeExpr: schema.mapEntries[key])
       else:
-        fields.add TypeField(name: key, optional: false)
+        fields.add TypeField(name: key, optional: false,
+                             typeExpr: schema.mapEntries[key])
   if node.props.hasKey("is"):
     compileExpr(c, node.props["is"])         # parent type value
   else:

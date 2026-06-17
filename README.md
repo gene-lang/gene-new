@@ -56,8 +56,9 @@ participates in equality or hashing.
   self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/`ns`/
   `import`/`mod`/`match`/`for`/`while`/`try`/`type` special forms, nominal types
   with construction, schema validation, and single inheritance (`(type T ^props
-  {…} ^is Parent)`), positional/named/rest/default function arguments, static and
-  dynamic selector/slash-path access,
+  {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
+  returns, and typed construction, positional/named/rest/default function
+  arguments, static and dynamic selector/slash-path access,
   functional selector updates, namespaces with qualified access, file-based
   modules (`import … from "path"`) with a load-once cache and cycle detection,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,

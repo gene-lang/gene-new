@@ -45,14 +45,20 @@ type
   NamedParam* = object
     arg*: string
     local*: string
+    typeExpr*: Value
     defaultValue*: ParamDefault
 
   FunctionProto* = ref object of FunctionCode
     name*: string
     params*: seq[string]
+    paramTypes*: seq[Value]
+    hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]
     restParam*: string
     namedParams*: seq[NamedParam]
+    hasNamedParamTypes*: bool
+    returnType*: Value
+    hasReturnType*: bool
     chunk*: Chunk
 
   ImportSelection* = object
@@ -194,16 +200,23 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
       let label = if fn.name.len > 0: fn.name else: "<anon>"
       var header = indent & "  [" & $i & "] " & label &
         " params=" & formatNames(fn.params)
+      if fn.paramTypes.len > 0:
+        var types: seq[string]
+        for t in fn.paramTypes:
+          types.add(if t.kind == vkNil: "_" else: t.print())
+        header.add " param-types=" & formatNames(types)
       if fn.restParam.len > 0:
         header.add " rest=" & fn.restParam
       if fn.namedParams.len > 0:
         var names: seq[string]
         for p in fn.namedParams:
-          if p.local == p.arg:
-            names.add p.arg
-          else:
-            names.add p.arg & ":" & p.local
+          var desc = if p.local == p.arg: p.arg else: p.arg & ":" & p.local
+          if p.typeExpr.kind != vkNil:
+            desc.add " " & p.typeExpr.print()
+          names.add desc
         header.add " named=" & formatNames(names)
+      if fn.returnType.kind != vkNil:
+        header.add " return=" & fn.returnType.print()
       lines.add header
       addDisassembly(lines, fn.chunk, indent & "    ")
 

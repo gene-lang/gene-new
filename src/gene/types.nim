@@ -198,10 +198,13 @@ type
     name: string
     parent: Value         # parent Type value, or NIL
     fields: seq[TypeField]
+    scope: Scope          # defining scope for resolving field type annotations
 
   TypeField* = object
     name*: string
     optional*: bool       # `^name?` — may be omitted at construction
+    typeExpr*: Value      # annotation syntax, or NIL for `Any`
+    scope*: Scope         # defining scope for resolving `typeExpr`
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -497,6 +500,11 @@ proc typeFields*(v: Value): seq[TypeField] =
     raise newException(FieldDefect, "value is not a Type")
   TypeData(objData(v)).fields
 
+proc typeScope*(v: Value): Scope =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).scope
+
 # ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
@@ -591,14 +599,20 @@ proc newNativeFn*(name: string, impl: NativeProc): Value =
 proc newNamespace*(name: string, scope: Scope): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope))
 
-proc newType*(name: string, parent: Value, ownFields: seq[TypeField]): Value =
+proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
+              scope: Scope): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
   if parent.kind == vkType:
     fields = typeFields(parent)
-  for f in ownFields: fields.add f
-  boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields))
+  for f in ownFields:
+    var owned = f
+    if owned.scope == nil:
+      owned.scope = scope
+    fields.add owned
+  boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
+                     scope: scope))
 
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.

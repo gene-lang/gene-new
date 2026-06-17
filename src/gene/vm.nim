@@ -652,7 +652,7 @@ proc run*(chunk: Chunk, scope: Scope): Value =
       let parent = stack.pop()
       if parent.kind != vkNil and parent.kind != vkType:
         raise newException(GeneError, "type ^is must be a type")
-      stack.add newType(proto.name, parent, proto.fields)
+      stack.add newType(proto.name, parent, proto.fields, scope)
     of opMakeNamespace:
       # Run the ns body in a fresh child scope; its bindings become the
       # namespace's exports. Bind the namespace in the enclosing scope.
@@ -782,6 +782,137 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   else:
     VOID
 
+proc typeExprLabel(expr: Value): string =
+  if expr.kind == vkNil: "Any" else: expr.print()
+
+proc raiseTypeError(where, expected: string, value: Value) =
+  let message = where & " expected " & expected & ", got " & $value.kind
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  props["where"] = newStr(where)
+  props["expected"] = newStr(expected)
+  props["actual"] = newStr($value.kind)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(newSym("TypeError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc isSubtypeOf(actual, expected: Value): bool =
+  var t = actual
+  while t.kind == vkType:
+    if equal(t, expected):
+      return true
+    t = t.typeParent
+  false
+
+proc isInstanceOfType(value, expected: Value): bool =
+  value.kind == vkNode and value.head.kind == vkType and
+    value.head.isSubtypeOf(expected)
+
+proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
+  case name
+  of "Any":
+    (true, true)
+  of "Never":
+    (true, false)
+  of "Nil":
+    (true, value.kind == vkNil)
+  of "Void":
+    (true, value.kind == vkVoid)
+  of "Bool":
+    (true, value.kind == vkBool)
+  of "Str", "String":
+    (true, value.kind == vkString)
+  of "Char":
+    (true, value.kind == vkChar)
+  of "Sym", "Symbol":
+    (true, value.kind == vkSymbol)
+  of "Int", "Integer", "Fixnum", "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64":
+    (true, value.kind == vkInt)
+  of "Number":
+    (true, value.kind in {vkInt, vkFloat})
+  of "Float", "F32", "F64":
+    (true, value.kind == vkFloat)
+  of "List":
+    (true, value.kind == vkList)
+  of "Map", "PropMap":
+    (true, value.kind == vkMap)
+  of "Gene", "Node":
+    (true, value.kind == vkNode)
+  of "Fn", "Function":
+    (true, value.kind == vkFunction)
+  of "Callable":
+    (true, value.kind in {vkFunction, vkNativeFn, vkType} or
+      (value.kind == vkNode and value.isSelector))
+  of "Type":
+    (true, value.kind == vkType)
+  of "Namespace":
+    (true, value.kind == vkNamespace)
+  else:
+    (false, false)
+
+proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
+  if expr.kind == vkNil:
+    return true
+  case expr.kind
+  of vkSymbol:
+    let builtin = matchesBuiltinType(expr.symVal, value)
+    if builtin.known:
+      return builtin.ok
+    var resolved: Value
+    if scope.lookupOptional(expr.symVal, resolved) and resolved.kind == vkType:
+      return value.isInstanceOfType(resolved)
+    raise newException(GeneError, "unknown type annotation: " & expr.symVal)
+  of vkNode:
+    if expr.head.kind == vkSymbol:
+      case expr.head.symVal
+      of "|":
+        for alt in expr.body:
+          if matchesTypeExpr(alt, value, scope):
+            return true
+        return false
+      of "opt":
+        if expr.body.len != 1:
+          raise newException(GeneError, "(opt T) expects one type")
+        return value.kind == vkNil or matchesTypeExpr(expr.body[0], value, scope)
+      of "List":
+        if value.kind != vkList:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(List T) expects one item type")
+        for item in value.listItems:
+          if not matchesTypeExpr(expr.body[0], item, scope):
+            return false
+        return true
+      of "Map", "PropMap":
+        if value.kind != vkMap:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Map T) expects one value type in this MVP")
+        for _, item in value.mapEntries:
+          if not matchesTypeExpr(expr.body[0], item, scope):
+            return false
+        return true
+      else:
+        discard
+    raise newException(GeneError, "unsupported type annotation: " & expr.print())
+  of vkType:
+    value.isInstanceOfType(expr)
+  else:
+    raise newException(GeneError, "unsupported type annotation: " & expr.print())
+
+proc checkBoundary(where: string, typeExpr, value: Value, scope: Scope) =
+  if typeExpr.kind == vkNil:
+    return
+  if not matchesTypeExpr(typeExpr, value, scope):
+    raiseTypeError(where, typeExpr.typeExprLabel, value)
+
 proc isSelectorStage(v: Value): bool =
   case v.kind
   of vkFunction, vkNativeFn:
@@ -893,16 +1024,28 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     let callScope = newScope(callee.fnScope)
     let providedPositional = min(args.len, positional.len)
     for i in 0 ..< providedPositional:
+      if proto.hasParamTypes and i < proto.paramTypes.len and
+          proto.paramTypes[i].kind != vkNil:
+        checkBoundary("parameter '" & positional[i] & "'", proto.paramTypes[i],
+                      args[i], callScope)
       callScope.define(positional[i], args[i])
     for p in proto.namedParams:
       if named.hasArg(p.arg):
-        callScope.define(p.local, named.getArg(p.arg))
+        let value = named.getArg(p.arg)
+        if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+          checkBoundary("parameter '" & p.local & "'", p.typeExpr, value, callScope)
+        callScope.define(p.local, value)
     for i in providedPositional ..< positional.len:
       let fallback = proto.positionalDefault(i)
       if not fallback.optional:
         raise newException(GeneError,
           "function '" & callee.fnName & "' missing positional argument: " & positional[i])
-      callScope.define(positional[i], fallback.defaultValue(callScope))
+      let value = fallback.defaultValue(callScope)
+      if proto.hasParamTypes and i < proto.paramTypes.len and
+          proto.paramTypes[i].kind != vkNil:
+        checkBoundary("parameter '" & positional[i] & "'", proto.paramTypes[i],
+                      value, callScope)
+      callScope.define(positional[i], value)
     if proto.restParam.len > 0:
       var rest = newSeq[Value](args.len - positional.len)
       for i in 0 ..< rest.len:
@@ -911,11 +1054,18 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     for p in proto.namedParams:
       if not named.hasArg(p.arg):
         if p.defaultValue.optional:
-          callScope.define(p.local, p.defaultValue.defaultValue(callScope))
+          let value = p.defaultValue.defaultValue(callScope)
+          if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+            checkBoundary("parameter '" & p.local & "'", p.typeExpr, value, callScope)
+          callScope.define(p.local, value)
         else:
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)
-    run(proto.chunk, callScope)
+    let resultValue = run(proto.chunk, callScope)
+    if proto.hasReturnType:
+      checkBoundary("return from '" & callee.fnName & "'", proto.returnType,
+                    resultValue, callScope)
+    resultValue
   of vkType:
     # Construct a typed instance: a node with the type as head, validated props.
     if args.len != 0:
@@ -925,7 +1075,11 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs): Value =
     var props = initOrderedTable[string, Value]()
     for f in fields:
       if named.hasArg(f.name):
-        props[f.name] = named.getArg(f.name)
+        let value = named.getArg(f.name)
+        let fieldScope = if f.scope == nil: callee.typeScope else: f.scope
+        checkBoundary("field '" & f.name & "' for " & callee.typeName,
+                      f.typeExpr, value, fieldScope)
+        props[f.name] = value
       elif not f.optional:
         raise newException(GeneError,
           "missing required field '" & f.name & "' for " & callee.typeName)
