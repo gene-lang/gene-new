@@ -140,7 +140,8 @@ benchmarks/           release-mode core benchmarks
 nimble test     # unit tests (tests/test_all.nim)
 nimble spec     # executable language-surface specs (tracks docs/design.md)
 nimble perf     # release-mode core benchmarks (smoke check, no thresholds yet)
-nimble verify   # tests + specs + benchmarks
+nimble leakcheck # refcount/scope leak assertions (-d:geneRcStats)
+nimble verify   # tests + specs + benchmarks + leakcheck
 ```
 
 Performance is a first-class concern for this codebase — value layout, the

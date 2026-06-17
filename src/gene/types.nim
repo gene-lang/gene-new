@@ -170,9 +170,17 @@ type
   ## Opaque compiled function body used by runtime function values.
   FunctionCode* = ref object of RootObj
 
-  ## Lexical environment for the VM (a Nim ORC ref, so scope cycles are
-  ## collectable). A first-class `Env` (design Section 11.1) is a later, richer
-  ## concept.
+  ## Lexical environment for the VM (a Nim ORC ref, so pure scope/namespace
+  ## cycles are collectable). A first-class `Env` (design Section 11.1) is a
+  ## later, richer concept.
+  ##
+  ## KNOWN LIMITATION (tracked by tests/test_rc.nim): a function captures its
+  ## defining `Scope` (see `GeneFunction.scope`), and a `Scope` holds bound
+  ## function `Value`s in `vars`. Because functions are manually refcounted and
+  ## reached only through NaN-boxed `Value`s, ORC cannot trace the back-edge, so
+  ## a `Scope -> Value(fn) -> GeneFunction.scope -> Scope` cycle leaks. Named
+  ## function bindings always form this cycle; anonymous transient closures do
+  ## not. Accepted short-term; revisit with the planned arena/reclamation work.
   Scope* = ref object
     parent*: Scope
     vars*: Table[string, Value]

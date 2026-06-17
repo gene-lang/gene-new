@@ -21,7 +21,11 @@ task spec, "Run executable language surface specs":
 task perf, "Run release-mode core benchmarks":
   exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
 
+task leakcheck, "Run refcount/scope leak tracking tests":
+  exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
+
 task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
   exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
+  exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"

@@ -74,6 +74,35 @@ suite "modules — file imports":
     writeModule("b.gene", "(import from \"./a\" ^as a) (var y 2)")
     expect GeneError: discard runProgram("(import from \"./a\" ^as a) a/x")
 
+suite "modules — built-in identity and scope hygiene":
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+
+  test "checked errors cross module boundaries (shared Error identity)":
+    # `Boom` implements module A's `Error`; the importer checks `^errors [Boom]`
+    # against its own built-in `Error`. These must be the same protocol value.
+    writeModule("erra.gene",
+      "(type Boom ^props {^message Str} ^impl [Error]) " &
+      "(impl Error Boom) " &
+      "(fn boom ^errors [Boom] [] (fail (Boom ^message \"x\")))")
+    check runProgram("(import [Boom, boom] from \"./erra\") " &
+      "(fn f ^errors [Boom] [] (boom)) " &
+      "(try (f) catch (Boom ^message m) m)").print() == "\"x\""
+
+  test "module declarations do not include built-ins":
+    writeModule("decls2.gene", "(var only-me 1)")
+    # Filtering the module's declarations for a built-in name finds nothing,
+    # because built-ins live in the shared parent scope, not the module root.
+    check runProgram("(import from \"./decls2\" ^as m) " &
+      "(var ds (filter (declarations m) (fn [d] (= d/name \"map\")))) " &
+      "(ds ~ Stream/has_next)").print() == "false"
+
+  test "selected imports cannot pull built-ins out of a module":
+    writeModule("decls2.gene", "(var only-me 1)")
+    expect GeneError:
+      discard runProgram("(import [map] from \"./decls2\")")
+
 suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":
     initModuleContext(getTempDir())

@@ -660,7 +660,11 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   stdout.write "\n"
   NIL
 
-proc newGlobalScope*(): Scope =
+proc buildBuiltins(): Scope =
+  ## Construct a fresh built-ins root scope holding all standard bindings and the
+  ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
+  ## these is shared per application (see `builtinsScope`) so built-in identity is
+  ## stable across modules.
   result = newScope()
   let errorProtocol = newProtocol("Error", [])
   result.define("Error", errorProtocol)
@@ -749,9 +753,30 @@ proc newGlobalScope*(): Scope =
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 
+var gBuiltins: Scope   # shared built-ins root for the current application run
+
+proc builtinsScope*(): Scope =
+  ## The single built-ins root scope for this application. Built lazily and
+  ## reset by `initModuleContext`, so every module/program scope created during
+  ## one run shares the same built-in protocol/type values (design §15.1).
+  if gBuiltins == nil:
+    gBuiltins = buildBuiltins()
+  gBuiltins
+
+proc newGlobalScope*(): Scope =
+  ## A fresh program/module root scope. Its parent is the shared built-ins root,
+  ## so top-level declarations stay isolated in this scope while name lookup
+  ## falls through to the built-ins. Built-in marker protocols (`Error`, `Send`)
+  ## and checked-error types are singletons across the application, which is what
+  ## makes cross-module `^errors` / marker-protocol checks resolve to the same
+  ## value (issues with per-module fresh built-ins).
+  newScope(builtinsScope())
+
 proc bindThisModule*(scope: Scope, name: string): Value =
   ## MVP bridge until first-class Module values exist: the module root is the
-  ## namespace value whose scope holds top-level bindings.
+  ## namespace value whose scope holds top-level bindings. `scope` must be a
+  ## module root scope (a child of the built-ins root), so its `vars` contain
+  ## only this module's declarations, not the built-ins.
   result = newNamespace(name, scope)
   scope.define("this-mod", result)
 
@@ -760,8 +785,9 @@ proc bindThisModule*(scope: Scope, name: string): Value =
 # ---------------------------------------------------------------------------
 #
 # A single-Application MVP: global cache + cycle set + current/root directories.
-# Each module gets its own global scope (fresh built-ins), so modules are
-# isolated from one another and from their importer.
+# Each module gets its own root scope (a child of the shared built-ins root via
+# newGlobalScope), so module declarations stay isolated from one another and from
+# their importer while built-in protocol/type identity is shared application-wide.
 
 var
   moduleCache: Table[string, Value]   # normalized abs path -> namespace value
@@ -770,7 +796,10 @@ var
   packageRoot = getCurrentDir()       # root for bare and absolute "/x" paths
 
 proc initModuleContext*(entryDir: string) =
-  ## Reset the loader for a fresh program run rooted at `entryDir`.
+  ## Reset the loader for a fresh program run rooted at `entryDir`. Drops the
+  ## built-ins root so a new run rebuilds it; modules loaded during this run then
+  ## share that one instance via `newGlobalScope`.
+  gBuiltins = nil
   moduleCache = initTable[string, Value]()
   moduleLoading = initHashSet[string]()
   let dir = if entryDir.len > 0: entryDir else: getCurrentDir()
