@@ -1599,6 +1599,12 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       let ns = newNamespace(inst.name, nsScope)
       scope.define(inst.name, ns)
       stack.add ns
+    of opSetModuleName:
+      var module: Value
+      if scope.lookupOptional("this-mod", module) and
+          module.kind == vkNamespace and module.nsIsModuleRoot:
+        module.setNsName(inst.name)
+      stack.add NIL
     of opImport:
       let spec = chunk.imports[inst.intArg]
       var sourceNs: Value

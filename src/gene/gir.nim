@@ -21,6 +21,7 @@ type
     opMakeSelector
     opMakeFn
     opMakeNamespace
+    opSetModuleName
     opMakeEnv
     opEval
     opMakeType
@@ -233,6 +234,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
     result.add " ns=" & $inst.intArg & " name=" & inst.name
+  of opSetModuleName:
+    result.add " name=" & inst.name
   of opMakeEnv:
     discard
   of opEval:

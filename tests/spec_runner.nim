@@ -227,6 +227,11 @@ suite "spec — modules from design":
     expect GeneError:
       discard compileSource("(do (mod nested))")
 
+  test "explicit mod names the current module root":
+    let scope = newGlobalScope()
+    discard bindThisModule(scope, "implicit")
+    check run(compileSource("(mod app) this-mod"), scope).print() == "(ns app)"
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

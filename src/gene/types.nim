@@ -553,6 +553,11 @@ proc nsName*(v: Value): lent string =
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).name
 
+proc setNsName*(v: Value, name: sink string) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  NamespaceData(objData(v)).name = name
+
 proc nsScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")

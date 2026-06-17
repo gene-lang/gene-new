@@ -219,3 +219,9 @@ suite "modules — namespace-path imports and mod":
       discard compileSource("(do (mod nested))")
     check run(compileSource("(quote (mod data))"),
       newGlobalScope()).print() == "(mod data)"
+
+  test "explicit mod names the current module root":
+    let scope = newGlobalScope()
+    discard bindThisModule(scope, "implicit")
+    check run(compileSource("(mod explicit) this-mod"), scope).print() ==
+      "(ns explicit)"

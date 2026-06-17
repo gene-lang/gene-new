@@ -440,7 +440,10 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
   if node.body.len == 0 or node.body[0].kind != vkSymbol:
     raise newException(GeneError, "mod requires a name")
   c.seenModDecl = true
-  compileBodyFrom(c, node.body, 1)
+  discard c.emit(opSetModuleName, name = node.body[0].symVal)
+  if node.body.len > 1:
+    discard c.emit(opPop)
+    compileBodyFrom(c, node.body, 1)
 
 proc compileNs(c: var Compiler, node: Value) =
   let body = node.body
