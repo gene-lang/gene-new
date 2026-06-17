@@ -105,8 +105,9 @@ constants:
 ```
 
 `gene parse <file>` prints the canonical parsed forms without executing them
-(a read → print round-trip; props print immediately after the head). `gene
-compile <file>` prints the compiled GIR bytecode without running it.
+(a read → print round-trip; props print immediately after the head). `gene fmt
+<file>` uses that same canonical printer as the MVP formatter. `gene compile
+<file>` prints the compiled GIR bytecode without running it.
 
 ## Project layout
 

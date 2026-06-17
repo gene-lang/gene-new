@@ -4,6 +4,7 @@
 ##   gene eval "<src>"   evaluate a source string, print the result
 ##   gene run  <file>    load and execute a .gene file, then call main if present
 ##   gene parse <file>   read and print canonical forms (no execution)
+##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
 
 import std/[os]
@@ -16,6 +17,7 @@ proc usage() =
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene run <file.gene> [args...] execute a file, then call main if present"
   echo "  gene parse <file.gene>  print canonical parsed forms"
+  echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
 
 proc readSourceFile(path: string): string =
@@ -92,6 +94,9 @@ proc cmdParse(path: string) =
     stderr.writeLine "Read error: " & e.msg
     quit(1)
 
+proc cmdFmt(path: string) =
+  cmdParse(path)
+
 proc cmdCompile(path: string) =
   let src = readSourceFile(path)
   try:
@@ -127,6 +132,11 @@ proc main() =
       stderr.writeLine "Error: 'parse' needs a file path"
       quit(1)
     cmdParse(paramStr(2))
+  of "fmt":
+    if paramCount() < 2:
+      stderr.writeLine "Error: 'fmt' needs a file path"
+      quit(1)
+    cmdFmt(paramStr(2))
   of "compile":
     if paramCount() < 2:
       stderr.writeLine "Error: 'compile' needs a file path"
