@@ -67,8 +67,8 @@ participates in equality or hashing.
   modules (`import … from "path"`) with a load-once cache and cycle detection,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
-  loops, typed recoverable errors (`Error`, `fail`, `^errors`,
-  `try/catch/ensure`), `panic`, closures,
+  loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
+  `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, `gene run` entrypoint invocation, GIR disassembly via `gene compile`,
   and built-ins
   (`+ - * / < > <= >= = not head props body meta assoc-in update-in panic

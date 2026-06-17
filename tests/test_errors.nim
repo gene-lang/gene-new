@@ -44,6 +44,9 @@ suite "errors — fail and catch":
   test "built-in TypeError implements Error":
     ck "(try (fail (TypeError ^message \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
        "catch (TypeError ^message m) m)", "\"m\""
+  test "built-in CompileError implements Error":
+    ck "(try (fail (CompileError ^message \"bad syntax\")) " &
+       "catch (CompileError ^message m) m)", "\"bad syntax\""
   test "Error marker impls apply to child error types":
     ck "(type BaseError ^props {^message Str} ^impl [Error]) " &
        "(impl Error BaseError) " &
@@ -98,6 +101,10 @@ suite "errors — checked rows":
     ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &
        "(try (first-two [1]) catch (MatchError ^message m) m)",
        "\"destructuring pattern did not match\""
+
+  test "checked rows can declare built-in CompileError":
+    ck "(fn bad ^errors [CompileError] [] (fail (CompileError ^message \"compile\"))) " &
+       "(try (bad) catch (CompileError ^message m) m)", "\"compile\""
 
 suite "errors — ensure":
   test "ensure runs on success":

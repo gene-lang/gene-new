@@ -410,6 +410,14 @@ proc newGlobalScope*(): Scope =
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: matchError,
                                 messages: initTable[string, Value]())
+  let compileError = newType("CompileError", NIL,
+                             @[TypeField(name: "message", optional: false,
+                                         typeExpr: newSym("Str"), scope: result)],
+                             @[errorProtocol], result)
+  result.define("CompileError", compileError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: compileError,
+                                messages: initTable[string, Value]())
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
