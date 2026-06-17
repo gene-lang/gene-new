@@ -55,6 +55,7 @@ type
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (module root or nested `ns`)
+    vkEnv       ## first-class eval environment (design Section 11.1 MVP)
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -196,6 +197,7 @@ type
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
   ObjKind* = enum
     okNamespace
+    okEnv
     okType
     okProtocol
     okProtocolMessage
@@ -206,6 +208,10 @@ type
   NamespaceData = ref object of GeneObjectData
     name: string
     scope: Scope          # the namespace's own bindings (its exports)
+
+  EnvData = ref object of GeneObjectData
+    parent: Value         # parent Env value, or NIL
+    bindings: Table[string, Value]
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -384,6 +390,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
   of OBJECT_TAG:
     case objData(v).objKind
     of okNamespace: vkNamespace
+    of okEnv: vkEnv
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -519,6 +526,16 @@ proc nsScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).scope
+
+proc envParent*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).parent
+
+proc envBindings*(v: Value): lent Table[string, Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).bindings
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -673,6 +690,10 @@ proc newNativeFn*(name: string, impl: NativeProc): Value =
 
 proc newNamespace*(name: string, scope: Scope): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope))
+
+proc newEnv*(bindings: sink Table[string, Value],
+             parent: Value = NIL): Value =
+  boxObject(EnvData(objKind: okEnv, parent: parent, bindings: bindings))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,

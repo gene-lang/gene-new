@@ -753,6 +753,30 @@ proc raiseMatchError(scope: Scope, message: string) =
   e.hasErrVal = true
   raise e
 
+proc raiseCompileError(scope: Scope, message: string) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  var head = newSym("CompileError")
+  var compileError: Value
+  if scope != nil and scope.lookupOptional("CompileError", compileError) and
+      compileError.kind == vkType:
+    head = compileError
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
+proc copyEnvBindings(env: Value, target: Scope) =
+  if env.kind != vkEnv:
+    raise newException(GeneError, "expected Env")
+  let parent = env.envParent
+  if parent.kind != vkNil:
+    copyEnvBindings(parent, target)
+  for k, v in env.envBindings:
+    target.define(k, v)
+
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =
   for impl in scope.impls:
@@ -862,6 +886,31 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
       stack.add newFunction(proto.name, proto.params, proto, scope,
                             proto.checksErrors, errorTypes)
+    of opMakeEnv:
+      let parent = stack.pop()
+      let bindingMap = stack.pop()
+      if bindingMap.kind != vkMap:
+        raise newException(GeneError, "env ^bindings must be a map")
+      if parent.kind != vkNil and parent.kind != vkEnv:
+        raise newException(GeneError, "env ^parent must be an Env")
+      var bindings = initTable[string, Value]()
+      for k, v in bindingMap.mapEntries:
+        bindings[k] = v
+      stack.add newEnv(bindings, parent)
+    of opEval:
+      let env = stack.pop()
+      let node = stack.pop()
+      if env.kind != vkEnv:
+        raise newException(GeneError, "eval ^in must be an Env")
+      let evalScope = newGlobalScope()
+      copyEnvBindings(env, evalScope)
+      let evalChunk =
+        try:
+          compileForm(node)
+        except GeneError as e:
+          raiseCompileError(scope, e.msg)
+          newChunk()
+      stack.add run(evalChunk, evalScope)
     of opMakeType:
       let proto = chunk.typeProtos[inst.intArg]
       let parent = stack.pop()
@@ -1116,6 +1165,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkProtocolMessage)
   of "Namespace":
     (true, value.kind == vkNamespace)
+  of "Env":
+    (true, value.kind == vkEnv)
   else:
     (false, false)
 

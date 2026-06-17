@@ -19,6 +19,8 @@ type
     opMakeSelector
     opMakeFn
     opMakeNamespace
+    opMakeEnv
+    opEval
     opMakeType
     opMakeProtocol
     opMakeImpl
@@ -190,6 +192,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
     result.add " ns=" & $inst.intArg & " name=" & inst.name
+  of opMakeEnv:
+    discard
+  of opEval:
+    discard
   of opMakeType:
     result.add " type=" & $inst.intArg
   of opMakeProtocol:

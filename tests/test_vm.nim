@@ -385,6 +385,38 @@ suite "vm — namespaces":
   test "namespaces compare by identity":
     ck "(ns m (var a 1)) (= m m)", "true"
 
+suite "vm — env and eval":
+  test "env values are opaque display values":
+    ck "(env)", "(env)"
+
+  test "eval compiles and executes a quoted node inside env bindings":
+    ck "(var e (env ^bindings {^x 10})) (eval (quote (+ x 5)) ^in e)", "15"
+
+  test "eval sees explicit env bindings, not caller locals":
+    ck "(var secret \"hidden\") (var e (env ^bindings {^x 1})) " &
+       "(try (eval (quote secret) ^in e) catch {^message m} m)",
+       "\"undefined symbol: secret\""
+
+  test "env parent bindings are visible to eval":
+    ck "(var base (env ^bindings {^x 10})) " &
+       "(var child (env ^parent base ^bindings {^y 20})) " &
+       "[(eval (quote x) ^in child) (eval (quote y) ^in child)]",
+       "[10 20]"
+
+  test "eval compile failures are typed CompileError values":
+    ck "(try (eval (quote (var)) ^in (env)) " &
+       "catch (CompileError ^message m) m)",
+       "\"var requires a name or pattern\""
+
+  test "Env annotations accept env values":
+    ck "(fn run-it [e : Env] (eval (quote (+ 1 2)) ^in e)) (run-it (env))",
+       "3"
+
+  test "functions returned from eval retain their evaluation scope":
+    ck "(var e (env ^bindings {^x 10})) " &
+       "(var f (eval (quote (fn [] x)) ^in e)) (f)",
+       "10"
+
 suite "vm — printer view of callables":
   test "functions print a display form":
     ck "(fn [x] x)", "(fn)"                  # anonymous

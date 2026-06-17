@@ -406,6 +406,34 @@ proc compileNs(c: var Compiler, node: Value) =
   let idx = c.chunk.addSubchunk(nsCompiler.chunk)
   discard c.emit(opMakeNamespace, idx, name = name)
 
+proc compileEnv(c: var Compiler, node: Value) =
+  if node.body.len != 0:
+    raise newException(GeneError, "env does not take positional arguments")
+  for key, _ in node.props:
+    if key notin ["bindings", "parent"]:
+      raise newException(GeneError, "env unknown option: ^" & key)
+  if node.props.hasKey("bindings"):
+    compileExpr(c, node.props["bindings"])
+  else:
+    c.emitConst newMap()
+  if node.props.hasKey("parent"):
+    compileExpr(c, node.props["parent"])
+  else:
+    c.emitConst NIL
+  discard c.emit(opMakeEnv)
+
+proc compileEval(c: var Compiler, node: Value) =
+  if node.body.len != 1:
+    raise newException(GeneError, "eval expects one node")
+  if not node.props.hasKey("in"):
+    raise newException(GeneError, "eval requires ^in Env")
+  for key, _ in node.props:
+    if key != "in":
+      raise newException(GeneError, "eval unknown option: ^" & key)
+  compileExpr(c, node.body[0])
+  compileExpr(c, node.props["in"])
+  discard c.emit(opEval)
+
 proc selectorLiteral(parts: openArray[Value]): Value =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
@@ -690,6 +718,12 @@ proc compileNode(c: var Compiler, node: Value) =
       return
     of "ns":
       compileNs(c, node)
+      return
+    of "env":
+      compileEnv(c, node)
+      return
+    of "eval":
+      compileEval(c, node)
       return
     of "import":
       compileImport(c, node)
