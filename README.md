@@ -80,6 +80,10 @@ participates in equality or hashing.
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
   Stream/next Stream/close print println`).
 
+  Current stream helpers are an MVP bridge: `map`, `filter`, and `take`
+  consume their input immediately and return a list-backed stream. The
+  `docs/design.md` target remains lazy stream combinators/generators.
+
 ## Quick start
 
 Requires Nim ≥ 2.0.
