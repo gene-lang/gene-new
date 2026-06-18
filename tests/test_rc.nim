@@ -55,6 +55,10 @@ when defined(geneRcStats):
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
       check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0
+      check leakedManaged("(fn gen [] (yield 1)) " &
+                          "(var s (gen)) " &
+                          "(s ~ Stream/next) " &
+                          "(s ~ Stream/close)") == 0
 
     test "protocol derive functions and generated impls are reclaimed":
       check leakedManaged("(protocol HasLabel " &
@@ -107,6 +111,19 @@ when defined(geneRcStats):
           "  (var x 41) " &
           "  (map (to_stream [1]) (fn [n] (+ x n)))) " &
           "(make)"), scope)
+        scope = nil
+      GC_fullCollect()
+      check stream.streamNext.intVal == 42
+      stream = NIL
+
+    test "returned generator streams keep their defining scope alive":
+      var stream = NIL
+      block:
+        var scope = newGlobalScope()
+        stream = run(compileSource(
+          "(var x 41) " &
+          "(fn gen [] : (Stream Int Never) (yield (+ x 1))) " &
+          "(gen)"), scope)
         scope = nil
       GC_fullCollect()
       check stream.streamNext.intVal == 42

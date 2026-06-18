@@ -1150,6 +1150,33 @@ proc forItems(coll: Value): seq[Value] =
   else:
     raise newException(GeneError, "for: cannot iterate " & $coll.kind)
 
+proc iteratorStream(coll: Value): Value =
+  case coll.kind
+  of vkList:
+    newStream(copyItems(coll.listItems))
+  of vkNode:
+    newStream(copyItems(coll.body))
+  of vkMap:
+    var pairs: seq[Value]
+    for k, v in coll.mapEntries:
+      pairs.add newList(@[newSym(k), v])
+    newStream(pairs)
+  of vkStream:
+    coll
+  of vkNil, vkVoid:
+    var empty: seq[Value]
+    newStream(empty)
+  else:
+    raise newException(GeneError, "for: cannot iterate " & $coll.kind)
+
+proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
+                       replaceExisting: bool) =
+  for k, v in binds:
+    if replaceExisting and scope.vars.hasKey(k):
+      scope.vars[k] = v
+    else:
+      scope.define(k, v)
+
 # ---------------------------------------------------------------------------
 # Execution
 # ---------------------------------------------------------------------------
@@ -1424,6 +1451,19 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value
 
+type
+  RunStopKind = enum
+    rskReturn
+    rskYield
+
+  RunStop = object
+    kind: RunStopKind
+    value: Value
+
+proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
+             stopOnYield: bool,
+             validateImplRequirements = true): RunStop
+
 proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
   if decl.kind != vkNode:
     raise newException(GeneError, "derive generated declarations must be nodes")
@@ -1469,9 +1509,9 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   else:
     raise newException(GeneError, "derive must return a declaration node or list")
 
-proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
-  var stack: seq[Value]
-  var ip = 0
+proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
+             stopOnYield: bool,
+             validateImplRequirements = true): RunStop =
   while ip < chunk.instructions.len:
     let inst = chunk.instructions[ip]
     inc ip
@@ -1731,7 +1771,14 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       var binds = initTable[string, Value]()
       if not tryMatch(chunk.constants[inst.intArg], target, scope, binds):
         raiseMatchError(scope, "destructuring pattern did not match")
-      for k, v in binds: scope.define(k, v)
+      scope.bindMatchedValues(binds, replaceExisting = false)
+      stack.add target
+    of opMatchBindReplace:
+      let target = stack.pop()
+      var binds = initTable[string, Value]()
+      if not tryMatch(chunk.constants[inst.intArg], target, scope, binds):
+        raiseMatchError(scope, "destructuring pattern did not match")
+      scope.bindMatchedValues(binds, replaceExisting = true)
       stack.add target
     of opForEach:
       let coll = stack.pop()
@@ -1744,6 +1791,18 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
         for k, v in binds: loopScope.define(k, v)
         discard run(fp.body, loopScope)
       stack.add NIL
+    of opMakeIterator:
+      stack.add iteratorStream(stack.pop())
+    of opIteratorHasNext:
+      let stream = stack.pop()
+      requireStream("for iterator", stream)
+      stack.add newBool(stream.streamHasNext)
+    of opIteratorNext:
+      let stream = stack.pop()
+      requireStream("for iterator", stream)
+      if not stream.streamHasNext:
+        raiseEndOfStream()
+      stack.add checkedStreamNext(stream, "for item")
     of opTry:
       let tp = chunk.tries[inst.intArg]
       var resultVal = NIL
@@ -1778,6 +1837,13 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       if not scope.isErrorValue(errVal):
         raise newException(GeneError, "fail expects an Error value")
       raiseFailedValue(errVal)
+    of opYield:
+      if not stopOnYield:
+        raise newException(GeneError, "yield is only valid in a generator")
+      if stack.len == 0:
+        raise newException(GeneError, "VM stack underflow in yield")
+      result = RunStop(kind: rskYield, value: escapeWeakFunctions(stack[^1]))
+      return
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:
@@ -1785,13 +1851,41 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
     of opJump:
       ip = inst.intArg
     of opReturn:
-      result = escapeWeakFunctions(if stack.len > 0: stack.pop() else: NIL)
+      result = RunStop(kind: rskReturn,
+                       value: escapeWeakFunctions(if stack.len > 0: stack.pop() else: NIL))
       if validateImplRequirements:
         scope.validateRequiredImpls()
       return
-  result = NIL
+  result = RunStop(kind: rskReturn, value: NIL)
   if validateImplRequirements:
     scope.validateRequiredImpls()
+
+proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
+  var stack: seq[Value]
+  var ip = 0
+  let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
+                        validateImplRequirements = validateImplRequirements)
+  if stopped.kind == rskYield:
+    raise newException(GeneError, "yield is only valid in a generator")
+  stopped.value
+
+proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
+  let code = stream.streamGeneratorCode
+  if code == nil or not (code of FunctionProto):
+    return StreamPullResult(has: false, item: NIL)
+  let proto = FunctionProto(code)
+  var ip = stream.streamGeneratorIp
+  let stopped = runLoop(proto.chunk, stream.streamGeneratorScope,
+                        stream.streamGeneratorStack, ip,
+                        stopOnYield = true,
+                        validateImplRequirements = false)
+  stream.setStreamGeneratorIp(ip)
+  case stopped.kind
+  of rskYield:
+    StreamPullResult(has: true, item: stopped.value)
+  of rskReturn:
+    stream.closeStream()
+    StreamPullResult(has: false, item: NIL)
 
 proc positionalDefault(proto: FunctionProto, index: int): ParamDefault =
   if index < proto.paramDefaults.len:
@@ -2154,6 +2248,12 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
         else:
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)
+    if proto.isGenerator:
+      var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
+      if proto.hasReturnType:
+        resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+                                    proto.returnType, resultValue, callScope)
+      return resultValue
     var resultValue: Value
     try:
       resultValue = run(proto.chunk, callScope)

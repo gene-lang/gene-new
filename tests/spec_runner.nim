@@ -194,11 +194,62 @@ suite "spec — streams from design":
                " (hits ~ Cell/get)]",
                "[0 1 1]")
 
+  test "yield functions return lazy streams":
+    check_eval("(var hits (cell 0)) " &
+               "(fn gen [] : (Stream Int Never) " &
+               "  (hits ~ Cell/set 1) " &
+               "  (yield 10) " &
+               "  (hits ~ Cell/set 2) " &
+               "  (yield 20)) " &
+               "(var s (gen)) " &
+               "[(hits ~ Cell/get) " &
+               " (s ~ Stream/next) " &
+               " (hits ~ Cell/get) " &
+               " (s ~ Stream/next) " &
+               " (hits ~ Cell/get) " &
+               " (s ~ Stream/has_next)]",
+               "[0 10 1 20 2 false]")
+
+  test "yield skips void and resumes while loops":
+    check_eval("(fn nums [] : (Stream Int Never) " &
+               "  (var i 0) " &
+               "  (while (< i 3) " &
+               "    (yield (if (= i 1) void i)) " &
+               "    (set i (+ i 1)))) " &
+               "(var s (nums)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next)]",
+               "[0 2 false]")
+
+  test "yield resumes for loops lazily":
+    check_eval("(var hits (cell 0)) " &
+               "(var source (map (to_stream [1 2 3]) " &
+               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "(fn copy [s] : (Stream Int Never) " &
+               "  (for x s (yield x))) " &
+               "(var out (copy source)) " &
+               "[(hits ~ Cell/get) " &
+               " (out ~ Stream/next) " &
+               " (hits ~ Cell/get) " &
+               " (out ~ Stream/next) " &
+               " (hits ~ Cell/get)]",
+               "[0 1 1 2 2]")
+
   test "typed stream boundaries check items when pulled":
     check_eval("(try (fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &
                "     (first (to_stream [\"bad\"])) " &
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
+    check_eval("(try (fn bad [] : (Stream Int Never) (yield \"bad\")) " &
+               "     (var s (bad)) " &
+               "     (s ~ Stream/next) " &
+               "catch (TypeError ^where w) w)",
+               "\"Stream/next item\"")
+
+  test "yield is only valid inside functions":
+    expect GeneError:
+      discard compileSource("(yield 1)")
 
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &

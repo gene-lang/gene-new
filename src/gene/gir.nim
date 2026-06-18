@@ -31,9 +31,14 @@ type
     opCall
     opMatch           # pop target, run the first matching branch in a child scope
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
+    opMatchBindReplace # pop target, destructure and replace existing loop binds
     opForEach         # pop a collection, run a for-loop body per item
+    opMakeIterator    # pop an iterable value, push a stream iterator
+    opIteratorHasNext # pop a stream iterator, push Bool
+    opIteratorNext    # pop a stream iterator, push next item
     opTry             # run a body with catch clauses and an ensure block
     opFail            # pop an Error value and raise it through GeneError
+    opYield           # suspend a generator and expose the stack top as item
     opJumpIfFalse
     opJump
     opReturn
@@ -66,6 +71,7 @@ type
     hasNamedParamTypes*: bool
     returnType*: Value
     hasReturnType*: bool
+    isGenerator*: bool
     checksErrors*: bool
     errorTypeCount*: int
     chunk*: Chunk
@@ -254,7 +260,7 @@ proc formatInstruction(inst: Instruction): string =
       result.add " names=" & formatNames(inst.names)
   of opMatch:
     result.add " match=" & $inst.intArg
-  of opMatchBind:
+  of opMatchBind, opMatchBindReplace:
     result.add " pattern=" & $inst.intArg
   of opForEach:
     result.add " for=" & $inst.intArg
@@ -264,7 +270,7 @@ proc formatInstruction(inst: Instruction): string =
     discard
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
-  of opPop, opReturn:
+  of opPop, opMakeIterator, opIteratorHasNext, opIteratorNext, opYield, opReturn:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =

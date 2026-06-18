@@ -8,6 +8,9 @@ type
     chunk: Chunk
     selfAvailable: bool
     seenModDecl: bool
+    allowYield: bool
+    sawYield: bool
+    gensym: int
 
   ParamSpecs = object
     positional: seq[string]
@@ -40,6 +43,46 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 
 proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable)
+
+proc nextTemp(c: var Compiler, prefix: string): string =
+  inc c.gensym
+  "__gene_" & prefix & "_" & $c.gensym
+
+proc containsYield(value: Value): bool =
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("yield"):
+      return true
+    if value.head.isSymbol("fn") or value.head.isSymbol("quote") or
+        value.head.isSymbol("quasiquote"):
+      return false
+    for _, item in value.props:
+      if containsYield(item):
+        return true
+    for item in value.body:
+      if containsYield(item):
+        return true
+    false
+  of vkList:
+    for item in value.listItems:
+      if containsYield(item):
+        return true
+    false
+  of vkMap:
+    for _, item in value.mapEntries:
+      if containsYield(item):
+        return true
+    false
+  else:
+    false
+
+proc bodyContainsYield(body: openArray[Value], first: int): bool =
+  if first > body.high:
+    return false
+  for i in first .. body.high:
+    if containsYield(body[i]):
+      return true
+  false
 
 proc patternBindsSelf(pattern: Value): bool =
   case pattern.kind
@@ -235,6 +278,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
 
   let specs = paramSpecs(paramList)
   var fnCompiler = c.childCompiler()
+  fnCompiler.allowYield = true
   if "self" in specs.positional or specs.rest == "self":
     fnCompiler.selfAvailable = true
   for p in specs.named:
@@ -262,6 +306,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                 hasNamedParamTypes: hasNamedParamTypes,
                 returnType: returnType,
                 hasReturnType: returnType.kind != vkNil,
+                isGenerator: fnCompiler.sawYield,
                 checksErrors: checksErrors,
                 errorTypeCount: errorTypeCount,
                 chunk: fnCompiler.chunk)
@@ -697,6 +742,28 @@ proc compileFor(c: var Compiler, node: Value) =
   let body = node.body
   if body.len < 2:
     raise newException(GeneError, "for requires a pattern and a collection")
+  if c.allowYield and body.bodyContainsYield(2):
+    let iterName = c.nextTemp("iter")
+    compileExpr(c, body[1])                   # collection on the stack
+    discard c.emit(opMakeIterator)
+    discard c.emit(opDefineName, name = iterName)
+
+    let start = c.chunk.instructions.len
+    discard c.emit(opLoadName, name = iterName)
+    discard c.emit(opIteratorHasNext)
+    let exitJump = c.emitJump(opJumpIfFalse)
+
+    discard c.emit(opLoadName, name = iterName)
+    discard c.emit(opIteratorNext)
+    discard c.emit(opMatchBindReplace, c.chunk.addConst(body[0]))
+    discard c.emit(opPop)                     # discard the matched item
+    compileBodyFrom(c, body, 2)
+    discard c.emit(opPop)                     # discard each iteration's body value
+    discard c.emit(opJump, start)
+    c.patchJump(exitJump)
+    c.emitConst NIL
+    return
+
   compileExpr(c, body[1])                   # collection on the stack
   var bodyCompiler = c.childCompiler()
   if patternBindsSelf(body[0]):
@@ -705,6 +772,15 @@ proc compileFor(c: var Compiler, node: Value) =
   discard bodyCompiler.emit(opReturn)
   let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
   discard c.emit(opForEach, c.chunk.addForLoop(fp))
+
+proc compileYield(c: var Compiler, node: Value) =
+  if not c.allowYield:
+    raise newException(GeneError, "yield is only valid inside fn")
+  if node.props.len != 0 or node.body.len != 1:
+    raise newException(GeneError, "yield expects one value")
+  compileExpr(c, node.body[0])
+  discard c.emit(opYield)
+  c.sawYield = true
 
 proc compileTry(c: var Compiler, node: Value) =
   ## (try body... catch pat recovery... [catch ...] [ensure cleanup...]) — the
@@ -919,6 +995,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "for":
       compileFor(c, node)
+      return
+    of "yield":
+      compileYield(c, node)
       return
     of "try":
       compileTry(c, node)

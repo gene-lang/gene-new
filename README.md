@@ -82,7 +82,7 @@ participates in equality or hashing.
   Stream/next Stream/close print println`).
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
-  Generator lowering with `yield` remains future work.
+  Functions containing `yield` return lazy streams.
 
 ## Quick start
 

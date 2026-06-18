@@ -255,6 +255,10 @@ type
     buffer: Value
     itemType: Value
     itemScope: Scope
+    generatorCode: FunctionCode
+    generatorScope: Scope
+    generatorStack: seq[Value]
+    generatorIp: int
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -726,6 +730,10 @@ proc closeStream*(v: Value) =
   data.closed = true
   data.buffered = false
   data.buffer = NIL
+  data.generatorCode = nil
+  data.generatorScope = nil
+  data.generatorStack.setLen(0)
+  data.generatorIp = 0
   if data.source.kind == vkStream:
     data.source.closeStream()
   else:
@@ -748,6 +756,21 @@ proc streamItemType*(v: Value): Value =
 
 proc streamItemScope*(v: Value): Scope =
   streamData(v).itemScope
+
+proc streamGeneratorCode*(v: Value): FunctionCode =
+  streamData(v).generatorCode
+
+proc streamGeneratorScope*(v: Value): Scope =
+  streamData(v).generatorScope
+
+proc streamGeneratorStack*(v: Value): var seq[Value] =
+  streamData(v).generatorStack
+
+proc streamGeneratorIp*(v: Value): int =
+  streamData(v).generatorIp
+
+proc setStreamGeneratorIp*(v: Value, ip: int) =
+  streamData(v).generatorIp = ip
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -1032,7 +1055,11 @@ proc escapeWeakFunctions*(v: Value): Value =
                          callable: escapedCallable, remaining: data.remaining,
                          pull: data.pull, closed: data.closed,
                          buffered: data.buffered, buffer: escapedBuffer,
-                         itemType: data.itemType, itemScope: data.itemScope))
+                         itemType: data.itemType, itemScope: data.itemScope,
+                         generatorCode: data.generatorCode,
+                         generatorScope: data.generatorScope,
+                         generatorStack: data.generatorStack,
+                         generatorIp: data.generatorIp))
   else:
     v
 
@@ -1081,6 +1108,12 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
       callable
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
                        remaining: remaining, pull: pull, closed: false))
+
+proc newGeneratorStream*(code: FunctionCode, scope: Scope,
+                         pull: StreamPullProc): Value =
+  boxObject(StreamData(objKind: okStream, pull: pull, closed: false,
+                       generatorCode: code, generatorScope: scope,
+                       generatorStack: @[], generatorIp: 0))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,
