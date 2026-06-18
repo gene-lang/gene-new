@@ -99,6 +99,19 @@ suite "spec — typed variable boundaries from design":
     check_eval("(try (var result : Int (eval (quote \"bad\") ^in (env))) result " &
                "catch (TypeError ^where w) w)",
                "\"var 'result'\"")
+  test "set checks typed variable boundaries":
+    check_eval("(var result : Int 1) (set result 42) result", "42")
+    check_eval("(try (var result : Int 1) (set result \"bad\") result " &
+               "catch (TypeError ^where w) w)",
+               "\"set 'result'\"")
+    check_eval("(try (fn f [x : Int] (set x \"bad\") x) (f 1) " &
+               "catch (TypeError ^where w) w)",
+               "\"set 'x'\"")
+    check_eval("(try (var s : (Stream Int Never) (to_stream [1])) " &
+               "     (set s (to_stream [\"bad\"])) " &
+               "     (s ~ Stream/next) " &
+               "catch (TypeError ^where w) w)",
+               "\"Stream/next item\"")
 
 suite "spec — generic functions from design":
   test "generic function calls infer type parameters locally":

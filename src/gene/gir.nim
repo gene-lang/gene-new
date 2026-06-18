@@ -48,6 +48,7 @@ type
     opJump
     opReturn
     opCheckType
+    opDeclareType
 
   Instruction* = object
     op*: OpCode
@@ -271,6 +272,10 @@ proc formatInstruction(inst: Instruction): string =
   of opEval:
     discard
   of opCheckType:
+    result.add " type=" & $inst.intArg
+    if inst.name.len > 0:
+      result.add " name=" & inst.name
+  of opDeclareType:
     result.add " type=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name

@@ -3,6 +3,10 @@
 import std/[algorithm, os, sets, strutils, tables]
 import ./[compiler, equality, gir, printer, types]
 
+proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
+proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
+proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
+
 # ---------------------------------------------------------------------------
 # Scope
 # ---------------------------------------------------------------------------
@@ -48,6 +52,26 @@ proc markSlotDefined(scope: Scope, index: int) =
   else:
     scope.slotDefinedOverflow[index - 64] = true
 
+proc hasTypeBinding(binding: TypeBinding): bool {.inline.} =
+  binding.expr.kind != vkNil
+
+proc assignmentValue(scope: Scope, name: string, v: Value,
+                     binding: TypeBinding): Value =
+  if binding.hasTypeBinding:
+    adaptBoundary("set '" & name & "'", binding.expr, v, binding.scope)
+  else:
+    v
+
+proc declareType(scope: Scope, name: string, typeExpr: Value) =
+  let binding = TypeBinding(expr: typeExpr, scope: scope)
+  let index = scope.slotIndex(name)
+  if index >= 0:
+    if scope.slotTypes.len < scope.slots.len:
+      scope.slotTypes.setLen(scope.slots.len)
+    scope.slotTypes[index] = binding
+  else:
+    scope.varTypes[name] = binding
+
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool) =
   scope.checkSlot(index, name)
@@ -55,7 +79,12 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
     raise newException(GeneError, "set of undefined symbol: " & name)
   if not requireExisting and scope.slotDefined(index):
     raise newException(GeneError, "duplicate binding: " & name)
-  let stored = functionForScopeStorage(v, scope)
+  let value =
+    if requireExisting and index < scope.slotTypes.len:
+      scope.assignmentValue(name, v, scope.slotTypes[index])
+    else:
+      v
+  let stored = functionForScopeStorage(value, scope)
   scope.slots[index] = stored
   if scope.slotMirror:
     scope.vars[name] = stored
@@ -155,7 +184,10 @@ proc assign*(scope: Scope, name: string, v: Value) =
     if s.storeNamedSlot(name, v, requireExisting = true):
       return
     if s.vars.hasKey(name):
-      let stored = functionForScopeStorage(v, s)
+      let value =
+        if s.varTypes.hasKey(name): s.assignmentValue(name, v, s.varTypes[name])
+        else: v
+      let stored = functionForScopeStorage(value, s)
       s.vars[name] = stored
       s.syncSlot(name, stored)
       return
@@ -183,9 +215,6 @@ proc getArg(named: NamedArgs, name: string): Value =
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil): Value
 proc typeExprLabel(expr: Value): string
-proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
-proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
-proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 
 # ---------------------------------------------------------------------------
 # Built-in functions
@@ -2072,6 +2101,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         raise newException(GeneError, "VM stack underflow in type check")
       stack[^1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
                                 stack[^1], scope)
+    of opDeclareType:
+      scope.declareType(inst[].name, chunk.constants[inst[].intArg])
   result = RunStop(kind: rskReturn, value: NIL)
   if validateImplRequirements:
     scope.validateRequiredImpls()
@@ -2672,28 +2703,36 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     let providedPositional = min(args.len, positional.len)
     for i in 0 ..< providedPositional:
       var value = args[i]
+      var declaredType = NIL
       if proto.hasParamTypes and i < proto.paramTypes.len and
           proto.paramTypes[i].kind != vkNil:
         let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                            proto.typeParams)
+        declaredType = typeExpr
         value = adaptBoundary("parameter '" & positional[i] & "'",
                               typeExpr, value, callScope)
       if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
         callScope.defineSlot(proto.positionalSlots[i], positional[i], value)
       else:
         callScope.define(positional[i], value)
+      if declaredType.kind != vkNil:
+        callScope.declareType(positional[i], declaredType)
     for pIndex, p in proto.namedParams:
       if named.hasArg(p.arg):
         var value = named.getArg(p.arg)
+        var declaredType = NIL
         if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
           let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                              proto.typeParams)
+          declaredType = typeExpr
           value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                 value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
           callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
         else:
           callScope.define(p.local, value)
+        if declaredType.kind != vkNil:
+          callScope.declareType(p.local, declaredType)
     for i in providedPositional ..< positional.len:
       let fallback = proto.positionalDefault(i)
       if not fallback.optional:
@@ -2701,16 +2740,20 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           "function '" & callee.fnName & "' missing positional argument: " & positional[i])
       let value = fallback.defaultValue(callScope)
       var boundValue = value
+      var declaredType = NIL
       if proto.hasParamTypes and i < proto.paramTypes.len and
           proto.paramTypes[i].kind != vkNil:
         let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                            proto.typeParams)
+        declaredType = typeExpr
         boundValue = adaptBoundary("parameter '" & positional[i] & "'",
                                    typeExpr, value, callScope)
       if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
         callScope.defineSlot(proto.positionalSlots[i], positional[i], boundValue)
       else:
         callScope.define(positional[i], boundValue)
+      if declaredType.kind != vkNil:
+        callScope.declareType(positional[i], declaredType)
     if proto.restParam.len > 0:
       var rest = newSeq[Value](args.len - positional.len)
       for i in 0 ..< rest.len:
@@ -2723,15 +2766,19 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       if not named.hasArg(p.arg):
         if p.defaultValue.optional:
           var value = p.defaultValue.defaultValue(callScope)
+          var declaredType = NIL
           if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
             let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                                proto.typeParams)
+            declaredType = typeExpr
             value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                   value, callScope)
           if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
             callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
           else:
             callScope.define(p.local, value)
+          if declaredType.kind != vkNil:
+            callScope.declareType(p.local, declaredType)
         else:
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)

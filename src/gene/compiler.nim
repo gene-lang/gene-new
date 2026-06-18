@@ -91,6 +91,9 @@ proc emitSetBinding(c: var Compiler, name: string) =
     else:
       discard c.emit(opSetName, name = name)
 
+proc emitDeclareType(c: var Compiler, name: string, typeExpr: Value) =
+  discard c.emit(opDeclareType, c.chunk.addConst(typeExpr), name = name)
+
 proc emitConst(c: var Compiler, value: Value) =
   discard c.emit(opPushConst, c.chunk.addConst(value))
 
@@ -607,6 +610,8 @@ proc compileVar(c: var Compiler, node: Value) =
     discard c.emit(opCheckType, c.chunk.addConst(body[2]), name = where)
   if body[0].kind == vkSymbol:
     c.emitDefineBinding(body[0].symVal)
+    if typed:
+      c.emitDeclareType(body[0].symVal, body[2])
     if body[0].symVal == "self":
       c.selfAvailable = true
   else:

@@ -175,6 +175,10 @@ type
     receiver*: Value
     messages*: Table[string, Value]
 
+  TypeBinding* = object
+    expr*: Value
+    scope*: Scope
+
   ## Opaque compiled function body used by runtime function values.
   FunctionCode* = ref object of RootObj
 
@@ -189,10 +193,12 @@ type
     parent*: Scope
     vars*: Table[string, Value]
     slots*: seq[Value]
+    slotTypes*: seq[TypeBinding]
     slotDefinedBits*: uint64
     slotDefinedOverflow*: seq[bool]
     slotNames*: seq[string]
     slotMirror*: bool
+    varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
 
