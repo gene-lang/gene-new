@@ -253,6 +253,9 @@ suite "compiler — GIR emission":
     check chunk.constants[chunk.instructions[1].intArg].print() == "Int"
     check chunk.instructions[2].op == opDefineLocal
     check chunk.instructions[2].name == "x"
+    check chunk.instructions[3].op == opDeclareType
+    check chunk.instructions[3].name == "x"
+    check chunk.constants[chunk.instructions[3].intArg].print() == "Int"
 
   test "compile errors use the runtime error channel":
     expect GeneError: discard compileSource("(var)")
@@ -452,6 +455,24 @@ suite "vm — special forms":
        "\"Stream/next item\""
   test "set reassigns an existing binding":
     ck "(var x 1) (set x 99) x", "99"
+  test "set checks typed binding boundaries":
+    ck "(var x : Int 1) (set x 2) x", "2"
+    ck "(try (var x : Int 1) (set x \"bad\") x " &
+       "catch (TypeError ^where w) w)",
+       "\"set 'x'\""
+    ck "(try (fn f [x : Int] (set x \"bad\") x) (f 1) " &
+       "catch (TypeError ^where w) w)",
+       "\"set 'x'\""
+    ck "(try (fn f [^x : Int] (set x \"bad\") x) (f ^x 1) " &
+       "catch (TypeError ^where w) w)",
+       "\"set 'x'\""
+    ck "(try (fn (f item) [x : item] (set x \"bad\") x) (f 1) " &
+       "catch (TypeError ^where w) w)",
+       "\"set 'x'\""
+    ck "(try (fn outer [] (var x : Int 1) (fn [] (set x \"bad\"))) " &
+       "     ((outer)) " &
+       "catch (TypeError ^where w) w)",
+       "\"set 'x'\""
   test "slotted conditional locals remain undefined when not executed":
     ck "((fn [flag] (if flag (var x 1) nil) x) true)", "1"
     expect GeneError:

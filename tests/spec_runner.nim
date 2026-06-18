@@ -332,6 +332,33 @@ suite "spec — streams from design":
                             "[(/value decl) (this-mod ~ Module/path)]"),
               scope).print() == "[9 nil]"
 
+suite "spec — Env and eval from design":
+  test "Env/extend creates a child environment":
+    check_eval("(var base (env ^bindings {^x 10})) " &
+               "(var child (base ~ Env/extend {^y 20})) " &
+               "[(eval (quote x) ^in child) " &
+               " (eval (quote y) ^in child) " &
+               " (try (eval (quote y) ^in base) catch {^message m} m)]",
+               "[10 20 \"undefined symbol: y\"]")
+
+  test "eval sees explicit Env imports before built-ins":
+    check_eval("(ns math (var forty-two 42)) " &
+               "(var e (env ^imports [math])) " &
+               "(eval (quote forty-two) ^in e)",
+               "42")
+
+  test "eval sees an optional Env module namespace":
+    check_eval("(ns app (var from-module \"ok\")) " &
+               "(var e (env ^module app)) " &
+               "(eval (quote from-module) ^in e)",
+               "\"ok\"")
+
+  test "eval declarations shadow Env bindings without mutating Env":
+    check_eval("(var e (env ^bindings {^x 1})) " &
+               "[(eval (quote (do (var x 2) x)) ^in e) " &
+               " (eval (quote x) ^in e)]",
+               "[2 1]")
+
 suite "spec — modules from design":
   test "explicit mod declarations are top-level and unique":
     check_eval("(mod app) (var x 1) x", "1")
