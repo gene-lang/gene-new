@@ -2097,10 +2097,7 @@ proc positionalDefault(proto: FunctionProto, index: int): ParamDefault =
     ParamDefault()
 
 proc requiredPositionalCount(proto: FunctionProto): int =
-  for i in 0 ..< proto.params.len:
-    if proto.positionalDefault(i).optional:
-      break
-    inc result
+  proto.requiredPositional
 
 proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   if defaultValue.defaultChunk != nil:
@@ -2569,6 +2566,17 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
+    if proto.simpleCall and named.len == 0:
+      if args.len != positional.len:
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
+          ".." & $positional.len &
+          " argument(s), got " & $args.len)
+      let callScope = newScope(callee.fnScope)
+      callScope.prepareSlots(proto.localNames)
+      for i in 0 ..< args.len:
+        callScope.defineSlot(proto.positionalSlots[i], positional[i], args[i])
+      return runPooled(proto.chunk, callScope)
     let requiredPositional = proto.requiredPositionalCount()
     if proto.restParam.len == 0:
       if args.len < requiredPositional or args.len > positional.len:

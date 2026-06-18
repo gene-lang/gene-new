@@ -35,6 +35,8 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     check proto.name == "inc"
     check proto.params == @["x"]
+    check proto.requiredPositional == 1
+    check proto.simpleCall
     check proto.restParam == ""
     check proto.namedParams.len == 0
     check proto.chunk.instructions.len == 5
@@ -48,6 +50,8 @@ suite "compiler — GIR emission":
     check proto.name == "identity"
     check proto.typeParams == @["item"]
     check proto.params == @["x"]
+    check proto.requiredPositional == 1
+    check not proto.simpleCall
     check proto.paramTypes[0].print() == "item"
     check proto.returnType.print() == "item"
 
@@ -230,6 +234,8 @@ suite "compiler — GIR emission":
     check proto.namedParams[0].arg == "scale"
     check proto.namedParams[0].defaultValue.optional == true
     check proto.namedParams[0].defaultValue.defaultChunk != nil
+    check proto.requiredPositional == 1
+    check not proto.simpleCall
 
   test "compile errors use the runtime error channel":
     expect GeneError: discard compileSource("(var)")

@@ -432,6 +432,17 @@ proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: i
     compileExpr(c, errorType)
     inc result.count
 
+proc requiredPositionalCount(specs: ParamSpecs): int =
+  for i in 0 ..< specs.positional.len:
+    if i < specs.positionalDefaults.len and specs.positionalDefaults[i].optional:
+      break
+    inc result
+
+proc hasOptionalPositional(specs: ParamSpecs): bool =
+  for defaultValue in specs.positionalDefaults:
+    if defaultValue.optional:
+      return true
+
 proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
                         typeParams: seq[string] = @[],
@@ -480,11 +491,18 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if p.typeExpr.kind != vkNil:
       hasNamedParamTypes = true
       break
+  let simpleCall = typeParams.len == 0 and not checksErrors and
+                   specs.rest.len == 0 and specs.named.len == 0 and
+                   not hasParamTypes and not hasNamedParamTypes and
+                   returnType.kind == vkNil and not fnCompiler.sawYield and
+                   not specs.hasOptionalPositional
   FunctionProto(name: name, typeParams: typeParams, params: specs.positional,
                 localNames: fnCompiler.localNames,
                 positionalSlots: positionalSlots,
                 namedSlots: namedSlots,
                 restSlot: restSlot,
+                requiredPositional: specs.requiredPositionalCount,
+                simpleCall: simpleCall,
                 paramTypes: specs.positionalTypes,
                 hasParamTypes: hasParamTypes,
                 paramDefaults: specs.positionalDefaults,

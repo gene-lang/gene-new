@@ -74,6 +74,8 @@ type
     namedSlots*: seq[int]
     restSlot*: int
     params*: seq[string]
+    requiredPositional*: int
+    simpleCall*: bool
     paramTypes*: seq[Value]
     hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]
