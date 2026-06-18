@@ -265,6 +265,7 @@ type
     buffered: bool
     buffer: Value
     itemType: Value
+    errType: Value
     itemScope: Scope
     generatorCode: FunctionCode
     generatorScope: Scope
@@ -1038,6 +1039,9 @@ proc setStreamRemaining*(v: Value, remaining: int64) =
 proc streamItemType*(v: Value): Value =
   streamData(v).itemType
 
+proc streamErrType*(v: Value): Value =
+  streamData(v).errType
+
 proc streamItemScope*(v: Value): Scope =
   streamData(v).itemScope
 
@@ -1520,9 +1524,9 @@ proc newAtomicCell*(value: Value): Value =
 proc newStream*(items: sink seq[Value]): Value =
   boxObject(StreamData(objKind: okStream, items: items, index: 0, closed: false))
 
-proc newCheckedStream*(source, itemType: Value, itemScope: Scope): Value =
+proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope): Value =
   boxObject(StreamData(objKind: okStream, source: source, itemType: itemType,
-                       itemScope: itemScope, closed: false))
+                       errType: errType, itemScope: itemScope, closed: false))
 
 proc newLazyStream*(source: Value, pull: StreamPullProc,
                     callable: Value = NIL, remaining: int64 = -1): Value =

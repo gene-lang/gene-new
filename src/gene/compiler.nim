@@ -133,6 +133,26 @@ proc compileDefaultExpr(node: Value): Chunk =
   discard c.emit(opReturn)
   c.chunk
 
+proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
+  if form.kind == vkSymbol:
+    return (form.symVal, @[])
+  if form.kind == vkNode and form.head.kind == vkSymbol:
+    result.name = form.head.symVal
+    if result.name.len == 0:
+      raise newException(GeneError, "generic function requires a name")
+    var seen = initTable[string, bool]()
+    for arg in form.body:
+      if arg.kind != vkSymbol:
+        raise newException(GeneError, "generic function type parameters must be names")
+      if arg.symVal.len == 0:
+        raise newException(GeneError, "generic function type parameter requires a name")
+      if seen.hasKey(arg.symVal):
+        raise newException(GeneError, "duplicate generic type parameter: " & arg.symVal)
+      seen[arg.symVal] = true
+      result.typeParams.add arg.symVal
+    return
+  raise newException(GeneError, "function name must be a symbol or (name type...)")
+
 proc compileSubBody(c: Compiler, forms: openArray[Value],
                     pattern: Value = NIL): Chunk =
   var child = c.childCompiler()
@@ -265,6 +285,7 @@ proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: i
 
 proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
+                        typeParams: seq[string] = @[],
                         checksErrors = false,
                         errorTypeCount = 0): FunctionProto =
   var start = bodyStart
@@ -298,7 +319,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if p.typeExpr.kind != vkNil:
       hasNamedParamTypes = true
       break
-  FunctionProto(name: name, params: specs.positional,
+  FunctionProto(name: name, typeParams: typeParams, params: specs.positional,
                 paramTypes: specs.positionalTypes,
                 hasParamTypes: hasParamTypes,
                 paramDefaults: specs.positionalDefaults,
@@ -394,14 +415,18 @@ proc compileFn(c: var Compiler, node: Value) =
   let body = node.body
   var idx = 0
   var name = ""
-  if body.len > 0 and body[0].kind == vkSymbol:
-    name = body[0].symVal
+  var typeParams: seq[string]
+  if body.len > 0 and (body[0].kind == vkSymbol or body[0].kind == vkNode):
+    let nameSpec = functionNameAndTypeParams(body[0])
+    name = nameSpec.name
+    typeParams = nameSpec.typeParams
     idx = 1
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
   let errorRow = compileErrorRow(c, node)
   let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
+                                 typeParams = typeParams,
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))

@@ -41,6 +41,15 @@ suite "compiler — GIR emission":
     check proto.chunk.instructions[0].name == "+"
     check proto.chunk.instructions[^1].op == opReturn
 
+  test "emits generic function type parameters":
+    let chunk = compileSource("(fn (identity item) [x : item] : item x)")
+    let proto = chunk.functions[0]
+    check proto.name == "identity"
+    check proto.typeParams == @["item"]
+    check proto.params == @["x"]
+    check proto.paramTypes[0].print() == "item"
+    check proto.returnType.print() == "item"
+
   test "emits call prop names and named parameter specs":
     let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")
     check callChunk.instructions[^2].op == opCall
@@ -109,6 +118,8 @@ suite "compiler — GIR emission":
     expect GeneError: discard compileSource("(fn bad [x? ys...] ys)")
     expect GeneError: discard compileSource("(fn bad [xs... = 1] xs)")
     expect GeneError: discard compileSource("(fn bad [x =] x)")
+    expect GeneError: discard compileSource("(fn (bad 1) [x] x)")
+    expect GeneError: discard compileSource("(fn (bad t t) [x] x)")
 
   test "leading flipped calls require lexical self":
     expect GeneError: discard compileSource("(~ + 1)")

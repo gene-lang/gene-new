@@ -92,6 +92,17 @@ suite "spec — numeric boundaries from design":
                                 "(fixed 9223372036854775808)"),
                   newGlobalScope())
 
+suite "spec — generic functions from design":
+  test "generic function calls infer type parameters locally":
+    check_eval("(fn (identity item) [x : item] : item x) " &
+               "[(identity 1) (identity \"ok\")]",
+               "[1 \"ok\"]")
+    check_eval("(fn ints [] : (Stream Int Never) (yield 7)) " &
+               "(fn (first item err) [s : (Stream item err)] : item " &
+               "  (s ~ Stream/next)) " &
+               "(first (ints))",
+               "7")
+
 suite "spec — pattern destructuring from design":
   test "match and catch bindings are branch-local":
     expect GeneError:

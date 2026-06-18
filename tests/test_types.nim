@@ -83,6 +83,32 @@ suite "types — function boundaries":
     ck "(try (fn answer [] : Int \"no\") (answer) " &
        "catch (TypeError ^where w) w)", "\"return from 'answer'\""
 
+  test "generic functions infer scalar parameter and return boundaries":
+    ck "(fn (identity item) [x : item] : item x) [(identity 1) (identity \"ok\")]",
+       "[1 \"ok\"]"
+    ck "(fn (named-id item) [^x : item] : item x) (named-id ^x \"ok\")",
+       "\"ok\""
+    ck "(try (fn (bad item) [x : item] : item \"bad\") (bad 1) " &
+       "catch (TypeError ^where w) w)", "\"return from 'bad'\""
+
+  test "generic functions enforce repeated type parameters":
+    ck "(fn (choose item) [a : item b : item] b) (choose 1 2)", "2"
+    ck "(try (fn (choose item) [a : item b : item] b) (choose 1 \"bad\") " &
+       "catch (TypeError ^expected e) e)", "\"Int\""
+
+  test "generic functions infer list element types":
+    ck "(fn (first item) [xs : (List item)] : item xs/0) (first [1 2])",
+       "1"
+    ck "(try (fn (first item) [xs : (List item)] : item xs/0) " &
+       "(first [1 \"bad\"]) catch (TypeError ^expected e) e)",
+       "\"(List Int)\""
+
+  test "generic functions infer typed stream item types":
+    ck "(fn nums [] : (Stream Int Never) (yield 4)) " &
+       "(fn (first item err) [s : (Stream item err)] : item (s ~ Stream/next)) " &
+       "(first (nums))",
+       "4"
+
   test "nominal subtype values pass parent boundaries":
     ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
        "(fn name-of [x : Animal] x/name) (name-of (Dog ^name \"Rex\" ^breed \"Lab\"))",

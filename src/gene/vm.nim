@@ -1923,6 +1923,176 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
 proc typeExprLabel(expr: Value): string =
   if expr.kind == vkNil: "Any" else: expr.print()
 
+proc isAnyType(expr: Value): bool =
+  expr.kind == vkNil or (expr.kind == vkSymbol and expr.symVal == "Any")
+
+proc typeExprEqual(a, b: Value): bool =
+  if a.isAnyType and b.isAnyType:
+    return true
+  equal(a, b)
+
+proc typeNode(name: string, body: sink seq[Value] = @[]): Value =
+  newNode(newSym(name), body = body)
+
+proc commonRuntimeTypeExpr(values: openArray[Value]): Value
+
+proc runtimeTypeExpr(value: Value): Value =
+  case value.kind
+  of vkNil: newSym("Nil")
+  of vkVoid: newSym("Void")
+  of vkBool: newSym("Bool")
+  of vkInt: newSym("Int")
+  of vkFloat: newSym("Float")
+  of vkString: newSym("Str")
+  of vkChar: newSym("Char")
+  of vkSymbol: newSym("Sym")
+  of vkList:
+    typeNode("List", @[commonRuntimeTypeExpr(value.listItems)])
+  of vkMap:
+    var values: seq[Value]
+    for _, item in value.mapEntries:
+      values.add item
+    typeNode("Map", @[commonRuntimeTypeExpr(values)])
+  of vkNode:
+    if value.head.kind == vkType: value.head else: newSym("Node")
+  of vkFunction: newSym("Fn")
+  of vkNativeFn: newSym("Callable")
+  of vkNamespace: newSym("Namespace")
+  of vkModule: newSym("Module")
+  of vkEnv: newSym("Env")
+  of vkCell: newSym("Cell")
+  of vkAtomicCell: newSym("AtomicCell")
+  of vkStream:
+    let itemType = value.streamItemType
+    if itemType.kind == vkNil:
+      newSym("Stream")
+    else:
+      let errType =
+        if value.streamErrType.kind == vkNil: newSym("Any")
+        else: value.streamErrType
+      typeNode("Stream", @[itemType, errType])
+  of vkType: newSym("Type")
+  of vkProtocol: newSym("Protocol")
+  of vkProtocolMessage: newSym("ProtocolMessage")
+
+proc commonRuntimeTypeExpr(values: openArray[Value]): Value =
+  if values.len == 0:
+    return newSym("Any")
+  result = runtimeTypeExpr(values[0])
+  for i in 1 ..< values.len:
+    let next = runtimeTypeExpr(values[i])
+    if not typeExprEqual(result, next):
+      return newSym("Any")
+
+proc bindTypeParam(bindings: var Table[string, Value], name: string,
+                   inferred: Value): bool =
+  if inferred.isAnyType:
+    return true
+  if not bindings.hasKey(name) or bindings[name].isAnyType:
+    bindings[name] = inferred
+    return true
+  typeExprEqual(bindings[name], inferred)
+
+proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[string],
+                   bindings: var Table[string, Value]): bool =
+  if expr.kind == vkNil:
+    return true
+  case expr.kind
+  of vkSymbol:
+    if expr.symVal in typeParams:
+      return bindings.bindTypeParam(expr.symVal, runtimeTypeExpr(value))
+    return matchesTypeExpr(expr, value, scope)
+  of vkNode:
+    if expr.head.kind == vkSymbol:
+      case expr.head.symVal
+      of "List":
+        if value.kind != vkList:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(List T) expects one item type")
+        for item in value.listItems:
+          if not inferTypeExpr(expr.body[0], item, scope, typeParams, bindings):
+            return false
+        return true
+      of "Map", "PropMap":
+        if value.kind != vkMap:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Map T) expects one value type in this MVP")
+        for _, item in value.mapEntries:
+          if not inferTypeExpr(expr.body[0], item, scope, typeParams, bindings):
+            return false
+        return true
+      of "Stream":
+        if value.kind != vkStream:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 2:
+          raise newException(GeneError, "(Stream item err) expects item and error types")
+        let itemType = value.streamItemType
+        if itemType.kind != vkNil and expr.body[0].kind == vkSymbol and
+            expr.body[0].symVal in typeParams:
+          if not bindings.bindTypeParam(expr.body[0].symVal, itemType):
+            return false
+        let errType = value.streamErrType
+        if errType.kind != vkNil and expr.body[1].kind == vkSymbol and
+            expr.body[1].symVal in typeParams:
+          if not bindings.bindTypeParam(expr.body[1].symVal, errType):
+            return false
+        return true
+      else:
+        discard
+    return matchesTypeExpr(expr, value, scope)
+  else:
+    matchesTypeExpr(expr, value, scope)
+
+proc substituteTypeParams(expr: Value, bindings: Table[string, Value],
+                          typeParams: openArray[string]): Value =
+  if expr.kind == vkNil:
+    return NIL
+  case expr.kind
+  of vkSymbol:
+    if expr.symVal in typeParams:
+      return bindings.getOrDefault(expr.symVal, newSym("Any"))
+    expr
+  of vkNode:
+    var props = initOrderedTable[string, Value]()
+    for key, value in expr.props:
+      props[key] = substituteTypeParams(value, bindings, typeParams)
+    var meta = initOrderedTable[string, Value]()
+    for key, value in expr.meta:
+      meta[key] = substituteTypeParams(value, bindings, typeParams)
+    var body: seq[Value]
+    for item in expr.body:
+      body.add substituteTypeParams(item, bindings, typeParams)
+    newNode(substituteTypeParams(expr.head, bindings, typeParams),
+            props = props, body = body, meta = meta,
+            immutable = expr.nodeImmutable)
+  of vkList:
+    var items: seq[Value]
+    for item in expr.listItems:
+      items.add substituteTypeParams(item, bindings, typeParams)
+    newList(items, expr.listImmutable)
+  of vkMap:
+    var entries = initOrderedTable[string, Value]()
+    for key, value in expr.mapEntries:
+      entries[key] = substituteTypeParams(value, bindings, typeParams)
+    newMap(entries, expr.mapImmutable)
+  else:
+    expr
+
+proc instantiateTypeExpr(expr: Value, bindings: Table[string, Value],
+                         typeParams: openArray[string]): Value {.inline.} =
+  if typeParams.len == 0:
+    expr
+  else:
+    substituteTypeParams(expr, bindings, typeParams)
+
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   let message = where & " expected " & expected & ", got " & $value.kind
   var props = initOrderedTable[string, Value]()
@@ -2099,7 +2269,7 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
     raiseTypeError(where, typeExpr.typeExprLabel, value, scope)
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Stream") and
       typeExpr.body.len == 2:
-    return newCheckedStream(value, typeExpr.body[0], scope)
+    return newCheckedStream(value, typeExpr.body[0], typeExpr.body[1], scope)
   value
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
@@ -2231,19 +2401,46 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
           "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
     let callScope = newScope(callee.fnScope)
+    var typeBindings: Table[string, Value]
+    if proto.typeParams.len > 0:
+      typeBindings = initTable[string, Value]()
+      let providedForInference = min(args.len, positional.len)
+      for i in 0 ..< providedForInference:
+        if proto.hasParamTypes and i < proto.paramTypes.len and
+            proto.paramTypes[i].kind != vkNil:
+          if not inferTypeExpr(proto.paramTypes[i], args[i], callScope,
+                               proto.typeParams, typeBindings):
+            let expected = substituteTypeParams(proto.paramTypes[i], typeBindings,
+                                                proto.typeParams)
+            raiseTypeError("parameter '" & positional[i] & "'",
+                           expected.typeExprLabel, args[i], callScope)
+      for p in proto.namedParams:
+        if named.hasArg(p.arg) and proto.hasNamedParamTypes and
+            p.typeExpr.kind != vkNil:
+          let value = named.getArg(p.arg)
+          if not inferTypeExpr(p.typeExpr, value, callScope,
+                               proto.typeParams, typeBindings):
+            let expected = substituteTypeParams(p.typeExpr, typeBindings,
+                                                proto.typeParams)
+            raiseTypeError("parameter '" & p.local & "'",
+                           expected.typeExprLabel, value, callScope)
     let providedPositional = min(args.len, positional.len)
     for i in 0 ..< providedPositional:
       var value = args[i]
       if proto.hasParamTypes and i < proto.paramTypes.len and
           proto.paramTypes[i].kind != vkNil:
+        let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
+                                           proto.typeParams)
         value = adaptBoundary("parameter '" & positional[i] & "'",
-                              proto.paramTypes[i], value, callScope)
+                              typeExpr, value, callScope)
       callScope.define(positional[i], value)
     for p in proto.namedParams:
       if named.hasArg(p.arg):
         var value = named.getArg(p.arg)
         if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
-          value = adaptBoundary("parameter '" & p.local & "'", p.typeExpr,
+          let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
+                                             proto.typeParams)
+          value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                 value, callScope)
         callScope.define(p.local, value)
     for i in providedPositional ..< positional.len:
@@ -2255,8 +2452,10 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
       var boundValue = value
       if proto.hasParamTypes and i < proto.paramTypes.len and
           proto.paramTypes[i].kind != vkNil:
+        let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
+                                           proto.typeParams)
         boundValue = adaptBoundary("parameter '" & positional[i] & "'",
-                                   proto.paramTypes[i], value, callScope)
+                                   typeExpr, value, callScope)
       callScope.define(positional[i], boundValue)
     if proto.restParam.len > 0:
       var rest = newSeq[Value](args.len - positional.len)
@@ -2268,7 +2467,9 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
         if p.defaultValue.optional:
           var value = p.defaultValue.defaultValue(callScope)
           if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
-            value = adaptBoundary("parameter '" & p.local & "'", p.typeExpr,
+            let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
+                                               proto.typeParams)
+            value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                   value, callScope)
           callScope.define(p.local, value)
         else:
@@ -2277,8 +2478,10 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
       if proto.hasReturnType:
+        let returnType = instantiateTypeExpr(proto.returnType, typeBindings,
+                                             proto.typeParams)
         resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                    proto.returnType, resultValue, callScope)
+                                    returnType, resultValue, callScope)
       return resultValue
     var resultValue: Value
     try:
@@ -2291,8 +2494,10 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
       raise newException(GeneError,
         "function '" & callee.fnName & "' raised an undeclared error")
     if proto.hasReturnType:
+      let returnType = instantiateTypeExpr(proto.returnType, typeBindings,
+                                           proto.typeParams)
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                  proto.returnType, resultValue, callScope)
+                                  returnType, resultValue, callScope)
     resultValue
   of vkType:
     # Construct a typed instance: a node with the type as head, validated props.

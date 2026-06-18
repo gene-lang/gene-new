@@ -62,6 +62,7 @@ type
 
   FunctionProto* = ref object of FunctionCode
     name*: string
+    typeParams*: seq[string]
     params*: seq[string]
     paramTypes*: seq[Value]
     hasParamTypes*: bool
@@ -294,6 +295,8 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
       let label = if fn.name.len > 0: fn.name else: "<anon>"
       var header = indent & "  [" & $i & "] " & label &
         " params=" & formatNames(fn.params)
+      if fn.typeParams.len > 0:
+        header.add " type-params=" & formatNames(fn.typeParams)
       if fn.paramTypes.len > 0:
         var types: seq[string]
         for t in fn.paramTypes:
