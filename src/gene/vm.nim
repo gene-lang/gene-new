@@ -185,6 +185,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc typeExprLabel(expr: Value): string
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
+proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 
 # ---------------------------------------------------------------------------
 # Built-in functions
@@ -2044,6 +2045,11 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       if validateImplRequirements:
         scope.validateRequiredImpls()
       return
+    of opCheckType:
+      if stack.len == 0:
+        raise newException(GeneError, "VM stack underflow in type check")
+      stack[^1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
+                                stack[^1], scope)
   result = RunStop(kind: rskReturn, value: NIL)
   if validateImplRequirements:
     scope.validateRequiredImpls()

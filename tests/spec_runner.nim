@@ -92,6 +92,14 @@ suite "spec — numeric boundaries from design":
                                 "(fixed 9223372036854775808)"),
                   newGlobalScope())
 
+suite "spec — typed variable boundaries from design":
+  test "var annotations check gradual boundaries":
+    check_eval("(var result : Int (eval (quote (+ 20 22)) ^in (env))) result",
+               "42")
+    check_eval("(try (var result : Int (eval (quote \"bad\") ^in (env))) result " &
+               "catch (TypeError ^where w) w)",
+               "\"var 'result'\"")
+
 suite "spec — generic functions from design":
   test "generic function calls infer type parameters locally":
     check_eval("(fn (identity item) [x : item] : item x) " &

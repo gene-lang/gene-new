@@ -574,13 +574,22 @@ proc compileVar(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "var requires a name or pattern")
-  if c.useLocalSlots and body[0].kind == vkSymbol and body.len >= 2 and
-      body[1].kind == vkNode and body[1].head.isSymbol("fn"):
+  let typed = body.len >= 2 and body[1].isSymbol(":")
+  if typed and body.len < 3:
+    raise newException(GeneError, "var type annotation requires a type")
+  let valueIndex = if typed: 3 else: 1
+  if c.useLocalSlots and body[0].kind == vkSymbol and body.len > valueIndex and
+      body[valueIndex].kind == vkNode and body[valueIndex].head.isSymbol("fn"):
     discard c.reserveLocal(body[0].symVal)
-  if body.len >= 2:
-    compileExpr(c, body[1])
+  if body.len > valueIndex:
+    compileExpr(c, body[valueIndex])
   else:
     c.emitConst NIL
+  if typed:
+    let where =
+      if body[0].kind == vkSymbol: "var '" & body[0].symVal & "'"
+      else: "var destructuring"
+    discard c.emit(opCheckType, c.chunk.addConst(body[2]), name = where)
   if body[0].kind == vkSymbol:
     c.emitDefineBinding(body[0].symVal)
     if body[0].symVal == "self":

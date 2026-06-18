@@ -237,8 +237,19 @@ suite "compiler — GIR emission":
     check proto.requiredPositional == 1
     check not proto.simpleCall
 
+  test "emits typed var boundary checks":
+    let chunk = compileSource("(var x : Int 1)")
+    check chunk.localNames == @["x"]
+    check chunk.instructions[0].op == opPushConst
+    check chunk.instructions[1].op == opCheckType
+    check chunk.instructions[1].name == "var 'x'"
+    check chunk.constants[chunk.instructions[1].intArg].print() == "Int"
+    check chunk.instructions[2].op == opDefineLocal
+    check chunk.instructions[2].name == "x"
+
   test "compile errors use the runtime error channel":
     expect GeneError: discard compileSource("(var)")
+    expect GeneError: discard compileSource("(var x :)")
     expect GeneError: discard compileSource("(fn missing-params 1)")
     expect GeneError: discard compileSource("(fn bad [^])")
     expect GeneError: discard compileSource("(fn bad [xs... y] y)")
@@ -419,6 +430,19 @@ suite "vm — special forms":
   test "var binds and returns the value":
     ck "(var x 5) x", "5"
     ck "(var x 5) (+ x 1)", "6"
+  test "typed var checks gradual boundaries":
+    ck "(var x : Int 5) (+ x 1)", "6"
+    ck "(var maybe : (opt Int)) maybe", "nil"
+    ck "(try (var x : Int \"no\") x catch (TypeError ^where w) w)",
+       "\"var 'x'\""
+    ck "(type Request ^props {^path Str}) " &
+       "(fn app [raw] (var req : Request raw) req/path) " &
+       "(app (Request ^path \"/\"))",
+       "\"/\""
+    ck "(try (var s : (Stream Int Never) (to_stream [\"bad\"])) " &
+       "     (s ~ Stream/next) " &
+       "catch (TypeError ^where w) w)",
+       "\"Stream/next item\""
   test "set reassigns an existing binding":
     ck "(var x 1) (set x 99) x", "99"
   test "slotted conditional locals remain undefined when not executed":
