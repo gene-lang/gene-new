@@ -2229,9 +2229,12 @@ proc runPooled(chunk: Chunk, scope: Scope,
   scope.prepareChunkScope(chunk)
   var stack = acquireRunStack()
   var ip = 0
-  let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
-                        validateImplRequirements = validateImplRequirements)
-  releaseRunStack(stack)
+  var stopped: RunStop
+  try:
+    stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
+                      validateImplRequirements = validateImplRequirements)
+  finally:
+    releaseRunStack(stack)
   if stopped.kind == rskYield:
     raise newException(GeneError, "yield is only valid in a generator")
   stopped.value

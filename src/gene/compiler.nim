@@ -15,6 +15,9 @@ type
     localSlots: Table[string, int]
     localNames: seq[string]
     parentSlots: seq[Table[string, int]]
+    macros: Table[string, MacroDef]
+    hasMacros: bool
+    macroExpansionDepth: int
 
   ParamSpecs = object
     positional: seq[string]
@@ -26,6 +29,13 @@ type
   ParamAdornment = object
     typeExpr: Value
     defaultValue: ParamDefault
+
+  MacroDef = object
+    params: seq[string]
+    rest: string
+    body: seq[Value]
+
+const MaxMacroExpansionDepth = 100
 
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           depth = 0,
@@ -109,7 +119,9 @@ proc isSymbol(v: Value, name: string): bool =
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 
 proc childCompiler(c: Compiler): Compiler =
-  Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable)
+  Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable,
+           macros: c.macros, hasMacros: c.hasMacros,
+           macroExpansionDepth: c.macroExpansionDepth)
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   inc c.gensym
@@ -285,11 +297,11 @@ proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int) =
 proc symbolText(v: Value): string =
   if v.kind == vkSymbol: v.symVal else: ""
 
-proc compileDefaultExpr(node: Value): Chunk =
-  var c = Compiler(chunk: newChunk())
-  compileExpr(c, node)
-  discard c.emit(opReturn)
-  c.chunk
+proc compileDefaultExpr(c: Compiler, node: Value): Chunk =
+  var child = c.childCompiler()
+  compileExpr(child, node)
+  discard child.emit(opReturn)
+  child.chunk
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
   if form.kind == vkSymbol:
@@ -341,7 +353,8 @@ proc splitOptionalName(s: string): tuple[name: string, optional: bool] =
   else:
     (s, false)
 
-proc parseParamAdornment(items: openArray[Value], i: var int): ParamAdornment =
+proc parseParamAdornment(c: Compiler, items: openArray[Value],
+                         i: var int): ParamAdornment =
   ## Parse type annotations and compile call-time defaults.
   while i < items.len:
     let s = items[i].symbolText
@@ -357,12 +370,12 @@ proc parseParamAdornment(items: openArray[Value], i: var int): ParamAdornment =
       if i >= items.len:
         raise newException(GeneError, "parameter default requires a value")
       result.defaultValue.optional = true
-      result.defaultValue.defaultChunk = compileDefaultExpr(items[i])
+      result.defaultValue.defaultChunk = c.compileDefaultExpr(items[i])
       inc i
     else:
       break
 
-proc paramSpecs(paramList: Value): ParamSpecs =
+proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
   ## Extract positional and named parameter bindings from an `[a ^name b]`
   ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
   ## `^` followed by `name`, and rest params appear as symbols like `xs...`.
@@ -400,7 +413,7 @@ proc paramSpecs(paramList: Value): ParamSpecs =
           if localSpec.optional:
             argSpec.optional = true
           inc i
-      var adornment = parseParamAdornment(items, i)
+      var adornment = c.parseParamAdornment(items, i)
       if argSpec.optional:
         adornment.defaultValue.optional = true
       result.named.add NamedParam(arg: arg, local: local,
@@ -426,7 +439,7 @@ proc paramSpecs(paramList: Value): ParamSpecs =
         if spec.name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
-        var adornment = parseParamAdornment(items, i)
+        var adornment = c.parseParamAdornment(items, i)
         if spec.optional:
           adornment.defaultValue.optional = true
         if adornment.defaultValue.optional:
@@ -437,7 +450,234 @@ proc paramSpecs(paramList: Value): ParamSpecs =
         result.positionalTypes.add adornment.typeExpr
         result.positionalDefaults.add adornment.defaultValue
         continue
-      discard parseParamAdornment(items, i)
+      discard c.parseParamAdornment(items, i)
+
+proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[string], rest: string] =
+  let specs = c.paramSpecs(paramList)
+  if specs.named.len != 0:
+    raise newException(GeneError, "macro named parameters are not implemented")
+  for t in specs.positionalTypes:
+    if t.kind != vkNil:
+      raise newException(GeneError, "macro parameter type annotations are not implemented")
+  for defaultValue in specs.positionalDefaults:
+    if defaultValue.optional:
+      raise newException(GeneError, "macro parameter defaults are not implemented")
+  (specs.positional, specs.rest)
+
+proc macroTemplateValue(expr: Value, env: Table[string, Value],
+                        c: var Compiler): Value
+
+proc appendMacroSplice(target: var seq[Value], value: Value) =
+  case value.kind
+  of vkList:
+    for item in value.listItems:
+      target.add item
+  of vkNode:
+    for item in value.body:
+      target.add item
+  else:
+    raise newException(GeneError, "macro splice expects a list or node")
+
+proc macroSpliceExpr(value: Value, env: Table[string, Value],
+                     c: var Compiler,
+                     depth: int): tuple[splice: bool, value: Value] =
+  if depth != 1 or value.kind != vkNode or not value.head.isSymbol("unquote"):
+    return
+  if value.body.len != 1:
+    raise newException(GeneError, "unquote requires one expression")
+  let inner = value.body[0]
+  if inner.kind == vkNode and inner.head.isSymbol("..."):
+    if inner.body.len != 1:
+      raise newException(GeneError, "splice requires one expression")
+    return (true, macroTemplateValue(inner.body[0], env, c))
+
+proc macroFresh(c: var Compiler, name: string): string =
+  inc c.gensym
+  "__gene_macro_" & $c.gensym & "_" & name
+
+proc hygienicSymbol(value: Value, hygiene: Table[string, string]): Value =
+  if value.kind == vkSymbol and hygiene.hasKey(value.symVal):
+    newSym(hygiene[value.symVal])
+  else:
+    value
+
+proc isIntroducedVar(node: Value): bool =
+  node.kind == vkNode and node.head.isSymbol("var") and node.body.len > 0 and
+    node.body[0].kind == vkSymbol
+
+proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
+                      c: var Compiler,
+                      hygiene: var Table[string, string]): Value
+
+proc expandMacroQuasiMap(source: PropTable, env: Table[string, Value],
+                         depth: int, c: var Compiler,
+                         hygiene: var Table[string, string]): PropTable =
+  result = initOrderedTable[string, Value]()
+  for key, item in source:
+    result[key] = expandMacroQuasi(item, env, depth, c, hygiene)
+
+proc expandMacroVarNode(node: Value, env: Table[string, Value], depth: int,
+                        c: var Compiler, hygiene: var Table[string, string],
+                        freshName: string): Value =
+  var meta = expandMacroQuasiMap(node.meta, env, depth, c, hygiene)
+  var props = expandMacroQuasiMap(node.props, env, depth, c, hygiene)
+  var body: seq[Value]
+  body.add newSym(freshName)
+  for i in 1 ..< node.body.len:
+    body.add expandMacroQuasi(node.body[i], env, depth, c, hygiene)
+  newNode(hygienicSymbol(node.head, hygiene), props = props, body = body,
+          meta = meta, immutable = node.nodeImmutable)
+
+proc expandMacroDoNode(node: Value, env: Table[string, Value], depth: int,
+                       c: var Compiler,
+                       hygiene: var Table[string, string]): Value =
+  var localHygiene = hygiene
+  var meta = expandMacroQuasiMap(node.meta, env, depth, c, localHygiene)
+  var props = expandMacroQuasiMap(node.props, env, depth, c, localHygiene)
+  var body: seq[Value]
+  for item in node.body:
+    if item.isIntroducedVar:
+      let original = item.body[0].symVal
+      let fresh = c.macroFresh(original)
+      body.add expandMacroVarNode(item, env, depth, c, localHygiene, fresh)
+      localHygiene[original] = fresh
+    else:
+      body.add expandMacroQuasi(item, env, depth, c, localHygiene)
+  newNode(hygienicSymbol(node.head, localHygiene), props = props, body = body,
+          meta = meta, immutable = node.nodeImmutable)
+
+proc expandMacroQuasiNodeParts(node: Value, env: Table[string, Value],
+                               depth: int, c: var Compiler,
+                               hygiene: var Table[string, string]): Value =
+  var meta = initOrderedTable[string, Value]()
+  for key, item in node.meta:
+    meta[key] = expandMacroQuasi(item, env, depth, c, hygiene)
+  var props = initOrderedTable[string, Value]()
+  for key, item in node.props:
+    props[key] = expandMacroQuasi(item, env, depth, c, hygiene)
+  var body: seq[Value]
+  for item in node.body:
+    let splice = macroSpliceExpr(item, env, c, depth)
+    if splice.splice:
+      body.appendMacroSplice(splice.value)
+    else:
+      body.add expandMacroQuasi(item, env, depth, c, hygiene)
+  newNode(hygienicSymbol(node.head, hygiene), props = props, body = body,
+          meta = meta, immutable = node.nodeImmutable)
+
+proc expandMacroQuasiNode(node: Value, env: Table[string, Value],
+                          depth: int, c: var Compiler,
+                          hygiene: var Table[string, string]): Value =
+  if node.head.isSymbol("unquote"):
+    if node.body.len != 1:
+      raise newException(GeneError, "unquote requires one expression")
+    if depth == 1:
+      return macroTemplateValue(node.body[0], env, c)
+    expandMacroQuasiNodeParts(node, env, depth - 1, c, hygiene)
+  elif node.head.isSymbol("quasiquote"):
+    if node.body.len != 1:
+      raise newException(GeneError, "quasiquote expects one template")
+    expandMacroQuasiNodeParts(node, env, depth + 1, c, hygiene)
+  elif depth == 1 and node.head.isSymbol("do"):
+    expandMacroDoNode(node, env, depth, c, hygiene)
+  elif depth == 1 and node.isIntroducedVar:
+    expandMacroVarNode(node, env, depth, c, hygiene,
+                       c.macroFresh(node.body[0].symVal))
+  else:
+    expandMacroQuasiNodeParts(node, env, depth, c, hygiene)
+
+proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
+                      c: var Compiler,
+                      hygiene: var Table[string, string]): Value =
+  case value.kind
+  of vkNode:
+    expandMacroQuasiNode(value, env, depth, c, hygiene)
+  of vkList:
+    var items: seq[Value]
+    for item in value.listItems:
+      let splice = macroSpliceExpr(item, env, c, depth)
+      if splice.splice:
+        items.appendMacroSplice(splice.value)
+      else:
+        items.add expandMacroQuasi(item, env, depth, c, hygiene)
+    newList(items, value.listImmutable)
+  of vkMap:
+    var entries = initOrderedTable[string, Value]()
+    for key, item in value.mapEntries:
+      entries[key] = expandMacroQuasi(item, env, depth, c, hygiene)
+    newMap(entries, value.mapImmutable)
+  of vkSymbol:
+    hygienicSymbol(value, hygiene)
+  else:
+    value
+
+proc macroTemplateValue(expr: Value, env: Table[string, Value],
+                        c: var Compiler): Value =
+  if expr.kind == vkSymbol and env.hasKey(expr.symVal):
+    return env[expr.symVal]
+  if expr.kind == vkNode and expr.head.isSymbol("quote"):
+    if expr.body.len != 1:
+      raise newException(GeneError, "quote expects one expression")
+    return expr.body[0]
+  if expr.kind == vkNode and expr.head.isSymbol("quasiquote"):
+    if expr.body.len != 1:
+      raise newException(GeneError, "quasiquote expects one template")
+    var hygiene = initTable[string, string]()
+    return expandMacroQuasi(expr.body[0], env, 1, c, hygiene)
+  expr
+
+proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
+  if node.props.len != 0:
+    raise newException(GeneError, "macro calls with props are not implemented")
+  let args = node.body
+  if args.len < def.params.len:
+    raise newException(GeneError, "macro expects at least " & $def.params.len &
+      " argument(s), got " & $args.len)
+  if def.rest.len == 0 and args.len != def.params.len:
+    raise newException(GeneError, "macro expects " & $def.params.len &
+      " argument(s), got " & $args.len)
+  var env = initTable[string, Value]()
+  for i, name in def.params:
+    env[name] = args[i]
+  if def.rest.len > 0:
+    var rest: seq[Value]
+    for i in def.params.len ..< args.len:
+      rest.add args[i]
+    env[def.rest] = newList(rest)
+  if def.body.len != 1:
+    raise newException(GeneError,
+      "template macros require exactly one body expression")
+  macroTemplateValue(def.body[0], env, c)
+
+proc compileMacroCall(c: var Compiler, node: Value, def: MacroDef) =
+  if c.macroExpansionDepth >= MaxMacroExpansionDepth:
+    raise newException(GeneError, "macro expansion depth exceeded")
+  inc c.macroExpansionDepth
+  try:
+    compileExpr(c, c.expandMacro(def, node))
+  finally:
+    dec c.macroExpansionDepth
+
+proc compileMacro(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len < 2:
+    raise newException(GeneError, "macro requires a name and parameter vector")
+  if body[0].kind != vkSymbol or body[0].symVal.len == 0:
+    raise newException(GeneError, "macro name must be a symbol")
+  if body[1].kind != vkList:
+    raise newException(GeneError, "macro requires a parameter vector")
+  let sig = c.macroParamDef(body[1])
+  if c.hasMacros and c.macros.hasKey(body[0].symVal):
+    raise newException(GeneError, "duplicate macro: " & body[0].symVal)
+  if not c.hasMacros:
+    c.macros = initTable[string, MacroDef]()
+  var macroBody: seq[Value]
+  for i in 2 ..< body.len:
+    macroBody.add body[i]
+  c.macros[body[0].symVal] = MacroDef(params: sig.params, rest: sig.rest,
+                                      body: macroBody)
+  c.hasMacros = true
+  c.emitConst NIL
 
 proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: int] =
   if not node.props.hasKey("errors"):
@@ -475,7 +715,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     returnType = body[start]
     inc start
 
-  let specs = paramSpecs(paramList)
+  let specs = c.paramSpecs(paramList)
   var fnCompiler = c.childCompiler()
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()
@@ -1239,6 +1479,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "fn":
       compileFn(c, node)
       return
+    of "macro":
+      compileMacro(c, node)
+      return
     of "quote":
       c.emitConst(if node.body.len >= 1: node.body[0] else: NIL)
       return
@@ -1294,7 +1537,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileImpl(c, node)
       return
     else:
-      discard
+      if c.hasMacros and c.macros.hasKey(h.symVal):
+        compileMacroCall(c, node, c.macros[h.symVal])
+        return
   compileCall(c, node)
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =

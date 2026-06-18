@@ -60,6 +60,31 @@ suite "spec — templates from design":
     check_eval("(var body [(quote (p \"a\")) (quote (p \"b\"))]) `(div %body...)",
                "(div (p \"a\") (p \"b\"))")
 
+suite "spec — macros from design":
+  test "template macros expand before calls":
+    check_eval("(macro when! [cond, body...] " &
+               "  `(if %cond (then %body...) (else nil))) " &
+               "[(when! true 1) (when! false 2)]",
+               "[1 nil]")
+    check_eval("(macro when! [cond, body...] " &
+               "  `(if %cond (then %body...) (else nil))) " &
+               "(when! true (var x 1) (+ x 1))",
+               "2")
+
+  test "macro call arguments are syntax nodes":
+    check_eval("(var hit 0) " &
+               "(macro ignore! [ignored] 7) " &
+               "[(ignore! (set hit 1)) hit]",
+               "[7 0]")
+
+  test "template macros expand in default arguments":
+    check_eval("(macro seven! [] 7) (fn f [x = (seven!)] x) (f)", "7")
+
+  test "template macros avoid introduced local capture":
+    check_eval("(macro local! [x] `(do (var tmp 1) (+ tmp %x))) " &
+               "(var tmp 100) [(local! 2) tmp]",
+               "[3 100]")
+
 suite "spec — strings from design":
   test "dollar interpolation calls to-str-style display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
