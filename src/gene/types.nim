@@ -188,6 +188,10 @@ type
   Scope* = ref object
     parent*: Scope
     vars*: Table[string, Value]
+    slots*: seq[Value]
+    slotDefinedBits*: uint64
+    slotDefinedOverflow*: seq[bool]
+    slotNames*: seq[string]
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
 

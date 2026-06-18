@@ -11,9 +11,93 @@ proc newScope*(parent: Scope = nil): Scope =
   Scope(parent: parent, vars: initTable[string, Value](), impls: @[],
         requiredImplTypes: @[])
 
+proc prepareSlots(scope: Scope, names: seq[string]) =
+  if names.len == 0:
+    return
+  scope.slots = newSeq[Value](names.len)
+  scope.slotDefinedBits = 0
+  if names.len > 64:
+    scope.slotDefinedOverflow = newSeq[bool](names.len - 64)
+  scope.slotNames = names
+
+proc checkSlot(scope: Scope, index: int, name: string) =
+  if index < 0 or index >= scope.slots.len:
+    raise newException(GeneError, "invalid local slot for symbol: " & name)
+
+proc slotIndex(scope: Scope, name: string): int =
+  for index, slotName in scope.slotNames:
+    if slotName == name:
+      return index
+  -1
+
+proc slotDefined(scope: Scope, index: int): bool =
+  if index < 64:
+    (scope.slotDefinedBits and (1'u64 shl index)) != 0
+  else:
+    scope.slotDefinedOverflow[index - 64]
+
+proc markSlotDefined(scope: Scope, index: int) =
+  if index < 64:
+    scope.slotDefinedBits = scope.slotDefinedBits or (1'u64 shl index)
+  else:
+    scope.slotDefinedOverflow[index - 64] = true
+
+proc storeSlot(scope: Scope, index: int, name: string, v: Value,
+               requireExisting: bool) =
+  scope.checkSlot(index, name)
+  if requireExisting and not scope.slotDefined(index):
+    raise newException(GeneError, "set of undefined symbol: " & name)
+  if not requireExisting and scope.slotDefined(index):
+    raise newException(GeneError, "duplicate binding: " & name)
+  scope.slots[index] = functionForScopeStorage(v, scope)
+  scope.markSlotDefined(index)
+
+proc storeNamedSlot(scope: Scope, name: string, v: Value,
+                    requireExisting: bool): bool =
+  if scope.slots.len == 0:
+    return false
+  let index = scope.slotIndex(name)
+  if index < 0:
+    return false
+  if requireExisting and not scope.slotDefined(index):
+    return false
+  scope.storeSlot(index, name, v, requireExisting)
+  true
+
+proc loadNamedSlot(scope: Scope, name: string, value: var Value): bool =
+  if scope.slots.len == 0:
+    return false
+  let index = scope.slotIndex(name)
+  if index >= 0 and scope.slotDefined(index):
+    value = scope.slots[index]
+    return true
+  false
+
+proc syncSlot(scope: Scope, name: string, v: Value) =
+  for index, slotName in scope.slotNames:
+    if slotName == name:
+      scope.slots[index] = v
+      scope.markSlotDefined(index)
+      return
+
+proc loadSlot(scope: Scope, index: int, name: string): Value =
+  scope.checkSlot(index, name)
+  if not scope.slotDefined(index):
+    raise newException(GeneError, "undefined symbol: " & name)
+  scope.slots[index]
+
+proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
+  if scope.vars.hasKey(name):
+    raise newException(GeneError, "duplicate binding: " & name)
+  scope.storeSlot(index, name, v, requireExisting = false)
+
+proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
+  scope.storeSlot(index, name, v, requireExisting = true)
+
 proc lookup*(scope: Scope, name: string): Value =
   var s = scope
   while s != nil:
+    if s.loadNamedSlot(name, result): return
     if s.vars.hasKey(name): return s.vars[name]
     s = s.parent
   raise newException(GeneError, "undefined symbol: " & name)
@@ -21,6 +105,8 @@ proc lookup*(scope: Scope, name: string): Value =
 proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   var s = scope
   while s != nil:
+    if s.loadNamedSlot(name, value):
+      return true
     if s.vars.hasKey(name):
       value = s.vars[name]
       return true
@@ -28,6 +114,8 @@ proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   false
 
 proc define*(scope: Scope, name: string, v: Value) =
+  if scope.storeNamedSlot(name, v, requireExisting = false):
+    return
   if scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
   scope.vars[name] = functionForScopeStorage(v, scope)
@@ -40,8 +128,12 @@ proc defineOverlay(scope: Scope, name: string, v: Value) =
 proc assign*(scope: Scope, name: string, v: Value) =
   var s = scope
   while s != nil:
+    if s.storeNamedSlot(name, v, requireExisting = true):
+      return
     if s.vars.hasKey(name):
-      s.vars[name] = functionForScopeStorage(v, s)
+      let stored = functionForScopeStorage(v, s)
+      s.vars[name] = stored
+      s.syncSlot(name, stored)
       return
     s = s.parent
   raise newException(GeneError, "set of undefined symbol: " & name)
@@ -1188,7 +1280,9 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
                        replaceExisting: bool) =
   for k, v in binds:
     if replaceExisting and scope.vars.hasKey(k):
-      scope.vars[k] = v
+      let stored = functionForScopeStorage(v, scope)
+      scope.vars[k] = stored
+      scope.syncSlot(k, stored)
     else:
       scope.define(k, v)
 
@@ -1539,14 +1633,24 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       stack.add chunk.constants[inst[].intArg]
     of opLoadName:
       stack.add scope.lookup(inst[].name)
+    of opLoadLocal:
+      stack.add scope.loadSlot(inst[].intArg, inst[].name)
     of opDefineName:
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in var")
       scope.define(inst[].name, stack[^1])
+    of opDefineLocal:
+      if stack.len == 0:
+        raise newException(GeneError, "VM stack underflow in var")
+      scope.defineSlot(inst[].intArg, inst[].name, stack[^1])
     of opSetName:
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in set")
       scope.assign(inst[].name, stack[^1])
+    of opSetLocal:
+      if stack.len == 0:
+        raise newException(GeneError, "VM stack underflow in set")
+      scope.assignSlot(inst[].intArg, inst[].name, stack[^1])
     of opPop:
       discard stack.pop()
     of opMakeList:
@@ -2405,6 +2509,7 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
           "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
     let callScope = newScope(callee.fnScope)
+    callScope.prepareSlots(proto.localNames)
     var typeBindings: Table[string, Value]
     if proto.typeParams.len > 0:
       typeBindings = initTable[string, Value]()
@@ -2437,8 +2542,11 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
                                            proto.typeParams)
         value = adaptBoundary("parameter '" & positional[i] & "'",
                               typeExpr, value, callScope)
-      callScope.define(positional[i], value)
-    for p in proto.namedParams:
+      if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
+        callScope.defineSlot(proto.positionalSlots[i], positional[i], value)
+      else:
+        callScope.define(positional[i], value)
+    for pIndex, p in proto.namedParams:
       if named.hasArg(p.arg):
         var value = named.getArg(p.arg)
         if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
@@ -2446,7 +2554,10 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
                                              proto.typeParams)
           value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                 value, callScope)
-        callScope.define(p.local, value)
+        if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
+          callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+        else:
+          callScope.define(p.local, value)
     for i in providedPositional ..< positional.len:
       let fallback = proto.positionalDefault(i)
       if not fallback.optional:
@@ -2460,13 +2571,19 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
                                            proto.typeParams)
         boundValue = adaptBoundary("parameter '" & positional[i] & "'",
                                    typeExpr, value, callScope)
-      callScope.define(positional[i], boundValue)
+      if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
+        callScope.defineSlot(proto.positionalSlots[i], positional[i], boundValue)
+      else:
+        callScope.define(positional[i], boundValue)
     if proto.restParam.len > 0:
       var rest = newSeq[Value](args.len - positional.len)
       for i in 0 ..< rest.len:
         rest[i] = args[positional.len + i]
-      callScope.define(proto.restParam, newList(rest))
-    for p in proto.namedParams:
+      if proto.restSlot >= 0:
+        callScope.defineSlot(proto.restSlot, proto.restParam, newList(rest))
+      else:
+        callScope.define(proto.restParam, newList(rest))
+    for pIndex, p in proto.namedParams:
       if not named.hasArg(p.arg):
         if p.defaultValue.optional:
           var value = p.defaultValue.defaultValue(callScope)
@@ -2475,7 +2592,10 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
                                                proto.typeParams)
             value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                   value, callScope)
-          callScope.define(p.local, value)
+          if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
+            callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+          else:
+            callScope.define(p.local, value)
         else:
           raise newException(GeneError,
             "function '" & callee.fnName & "' missing named argument: " & p.arg)

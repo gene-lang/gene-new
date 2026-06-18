@@ -11,6 +11,9 @@ type
     allowYield: bool
     sawYield: bool
     gensym: int
+    useLocalSlots: bool
+    localSlots: Table[string, int]
+    localNames: seq[string]
 
   ParamSpecs = object
     positional: seq[string]
@@ -26,6 +29,45 @@ type
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           names: seq[string] = @[], flag = false): int =
   c.chunk.emit Instruction(op: op, intArg: intArg, name: name, names: names, flag: flag)
+
+proc enableLocalSlots(c: var Compiler) =
+  c.useLocalSlots = true
+  c.localSlots = initTable[string, int]()
+  c.localNames = @[]
+
+proc reserveLocal(c: var Compiler, name: string): int =
+  if not c.useLocalSlots:
+    return -1
+  if c.localSlots.hasKey(name):
+    return c.localSlots[name]
+  result = c.localNames.len
+  c.localSlots[name] = result
+  c.localNames.add name
+
+proc localSlot(c: Compiler, name: string): int =
+  if c.useLocalSlots and c.localSlots.hasKey(name):
+    return c.localSlots[name]
+  -1
+
+proc emitLoadBinding(c: var Compiler, name: string) =
+  let slot = c.localSlot(name)
+  if slot >= 0:
+    discard c.emit(opLoadLocal, slot, name = name)
+  else:
+    discard c.emit(opLoadName, name = name)
+
+proc emitDefineBinding(c: var Compiler, name: string) =
+  if c.useLocalSlots:
+    discard c.emit(opDefineLocal, c.reserveLocal(name), name = name)
+  else:
+    discard c.emit(opDefineName, name = name)
+
+proc emitSetBinding(c: var Compiler, name: string) =
+  let slot = c.localSlot(name)
+  if slot >= 0:
+    discard c.emit(opSetLocal, slot, name = name)
+  else:
+    discard c.emit(opSetName, name = name)
 
 proc emitConst(c: var Compiler, value: Value) =
   discard c.emit(opPushConst, c.chunk.addConst(value))
@@ -299,6 +341,16 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
 
   let specs = paramSpecs(paramList)
   var fnCompiler = c.childCompiler()
+  fnCompiler.enableLocalSlots()
+  var positionalSlots: seq[int]
+  for name in specs.positional:
+    positionalSlots.add fnCompiler.reserveLocal(name)
+  var namedSlots: seq[int]
+  for p in specs.named:
+    namedSlots.add fnCompiler.reserveLocal(p.local)
+  var restSlot = -1
+  if specs.rest.len > 0:
+    restSlot = fnCompiler.reserveLocal(specs.rest)
   fnCompiler.allowYield = true
   if "self" in specs.positional or specs.rest == "self":
     fnCompiler.selfAvailable = true
@@ -320,6 +372,10 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       hasNamedParamTypes = true
       break
   FunctionProto(name: name, typeParams: typeParams, params: specs.positional,
+                localNames: fnCompiler.localNames,
+                positionalSlots: positionalSlots,
+                namedSlots: namedSlots,
+                restSlot: restSlot,
                 paramTypes: specs.positionalTypes,
                 hasParamTypes: hasParamTypes,
                 paramDefaults: specs.positionalDefaults,
@@ -396,7 +452,7 @@ proc compileVar(c: var Compiler, node: Value) =
   else:
     c.emitConst NIL
   if body[0].kind == vkSymbol:
-    discard c.emit(opDefineName, name = body[0].symVal)
+    c.emitDefineBinding(body[0].symVal)
     if body[0].symVal == "self":
       c.selfAvailable = true
   else:
@@ -409,7 +465,7 @@ proc compileSet(c: var Compiler, node: Value) =
   if body.len < 2 or body[0].kind != vkSymbol:
     raise newException(GeneError, "set requires a name and a value")
   compileExpr(c, body[1])
-  discard c.emit(opSetName, name = body[0].symVal)
+  c.emitSetBinding(body[0].symVal)
 
 proc compileFn(c: var Compiler, node: Value) =
   let body = node.body
@@ -431,7 +487,7 @@ proc compileFn(c: var Compiler, node: Value) =
                                  errorTypeCount = errorRow.count)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if name.len > 0:
-    discard c.emit(opDefineName, name = name)
+    c.emitDefineBinding(name)
 
 proc importSelections(sel: Value): seq[ImportSelection] =
   ## Parse a single name `add` or a `[add, sub : minus]` selection list. The
@@ -771,14 +827,14 @@ proc compileFor(c: var Compiler, node: Value) =
     let iterName = c.nextTemp("iter")
     compileExpr(c, body[1])                   # collection on the stack
     discard c.emit(opMakeIterator)
-    discard c.emit(opDefineName, name = iterName)
+    c.emitDefineBinding(iterName)
 
     let start = c.chunk.instructions.len
-    discard c.emit(opLoadName, name = iterName)
+    c.emitLoadBinding(iterName)
     discard c.emit(opIteratorHasNext)
     let exitJump = c.emitJump(opJumpIfFalse)
 
-    discard c.emit(opLoadName, name = iterName)
+    c.emitLoadBinding(iterName)
     discard c.emit(opIteratorNext)
     discard c.emit(opMatchBindReplace, c.chunk.addConst(body[0]))
     discard c.emit(opPop)                     # discard the matched item
@@ -901,7 +957,7 @@ proc compileType(c: var Compiler, node: Value) =
                                            requiredImplCount: requiredImplCount,
                                            deriveProtocolCount: deriveProtocolCount,
                                            deriveRequests: deriveRequests)))
-  discard c.emit(opDefineName, name = name)
+  c.emitDefineBinding(name)
 
 proc messageName(node: Value): string =
   if node.kind != vkNode or not node.head.isSymbol("message"):
@@ -936,7 +992,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
                                               messageNames: messageNames,
                                               deriveFn: deriveFn))
   discard c.emit(opMakeProtocol, idx)
-  discard c.emit(opDefineName, name = name)
+  c.emitDefineBinding(name)
 
 proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
   let name = messageName(node)
@@ -1046,7 +1102,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   case node.kind
   of vkSymbol:
-    discard c.emit(opLoadName, name = node.symVal)
+    c.emitLoadBinding(node.symVal)
   of vkNode:
     compileNode(c, node, allowModDecl)
   of vkList:

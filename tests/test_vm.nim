@@ -50,6 +50,31 @@ suite "compiler — GIR emission":
     check proto.paramTypes[0].print() == "item"
     check proto.returnType.print() == "item"
 
+  test "emits local slots for function parameters and locals":
+    let chunk = compileSource("(fn f [x ^scale s rest...] " &
+                              "  (var y (+ x s)) " &
+                              "  (set y (+ y 1)) " &
+                              "  [y rest])")
+    let proto = chunk.functions[0]
+    check proto.localNames == @["x", "s", "rest", "y"]
+    check proto.positionalSlots == @[0]
+    check proto.namedSlots == @[1]
+    check proto.restSlot == 2
+
+    var sawLoadX = false
+    var sawDefineY = false
+    var sawSetY = false
+    for inst in proto.chunk.instructions:
+      if inst.op == opLoadLocal and inst.name == "x" and inst.intArg == 0:
+        sawLoadX = true
+      if inst.op == opDefineLocal and inst.name == "y" and inst.intArg == 3:
+        sawDefineY = true
+      if inst.op == opSetLocal and inst.name == "y" and inst.intArg == 3:
+        sawSetY = true
+    check sawLoadX
+    check sawDefineY
+    check sawSetY
+
   test "emits call prop names and named parameter specs":
     let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")
     check callChunk.instructions[^2].op == opCall
@@ -292,6 +317,10 @@ suite "vm — special forms":
     ck "(var x 5) (+ x 1)", "6"
   test "set reassigns an existing binding":
     ck "(var x 1) (set x 99) x", "99"
+  test "slotted conditional locals remain undefined when not executed":
+    ck "((fn [flag] (if flag (var x 1) nil) x) true)", "1"
+    expect GeneError:
+      discard runStr("((fn [flag] (if flag (var x 1) nil) x) false)")
   test "set on an undefined name raises":
     expect GeneError: discard runStr("(set nope 1)")
   test "undefined symbol raises":
@@ -314,6 +343,10 @@ suite "vm — functions and closures":
     ck "(var adder (fn [a] (fn [b] (+ a b)))) ((adder 10) 5)", "15"
   test "lexical capture is by reference to the defining scope":
     ck "(var x 1) (var get (fn [] x)) (set x 2) (get)", "2"
+  test "closures see updates to slot-backed locals":
+    ck "(fn outer [x] (var get (fn [] x)) (set x 2) (get)) (outer 1)", "2"
+  test "default expressions see earlier slot-backed parameters":
+    ck "((fn [x y = x] y) 7)", "7"
   test "recursion via a var-bound self reference":
     ck "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
   test "recursion via a named function declaration":

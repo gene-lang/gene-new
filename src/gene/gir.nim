@@ -11,8 +11,11 @@ type
   OpCode* = enum
     opPushConst
     opLoadName
+    opLoadLocal
     opDefineName
+    opDefineLocal
     opSetName
+    opSetLocal
     opPop
     opMakeList
     opMakeListSplice
@@ -63,6 +66,10 @@ type
   FunctionProto* = ref object of FunctionCode
     name*: string
     typeParams*: seq[string]
+    localNames*: seq[string]
+    positionalSlots*: seq[int]
+    namedSlots*: seq[int]
+    restSlot*: int
     params*: seq[string]
     paramTypes*: seq[Value]
     hasParamTypes*: bool
@@ -225,6 +232,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " const=" & $inst.intArg
   of opLoadName, opDefineName, opSetName:
     result.add " name=" & inst.name
+  of opLoadLocal, opDefineLocal, opSetLocal:
+    result.add " slot=" & $inst.intArg
+    if inst.name.len > 0:
+      result.add " name=" & inst.name
   of opMakeList:
     result.add " count=" & $inst.intArg
     if inst.flag: result.add " immutable=true"
@@ -297,6 +308,8 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         " params=" & formatNames(fn.params)
       if fn.typeParams.len > 0:
         header.add " type-params=" & formatNames(fn.typeParams)
+      if fn.localNames.len > 0:
+        header.add " locals=" & formatNames(fn.localNames)
       if fn.paramTypes.len > 0:
         var types: seq[string]
         for t in fn.paramTypes:
