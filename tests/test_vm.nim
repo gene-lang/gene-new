@@ -435,15 +435,31 @@ suite "vm — comparison and logic":
     ck "(not 1)", "false"
 
 suite "vm — special forms":
-  test "deferred special forms are reserved only in head position":
-    for form in ["scope", "spawn", "await"]:
-      expect GeneError:
-        discard compileSource("(" & form & " 1)")
+  test "derive is reserved for protocol-local use only":
     expect GeneError:
       discard compileSource("(derive [t req] nil)")
+
+  test "task scopes, spawn, and await produce completed Task values":
+    ck "(scope (var a (spawn (+ 1 2))) (await a))", "3"
+    ck "(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)"
+    ck "(scope (var t (spawn 1)) (t ~ Task/cancel))", "nil"
+
+  test "task scope and spawn bodies are branch-local":
+    expect GeneError:
+      discard runStr("(scope (var local 1) local) local")
+    expect GeneError:
+      discard runStr("(scope (var t (spawn (do (var child 1) child))) " &
+                     "(await t) child)")
     ck "(var scope 3) scope", "3"
     ck "(var spawn 1) spawn", "1"
     ck "(var await 2) await", "2"
+
+  test "await propagates recoverable task errors":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(scope (var t (spawn (fail (Boom ^message \"x\")))) " &
+       "  (try (await t) catch (Boom ^message m) m))",
+       "\"x\""
 
   test "do returns last":
     ck "(do 1 2 3)", "3"

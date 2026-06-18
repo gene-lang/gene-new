@@ -1338,6 +1338,24 @@ proc compileTry(c: var Compiler, node: Value) =
     tp.ensureBody = c.compileSubBody(ensureForms)
   discard c.emit(opTry, c.chunk.addTry(tp))
 
+proc compileTaskScope(c: var Compiler, node: Value) =
+  if node.props.len != 0:
+    raise newException(GeneError, "scope does not accept named arguments")
+  let body = c.compileSubBody(node.body, scoped = true)
+  discard c.emit(opTaskScope, c.chunk.addSubchunk(body))
+
+proc compileSpawn(c: var Compiler, node: Value) =
+  if node.props.len != 0 or node.body.len != 1:
+    raise newException(GeneError, "spawn expects one expression")
+  let body = c.compileSubBody(node.body, scoped = true)
+  discard c.emit(opSpawn, c.chunk.addSubchunk(body))
+
+proc compileAwait(c: var Compiler, node: Value) =
+  if node.props.len != 0 or node.body.len != 1:
+    raise newException(GeneError, "await expects one Task")
+  compileExpr(c, node.body[0])
+  discard c.emit(opAwait)
+
 proc compileFail(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:
     raise newException(GeneError, "fail expects one Error value")
@@ -1541,6 +1559,15 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "try":
       compileTry(c, node)
       return
+    of "scope":
+      compileTaskScope(c, node)
+      return
+    of "spawn":
+      compileSpawn(c, node)
+      return
+    of "await":
+      compileAwait(c, node)
+      return
     of "fail":
       compileFail(c, node)
       return
@@ -1559,9 +1586,6 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "derive":
       raise newException(GeneError,
         "derive is only valid inside a protocol declaration")
-    of "scope", "spawn", "await":
-      raise newException(GeneError,
-        "special form '" & h.symVal & "' is reserved but not implemented")
     else:
       if c.hasMacros and c.macros.hasKey(h.symVal):
         compileMacroCall(c, node, c.macros[h.symVal])

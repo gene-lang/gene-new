@@ -145,3 +145,7 @@ suite "errors — panic":
       discard runStr("(var panic (fn [x] nil)) (panic \"halt\")")
     expect GeneError:
       discard compileSource("(panic \"x\" \"y\")")
+  test "await propagates task panic outside try":
+    expect GenePanic:
+      discard runStr("(scope (var t (spawn (panic \"halt\"))) " &
+                     "(try (await t) catch _ \"caught\"))")

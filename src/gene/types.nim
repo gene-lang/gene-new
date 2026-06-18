@@ -60,6 +60,7 @@ type
     vkCell      ## first-class mutable reference (design Section 12.2)
     vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
     vkStream    ## first-class pull stream (design Section 6)
+    vkTask      ## first-class structured task handle (design Section 13)
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -246,6 +247,7 @@ type
     okCell
     okAtomicCell
     okStream
+    okTask
     okType
     okProtocol
     okProtocolMessage
@@ -302,6 +304,18 @@ type
     generatorScope: Scope
     generatorStack: seq[Value]
     generatorIp: int
+
+  TaskData = ref object of GeneObjectData
+    done: bool
+    cancelled: bool
+    awaited: bool
+    result: Value
+    errorMsg: string
+    errorValue: Value
+    hasErrorValue: bool
+    panicMsg: string
+    panicValue: Value
+    hasPanicValue: bool
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -744,6 +758,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
     of okStream: vkStream
+    of okTask: vkTask
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1120,6 +1135,63 @@ proc streamGeneratorIp*(v: Value): int =
 
 proc setStreamGeneratorIp*(v: Value, ip: int) =
   streamData(v).generatorIp = ip
+
+proc taskData(v: Value): TaskData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okTask:
+    raise newException(FieldDefect, "value is not a Task")
+  TaskData(objData(v))
+
+proc taskDone*(v: Value): bool =
+  taskData(v).done
+
+proc taskCancelled*(v: Value): bool =
+  taskData(v).cancelled
+
+proc taskAwaited*(v: Value): bool =
+  taskData(v).awaited
+
+proc cancelTask*(v: Value) =
+  let data = taskData(v)
+  if not data.done:
+    data.cancelled = true
+
+proc taskResult*(v: Value): Value =
+  taskData(v).result
+
+proc taskHasError*(v: Value): bool =
+  taskData(v).errorMsg.len > 0 or taskData(v).hasErrorValue
+
+proc taskErrorMsg*(v: Value): lent string =
+  taskData(v).errorMsg
+
+proc taskErrorValue*(v: Value): Value =
+  taskData(v).errorValue
+
+proc taskHasErrorValue*(v: Value): bool =
+  taskData(v).hasErrorValue
+
+proc taskHasPanic*(v: Value): bool =
+  taskData(v).panicMsg.len > 0 or taskData(v).hasPanicValue
+
+proc taskPanicMsg*(v: Value): lent string =
+  taskData(v).panicMsg
+
+proc taskPanicValue*(v: Value): Value =
+  taskData(v).panicValue
+
+proc taskHasPanicValue*(v: Value): bool =
+  taskData(v).hasPanicValue
+
+proc clearTaskPayload*(v: Value) =
+  let data = taskData(v)
+  data.awaited = true
+  data.result = NIL
+  data.errorMsg = ""
+  data.errorValue = NIL
+  data.hasErrorValue = false
+  data.panicMsg = ""
+  data.panicValue = NIL
+  data.hasPanicValue = false
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -1550,8 +1622,45 @@ proc escapeWeakFunctions*(v: Value): Value =
                          generatorScope: data.generatorScope,
                          generatorStack: data.generatorStack,
                          generatorIp: data.generatorIp))
+  of vkTask:
+    let data = taskData(v)
+    let escapedResult = escapeWeakFunctions(data.result)
+    let escapedError = escapeWeakFunctions(data.errorValue)
+    let escapedPanic = escapeWeakFunctions(data.panicValue)
+    if escapedResult.bits == data.result.bits and
+        escapedError.bits == data.errorValue.bits and
+        escapedPanic.bits == data.panicValue.bits:
+      return v
+    boxObject(TaskData(objKind: okTask, done: data.done,
+                       cancelled: data.cancelled,
+                       awaited: data.awaited,
+                       result: escapedResult,
+                       errorMsg: data.errorMsg,
+                       errorValue: escapedError,
+                       hasErrorValue: data.hasErrorValue,
+                       panicMsg: data.panicMsg,
+                       panicValue: escapedPanic,
+                       hasPanicValue: data.hasPanicValue))
   else:
     v
+
+proc newCompletedTask*(value: Value): Value =
+  boxObject(TaskData(objKind: okTask, done: true,
+                     result: escapeWeakFunctions(value)))
+
+proc newFailedTask*(message: string, value: Value = NIL,
+                    hasValue = false): Value =
+  boxObject(TaskData(objKind: okTask, done: true,
+                     errorMsg: message,
+                     errorValue: escapeWeakFunctions(value),
+                     hasErrorValue: hasValue))
+
+proc newPanickedTask*(message: string, value: Value = NIL,
+                      hasValue = false): Value =
+  boxObject(TaskData(objKind: okTask, done: true,
+                     panicMsg: message,
+                     panicValue: escapeWeakFunctions(value),
+                     hasPanicValue: hasValue))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

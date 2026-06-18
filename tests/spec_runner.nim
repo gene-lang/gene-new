@@ -376,6 +376,25 @@ suite "spec — streams from design":
                             "[(/value decl) (this-mod ~ Module/path)]"),
               scope).print() == "[9 nil]"
 
+suite "spec — structured tasks from design":
+  test "scope owns spawned tasks and await returns the result":
+    check_eval("(scope " &
+               "  (var a (spawn (+ 1 2))) " &
+               "  (var b (spawn (+ 3 4))) " &
+               "  (+ (await a) (await b)))",
+               "10")
+
+  test "await propagates recoverable task errors":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(scope " &
+               "  (var t (spawn (fail (Boom ^message \"boom\")))) " &
+               "  (try (await t) catch (Boom ^message m) m))",
+               "\"boom\"")
+
+  test "Task annotations accept task handles":
+    check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

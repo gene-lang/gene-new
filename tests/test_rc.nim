@@ -59,6 +59,7 @@ when defined(geneRcStats):
                           "(var s (gen)) " &
                           "(s ~ Stream/next) " &
                           "(s ~ Stream/close)") == 0
+      check leakedManaged("(scope (var t (spawn (fn [] 1))) (await t))") == 0
 
     test "protocol derive functions and generated impls are reclaimed":
       check leakedManaged("(protocol HasLabel " &
@@ -128,5 +129,17 @@ when defined(geneRcStats):
       GC_fullCollect()
       check stream.streamNext.intVal == 42
       stream = NIL
+
+    test "returned completed tasks keep result scopes alive":
+      var task = NIL
+      block:
+        var scope = newGlobalScope()
+        task = run(compileSource(
+          "(var x 41) " &
+          "(scope (spawn (fn [] (+ x 1))))"), scope)
+        scope = nil
+      GC_fullCollect()
+      check task.taskResult.call().intVal == 42
+      task = NIL
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

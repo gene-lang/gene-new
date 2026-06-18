@@ -42,6 +42,9 @@ type
     opIteratorHasNext # pop a stream iterator, push Bool
     opIteratorNext    # pop a stream iterator, push next item
     opTry             # run a body with catch clauses and an ensure block
+    opTaskScope       # run a structured task scope body
+    opSpawn           # run a child task body and push a Task handle
+    opAwait           # pop a Task and push/rethrow its completed result
     opFail            # pop an Error value and raise it through GeneError
     opPanic           # pop a value and raise it through GenePanic
     opYield           # suspend a generator and expose the stack top as item
@@ -300,11 +303,14 @@ proc formatInstruction(inst: Instruction): string =
     result.add " for=" & $inst.intArg
   of opTry:
     result.add " try=" & $inst.intArg
+  of opTaskScope, opSpawn:
+    result.add " body=" & $inst.intArg
   of opFail, opPanic:
     discard
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
-  of opPop, opMakeIterator, opIteratorHasNext, opIteratorNext, opYield, opReturn:
+  of opPop, opMakeIterator, opIteratorHasNext, opIteratorNext, opAwait, opYield,
+     opReturn:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =

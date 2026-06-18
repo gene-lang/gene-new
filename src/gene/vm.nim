@@ -446,6 +446,16 @@ proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
   else:
     FALSE
 
+proc requireTask(name: string, value: Value) =
+  if value.kind != vkTask:
+    raise newException(GeneError, name & " expects a Task")
+
+proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Task/cancel", args)
+  requireTask("Task/cancel", args[0])
+  args[0].cancelTask()
+  NIL
+
 proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
     raise newException(GeneError, name & " expects a Stream")
@@ -576,6 +586,7 @@ proc declarationKind(value: Value): string =
   of vkCell: "Cell"
   of vkAtomicCell: "AtomicCell"
   of vkStream: "Stream"
+  of vkTask: "Task"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1007,6 +1018,9 @@ proc buildBuiltins(app: Application): Scope =
   atomicCellScope.define("compare-exchange",
     newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
+  let taskScope = newScope(result)
+  taskScope.define("cancel", newNativeFn("Task/cancel", biTaskCancel))
+  result.define("Task", newNamespace("Task", taskScope))
   result.define("declarations", newNativeFn("declarations", biDeclarations))
   let namespaceScope = newScope(result)
   namespaceScope.define("bindings", newNativeFn("Namespace/bindings", biNamespaceBindings))
@@ -1588,6 +1602,53 @@ proc raisePanicValue(value: Value) =
   e.errVal = value
   e.hasErrVal = true
   raise e
+
+proc completedTaskFromError(e: ref GeneError): Value =
+  if e.hasErrVal:
+    newFailedTask(e.msg, e.errVal, hasValue = true)
+  else:
+    newFailedTask(e.msg)
+
+proc completedTaskFromPanic(e: ref GenePanic): Value =
+  if e.hasErrVal:
+    newPanickedTask(e.msg, e.errVal, hasValue = true)
+  else:
+    newPanickedTask(e.msg)
+
+proc awaitTaskValue(task: Value): Value =
+  if task.kind != vkTask:
+    raise newException(GeneError, "await expects a Task")
+  if task.taskAwaited:
+    raise newException(GeneError, "task result has already been awaited")
+  # The current completed-task MVP consumes the payload on await. That breaks
+  # Task -> closure result -> scope -> Task cycles until live task frames have
+  # an explicit scheduler-owned reclamation path.
+  if task.taskHasPanic:
+    let msg = $task.taskPanicMsg
+    let hasValue = task.taskHasPanicValue
+    let value = task.taskPanicValue
+    task.clearTaskPayload()
+    var e: ref GenePanic
+    new(e)
+    e.msg = msg
+    if hasValue:
+      e.errVal = value
+      e.hasErrVal = true
+    raise e
+  if task.taskHasError:
+    let msg = $task.taskErrorMsg
+    let hasValue = task.taskHasErrorValue
+    let value = task.taskErrorValue
+    task.clearTaskPayload()
+    var e: ref GeneError
+    new(e)
+    e.msg = msg
+    if hasValue:
+      e.errVal = value
+      e.hasErrVal = true
+    raise e
+  result = task.taskResult
+  task.clearTaskPayload()
 
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initOrderedTable[string, Value]()
@@ -2220,6 +2281,19 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         if tp.ensureBody != nil:
           discard run(tp.ensureBody, scope, validateImplRequirements = false)
       stack.add resultVal
+    of opTaskScope:
+      let taskScope = newScope(scope)
+      stack.add run(chunk.subchunks[inst[].intArg], taskScope)
+    of opSpawn:
+      let taskScope = newScope(scope)
+      try:
+        stack.add newCompletedTask(run(chunk.subchunks[inst[].intArg], taskScope))
+      except GeneError as e:
+        stack.add completedTaskFromError(e)
+      except GenePanic as e:
+        stack.add completedTaskFromPanic(e)
+    of opAwait:
+      stack.add awaitTaskValue(stack.pop())
     of opFail:
       let errVal = stack.pop()
       if not scope.isErrorValue(errVal):
@@ -2368,6 +2442,7 @@ proc runtimeTypeExpr(value: Value): Value =
         if value.streamErrType.kind == vkNil: newSym("Any")
         else: value.streamErrType
       typeNode("Stream", @[itemType, errType])
+  of vkTask: newSym("Task")
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -2609,6 +2684,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkAtomicCell)
   of "Stream":
     (true, value.kind == vkStream)
+  of "Task":
+    (true, value.kind == vkTask)
   else:
     (false, false)
 
@@ -2617,11 +2694,18 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     return true
   case expr.kind
   of vkSymbol:
+    var resolved: Value
+    # `Task` is both a built-in annotation/namespace and a name existing tests
+    # use for nominal types; let local nominal declarations win for bare `Task`.
+    if expr.symVal == "Task" and scope != nil and
+        scope.lookupOptional(expr.symVal, resolved) and
+        resolved.kind == vkType:
+      return value.isInstanceOfType(resolved)
     let builtin = matchesBuiltinType(expr.symVal, value)
     if builtin.known:
       return builtin.ok
-    var resolved: Value
-    if scope.lookupOptional(expr.symVal, resolved) and resolved.kind == vkType:
+    if scope != nil and scope.lookupOptional(expr.symVal, resolved) and
+        resolved.kind == vkType:
       return value.isInstanceOfType(resolved)
     raise newException(GeneError, "unknown type annotation: " & expr.symVal)
   of vkNode:
@@ -2668,6 +2752,14 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           return true
         if expr.body.len != 2:
           raise newException(GeneError, "(Stream item err) expects item and error types")
+        return true
+      of "Task":
+        if value.kind != vkTask:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 2:
+          raise newException(GeneError, "(Task result err) expects result and error types")
         return true
       else:
         discard
