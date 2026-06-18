@@ -192,6 +192,7 @@ type
     slotDefinedBits*: uint64
     slotDefinedOverflow*: seq[bool]
     slotNames*: seq[string]
+    slotMirror*: bool
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
 

@@ -27,8 +27,9 @@ suite "compiler — GIR emission":
     check chunk.functions.len == 1
     check chunk.instructions.len == 3
     check chunk.instructions[0].op == opMakeFn
-    check chunk.instructions[1].op == opDefineName
+    check chunk.instructions[1].op == opDefineLocal
     check chunk.instructions[1].name == "inc"
+    check chunk.localNames == @["inc"]
     check chunk.instructions[2].op == opReturn
 
     let proto = chunk.functions[0]
@@ -74,6 +75,17 @@ suite "compiler — GIR emission":
     check sawLoadX
     check sawDefineY
     check sawSetY
+
+  test "emits outer slots for recursive var-bound closures":
+    let chunk = compileSource("(var fib (fn [n] (if (< n 2) n (fib (- n 1)))))")
+    check chunk.localNames == @["fib"]
+    let proto = chunk.functions[0]
+    var sawOuterFib = false
+    for inst in proto.chunk.instructions:
+      if inst.op == opLoadOuterLocal and inst.name == "fib" and
+          inst.depth == 1 and inst.intArg == 0:
+        sawOuterFib = true
+    check sawOuterFib
 
   test "emits call prop names and named parameter specs":
     let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")

@@ -14,6 +14,7 @@ type
     useLocalSlots: bool
     localSlots: Table[string, int]
     localNames: seq[string]
+    parentSlots: seq[Table[string, int]]
 
   ParamSpecs = object
     positional: seq[string]
@@ -27,8 +28,10 @@ type
     defaultValue: ParamDefault
 
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
+          depth = 0,
           names: seq[string] = @[], flag = false): int =
-  c.chunk.emit Instruction(op: op, intArg: intArg, name: name, names: names, flag: flag)
+  c.chunk.emit Instruction(op: op, intArg: intArg, depth: depth,
+                           name: name, names: names, flag: flag)
 
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
@@ -49,12 +52,27 @@ proc localSlot(c: Compiler, name: string): int =
     return c.localSlots[name]
   -1
 
+proc parentSlot(c: Compiler, name: string): tuple[depth: int, slot: int] =
+  for i, slots in c.parentSlots:
+    if slots.hasKey(name):
+      return (i + 1, slots[name])
+  (-1, -1)
+
+proc parentFrames(c: Compiler): seq[Table[string, int]] =
+  if c.useLocalSlots:
+    result.add c.localSlots
+  result.add c.parentSlots
+
 proc emitLoadBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
   if slot >= 0:
     discard c.emit(opLoadLocal, slot, name = name)
   else:
-    discard c.emit(opLoadName, name = name)
+    let outer = c.parentSlot(name)
+    if outer.slot >= 0:
+      discard c.emit(opLoadOuterLocal, outer.slot, depth = outer.depth, name = name)
+    else:
+      discard c.emit(opLoadName, name = name)
 
 proc emitDefineBinding(c: var Compiler, name: string) =
   if c.useLocalSlots:
@@ -67,7 +85,11 @@ proc emitSetBinding(c: var Compiler, name: string) =
   if slot >= 0:
     discard c.emit(opSetLocal, slot, name = name)
   else:
-    discard c.emit(opSetName, name = name)
+    let outer = c.parentSlot(name)
+    if outer.slot >= 0:
+      discard c.emit(opSetOuterLocal, outer.slot, depth = outer.depth, name = name)
+    else:
+      discard c.emit(opSetName, name = name)
 
 proc emitConst(c: var Compiler, value: Value) =
   discard c.emit(opPushConst, c.chunk.addConst(value))
@@ -342,6 +364,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let specs = paramSpecs(paramList)
   var fnCompiler = c.childCompiler()
   fnCompiler.enableLocalSlots()
+  fnCompiler.parentSlots = c.parentFrames()
   var positionalSlots: seq[int]
   for name in specs.positional:
     positionalSlots.add fnCompiler.reserveLocal(name)
@@ -360,6 +383,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       break
   compileBodyFrom(fnCompiler, body, start)
   discard fnCompiler.emit(opReturn)
+  fnCompiler.chunk.localNames = fnCompiler.localNames
 
   var hasParamTypes = false
   for t in specs.positionalTypes:
@@ -447,6 +471,9 @@ proc compileVar(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "var requires a name or pattern")
+  if c.useLocalSlots and body[0].kind == vkSymbol and body.len >= 2 and
+      body[1].kind == vkNode and body[1].head.isSymbol("fn"):
+    discard c.reserveLocal(body[0].symVal)
   if body.len >= 2:
     compileExpr(c, body[1])
   else:
@@ -480,6 +507,8 @@ proc compileFn(c: var Compiler, node: Value) =
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
+  if name.len > 0 and c.useLocalSlots:
+    discard c.reserveLocal(name)
   let errorRow = compileErrorRow(c, node)
   let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
                                  typeParams = typeParams,
@@ -582,8 +611,11 @@ proc compileNs(c: var Compiler, node: Value) =
     raise newException(GeneError, "ns requires a name")
   let name = body[0].symVal
   var nsCompiler = c.childCompiler()
+  nsCompiler.enableLocalSlots()
   compileBodyFrom(nsCompiler, body, 1)
   discard nsCompiler.emit(opReturn)
+  nsCompiler.chunk.localNames = nsCompiler.localNames
+  nsCompiler.chunk.mirrorSlots = true
   let idx = c.chunk.addSubchunk(nsCompiler.chunk)
   discard c.emit(opMakeNamespace, idx, name = name)
 
@@ -1120,6 +1152,7 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
 
 proc compileForms*(forms: openArray[Value]): Chunk =
   var c = Compiler(chunk: newChunk())
+  c.enableLocalSlots()
   if forms.len == 0:
     c.emitConst NIL
   else:
@@ -1128,6 +1161,8 @@ proc compileForms*(forms: openArray[Value]): Chunk =
       if i < forms.high:
         discard c.emit(opPop)
   discard c.emit(opReturn)
+  c.chunk.localNames = c.localNames
+  c.chunk.mirrorSlots = true
   c.chunk
 
 proc compileForm*(form: Value): Chunk =

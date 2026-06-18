@@ -11,7 +11,7 @@ proc newScope*(parent: Scope = nil): Scope =
   Scope(parent: parent, vars: initTable[string, Value](), impls: @[],
         requiredImplTypes: @[])
 
-proc prepareSlots(scope: Scope, names: seq[string]) =
+proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   if names.len == 0:
     return
   scope.slots = newSeq[Value](names.len)
@@ -19,6 +19,7 @@ proc prepareSlots(scope: Scope, names: seq[string]) =
   if names.len > 64:
     scope.slotDefinedOverflow = newSeq[bool](names.len - 64)
   scope.slotNames = names
+  scope.slotMirror = mirror
 
 proc checkSlot(scope: Scope, index: int, name: string) =
   if index < 0 or index >= scope.slots.len:
@@ -49,8 +50,20 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
     raise newException(GeneError, "set of undefined symbol: " & name)
   if not requireExisting and scope.slotDefined(index):
     raise newException(GeneError, "duplicate binding: " & name)
-  scope.slots[index] = functionForScopeStorage(v, scope)
+  let stored = functionForScopeStorage(v, scope)
+  scope.slots[index] = stored
+  if scope.slotMirror:
+    scope.vars[name] = stored
   scope.markSlotDefined(index)
+
+proc scopeAtDepth(scope: Scope, depth: int, name: string): Scope =
+  result = scope
+  for _ in 0 ..< depth:
+    if result == nil:
+      raise newException(GeneError, "undefined symbol: " & name)
+    result = result.parent
+  if result == nil:
+    raise newException(GeneError, "undefined symbol: " & name)
 
 proc storeNamedSlot(scope: Scope, name: string, v: Value,
                     requireExisting: bool): bool =
@@ -86,6 +99,9 @@ proc loadSlot(scope: Scope, index: int, name: string): Value =
     raise newException(GeneError, "undefined symbol: " & name)
   scope.slots[index]
 
+proc loadSlotAt(scope: Scope, depth, index: int, name: string): Value =
+  scope.scopeAtDepth(depth, name).loadSlot(index, name)
+
 proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
   if scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
@@ -93,6 +109,9 @@ proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
 
 proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
   scope.storeSlot(index, name, v, requireExisting = true)
+
+proc assignSlotAt(scope: Scope, depth, index: int, name: string, v: Value) =
+  scope.scopeAtDepth(depth, name).assignSlot(index, name, v)
 
 proc lookup*(scope: Scope, name: string): Value =
   var s = scope
@@ -1635,6 +1654,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       stack.add scope.lookup(inst[].name)
     of opLoadLocal:
       stack.add scope.loadSlot(inst[].intArg, inst[].name)
+    of opLoadOuterLocal:
+      stack.add scope.loadSlotAt(inst[].depth, inst[].intArg, inst[].name)
     of opDefineName:
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in var")
@@ -1651,6 +1672,10 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in set")
       scope.assignSlot(inst[].intArg, inst[].name, stack[^1])
+    of opSetOuterLocal:
+      if stack.len == 0:
+        raise newException(GeneError, "VM stack underflow in set")
+      scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[^1])
     of opPop:
       discard stack.pop()
     of opMakeList:
@@ -1984,6 +2009,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
     scope.validateRequiredImpls()
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
+  if scope.slots.len == 0 and chunk.localNames.len > 0:
+    scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
   var stack: seq[Value]
   var ip = 0
   let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,

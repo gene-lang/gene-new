@@ -12,10 +12,12 @@ type
     opPushConst
     opLoadName
     opLoadLocal
+    opLoadOuterLocal
     opDefineName
     opDefineLocal
     opSetName
     opSetLocal
+    opSetOuterLocal
     opPop
     opMakeList
     opMakeListSplice
@@ -49,6 +51,7 @@ type
   Instruction* = object
     op*: OpCode
     intArg*: int
+    depth*: int
     name*: string
     names*: seq[string]
     flag*: bool
@@ -150,6 +153,8 @@ type
     constants*: seq[Value]
     instructions*: seq[Instruction]
     functions*: seq[FunctionProto]
+    localNames*: seq[string]
+    mirrorSlots*: bool
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
     forLoops*: seq[ForProto]
@@ -236,6 +241,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
+  of opLoadOuterLocal, opSetOuterLocal:
+    result.add " depth=" & $inst.depth & " slot=" & $inst.intArg
+    if inst.name.len > 0:
+      result.add " name=" & inst.name
   of opMakeList:
     result.add " count=" & $inst.intArg
     if inst.flag: result.add " immutable=true"
@@ -292,6 +301,9 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
   else:
     for i, value in chunk.constants:
       lines.add indent & "  [" & $i & "] " & value.print()
+
+  if chunk.localNames.len > 0:
+    lines.add indent & "locals: " & formatNames(chunk.localNames)
 
   lines.add indent & "instructions:"
   if chunk.instructions.len == 0:
