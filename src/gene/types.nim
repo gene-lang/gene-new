@@ -174,13 +174,9 @@ type
   ## cycles are collectable). A first-class `Env` (design Section 11.1) is a
   ## later, richer concept.
   ##
-  ## KNOWN LIMITATION (tracked by tests/test_rc.nim): a function captures its
-  ## defining `Scope` (see `GeneFunction.scope`), and a `Scope` holds bound
-  ## function `Value`s in `vars`. Because functions are manually refcounted and
-  ## reached only through NaN-boxed `Value`s, ORC cannot trace the back-edge, so
-  ## a `Scope -> Value(fn) -> GeneFunction.scope -> Scope` cycle leaks. Named
-  ## function bindings always form this cycle; anonymous transient closures do
-  ## not. Accepted short-term; revisit with the planned arena/reclamation work.
+  ## Scope-owned functions are stored with a weak captured-scope edge so a
+  ## `Scope -> Value(fn) -> Scope` cycle does not keep both sides alive. Function
+  ## values escaping as run/eval results are cloned back to a strong capture.
   Scope* = ref object
     parent*: Scope
     vars*: Table[string, Value]
@@ -195,7 +191,8 @@ type
     name: string
     params: seq[string]
     code: FunctionCode
-    scope: Scope
+    scope: Scope             # strong capture for escaping closures
+    weakScope: pointer       # non-owning Scope used for scope-owned bindings
     checksErrors: bool
     errorTypes: seq[Value]
 
@@ -244,7 +241,8 @@ type
     name: string
     parent: Value         # parent Type value, or NIL
     fields: seq[TypeField]
-    scope: Scope          # defining scope for resolving field type annotations
+    scope: Scope          # strong only for future escaped-type anchoring
+    weakScope: pointer    # defining scope for scope-owned type metadata
     requiredProtocols: seq[Value]
     derivedProtocols: seq[Value]
     deriveRequests: seq[Value]
@@ -253,7 +251,8 @@ type
     name*: string
     optional*: bool       # `^name?` — may be omitted at construction
     typeExpr*: Value      # annotation syntax, or NIL for `Any`
-    scope*: Scope         # defining scope for resolving `typeExpr`
+    scope*: Scope         # strong only for future escaped-field anchoring
+    weakScope*: pointer   # defining scope for scope-owned field metadata
 
   ProtocolData = ref object of GeneObjectData
     name: string
@@ -262,7 +261,7 @@ type
 
   ProtocolMessageData = ref object of GeneObjectData
     name: string
-    protocol: Value
+    protocolBits: uint64  # non-owning backreference to the owning Protocol
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -526,7 +525,17 @@ proc fnCode*(v: Value): FunctionCode =
 proc fnScope*(v: Value): Scope =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
-  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).scope
+  let fn = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+  if fn.scope != nil:
+    fn.scope
+  else:
+    cast[Scope](fn.weakScope)
+
+proc fnHasWeakScope*(v: Value): bool =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  let fn = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+  fn.scope == nil and fn.weakScope != nil
 
 proc fnChecksErrors*(v: Value): bool =
   if v.tagOf != FUNCTION_TAG:
@@ -669,7 +678,19 @@ proc typeFields*(v: Value): seq[TypeField] =
 proc typeScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
-  TypeData(objData(v)).scope
+  let data = TypeData(objData(v))
+  if data.scope != nil:
+    data.scope
+  else:
+    cast[Scope](data.weakScope)
+
+proc typeFieldScope*(field: TypeField, fallback: Scope): Scope =
+  if field.scope != nil:
+    field.scope
+  elif field.weakScope != nil:
+    cast[Scope](field.weakScope)
+  else:
+    fallback
 
 proc typeRequiredProtocols*(v: Value): lent seq[Value] =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -709,7 +730,10 @@ proc protocolMessageName*(v: Value): lent string =
 proc protocolMessageProtocol*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
     raise newException(FieldDefect, "value is not a ProtocolMessage")
-  ProtocolMessageData(objData(v)).protocol
+  let bits = ProtocolMessageData(objData(v)).protocolBits
+  if (bits shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRetain(bits)
+  Value(bits: bits)
 
 # ---------------------------------------------------------------------------
 # Constructors
@@ -812,6 +836,101 @@ proc newFunction*(name: string, params: sink seq[string],
   p.errorTypes = errorTypes
   boxPtr(FUNCTION_TAG, p)
 
+proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
+  let src = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+  let p = createObj(GeneFunction)
+  p.refCount = 1
+  p.name = src.name
+  p.params = src.params
+  p.code = src.code
+  if weak:
+    p.weakScope = cast[pointer](scope)
+  else:
+    p.scope = scope
+  p.checksErrors = src.checksErrors
+  p.errorTypes = src.errorTypes
+  boxPtr(FUNCTION_TAG, p)
+
+proc functionForScopeStorage*(v: Value, owner: Scope): Value =
+  ## Store scope-owned functions with a weak back-edge so the owner can be
+  ## reclaimed after its ordinary references are dropped.
+  if v.kind == vkFunction and not v.fnHasWeakScope and v.fnScope == owner:
+    return cloneFunctionCapture(v, owner, weak = true)
+  v
+
+proc escapeWeakFunctions*(v: Value): Value =
+  ## Values that leave their defining run/eval boundary must keep weakly-stored
+  ## lexical scopes alive. Rebuild only the containers that actually contain a
+  ## weak function.
+  if not v.isManaged:
+    return v
+  case v.kind
+  of vkFunction:
+    if v.fnHasWeakScope:
+      return cloneFunctionCapture(v, v.fnScope, weak = false)
+    v
+  of vkList:
+    for i, item in v.listItems:
+      let escaped = escapeWeakFunctions(item)
+      if escaped.bits != item.bits:
+        var items = newSeq[Value](v.listItems.len)
+        for j in 0 ..< i:
+          items[j] = v.listItems[j]
+        items[i] = escaped
+        for j in i + 1 ..< v.listItems.len:
+          items[j] = escapeWeakFunctions(v.listItems[j])
+        return newList(items, v.listImmutable)
+    v
+  of vkMap:
+    var changed = false
+    for key, val in v.mapEntries:
+      let escaped = escapeWeakFunctions(val)
+      if escaped.bits != val.bits:
+        changed = true
+        break
+    if not changed:
+      return v
+    var entries = initOrderedTable[string, Value]()
+    for key, val in v.mapEntries:
+      entries[key] = escapeWeakFunctions(val)
+    newMap(entries, v.mapImmutable)
+  of vkNode:
+    let escapedHead = escapeWeakFunctions(v.head)
+    var changed = escapedHead.bits != v.head.bits
+    if not changed:
+      for _, val in v.props:
+        let escaped = escapeWeakFunctions(val)
+        if escaped.bits != val.bits:
+          changed = true
+          break
+    if not changed:
+      for item in v.body:
+        let escaped = escapeWeakFunctions(item)
+        if escaped.bits != item.bits:
+          changed = true
+          break
+    if not changed:
+      for _, val in v.meta:
+        let escaped = escapeWeakFunctions(val)
+        if escaped.bits != val.bits:
+          changed = true
+          break
+    if not changed:
+      return v
+    var props = initOrderedTable[string, Value]()
+    for key, val in v.props:
+      props[key] = escapeWeakFunctions(val)
+    var body: seq[Value]
+    for item in v.body:
+      body.add escapeWeakFunctions(item)
+    var meta = initOrderedTable[string, Value]()
+    for key, val in v.meta:
+      meta[key] = escapeWeakFunctions(val)
+    newNode(escapedHead, props = props, body = body, meta = meta,
+            immutable = v.nodeImmutable)
+  else:
+    v
+
 proc newNativeFn*(name: string, impl: NativeProc): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
@@ -852,18 +971,19 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     fields = typeFields(parent)
   for f in ownFields:
     var owned = f
-    if owned.scope == nil:
-      owned.scope = scope
+    if owned.scope == nil and owned.weakScope == nil:
+      owned.weakScope = cast[pointer](scope)
     fields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
-                     scope: scope, requiredProtocols: requiredProtocols,
+                     weakScope: cast[pointer](scope),
+                     requiredProtocols: requiredProtocols,
                      derivedProtocols: derivedProtocols,
                      deriveRequests: deriveRequests))
 
 proc newProtocolMessage*(protocol: Value, name: string): Value =
   boxObject(ProtocolMessageData(objKind: okProtocolMessage,
                                 name: name,
-                                protocol: protocol))
+                                protocolBits: protocol.bits))
 
 proc newProtocol*(name: string, messageNames: openArray[string],
                   deriveFn: Value = NIL): Value =

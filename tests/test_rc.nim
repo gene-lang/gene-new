@@ -1,23 +1,10 @@
 ## Runtime leak tests for closures, scopes, and eval overlays.
 ##
 ## Managed heap values (strings, lists, maps, nodes, functions, native fns) are
-## manually refcounted; `Scope` is an ORC ref. A function captures its defining
-## `Scope` (an ORC ref inside the manually-allocated `GeneFunction`), and a
-## `Scope` holds the function `Value` in `vars`. ORC cannot trace through a
-## NaN-boxed `Value` into the manually-RC'd function, and manual RC cannot break
-## cycles, so a `Scope -> Value(fn) -> GeneFunction.scope -> Scope` cycle is
-## collectable by neither side.
-##
-## Empirically (see assertions below):
-##   * anonymous / transient closures that are never bound into a surviving scope
-##     ARE reclaimed — no leak;
-##   * any *named* function binding leaks its `GeneFunction` (and the captured
-##     scope) because the binding closes the cycle.
-##
-## This is a KNOWN, accepted short-term limitation. It bites long-lived processes
-## (REPL, servers, repeated eval overlays), not run-once scripts. Tracked here so
-## the behavior is pinned: if a count drops to 0, real cycle collection landed and
-## the assertion should be tightened; if it grows, something regressed.
+## manually refcounted; `Scope` is an ORC ref. Scope-owned functions are stored
+## with weak captured-scope back-edges, and values escaping a run/eval boundary
+## are strengthened before returning. These tests pin the retain/release behavior
+## around the old `Scope -> Value(fn) -> Scope` leak class.
 ##
 ## Build with: nim c -r -d:geneRcStats --path:src tests/test_rc.nim
 
@@ -49,25 +36,25 @@ when defined(geneRcStats):
       check leakedManaged("((fn [] (fn [] 1)))") == 0
       check leakedManaged("((fn [n] (* n n)) 5)") == 0
 
-    test "KNOWN LIMITATION: a named function leaks its scope cycle":
-      check leakedManaged("(fn f [] 1)") == 1
-      check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 1
-      check leakedManaged("(fn fac [n] (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 1
+    test "scope-owned named functions are reclaimed":
+      check leakedManaged("(fn f [] 1)") == 0
+      check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
+      check leakedManaged("(fn fac [n] (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
 
-    test "KNOWN LIMITATION: a self-referential closure leaks":
-      check leakedManaged("(var f nil) (set f (fn [] f))") == 1
+    test "self-referential closures stored in their scope are reclaimed":
+      check leakedManaged("(var f nil) (set f (fn [] f))") == 0
 
     test "eval overlays without escaping functions are reclaimed":
       check leakedManaged("(eval (quote (+ 1 2)) ^in (env))") == 0
 
-    test "KNOWN LIMITATION: eval named functions leak their overlay scope cycle":
-      check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 1
+    test "eval named functions are reclaimed when the result does not escape":
+      check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
 
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
 
-    test "KNOWN LIMITATION: protocol derive retains function scope cycles":
+    test "protocol derive functions and generated impls are reclaimed":
       check leakedManaged("(protocol HasLabel " &
                           "  (message label [self] : Str) " &
                           "  (derive [t : Type, req] " &
@@ -76,6 +63,26 @@ when defined(geneRcStats):
                           "(type User ^props {^name Str} " &
                           "  ^impl [HasLabel] " &
                           "  ^derive [HasLabel]) " &
-                          "(label (User ^name \"Ada\"))") == 3
+                          "(label (User ^name \"Ada\"))") == 0
+
+    test "returned named functions keep their defining scope alive":
+      var f = NIL
+      block:
+        var scope = newGlobalScope()
+        f = run(compileSource("(var x 41) (fn f [] (+ x 1)) f"), scope)
+        scope = nil
+      GC_fullCollect()
+      check f.call().intVal == 42
+      f = NIL
+
+    test "returned containers strengthen contained functions":
+      var functions = NIL
+      block:
+        var scope = newGlobalScope()
+        functions = run(compileSource("(var x 40) (fn f [] (+ x 2)) [f]"), scope)
+        scope = nil
+      GC_fullCollect()
+      check functions.listItems[0].call().intVal == 42
+      functions = NIL
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

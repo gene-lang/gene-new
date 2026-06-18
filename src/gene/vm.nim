@@ -30,7 +30,7 @@ proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
 proc define*(scope: Scope, name: string, v: Value) =
   if scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
-  scope.vars[name] = v
+  scope.vars[name] = functionForScopeStorage(v, scope)
 
 proc defineOverlay(scope: Scope, name: string, v: Value) =
   ## Internal overlay write for Env materialization: child Env bindings should
@@ -41,7 +41,7 @@ proc assign*(scope: Scope, name: string, v: Value) =
   var s = scope
   while s != nil:
     if s.vars.hasKey(name):
-      s.vars[name] = v
+      s.vars[name] = functionForScopeStorage(v, s)
       return
     s = s.parent
   raise newException(GeneError, "set of undefined symbol: " & name)
@@ -1578,6 +1578,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       if proto.deriveFn != nil:
         deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
                                proto.deriveFn, scope)
+        deriveFn = functionForScopeStorage(deriveFn, scope)
       let protocol = newProtocol(proto.name, proto.messageNames, deriveFn)
       for _, message in protocol.protocolMessages:
         scope.define(message.protocolMessageName, message)
@@ -1593,9 +1594,10 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       let protocol = stack.pop()
       var messages = initTable[string, Value]()
       for i, message in proto.messages:
-        messages[message.name] =
-          newFunction(message.fn.name, message.fn.params, message.fn, scope,
-                      message.fn.checksErrors, messageErrorTypes[i])
+        let fn = newFunction(message.fn.name, message.fn.params, message.fn,
+                             scope, message.fn.checksErrors,
+                             messageErrorTypes[i])
+        messages[message.name] = functionForScopeStorage(fn, scope)
       scope.registerImpl(protocol, receiver, messages)
       stack.add NIL
     of opMakeNamespace:
@@ -1727,7 +1729,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
     of opJump:
       ip = inst.intArg
     of opReturn:
-      result = if stack.len > 0: stack.pop() else: NIL
+      result = escapeWeakFunctions(if stack.len > 0: stack.pop() else: NIL)
       if validateImplRequirements:
         scope.validateRequiredImpls()
       return
@@ -2123,7 +2125,7 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
             raise newException(GeneError,
               "missing required field '" & f.name & "' for " & callee.typeName)
         else:
-          let fieldScope = if f.scope == nil: callee.typeScope else: f.scope
+          let fieldScope = f.typeFieldScope(callee.typeScope)
           props[f.name] = adaptBoundary("field '" & f.name & "' for " &
                                         callee.typeName, f.typeExpr, value,
                                         fieldScope)
