@@ -108,6 +108,13 @@ suite "compiler — GIR emission":
     check sawLoadA
     check sawSetTotal
 
+  test "emits one branch slot for typed pattern binders":
+    let chunk = compileSource("(match \"hi\" (when (s : Str) s))")
+    let body = chunk.matches[0].clauses[0].body
+    check body.localNames == @["s"]
+    check body.instructions[0].op == opLoadLocal
+    check body.instructions[0].name == "s"
+
   test "emits slots for for and catch child scopes":
     let loopChunk = compileSource(
       "(var total 0) (for [a b] [[1 2]] (set total (+ total a b)))")

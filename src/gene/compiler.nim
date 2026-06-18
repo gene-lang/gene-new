@@ -148,6 +148,14 @@ proc bodyContainsYield(body: openArray[Value], first: int): bool =
       return true
   false
 
+proc isTypedPattern(pat: Value): bool =
+  pat.kind == vkNode and pat.head.kind == vkSymbol and pat.body.len > 0 and
+    pat.body[0].isSymbol(":")
+
+proc requireTypedPatternShape(pat: Value) =
+  if pat.body.len != 2:
+    raise newException(GeneError, "typed pattern requires a name and one type")
+
 proc patternBindsSelf(pattern: Value): bool =
   case pattern.kind
   of vkSymbol:
@@ -161,6 +169,9 @@ proc patternBindsSelf(pattern: Value): bool =
       if patternBindsSelf(value):
         return true
   of vkNode:
+    if pattern.isTypedPattern:
+      pattern.requireTypedPatternShape()
+      return pattern.head.symVal == "self"
     for _, value in pattern.props:
       if patternBindsSelf(value):
         return true
@@ -213,6 +224,10 @@ proc collectPatternBindingNames(pat: Value, names: var seq[string],
     for _, valuePat in pat.mapEntries:
       collectPatternBindingNames(valuePat, names, seen)
   of vkNode:
+    if pat.isTypedPattern:
+      pat.requireTypedPatternShape()
+      addPatternBinding(names, seen, pat.head.symVal)
+      return
     if pat.head.kind == vkSymbol:
       case pat.head.symVal
       of "unquote":

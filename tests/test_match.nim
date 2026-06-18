@@ -48,6 +48,23 @@ suite "match — structural patterns":
   test "meta patterns require meta and value patterns":
     expect GeneError: discard runStr("(match 1 (when (@ {}) 1))")
 
+suite "match — typed patterns":
+  test "typed patterns bind only matching values":
+    ck "(match \"hi\" (when (s : Str) s) (else \"no\"))", "\"hi\""
+    ck "(match 1 (when (s : Str) s) (else \"no\"))", "\"no\""
+    ck "(match \"hi\" (when (_ : Str) \"str\") (else \"no\"))", "\"str\""
+  test "typed patterns adapt streams lazily":
+    ck "(try (match (to_stream [\"bad\"]) " &
+       "       (when (s : (Stream Int Never)) (s ~ Stream/next))) " &
+       "catch (TypeError ^where w) w)",
+       "\"Stream/next item\""
+  test "typed catch patterns match error types":
+    ck "(try (fn f [x : Int] x) (f \"bad\") " &
+       "catch (e : TypeError) e/where)",
+       "\"parameter 'x'\""
+  test "typed patterns require exactly one type":
+    expect GeneError: discard runStr("(match 1 (when (x :) x))")
+
 suite "match — combinators":
   test "alternation matches any branch":
     ck "(match 3 (when (| 1 2 3) \"small\") (else \"big\"))", "\"small\""

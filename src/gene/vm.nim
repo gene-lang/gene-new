@@ -1066,14 +1066,22 @@ proc isSubtypeOf(actual, expected: Value): bool {.inline.} =
 # `tryMatch` walks a pattern AST against a target value, collecting bindings into
 # `binds` (committed by the caller only on success). Supported: `_` wildcard,
 # bare-name bind, scalar literal (=), `%name` (compare to a lexical value), list
-# `[a b rest...]`, map/props `{^k p}` (open), and `(| & not)`. Node-shape/type
-# patterns and typed `x : T` are deferred until the type system lands.
+# `[a b rest...]`, map/props `{^k p}` (open), typed `x : T`, `(@ meta value)`,
+# `(| & not)`, and node-shape/type patterns.
 
 proc isSymbolP(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
 proc isRestPattern(p: Value): bool =
   p.kind == vkSymbol and p.symVal.len > 3 and p.symVal.endsWith("...")
+
+proc isTypedPattern(p: Value): bool =
+  p.kind == vkNode and p.head.kind == vkSymbol and p.body.len > 0 and
+    p.body[0].isSymbolP(":")
+
+proc requireTypedPatternShape(p: Value) =
+  if p.body.len != 2:
+    raise newException(GeneError, "typed pattern requires a name and one type")
 
 proc patternItems(target: Value): tuple[items: seq[Value], ok: bool] =
   case target.kind
@@ -1123,6 +1131,11 @@ proc collectPatternBindings(pat: Value, names: var HashSet[string]) =
     for _, valuePat in pat.mapEntries:
       collectPatternBindings(valuePat, names)
   of vkNode:
+    if pat.isTypedPattern:
+      pat.requireTypedPatternShape()
+      if pat.head.symVal != "_":
+        names.incl pat.head.symVal
+      return
     if pat.head.kind == vkSymbol:
       case pat.head.symVal
       of "unquote":
@@ -1213,6 +1226,15 @@ proc tryMatch(pat, target: Value, scope: Scope,
       if not tryMatch(vpat, fieldVal, scope, binds): return false
     true
   of vkNode:
+    if pat.isTypedPattern:
+      pat.requireTypedPatternShape()
+      if not matchesTypeExpr(pat.body[1], target, scope):
+        return false
+      if pat.head.symVal != "_":
+        binds[pat.head.symVal] =
+          adaptBoundary("pattern '" & pat.head.symVal & "'",
+                        pat.body[1], target, scope)
+      return true
     if pat.head.kind == vkSymbol:
       case pat.head.symVal
       of "unquote":          # %name -> compare to a lexical value

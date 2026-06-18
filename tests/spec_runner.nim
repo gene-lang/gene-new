@@ -140,6 +140,14 @@ suite "spec — pattern destructuring from design":
     check_eval("(match (quote (x @line 7 ^name \"Ada\")) " &
                "  (when (x ^name n) n))",
                "\"Ada\"")
+  test "typed patterns bind and require the declared type":
+    check_eval("(match \"Ada\" (when (s : Str) s) (else \"no\"))",
+               "\"Ada\"")
+    check_eval("(match 7 (when (s : Str) s) (else \"no\"))",
+               "\"no\"")
+    check_eval("(try (fn f [x : Int] x) (f \"bad\") " &
+               "catch (e : TypeError) e/where)",
+               "\"parameter 'x'\"")
 
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":

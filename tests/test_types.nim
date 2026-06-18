@@ -66,6 +66,12 @@ suite "types — pattern matching":
   test "a different type does not match":
     ck "(type A ^props {^x Int}) (type B ^props {^x Int}) " &
        "(match (B ^x 1) (when (A ^x v) \"a\") (else \"other\"))", "\"other\""
+  test "typed binders match nominal types":
+    ck "(type Task ^props {^id Int}) " &
+       "(match (Task ^id 7) (when (t : Task) t/id))", "7"
+    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+       "(match (Dog ^name \"Rex\" ^breed \"Lab\") (when (a : Animal) a/name))",
+       "\"Rex\""
 
 suite "types — function boundaries":
   test "positional parameter annotations are checked":
