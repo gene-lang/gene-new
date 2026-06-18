@@ -14,6 +14,7 @@ type
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
+proc isSendableValue(value: Value, scope: Scope): bool
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -513,6 +514,12 @@ proc checkedChannelItem(channel, item: Value, where: string,
     else: channel.channelItemScope
   adaptBoundary(where, itemType, item, itemScope)
 
+proc checkedChannelSendItem(channel, item: Value, where: string,
+                            fallbackScope: Scope): Value =
+  result = checkedChannelItem(channel, item, where, fallbackScope)
+  if not isSendableValue(result, fallbackScope):
+    raiseTypeError(where, "Send", result, fallbackScope)
+
 proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
@@ -522,8 +529,8 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args[0].channelFull:
     raise newException(GeneError, "Channel/send would suspend on a full channel")
   let scope = if call == nil: nil else: call[].dispatchScope
-  args[0].pushChannel(checkedChannelItem(args[0], args[1],
-                                         "Channel/send item", scope))
+  args[0].pushChannel(checkedChannelSendItem(args[0], args[1],
+                                             "Channel/send item", scope))
   NIL
 
 proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -533,8 +540,8 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
   if args[0].channelClosed or args[0].channelFull:
     return FALSE
   let scope = if call == nil: nil else: call[].dispatchScope
-  args[0].pushChannel(checkedChannelItem(args[0], args[1],
-                                         "Channel/try-send item", scope))
+  args[0].pushChannel(checkedChannelSendItem(args[0], args[1],
+                                             "Channel/try-send item", scope))
   TRUE
 
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -1682,6 +1689,59 @@ proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
       return true
     t = t.typeParent
   false
+
+proc isSendableValue(value: Value, scope: Scope,
+                     seen: var HashSet[uint64]): bool =
+  if value.kind in {vkList, vkMap, vkNode}:
+    if seen.contains(value.bits):
+      return true
+    seen.incl value.bits
+  case value.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
+     vkNativeFn, vkType, vkProtocol, vkProtocolMessage:
+    true
+  of vkNode:
+    var sendProtocol: Value
+    if value.head.kind == vkType and scope != nil and
+        scope.lookupOptional("Send", sendProtocol) and
+        sendProtocol.kind == vkProtocol and
+        scope.typeImplementsProtocol(value.head, sendProtocol):
+      return true
+    if not value.nodeImmutable:
+      return false
+    if not isSendableValue(value.head, scope, seen):
+      return false
+    for _, item in value.props:
+      if not isSendableValue(item, scope, seen):
+        return false
+    for item in value.body:
+      if not isSendableValue(item, scope, seen):
+        return false
+    for _, item in value.meta:
+      if not isSendableValue(item, scope, seen):
+        return false
+    true
+  of vkList:
+    if not value.listImmutable:
+      return false
+    for item in value.listItems:
+      if not isSendableValue(item, scope, seen):
+        return false
+    true
+  of vkMap:
+    if not value.mapImmutable:
+      return false
+    for _, item in value.mapEntries:
+      if not isSendableValue(item, scope, seen):
+        return false
+    true
+  of vkFunction, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream,
+     vkTask, vkChannel:
+    false
+
+proc isSendableValue(value: Value, scope: Scope): bool =
+  var seen = initHashSet[uint64]()
+  isSendableValue(value, scope, seen)
 
 proc validateRequiredImpls(scope: Scope) =
   for typ in scope.requiredImplTypes:

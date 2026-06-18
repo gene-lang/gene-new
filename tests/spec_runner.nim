@@ -419,6 +419,19 @@ suite "spec — bounded channels from design":
                "(try (ch ~ Channel/send \"bad\") catch (TypeError ^where w) w)",
                "\"Channel/send item\"")
 
+  test "channel sends enforce dynamic Send values":
+    check_eval("(var ch (channel)) " &
+               "(ch ~ Channel/send #[1 #{^a 2}]) " &
+               "(ch ~ Channel/recv)",
+               "#[1 #{^a 2}]")
+    check_eval("(var ch (channel)) " &
+               "(try (ch ~ Channel/send [1]) catch (TypeError ^expected e) e)",
+               "\"Send\"")
+    check_eval("(var ch (channel)) " &
+               "(try (ch ~ Channel/send #[(cell 1)]) " &
+               "catch (TypeError ^where w) w)",
+               "\"Channel/send item\"")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

@@ -914,6 +914,25 @@ suite "vm — channels":
        "(try (ch ~ Channel/recv) catch (TypeError ^where w) w)",
        "\"Channel/recv item\""
 
+  test "channel sends require Send values":
+    ck "(var ch (channel)) " &
+       "(ch ~ Channel/send #[1 #{^a 2}]) " &
+       "(ch ~ Channel/recv)",
+       "#[1 #{^a 2}]"
+    ck "(var ch (channel)) " &
+       "(try (ch ~ Channel/send [1]) catch (TypeError ^expected e) e)",
+       "\"Send\""
+    ck "(var ch (channel)) " &
+       "(try (ch ~ Channel/send #[(cell 1)]) catch (TypeError ^where w) w)",
+       "\"Channel/send item\""
+    ck "(type Msg ^props {^x Int} ^impl [Send]) " &
+       "(impl Send Msg) " &
+       "(var ch (channel)) " &
+       "(ch ~ Channel/send (Msg ^x 7)) " &
+       "(var msg (ch ~ Channel/recv)) " &
+       "msg/x",
+       "7"
+
   test "channel operations require channels":
     expect GeneError: discard runStr("(channel ^capacity 0)")
     expect GeneError: discard runStr("(Channel/send 1 2)")

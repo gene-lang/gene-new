@@ -61,7 +61,7 @@ when defined(geneRcStats):
                           "(s ~ Stream/close)") == 0
       check leakedManaged("(scope (var t (spawn (fn [] 1))) (await t))") == 0
       check leakedManaged("(var ch (channel)) " &
-                          "(ch ~ Channel/send (fn [] 1)) " &
+                          "(ch ~ Channel/send 1) " &
                           "(ch ~ Channel/recv)") == 0
       check leakedManaged("(var ch : (Channel Int) (channel))") == 0
 
@@ -146,18 +146,20 @@ when defined(geneRcStats):
       check task.taskResult.call().intVal == 42
       task = NIL
 
-    test "returned channels keep buffered result scopes alive":
+    test "returned channels keep buffered values alive":
       var channel = NIL
       block:
         var scope = newGlobalScope()
         channel = run(compileSource(
-          "(var x 41) " &
           "(var ch (channel)) " &
-          "(ch ~ Channel/send (fn [] (+ x 1))) " &
+          "(ch ~ Channel/send #[1 2]) " &
           "ch"), scope)
         scope = nil
       GC_fullCollect()
-      check channel.popChannel().call().intVal == 42
+      let buffered = channel.popChannel()
+      check buffered.listImmutable
+      check buffered.listItems[0].intVal == 1
+      check buffered.listItems[1].intVal == 2
       channel = NIL
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."
