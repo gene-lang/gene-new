@@ -21,6 +21,10 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotNames = names
   scope.slotMirror = mirror
 
+proc prepareChunkScope(scope: Scope, chunk: Chunk) =
+  if scope.slots.len == 0 and chunk.localNames.len > 0:
+    scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
+
 proc checkSlot(scope: Scope, index: int, name: string) =
   if index < 0 or index >= scope.slots.len:
     raise newException(GeneError, "invalid local slot for symbol: " & name)
@@ -1298,12 +1302,15 @@ proc iteratorStream(coll: Value): Value =
 proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
                        replaceExisting: bool) =
   for k, v in binds:
-    if replaceExisting and scope.vars.hasKey(k):
-      let stored = functionForScopeStorage(v, scope)
-      scope.vars[k] = stored
-      scope.syncSlot(k, stored)
-    else:
-      scope.define(k, v)
+    if replaceExisting:
+      if scope.storeNamedSlot(k, v, requireExisting = true):
+        continue
+      if scope.vars.hasKey(k):
+        let stored = functionForScopeStorage(v, scope)
+        scope.vars[k] = stored
+        scope.syncSlot(k, stored)
+        continue
+    scope.define(k, v)
 
 # ---------------------------------------------------------------------------
 # Execution
@@ -1903,7 +1910,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         var binds = initTable[string, Value]()
         if tryMatch(cl.pattern, target, scope, binds):
           let branchScope = newScope(scope)
-          for k, v in binds: branchScope.define(k, v)
+          branchScope.prepareChunkScope(cl.body)
+          branchScope.bindMatchedValues(binds, replaceExisting = false)
           stack.add run(cl.body, branchScope,
                         validateImplRequirements = validateImplRequirements)
           handled = true
@@ -1933,10 +1941,11 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       let fp = chunk.forLoops[inst[].intArg]
       for item in forItems(coll):
         let loopScope = newScope(scope)
+        loopScope.prepareChunkScope(fp.body)
         var binds = initTable[string, Value]()
         if not tryMatch(fp.pattern, item, loopScope, binds):
           raiseMatchError(loopScope, "for pattern did not match an item")
-        for k, v in binds: loopScope.define(k, v)
+        loopScope.bindMatchedValues(binds, replaceExisting = false)
         discard run(fp.body, loopScope)
       stack.add NIL
     of opMakeIterator:
@@ -1969,7 +1978,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
             var binds = initTable[string, Value]()
             if tryMatch(cl.pattern, errVal, scope, binds):
               let catchScope = newScope(scope)
-              for k, v in binds: catchScope.define(k, v)
+              catchScope.prepareChunkScope(cl.body)
+              catchScope.bindMatchedValues(binds, replaceExisting = false)
               resultVal = run(cl.body, catchScope,
                               validateImplRequirements = validateImplRequirements)
               handled = true
@@ -2009,8 +2019,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
     scope.validateRequiredImpls()
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
-  if scope.slots.len == 0 and chunk.localNames.len > 0:
-    scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
+  scope.prepareChunkScope(chunk)
   var stack: seq[Value]
   var ip = 0
   let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,

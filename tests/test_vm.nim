@@ -87,6 +87,35 @@ suite "compiler — GIR emission":
         sawOuterFib = true
     check sawOuterFib
 
+  test "emits slots for match branch bindings and outer updates":
+    let chunk = compileSource(
+      "(var total 0) (match [1 2] (when [a b] (set total (+ a b))))")
+    check chunk.localNames == @["total"]
+    let body = chunk.matches[0].clauses[0].body
+    check body.localNames == @["a", "b"]
+    var sawLoadA = false
+    var sawSetTotal = false
+    for inst in body.instructions:
+      if inst.op == opLoadLocal and inst.name == "a" and inst.intArg == 0:
+        sawLoadA = true
+      if inst.op == opSetOuterLocal and inst.name == "total" and
+          inst.depth == 1 and inst.intArg == 0:
+        sawSetTotal = true
+    check sawLoadA
+    check sawSetTotal
+
+  test "emits slots for for and catch child scopes":
+    let loopChunk = compileSource(
+      "(var total 0) (for [a b] [[1 2]] (set total (+ total a b)))")
+    let loopBody = loopChunk.forLoops[0].body
+    check loopBody.localNames == @["a", "b"]
+
+    let tryChunk = compileSource("(try 1 catch {^message m} m)")
+    let catchBody = tryChunk.tries[0].catches[0].body
+    check catchBody.localNames == @["m"]
+    check catchBody.instructions[0].op == opLoadLocal
+    check catchBody.instructions[0].name == "m"
+
   test "emits call prop names and named parameter specs":
     let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")
     check callChunk.instructions[^2].op == opCall

@@ -170,6 +170,82 @@ proc patternBindsSelf(pattern: Value): bool =
   else:
     return false
 
+proc isRestPattern(pat: Value): bool =
+  pat.kind == vkSymbol and pat.symVal.len > 3 and pat.symVal.endsWith("...")
+
+proc addPatternBinding(names: var seq[string], seen: var Table[string, bool],
+                       name: string) =
+  if name.len == 0 or name == "_" or seen.hasKey(name):
+    return
+  seen[name] = true
+  names.add name
+
+proc collectPatternBindingNames(pat: Value, names: var seq[string],
+                                seen: var Table[string, bool])
+
+proc sameNameSet(a, b: openArray[string]): bool =
+  if a.len != b.len:
+    return false
+  var seen = initTable[string, bool]()
+  for name in a:
+    seen[name] = true
+  for name in b:
+    if not seen.hasKey(name):
+      return false
+  true
+
+proc patternBindingNames(pat: Value): seq[string] =
+  var seen = initTable[string, bool]()
+  collectPatternBindingNames(pat, result, seen)
+
+proc collectPatternBindingNames(pat: Value, names: var seq[string],
+                                seen: var Table[string, bool]) =
+  case pat.kind
+  of vkSymbol:
+    if pat.isRestPattern:
+      addPatternBinding(names, seen, pat.symVal[0 .. ^4])
+    else:
+      addPatternBinding(names, seen, pat.symVal)
+  of vkList:
+    for item in pat.listItems:
+      collectPatternBindingNames(item, names, seen)
+  of vkMap:
+    for _, valuePat in pat.mapEntries:
+      collectPatternBindingNames(valuePat, names, seen)
+  of vkNode:
+    if pat.head.kind == vkSymbol:
+      case pat.head.symVal
+      of "unquote":
+        return
+      of "|":
+        if pat.body.len == 0:
+          return
+        let baseline = patternBindingNames(pat.body[0])
+        for i in 1 ..< pat.body.len:
+          if not sameNameSet(baseline, patternBindingNames(pat.body[i])):
+            raise newException(GeneError,
+              "alternation pattern alternatives must bind the same names")
+        for name in baseline:
+          addPatternBinding(names, seen, name)
+        return
+      of "&":
+        for sub in pat.body:
+          collectPatternBindingNames(sub, names, seen)
+        return
+      of "not":
+        if pat.body.len == 1 and patternBindingNames(pat.body[0]).len > 0:
+          raise newException(GeneError,
+            "pattern (not p) must not introduce bindings")
+        return
+      else:
+        discard
+    for _, valuePat in pat.props:
+      collectPatternBindingNames(valuePat, names, seen)
+    for item in pat.body:
+      collectPatternBindingNames(item, names, seen)
+  else:
+    discard
+
 proc compileBody(c: var Compiler, body: openArray[Value]) =
   if body.len == 0:
     c.emitConst NIL
@@ -218,12 +294,21 @@ proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq
   raise newException(GeneError, "function name must be a symbol or (name type...)")
 
 proc compileSubBody(c: Compiler, forms: openArray[Value],
-                    pattern: Value = NIL): Chunk =
+                    pattern: Value = NIL, scoped = false): Chunk =
   var child = c.childCompiler()
-  if patternBindsSelf(pattern):
+  if scoped:
+    child.enableLocalSlots()
+    child.parentSlots = c.parentFrames()
+    for name in patternBindingNames(pattern):
+      discard child.reserveLocal(name)
+      if name == "self":
+        child.selfAvailable = true
+  elif patternBindsSelf(pattern):
     child.selfAvailable = true
   compileBody(child, forms)            # empty -> nil
   discard child.emit(opReturn)
+  if scoped:
+    child.chunk.localNames = child.localNames
   child.chunk
 
 proc isParamTerminator(s: string): bool =
@@ -830,9 +915,10 @@ proc compileMatch(c: var Compiler, node: Value) =
         branchBody.add clause.body[j]
       mp.clauses.add MatchClause(pattern: clause.body[0],
                                   body: c.compileSubBody(branchBody,
-                                                         clause.body[0]))
+                                                         clause.body[0],
+                                                         scoped = true))
     of "else":
-      mp.elseBody = c.compileSubBody(clause.body)
+      mp.elseBody = c.compileSubBody(clause.body, scoped = true)
       break
     else:
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
@@ -879,10 +965,17 @@ proc compileFor(c: var Compiler, node: Value) =
 
   compileExpr(c, body[1])                   # collection on the stack
   var bodyCompiler = c.childCompiler()
+  bodyCompiler.enableLocalSlots()
+  bodyCompiler.parentSlots = c.parentFrames()
+  for name in patternBindingNames(body[0]):
+    discard bodyCompiler.reserveLocal(name)
+    if name == "self":
+      bodyCompiler.selfAvailable = true
   if patternBindsSelf(body[0]):
     bodyCompiler.selfAvailable = true
   compileBodyFrom(bodyCompiler, body, 2)
   discard bodyCompiler.emit(opReturn)
+  bodyCompiler.chunk.localNames = bodyCompiler.localNames
   let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
   discard c.emit(opForEach, c.chunk.addForLoop(fp))
 
@@ -916,7 +1009,8 @@ proc compileTry(c: var Compiler, node: Value) =
       recovery.add body[i]
       inc i
     tp.catches.add CatchClause(pattern: pattern,
-                               body: c.compileSubBody(recovery, pattern))
+                               body: c.compileSubBody(recovery, pattern,
+                                                      scoped = true))
   if i < body.len and body[i].isSymbol("ensure"):
     inc i
     var ensureForms: seq[Value]
