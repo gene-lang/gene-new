@@ -668,6 +668,11 @@ proc compileImport(c: var Compiler, node: Value) =
       spec.selections = importSelections(body[1])
   if spec.alias.len == 0 and spec.selections.len == 0:
     raise newException(GeneError, "import needs `^as` or a selection list")
+  if c.useLocalSlots:
+    if spec.alias.len > 0:
+      discard c.reserveLocal(spec.alias)
+    for sel in spec.selections:
+      discard c.reserveLocal(sel.local)
   discard c.emit(opImport, c.chunk.addImport(spec))
 
 proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =

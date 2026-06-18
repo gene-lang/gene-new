@@ -116,6 +116,30 @@ suite "compiler — GIR emission":
     check catchBody.instructions[0].op == opLoadLocal
     check catchBody.instructions[0].name == "m"
 
+  test "emits slots for imported bindings":
+    let selectedChunk = compileSource(
+      "(import [foo, bar : baz] from \"./lib\") (fn use [] [foo baz])")
+    check selectedChunk.localNames == @["foo", "baz", "use"]
+    let selectedProto = selectedChunk.functions[0]
+    var sawFoo = false
+    var sawBaz = false
+    for inst in selectedProto.chunk.instructions:
+      if inst.op == opLoadOuterLocal and inst.name == "foo" and
+          inst.depth == 1 and inst.intArg == 0:
+        sawFoo = true
+      if inst.op == opLoadOuterLocal and inst.name == "baz" and
+          inst.depth == 1 and inst.intArg == 1:
+        sawBaz = true
+    check sawFoo
+    check sawBaz
+
+    let aliasChunk = compileSource(
+      "(import std/stream ^as stream) (fn use [] stream)")
+    check aliasChunk.localNames == @["stream", "use"]
+    check aliasChunk.functions[0].chunk.instructions[0].op == opLoadOuterLocal
+    check aliasChunk.functions[0].chunk.instructions[0].name == "stream"
+    check aliasChunk.functions[0].chunk.instructions[0].intArg == 0
+
   test "emits call prop names and named parameter specs":
     let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")
     check callChunk.instructions[^2].op == opCall
