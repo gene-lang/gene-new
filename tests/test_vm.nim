@@ -140,6 +140,39 @@ suite "compiler — GIR emission":
     check aliasChunk.functions[0].chunk.instructions[0].name == "stream"
     check aliasChunk.functions[0].chunk.instructions[0].intArg == 0
 
+  test "emits slots for namespace declarations and captures":
+    let chunk = compileSource(
+      "(var base 1) (ns math (fn get [] base)) (fn use [] math)")
+    check chunk.localNames == @["base", "math", "use"]
+
+    let nsChunk = chunk.subchunks[0]
+    check nsChunk.localNames == @["get"]
+    var sawBaseCapture = false
+    for inst in nsChunk.functions[0].chunk.instructions:
+      if inst.op == opLoadOuterLocal and inst.name == "base" and
+          inst.depth == 2 and inst.intArg == 0:
+        sawBaseCapture = true
+    check sawBaseCapture
+
+    let useProto = chunk.functions[0]
+    check useProto.chunk.instructions[0].op == opLoadOuterLocal
+    check useProto.chunk.instructions[0].name == "math"
+    check useProto.chunk.instructions[0].depth == 1
+    check useProto.chunk.instructions[0].intArg == 1
+
+  test "emits slots for generated protocol messages":
+    let chunk = compileSource(
+      "(protocol P (message ping [x])) (fn use [x] (ping x))")
+    check chunk.localNames == @["ping", "P", "use"]
+
+    let useProto = chunk.functions[0]
+    var sawPing = false
+    for inst in useProto.chunk.instructions:
+      if inst.op == opLoadOuterLocal and inst.name == "ping" and
+          inst.depth == 1 and inst.intArg == 0:
+        sawPing = true
+    check sawPing
+
   test "emits call prop names and named parameter specs":
     let callChunk = compileSource("(draw ^color (+ 1 2) \"circle\")")
     check callChunk.instructions[^2].op == opCall

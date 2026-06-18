@@ -702,10 +702,12 @@ proc compileNs(c: var Compiler, node: Value) =
   let name = body[0].symVal
   var nsCompiler = c.childCompiler()
   nsCompiler.enableLocalSlots()
+  nsCompiler.parentSlots = c.parentFrames()
   compileBodyFrom(nsCompiler, body, 1)
   discard nsCompiler.emit(opReturn)
   nsCompiler.chunk.localNames = nsCompiler.localNames
   nsCompiler.chunk.mirrorSlots = true
+  discard c.reserveLocal(name)
   let idx = c.chunk.addSubchunk(nsCompiler.chunk)
   discard c.emit(opMakeNamespace, idx, name = name)
 
@@ -1119,6 +1121,8 @@ proc compileProtocol(c: var Compiler, node: Value) =
       raise newException(GeneError, "duplicate protocol message: " & message)
     seen[message] = true
     messageNames.add message
+  for message in messageNames:
+    discard c.reserveLocal(message)
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
                                               messageNames: messageNames,
                                               deriveFn: deriveFn))
