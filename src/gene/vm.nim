@@ -1955,7 +1955,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       let evalScope = newScope(materializeEvalParent(env))
       let evalChunk =
         try:
-          compileForm(node)
+          compileEvalForm(node)
         except GeneError as e:
           raiseCompileError(scope, e.msg)
           newChunk()

@@ -18,6 +18,7 @@ type
     macros: Table[string, MacroDef]
     hasMacros: bool
     macroExpansionDepth: int
+    allowAmbientImports: bool
 
   ParamSpecs = object
     positional: seq[string]
@@ -121,7 +122,8 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable,
            macros: c.macros, hasMacros: c.hasMacros,
-           macroExpansionDepth: c.macroExpansionDepth)
+           macroExpansionDepth: c.macroExpansionDepth,
+           allowAmbientImports: c.allowAmbientImports)
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   inc c.gensym
@@ -930,6 +932,8 @@ proc nsPathSegments(v: Value): seq[string] =
     raise newException(GeneError, "import source must be a namespace path or `from \"path\"`")
 
 proc compileImport(c: var Compiler, node: Value) =
+  if not c.allowAmbientImports:
+    raise newException(GeneError, "eval cannot use import; add imports to Env")
   var spec: ImportSpec
   if node.props.hasKey("as"):
     let a = node.props["as"]
@@ -1565,8 +1569,9 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   else:
     c.emitConst node
 
-proc compileForms*(forms: openArray[Value]): Chunk =
-  var c = Compiler(chunk: newChunk())
+proc compileForms*(forms: openArray[Value],
+                   allowAmbientImports = true): Chunk =
+  var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports)
   c.enableLocalSlots()
   if forms.len == 0:
     c.emitConst NIL
@@ -1583,6 +1588,12 @@ proc compileForms*(forms: openArray[Value]): Chunk =
 proc compileForm*(form: Value): Chunk =
   let forms = @[form]
   compileForms(forms)
+
+proc compileEvalForm*(form: Value): Chunk =
+  ## Eval code receives only explicit Env bindings/imports/module context. It
+  ## must not use source-level imports to acquire ambient module-loader authority.
+  let forms = @[form]
+  compileForms(forms, allowAmbientImports = false)
 
 proc compileSource*(src: string): Chunk =
   compileForms(readAll(src))

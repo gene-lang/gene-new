@@ -402,6 +402,12 @@ suite "spec — Env and eval from design":
                " (eval (quote x) ^in e)]",
                "[2 1]")
 
+  test "eval rejects ambient imports inside evaluated code":
+    check_eval("(try " &
+               "  (eval (quote (import [answer] from \"./envlib\")) ^in (env)) " &
+               "catch (CompileError ^message m) m)",
+               "\"eval cannot use import; add imports to Env\"")
+
 suite "spec — modules from design":
   test "explicit mod declarations are top-level and unique":
     check_eval("(mod app) (var x 1) x", "1")
