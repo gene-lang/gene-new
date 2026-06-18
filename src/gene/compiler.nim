@@ -501,9 +501,22 @@ proc hygienicSymbol(value: Value, hygiene: Table[string, string]): Value =
   else:
     value
 
-proc isIntroducedVar(node: Value): bool =
-  node.kind == vkNode and node.head.isSymbol("var") and node.body.len > 0 and
-    node.body[0].kind == vkSymbol
+proc introducedBinderName(node: Value): string =
+  if node.kind != vkNode or node.head.kind != vkSymbol or node.body.len == 0:
+    return ""
+  case node.head.symVal
+  of "var", "type", "protocol", "ns", "macro":
+    if node.body[0].kind == vkSymbol:
+      return node.body[0].symVal
+  of "fn":
+    if node.body.len >= 2 and node.body[1].kind == vkList:
+      if node.body[0].kind == vkSymbol:
+        return node.body[0].symVal
+      if node.body[0].kind == vkNode and node.body[0].head.kind == vkSymbol:
+        return node.body[0].head.symVal
+  else:
+    discard
+  ""
 
 proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
                       c: var Compiler,
@@ -516,33 +529,21 @@ proc expandMacroQuasiMap(source: PropTable, env: Table[string, Value],
   for key, item in source:
     result[key] = expandMacroQuasi(item, env, depth, c, hygiene)
 
-proc expandMacroVarNode(node: Value, env: Table[string, Value], depth: int,
-                        c: var Compiler, hygiene: var Table[string, string],
-                        freshName: string): Value =
-  var meta = expandMacroQuasiMap(node.meta, env, depth, c, hygiene)
-  var props = expandMacroQuasiMap(node.props, env, depth, c, hygiene)
-  var body: seq[Value]
-  body.add newSym(freshName)
-  for i in 1 ..< node.body.len:
-    body.add expandMacroQuasi(node.body[i], env, depth, c, hygiene)
-  newNode(hygienicSymbol(node.head, hygiene), props = props, body = body,
-          meta = meta, immutable = node.nodeImmutable)
-
 proc expandMacroDoNode(node: Value, env: Table[string, Value], depth: int,
                        c: var Compiler,
                        hygiene: var Table[string, string]): Value =
   var localHygiene = hygiene
+  var localIntroduced = initTable[string, string]()
+  for item in node.body:
+    let name = introducedBinderName(item)
+    if name.len > 0 and not localIntroduced.hasKey(name):
+      localIntroduced[name] = c.macroFresh(name)
+      localHygiene[name] = localIntroduced[name]
   var meta = expandMacroQuasiMap(node.meta, env, depth, c, localHygiene)
   var props = expandMacroQuasiMap(node.props, env, depth, c, localHygiene)
   var body: seq[Value]
   for item in node.body:
-    if item.isIntroducedVar:
-      let original = item.body[0].symVal
-      let fresh = c.macroFresh(original)
-      body.add expandMacroVarNode(item, env, depth, c, localHygiene, fresh)
-      localHygiene[original] = fresh
-    else:
-      body.add expandMacroQuasi(item, env, depth, c, localHygiene)
+    body.add expandMacroQuasi(item, env, depth, c, localHygiene)
   newNode(hygienicSymbol(node.head, localHygiene), props = props, body = body,
           meta = meta, immutable = node.nodeImmutable)
 
@@ -580,11 +581,14 @@ proc expandMacroQuasiNode(node: Value, env: Table[string, Value],
     expandMacroQuasiNodeParts(node, env, depth + 1, c, hygiene)
   elif depth == 1 and node.head.isSymbol("do"):
     expandMacroDoNode(node, env, depth, c, hygiene)
-  elif depth == 1 and node.isIntroducedVar:
-    expandMacroVarNode(node, env, depth, c, hygiene,
-                       c.macroFresh(node.body[0].symVal))
   else:
-    expandMacroQuasiNodeParts(node, env, depth, c, hygiene)
+    let name = introducedBinderName(node)
+    if depth == 1 and name.len > 0 and not hygiene.hasKey(name):
+      var localHygiene = hygiene
+      localHygiene[name] = c.macroFresh(name)
+      expandMacroQuasiNodeParts(node, env, depth, c, localHygiene)
+    else:
+      expandMacroQuasiNodeParts(node, env, depth, c, hygiene)
 
 proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
                       c: var Compiler,

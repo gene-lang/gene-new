@@ -85,6 +85,18 @@ suite "spec — macros from design":
                "(var tmp 100) [(local! 2) tmp]",
                "[3 100]")
 
+  test "template macros avoid introduced helper capture":
+    check_eval("(macro helper! [x] " &
+               "  `(do (fn helper [y] (+ y 1)) (helper %x))) " &
+               "(fn helper [y] 100) [(helper! 2) (helper 2)]",
+               "[3 100]")
+    check_eval("(macro recursive! [x] " &
+               "  `(do (fn helper [n] " &
+               "          (if (= n 0) 0 (helper (- n 1)))) " &
+               "       (helper %x))) " &
+               "(fn helper [n] 99) [(recursive! 3) (helper 3)]",
+               "[0 99]")
+
 suite "spec — strings from design":
   test "dollar interpolation calls to-str-style display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
