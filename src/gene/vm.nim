@@ -16,6 +16,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
 proc isSendableValue(value: Value, scope: Scope): bool
+proc completedTaskFromError(e: ref GeneError): Value
+proc completedTaskFromPanic(e: ref GenePanic): Value
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -590,6 +592,19 @@ proc raiseActorClosed(scope: Scope) =
   e.hasErrVal = true
   raise e
 
+proc actorErrorValue(scope: Scope, message: string): Value =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  var head = newSym("ActorError")
+  var actorError: Value
+  if scope != nil and scope.lookupOptional("ActorError", actorError) and
+      actorError.kind == vkType:
+    head = actorError
+  newNode(head, props = props)
+
+proc completedActorErrorTask(scope: Scope, message: string): Value =
+  newFailedTask(message, actorErrorValue(scope, message), hasValue = true)
+
 proc actorMailboxArg(call: ptr NativeCall): int =
   result = 16
   if call == nil:
@@ -632,6 +647,34 @@ proc checkedActorMessage(actor, message: Value, where: string,
     else: adaptBoundary(where, messageType, message, scope)
   if not isSendableValue(result, scope):
     raiseTypeError(where, "Send", result, scope)
+
+proc requireReplyTo(name: string, value: Value) =
+  if value.kind != vkReplyTo:
+    raise newException(GeneError, name & " expects a ReplyTo")
+
+proc checkedReplyValue(reply, value: Value, where: string,
+                       fallbackScope: Scope): Value =
+  let resultType = reply.replyToResultType
+  let resultScope =
+    if reply.replyToResultScope == nil: fallbackScope
+    else: reply.replyToResultScope
+  result =
+    if resultType.kind == vkNil: value
+    else: adaptBoundary(where, resultType, value, resultScope)
+  if not isSendableValue(result, fallbackScope):
+    raiseTypeError(where, "Send", result, fallbackScope)
+
+proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "ReplyTo/send expects 2 arguments, got " & $args.len)
+  requireReplyTo("ReplyTo/send", args[0])
+  if args[0].replyToSent:
+    raise newException(GeneError, "reply has already been sent")
+  let scope = actorDispatchScope(call)
+  args[0].sendReplyTo(checkedReplyValue(args[0], args[1],
+                                        "ReplyTo/send value", scope))
+  NIL
 
 proc pumpActor(actor: Value, scope: Scope) =
   if actor.actorProcessing:
@@ -692,6 +735,30 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
                                                "actor/try-send message", scope))
   args[0].pumpActor(scope)
   TRUE
+
+proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "actor/ask expects 2 arguments, got " & $args.len)
+  requireActor("actor/ask", args[0])
+  let scope = actorDispatchScope(call)
+  let reply = newReplyTo()
+  try:
+    if args[0].actorClosed:
+      raiseActorClosed(scope)
+    if args[0].actorFull:
+      raise newException(GeneError, "actor/ask would suspend on a full mailbox")
+    var buildArgs = [reply]
+    let message = applyCall(args[1], buildArgs, NamedArgs(), scope)
+    args[0].pushActorMessage(checkedActorMessage(args[0], message,
+                                                 "actor/ask message", scope))
+    args[0].pumpActor(scope)
+    if not reply.replyToSent:
+      return completedActorErrorTask(scope, "actor/ask did not receive a reply")
+    newCompletedTask(reply.replyToResult)
+  except GeneError as e:
+    completedTaskFromError(e)
+  except GenePanic as e:
+    completedTaskFromPanic(e)
 
 proc biActorContinue(args: openArray[Value]): Value {.nimcall.} =
   requireOne("actor/continue", args)
@@ -837,6 +904,7 @@ proc declarationKind(value: Value): string =
   of vkActorRef: "ActorRef"
   of vkActorContext: "ActorContext"
   of vkActorStep: "ActorStep"
+  of vkReplyTo: "ReplyTo"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1244,14 +1312,16 @@ proc buildBuiltins(app: Application): Scope =
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: channelClosed,
                                 messages: initTable[string, Value]())
-  let actorClosed = newType("ActorClosed", NIL,
+  let actorError = newType("ActorError", NIL,
                             @[TypeField(name: "message", optional: false,
                                         typeExpr: newSym("Str"), scope: result)],
                             @[errorProtocol], result)
-  result.define("ActorClosed", actorClosed)
+  result.define("ActorError", actorError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: actorClosed,
+                                receiver: actorError,
                                 messages: initTable[string, Value]())
+  let actorClosed = newType("ActorClosed", actorError, @[], @[], result)
+  result.define("ActorClosed", actorClosed)
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
@@ -1309,9 +1379,15 @@ proc buildBuiltins(app: Application): Scope =
   actorScope.define("try-send", newNativeCallFn("actor/try-send",
                                                biActorTrySend,
                                                acceptsNamed = false))
+  actorScope.define("ask", newNativeCallFn("actor/ask", biActorAsk,
+                                           acceptsNamed = false))
   actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
   actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
   result.define("actor", newNamespace("actor", actorScope))
+  let replyToScope = newScope(result)
+  replyToScope.define("send", newNativeCallFn("ReplyTo/send", biReplyToSend,
+                                             acceptsNamed = false))
+  result.define("ReplyTo", newNamespace("ReplyTo", replyToScope))
   result.define("declarations", newNativeFn("declarations", biDeclarations))
   let namespaceScope = newScope(result)
   namespaceScope.define("bindings", newNativeFn("Namespace/bindings", biNamespaceBindings))
@@ -1851,7 +1927,7 @@ proc isSendableValue(value: Value, scope: Scope,
     seen.incl value.bits
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
-     vkNativeFn, vkActorRef, vkType, vkProtocol, vkProtocolMessage:
+     vkNativeFn, vkActorRef, vkReplyTo, vkType, vkProtocol, vkProtocolMessage:
     true
   of vkNode:
     var sendProtocol: Value
@@ -2801,6 +2877,12 @@ proc runtimeTypeExpr(value: Value): Value =
       typeNode("ActorRef", @[messageType])
   of vkActorContext: newSym("ActorContext")
   of vkActorStep: newSym("ActorStep")
+  of vkReplyTo:
+    let resultType = value.replyToResultType
+    if resultType.kind == vkNil:
+      newSym("ReplyTo")
+    else:
+      typeNode("ReplyTo", @[resultType])
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -2913,6 +2995,18 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
         if messageType.kind != vkNil and expr.body[0].kind == vkSymbol and
             expr.body[0].symVal in typeParams:
           return bindings.bindTypeParam(expr.body[0].symVal, messageType)
+        return true
+      of "ReplyTo":
+        if value.kind != vkReplyTo:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(ReplyTo R) expects one result type")
+        let resultType = value.replyToResultType
+        if resultType.kind != vkNil and expr.body[0].kind == vkSymbol and
+            expr.body[0].symVal in typeParams:
+          return bindings.bindTypeParam(expr.body[0].symVal, resultType)
         return true
       else:
         discard
@@ -3076,6 +3170,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkActorContext)
   of "ActorStep":
     (true, value.kind == vkActorStep)
+  of "ReplyTo":
+    (true, value.kind == vkReplyTo)
   else:
     (false, false)
 
@@ -3090,7 +3186,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       expr.symVal == "Channel" or
       expr.symVal == "ActorRef" or
       expr.symVal == "ActorContext" or
-      expr.symVal == "ActorStep"
+      expr.symVal == "ActorStep" or
+      expr.symVal == "ReplyTo"
     if (not builtin.known or canBeLocalBuiltin) and scope != nil:
       var resolved: Value
       if scope.lookupOptional(expr.symVal, resolved) and resolved.kind == vkType:
@@ -3156,7 +3253,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
          (name.len == 7 and name == "Channel") or
          (name.len == 8 and name == "ActorRef") or
          (name.len == 12 and name == "ActorContext") or
-         (name.len == 9 and name == "ActorStep")) and
+         (name.len == 9 and name == "ActorStep") or
+         (name.len == 7 and name == "ReplyTo")) and
         scope.lookupOptional(name, resolved) and
         resolved.kind == vkType:
       return value.isInstanceOfType(resolved)
@@ -3258,6 +3356,17 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         if value.actorStepContinue:
           return matchesTypeExpr(expr.body[0], value.actorStepState, scope)
         return true
+      of "ReplyTo":
+        if value.kind != vkReplyTo:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(ReplyTo R) expects one result type")
+        let resultType = value.replyToResultType
+        if resultType.kind != vkNil:
+          return typeExprEqual(closeTypeExpr(expr.body[0], scope), resultType)
+        return true
       else:
         discard
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
@@ -3281,6 +3390,13 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
       typeExpr.body.len == 1 and value.kind == vkActorRef and
       value.actorMessageType.kind == vkNil:
     value.setActorMessageType(closeTypeExpr(typeExpr.body[0], scope))
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("ReplyTo") and
+      typeExpr.body.len == 1 and value.kind == vkReplyTo and
+      value.replyToResultType.kind == vkNil:
+    let resultType = closeTypeExpr(typeExpr.body[0], scope)
+    if value.replyToSent:
+      discard adaptBoundary(where, resultType, value.replyToResult, scope)
+    value.setReplyToResultType(resultType, scope)
   value
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =

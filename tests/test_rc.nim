@@ -67,6 +67,17 @@ when defined(geneRcStats):
       check leakedManaged("(var a (actor/spawn ^init (fn [] 0) " &
                           "  ^handle (fn [ctx state msg] " &
                           "    (actor/continue state))))") == 0
+      check leakedManaged("(type Get ^props {^reply (ReplyTo Int)}) " &
+                          "(impl Send Get) " &
+                          "(var a : (ActorRef Get) " &
+                          "  (actor/spawn ^init (fn [] 1) " &
+                          "    ^handle (fn [ctx state msg] " &
+                          "      (match msg " &
+                          "        (when (Get ^reply reply) " &
+                          "          (reply ~ ReplyTo/send state) " &
+                          "          (actor/continue state)))))) " &
+                          "(await (a ~ actor/ask " &
+                          "  (fn [reply] (Get ^reply reply))))") == 0
 
     test "protocol derive functions and generated impls are reclaimed":
       check leakedManaged("(protocol HasLabel " &

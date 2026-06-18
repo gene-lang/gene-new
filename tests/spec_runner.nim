@@ -465,6 +465,31 @@ suite "spec — actors from design":
                "(try (a ~ actor/send [1]) catch (TypeError ^expected e) e)",
                "\"Send\"")
 
+  test "actor ask uses an explicit one-shot ReplyTo capability":
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
+               "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
+               "  (match msg " &
+               "    (when (Get ^reply reply) " &
+               "      (reply ~ ReplyTo/send state) " &
+               "      (actor/continue state)))) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
+               "(await (counter ~ actor/ask (fn [reply] (Get ^reply reply))))",
+               "41")
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 0) " &
+               "    ^handle (fn [ctx state msg] " &
+               "      (match msg " &
+               "        (when (Get ^reply reply) " &
+               "          (reply ~ ReplyTo/send \"bad\") " &
+               "          (actor/continue state)))))) " &
+               "(try (await (counter ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+               "catch (TypeError ^where w) w)",
+               "\"ReplyTo/send value\"")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

@@ -990,6 +990,41 @@ suite "vm — actors":
        "(ch ~ Channel/recv)",
        "(actor)"
 
+  test "actor ask returns a task with a one-shot reply":
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(fn handle [ctx state msg] : (ActorStep Int) " &
+       "  (match msg " &
+       "    (when (Get ^reply reply) " &
+       "      (reply ~ ReplyTo/send state) " &
+       "      (actor/continue state)))) " &
+       "(var a : (ActorRef Get) " &
+       "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
+       "(await (a ~ actor/ask (fn [reply] (Get ^reply reply))))",
+       "41"
+
+  test "actor ask enforces ReplyTo result type and reports missing replies":
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(var a : (ActorRef Get) " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (match msg " &
+       "        (when (Get ^reply reply) " &
+       "          (reply ~ ReplyTo/send \"bad\") " &
+       "          (actor/continue state)))))) " &
+       "(try (await (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+       "catch (TypeError ^where w) w)",
+       "\"ReplyTo/send value\""
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(var a : (ActorRef Get) " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
+       "(try (await (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+       "catch (ActorError ^message m) m)",
+       "\"actor/ask did not receive a reply\""
+
   test "actor handler must return an ActorStep":
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &
@@ -1001,6 +1036,7 @@ suite "vm — actors":
     expect GeneError:
       discard runStr("(actor/spawn ^handle (fn [ctx state msg] (actor/stop)))")
     expect GeneError: discard runStr("(actor/send 1 2)")
+    expect GeneError: discard runStr("(ReplyTo/send 1 2)")
 
 suite "vm — streams":
   test "stream values are opaque display values":

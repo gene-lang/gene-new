@@ -120,6 +120,8 @@ proc print*(v: Value): string =
     "(actor-context)"
   of vkActorStep:
     "(actor-step)"
+  of vkReplyTo:
+    "(reply-to)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

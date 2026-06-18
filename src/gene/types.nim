@@ -65,6 +65,7 @@ type
     vkActorRef  ## first-class actor reference (design Section 13.4)
     vkActorContext ## opaque actor handler context
     vkActorStep ## actor handler continuation/stop result
+    vkReplyTo   ## one-shot actor request/reply capability
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -256,6 +257,7 @@ type
     okActorRef
     okActorContext
     okActorStep
+    okReplyTo
     okType
     okProtocol
     okProtocolMessage
@@ -350,6 +352,12 @@ type
   ActorStepData = ref object of GeneObjectData
     continueActor: bool
     state: Value
+
+  ReplyToData = ref object of GeneObjectData
+    sent: bool
+    result: Value
+    resultType: Value
+    resultScope: Scope
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -797,6 +805,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okActorRef: vkActorRef
     of okActorContext: vkActorContext
     of okActorStep: vkActorStep
+    of okReplyTo: vkReplyTo
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1335,6 +1344,35 @@ proc actorStepState*(v: Value): Value =
     raise newException(FieldDefect, "value is not an ActorStep")
   ActorStepData(objData(v)).state
 
+proc replyToData(v: Value): ReplyToData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okReplyTo:
+    raise newException(FieldDefect, "value is not a ReplyTo")
+  ReplyToData(objData(v))
+
+proc replyToSent*(v: Value): bool =
+  replyToData(v).sent
+
+proc replyToResult*(v: Value): Value =
+  replyToData(v).result
+
+proc replyToResultType*(v: Value): Value =
+  replyToData(v).resultType
+
+proc replyToResultScope*(v: Value): Scope =
+  replyToData(v).resultScope
+
+proc setReplyToResultType*(v, resultType: Value, scope: Scope) =
+  let data = replyToData(v)
+  data.resultType = resultType
+  data.resultScope = scope
+
+proc sendReplyTo*(v, result: Value) =
+  let data = replyToData(v)
+  if data.sent:
+    raise newException(FieldDefect, "reply has already been sent")
+  data.result = escapeWeakFunctions(result)
+  data.sent = true
+
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -1834,6 +1872,16 @@ proc escapeWeakFunctions*(v: Value): Value =
     boxObject(ActorStepData(objKind: okActorStep,
                             continueActor: v.actorStepContinue,
                             state: escapedState))
+  of vkReplyTo:
+    let data = replyToData(v)
+    let escapedResult = escapeWeakFunctions(data.result)
+    if escapedResult.bits == data.result.bits:
+      return v
+    boxObject(ReplyToData(objKind: okReplyTo,
+                          sent: data.sent,
+                          result: escapedResult,
+                          resultType: data.resultType,
+                          resultScope: data.resultScope))
   else:
     v
 
@@ -1887,6 +1935,12 @@ proc newActorContinue*(state: Value): Value =
 proc newActorStop*(): Value =
   boxObject(ActorStepData(objKind: okActorStep,
                           continueActor: false))
+
+proc newReplyTo*(resultType = NIL, resultScope: Scope = nil): Value =
+  boxObject(ReplyToData(objKind: okReplyTo,
+                        result: NIL,
+                        resultType: resultType,
+                        resultScope: resultScope))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =
