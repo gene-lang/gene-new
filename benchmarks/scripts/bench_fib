@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Usage:
-#   benchmarks/scripts/benchme [n]
+#   benchmarks/scripts/bench_fib [n]
 #
 # Environment:
 #   GENE_BENCH_MODE=vm     (default: vm)

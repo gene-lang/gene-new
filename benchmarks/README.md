@@ -3,8 +3,8 @@
 Run the recursive Fibonacci benchmark with:
 
 ```bash
-benchmarks/scripts/benchme       # defaults to fib(24)
-benchmarks/scripts/benchme 28
+benchmarks/scripts/bench_fib       # defaults to fib(24)
+benchmarks/scripts/bench_fib 28
 ```
 
 The current implementation has a bytecode VM but not the old native compiler
