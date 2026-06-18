@@ -1595,6 +1595,10 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
   if parent.kind == vkType:
     fields = typeFields(parent)
   for f in ownFields:
+    for inherited in fields:
+      if inherited.name == f.name:
+        raise newException(GeneError,
+          "type " & name & " redeclares inherited field: " & f.name)
     var owned = f
     if owned.scope == nil and owned.weakScope == nil:
       owned.weakScope = cast[pointer](scope)

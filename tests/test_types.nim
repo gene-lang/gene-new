@@ -51,6 +51,13 @@ suite "types — single inheritance":
     ck "(ns model (type Id ^props {^raw Int}) (type Entity ^props {^id Id})) " &
        "(type User ^is model/Entity ^props {^name Str}) " &
        "(var u (User ^id (model/Id ^raw 7) ^name \"Ada\")) u/id/raw", "7"
+  test "child types cannot redeclare inherited fields":
+    expect GeneError:
+      discard runStr("(type Animal ^props {^name Str}) " &
+                     "(type Dog ^is Animal ^props {^name Any})")
+    expect GeneError:
+      discard runStr("(type Animal ^props {^name Str}) " &
+                     "(type Dog ^is Animal ^props {^name Str})")
   test "^is must reference a type":
     expect GeneError:
       discard runStr("(type Dog ^is 5 ^props {^breed Str})")

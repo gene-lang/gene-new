@@ -129,6 +129,13 @@ suite "spec — numeric boundaries from design":
                                 "(fixed 9223372036854775808)"),
                   newGlobalScope())
 
+suite "spec — nominal types from design":
+  test "child types preserve inherited field schemas":
+    expect GeneError:
+      discard run(compileSource("(type Animal ^props {^name Str}) " &
+                                "(type Dog ^is Animal ^props {^name Any})"),
+                  newGlobalScope())
+
 suite "spec — typed variable boundaries from design":
   test "var annotations check gradual boundaries":
     check_eval("(var result : Int (eval (quote (+ 20 22)) ^in (env))) result",
