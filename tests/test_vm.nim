@@ -8,6 +8,18 @@ template ck(src, expected: string) =
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
 
+proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if call == nil:
+    raise newException(GeneError, "native envelope missing")
+  var items = @[newStr(call[].calleeName), newInt(args.len),
+                newInt(call[].namedNames.len)]
+  if call[].namedNames.len > 0:
+    items.add newSym(call[].namedNames[0])
+    items.add call[].namedValues[0]
+  if args.len > 0:
+    items.add args[0]
+  newList(items)
+
 suite "compiler — GIR emission":
   test "emits a callable-first bytecode sequence":
     let chunk = compileSource("(+ 1 2)")
@@ -525,6 +537,12 @@ suite "vm — named arguments":
     expect GeneError: discard runStr("(var draw (fn [shape ^color] [shape color])) (draw ^width 2 \"circle\")")
   test "native functions reject named arguments":
     expect GeneError: discard runStr("(+ ^base 1 2)")
+  test "native call envelope carries named arguments":
+    let scope = newGlobalScope()
+    scope.define("native-envelope",
+                 newNativeCallFn("native-envelope", nativeEnvelopeEcho))
+    check run(compileSource("(native-envelope ^scale 3 4)"), scope).print() ==
+      "[\"native-envelope\" 1 1 scale 3 4]"
 
 suite "vm — rest parameters":
   test "rest parameter gathers extra positional args":

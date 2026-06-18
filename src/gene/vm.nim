@@ -2754,8 +2754,18 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
   case callee.kind
   of vkNativeFn:
     if named.len != 0:
-      raise newException(GeneError,
-        "native function '" & callee.nativeFnName & "' does not accept named arguments")
+      if not callee.nativeAcceptsNamed:
+        raise newException(GeneError,
+          "native function '" & callee.nativeFnName & "' does not accept named arguments")
+      let callImpl = callee.nativeCallImpl
+      if callImpl == nil:
+        raise newException(GeneError,
+          "native function '" & callee.nativeFnName & "' cannot receive named arguments")
+      var call = NativeCall(calleeName: callee.nativeFnName,
+                            namedNames: named.names,
+                            namedValues: named.values,
+                            dispatchScope: dispatchScope)
+      return callImpl(args, addr call)
     callee.nativeImpl()(args)
   of vkFunction:
     let positional = callee.fnParams

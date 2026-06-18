@@ -202,8 +202,17 @@ type
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
 
-  ## A built-in function implemented in Nim. Positional args only for MVP.
+  ## Runtime call metadata for envelope-aware native functions. Positional
+  ## arguments stay as an openArray parameter on NativeProc to keep the hot
+  ## builtin path allocation-free.
+  NativeCall* = object
+    calleeName*: string
+    namedNames*: seq[string]
+    namedValues*: seq[Value]
+    dispatchScope*: Scope
+
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
+  NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
   GeneFunction = object
     refCount: int
@@ -219,6 +228,8 @@ type
     refCount: int
     name: string
     impl: NativeProc
+    callImpl: NativeCallProc
+    acceptsNamed: bool
 
   # OBJECT_TAG heap kinds. `GeneObjectData` is the GC-managed (ORC) base; each
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
@@ -871,15 +882,25 @@ proc fnErrorTypes*(v: Value): lent seq[Value] =
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorTypes
 
-proc nativeFnName*(v: Value): lent string =
+proc nativeFnName*(v: Value): lent string {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).name
 
-proc nativeImpl*(v: Value): NativeProc =
+proc nativeImpl*(v: Value): NativeProc {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).impl
+
+proc nativeCallImpl*(v: Value): NativeCallProc {.inline.} =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).callImpl
+
+proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).acceptsNamed
 
 proc nsName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
@@ -1527,11 +1548,22 @@ proc escapeWeakFunctions*(v: Value): Value =
   else:
     v
 
-proc newNativeFn*(name: string, impl: NativeProc): Value =
+proc newNativeFn*(name: string, impl: NativeProc,
+                  acceptsNamed = false): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
   p.impl = impl
+  p.acceptsNamed = acceptsNamed
+  boxPtr(NATIVE_FN_TAG, p)
+
+proc newNativeCallFn*(name: string, impl: NativeCallProc,
+                      acceptsNamed = true): Value =
+  let p = createObj(GeneNativeFn)
+  p.refCount = 1
+  p.name = name
+  p.callImpl = impl
+  p.acceptsNamed = acceptsNamed
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",
