@@ -62,6 +62,9 @@ type
     vkStream    ## first-class pull stream (design Section 6)
     vkTask      ## first-class structured task handle (design Section 13)
     vkChannel   ## first-class bounded FIFO channel (design Section 13.2)
+    vkActorRef  ## first-class actor reference (design Section 13.4)
+    vkActorContext ## opaque actor handler context
+    vkActorStep ## actor handler continuation/stop result
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -250,6 +253,9 @@ type
     okStream
     okTask
     okChannel
+    okActorRef
+    okActorContext
+    okActorStep
     okType
     okProtocol
     okProtocolMessage
@@ -328,6 +334,22 @@ type
     state: ChannelState
     itemType: Value
     itemScope: Scope
+
+  ActorData = ref object of GeneObjectData
+    capacity: int
+    queue: seq[Value]
+    closed: bool
+    processing: bool
+    state: Value
+    handler: Value
+    messageType: Value
+
+  ActorContextData = ref object of GeneObjectData
+    actor: Value
+
+  ActorStepData = ref object of GeneObjectData
+    continueActor: bool
+    state: Value
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -772,6 +794,9 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okStream: vkStream
     of okTask: vkTask
     of okChannel: vkChannel
+    of okActorRef: vkActorRef
+    of okActorContext: vkActorContext
+    of okActorStep: vkActorStep
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1246,6 +1271,70 @@ proc popChannel*(v: Value): Value =
   result = data.state.items[0]
   data.state.items.delete(0)
 
+proc actorData(v: Value): ActorData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorRef:
+    raise newException(FieldDefect, "value is not an ActorRef")
+  ActorData(objData(v))
+
+proc actorState*(v: Value): Value =
+  actorData(v).state
+
+proc setActorState*(v, state: Value) =
+  actorData(v).state = escapeWeakFunctions(state)
+
+proc actorHandler*(v: Value): Value =
+  actorData(v).handler
+
+proc actorMessageType*(v: Value): Value =
+  actorData(v).messageType
+
+proc setActorMessageType*(v, messageType: Value) =
+  actorData(v).messageType = messageType
+
+proc actorClosed*(v: Value): bool =
+  actorData(v).closed
+
+proc actorProcessing*(v: Value): bool =
+  actorData(v).processing
+
+proc setActorProcessing*(v: Value, processing: bool) =
+  actorData(v).processing = processing
+
+proc actorQueueLen*(v: Value): int =
+  actorData(v).queue.len
+
+proc actorFull*(v: Value): bool =
+  let data = actorData(v)
+  data.queue.len >= data.capacity
+
+proc closeActor*(v: Value) =
+  actorData(v).closed = true
+
+proc pushActorMessage*(v, message: Value) =
+  actorData(v).queue.add escapeWeakFunctions(message)
+
+proc popActorMessage*(v: Value): Value =
+  let data = actorData(v)
+  if data.queue.len == 0:
+    raise newException(FieldDefect, "actor mailbox is empty")
+  result = data.queue[0]
+  data.queue.delete(0)
+
+proc actorContextActor*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorContext:
+    raise newException(FieldDefect, "value is not an ActorContext")
+  ActorContextData(objData(v)).actor
+
+proc actorStepContinue*(v: Value): bool =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorStep:
+    raise newException(FieldDefect, "value is not an ActorStep")
+  ActorStepData(objData(v)).continueActor
+
+proc actorStepState*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorStep:
+    raise newException(FieldDefect, "value is not an ActorStep")
+  ActorStepData(objData(v)).state
+
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -1710,6 +1799,41 @@ proc escapeWeakFunctions*(v: Value): Value =
     boxObject(ChannelData(objKind: okChannel, state: escapedState,
                           itemType: data.itemType,
                           itemScope: data.itemScope))
+  of vkActorRef:
+    let data = actorData(v)
+    let escapedState = escapeWeakFunctions(data.state)
+    let escapedHandler = escapeWeakFunctions(data.handler)
+    var changed = escapedState.bits != data.state.bits or
+      escapedHandler.bits != data.handler.bits
+    var escapedQueue = newSeq[Value](data.queue.len)
+    for i, item in data.queue:
+      escapedQueue[i] = escapeWeakFunctions(item)
+      if escapedQueue[i].bits != item.bits:
+        changed = true
+    if not changed:
+      return v
+    boxObject(ActorData(objKind: okActorRef,
+                        capacity: data.capacity,
+                        queue: escapedQueue,
+                        closed: data.closed,
+                        processing: data.processing,
+                        state: escapedState,
+                        handler: escapedHandler,
+                        messageType: data.messageType))
+  of vkActorContext:
+    let actor = v.actorContextActor
+    let escapedActor = escapeWeakFunctions(actor)
+    if escapedActor.bits == actor.bits:
+      return v
+    boxObject(ActorContextData(objKind: okActorContext, actor: escapedActor))
+  of vkActorStep:
+    let state = v.actorStepState
+    let escapedState = escapeWeakFunctions(state)
+    if escapedState.bits == state.bits:
+      return v
+    boxObject(ActorStepData(objKind: okActorStep,
+                            continueActor: v.actorStepContinue,
+                            state: escapedState))
   else:
     v
 
@@ -1739,6 +1863,30 @@ proc newCheckedChannel*(source, itemType: Value, itemScope: Scope): Value =
   let data = channelData(source)
   boxObject(ChannelData(objKind: okChannel, state: data.state,
                         itemType: itemType, itemScope: itemScope))
+
+proc newActorRef*(capacity: int, state, handler, messageType: Value): Value =
+  let storedHandler =
+    if handler.kind == vkFunction:
+      functionForScopeStorage(handler, handler.fnScope)
+    else:
+      handler
+  boxObject(ActorData(objKind: okActorRef,
+                      capacity: capacity,
+                      state: escapeWeakFunctions(state),
+                      handler: storedHandler,
+                      messageType: messageType))
+
+proc newActorContext*(actor: Value): Value =
+  boxObject(ActorContextData(objKind: okActorContext, actor: actor))
+
+proc newActorContinue*(state: Value): Value =
+  boxObject(ActorStepData(objKind: okActorStep,
+                          continueActor: true,
+                          state: escapeWeakFunctions(state)))
+
+proc newActorStop*(): Value =
+  boxObject(ActorStepData(objKind: okActorStep,
+                          continueActor: false))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

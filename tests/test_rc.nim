@@ -64,6 +64,9 @@ when defined(geneRcStats):
                           "(ch ~ Channel/send 1) " &
                           "(ch ~ Channel/recv)") == 0
       check leakedManaged("(var ch : (Channel Int) (channel))") == 0
+      check leakedManaged("(var a (actor/spawn ^init (fn [] 0) " &
+                          "  ^handle (fn [ctx state msg] " &
+                          "    (actor/continue state))))") == 0
 
     test "protocol derive functions and generated impls are reclaimed":
       check leakedManaged("(protocol HasLabel " &
@@ -161,5 +164,21 @@ when defined(geneRcStats):
       check buffered.listItems[0].intVal == 1
       check buffered.listItems[1].intVal == 2
       channel = NIL
+
+    test "returned actors keep handler scopes alive":
+      var actor = NIL
+      block:
+        var scope = newGlobalScope()
+        actor = run(compileSource(
+          "(actor/spawn ^init (fn [] 0) " &
+          "  ^handle (fn [ctx state msg] (actor/stop)))"), scope)
+        scope = nil
+      GC_fullCollect()
+      block:
+        var scope = newGlobalScope()
+        scope.define("a", actor)
+        discard run(compileSource("(a ~ actor/send 1)"), scope)
+      check actor.actorClosed
+      actor = NIL
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

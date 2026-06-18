@@ -938,6 +938,70 @@ suite "vm — channels":
     expect GeneError: discard runStr("(Channel/send 1 2)")
     expect GeneError: discard runStr("(Channel/recv 1)")
 
+suite "vm — actors":
+  test "actor values are opaque display values":
+    ck "(actor/spawn ^init (fn [] 0) " &
+       "             ^handle (fn [ctx state msg] (actor/continue state)))",
+       "(actor)"
+
+  test "actor send processes messages sequentially":
+    ck "(var out (cell 0)) " &
+       "(fn handle [ctx state msg] : (ActorStep Int) " &
+       "  (var next (+ state msg)) " &
+       "  (out ~ Cell/set next) " &
+       "  (actor/continue next)) " &
+       "(var counter : (ActorRef Int) " &
+       "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+       "(counter ~ actor/send 2) " &
+       "(counter ~ actor/send 5) " &
+       "(out ~ Cell/get)",
+       "7"
+
+  test "actor stop closes the actor":
+    ck "(var a : (ActorRef Int) " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] (actor/stop)))) " &
+       "(a ~ actor/send 1) " &
+       "(try (a ~ actor/send 2) catch (ActorClosed ^message m) m)",
+       "\"actor is closed\""
+    ck "(var a : (ActorRef Int) " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] (actor/stop)))) " &
+       "(a ~ actor/send 1) " &
+       "(a ~ actor/try-send 2)",
+       "false"
+
+  test "actor sends check message type and Send":
+    ck "(var a : (ActorRef Int) " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
+       "(try (a ~ actor/send \"bad\") catch (TypeError ^where w) w)",
+       "\"actor/send message\""
+    ck "(var a (actor/spawn ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
+       "(try (a ~ actor/send [1]) catch (TypeError ^expected e) e)",
+       "\"Send\""
+
+  test "actor refs are Send values":
+    ck "(var a (actor/spawn ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
+       "(var ch (channel)) " &
+       "(ch ~ Channel/send a) " &
+       "(ch ~ Channel/recv)",
+       "(actor)"
+
+  test "actor handler must return an ActorStep":
+    ck "(var a : (ActorRef Int) " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] 99))) " &
+       "(try (a ~ actor/send 1) catch (TypeError ^where w) w)",
+       "\"actor handler return\""
+
+  test "actor operations require actors":
+    expect GeneError:
+      discard runStr("(actor/spawn ^handle (fn [ctx state msg] (actor/stop)))")
+    expect GeneError: discard runStr("(actor/send 1 2)")
+
 suite "vm — streams":
   test "stream values are opaque display values":
     ck "(to_stream [1 2])", "(stream)"

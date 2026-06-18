@@ -432,6 +432,39 @@ suite "spec — bounded channels from design":
                "catch (TypeError ^where w) w)",
                "\"Channel/send item\"")
 
+suite "spec — actors from design":
+  test "actor send processes messages sequentially":
+    check_eval("(var out (cell 0)) " &
+               "(fn handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
+               "  (var next (+ state msg)) " &
+               "  (out ~ Cell/set next) " &
+               "  (actor/continue next)) " &
+               "(var counter : (ActorRef Int) " &
+               "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(counter ~ actor/send 2) " &
+               "(counter ~ actor/send 5) " &
+               "(out ~ Cell/get)",
+               "7")
+
+  test "actor stop closes the actor":
+    check_eval("(var a : (ActorRef Int) " &
+               "  (actor/spawn ^init (fn [] 0) " &
+               "    ^handle (fn [ctx state msg] (actor/stop)))) " &
+               "(a ~ actor/send 1) " &
+               "(try (a ~ actor/send 2) catch (ActorClosed ^message m) m)",
+               "\"actor is closed\"")
+
+  test "actor sends require typed Send messages":
+    check_eval("(var a : (ActorRef Int) " &
+               "  (actor/spawn ^init (fn [] 0) " &
+               "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
+               "(try (a ~ actor/send \"bad\") catch (TypeError ^where w) w)",
+               "\"actor/send message\"")
+    check_eval("(var a (actor/spawn ^init (fn [] 0) " &
+               "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
+               "(try (a ~ actor/send [1]) catch (TypeError ^expected e) e)",
+               "\"Send\"")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

@@ -14,6 +14,7 @@ type
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
+proc closeTypeExpr(expr: Value, scope: Scope): Value
 proc isSendableValue(value: Value, scope: Scope): bool
 
 # ---------------------------------------------------------------------------
@@ -570,6 +571,137 @@ proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   args[0].closeChannel()
   NIL
 
+proc requireActor(name: string, value: Value) =
+  if value.kind != vkActorRef:
+    raise newException(GeneError, name & " expects an ActorRef")
+
+proc raiseActorClosed(scope: Scope) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr("actor is closed")
+  var head = newSym("ActorClosed")
+  var closedType: Value
+  if scope != nil and scope.lookupOptional("ActorClosed", closedType) and
+      closedType.kind == vkType:
+    head = closedType
+  var e: ref GeneError
+  new(e)
+  e.msg = "actor is closed"
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
+proc actorMailboxArg(call: ptr NativeCall): int =
+  result = 16
+  if call == nil:
+    return
+  let index = nativeNamedIndex(call, "mailbox")
+  if index >= 0:
+    let raw = requireInt64("actor/spawn mailbox", call[].namedValues[index])
+    if raw > int64(high(int)):
+      raise newException(GeneError, "actor/spawn mailbox is too large")
+    result = int(raw)
+  if result <= 0:
+    raise newException(GeneError, "actor/spawn mailbox must be positive")
+
+proc actorNamedValue(call: ptr NativeCall, name: string): Value =
+  let index = nativeNamedIndex(call, name)
+  if index < 0:
+    raise newException(GeneError, "actor/spawn missing named argument: " & name)
+  call[].namedValues[index]
+
+proc actorOptionalNamedValue(call: ptr NativeCall, name: string): Value =
+  let index = nativeNamedIndex(call, name)
+  if index < 0: NIL else: call[].namedValues[index]
+
+proc actorDispatchScope(call: ptr NativeCall): Scope =
+  if call == nil: nil else: call[].dispatchScope
+
+proc checkActorSpawnNames(call: ptr NativeCall) =
+  if call == nil:
+    return
+  for name in call[].namedNames:
+    if name notin ["mailbox", "init", "handle", "type"]:
+      raise newException(GeneError,
+        "actor/spawn got unexpected named argument: " & name)
+
+proc checkedActorMessage(actor, message: Value, where: string,
+                         scope: Scope): Value =
+  let messageType = actor.actorMessageType
+  result =
+    if messageType.kind == vkNil: message
+    else: adaptBoundary(where, messageType, message, scope)
+  if not isSendableValue(result, scope):
+    raiseTypeError(where, "Send", result, scope)
+
+proc pumpActor(actor: Value, scope: Scope) =
+  if actor.actorProcessing:
+    return
+  actor.setActorProcessing(true)
+  try:
+    while actor.actorQueueLen > 0 and not actor.actorClosed:
+      let message = actor.popActorMessage()
+      var args = [newActorContext(actor), actor.actorState, message]
+      let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
+      if step.kind != vkActorStep:
+        raiseTypeError("actor handler return", "ActorStep", step, scope)
+      if step.actorStepContinue:
+        actor.setActorState(step.actorStepState)
+      else:
+        actor.closeActor()
+  except CatchableError:
+    actor.closeActor()
+    raise
+  finally:
+    actor.setActorProcessing(false)
+
+proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "actor/spawn expects no positional arguments")
+  checkActorSpawnNames(call)
+  let scope = actorDispatchScope(call)
+  let initFn = actorNamedValue(call, "init")
+  let handler = actorNamedValue(call, "handle")
+  let messageType = actorOptionalNamedValue(call, "type")
+  let closedMessageType =
+    if messageType.kind == vkNil: NIL else: closeTypeExpr(messageType, scope)
+  let state = applyCall(initFn, [], NamedArgs(), scope)
+  newActorRef(actorMailboxArg(call), state, handler, closedMessageType)
+
+proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "actor/send expects 2 arguments, got " & $args.len)
+  requireActor("actor/send", args[0])
+  let scope = actorDispatchScope(call)
+  if args[0].actorClosed:
+    raiseActorClosed(scope)
+  if args[0].actorFull:
+    raise newException(GeneError, "actor/send would suspend on a full mailbox")
+  args[0].pushActorMessage(checkedActorMessage(args[0], args[1],
+                                               "actor/send message", scope))
+  args[0].pumpActor(scope)
+  NIL
+
+proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "actor/try-send expects 2 arguments, got " & $args.len)
+  requireActor("actor/try-send", args[0])
+  if args[0].actorClosed or args[0].actorFull:
+    return FALSE
+  let scope = actorDispatchScope(call)
+  args[0].pushActorMessage(checkedActorMessage(args[0], args[1],
+                                               "actor/try-send message", scope))
+  args[0].pumpActor(scope)
+  TRUE
+
+proc biActorContinue(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("actor/continue", args)
+  newActorContinue(args[0])
+
+proc biActorStop(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "actor/stop expects no arguments")
+  newActorStop()
+
 proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
     raise newException(GeneError, name & " expects a Stream")
@@ -702,6 +834,9 @@ proc declarationKind(value: Value): string =
   of vkStream: "Stream"
   of vkTask: "Task"
   of vkChannel: "Channel"
+  of vkActorRef: "ActorRef"
+  of vkActorContext: "ActorContext"
+  of vkActorStep: "ActorStep"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1109,6 +1244,14 @@ proc buildBuiltins(app: Application): Scope =
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: channelClosed,
                                 messages: initTable[string, Value]())
+  let actorClosed = newType("ActorClosed", NIL,
+                            @[TypeField(name: "message", optional: false,
+                                        typeExpr: newSym("Str"), scope: result)],
+                            @[errorProtocol], result)
+  result.define("ActorClosed", actorClosed)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: actorClosed,
+                                messages: initTable[string, Value]())
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
@@ -1159,6 +1302,16 @@ proc buildBuiltins(app: Application): Scope =
   channelScope.define("close", newNativeCallFn("Channel/close", biChannelClose,
                                               acceptsNamed = false))
   result.define("Channel", newNamespace("Channel", channelScope))
+  let actorScope = newScope(result)
+  actorScope.define("spawn", newNativeCallFn("actor/spawn", biActorSpawn))
+  actorScope.define("send", newNativeCallFn("actor/send", biActorSend,
+                                           acceptsNamed = false))
+  actorScope.define("try-send", newNativeCallFn("actor/try-send",
+                                               biActorTrySend,
+                                               acceptsNamed = false))
+  actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
+  actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
+  result.define("actor", newNamespace("actor", actorScope))
   result.define("declarations", newNativeFn("declarations", biDeclarations))
   let namespaceScope = newScope(result)
   namespaceScope.define("bindings", newNativeFn("Namespace/bindings", biNamespaceBindings))
@@ -1698,7 +1851,7 @@ proc isSendableValue(value: Value, scope: Scope,
     seen.incl value.bits
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
-     vkNativeFn, vkType, vkProtocol, vkProtocolMessage:
+     vkNativeFn, vkActorRef, vkType, vkProtocol, vkProtocolMessage:
     true
   of vkNode:
     var sendProtocol: Value
@@ -1736,7 +1889,7 @@ proc isSendableValue(value: Value, scope: Scope,
         return false
     true
   of vkFunction, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream,
-     vkTask, vkChannel:
+     vkTask, vkChannel, vkActorContext, vkActorStep:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -2640,6 +2793,14 @@ proc runtimeTypeExpr(value: Value): Value =
       newSym("Channel")
     else:
       typeNode("Channel", @[itemType])
+  of vkActorRef:
+    let messageType = value.actorMessageType
+    if messageType.kind == vkNil:
+      newSym("ActorRef")
+    else:
+      typeNode("ActorRef", @[messageType])
+  of vkActorContext: newSym("ActorContext")
+  of vkActorStep: newSym("ActorStep")
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -2740,6 +2901,18 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
         if itemType.kind != vkNil and expr.body[0].kind == vkSymbol and
             expr.body[0].symVal in typeParams:
           return bindings.bindTypeParam(expr.body[0].symVal, itemType)
+        return true
+      of "ActorRef":
+        if value.kind != vkActorRef:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(ActorRef M) expects one message type")
+        let messageType = value.actorMessageType
+        if messageType.kind != vkNil and expr.body[0].kind == vkSymbol and
+            expr.body[0].symVal in typeParams:
+          return bindings.bindTypeParam(expr.body[0].symVal, messageType)
         return true
       else:
         discard
@@ -2897,6 +3070,12 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkTask)
   of "Channel":
     (true, value.kind == vkChannel)
+  of "ActorRef":
+    (true, value.kind == vkActorRef)
+  of "ActorContext":
+    (true, value.kind == vkActorContext)
+  of "ActorStep":
+    (true, value.kind == vkActorStep)
   else:
     (false, false)
 
@@ -2907,7 +3086,11 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
   case expr.kind
   of vkSymbol:
     let builtin = matchesBuiltinType(expr.symVal, NIL)
-    let canBeLocalBuiltin = expr.symVal == "Task" or expr.symVal == "Channel"
+    let canBeLocalBuiltin = expr.symVal == "Task" or
+      expr.symVal == "Channel" or
+      expr.symVal == "ActorRef" or
+      expr.symVal == "ActorContext" or
+      expr.symVal == "ActorStep"
     if (not builtin.known or canBeLocalBuiltin) and scope != nil:
       var resolved: Value
       if scope.lookupOptional(expr.symVal, resolved) and resolved.kind == vkType:
@@ -2970,7 +3153,10 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     # user code; let local nominal declarations win for bare annotations.
     if scope != nil and
         ((name.len == 4 and name == "Task") or
-         (name.len == 7 and name == "Channel")) and
+         (name.len == 7 and name == "Channel") or
+         (name.len == 8 and name == "ActorRef") or
+         (name.len == 12 and name == "ActorContext") or
+         (name.len == 9 and name == "ActorStep")) and
         scope.lookupOptional(name, resolved) and
         resolved.kind == vkType:
       return value.isInstanceOfType(resolved)
@@ -3045,6 +3231,33 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         if itemType.kind != vkNil:
           return typeExprEqual(closeTypeExpr(expr.body[0], scope), itemType)
         return true
+      of "ActorRef":
+        if value.kind != vkActorRef:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(ActorRef M) expects one message type")
+        let messageType = value.actorMessageType
+        if messageType.kind != vkNil:
+          return typeExprEqual(closeTypeExpr(expr.body[0], scope), messageType)
+        return true
+      of "ActorContext":
+        if value.kind != vkActorContext:
+          return false
+        if expr.body.len notin [0, 1]:
+          raise newException(GeneError, "(ActorContext M) expects one message type")
+        return true
+      of "ActorStep":
+        if value.kind != vkActorStep:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(ActorStep S) expects one state type")
+        if value.actorStepContinue:
+          return matchesTypeExpr(expr.body[0], value.actorStepState, scope)
+        return true
       else:
         discard
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
@@ -3064,6 +3277,10 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Channel") and
       typeExpr.body.len == 1:
     return newCheckedChannel(value, closeTypeExpr(typeExpr.body[0], scope), nil)
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("ActorRef") and
+      typeExpr.body.len == 1 and value.kind == vkActorRef and
+      value.actorMessageType.kind == vkNil:
+    value.setActorMessageType(closeTypeExpr(typeExpr.body[0], scope))
   value
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =

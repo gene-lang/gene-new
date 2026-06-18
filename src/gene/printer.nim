@@ -114,6 +114,12 @@ proc print*(v: Value): string =
     "(task)"
   of vkChannel:
     "(channel)"
+  of vkActorRef:
+    "(actor)"
+  of vkActorContext:
+    "(actor-context)"
+  of vkActorStep:
+    "(actor-step)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

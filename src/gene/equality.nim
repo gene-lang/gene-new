@@ -46,7 +46,8 @@ proc equal*(a, b: Value): bool =
       if not equal(a.body[i], b.body[i]): return false
     tablesEqual(a.props, b.props)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
-     vkStream, vkTask, vkChannel, vkType, vkProtocol, vkProtocolMessage:
+     vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
+     vkType, vkProtocol, vkProtocolMessage:
     # callable and opaque runtime values have identity equality
     a.bits == b.bits
 
@@ -60,8 +61,8 @@ proc same*(a, b: Value): bool =
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol:
     equal(a, b)
   of vkList, vkMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
-     vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkType, vkProtocol,
-     vkProtocolMessage:
+     vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
+     vkActorContext, vkActorStep, vkType, vkProtocol, vkProtocolMessage:
     a.bits == b.bits
 
 proc hash*(v: Value): Hash =
@@ -90,6 +91,7 @@ proc hash*(v: Value): Hash =
       acc = acc xor (hash(k) !& hash(val))
     h = h !& acc
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
-     vkStream, vkTask, vkChannel, vkType, vkProtocol, vkProtocolMessage:
+     vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
+     vkType, vkProtocol, vkProtocolMessage:
     h = h !& hash(v.bits)
   !$h
