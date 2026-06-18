@@ -8,8 +8,9 @@ import ./[compiler, equality, gir, printer, types]
 # ---------------------------------------------------------------------------
 
 proc newScope*(parent: Scope = nil): Scope =
-  Scope(parent: parent, vars: initTable[string, Value](), impls: @[],
-        requiredImplTypes: @[])
+  # Tables and seqs stay at Nim's zero-value empty state until a scope actually
+  # needs named declarations, impls, or required protocol checks.
+  Scope(parent: parent)
 
 proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   if names.len == 0:
