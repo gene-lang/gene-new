@@ -1080,9 +1080,19 @@ proc initModuleContext*(entryDir: string) =
   gBuiltins = nil
   moduleCache = initTable[string, Value]()
   moduleLoading = initHashSet[string]()
-  let dir = if entryDir.len > 0: entryDir else: getCurrentDir()
+  let dir = normalizedPath(absolutePath(
+    if entryDir.len > 0: entryDir else: getCurrentDir()))
   currentModuleDir = dir
   packageRoot = dir
+
+proc isWithinPackageRoot(path: string): bool =
+  let root = normalizedPath(absolutePath(packageRoot))
+  if path == root:
+    return true
+  let prefix =
+    if root.len > 0 and root[^1] == DirSep: root
+    else: root & $DirSep
+  path.startsWith(prefix)
 
 proc resolveModulePath(rawPath: string): string =
   ## Normalize a `from "path"` string to a stable absolute module identity.
@@ -1094,7 +1104,9 @@ proc resolveModulePath(rawPath: string): string =
     else: packageRoot        # bare and leading-"/" resolve from the root
   if p.startsWith("/"):
     p = p[1 .. ^1]
-  normalizedPath(absolutePath(p, base))
+  result = normalizedPath(absolutePath(p, base))
+  if not result.isWithinPackageRoot:
+    raise newException(GeneError, "module path escapes package root: " & rawPath)
 
 proc loadModuleValue(absPath: string): Value
 

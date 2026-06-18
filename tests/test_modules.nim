@@ -1,5 +1,5 @@
 import gene/[compiler, types, vm, printer]
-import std/[os, unittest]
+import std/[os, strutils, unittest]
 
 let modDir = getTempDir() / "gene_module_tests"
 
@@ -153,6 +153,17 @@ suite "modules — file imports":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
     check runProgram("(import [pi] from \"/math\") pi").print() == "3"
     check runProgram("(import [add] from \"math\") (add 1 2)").print() == "3"
+
+  test "module paths cannot escape the package root":
+    let outside = modDir & "_outside.gene"
+    writeFile(outside, "(var secret 99)")
+    try:
+      discard runProgram("(import [secret] from \"../gene_module_tests_outside\") secret")
+      fail()
+    except GeneError as e:
+      check e.msg.contains("module path escapes package root")
+    finally:
+      removeFile(outside)
 
   test "missing export raises":
     writeModule("math.gene", "(var pi 3)")
