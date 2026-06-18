@@ -293,7 +293,7 @@ proc requireNamespace(name: string, value: Value) =
     raise newException(GeneError, name & " expects a Namespace")
 
 proc requireModule(name: string, value: Value) =
-  if value.kind != vkNamespace or not value.nsIsModuleRoot:
+  if value.kind != vkModule:
     raise newException(GeneError, name & " expects a Module")
 
 proc raiseEndOfStream() =
@@ -390,6 +390,7 @@ proc declarationKind(value: Value): string =
   of vkFunction: "Fn"
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
+  of vkModule: "Module"
   of vkEnv: "Env"
   of vkCell: "Cell"
   of vkAtomicCell: "AtomicCell"
@@ -398,8 +399,17 @@ proc declarationKind(value: Value): string =
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
 
+proc exportedBinding(ns: Value, name: string): Value =
+  if ns.kind != vkNamespace:
+    return VOID
+  if ns.nsIsModuleRoot and name == "this-mod":
+    return VOID
+  ns.nsScope.vars.getOrDefault(name, VOID)
+
 proc namespaceDeclarationNodes(ns: Value): seq[Value] =
   for name in sortedBindingNames(ns.nsScope):
+    if ns.nsIsModuleRoot and name == "this-mod":
+      continue
     let value = ns.nsScope.vars[name]
     var props = initOrderedTable[string, Value]()
     props["name"] = newStr(name)
@@ -409,8 +419,13 @@ proc namespaceDeclarationNodes(ns: Value): seq[Value] =
 
 proc biDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireOne("declarations", args)
-  requireNamespace("declarations", args[0])
-  newStream(namespaceDeclarationNodes(args[0]))
+  case args[0].kind
+  of vkNamespace:
+    newStream(namespaceDeclarationNodes(args[0]))
+  of vkModule:
+    newStream(namespaceDeclarationNodes(args[0].moduleRootNamespace))
+  else:
+    raise newException(GeneError, "declarations expects a Module or Namespace")
 
 proc biNamespaceBindings(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Namespace/bindings", args)
@@ -434,18 +449,28 @@ proc biNamespaceDeclarations(args: openArray[Value]): Value {.nimcall.} =
 proc biModuleRootNamespace(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Module/root_namespace", args)
   requireModule("Module/root_namespace", args[0])
-  args[0]
+  args[0].moduleRootNamespace
 
 proc biModulePath(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Module/path", args)
   requireModule("Module/path", args[0])
-  let path = args[0].nsModulePath
+  let path = args[0].modulePath
   if path.len == 0: NIL else: newStr(path)
+
+proc biModuleName(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Module/name", args)
+  requireModule("Module/name", args[0])
+  newStr(args[0].moduleName)
+
+proc biModuleMeta(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Module/meta", args)
+  requireModule("Module/meta", args[0])
+  newMap(copyEntries(args[0].moduleMeta))
 
 proc biModuleDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Module/declarations", args)
   requireModule("Module/declarations", args[0])
-  newStream(namespaceDeclarationNodes(args[0]))
+  newStream(namespaceDeclarationNodes(args[0].moduleRootNamespace))
 
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
@@ -797,7 +822,9 @@ proc buildBuiltins(): Scope =
   let moduleScope = newScope(result)
   moduleScope.define("root_namespace",
     newNativeFn("Module/root_namespace", biModuleRootNamespace))
+  moduleScope.define("name", newNativeFn("Module/name", biModuleName))
   moduleScope.define("path", newNativeFn("Module/path", biModulePath))
+  moduleScope.define("meta", newNativeFn("Module/meta", biModuleMeta))
   moduleScope.define("declarations",
     newNativeFn("Module/declarations", biModuleDeclarations))
   result.define("Module", newNamespace("Module", moduleScope))
@@ -839,11 +866,11 @@ proc newGlobalScope*(): Scope =
   newScope(builtinsScope())
 
 proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
-  ## MVP bridge until first-class Module values exist: the module root is the
-  ## namespace value whose scope holds top-level bindings. `scope` must be a
-  ## module root scope (a child of the built-ins root), so its `vars` contain
-  ## only this module's declarations, not the built-ins.
-  result = newNamespace(name, scope, path, moduleRoot = true)
+  ## Create the first-class module value for a module root scope. The root
+  ## namespace owns declarations; the Module value carries identity, path, and
+  ## metadata and is exposed through the compiler-provided `this-mod` binding.
+  let root = newNamespace(name, scope, path, moduleRoot = true)
+  result = newModule(name, root, path)
   scope.define("this-mod", result)
 
 # ---------------------------------------------------------------------------
@@ -856,7 +883,7 @@ proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
 # their importer while built-in protocol/type identity is shared application-wide.
 
 var
-  moduleCache: Table[string, Value]   # normalized abs path -> namespace value
+  moduleCache: Table[string, Value]   # normalized abs path -> Module value
   moduleLoading: HashSet[string]      # paths mid-load, for cycle detection
   currentModuleDir = getCurrentDir()  # dir of the module currently executing
   packageRoot = getCurrentDir()       # root for bare and absolute "/x" paths
@@ -884,7 +911,7 @@ proc resolveModulePath(rawPath: string): string =
     p = p[1 .. ^1]
   normalizedPath(absolutePath(p, base))
 
-proc loadModuleNamespace(absPath: string): Value
+proc loadModuleValue(absPath: string): Value
 
 proc isSubtypeOf(actual, expected: Value): bool {.inline.} =
   if expected.kind != vkType:
@@ -1623,30 +1650,46 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       stack.add ns
     of opSetModuleName:
       var module: Value
-      if scope.lookupOptional("this-mod", module) and
-          module.kind == vkNamespace and module.nsIsModuleRoot:
-        module.setNsName(inst.name)
+      if scope.lookupOptional("this-mod", module):
+        if module.kind == vkModule:
+          module.setModuleName(inst.name)
+          if inst.intArg >= 0 and inst.intArg < chunk.constants.len:
+            let metaValue = chunk.constants[inst.intArg]
+            if metaValue.kind == vkMap:
+              module.setModuleMeta(copyEntries(metaValue.mapEntries))
+        elif module.kind == vkNamespace and module.nsIsModuleRoot:
+          module.setNsName(inst.name)
       stack.add NIL
     of opImport:
       let spec = chunk.imports[inst.intArg]
-      var sourceNs: Value
+      var source: Value
       if spec.fromModule:
-        sourceNs = loadModuleNamespace(resolveModulePath(spec.modulePath))
+        source = loadModuleValue(resolveModulePath(spec.modulePath))
       else:
         # Namespace path: resolve segments against the current scope.
-        sourceNs = scope.lookup(spec.nsSegments[0])
+        source = scope.lookup(spec.nsSegments[0])
         for i in 1 ..< spec.nsSegments.len:
-          if sourceNs.kind != vkNamespace:
+          if source.kind == vkModule:
+            source = source.moduleRootNamespace
+          if source.kind != vkNamespace:
             raise newException(GeneError,
               "import: '" & spec.nsSegments[0 ..< i].join("/") & "' is not a namespace")
-          sourceNs = sourceNs.nsScope.vars.getOrDefault(spec.nsSegments[i], VOID)
+          source = source.exportedBinding(spec.nsSegments[i])
+      let sourceNs =
+        case source.kind
+        of vkModule:
+          source.moduleRootNamespace
+        of vkNamespace:
+          source
+        else:
+          VOID
       if sourceNs.kind != vkNamespace:
         raise newException(GeneError, "import source is not a namespace")
       scope.makeImplsVisible(sourceNs.nsScope)
       if spec.alias.len > 0:
-        scope.define(spec.alias, sourceNs)
+        scope.define(spec.alias, source)
       for sel in spec.selections:
-        let v = sourceNs.nsScope.vars.getOrDefault(sel.name, VOID)
+        let v = sourceNs.exportedBinding(sel.name)
         if v.kind == vkVoid:
           raise newException(GeneError, "module/namespace has no export: " & sel.name)
         scope.define(sel.local, v)
@@ -1855,7 +1898,7 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   of "Namespace":
     (true, value.kind == vkNamespace)
   of "Module":
-    (true, value.kind == vkNamespace and value.nsIsModuleRoot)
+    (true, value.kind == vkModule)
   of "Env":
     (true, value.kind == vkEnv)
   of "Cell":
@@ -2007,7 +2050,9 @@ proc staticLookup(target, segment: Value): Value =
       else: VOID
     of vkNamespace:
       # Qualified access reads the namespace's own exports (not its parent chain).
-      target.nsScope.vars.getOrDefault(key, VOID)
+      target.exportedBinding(key)
+    of vkModule:
+      target.moduleRootNamespace.exportedBinding(key)
     of vkProtocol:
       target.protocolMessages.getOrDefault(key, VOID)
     else:
@@ -2174,9 +2219,9 @@ proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
 proc call*(callee: Value, args: seq[Value] = @[]): Value =
   applyCall(callee, args, NamedArgs())
 
-proc loadModuleNamespace(absPath: string): Value =
-  ## Load, execute, and cache a module; return its root namespace. Modules run at
-  ## most once (cache) and import cycles are rejected (loading set).
+proc loadModuleValue(absPath: string): Value =
+  ## Load, execute, and cache a module; return its first-class Module value.
+  ## Modules run at most once (cache) and import cycles are rejected (loading set).
   if moduleCache.hasKey(absPath):
     return moduleCache[absPath]
   if absPath in moduleLoading:

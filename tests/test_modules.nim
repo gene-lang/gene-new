@@ -28,7 +28,7 @@ suite "modules — file imports":
     writeModule("math.gene", "(fn sub [a b] (- a b))")
     check runProgram("(import [sub : minus] from \"./math\") (minus 10 4)").print() == "6"
 
-  test "bind module root namespace with ^as":
+  test "bind module value with ^as":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
     check runProgram("(import from \"./math\" ^as m) m/pi").print() == "3"
     check runProgram("(import from \"./math\" ^as m) (m/add 1 1)").print() == "2"
@@ -60,14 +60,28 @@ suite "modules — file imports":
 
   test "this-mod exposes module reflection helpers":
     writeModule("selfpath.gene",
-      "(var reflected [(this-mod ~ Module/path) " &
-      "                (= (this-mod ~ Module/root_namespace) this-mod)])")
+      "(var marker 42) " &
+      "(var root (this-mod ~ Module/root_namespace)) " &
+      "(var reflected [(this-mod ~ Module/name) " &
+      "                (this-mod ~ Module/path) " &
+      "                (= root this-mod) " &
+      "                (/marker root)])")
     let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
-    check reflected.listItems[0].strVal ==
+    check reflected.listItems[0].strVal == "selfpath"
+    check reflected.listItems[1].strVal ==
       normalizedPath(absolutePath("selfpath.gene", modDir))
-    check reflected.listItems[1].boolVal == true
+    check reflected.listItems[2].boolVal == false
+    check reflected.listItems[3].intVal == 42
 
-  test "Module annotations accept module root namespaces":
+  test "mod metadata persists on the module value":
+    writeModule("meta.gene",
+      "(mod renamed @doc \"module docs\") " &
+      "(var reflected [(this-mod ~ Module/name) " &
+      "                (/doc (this-mod ~ Module/meta))])")
+    check runProgram("(import [reflected] from \"./meta\") reflected").print() ==
+      "[\"renamed\" \"module docs\"]"
+
+  test "Module annotations accept module values":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import from \"./math\" ^as m) " &
       "(fn module_path [m : Module] (m ~ Module/path)) (module_path m)").strVal ==
@@ -78,7 +92,7 @@ suite "modules — file imports":
       discard runProgram("(ns local (var x 1)) " &
         "(fn module_id [m : Module] m) (module_id local)")
 
-  test "a module is loaded once (cache returns the same namespace)":
+  test "a module is loaded once (cache returns the same module value)":
     writeModule("m.gene", "(var v 1)")
     check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (= a b)").print() == "true"
 
@@ -182,11 +196,19 @@ suite "modules — built-in identity and scope hygiene":
     check runProgram("(import from \"./decls2\" ^as m) " &
       "(var ds (filter (declarations m) (fn [d] (= d/name \"map\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
+    check runProgram("(import from \"./decls2\" ^as m) " &
+      "(var ds (filter (declarations m) (fn [d] (= d/name \"this-mod\")))) " &
+      "(ds ~ Stream/has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":
     writeModule("decls2.gene", "(var only-me 1)")
     expect GeneError:
       discard runProgram("(import [map] from \"./decls2\")")
+
+  test "selected imports cannot pull this-mod out of a module":
+    writeModule("decls3.gene", "(var only-me 1)")
+    expect GeneError:
+      discard runProgram("(import [this-mod] from \"./decls3\")")
 
 suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":
@@ -231,4 +253,4 @@ suite "modules — namespace-path imports and mod":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "implicit")
     check run(compileSource("(mod explicit) this-mod"), scope).print() ==
-      "(ns explicit)"
+      "(mod explicit)"

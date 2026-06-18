@@ -431,8 +431,9 @@ proc compileImport(c: var Compiler, node: Value) =
   discard c.emit(opImport, c.chunk.addImport(spec))
 
 proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
-  ## MVP: a file is already its own module, so `(mod name body...)` just runs its
-  ## body in the current module scope. The name and `@doc` meta are ignored here.
+  ## A file/source unit already has a loader-created Module; `(mod name @meta
+  ## body...)` names that module, stores its metadata, and runs the body in the
+  ## current module scope.
   if not allowModDecl:
     raise newException(GeneError, "mod must be a top-level form")
   if c.seenModDecl:
@@ -440,7 +441,11 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
   if node.body.len == 0 or node.body[0].kind != vkSymbol:
     raise newException(GeneError, "mod requires a name")
   c.seenModDecl = true
-  discard c.emit(opSetModuleName, name = node.body[0].symVal)
+  var meta = initOrderedTable[string, Value]()
+  for key, val in node.meta:
+    meta[key] = val
+  discard c.emit(opSetModuleName, c.chunk.addConst(newMap(meta)),
+                 name = node.body[0].symVal)
   if node.body.len > 1:
     discard c.emit(opPop)
     compileBodyFrom(c, node.body, 1)

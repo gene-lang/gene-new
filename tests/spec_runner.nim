@@ -239,7 +239,7 @@ suite "spec — modules from design":
   test "explicit mod names the current module root":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "implicit")
-    check run(compileSource("(mod app) this-mod"), scope).print() == "(ns app)"
+    check run(compileSource("(mod app) this-mod"), scope).print() == "(mod app)"
 
   test "duplicate bindings in one namespace are rejected":
     expect GeneError:

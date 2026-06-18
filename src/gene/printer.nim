@@ -100,6 +100,8 @@ proc print*(v: Value): string =
     "(native-fn " & v.nativeFnName & ")"
   of vkNamespace:
     "(ns " & v.nsName & ")"
+  of vkModule:
+    "(mod " & v.moduleName & ")"
   of vkEnv:
     "(env)"
   of vkCell:

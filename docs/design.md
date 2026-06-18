@@ -1968,7 +1968,7 @@ Built-in / namespace imports:
 Module-path imports:
 
 ```gene
-(import from "./math" ^as math)          # bind loaded module root namespace as math
+(import from "./math" ^as math)          # bind loaded module value as math
 (import add from "./math")              # import one exported binding
 (import [add, sub] from "./math")       # import selected exported bindings
 (import [add : plus, sub : minus] from "./math")
@@ -1979,11 +1979,11 @@ Rules:
 
 - `std/stream` in source position is a static namespace path, not a string module path and not runtime selector evaluation;
 - `from "path"` is the only MVP form that names a file/string module path;
-- `(import from "path" ^as alias)` loads the module at `path` and binds its root namespace value to `alias`;
+- `(import from "path" ^as alias)` loads the module at `path` and binds its module value to `alias`;
 - selected imports bind exported names from the source namespace/module root into the current namespace;
 - `name : alias` binds the imported exported name to a different local name;
 - commas inside the import list are optional separators;
-- `^as alias` with a namespace source binds that namespace value; `^as alias` with `from "path"` binds the loaded module's root namespace value;
+- `^as alias` with a namespace source binds that namespace value; `^as alias` with `from "path"` binds the loaded module value;
 - wildcard imports are deferred.
 
 MVP export model:
@@ -2051,7 +2051,9 @@ Namespaces should expose reflection helpers such as:
 Namespace/bindings
 Namespace/lookup
 Module/root_namespace
+Module/name
 Module/path
+Module/meta
 Module/declarations
 ```
 

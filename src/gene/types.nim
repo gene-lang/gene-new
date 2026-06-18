@@ -54,7 +54,8 @@ type
     vkNode      ## general node (head + props + body + meta)
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
-    vkNamespace ## named binding container (module root or nested `ns`)
+    vkNamespace ## named binding container (`ns` or module root namespace)
+    vkModule    ## first-class module value with a root namespace
     vkEnv       ## first-class eval environment (design Section 11.1 MVP)
     vkCell      ## first-class mutable reference (design Section 12.2)
     vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
@@ -205,6 +206,7 @@ type
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
   ObjKind* = enum
     okNamespace
+    okModule
     okEnv
     okCell
     okAtomicCell
@@ -219,8 +221,14 @@ type
   NamespaceData = ref object of GeneObjectData
     name: string
     scope: Scope          # the namespace's own bindings (its exports)
-    moduleRoot: bool      # true only for this-mod / imported module roots
+    moduleRoot: bool      # true only for loader-created module root namespaces
     modulePath: string    # non-empty only for file-backed module roots
+
+  ModuleData = ref object of GeneObjectData
+    name: string
+    path: string
+    root: Value
+    meta: PropTable
 
   EnvData = ref object of GeneObjectData
     parent: Value         # parent Env value, or NIL
@@ -428,6 +436,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
   of OBJECT_TAG:
     case objData(v).objKind
     of okNamespace: vkNamespace
+    of okModule: vkModule
     of okEnv: vkEnv
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
@@ -592,6 +601,39 @@ proc nsIsModuleRoot*(v: Value): bool =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).moduleRoot
+
+proc moduleName*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).name
+
+proc setModuleName*(v: Value, name: sink string) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  let data = ModuleData(objData(v))
+  data.name = name
+  if data.root.kind == vkNamespace:
+    data.root.setNsName(data.name)
+
+proc modulePath*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).path
+
+proc moduleRootNamespace*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).root
+
+proc moduleMeta*(v: Value): lent PropTable =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).meta
+
+proc setModuleMeta*(v: Value, meta: sink PropTable) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).meta = meta
 
 proc envParent*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
@@ -1005,6 +1047,13 @@ proc newNamespace*(name: string, scope: Scope, modulePath = "",
                    moduleRoot = false): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope,
                           moduleRoot: moduleRoot, modulePath: modulePath))
+
+proc newModule*(name: string, root: Value, path = "",
+                meta: sink PropTable = initOrderedTable[string, Value]()): Value =
+  if root.kind != vkNamespace:
+    raise newException(FieldDefect, "module root is not a Namespace")
+  boxObject(ModuleData(objKind: okModule, name: name, path: path, root: root,
+                       meta: meta))
 
 proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL): Value =
