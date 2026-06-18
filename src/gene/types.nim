@@ -229,11 +229,22 @@ type
   CellData = ref object of GeneObjectData
     value: Value
 
+  StreamPullResult* = object
+    has*: bool
+    item*: Value
+
+  StreamPullProc* = proc(stream: Value): StreamPullResult {.nimcall.}
+
   StreamData = ref object of GeneObjectData
     items: seq[Value]
     index: int
     closed: bool
     source: Value
+    callable: Value
+    remaining: int64
+    pull: StreamPullProc
+    buffered: bool
+    buffer: Value
     itemType: Value
     itemScope: Scope
 
@@ -622,8 +633,25 @@ proc skipStreamVoids(data: StreamData) =
       data.items[data.index].kind == vkVoid:
     inc data.index
 
+proc fillStreamBuffer(stream: Value, data: StreamData): bool =
+  if data.buffered:
+    return true
+  while not data.closed:
+    let pulled = data.pull(stream)
+    if not pulled.has:
+      data.closed = true
+      data.buffer = NIL
+      return false
+    if pulled.item.kind != vkVoid:
+      data.buffer = pulled.item
+      data.buffered = true
+      return true
+  false
+
 proc streamHasNext*(v: Value): bool =
   let data = streamData(v)
+  if data.pull != nil:
+    return fillStreamBuffer(v, data)
   if data.source.kind == vkStream:
     return not data.closed and data.source.streamHasNext()
   data.skipStreamVoids()
@@ -633,6 +661,8 @@ proc streamPeek*(v: Value): Value =
   if not v.streamHasNext:
     raise newException(FieldDefect, "stream is exhausted")
   let data = streamData(v)
+  if data.pull != nil:
+    return data.buffer
   if data.source.kind == vkStream:
     return data.source.streamPeek
   data.items[data.index]
@@ -640,6 +670,10 @@ proc streamPeek*(v: Value): Value =
 proc streamNext*(v: Value): Value =
   result = v.streamPeek
   let data = streamData(v)
+  if data.pull != nil:
+    data.buffered = false
+    data.buffer = NIL
+    return
   if data.source.kind == vkStream:
     discard data.source.streamNext
   else:
@@ -648,10 +682,24 @@ proc streamNext*(v: Value): Value =
 proc closeStream*(v: Value) =
   let data = streamData(v)
   data.closed = true
+  data.buffered = false
+  data.buffer = NIL
   if data.source.kind == vkStream:
     data.source.closeStream()
   else:
     data.index = data.items.len
+
+proc streamSource*(v: Value): Value =
+  streamData(v).source
+
+proc streamCallable*(v: Value): Value =
+  streamData(v).callable
+
+proc streamRemaining*(v: Value): int64 =
+  streamData(v).remaining
+
+proc setStreamRemaining*(v: Value, remaining: int64) =
+  streamData(v).remaining = remaining
 
 proc streamItemType*(v: Value): Value =
   streamData(v).itemType
@@ -928,6 +976,21 @@ proc escapeWeakFunctions*(v: Value): Value =
       meta[key] = escapeWeakFunctions(val)
     newNode(escapedHead, props = props, body = body, meta = meta,
             immutable = v.nodeImmutable)
+  of vkStream:
+    let data = streamData(v)
+    let escapedSource = escapeWeakFunctions(data.source)
+    let escapedCallable = escapeWeakFunctions(data.callable)
+    let escapedBuffer = escapeWeakFunctions(data.buffer)
+    if escapedSource.bits == data.source.bits and
+        escapedCallable.bits == data.callable.bits and
+        escapedBuffer.bits == data.buffer.bits:
+      return v
+    boxObject(StreamData(objKind: okStream, source: escapedSource,
+                         items: data.items, index: data.index,
+                         callable: escapedCallable, remaining: data.remaining,
+                         pull: data.pull, closed: data.closed,
+                         buffered: data.buffered, buffer: escapedBuffer,
+                         itemType: data.itemType, itemScope: data.itemScope))
   else:
     v
 
@@ -959,6 +1022,16 @@ proc newStream*(items: sink seq[Value]): Value =
 proc newCheckedStream*(source, itemType: Value, itemScope: Scope): Value =
   boxObject(StreamData(objKind: okStream, source: source, itemType: itemType,
                        itemScope: itemScope, closed: false))
+
+proc newLazyStream*(source: Value, pull: StreamPullProc,
+                    callable: Value = NIL, remaining: int64 = -1): Value =
+  let storedCallable =
+    if callable.kind == vkFunction:
+      functionForScopeStorage(callable, callable.fnScope)
+    else:
+      callable
+  boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
+                       remaining: remaining, pull: pull, closed: false))
 
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,

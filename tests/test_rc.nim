@@ -53,6 +53,8 @@ when defined(geneRcStats):
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
+      check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
+      check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0
 
     test "protocol derive functions and generated impls are reclaimed":
       check leakedManaged("(protocol HasLabel " &
@@ -84,5 +86,30 @@ when defined(geneRcStats):
       GC_fullCollect()
       check functions.listItems[0].call().intVal == 42
       functions = NIL
+
+    test "returned lazy streams keep mapper scopes alive":
+      var stream = NIL
+      block:
+        var scope = newGlobalScope()
+        stream = run(compileSource("(var x 41) " &
+          "(map (to_stream [1]) (fn [n] (+ x n)))"), scope)
+        scope = nil
+      GC_fullCollect()
+      check stream.streamNext.intVal == 42
+      stream = NIL
+
+    test "returned typed lazy streams keep wrapped mapper scopes alive":
+      var stream = NIL
+      block:
+        var scope = newGlobalScope()
+        stream = run(compileSource(
+          "(fn make [] : (Stream Int Never) " &
+          "  (var x 41) " &
+          "  (map (to_stream [1]) (fn [n] (+ x n)))) " &
+          "(make)"), scope)
+        scope = nil
+      GC_fullCollect()
+      check stream.streamNext.intVal == 42
+      stream = NIL
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

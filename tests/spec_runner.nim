@@ -157,7 +157,7 @@ suite "spec — void normalization from design":
                "[{^b 1} (x ^b 1) void]")
 
 suite "spec — streams from design":
-  test "list-backed streams expose pull operations":
+  test "streams expose pull operations":
     check_eval("(var s (to_stream [1 2])) " &
                "[(s ~ Stream/has_next) " &
                " (s ~ Stream/peek) " &
@@ -184,6 +184,15 @@ suite "spec — streams from design":
                "     (pairs ~ Stream/next)) " &
                " (into (to_pairs_stream {^a 1}) {})]",
                "[3 4 false [a 1] {^a 1}]")
+
+  test "stream helpers are lazy":
+    check_eval("(var hits (cell 0)) " &
+               "(var s (map (to_stream [1 2]) " &
+               "            (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "[(hits ~ Cell/get) " &
+               " (s ~ Stream/next) " &
+               " (hits ~ Cell/get)]",
+               "[0 1 1]")
 
   test "typed stream boundaries check items when pulled":
     check_eval("(try (fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &

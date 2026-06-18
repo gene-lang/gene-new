@@ -447,26 +447,43 @@ proc biModuleDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireModule("Module/declarations", args[0])
   newStream(namespaceDeclarationNodes(args[0]))
 
+proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
+  let source = stream.streamSource
+  while source.streamHasNext:
+    let item = checkedStreamNext(source, "map item")
+    return StreamPullResult(
+      has: true,
+      item: applyCall(stream.streamCallable, @[item], NamedArgs()))
+  StreamPullResult(has: false, item: NIL)
+
+proc pullFilterStream(stream: Value): StreamPullResult {.nimcall.} =
+  let source = stream.streamSource
+  while source.streamHasNext:
+    let item = checkedStreamNext(source, "filter item")
+    if applyCall(stream.streamCallable, @[item], NamedArgs()).isTruthy:
+      return StreamPullResult(has: true, item: item)
+  StreamPullResult(has: false, item: NIL)
+
+proc pullTakeStream(stream: Value): StreamPullResult {.nimcall.} =
+  let source = stream.streamSource
+  while stream.streamRemaining > 0 and source.streamHasNext:
+    stream.setStreamRemaining(stream.streamRemaining - 1)
+    return StreamPullResult(
+      has: true,
+      item: checkedStreamNext(source, "take item"))
+  StreamPullResult(has: false, item: NIL)
+
 proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "map expects 2 arguments, got " & $args.len)
   requireStream("map", args[0])
-  var items: seq[Value]
-  while args[0].streamHasNext:
-    items.add applyCall(args[1], @[checkedStreamNext(args[0], "map item")],
-                        NamedArgs())
-  newStream(items)
+  newLazyStream(args[0], pullMapStream, callable = args[1])
 
 proc biStreamFilter(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "filter expects 2 arguments, got " & $args.len)
   requireStream("filter", args[0])
-  var items: seq[Value]
-  while args[0].streamHasNext:
-    let item = checkedStreamNext(args[0], "filter item")
-    if applyCall(args[1], @[item], NamedArgs()).isTruthy:
-      items.add item
-  newStream(items)
+  newLazyStream(args[0], pullFilterStream, callable = args[1])
 
 proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -477,11 +494,7 @@ proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
   var remaining = args[1].intVal
   if remaining < 0:
     raise newException(GeneError, "take count must be non-negative")
-  var items: seq[Value]
-  while remaining > 0 and args[0].streamHasNext:
-    items.add checkedStreamNext(args[0], "take item")
-    dec remaining
-  newStream(items)
+  newLazyStream(args[0], pullTakeStream, remaining = remaining)
 
 proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:

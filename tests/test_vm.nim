@@ -646,15 +646,43 @@ suite "vm — streams":
        "[(s ~ Stream/next) (s ~ Stream/has_next)]",
        "[2 false]"
 
+  test "stream map is lazy":
+    ck "(var hits (cell 0)) " &
+       "(var s (map (to_stream [1 2 3]) " &
+       "            (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) (* x 2)))) " &
+       "[(hits ~ Cell/get) " &
+       " (s ~ Stream/next) (hits ~ Cell/get) " &
+       " (s ~ Stream/next) (hits ~ Cell/get)]",
+       "[0 2 1 4 2]"
+
   test "stream filter keeps truthy predicate results":
     ck "(var s (filter (to_stream [1 2 3]) (fn [x] (> x 1)))) " &
        "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
        "[2 3 false]"
 
+  test "stream filter is lazy":
+    ck "(var hits (cell 0)) " &
+       "(var s (filter (to_stream [1 2 3]) " &
+       "               (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) (> x 1)))) " &
+       "[(hits ~ Cell/get) " &
+       " (s ~ Stream/next) (hits ~ Cell/get) " &
+       " (s ~ Stream/next) (hits ~ Cell/get)]",
+       "[0 2 2 3 3]"
+
   test "stream take limits pulled values":
     ck "(var s (take (to_stream [1 2 3]) 2)) " &
        "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
        "[1 2 false]"
+
+  test "stream take does not over-pull upstream":
+    ck "(var hits (cell 0)) " &
+       "(var source (map (to_stream [1 2 3]) " &
+       "                 (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+       "(var s (take source 1)) " &
+       "[(hits ~ Cell/get) " &
+       " (s ~ Stream/next) (hits ~ Cell/get) " &
+       " (s ~ Stream/has_next) (hits ~ Cell/get)]",
+       "[0 1 1 false 1]"
 
   test "stream into materializes list and map targets":
     ck "[(into (to_stream [2 3]) [1]) " &
