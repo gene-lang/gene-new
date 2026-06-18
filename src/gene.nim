@@ -99,13 +99,14 @@ proc exitFromMain(scope: Scope, value: Value) =
     raiseMainReturnTypeError(scope, value)
 
 proc cmdRun(path: string, args: openArray[string] = []) =
-  let src = readSourceFile(path)
+  if not fileExists(path):
+    stderr.writeLine "Error: file not found: " & path
+    quit(1)
   try:
-    initModuleContext(parentDir(absolutePath(path)))   # entry module dir = root
-    let scope = newGlobalScope()
-    discard bindThisModule(scope, splitFile(path).name,
-                           normalizedPath(absolutePath(path)))
-    discard run(compileSource(src), scope)
+    let absPath = normalizedPath(absolutePath(path))
+    let app = newApplication(parentDir(absPath))
+    let entryModule = app.loadFileModule(absPath)
+    let scope = entryModule.moduleRootNamespace.nsScope
     var mainBinding: Value
     if scope.lookupOptional("main", mainBinding):
       let result =

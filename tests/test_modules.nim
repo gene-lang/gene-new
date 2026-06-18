@@ -96,6 +96,18 @@ suite "modules — file imports":
     writeModule("m.gene", "(var v 1)")
     check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (= a b)").print() == "true"
 
+  test "entry file modules load through the application cache":
+    let entryPath = modDir / "entry.gene"
+    writeFile(entryPath, "(var value 11) (fn main [] value)")
+    let app = newApplication(modDir)
+    let entryModule = app.loadFileModule(entryPath)
+    let imported = run(compileSource("(import from \"./entry\" ^as e) e"),
+                       newGlobalScope(app))
+    check imported.bits == entryModule.bits
+    var mainBinding: Value
+    check entryModule.moduleRootNamespace.nsScope.lookupOptional("main", mainBinding)
+    check mainBinding.call().print() == "11"
+
   test "applications isolate module cache and package roots":
     let dirA = modDir / "app-a"
     let dirB = modDir / "app-b"

@@ -3041,3 +3041,15 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     app.currentModuleDir = savedDir
     app.moduleLoading.excl absPath
   app.moduleCache[absPath] = result
+
+proc loadFileModule*(app: Application, path: string): Value =
+  ## Load a host file path as an application module. This is used by program
+  ## startup; source-level `from "path"` imports still go through
+  ## `resolveModulePath` so leading slash stays package-root-relative there.
+  var p = path
+  if splitFile(p).ext.len == 0:
+    p = p & ".gene"
+  let absPath = normalizedPath(absolutePath(p))
+  if not app.isWithinPackageRoot(absPath):
+    raise newException(GeneError, "module path escapes package root: " & path)
+  loadModuleValue(app, absPath)
