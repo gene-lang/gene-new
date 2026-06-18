@@ -3,6 +3,14 @@
 import std/[algorithm, os, sets, strutils, tables]
 import ./[compiler, equality, gir, printer, types]
 
+type
+  Application* = ref object of RuntimeContext
+    builtins: Scope
+    moduleCache: Table[string, Value]
+    moduleLoading: HashSet[string]
+    currentModuleDir: string
+    packageRoot: string
+
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
@@ -11,10 +19,15 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 # Scope
 # ---------------------------------------------------------------------------
 
-proc newScope*(parent: Scope = nil): Scope =
+proc newScope*(parent: Scope = nil,
+               application: RuntimeContext = nil): Scope =
   # Tables and seqs stay at Nim's zero-value empty state until a scope actually
   # needs named declarations, impls, or required protocol checks.
-  Scope(parent: parent)
+  let owner =
+    if application != nil: application
+    elif parent != nil: parent.application
+    else: nil
+  Scope(application: owner, parent: parent)
 
 proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   if names.len == 0:
@@ -926,12 +939,12 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   stdout.write "\n"
   NIL
 
-proc buildBuiltins(): Scope =
+proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
   ## these is shared per application (see `builtinsScope`) so built-in identity is
   ## stable across modules.
-  result = newScope()
+  result = newScope(application = app)
   let errorProtocol = newProtocol("Error", [])
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
@@ -1031,24 +1044,48 @@ proc buildBuiltins(): Scope =
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 
-var gBuiltins: Scope   # shared built-ins root for the current application run
+var gApplication: Application
+
+proc normalizedDir(path: string): string =
+  normalizedPath(absolutePath(if path.len > 0: path else: getCurrentDir()))
+
+proc newApplication*(entryDir = ""): Application =
+  ## Create the runtime owner for one Gene program. MVP packages are represented
+  ## by the root directory used for absolute/bare module resolution.
+  let root = normalizedDir(entryDir)
+  result = Application(moduleCache: initTable[string, Value](),
+                       moduleLoading: initHashSet[string](),
+                       currentModuleDir: root,
+                       packageRoot: root)
+
+proc currentApplication(): Application =
+  if gApplication == nil:
+    gApplication = newApplication(getCurrentDir())
+  gApplication
+
+proc application*(scope: Scope): Application =
+  if scope != nil and scope.application != nil:
+    return Application(scope.application)
+  currentApplication()
+
+proc builtinsScope*(app: Application): Scope =
+  ## The single built-ins root scope for this application. Every module/program
+  ## scope created for `app` shares these built-in protocol/type values.
+  if app.builtins == nil:
+    app.builtins = buildBuiltins(app)
+  app.builtins
 
 proc builtinsScope*(): Scope =
-  ## The single built-ins root scope for this application. Built lazily and
-  ## reset by `initModuleContext`, so every module/program scope created during
-  ## one run shares the same built-in protocol/type values (design §15.1).
-  if gBuiltins == nil:
-    gBuiltins = buildBuiltins()
-  gBuiltins
+  currentApplication().builtinsScope()
+
+proc newGlobalScope*(app: Application): Scope =
+  ## A fresh program/module root scope. Its parent is the application's shared
+  ## built-ins root, so declarations stay isolated while lookup falls through to
+  ## built-ins with stable marker protocol/type identity.
+  newScope(app.builtinsScope(), application = app)
 
 proc newGlobalScope*(): Scope =
-  ## A fresh program/module root scope. Its parent is the shared built-ins root,
-  ## so top-level declarations stay isolated in this scope while name lookup
-  ## falls through to the built-ins. Built-in marker protocols (`Error`, `Send`)
-  ## and checked-error types are singletons across the application, which is what
-  ## makes cross-module `^errors` / marker-protocol checks resolve to the same
-  ## value (issues with per-module fresh built-ins).
-  newScope(builtinsScope())
+  newGlobalScope(currentApplication())
 
 proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
   ## Create the first-class module value for a module root scope. The root
@@ -1062,31 +1099,15 @@ proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
 # Module loading (design §15.4/§15.6)
 # ---------------------------------------------------------------------------
 #
-# A single-Application MVP: global cache + cycle set + current/root directories.
-# Each module gets its own root scope (a child of the shared built-ins root via
-# newGlobalScope), so module declarations stay isolated from one another and from
-# their importer while built-in protocol/type identity is shared application-wide.
+proc initModuleContext*(entryDir: string): Application {.discardable.} =
+  ## Reset the default loader for a fresh program run rooted at `entryDir`.
+  ## Existing callers can ignore the returned Application; new code can keep it
+  ## and pass it to `newGlobalScope(app)`.
+  gApplication = newApplication(entryDir)
+  gApplication
 
-var
-  moduleCache: Table[string, Value]   # normalized abs path -> Module value
-  moduleLoading: HashSet[string]      # paths mid-load, for cycle detection
-  currentModuleDir = getCurrentDir()  # dir of the module currently executing
-  packageRoot = getCurrentDir()       # root for bare and absolute "/x" paths
-
-proc initModuleContext*(entryDir: string) =
-  ## Reset the loader for a fresh program run rooted at `entryDir`. Drops the
-  ## built-ins root so a new run rebuilds it; modules loaded during this run then
-  ## share that one instance via `newGlobalScope`.
-  gBuiltins = nil
-  moduleCache = initTable[string, Value]()
-  moduleLoading = initHashSet[string]()
-  let dir = normalizedPath(absolutePath(
-    if entryDir.len > 0: entryDir else: getCurrentDir()))
-  currentModuleDir = dir
-  packageRoot = dir
-
-proc isWithinPackageRoot(path: string): bool =
-  let root = normalizedPath(absolutePath(packageRoot))
+proc isWithinPackageRoot(app: Application, path: string): bool =
+  let root = normalizedPath(absolutePath(app.packageRoot))
   if path == root:
     return true
   let prefix =
@@ -1094,21 +1115,21 @@ proc isWithinPackageRoot(path: string): bool =
     else: root & $DirSep
   path.startsWith(prefix)
 
-proc resolveModulePath(rawPath: string): string =
+proc resolveModulePath(app: Application, rawPath: string): string =
   ## Normalize a `from "path"` string to a stable absolute module identity.
   var p = rawPath
   if splitFile(p).ext.len == 0:
     p = p & ".gene"          # MVP extension policy
   let base =
-    if p.startsWith("./") or p.startsWith("../"): currentModuleDir
-    else: packageRoot        # bare and leading-"/" resolve from the root
+    if p.startsWith("./") or p.startsWith("../"): app.currentModuleDir
+    else: app.packageRoot    # bare and leading-"/" resolve from the root
   if p.startsWith("/"):
     p = p[1 .. ^1]
   result = normalizedPath(absolutePath(p, base))
-  if not result.isWithinPackageRoot:
+  if not app.isWithinPackageRoot(result):
     raise newException(GeneError, "module path escapes package root: " & rawPath)
 
-proc loadModuleValue(absPath: string): Value
+proc loadModuleValue(app: Application, absPath: string): Value
 
 proc isSubtypeOf(actual, expected: Value): bool {.inline.} =
   if expected.kind != vkType:
@@ -1607,12 +1628,12 @@ proc namespaceForEnvSource(source: Value): Value =
   else:
     VOID
 
-proc normalizeEnvImport(item: Value): Value =
+proc normalizeEnvImport(app: Application, item: Value): Value =
   case item.kind
   of vkModule, vkNamespace:
     item
   of vkString:
-    loadModuleValue(resolveModulePath(item.strVal))
+    loadModuleValue(app, app.resolveModulePath(item.strVal))
   else:
     raise newException(GeneError,
       "env ^imports entries must be modules, namespaces, or module path strings")
@@ -1963,8 +1984,9 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       if capabilities.kind != vkNil and capabilities.kind != vkMap:
         raise newException(GeneError, "env ^capabilities must be a map")
       var imports: seq[Value]
+      let app = scope.application()
       for item in importsValue.listItems:
-        imports.add normalizeEnvImport(item)
+        imports.add normalizeEnvImport(app, item)
       stack.add newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
                        imports, module, capabilities, policy)
     of opEval:
@@ -2058,7 +2080,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       let spec = chunk.imports[inst[].intArg]
       var source: Value
       if spec.fromModule:
-        source = loadModuleValue(resolveModulePath(spec.modulePath))
+        let app = scope.application()
+        source = loadModuleValue(app, app.resolveModulePath(spec.modulePath))
       else:
         # Namespace path: resolve segments against the current scope.
         source = scope.lookup(spec.nsSegments[0])
@@ -2997,24 +3020,24 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc call*(callee: Value, args: seq[Value] = @[]): Value =
   applyCall(callee, args, NamedArgs())
 
-proc loadModuleValue(absPath: string): Value =
+proc loadModuleValue(app: Application, absPath: string): Value =
   ## Load, execute, and cache a module; return its first-class Module value.
   ## Modules run at most once (cache) and import cycles are rejected (loading set).
-  if moduleCache.hasKey(absPath):
-    return moduleCache[absPath]
-  if absPath in moduleLoading:
+  if app.moduleCache.hasKey(absPath):
+    return app.moduleCache[absPath]
+  if absPath in app.moduleLoading:
     raise newException(GeneError, "import cycle detected at " & absPath)
   if not fileExists(absPath):
     raise newException(GeneError, "module not found: " & absPath)
-  moduleLoading.incl absPath
+  app.moduleLoading.incl absPath
   let src = readFile(absPath)
-  let modScope = newGlobalScope()
+  let modScope = newGlobalScope(app)
   result = bindThisModule(modScope, splitFile(absPath).name, absPath)
-  let savedDir = currentModuleDir
-  currentModuleDir = parentDir(absPath)
+  let savedDir = app.currentModuleDir
+  app.currentModuleDir = parentDir(absPath)
   try:
     discard run(compileSource(src), modScope)
   finally:
-    currentModuleDir = savedDir
-    moduleLoading.excl absPath
-  moduleCache[absPath] = result
+    app.currentModuleDir = savedDir
+    app.moduleLoading.excl absPath
+  app.moduleCache[absPath] = result

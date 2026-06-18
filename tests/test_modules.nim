@@ -96,6 +96,22 @@ suite "modules — file imports":
     writeModule("m.gene", "(var v 1)")
     check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (= a b)").print() == "true"
 
+  test "applications isolate module cache and package roots":
+    let dirA = modDir / "app-a"
+    let dirB = modDir / "app-b"
+    createDir(dirA)
+    createDir(dirB)
+    writeFile(dirA / "lib.gene", "(var value \"A\")")
+    writeFile(dirB / "lib.gene", "(var value \"B\")")
+    let appA = newApplication(dirA)
+    let appB = newApplication(dirB)
+    discard initModuleContext(dirB)
+    let src = "(import [value] from \"./lib\") value"
+    check run(compileSource(src), newGlobalScope(appA)).print() == "\"A\""
+    check run(compileSource(src), newGlobalScope(appB)).print() == "\"B\""
+    writeFile(dirA / "lib.gene", "(var value \"changed\")")
+    check run(compileSource(src), newGlobalScope(appA)).print() == "\"A\""
+
   test "transitive imports resolve relative to each module":
     writeModule("base.gene", "(fn one [] 1)")
     writeModule("mid.gene", "(import [one] from \"./base\") (fn two [] (+ (one) (one)))")

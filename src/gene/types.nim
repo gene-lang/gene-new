@@ -182,6 +182,10 @@ type
   ## Opaque compiled function body used by runtime function values.
   FunctionCode* = ref object of RootObj
 
+  ## Opaque runtime owner for scopes. The VM defines the concrete Application
+  ## type; the value layer keeps only this base reference.
+  RuntimeContext* = ref object of RootObj
+
   ## Lexical environment for the VM (a Nim ORC ref, so pure scope/namespace
   ## cycles are collectable). A first-class `Env` (design Section 11.1) is a
   ## later, richer concept.
@@ -190,6 +194,7 @@ type
   ## `Scope -> Value(fn) -> Scope` cycle does not keep both sides alive. Function
   ## values escaping as run/eval results are cloned back to a strong capture.
   Scope* = ref object
+    application*: RuntimeContext
     parent*: Scope
     vars*: Table[string, Value]
     slots*: seq[Value]
