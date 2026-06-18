@@ -28,6 +28,13 @@ proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   false
 
 proc define*(scope: Scope, name: string, v: Value) =
+  if scope.vars.hasKey(name):
+    raise newException(GeneError, "duplicate binding: " & name)
+  scope.vars[name] = v
+
+proc defineOverlay(scope: Scope, name: string, v: Value) =
+  ## Internal overlay write for Env materialization: child Env bindings should
+  ## shadow copied parent bindings without acting like source declarations.
   scope.vars[name] = v
 
 proc assign*(scope: Scope, name: string, v: Value) =
@@ -1283,7 +1290,7 @@ proc copyEnvBindings(env: Value, target: Scope) =
   if parent.kind != vkNil:
     copyEnvBindings(parent, target)
   for k, v in env.envBindings:
-    target.define(k, v)
+    target.defineOverlay(k, v)
 
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =

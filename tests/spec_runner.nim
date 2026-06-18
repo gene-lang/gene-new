@@ -232,6 +232,14 @@ suite "spec — modules from design":
     discard bindThisModule(scope, "implicit")
     check run(compileSource("(mod app) this-mod"), scope).print() == "(ns app)"
 
+  test "duplicate bindings in one namespace are rejected":
+    expect GeneError:
+      discard run(compileSource("(var x 1) (var x 2)"), newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(ns m (var x 1) (var x 2))"),
+                  newGlobalScope())
+    check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

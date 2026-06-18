@@ -269,6 +269,10 @@ suite "vm — special forms":
     expect GeneError: discard runStr("(set nope 1)")
   test "undefined symbol raises":
     expect GeneError: discard runStr("nope")
+  test "duplicate bindings in one scope are rejected":
+    expect GeneError: discard runStr("(var x 1) (var x 2)")
+    expect GeneError: discard runStr("(fn f [] 1) (fn f [] 2)")
+    ck "(var x 1) (set x 2) x", "2"
 
 suite "vm — functions and closures":
   test "anonymous function application":
@@ -475,6 +479,9 @@ suite "vm — namespaces":
     ck "(ns a (ns b (var x 42))) a/b/x", "42"
   test "ns body sees outer bindings and built-ins":
     ck "(var base 100) (ns m (var total (+ base 1))) m/total", "101"
+  test "ns rejects duplicate local bindings only":
+    expect GeneError: discard runStr("(ns m (var x 1) (var x 2))")
+    ck "(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]"
   test "a missing namespace member is void":
     ck "(ns n (var a 1)) n/nope", "void"
   test "namespace exports do not leak into the enclosing scope":
@@ -515,6 +522,12 @@ suite "vm — env and eval":
        "(var child (env ^parent base ^bindings {^y 20})) " &
        "[(eval (quote x) ^in child) (eval (quote y) ^in child)]",
        "[10 20]"
+
+  test "env child bindings shadow parent bindings":
+    ck "(var base (env ^bindings {^x 10})) " &
+       "(var child (env ^parent base ^bindings {^x 20})) " &
+       "(eval (quote x) ^in child)",
+       "20"
 
   test "eval compile failures are typed CompileError values":
     ck "(try (eval (quote (var)) ^in (env)) " &

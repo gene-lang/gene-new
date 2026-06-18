@@ -144,6 +144,13 @@ suite "modules — file imports":
     writeModule("math.gene", "(var pi 3)")
     expect GeneError: discard runProgram("(import [nope] from \"./math\")")
 
+  test "selected imports reject duplicate local bindings":
+    writeModule("math.gene", "(var pi 3) (var tau 6)")
+    expect GeneError:
+      discard runProgram("(import [pi] from \"./math\") (var pi 4)")
+    expect GeneError:
+      discard runProgram("(import [pi : n, tau : n] from \"./math\")")
+
   test "missing module raises":
     expect GeneError: discard runProgram("(import [x] from \"./does-not-exist\")")
 
