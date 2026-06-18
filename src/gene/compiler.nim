@@ -762,7 +762,7 @@ proc compileEnv(c: var Compiler, node: Value) =
   if node.body.len != 0:
     raise newException(GeneError, "env does not take positional arguments")
   for key, _ in node.props:
-    if key notin ["bindings", "parent"]:
+    if key notin ["bindings", "parent", "imports", "module", "capabilities", "policy"]:
       raise newException(GeneError, "env unknown option: ^" & key)
   if node.props.hasKey("bindings"):
     compileExpr(c, node.props["bindings"])
@@ -770,6 +770,22 @@ proc compileEnv(c: var Compiler, node: Value) =
     c.emitConst newMap()
   if node.props.hasKey("parent"):
     compileExpr(c, node.props["parent"])
+  else:
+    c.emitConst NIL
+  if node.props.hasKey("imports"):
+    compileExpr(c, node.props["imports"])
+  else:
+    c.emitConst newList()
+  if node.props.hasKey("module"):
+    compileExpr(c, node.props["module"])
+  else:
+    c.emitConst NIL
+  if node.props.hasKey("capabilities"):
+    compileExpr(c, node.props["capabilities"])
+  else:
+    c.emitConst NIL
+  if node.props.hasKey("policy"):
+    compileExpr(c, node.props["policy"])
   else:
     c.emitConst NIL
   discard c.emit(opMakeEnv)

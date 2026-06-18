@@ -255,6 +255,10 @@ type
   EnvData = ref object of GeneObjectData
     parent: Value         # parent Env value, or NIL
     bindings: Table[string, Value]
+    imports: seq[Value]
+    module: Value
+    capabilities: Value
+    policy: Value
 
   CellData = ref object of GeneObjectData
     value: Value
@@ -945,6 +949,26 @@ proc envBindings*(v: Value): lent Table[string, Value] =
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).bindings
 
+proc envImports*(v: Value): lent seq[Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).imports
+
+proc envModule*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).module
+
+proc envCapabilities*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).capabilities
+
+proc envPolicy*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).policy
+
 proc cellValue*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okCell:
     raise newException(FieldDefect, "value is not a Cell")
@@ -1523,8 +1547,14 @@ proc newModule*(name: string, root: Value, path = "",
                        meta: meta))
 
 proc newEnv*(bindings: sink Table[string, Value],
-             parent: Value = NIL): Value =
-  boxObject(EnvData(objKind: okEnv, parent: parent, bindings: bindings))
+             parent: Value = NIL,
+             imports: sink seq[Value] = @[],
+             module: Value = NIL,
+             capabilities: Value = NIL,
+             policy: Value = NIL): Value =
+  boxObject(EnvData(objKind: okEnv, parent: parent, bindings: bindings,
+                    imports: imports, module: module,
+                    capabilities: capabilities, policy: policy))
 
 proc newCell*(value: Value): Value =
   boxObject(CellData(objKind: okCell, value: value))

@@ -254,3 +254,21 @@ suite "modules — namespace-path imports and mod":
     discard bindThisModule(scope, "implicit")
     check run(compileSource("(mod explicit) this-mod"), scope).print() ==
       "(mod explicit)"
+
+suite "modules — Env imports":
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+
+  test "eval env can import a module path string":
+    writeModule("envlib.gene", "(var answer 42)")
+    check runProgram("(var e (env ^imports [\"./envlib\"])) " &
+      "(eval (quote answer) ^in e)").print() == "42"
+
+  test "eval env module imports make impls visible":
+    writeModule("showlib.gene",
+      "(protocol Show (message show [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(impl Show T (message show [self] : Str \"ok\"))")
+    check runProgram("(var e (env ^imports [\"./showlib\"])) " &
+      "(eval (quote (show (T))) ^in e)").print() == "\"ok\""

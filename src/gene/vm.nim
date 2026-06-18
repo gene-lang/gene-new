@@ -460,6 +460,10 @@ proc requireModule(name: string, value: Value) =
   if value.kind != vkModule:
     raise newException(GeneError, name & " expects a Module")
 
+proc requireEnv(name: string, value: Value) =
+  if value.kind != vkEnv:
+    raise newException(GeneError, name & " expects an Env")
+
 proc raiseEndOfStream() =
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr("end of stream")
@@ -635,6 +639,19 @@ proc biModuleDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Module/declarations", args)
   requireModule("Module/declarations", args[0])
   newStream(namespaceDeclarationNodes(args[0].moduleRootNamespace))
+
+proc bindingsFromMap(name: string, value: Value): Table[string, Value] =
+  if value.kind != vkMap:
+    raise newException(GeneError, name & " must be a map")
+  result = initTable[string, Value]()
+  for k, v in value.mapEntries:
+    result[k] = v
+
+proc biEnvExtend(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Env/extend expects 2 arguments, got " & $args.len)
+  requireEnv("Env/extend", args[0])
+  newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0])
 
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
@@ -993,6 +1010,9 @@ proc buildBuiltins(): Scope =
   moduleScope.define("declarations",
     newNativeFn("Module/declarations", biModuleDeclarations))
   result.define("Module", newNamespace("Module", moduleScope))
+  let envScope = newScope(result)
+  envScope.define("extend", newNativeFn("Env/extend", biEnvExtend))
+  result.define("Env", newNamespace("Env", envScope))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
   result.define("map", newNativeFn("map", biStreamMap))
@@ -1558,14 +1578,76 @@ proc raiseCompileError(scope: Scope, message: string) =
   e.hasErrVal = true
   raise e
 
-proc copyEnvBindings(env: Value, target: Scope) =
+proc namespaceForEnvSource(source: Value): Value =
+  case source.kind
+  of vkModule:
+    source.moduleRootNamespace
+  of vkNamespace:
+    source
+  else:
+    VOID
+
+proc normalizeEnvImport(item: Value): Value =
+  case item.kind
+  of vkModule, vkNamespace:
+    item
+  of vkString:
+    loadModuleValue(resolveModulePath(item.strVal))
+  else:
+    raise newException(GeneError,
+      "env ^imports entries must be modules, namespaces, or module path strings")
+
+proc envChain(env: Value): seq[Value] =
   if env.kind != vkEnv:
     raise newException(GeneError, "expected Env")
   let parent = env.envParent
   if parent.kind != vkNil:
-    copyEnvBindings(parent, target)
-  for k, v in env.envBindings:
-    target.defineOverlay(k, v)
+    result = envChain(parent)
+  result.add env
+
+proc nearestEnvModule(chain: openArray[Value]): Value =
+  if chain.len == 0:
+    return NIL
+  for i in countdown(chain.high, 0):
+    let module = chain[i].envModule
+    if module.kind != vkNil:
+      return module
+  NIL
+
+proc importNamespaceBindings(target: Scope, source: Value) =
+  let sourceNs = namespaceForEnvSource(source)
+  if sourceNs.kind != vkNamespace:
+    raise newException(GeneError, "env import source is not a namespace")
+  target.makeImplsVisible(sourceNs.nsScope)
+  for name in sortedBindingNames(sourceNs.nsScope):
+    let value = sourceNs.exportedBinding(name)
+    if value.kind != vkVoid:
+      target.define(name, value)
+
+proc materializeEvalParent(env: Value): Scope =
+  let chain = envChain(env)
+  let module = nearestEnvModule(chain)
+  var current = builtinsScope()
+  if module.kind != vkNil:
+    let moduleScope = newScope(current)
+    moduleScope.importNamespaceBindings(module)
+    current = moduleScope
+
+  var importScope: Scope
+  for itemEnv in chain:
+    for imported in itemEnv.envImports:
+      if importScope == nil:
+        importScope = newScope(current)
+      importScope.importNamespaceBindings(imported)
+  if importScope != nil:
+    current = importScope
+
+  for itemEnv in chain:
+    let bindingScope = newScope(current)
+    for k, v in itemEnv.envBindings:
+      bindingScope.defineOverlay(k, v)
+    current = bindingScope
+  current
 
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =
@@ -1600,6 +1682,18 @@ proc collectProtocolMatchesExtra(scope, currentScope: Scope, protocol, recvType,
       collectProtocolMatches(s, protocol, recvType, message, matches)
     s = s.parent
 
+proc dedupeProtocolMatches(matches: var seq[Value]) =
+  var unique: seq[Value]
+  for candidate in matches:
+    var duplicate = false
+    for existing in unique:
+      if same(existing, candidate):
+        duplicate = true
+        break
+    if not duplicate:
+      unique.add candidate
+  matches = unique
+
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
   if scope == nil:
     raise newException(GeneError,
@@ -1621,6 +1715,7 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       collectProtocolMatchesExtra(definingScope, scope, protocol, recvType, message,
                                   seenExtraScopes, matches)
     typ = typ.typeParent
+  matches.dedupeProtocolMatches()
   if matches.len == 0:
     raise newException(GeneError,
       "missing impl " & protocol.protocolName & " for " & recvType.typeName)
@@ -1831,23 +1926,33 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       stack.add newFunction(proto.name, proto.params, proto, scope,
                             proto.checksErrors, errorTypes)
     of opMakeEnv:
+      let policy = stack.pop()
+      let capabilities = stack.pop()
+      let module = stack.pop()
+      let importsValue = stack.pop()
       let parent = stack.pop()
       let bindingMap = stack.pop()
       if bindingMap.kind != vkMap:
         raise newException(GeneError, "env ^bindings must be a map")
       if parent.kind != vkNil and parent.kind != vkEnv:
         raise newException(GeneError, "env ^parent must be an Env")
-      var bindings = initTable[string, Value]()
-      for k, v in bindingMap.mapEntries:
-        bindings[k] = v
-      stack.add newEnv(bindings, parent)
+      if importsValue.kind != vkList:
+        raise newException(GeneError, "env ^imports must be a list")
+      if module.kind != vkNil and module.kind notin {vkModule, vkNamespace}:
+        raise newException(GeneError, "env ^module must be a Module or Namespace")
+      if capabilities.kind != vkNil and capabilities.kind != vkMap:
+        raise newException(GeneError, "env ^capabilities must be a map")
+      var imports: seq[Value]
+      for item in importsValue.listItems:
+        imports.add normalizeEnvImport(item)
+      stack.add newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
+                       imports, module, capabilities, policy)
     of opEval:
       let env = stack.pop()
       let node = stack.pop()
       if env.kind != vkEnv:
         raise newException(GeneError, "eval ^in must be an Env")
-      let evalScope = newGlobalScope()
-      copyEnvBindings(env, evalScope)
+      let evalScope = newScope(materializeEvalParent(env))
       let evalChunk =
         try:
           compileForm(node)

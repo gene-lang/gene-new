@@ -353,6 +353,12 @@ suite "spec — Env and eval from design":
                "(eval (quote from-module) ^in e)",
                "\"ok\"")
 
+  test "eval module context does not mutate the source namespace":
+    check_eval("(ns app (var x 1)) " &
+               "(var e (env ^module app)) " &
+               "[(eval (quote (set x 2)) ^in e) (/x app)]",
+               "[2 1]")
+
   test "eval declarations shadow Env bindings without mutating Env":
     check_eval("(var e (env ^bindings {^x 1})) " &
                "[(eval (quote (do (var x 2) x)) ^in e) " &
