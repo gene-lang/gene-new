@@ -1327,6 +1327,22 @@ proc pop(stack: var seq[Value]): Value =
   result = stack[^1]
   stack.setLen(stack.len - 1)
 
+const MaxRunStackPool = 64
+
+var runStackPool {.threadvar.}: seq[seq[Value]]
+
+proc acquireRunStack(): seq[Value] =
+  if runStackPool.len == 0:
+    return @[]
+  let index = runStackPool.high
+  result = runStackPool[index]
+  runStackPool.setLen(index)
+
+proc releaseRunStack(stack: var seq[Value]) =
+  stack.setLen(0)
+  if runStackPool.len < MaxRunStackPool:
+    runStackPool.add stack
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   messages: sink Table[string, Value]) =
   if protocol.kind != vkProtocol:
@@ -2042,6 +2058,20 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
     raise newException(GeneError, "yield is only valid in a generator")
   stopped.value
 
+proc runPooled(chunk: Chunk, scope: Scope,
+               validateImplRequirements = true): Value =
+  if chunk.localNames.len == 0:
+    return run(chunk, scope, validateImplRequirements)
+  scope.prepareChunkScope(chunk)
+  var stack = acquireRunStack()
+  var ip = 0
+  let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
+                        validateImplRequirements = validateImplRequirements)
+  releaseRunStack(stack)
+  if stopped.kind == rskYield:
+    raise newException(GeneError, "yield is only valid in a generator")
+  stopped.value
+
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
   let code = stream.streamGeneratorCode
   if code == nil or not (code of FunctionProto):
@@ -2661,7 +2691,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       return resultValue
     var resultValue: Value
     try:
-      resultValue = run(proto.chunk, callScope)
+      resultValue = runPooled(proto.chunk, callScope)
     except GeneError as e:
       if not callee.fnChecksErrors:
         raise
