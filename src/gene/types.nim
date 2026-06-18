@@ -61,6 +61,7 @@ type
     vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
     vkStream    ## first-class pull stream (design Section 6)
     vkTask      ## first-class structured task handle (design Section 13)
+    vkChannel   ## first-class bounded FIFO channel (design Section 13.2)
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -248,6 +249,7 @@ type
     okAtomicCell
     okStream
     okTask
+    okChannel
     okType
     okProtocol
     okProtocolMessage
@@ -316,6 +318,16 @@ type
     panicMsg: string
     panicValue: Value
     hasPanicValue: bool
+
+  ChannelState = ref object
+    items: seq[Value]
+    capacity: int
+    closed: bool
+
+  ChannelData = ref object of GeneObjectData
+    state: ChannelState
+    itemType: Value
+    itemScope: Scope
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -759,6 +771,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okAtomicCell: vkAtomicCell
     of okStream: vkStream
     of okTask: vkTask
+    of okChannel: vkChannel
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -921,6 +934,8 @@ proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).acceptsNamed
+
+proc escapeWeakFunctions*(v: Value): Value
 
 proc nsName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
@@ -1192,6 +1207,44 @@ proc clearTaskPayload*(v: Value) =
   data.panicMsg = ""
   data.panicValue = NIL
   data.hasPanicValue = false
+
+proc channelData(v: Value): ChannelData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okChannel:
+    raise newException(FieldDefect, "value is not a Channel")
+  ChannelData(objData(v))
+
+proc channelCapacity*(v: Value): int =
+  channelData(v).state.capacity
+
+proc channelLen*(v: Value): int =
+  channelData(v).state.items.len
+
+proc channelClosed*(v: Value): bool =
+  channelData(v).state.closed
+
+proc channelFull*(v: Value): bool =
+  let data = channelData(v)
+  data.state.items.len >= data.state.capacity
+
+proc channelItemType*(v: Value): Value =
+  channelData(v).itemType
+
+proc channelItemScope*(v: Value): Scope =
+  channelData(v).itemScope
+
+proc closeChannel*(v: Value) =
+  channelData(v).state.closed = true
+
+proc pushChannel*(v, item: Value) =
+  let data = channelData(v)
+  data.state.items.add escapeWeakFunctions(item)
+
+proc popChannel*(v: Value): Value =
+  let data = channelData(v)
+  if data.state.items.len == 0:
+    raise newException(FieldDefect, "channel is empty")
+  result = data.state.items[0]
+  data.state.items.delete(0)
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -1641,6 +1694,22 @@ proc escapeWeakFunctions*(v: Value): Value =
                        panicMsg: data.panicMsg,
                        panicValue: escapedPanic,
                        hasPanicValue: data.hasPanicValue))
+  of vkChannel:
+    let data = channelData(v)
+    var changed = false
+    var escapedItems = newSeq[Value](data.state.items.len)
+    for i, item in data.state.items:
+      escapedItems[i] = escapeWeakFunctions(item)
+      if escapedItems[i].bits != item.bits:
+        changed = true
+    if not changed:
+      return v
+    let escapedState = ChannelState(items: escapedItems,
+                                    capacity: data.state.capacity,
+                                    closed: data.state.closed)
+    boxObject(ChannelData(objKind: okChannel, state: escapedState,
+                          itemType: data.itemType,
+                          itemScope: data.itemScope))
   else:
     v
 
@@ -1661,6 +1730,15 @@ proc newPanickedTask*(message: string, value: Value = NIL,
                      panicMsg: message,
                      panicValue: escapeWeakFunctions(value),
                      hasPanicValue: hasValue))
+
+proc newChannel*(capacity = 16): Value =
+  boxObject(ChannelData(objKind: okChannel,
+                        state: ChannelState(capacity: capacity)))
+
+proc newCheckedChannel*(source, itemType: Value, itemScope: Scope): Value =
+  let data = channelData(source)
+  boxObject(ChannelData(objKind: okChannel, state: data.state,
+                        itemType: itemType, itemScope: itemScope))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

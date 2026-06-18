@@ -395,6 +395,30 @@ suite "spec — structured tasks from design":
   test "Task annotations accept task handles":
     check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
 
+suite "spec — bounded channels from design":
+  test "channels send, receive, and close in FIFO order":
+    check_eval("(var ch (channel ^capacity 2)) " &
+               "(ch ~ Channel/send 1) " &
+               "(ch ~ Channel/send 2) " &
+               "(ch ~ Channel/close) " &
+               "[(ch ~ Channel/recv) " &
+               " (ch ~ Channel/recv) " &
+               " (try (ch ~ Channel/recv) catch (ChannelClosed ^message m) m)]",
+               "[1 2 \"channel is closed\"]")
+
+  test "try-send and try-recv expose non-suspending channel checks":
+    check_eval("(var ch (channel ^capacity 1)) " &
+               "[(ch ~ Channel/try-send 1) " &
+               " (ch ~ Channel/try-send 2) " &
+               " (ch ~ Channel/recv) " &
+               " (same? (ch ~ Channel/try-recv) void)]",
+               "[true false 1 true]")
+
+  test "typed channel boundaries check items before enqueue":
+    check_eval("(var ch : (Channel Int) (channel)) " &
+               "(try (ch ~ Channel/send \"bad\") catch (TypeError ^where w) w)",
+               "\"Channel/send item\"")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

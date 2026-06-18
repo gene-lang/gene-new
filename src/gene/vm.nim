@@ -456,6 +456,113 @@ proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
   args[0].cancelTask()
   NIL
 
+proc requireChannel(name: string, value: Value) =
+  if value.kind != vkChannel:
+    raise newException(GeneError, name & " expects a Channel")
+
+proc raiseChannelClosed(scope: Scope) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr("channel is closed")
+  var head = newSym("ChannelClosed")
+  var closedType: Value
+  if scope != nil and scope.lookupOptional("ChannelClosed", closedType) and
+      closedType.kind == vkType:
+    head = closedType
+  var e: ref GeneError
+  new(e)
+  e.msg = "channel is closed"
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
+proc nativeNamedIndex(call: ptr NativeCall, name: string): int =
+  if call == nil:
+    return -1
+  for i, key in call[].namedNames:
+    if key == name:
+      return i
+  -1
+
+proc channelCapacityArg(args: openArray[Value], call: ptr NativeCall): int =
+  if args.len != 0:
+    raise newException(GeneError, "channel expects no positional arguments")
+  result = 16
+  if call != nil:
+    for name in call[].namedNames:
+      if name != "capacity":
+        raise newException(GeneError, "channel got unexpected named argument: " & name)
+    let index = nativeNamedIndex(call, "capacity")
+    if index >= 0:
+      let raw = requireInt64("channel capacity", call[].namedValues[index])
+      if raw > int64(high(int)):
+        raise newException(GeneError, "channel capacity is too large")
+      result = int(raw)
+  if result <= 0:
+    raise newException(GeneError, "channel capacity must be positive")
+
+proc biChannel(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  newChannel(channelCapacityArg(args, call))
+
+proc checkedChannelItem(channel, item: Value, where: string,
+                        fallbackScope: Scope): Value =
+  let itemType = channel.channelItemType
+  if itemType.kind == vkNil:
+    return item
+  let itemScope =
+    if channel.channelItemScope == nil: fallbackScope
+    else: channel.channelItemScope
+  adaptBoundary(where, itemType, item, itemScope)
+
+proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
+  requireChannel("Channel/send", args[0])
+  if args[0].channelClosed:
+    raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
+  if args[0].channelFull:
+    raise newException(GeneError, "Channel/send would suspend on a full channel")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  args[0].pushChannel(checkedChannelItem(args[0], args[1],
+                                         "Channel/send item", scope))
+  NIL
+
+proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Channel/try-send expects 2 arguments, got " & $args.len)
+  requireChannel("Channel/try-send", args[0])
+  if args[0].channelClosed or args[0].channelFull:
+    return FALSE
+  let scope = if call == nil: nil else: call[].dispatchScope
+  args[0].pushChannel(checkedChannelItem(args[0], args[1],
+                                         "Channel/try-send item", scope))
+  TRUE
+
+proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Channel/recv", args)
+  requireChannel("Channel/recv", args[0])
+  if args[0].channelLen > 0:
+    let scope = if call == nil: nil else: call[].dispatchScope
+    return checkedChannelItem(args[0], args[0].popChannel(),
+                              "Channel/recv item", scope)
+  if args[0].channelClosed:
+    raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
+  raise newException(GeneError, "Channel/recv would suspend on an empty channel")
+
+proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Channel/try-recv", args)
+  requireChannel("Channel/try-recv", args[0])
+  if args[0].channelLen == 0:
+    return VOID
+  let scope = if call == nil: nil else: call[].dispatchScope
+  checkedChannelItem(args[0], args[0].popChannel(), "Channel/try-recv item",
+                     scope)
+
+proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Channel/close", args)
+  requireChannel("Channel/close", args[0])
+  args[0].closeChannel()
+  NIL
+
 proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
     raise newException(GeneError, name & " expects a Stream")
@@ -587,6 +694,7 @@ proc declarationKind(value: Value): string =
   of vkAtomicCell: "AtomicCell"
   of vkStream: "Stream"
   of vkTask: "Task"
+  of vkChannel: "Channel"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -986,6 +1094,14 @@ proc buildBuiltins(app: Application): Scope =
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: compileError,
                                 messages: initTable[string, Value]())
+  let channelClosed = newType("ChannelClosed", NIL,
+                              @[TypeField(name: "message", optional: false,
+                                          typeExpr: newSym("Str"), scope: result)],
+                              @[errorProtocol], result)
+  result.define("ChannelClosed", channelClosed)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: channelClosed,
+                                messages: initTable[string, Value]())
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
@@ -1021,6 +1137,21 @@ proc buildBuiltins(app: Application): Scope =
   let taskScope = newScope(result)
   taskScope.define("cancel", newNativeFn("Task/cancel", biTaskCancel))
   result.define("Task", newNamespace("Task", taskScope))
+  result.define("channel", newNativeCallFn("channel", biChannel))
+  let channelScope = newScope(result)
+  channelScope.define("send", newNativeCallFn("Channel/send", biChannelSend,
+                                             acceptsNamed = false))
+  channelScope.define("try-send", newNativeCallFn("Channel/try-send",
+                                                 biChannelTrySend,
+                                                 acceptsNamed = false))
+  channelScope.define("recv", newNativeCallFn("Channel/recv", biChannelRecv,
+                                             acceptsNamed = false))
+  channelScope.define("try-recv", newNativeCallFn("Channel/try-recv",
+                                                 biChannelTryRecv,
+                                                 acceptsNamed = false))
+  channelScope.define("close", newNativeCallFn("Channel/close", biChannelClose,
+                                              acceptsNamed = false))
+  result.define("Channel", newNamespace("Channel", channelScope))
   result.define("declarations", newNativeFn("declarations", biDeclarations))
   let namespaceScope = newScope(result)
   namespaceScope.define("bindings", newNativeFn("Namespace/bindings", biNamespaceBindings))
@@ -2443,6 +2574,12 @@ proc runtimeTypeExpr(value: Value): Value =
         else: value.streamErrType
       typeNode("Stream", @[itemType, errType])
   of vkTask: newSym("Task")
+  of vkChannel:
+    let itemType = value.channelItemType
+    if itemType.kind == vkNil:
+      newSym("Channel")
+    else:
+      typeNode("Channel", @[itemType])
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -2531,6 +2668,18 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
             expr.body[1].symVal in typeParams:
           if not bindings.bindTypeParam(expr.body[1].symVal, errType):
             return false
+        return true
+      of "Channel":
+        if value.kind != vkChannel:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Channel T) expects one item type")
+        let itemType = value.channelItemType
+        if itemType.kind != vkNil and expr.body[0].kind == vkSymbol and
+            expr.body[0].symVal in typeParams:
+          return bindings.bindTypeParam(expr.body[0].symVal, itemType)
         return true
       else:
         discard
@@ -2686,8 +2835,69 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkStream)
   of "Task":
     (true, value.kind == vkTask)
+  of "Channel":
+    (true, value.kind == vkChannel)
   else:
     (false, false)
+
+proc closeTypeExpr(expr: Value, scope: Scope): Value =
+  ## Convert nominal type references that require lexical lookup into direct
+  ## Type values before storing a boundary on an escaping runtime object. Builtin
+  ## annotation names stay symbolic so hot scalar checks keep their cheap path.
+  case expr.kind
+  of vkSymbol:
+    let builtin = matchesBuiltinType(expr.symVal, NIL)
+    let canBeLocalBuiltin = expr.symVal == "Task" or expr.symVal == "Channel"
+    if (not builtin.known or canBeLocalBuiltin) and scope != nil:
+      var resolved: Value
+      if scope.lookupOptional(expr.symVal, resolved) and resolved.kind == vkType:
+        return resolved
+    expr
+  of vkNode:
+    var changed = false
+    var props = initOrderedTable[string, Value]()
+    for key, value in expr.props:
+      let closed = closeTypeExpr(value, scope)
+      props[key] = closed
+      if closed.bits != value.bits:
+        changed = true
+    var body: seq[Value]
+    for item in expr.body:
+      let closed = closeTypeExpr(item, scope)
+      body.add closed
+      if closed.bits != item.bits:
+        changed = true
+    var meta = initOrderedTable[string, Value]()
+    for key, value in expr.meta:
+      let closed = closeTypeExpr(value, scope)
+      meta[key] = closed
+      if closed.bits != value.bits:
+        changed = true
+    if changed:
+      newNode(expr.head, props = props, body = body, meta = meta,
+              immutable = expr.nodeImmutable)
+    else:
+      expr
+  of vkList:
+    var changed = false
+    var items: seq[Value]
+    for item in expr.listItems:
+      let closed = closeTypeExpr(item, scope)
+      items.add closed
+      if closed.bits != item.bits:
+        changed = true
+    if changed: newList(items, expr.listImmutable) else: expr
+  of vkMap:
+    var changed = false
+    var entries = initOrderedTable[string, Value]()
+    for key, value in expr.mapEntries:
+      let closed = closeTypeExpr(value, scope)
+      entries[key] = closed
+      if closed.bits != value.bits:
+        changed = true
+    if changed: newMap(entries, expr.mapImmutable) else: expr
+  else:
+    expr
 
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   if expr.kind == vkNil:
@@ -2695,19 +2905,22 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   case expr.kind
   of vkSymbol:
     var resolved: Value
-    # `Task` is both a built-in annotation/namespace and a name existing tests
-    # use for nominal types; let local nominal declarations win for bare `Task`.
-    if expr.symVal == "Task" and scope != nil and
-        scope.lookupOptional(expr.symVal, resolved) and
+    let name = expr.symVal
+    # Some built-ins are both annotations/namespaces and legal nominal names in
+    # user code; let local nominal declarations win for bare annotations.
+    if scope != nil and
+        ((name.len == 4 and name == "Task") or
+         (name.len == 7 and name == "Channel")) and
+        scope.lookupOptional(name, resolved) and
         resolved.kind == vkType:
       return value.isInstanceOfType(resolved)
-    let builtin = matchesBuiltinType(expr.symVal, value)
+    let builtin = matchesBuiltinType(name, value)
     if builtin.known:
       return builtin.ok
-    if scope != nil and scope.lookupOptional(expr.symVal, resolved) and
+    if scope != nil and scope.lookupOptional(name, resolved) and
         resolved.kind == vkType:
       return value.isInstanceOfType(resolved)
-    raise newException(GeneError, "unknown type annotation: " & expr.symVal)
+    raise newException(GeneError, "unknown type annotation: " & name)
   of vkNode:
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
@@ -2761,6 +2974,17 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         if expr.body.len != 2:
           raise newException(GeneError, "(Task result err) expects result and error types")
         return true
+      of "Channel":
+        if value.kind != vkChannel:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Channel T) expects one item type")
+        let itemType = value.channelItemType
+        if itemType.kind != vkNil:
+          return typeExprEqual(closeTypeExpr(expr.body[0], scope), itemType)
+        return true
       else:
         discard
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
@@ -2777,6 +3001,9 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Stream") and
       typeExpr.body.len == 2:
     return newCheckedStream(value, typeExpr.body[0], typeExpr.body[1], scope)
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Channel") and
+      typeExpr.body.len == 1:
+    return newCheckedChannel(value, closeTypeExpr(typeExpr.body[0], scope), nil)
   value
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
@@ -2878,20 +3105,27 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil): Value =
   case callee.kind
   of vkNativeFn:
-    if named.len != 0:
-      if not callee.nativeAcceptsNamed:
-        raise newException(GeneError,
-          "native function '" & callee.nativeFnName & "' does not accept named arguments")
-      let callImpl = callee.nativeCallImpl
-      if callImpl == nil:
+    let impl = callee.nativeImpl
+    if impl != nil:
+      if named.len != 0:
+        if not callee.nativeAcceptsNamed:
+          raise newException(GeneError,
+            "native function '" & callee.nativeFnName & "' does not accept named arguments")
         raise newException(GeneError,
           "native function '" & callee.nativeFnName & "' cannot receive named arguments")
-      var call = NativeCall(calleeName: callee.nativeFnName,
-                            namedNames: named.names,
-                            namedValues: named.values,
-                            dispatchScope: dispatchScope)
-      return callImpl(args, addr call)
-    callee.nativeImpl()(args)
+      return impl(args)
+    let callImpl = callee.nativeCallImpl
+    if callImpl == nil:
+      raise newException(GeneError,
+        "native function '" & callee.nativeFnName & "' has no implementation")
+    if named.len != 0 and not callee.nativeAcceptsNamed:
+      raise newException(GeneError,
+        "native function '" & callee.nativeFnName & "' does not accept named arguments")
+    var call = NativeCall(calleeName: callee.nativeFnName,
+                          namedNames: named.names,
+                          namedValues: named.values,
+                          dispatchScope: dispatchScope)
+    callImpl(args, addr call)
   of vkFunction:
     let positional = callee.fnParams
     let code = callee.fnCode

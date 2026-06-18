@@ -112,6 +112,8 @@ proc print*(v: Value): string =
     "(stream)"
   of vkTask:
     "(task)"
+  of vkChannel:
+    "(channel)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

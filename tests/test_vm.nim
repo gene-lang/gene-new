@@ -869,6 +869,56 @@ suite "vm — atomic cells":
     expect GeneError: discard runStr("(AtomicCell/load 1)")
     expect GeneError: discard runStr("(AtomicCell/store (atomic-cell 1))")
 
+suite "vm — channels":
+  test "channel values are opaque display values":
+    ck "(channel)", "(channel)"
+
+  test "channels send and receive FIFO values":
+    ck "(var ch (channel ^capacity 2)) " &
+       "(ch ~ Channel/send 1) " &
+       "(ch ~ Channel/send 2) " &
+       "[(ch ~ Channel/recv) (ch ~ Channel/recv)]",
+       "[1 2]"
+
+  test "try-send and try-recv are non-blocking":
+    ck "(var ch (channel ^capacity 1)) " &
+       "[(ch ~ Channel/try-send 1) " &
+       " (ch ~ Channel/try-send 2) " &
+       " (ch ~ Channel/recv) " &
+       " (same? (ch ~ Channel/try-recv) void)]",
+       "[true false 1 true]"
+
+  test "closed channels drain buffered values before ChannelClosed":
+    ck "(var ch (channel ^capacity 1)) " &
+       "(ch ~ Channel/send 9) " &
+       "(ch ~ Channel/close) " &
+       "[(ch ~ Channel/recv) " &
+       " (try (ch ~ Channel/recv) catch (ChannelClosed ^message m) m)]",
+       "[9 \"channel is closed\"]"
+    ck "(var ch (channel)) " &
+       "(ch ~ Channel/close) " &
+       "(try (ch ~ Channel/send 1) catch (ChannelClosed ^message m) m)",
+       "\"channel is closed\""
+
+  test "typed channels check items on send":
+    ck "(var ch : (Channel Int) (channel)) " &
+       "(try (ch ~ Channel/send \"bad\") catch (TypeError ^where w) w)",
+       "\"Channel/send item\""
+    ck "(var ch : (Channel Int) (channel)) " &
+       "(ch ~ Channel/send 7) " &
+       "(ch ~ Channel/recv)",
+       "7"
+    ck "(var raw (channel)) " &
+       "(raw ~ Channel/send \"bad\") " &
+       "(var ch : (Channel Int) raw) " &
+       "(try (ch ~ Channel/recv) catch (TypeError ^where w) w)",
+       "\"Channel/recv item\""
+
+  test "channel operations require channels":
+    expect GeneError: discard runStr("(channel ^capacity 0)")
+    expect GeneError: discard runStr("(Channel/send 1 2)")
+    expect GeneError: discard runStr("(Channel/recv 1)")
+
 suite "vm — streams":
   test "stream values are opaque display values":
     ck "(to_stream [1 2])", "(stream)"
