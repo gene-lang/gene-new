@@ -2184,6 +2184,13 @@ proc bindTypeParam(bindings: var Table[string, Value], name: string,
     return true
   typeExprEqual(bindings[name], inferred)
 
+proc matchesMapKeyType(expr: Value, key: string, scope: Scope): bool =
+  ## Map keys are currently stored as canonical strings after both symbol and
+  ## string key paths. Until the value layer preserves key provenance, accept a
+  ## key if either visible representation satisfies the requested boundary.
+  expr.isAnyType or matchesTypeExpr(expr, newSym(key), scope) or
+    matchesTypeExpr(expr, newStr(key), scope)
+
 proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[string],
                    bindings: var Table[string, Value]): bool =
   if expr.kind == vkNil:
@@ -2212,10 +2219,18 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
           return false
         if expr.body.len == 0:
           return true
-        if expr.body.len != 1:
-          raise newException(GeneError, "(Map T) expects one value type in this MVP")
-        for _, item in value.mapEntries:
-          if not inferTypeExpr(expr.body[0], item, scope, typeParams, bindings):
+        if expr.body.len notin [1, 2]:
+          raise newException(GeneError, "(Map K V) expects key and value types")
+        let valueType = expr.body[^1]
+        for key, item in value.mapEntries:
+          if expr.body.len == 2 and expr.body[0].kind != vkSymbol and
+              not matchesMapKeyType(expr.body[0], key, scope):
+            return false
+          if expr.body.len == 2 and expr.body[0].kind == vkSymbol and
+              expr.body[0].symVal notin typeParams and
+              not matchesMapKeyType(expr.body[0], key, scope):
+            return false
+          if not inferTypeExpr(valueType, item, scope, typeParams, bindings):
             return false
         return true
       of "Stream":
@@ -2431,10 +2446,13 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           return false
         if expr.body.len == 0:
           return true
-        if expr.body.len != 1:
-          raise newException(GeneError, "(Map T) expects one value type in this MVP")
-        for _, item in value.mapEntries:
-          if not matchesTypeExpr(expr.body[0], item, scope):
+        if expr.body.len notin [1, 2]:
+          raise newException(GeneError, "(Map K V) expects key and value types")
+        let valueType = expr.body[^1]
+        for key, item in value.mapEntries:
+          if expr.body.len == 2 and not matchesMapKeyType(expr.body[0], key, scope):
+            return false
+          if not matchesTypeExpr(valueType, item, scope):
             return false
         return true
       of "Stream":

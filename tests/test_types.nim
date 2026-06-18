@@ -103,6 +103,14 @@ suite "types — function boundaries":
        "(first [1 \"bad\"]) catch (TypeError ^expected e) e)",
        "\"(List Int)\""
 
+  test "generic functions infer map value types":
+    ck "(fn (get key value) [m : (Map key value)] : value m/a) " &
+       "(get {^a 42})",
+       "42"
+    ck "(try (fn (choose key value) [m : (Map key value) fallback : value] fallback) " &
+       "(choose {^a 1} \"bad\") catch (TypeError ^expected e) e)",
+       "\"Int\""
+
   test "generic functions infer typed stream item types":
     ck "(fn nums [] : (Stream Int Never) (yield 4)) " &
        "(fn (first item err) [s : (Stream item err)] : item (s ~ Stream/next)) " &
@@ -121,6 +129,15 @@ suite "types — function boundaries":
     ck "(fn size [xs : (List Int)] xs/size) (size [1 2 3])", "3"
     ck "(try (fn size [xs : (List Int)] xs/size) (size [1 \"bad\"]) " &
        "catch (TypeError ^expected e) e)", "\"(List Int)\""
+    ck "(fn value [m : (Map Sym Int)] m/a) (value {^a 3})", "3"
+    ck "(var routes (into (to_stream [[\"handler\" (fn [] 7)]]) {})) " &
+       "(fn run [m : (Map Str Fn)] ((m ~ /handler))) " &
+       "(run routes)",
+       "7"
+    ck "(try (fn value [m : (Map Sym Int)] m) (value {^a \"bad\"}) " &
+       "catch (TypeError ^expected e) e)", "\"(Map Sym Int)\""
+    ck "(try (fn value [m : (Map Int Str)] m) (value {^a \"ok\"}) " &
+       "catch (TypeError ^expected e) e)", "\"(Map Int Str)\""
 
   test "fixed-width integer annotations range-check boundaries":
     ck "(fn f [x : I8] x) [(f -128) (f 127)]", "[-128 127]"

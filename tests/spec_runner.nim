@@ -105,6 +105,9 @@ suite "spec — generic functions from design":
     check_eval("(fn (identity item) [x : item] : item x) " &
                "[(identity 1) (identity \"ok\")]",
                "[1 \"ok\"]")
+    check_eval("(fn (get key value) [m : (Map key value)] : value m/a) " &
+               "(get {^a 9})",
+               "9")
     check_eval("(fn ints [] : (Stream Int Never) (yield 7)) " &
                "(fn (first item err) [s : (Stream item err)] : item " &
                "  (s ~ Stream/next)) " &
