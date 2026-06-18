@@ -20,7 +20,7 @@
 ## per-object `shared` flag and switch to atomic inc/dec only for published values
 ## (see `(freeze)`), keeping thread-local objects on the cheap path.
 
-import std/[locks, tables, unicode]
+import std/[locks, strutils, tables, unicode]
 
 # Manual reference counting (below) relies on ARC/ORC move semantics and runs
 # =copy/=sink/=dup/=destroy over raw alloc0 objects holding GC-managed fields.
@@ -44,7 +44,7 @@ type
     vkNil       ## explicit absence (`nil` : Nil)
     vkVoid      ## no-value / skip / delete (`void` : Void)
     vkBool
-    vkInt       ## MVP: 64-bit; small int64s are immediate, large int64s heap-backed
+    vkInt       ## mathematical Int; fixnums/int64 fast paths, bigint on overflow
     vkFloat     ## F64 (design `Float` alias)
     vkString    ## immutable UTF-8 string
     vkChar      ## one Unicode scalar value
@@ -66,6 +66,10 @@ type
 
   Value* = object
     bits*: uint64
+
+  BigIntValue = object
+    sign: int8                 # -1, 0, or 1
+    digits: seq[uint32]        # little-endian base-1e9 limbs
 
 const
   TAG_SHIFT = 48
@@ -102,6 +106,9 @@ const
   SMALL_INT_MIN = -(1'i64 shl 47)
   SMALL_INT_MAX = (1'i64 shl 47) - 1
   INT_SIGN_BIT  = 0x0000_8000_0000_0000'u64
+
+  BIG_BASE = 1_000_000_000'u64
+  BIG_BASE_DIGITS = 9
 
 # ---------------------------------------------------------------------------
 # Value lifecycle hooks (must precede any Value-containing type so the managed
@@ -207,6 +214,7 @@ type
   ObjKind* = enum
     okNamespace
     okModule
+    okBigInt
     okEnv
     okCell
     okAtomicCell
@@ -229,6 +237,9 @@ type
     path: string
     root: Value
     meta: PropTable
+
+  BigIntData = ref object of GeneObjectData
+    value: BigIntValue
 
   EnvData = ref object of GeneObjectData
     parent: Value         # parent Env value, or NIL
@@ -348,6 +359,261 @@ proc decodeSmallInt(bits: uint64): int64 {.inline.} =
   else:
     cast[int64](raw)
 
+proc normalizeBig(x: var BigIntValue) =
+  while x.digits.len > 0 and x.digits[^1] == 0'u32:
+    x.digits.setLen(x.digits.len - 1)
+  if x.digits.len == 0:
+    x.sign = 0
+  elif x.sign == 0:
+    x.sign = 1
+
+proc bigZero(): BigIntValue =
+  BigIntValue(sign: 0, digits: @[])
+
+proc bigFromUInt64(mag: uint64, sign: int8): BigIntValue =
+  if mag == 0:
+    return bigZero()
+  result.sign = sign
+  var n = mag
+  while n > 0:
+    result.digits.add uint32(n mod BIG_BASE)
+    n = n div BIG_BASE
+  result.normalizeBig()
+
+proc bigFromInt64(v: int64): BigIntValue =
+  if v == 0:
+    return bigZero()
+  if v < 0:
+    bigFromUInt64(uint64(-(v + 1)) + 1'u64, -1)
+  else:
+    bigFromUInt64(uint64(v), 1)
+
+proc cmpAbs(a, b: BigIntValue): int =
+  if a.digits.len < b.digits.len: return -1
+  if a.digits.len > b.digits.len: return 1
+  for i in countdown(a.digits.len - 1, 0):
+    if a.digits[i] < b.digits[i]: return -1
+    if a.digits[i] > b.digits[i]: return 1
+  0
+
+proc cmpBig(a, b: BigIntValue): int =
+  if a.sign < b.sign: return -1
+  if a.sign > b.sign: return 1
+  if a.sign == 0: return 0
+  let c = cmpAbs(a, b)
+  if a.sign > 0: c else: -c
+
+proc addAbs(a, b: BigIntValue): BigIntValue =
+  result.sign = 1
+  let n = max(a.digits.len, b.digits.len)
+  result.digits = newSeq[uint32](n)
+  var carry: uint64
+  for i in 0 ..< n:
+    let av = if i < a.digits.len: uint64(a.digits[i]) else: 0'u64
+    let bv = if i < b.digits.len: uint64(b.digits[i]) else: 0'u64
+    let s = av + bv + carry
+    result.digits[i] = uint32(s mod BIG_BASE)
+    carry = s div BIG_BASE
+  if carry > 0:
+    result.digits.add uint32(carry)
+  result.normalizeBig()
+
+proc subAbs(a, b: BigIntValue): BigIntValue =
+  ## Absolute subtraction; requires |a| >= |b|.
+  result.sign = 1
+  result.digits = newSeq[uint32](a.digits.len)
+  var borrow: int64
+  for i in 0 ..< a.digits.len:
+    let av = int64(a.digits[i]) - borrow
+    let bv = if i < b.digits.len: int64(b.digits[i]) else: 0'i64
+    var d = av - bv
+    if d < 0:
+      d += int64(BIG_BASE)
+      borrow = 1
+    else:
+      borrow = 0
+    result.digits[i] = uint32(d)
+  result.normalizeBig()
+
+proc negBig(a: BigIntValue): BigIntValue =
+  result = a
+  result.sign = -result.sign
+
+proc addBig(a, b: BigIntValue): BigIntValue =
+  if a.sign == 0: return b
+  if b.sign == 0: return a
+  if a.sign == b.sign:
+    result = addAbs(a, b)
+    result.sign = a.sign
+    return
+  let c = cmpAbs(a, b)
+  if c == 0:
+    return bigZero()
+  if c > 0:
+    result = subAbs(a, b)
+    result.sign = a.sign
+  else:
+    result = subAbs(b, a)
+    result.sign = b.sign
+
+proc subBig(a, b: BigIntValue): BigIntValue =
+  addBig(a, negBig(b))
+
+proc mulAbsSmall(a: BigIntValue, small: uint32): BigIntValue =
+  if a.sign == 0 or small == 0:
+    return bigZero()
+  result.sign = 1
+  result.digits = newSeq[uint32](a.digits.len)
+  var carry: uint64
+  for i in 0 ..< a.digits.len:
+    let p = uint64(a.digits[i]) * uint64(small) + carry
+    result.digits[i] = uint32(p mod BIG_BASE)
+    carry = p div BIG_BASE
+  if carry > 0:
+    result.digits.add uint32(carry)
+  result.normalizeBig()
+
+proc mulBig(a, b: BigIntValue): BigIntValue =
+  if a.sign == 0 or b.sign == 0:
+    return bigZero()
+  result.sign = a.sign * b.sign
+  result.digits = newSeq[uint32](a.digits.len + b.digits.len)
+  for i in 0 ..< a.digits.len:
+    var carry: uint64
+    for j in 0 ..< b.digits.len:
+      let idx = i + j
+      let p = uint64(result.digits[idx]) +
+        uint64(a.digits[i]) * uint64(b.digits[j]) + carry
+      result.digits[idx] = uint32(p mod BIG_BASE)
+      carry = p div BIG_BASE
+    var idx = i + b.digits.len
+    while carry > 0:
+      if idx >= result.digits.len:
+        result.digits.add 0
+      let s = uint64(result.digits[idx]) + carry
+      result.digits[idx] = uint32(s mod BIG_BASE)
+      carry = s div BIG_BASE
+      inc idx
+  result.normalizeBig()
+
+proc divModSmallAbs(a: BigIntValue, small: uint32): tuple[q: BigIntValue, r: uint32] =
+  if small == 0:
+    raise newException(FieldDefect, "division by zero")
+  if a.sign == 0:
+    return (bigZero(), 0'u32)
+  result.q.sign = 1
+  result.q.digits = newSeq[uint32](a.digits.len)
+  var rem: uint64
+  for i in countdown(a.digits.len - 1, 0):
+    let cur = rem * BIG_BASE + uint64(a.digits[i])
+    result.q.digits[i] = uint32(cur div uint64(small))
+    rem = cur mod uint64(small)
+  result.r = uint32(rem)
+  result.q.normalizeBig()
+
+proc shiftAddDigit(rem: BigIntValue, digit: uint32): BigIntValue =
+  if rem.sign == 0 and digit == 0:
+    return bigZero()
+  result.sign = 1
+  result.digits = newSeq[uint32](rem.digits.len + 1)
+  result.digits[0] = digit
+  for i in 0 ..< rem.digits.len:
+    result.digits[i + 1] = rem.digits[i]
+  result.normalizeBig()
+
+proc divAbs(a, b: BigIntValue): BigIntValue =
+  if b.sign == 0:
+    raise newException(FieldDefect, "division by zero")
+  let c = cmpAbs(a, b)
+  if c < 0: return bigZero()
+  if c == 0: return bigFromUInt64(1, 1)
+  if b.digits.len == 1:
+    return divModSmallAbs(a, b.digits[0]).q
+
+  result.sign = 1
+  result.digits = newSeq[uint32](a.digits.len)
+  var rem = bigZero()
+  for i in countdown(a.digits.len - 1, 0):
+    rem = shiftAddDigit(rem, a.digits[i])
+    var lo: uint64 = 0
+    var hi: uint64 = BIG_BASE - 1
+    var qdigit: uint32 = 0
+    while lo <= hi:
+      let mid = (lo + hi) div 2
+      let prod = mulAbsSmall(b, uint32(mid))
+      if cmpAbs(prod, rem) <= 0:
+        qdigit = uint32(mid)
+        lo = mid + 1
+      else:
+        if mid == 0: break
+        hi = mid - 1
+    result.digits[i] = qdigit
+    if qdigit != 0:
+      rem = subAbs(rem, mulAbsSmall(b, qdigit))
+  result.normalizeBig()
+
+proc divBig(a, b: BigIntValue): BigIntValue =
+  if b.sign == 0:
+    raise newException(FieldDefect, "division by zero")
+  if a.sign == 0:
+    return bigZero()
+  result = divAbs(a, b)
+  if result.sign != 0:
+    result.sign = a.sign * b.sign
+
+proc absFitsInt64(x: BigIntValue, negative: bool): bool =
+  let limit =
+    if negative: bigFromUInt64(1'u64 shl 63, 1)
+    else: bigFromUInt64(uint64(high(int64)), 1)
+  cmpAbs(x, limit) <= 0
+
+proc bigToInt64(x: BigIntValue): tuple[ok: bool, value: int64] =
+  if x.sign == 0:
+    return (true, 0'i64)
+  let negative = x.sign < 0
+  if not absFitsInt64(x, negative):
+    return (false, 0'i64)
+  var mag: uint64
+  for i in countdown(x.digits.len - 1, 0):
+    mag = mag * BIG_BASE + uint64(x.digits[i])
+  if negative:
+    if mag == (1'u64 shl 63):
+      (true, low(int64))
+    else:
+      (true, -int64(mag))
+  else:
+    (true, int64(mag))
+
+proc parseBigDecimal(s: string): BigIntValue =
+  var i = 0
+  var sign: int8 = 1
+  if s.len > 0 and s[0] == '-':
+    sign = -1
+    i = 1
+  if i >= s.len:
+    raise newException(FieldDefect, "invalid integer literal")
+  result = bigZero()
+  while i < s.len:
+    let ch = s[i]
+    if ch < '0' or ch > '9':
+      raise newException(FieldDefect, "invalid integer literal")
+    result = addBig(mulAbsSmall(result, 10),
+                    bigFromUInt64(uint64(ord(ch) - ord('0')), 1))
+    inc i
+  if result.sign != 0:
+    result.sign = sign
+
+proc bigToString(x: BigIntValue): string =
+  if x.sign == 0:
+    return "0"
+  if x.sign < 0:
+    result.add '-'
+  result.add $x.digits[^1]
+  for i in countdown(x.digits.len - 2, 0):
+    let part = $x.digits[i]
+    result.add repeat("0", BIG_BASE_DIGITS - part.len)
+    result.add part
+
 # ---------------------------------------------------------------------------
 # Reference counting bodies
 # ---------------------------------------------------------------------------
@@ -441,6 +707,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     case objData(v).objKind
     of okNamespace: vkNamespace
     of okModule: vkModule
+    of okBigInt: vkInt
     of okEnv: vkEnv
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
@@ -462,7 +729,24 @@ proc intVal*(v: Value): int64 {.inline.} =
   case v.bits shr TAG_SHIFT
   of INT_TAG: decodeSmallInt(v.bits)
   of INT64_TAG: cast[ptr GeneInt64](v.bits and PAYLOAD_MASK).i
-  else: raise newException(FieldDefect, "value is not an Int")
+  of OBJECT_TAG:
+    if objData(v).objKind == okBigInt:
+      let converted = bigToInt64(BigIntData(objData(v)).value)
+      if converted.ok:
+        return converted.value
+      raise newException(FieldDefect, "Int does not fit in int64")
+    raise newException(FieldDefect, "value is not an Int")
+  else:
+    raise newException(FieldDefect, "value is not an Int")
+
+proc intFitsInt64*(v: Value): bool =
+  if v.kind != vkInt:
+    return false
+  try:
+    discard v.intVal
+    true
+  except FieldDefect:
+    false
 
 proc floatVal*(v: Value): float64 {.inline.} =
   if v.isImmediateFloat:
@@ -860,6 +1144,147 @@ proc newInt*(v: int64): Value {.inline.} =
     p.refCount = 1
     p.i = v
     boxPtr(INT64_TAG, p)
+
+proc intBigValue(v: Value): BigIntValue =
+  case v.bits shr TAG_SHIFT
+  of INT_TAG:
+    bigFromInt64(decodeSmallInt(v.bits))
+  of INT64_TAG:
+    bigFromInt64(cast[ptr GeneInt64](v.bits and PAYLOAD_MASK).i)
+  of OBJECT_TAG:
+    if objData(v).objKind == okBigInt:
+      BigIntData(objData(v)).value
+    else:
+      raise newException(FieldDefect, "value is not an Int")
+  else:
+    raise newException(FieldDefect, "value is not an Int")
+
+proc bigToValue(x: BigIntValue): Value =
+  let converted = bigToInt64(x)
+  if converted.ok:
+    return newInt(converted.value)
+  boxObject(BigIntData(objKind: okBigInt, value: x))
+
+proc newIntFromDecimal*(s: string): Value =
+  bigToValue(parseBigDecimal(s))
+
+proc intToString*(v: Value): string =
+  case v.bits shr TAG_SHIFT
+  of INT_TAG, INT64_TAG:
+    $v.intVal
+  of OBJECT_TAG:
+    if objData(v).objKind == okBigInt:
+      bigToString(BigIntData(objData(v)).value)
+    else:
+      raise newException(FieldDefect, "value is not an Int")
+  else:
+    raise newException(FieldDefect, "value is not an Int")
+
+proc intToFloat*(v: Value): float64 =
+  parseFloat(v.intToString)
+
+proc intIsZero*(v: Value): bool {.inline.} =
+  case v.bits shr TAG_SHIFT
+  of INT_TAG, INT64_TAG:
+    v.intVal == 0
+  of OBJECT_TAG:
+    if objData(v).objKind == okBigInt:
+      BigIntData(objData(v)).value.sign == 0
+    else:
+      raise newException(FieldDefect, "value is not an Int")
+  else:
+    raise newException(FieldDefect, "value is not an Int")
+
+proc isInt64Backed(v: Value): bool {.inline.} =
+  let tag = v.bits shr TAG_SHIFT
+  tag == INT_TAG or tag == INT64_TAG
+
+proc intCompare*(a, b: Value): int {.inline.} =
+  if a.kind != vkInt or b.kind != vkInt:
+    raise newException(FieldDefect, "value is not an Int")
+  if a.isInt64Backed and b.isInt64Backed:
+    let av = a.intVal
+    let bv = b.intVal
+    if av < bv: -1 elif av > bv: 1 else: 0
+  else:
+    cmpBig(a.intBigValue, b.intBigValue)
+
+proc intCompareToInt64*(a: Value, b: int64): int {.inline.} =
+  intCompare(a, newInt(b))
+
+proc checkedAdd64(a, b: int64, outValue: var int64): bool {.inline.} =
+  if (b > 0 and a > high(int64) - b) or
+     (b < 0 and a < low(int64) - b):
+    return false
+  outValue = a + b
+  true
+
+proc checkedSub64(a, b: int64, outValue: var int64): bool {.inline.} =
+  if (b > 0 and a < low(int64) + b) or
+     (b < 0 and a > high(int64) + b):
+    return false
+  outValue = a - b
+  true
+
+proc absMagnitude(v: int64): uint64 {.inline.} =
+  if v < 0: uint64(-(v + 1)) + 1'u64 else: uint64(v)
+
+proc checkedMul64(a, b: int64, outValue: var int64): bool {.inline.} =
+  if a == 0 or b == 0:
+    outValue = 0
+    return true
+  if a == low(int64) and b == -1: return false
+  if b == low(int64) and a == -1: return false
+  let aa = absMagnitude(a)
+  let bb = absMagnitude(b)
+  let negative = (a < 0) xor (b < 0)
+  let limit = if negative: 1'u64 shl 63 else: uint64(high(int64))
+  if aa > limit div bb:
+    return false
+  let mag = aa * bb
+  if negative:
+    outValue = if mag == (1'u64 shl 63): low(int64) else: -int64(mag)
+  else:
+    outValue = int64(mag)
+  true
+
+proc intAdd*(a, b: Value): Value {.inline.} =
+  if a.isInt64Backed and b.isInt64Backed:
+    var s: int64
+    if checkedAdd64(a.intVal, b.intVal, s):
+      return newInt(s)
+  bigToValue(addBig(a.intBigValue, b.intBigValue))
+
+proc intNeg*(a: Value): Value {.inline.} =
+  if a.isInt64Backed:
+    let av = a.intVal
+    if av != low(int64):
+      return newInt(-av)
+  bigToValue(negBig(a.intBigValue))
+
+proc intSub*(a, b: Value): Value {.inline.} =
+  if a.isInt64Backed and b.isInt64Backed:
+    var s: int64
+    if checkedSub64(a.intVal, b.intVal, s):
+      return newInt(s)
+  bigToValue(subBig(a.intBigValue, b.intBigValue))
+
+proc intMul*(a, b: Value): Value {.inline.} =
+  if a.isInt64Backed and b.isInt64Backed:
+    var p: int64
+    if checkedMul64(a.intVal, b.intVal, p):
+      return newInt(p)
+  bigToValue(mulBig(a.intBigValue, b.intBigValue))
+
+proc intDiv*(a, b: Value): Value {.inline.} =
+  if b.intIsZero:
+    raise newException(FieldDefect, "division by zero")
+  if a.isInt64Backed and b.isInt64Backed:
+    let av = a.intVal
+    let bv = b.intVal
+    if not (av == low(int64) and bv == -1):
+      return newInt(av div bv)
+  bigToValue(divBig(a.intBigValue, b.intBigValue))
 
 proc newFloat*(v: float64): Value {.inline.} =
   let raw = cast[uint64](v)

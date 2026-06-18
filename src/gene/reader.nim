@@ -33,6 +33,20 @@ type
 
   ReadError* = object of CatchableError
 
+proc isIntLexeme(lexeme: string): bool =
+  if lexeme.len == 0:
+    return false
+  var i = 0
+  if lexeme[0] == '-':
+    if lexeme.len == 1:
+      return false
+    i = 1
+  while i < lexeme.len:
+    if lexeme[i] < '0' or lexeme[i] > '9':
+      return false
+    inc i
+  true
+
 proc initReader(src: string): Reader =
   Reader(src: src, line: 1, col: 1,
          tokens: newSeqOfCap[Token](min(src.len + 1, 4096)))
@@ -302,9 +316,8 @@ proc tokenize(r: var Reader) =
         continue
 
       # Check if it's a number
-      var valInt: int
       var valFloat: float
-      if parseutils.parseInt(lexeme, valInt) == lexeme.len:
+      if lexeme.isIntLexeme:
         r.tokens.add Token(kind: tkInt, lexeme: lexeme, line: startLine, col: startCol)
       elif parseutils.parseFloat(lexeme, valFloat) == lexeme.len:
         r.tokens.add Token(kind: tkFloat, lexeme: lexeme, line: startLine, col: startCol)
@@ -362,9 +375,8 @@ proc desugarPath(lexeme: string): Value =
     if p.startsWith("%"):
       body.add newNode(newSym("unquote"), body = @[newSym(p[1..^1])])
     else:
-      var intVal: int
-      if parseutils.parseInt(p, intVal) == p.len:
-        body.add newInt(intVal)
+      if p.isIntLexeme:
+        body.add newIntFromDecimal(p)
       else:
         body.add newSym(p)
 
@@ -537,7 +549,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   r.skipDatumComments()
   let tok = r.next()
   case tok.kind
-  of tkInt: return newInt(parseInt(tok.lexeme))
+  of tkInt: return newIntFromDecimal(tok.lexeme)
   of tkFloat: return newFloat(parseFloat(tok.lexeme))
   of tkString: return newStr(tok.lexeme)
   of tkChar: return newChar(runeAt(tok.lexeme, 0))

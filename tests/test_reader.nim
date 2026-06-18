@@ -14,6 +14,7 @@ suite "reader — atoms and containers":
   test "immutable list":     check_read("#[1 2 3]",  "#[1 2 3]")
   test "immutable map":      check_read("#{^a 1}",   "#{^a 1}")
   test "integer":            check_read("42",         "42")
+  test "big integer":        check_read("9223372036854775808", "9223372036854775808")
   test "float":              check_read("3.14",       "3.14")
   test "bool true":          check_read("true",       "true")
   test "bool false":         check_read("false",      "false")

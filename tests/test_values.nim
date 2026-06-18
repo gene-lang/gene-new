@@ -30,6 +30,19 @@ suite "value — NaN boxing":
     check x.isHeapBacked
     check x.intVal == (1'i64 shl 50)
 
+  test "big ints preserve arbitrary precision decimal values":
+    let x = newIntFromDecimal("9223372036854775808")
+    let y = newIntFromDecimal("-9223372036854775809")
+    check x.kind == vkInt
+    check y.kind == vkInt
+    check x.isHeapBacked
+    check y.isHeapBacked
+    check x.intToString == "9223372036854775808"
+    check y.intToString == "-9223372036854775809"
+    check intCompare(x, newInt(high(int64))) > 0
+    expect FieldDefect:
+      discard x.intVal
+
   test "non-zero floats are stored directly":
     let x = newFloat(3.5)
     check x.kind == vkFloat
@@ -73,6 +86,8 @@ suite "value — equality":
   test "same uses scalar value identity and container heap identity":
     check same(newInt(10), newInt(10))
     check same(newInt(1'i64 shl 50), newInt(1'i64 shl 50))
+    check same(newIntFromDecimal("9223372036854775808"),
+               newIntFromDecimal("9223372036854775808"))
     check same(newStr("x"), newStr("x"))
     check not same(newList(@[newInt(1)]), newList(@[newInt(1)]))
 

@@ -69,11 +69,31 @@ proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   e.hasErrVal = true
   raise e
 
+proc raiseMainReturnRangeError(scope: Scope) =
+  let message = "main return Int must fit in int64"
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  props["where"] = newStr("main return")
+  props["expected"] = newStr("int64-range Int")
+  props["actual"] = newStr("Int")
+  var head = newSym("TypeError")
+  var typeError: Value
+  if scope.lookupOptional("TypeError", typeError) and typeError.kind == vkType:
+    head = typeError
+  var e: ref GeneError
+  new(e)
+  e.msg = "TypeError: " & message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
 proc exitFromMain(scope: Scope, value: Value) =
   case value.kind
   of vkNil:
     discard
   of vkInt:
+    if not value.intFitsInt64:
+      raiseMainReturnRangeError(scope)
     quit(int(value.intVal))
   else:
     raiseMainReturnTypeError(scope, value)

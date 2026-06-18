@@ -99,11 +99,14 @@ suite "types — function boundaries":
   test "fixed-width integer annotations range-check boundaries":
     ck "(fn f [x : I8] x) [(f -128) (f 127)]", "[-128 127]"
     ck "(fn f [x : U8] x) [(f 0) (f 255)]", "[0 255]"
+    ck "(fn f [x : U64] x) (f 18446744073709551615)", "18446744073709551615"
     expect GeneError: discard runStr("(fn f [x : I8] x) (f -129)")
     expect GeneError: discard runStr("(fn f [x : I8] x) (f 128)")
     expect GeneError: discard runStr("(fn f [x : U8] x) (f -1)")
     expect GeneError: discard runStr("(fn f [x : U8] x) (f 256)")
     expect GeneError: discard runStr("(fn f [x : I32] x) (f 2147483648)")
+    expect GeneError: discard runStr("(fn f [x : I64] x) (f 9223372036854775808)")
+    expect GeneError: discard runStr("(fn f [x : U64] x) (f 18446744073709551616)")
     ck "(type Byte ^props {^value U8}) (var b (Byte ^value 255)) b/value", "255"
     expect GeneError:
       discard runStr("(type Byte ^props {^value U8}) (Byte ^value 256)")

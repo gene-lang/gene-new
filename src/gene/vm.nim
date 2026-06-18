@@ -75,7 +75,7 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 # ---------------------------------------------------------------------------
 
 proc isNumber(v: Value): bool = v.kind == vkInt or v.kind == vkFloat
-proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intVal.float64 else: v.floatVal)
+proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intToFloat else: v.floatVal)
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
@@ -87,15 +87,25 @@ proc requireNums(name: string, args: openArray[Value]) =
     if not a.isNumber:
       raise newException(GeneError, name & " expects numbers, got " & $a.kind)
 
+proc requireInt64(name: string, value: Value): int64 =
+  if value.kind != vkInt:
+    raise newException(GeneError, name & " expects an Int")
+  try:
+    value.intVal
+  except FieldDefect:
+    raise newException(GeneError, name & " expects an Int in int64 range")
+
 proc biAdd(args: openArray[Value]): Value {.nimcall.} =
   requireNums("+", args)
   var allInt = true
   for a in args:
     if a.kind == vkFloat: allInt = false
   if allInt:
-    var s: int64 = 0
-    for a in args: s += a.intVal
-    newInt(s)
+    if args.len == 0:
+      return newInt(0)
+    var s = args[0]
+    for i in 1 ..< args.len: s = intAdd(s, args[i])
+    s
   else:
     var s: float64 = 0
     for a in args: s += a.toFloat
@@ -108,11 +118,11 @@ proc biSub(args: openArray[Value]): Value {.nimcall.} =
   for a in args:
     if a.kind == vkFloat: allInt = false
   if args.len == 1:
-    return (if allInt: newInt(-args[0].intVal) else: newFloat(-args[0].toFloat))
+    return (if allInt: intNeg(args[0]) else: newFloat(-args[0].toFloat))
   if allInt:
-    var s = args[0].intVal
-    for i in 1 ..< args.len: s -= args[i].intVal
-    newInt(s)
+    var s = args[0]
+    for i in 1 ..< args.len: s = intSub(s, args[i])
+    s
   else:
     var s = args[0].toFloat
     for i in 1 ..< args.len: s -= args[i].toFloat
@@ -124,9 +134,11 @@ proc biMul(args: openArray[Value]): Value {.nimcall.} =
   for a in args:
     if a.kind == vkFloat: allInt = false
   if allInt:
-    var s: int64 = 1
-    for a in args: s *= a.intVal
-    newInt(s)
+    if args.len == 0:
+      return newInt(1)
+    var s = args[0]
+    for i in 1 ..< args.len: s = intMul(s, args[i])
+    s
   else:
     var s: float64 = 1
     for a in args: s *= a.toFloat
@@ -140,11 +152,11 @@ proc biDiv(args: openArray[Value]): Value {.nimcall.} =
   for a in args:
     if a.kind == vkFloat: allInt = false
   if allInt:
-    var s = args[0].intVal
+    var s = args[0]
     for i in 1 ..< args.len:
-      if args[i].intVal == 0: raise newException(GeneError, "division by zero")
-      s = s div args[i].intVal
-    newInt(s)
+      if args[i].intIsZero: raise newException(GeneError, "division by zero")
+      s = intDiv(s, args[i])
+    s
   else:
     var s = args[0].toFloat
     for i in 1 ..< args.len:
@@ -157,7 +169,12 @@ template comparison(name: string, op: untyped): NativeProc =
   (proc(args: openArray[Value]): Value {.nimcall.} =
     requireNums(name, args)
     for i in 1 ..< args.len:
-      if not op(args[i-1].toFloat, args[i].toFloat): return FALSE
+      let ok =
+        if args[i-1].kind == vkInt and args[i].kind == vkInt:
+          op(intCompare(args[i-1], args[i]), 0)
+        else:
+          op(args[i-1].toFloat, args[i].toFloat)
+      if not ok: return FALSE
     TRUE)
 
 proc biEq(args: openArray[Value]): Value {.nimcall.} =
@@ -514,9 +531,7 @@ proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "take expects 2 arguments, got " & $args.len)
   requireStream("take", args[0])
-  if args[1].kind != vkInt:
-    raise newException(GeneError, "take expects an Int count")
-  var remaining = args[1].intVal
+  var remaining = requireInt64("take count", args[1])
   if remaining < 0:
     raise newException(GeneError, "take count must be non-negative")
   newLazyStream(args[0], pullTakeStream, remaining = remaining)
@@ -583,11 +598,11 @@ proc readUpdateChild(name: string, target, segment: Value): Value =
   of vkList:
     if segment.kind != vkInt:
       raise newException(GeneError, name & " expects an integer list path segment")
-    readIndex(target.listItems, segment.intVal)
+    readIndex(target.listItems, requireInt64(name, segment))
   of vkNode:
     case segment.kind
     of vkInt:
-      readIndex(target.body, segment.intVal)
+      readIndex(target.body, requireInt64(name, segment))
     of vkSymbol, vkString:
       let key = keySegment(name, segment)
       if target.props.hasKey(key):
@@ -619,7 +634,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
     if segment.kind != vkInt:
       raise newException(GeneError, name & " expects an integer list path segment")
     var items = copyItems(target.listItems)
-    items[updateIndex(name, items.len, segment.intVal)] =
+    items[updateIndex(name, items.len, requireInt64(name, segment))] =
       if value.kind == vkVoid: NIL else: value
     newList(items, target.listImmutable)
   of vkNode:
@@ -628,7 +643,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
     var meta = copyEntries(target.meta)
     case segment.kind
     of vkInt:
-      body[updateIndex(name, body.len, segment.intVal)] =
+      body[updateIndex(name, body.len, requireInt64(name, segment))] =
         if value.kind == vkVoid: NIL else: value
     of vkSymbol, vkString:
       let key = keySegment(name, segment)
@@ -1932,7 +1947,14 @@ proc isInstanceOfType(value, expected: Value): bool =
     value.head.isSubtypeOf(expected)
 
 proc intInRange(value: Value, low, high: int64): bool {.inline.} =
-  value.kind == vkInt and value.intVal >= low and value.intVal <= high
+  value.kind == vkInt and
+    value.intCompareToInt64(low) >= 0 and
+    value.intCompareToInt64(high) <= 0
+
+proc intInDecimalRange(value: Value, low, high: string): bool =
+  value.kind == vkInt and
+    intCompare(value, newIntFromDecimal(low)) >= 0 and
+    intCompare(value, newIntFromDecimal(high)) <= 0
 
 proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   case name
@@ -1952,8 +1974,12 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkChar)
   of "Sym", "Symbol":
     (true, value.kind == vkSymbol)
-  of "Int", "Integer", "Fixnum", "I64":
+  of "Int", "Integer":
     (true, value.kind == vkInt)
+  of "Fixnum":
+    (true, value.kind == vkInt and not value.isHeapBacked)
+  of "I64":
+    (true, value.intInRange(low(int64), high(int64)))
   of "I8":
     (true, value.intInRange(-128'i64, 127'i64))
   of "I16":
@@ -1967,7 +1993,7 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   of "U32":
     (true, value.intInRange(0'i64, 4294967295'i64))
   of "U64":
-    (true, value.kind == vkInt and value.intVal >= 0)
+    (true, value.intInDecimalRange("0", "18446744073709551615"))
   of "Number":
     (true, value.kind in {vkInt, vkFloat})
   of "Float", "F32", "F64":
@@ -2115,9 +2141,9 @@ proc staticLookup(target, segment: Value): Value =
   of vkInt:
     case target.kind
     of vkList:
-      lookupIndex(target.listItems, segment.intVal)
+      if segment.intFitsInt64: lookupIndex(target.listItems, segment.intVal) else: VOID
     of vkNode:
-      lookupIndex(target.body, segment.intVal)
+      if segment.intFitsInt64: lookupIndex(target.body, segment.intVal) else: VOID
     else:
       VOID
   of vkSymbol, vkString:

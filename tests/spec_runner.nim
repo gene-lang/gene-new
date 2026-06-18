@@ -71,6 +71,14 @@ suite "spec — equality and identity from design":
                "[true false true]")
 
 suite "spec — numeric boundaries from design":
+  test "Int has mathematical integer semantics":
+    check_eval("[(+ 9223372036854775807 1) " &
+               " (* 100000000000000000000 100000000000000000000) " &
+               " (< 9223372036854775808 9223372036854775809)]",
+               "[9223372036854775808 " &
+               "10000000000000000000000000000000000000000 " &
+               "true]")
+
   test "fixed-width integer annotations are range checked":
     check_eval("(fn byte [x : U8] x) [(byte 0) (byte 255)]", "[0 255]")
     expect GeneError:
@@ -78,6 +86,10 @@ suite "spec — numeric boundaries from design":
                   newGlobalScope())
     expect GeneError:
       discard run(compileSource("(fn small [x : I8] x) (small -129)"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(fn fixed [x : I64] x) " &
+                                "(fixed 9223372036854775808)"),
                   newGlobalScope())
 
 suite "spec — pattern destructuring from design":

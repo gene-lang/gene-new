@@ -2,15 +2,17 @@ import std/[os, osproc, strutils, unittest]
 
 let cliDir = getTempDir() / "gene_cli_tests"
 let geneExe = cliDir / "gene-test-bin"
+var cliBuilt = false
 
 proc buildGeneCli() =
-  if fileExists(geneExe):
+  if cliBuilt:
     return
   createDir(cliDir)
   let build = execCmdEx("nim c --path:src --hints:off -o:" & geneExe & " src/gene.nim")
   if build.exitCode != 0:
     checkpoint build.output
   check build.exitCode == 0
+  cliBuilt = true
 
 proc writeCliProgram(name, src: string): string =
   createDir(cliDir)
@@ -49,3 +51,11 @@ suite "cli — gene run":
     check ran.exitCode == 1
     check "TypeError" in ran.output
     check "main return expected Nil or Int" in ran.output
+
+  test "oversized main return is a boundary TypeError":
+    let bigMain = writeCliProgram("big_main.gene",
+      "(fn main [] 9223372036854775808)")
+    let ran = runGene(["run", bigMain])
+    check ran.exitCode == 1
+    check "TypeError" in ran.output
+    check "main return Int must fit in int64" in ran.output

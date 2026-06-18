@@ -26,7 +26,7 @@ proc equal*(a, b: Value): bool =
   case a.kind
   of vkNil, vkVoid: true
   of vkBool:   a.boolVal == b.boolVal
-  of vkInt:    a.intVal == b.intVal
+  of vkInt:    intCompare(a, b) == 0
   of vkFloat:  a.floatVal == b.floatVal
   of vkString: a.strVal == b.strVal
   of vkChar:   int32(a.charVal) == int32(b.charVal)
@@ -70,7 +70,7 @@ proc hash*(v: Value): Hash =
   case v.kind
   of vkNil, vkVoid: discard
   of vkBool:   h = h !& hash(v.boolVal)
-  of vkInt:    h = h !& hash(v.intVal)
+  of vkInt:    h = h !& hash(v.intToString)
   of vkFloat:  h = h !& hash(v.floatVal)
   of vkString: h = h !& hash(v.strVal)
   of vkChar:   h = h !& hash(int32(v.charVal))

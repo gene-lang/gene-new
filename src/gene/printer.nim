@@ -59,7 +59,7 @@ proc print*(v: Value): string =
   of vkNil:    "nil"
   of vkVoid:   "void"
   of vkBool:   (if v.boolVal: "true" else: "false")
-  of vkInt:    $v.intVal
+  of vkInt:    v.intToString
   of vkFloat:  printFloat(v.floatVal)
   of vkString: escapeStr(v.strVal)
   of vkChar:   "'" & escapeChar(v.charVal) & "'"
