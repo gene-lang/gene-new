@@ -1527,32 +1527,36 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
 proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
              stopOnYield: bool,
              validateImplRequirements = true): RunStop =
-  while ip < chunk.instructions.len:
-    let inst = chunk.instructions[ip]
+  while true:
+    {.computedGoto.}
+    if ip >= chunk.instructions.len:
+      break
+    let inst = addr chunk.instructions[ip]
+    let op = inst[].op
     inc ip
-    case inst.op
+    case op
     of opPushConst:
-      stack.add chunk.constants[inst.intArg]
+      stack.add chunk.constants[inst[].intArg]
     of opLoadName:
-      stack.add scope.lookup(inst.name)
+      stack.add scope.lookup(inst[].name)
     of opDefineName:
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in var")
-      scope.define(inst.name, stack[^1])
+      scope.define(inst[].name, stack[^1])
     of opSetName:
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in set")
-      scope.assign(inst.name, stack[^1])
+      scope.assign(inst[].name, stack[^1])
     of opPop:
       discard stack.pop()
     of opMakeList:
-      var items = newSeq[Value](inst.intArg)
-      if inst.intArg > 0:
-        for i in countdown(inst.intArg - 1, 0):
+      var items = newSeq[Value](inst[].intArg)
+      if inst[].intArg > 0:
+        for i in countdown(inst[].intArg - 1, 0):
           items[i] = stack.pop()
-      stack.add newList(items, inst.flag)
+      stack.add newList(items, inst[].flag)
     of opMakeListSplice:
-      let proto = chunk.listBuilds[inst.intArg]
+      let proto = chunk.listBuilds[inst[].intArg]
       var parts = newSeq[Value](proto.splices.len)
       if proto.splices.len > 0:
         for i in countdown(proto.splices.len - 1, 0):
@@ -1565,17 +1569,17 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
           items.add part
       stack.add newList(items, proto.immutable)
     of opMakeMap:
-      var values = newSeq[Value](inst.intArg)
-      if inst.intArg > 0:
-        for i in countdown(inst.intArg - 1, 0):
+      var values = newSeq[Value](inst[].intArg)
+      if inst[].intArg > 0:
+        for i in countdown(inst[].intArg - 1, 0):
           values[i] = stack.pop()
       var entries = initOrderedTable[string, Value]()
-      for i, key in inst.names:
+      for i, key in inst[].names:
         if values[i].kind != vkVoid:
           entries[key] = values[i]
-      stack.add newMap(entries, inst.flag)
+      stack.add newMap(entries, inst[].flag)
     of opMakeNode:
-      let proto = chunk.nodeBuilds[inst.intArg]
+      let proto = chunk.nodeBuilds[inst[].intArg]
       var bodyParts = newSeq[Value](proto.bodyCount)
       if proto.bodyCount > 0:
         for i in countdown(proto.bodyCount - 1, 0):
@@ -1606,13 +1610,13 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       stack.add newNode(head, props = props, body = body, meta = meta,
                         immutable = proto.immutable)
     of opMakeSelector:
-      var body = newSeq[Value](inst.intArg)
-      if inst.intArg > 0:
-        for i in countdown(inst.intArg - 1, 0):
+      var body = newSeq[Value](inst[].intArg)
+      if inst[].intArg > 0:
+        for i in countdown(inst[].intArg - 1, 0):
           body[i] = stack.pop()
       stack.add newNode(newSym("select"), body = body)
     of opMakeFn:
-      let proto = chunk.functions[inst.intArg]
+      let proto = chunk.functions[inst[].intArg]
       let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
       stack.add newFunction(proto.name, proto.params, proto, scope,
                             proto.checksErrors, errorTypes)
@@ -1642,7 +1646,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
           newChunk()
       stack.add run(evalChunk, evalScope)
     of opMakeType:
-      let proto = chunk.typeProtos[inst.intArg]
+      let proto = chunk.typeProtos[inst[].intArg]
       let parent = stack.pop()
       if parent.kind != vkNil and parent.kind != vkType:
         raise newException(GeneError, "type ^is must be a type")
@@ -1668,7 +1672,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
       stack.add typ
     of opMakeProtocol:
-      let proto = chunk.protocolProtos[inst.intArg]
+      let proto = chunk.protocolProtos[inst[].intArg]
       var deriveFn = NIL
       if proto.deriveFn != nil:
         deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
@@ -1679,7 +1683,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         scope.define(message.protocolMessageName, message)
       stack.add protocol
     of opMakeImpl:
-      let proto = chunk.implProtos[inst.intArg]
+      let proto = chunk.implProtos[inst[].intArg]
       var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
       if proto.messages.len > 0:
         for i in countdown(proto.messages.len - 1, 0):
@@ -1699,24 +1703,24 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       # Run the ns body in a fresh child scope; its bindings become the
       # namespace's exports. Bind the namespace in the enclosing scope.
       let nsScope = newScope(scope)
-      discard run(chunk.subchunks[inst.intArg], nsScope)
-      let ns = newNamespace(inst.name, nsScope)
-      scope.define(inst.name, ns)
+      discard run(chunk.subchunks[inst[].intArg], nsScope)
+      let ns = newNamespace(inst[].name, nsScope)
+      scope.define(inst[].name, ns)
       stack.add ns
     of opSetModuleName:
       var module: Value
       if scope.lookupOptional("this-mod", module):
         if module.kind == vkModule:
-          module.setModuleName(inst.name)
-          if inst.intArg >= 0 and inst.intArg < chunk.constants.len:
-            let metaValue = chunk.constants[inst.intArg]
+          module.setModuleName(inst[].name)
+          if inst[].intArg >= 0 and inst[].intArg < chunk.constants.len:
+            let metaValue = chunk.constants[inst[].intArg]
             if metaValue.kind == vkMap:
               module.setModuleMeta(copyEntries(metaValue.mapEntries))
         elif module.kind == vkNamespace and module.nsIsModuleRoot:
-          module.setNsName(inst.name)
+          module.setNsName(inst[].name)
       stack.add NIL
     of opImport:
-      let spec = chunk.imports[inst.intArg]
+      let spec = chunk.imports[inst[].intArg]
       var source: Value
       if spec.fromModule:
         source = loadModuleValue(resolveModulePath(spec.modulePath))
@@ -1750,21 +1754,21 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         scope.define(sel.local, v)
       stack.add NIL
     of opCall:
-      var args = newSeq[Value](inst.intArg)
-      if inst.intArg > 0:
-        for i in countdown(inst.intArg - 1, 0):
+      var args = newSeq[Value](inst[].intArg)
+      if inst[].intArg > 0:
+        for i in countdown(inst[].intArg - 1, 0):
           args[i] = stack.pop()
       var named: NamedArgs
-      if inst.names.len > 0:
-        named.names = inst.names
-        named.values = newSeq[Value](inst.names.len)
-        for i in countdown(inst.names.len - 1, 0):
+      if inst[].names.len > 0:
+        named.names = inst[].names
+        named.values = newSeq[Value](inst[].names.len)
+        for i in countdown(inst[].names.len - 1, 0):
           named.values[i] = stack.pop()
       let callee = stack.pop()
       stack.add applyCall(callee, args, named, scope)
     of opMatch:
       let target = stack.pop()
-      let mp = chunk.matches[inst.intArg]
+      let mp = chunk.matches[inst[].intArg]
       var handled = false
       for cl in mp.clauses:
         var binds = initTable[string, Value]()
@@ -1784,20 +1788,20 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
     of opMatchBind:
       let target = stack.pop()
       var binds = initTable[string, Value]()
-      if not tryMatch(chunk.constants[inst.intArg], target, scope, binds):
+      if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
         raiseMatchError(scope, "destructuring pattern did not match")
       scope.bindMatchedValues(binds, replaceExisting = false)
       stack.add target
     of opMatchBindReplace:
       let target = stack.pop()
       var binds = initTable[string, Value]()
-      if not tryMatch(chunk.constants[inst.intArg], target, scope, binds):
+      if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
         raiseMatchError(scope, "destructuring pattern did not match")
       scope.bindMatchedValues(binds, replaceExisting = true)
       stack.add target
     of opForEach:
       let coll = stack.pop()
-      let fp = chunk.forLoops[inst.intArg]
+      let fp = chunk.forLoops[inst[].intArg]
       for item in forItems(coll):
         let loopScope = newScope(scope)
         var binds = initTable[string, Value]()
@@ -1819,7 +1823,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         raiseEndOfStream()
       stack.add checkedStreamNext(stream, "for item")
     of opTry:
-      let tp = chunk.tries[inst.intArg]
+      let tp = chunk.tries[inst[].intArg]
       var resultVal = NIL
       try:
         try:
@@ -1862,9 +1866,9 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:
-        ip = inst.intArg
+        ip = inst[].intArg
     of opJump:
-      ip = inst.intArg
+      ip = inst[].intArg
     of opReturn:
       result = RunStop(kind: rskReturn,
                        value: escapeWeakFunctions(if stack.len > 0: stack.pop() else: NIL))
