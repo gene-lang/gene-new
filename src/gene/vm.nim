@@ -180,7 +180,7 @@ proc getArg(named: NamedArgs, name: string): Value =
     if key == name: return named.values[i]
   raise newException(GeneError, "missing named argument: " & name)
 
-proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
+proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil): Value
 proc typeExprLabel(expr: Value): string
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
@@ -359,7 +359,8 @@ proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Cell/update expects 2 arguments, got " & $args.len)
   requireCell("Cell/update", args[0])
-  let next = applyCall(args[1], @[args[0].cellValue], NamedArgs())
+  var callArgs = [args[0].cellValue]
+  let next = applyCall(args[1], callArgs, NamedArgs())
   args[0].setCellValue(next)
   next
 
@@ -609,16 +610,18 @@ proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "map item")
+    var callArgs = [item]
     return StreamPullResult(
       has: true,
-      item: applyCall(stream.streamCallable, @[item], NamedArgs()))
+      item: applyCall(stream.streamCallable, callArgs, NamedArgs()))
   StreamPullResult(has: false, item: NIL)
 
 proc pullFilterStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "filter item")
-    if applyCall(stream.streamCallable, @[item], NamedArgs()).isTruthy:
+    var callArgs = [item]
+    if applyCall(stream.streamCallable, callArgs, NamedArgs()).isTruthy:
       return StreamPullResult(has: true, item: item)
   StreamPullResult(has: false, item: NIL)
 
@@ -820,7 +823,8 @@ proc updateAt(name: string, target: Value, path: openArray[Value],
   let segment = path[pos]
   if pos == path.high:
     let current = readUpdateChild(name, target, segment)
-    let nextValue = applyCall(updater, @[current], NamedArgs())
+    var callArgs = [current]
+    let nextValue = applyCall(updater, callArgs, NamedArgs())
     return writeUpdateChild(name, target, segment, nextValue)
   let child = readUpdateChild(name, target, segment)
   if child.kind == vkVoid:
@@ -1633,7 +1637,8 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   if deriveFn.kind == vkNil:
     raise newException(GeneError,
       "protocol " & protocol.protocolName & " has no derive form")
-  let generated = applyCall(deriveFn, @[typ, request], NamedArgs(), scope)
+  var callArgs = [typ, request]
+  let generated = applyCall(deriveFn, callArgs, NamedArgs(), scope)
   case generated.kind
   of vkNil, vkVoid:
     discard
@@ -1891,18 +1896,26 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         scope.define(sel.local, v)
       stack.add NIL
     of opCall:
-      var args = newSeq[Value](inst[].intArg)
-      if inst[].intArg > 0:
-        for i in countdown(inst[].intArg - 1, 0):
-          args[i] = stack.pop()
       var named: NamedArgs
+      let argCount = inst[].intArg
+      let namedCount = inst[].names.len
+      let argsStart = stack.len - argCount
+      if argsStart < 0 or argsStart < namedCount + 1:
+        raise newException(GeneError, "VM stack underflow in call")
+      let calleeIndex = argsStart - namedCount - 1
+      let callee = stack[calleeIndex]
       if inst[].names.len > 0:
         named.names = inst[].names
         named.values = newSeq[Value](inst[].names.len)
-        for i in countdown(inst[].names.len - 1, 0):
-          named.values[i] = stack.pop()
-      let callee = stack.pop()
-      stack.add applyCall(callee, args, named, scope)
+        for i in 0 ..< inst[].names.len:
+          named.values[i] = stack[calleeIndex + 1 + i]
+      let value =
+        if argCount == 0:
+          applyCall(callee, [], named, scope)
+        else:
+          applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope)
+      stack.setLen(calleeIndex)
+      stack.add value
     of opMatch:
       let target = stack.pop()
       let mp = chunk.matches[inst[].intArg]
@@ -2504,13 +2517,15 @@ proc applySelector(selector, target: Value): Value =
   for segment in selector.body:
     result =
       if segment.isSelectorStage:
-        applyCall(segment, @[result], NamedArgs())
+        block:
+          var callArgs = [result]
+          applyCall(segment, callArgs, NamedArgs())
       else:
         staticLookup(result, segment)
     if result.kind == vkVoid:
       return VOID
 
-proc applyCall(callee: Value, args: seq[Value], named: NamedArgs,
+proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil): Value =
   case callee.kind
   of vkNativeFn:
