@@ -1560,6 +1560,14 @@ proc raiseFailedValue(value: Value) =
   e.hasErrVal = true
   raise e
 
+proc raisePanicValue(value: Value) =
+  var e: ref GenePanic
+  new(e)
+  e.msg = displayStr(value)
+  e.errVal = value
+  e.hasErrVal = true
+  raise e
+
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr(message)
@@ -2194,6 +2202,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       if not scope.isErrorValue(errVal):
         raise newException(GeneError, "fail expects an Error value")
       raiseFailedValue(errVal)
+    of opPanic:
+      raisePanicValue(stack.pop())
     of opYield:
       if not stopOnYield:
         raise newException(GeneError, "yield is only valid in a generator")

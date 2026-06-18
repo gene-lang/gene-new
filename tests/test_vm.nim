@@ -435,6 +435,16 @@ suite "vm — comparison and logic":
     ck "(not 1)", "false"
 
 suite "vm — special forms":
+  test "deferred special forms are reserved only in head position":
+    for form in ["scope", "spawn", "await"]:
+      expect GeneError:
+        discard compileSource("(" & form & " 1)")
+    expect GeneError:
+      discard compileSource("(derive [t req] nil)")
+    ck "(var scope 3) scope", "3"
+    ck "(var spawn 1) spawn", "1"
+    ck "(var await 2) await", "2"
+
   test "do returns last":
     ck "(do 1 2 3)", "3"
     ck "(do)", "nil"

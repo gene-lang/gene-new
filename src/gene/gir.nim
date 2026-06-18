@@ -43,6 +43,7 @@ type
     opIteratorNext    # pop a stream iterator, push next item
     opTry             # run a body with catch clauses and an ensure block
     opFail            # pop an Error value and raise it through GeneError
+    opPanic           # pop a value and raise it through GenePanic
     opYield           # suspend a generator and expose the stack top as item
     opJumpIfFalse
     opJump
@@ -299,7 +300,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " for=" & $inst.intArg
   of opTry:
     result.add " try=" & $inst.intArg
-  of opFail:
+  of opFail, opPanic:
     discard
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg

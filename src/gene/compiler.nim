@@ -1344,6 +1344,15 @@ proc compileFail(c: var Compiler, node: Value) =
   compileExpr(c, node.body[0])
   discard c.emit(opFail)
 
+proc compilePanic(c: var Compiler, node: Value) =
+  if node.props.len != 0 or node.body.len > 1:
+    raise newException(GeneError, "panic expects zero or one value")
+  if node.body.len == 0:
+    c.emitConst newStr("panic")
+  else:
+    compileExpr(c, node.body[0])
+  discard c.emit(opPanic)
+
 proc deriveProtocolExpr(request: Value): Value =
   if request.kind == vkNode:
     request.head
@@ -1535,6 +1544,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "fail":
       compileFail(c, node)
       return
+    of "panic":
+      compilePanic(c, node)
+      return
     of "type":
       compileType(c, node)
       return
@@ -1544,6 +1556,12 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "impl":
       compileImpl(c, node)
       return
+    of "derive":
+      raise newException(GeneError,
+        "derive is only valid inside a protocol declaration")
+    of "scope", "spawn", "await":
+      raise newException(GeneError,
+        "special form '" & h.symVal & "' is reserved but not implemented")
     else:
       if c.hasMacros and c.macros.hasKey(h.symVal):
         compileMacroCall(c, node, c.macros[h.symVal])
