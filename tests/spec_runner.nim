@@ -572,6 +572,13 @@ suite "spec — Env and eval from design":
                "catch (CompileError ^message m) m)",
                "\"eval cannot use import; add imports to Env\"")
 
+suite "spec — parser helpers from design":
+  test "read-one feeds eval and read-all returns a stream":
+    check_eval("(eval (read-one \"(+ 1 2)\") ^in (env))", "3")
+    check_eval("(var s (read-all \"(a) (b 2)\")) " &
+               "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+               "[(a) (b 2) false]")
+
 suite "spec — modules from design":
   test "explicit mod declarations are top-level and unique":
     check_eval("(mod app) (var x 1) x", "1")

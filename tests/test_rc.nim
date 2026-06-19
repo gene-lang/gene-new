@@ -52,6 +52,7 @@ when defined(geneRcStats):
 
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
+      check leakedManaged("(var s (read-all \"(a) (b)\")) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
       check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0

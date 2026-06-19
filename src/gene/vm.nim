@@ -1,7 +1,7 @@
 ## Stack VM for compiled Gene GIR chunks.
 
 import std/[algorithm, os, sets, strutils, tables]
-import ./[compiler, equality, gir, printer, types]
+import ./[compiler, equality, gir, printer, reader, types]
 
 type
   Application* = ref object of RuntimeContext
@@ -867,6 +867,27 @@ proc raiseEndOfStream() =
   e.hasErrVal = true
   raise e
 
+proc readFormsFromString(name: string, value: Value): seq[Value] =
+  if value.kind != vkString:
+    raise newException(GeneError, name & " expects a Str")
+  try:
+    readAll(value.strVal)
+  except ReadError as e:
+    raise newException(GeneError, name & ": " & e.msg)
+
+proc biReadOne(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("read-one", args)
+  let forms = readFormsFromString("read-one", args[0])
+  if forms.len == 0:
+    return NIL
+  if forms.len > 1:
+    raise newException(GeneError, "read-one expects one form, got " & $forms.len)
+  forms[0]
+
+proc biReadAll(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("read-all", args)
+  newStream(readFormsFromString("read-all", args[0]))
+
 proc biToStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_stream", args)
   if args[0].kind != vkList:
@@ -1569,6 +1590,8 @@ proc buildBuiltins(app: Application): Scope =
   let envScope = newScope(result)
   envScope.define("extend", newNativeFn("Env/extend", biEnvExtend))
   result.define("Env", newNamespace("Env", envScope))
+  result.define("read-one", newNativeFn("read-one", biReadOne))
+  result.define("read-all", newNativeFn("read-all", biReadAll))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
   result.define("map", newNativeFn("map", biStreamMap))

@@ -1105,6 +1105,19 @@ suite "vm — actors":
     expect GeneError: discard runStr("(ReplyTo/send 1 2)")
 
 suite "vm — streams":
+  test "read-one and read-all expose parsed forms":
+    ck "(read-one \"(+ 1 2)\")", "(+ 1 2)"
+    ck "(eval (read-one \"(+ 1 2)\") ^in (env))", "3"
+    ck "(read-one \"#_ (ignored)\")", "nil"
+    ck "(var s (read-all \"(a) #_ (ignored) (b 2)\")) " &
+       "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+       "[(a) (b 2) false]"
+    ck "(try (read-one \"(a\") catch {^message m} m)",
+       "\"read-one: unexpected EOF: unclosed '('\""
+    expect GeneError: discard runStr("(read-one 1)")
+    expect GeneError: discard runStr("(read-all 1)")
+    expect GeneError: discard runStr("(read-one \"1 2\")")
+
   test "stream values are opaque display values":
     ck "(to_stream [1 2])", "(stream)"
 
