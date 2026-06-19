@@ -153,6 +153,11 @@ suite "types — function boundaries":
        "catch (TypeError ^expected e) e)", "\"(Map Int Str)\""
 
   test "fixed-width integer annotations range-check boundaries":
+    ck "(fn f [x : SignedInt] x) [(f -1) (f 0) (f 1)]", "[-1 0 1]"
+    ck "(fn f [x : UnsignedInt] x) " &
+       "[(f 0) (f 18446744073709551616)]",
+       "[0 18446744073709551616]"
+    expect GeneError: discard runStr("(fn f [x : UnsignedInt] x) (f -1)")
     ck "(fn f [x : I8] x) [(f -128) (f 127)]", "[-128 127]"
     ck "(fn f [x : U8] x) [(f 0) (f 255)]", "[0 255]"
     ck "(fn f [x : U64] x) (f 18446744073709551615)", "18446744073709551615"

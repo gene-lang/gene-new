@@ -3475,6 +3475,10 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkSymbol)
   of "Int", "Integer":
     (true, value.kind == vkInt)
+  of "SignedInt":
+    (true, value.kind == vkInt)
+  of "UnsignedInt":
+    (true, value.kind == vkInt and value.intCompareToInt64(0) >= 0)
   of "Fixnum":
     (true, value.kind == vkInt and not value.isHeapBacked)
   of "I64":

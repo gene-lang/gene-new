@@ -125,6 +125,14 @@ suite "spec — numeric boundaries from design":
                "true]")
 
   test "fixed-width integer annotations are range checked":
+    check_eval("(fn signed [x : SignedInt] x) " &
+               "(fn unsigned [x : UnsignedInt] x) " &
+               "[(signed -1) (unsigned 18446744073709551616)]",
+               "[-1 18446744073709551616]")
+    expect GeneError:
+      discard run(compileSource("(fn unsigned [x : UnsignedInt] x) " &
+                                "(unsigned -1)"),
+                  newGlobalScope())
     check_eval("(fn byte [x : U8] x) [(byte 0) (byte 255)]", "[0 255]")
     expect GeneError:
       discard run(compileSource("(fn byte [x : U8] x) (byte 256)"),
