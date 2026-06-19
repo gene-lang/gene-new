@@ -1,5 +1,5 @@
 import gene/[compiler, printer, types, vm]
-import std/unittest
+import std/[tables, unittest]
 
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
@@ -30,6 +30,26 @@ suite "protocols — declarations and dispatch":
        "(impl ToName User (message to_name [self] : Str self/name)) " &
        "((User ^name \"Ada\") ~ to_name)",
        "\"Ada\""
+
+  test "user-defined Callable values receive a Call envelope":
+    ck "(type AddN ^props {^n Int}) " &
+       "(impl Callable AddN " &
+       "  (message apply [self call] (+ self/n (call ~ /0)))) " &
+       "((AddN ^n 5) 7)",
+       "12"
+    ck "(type PickNamed ^props {}) " &
+       "(impl Callable PickNamed " &
+       "  (message apply [self call] call/named/name)) " &
+       "((PickNamed) ^name \"Ada\")",
+       "\"Ada\""
+
+  test "Callable boundaries accept values with visible impls":
+    ck "(type AddN ^props {^n Int}) " &
+       "(impl Callable AddN " &
+       "  (message apply [self call] (+ self/n (call ~ /0)))) " &
+       "(fn invoke [f : Callable] (f 2)) " &
+       "(invoke (AddN ^n 3))",
+       "5"
 
   test "namespace protocol messages find receiver-scope impls":
     ck "(ns model " &

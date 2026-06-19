@@ -1589,6 +1589,24 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
+  let callType = newType("Call", NIL,
+                         @[
+                           TypeField(name: "named", optional: false,
+                                     typeExpr: newSym("PropMap"), scope: result),
+                           TypeField(name: "site", optional: true,
+                                     typeExpr: newSym("Node"), scope: result)
+                         ],
+                         @[], result, @[], @[],
+                         @[
+                           TypeBodyField(rest: true,
+                                         typeExpr: newSym("Any"),
+                                         scope: result)
+                         ])
+  result.define("Call", callType)
+  let callableProtocol = newProtocol("Callable", ["apply"])
+  result.define("Callable", callableProtocol)
+  for _, message in callableProtocol.protocolMessages:
+    result.define(message.protocolMessageName, message)
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
@@ -2256,6 +2274,25 @@ proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
       return true
     t = t.typeParent
   false
+
+proc builtinBinding(scope: Scope, name: string): Value =
+  let root =
+    if scope == nil: builtinsScope()
+    else: scope.application().builtinsScope()
+  root.lookup(name)
+
+proc isBuiltinCallable(value: Value): bool =
+  value.kind in {vkFunction, vkNativeFn, vkType, vkProtocolMessage} or
+    (value.kind == vkNode and value.isSelector)
+
+proc valueImplementsCallable(value: Value, scope: Scope): bool =
+  if value.isBuiltinCallable:
+    return true
+  let typ = value.receiverType
+  if typ.kind != vkType:
+    return false
+  let protocol = builtinBinding(scope, "Callable")
+  protocol.kind == vkProtocol and typeImplementsProtocol(scope, typ, protocol)
 
 proc capturedScope(scope: Scope, captureDepth: int): Scope =
   if captureDepth <= 0:
@@ -3761,6 +3798,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   of vkSymbol:
     var resolved: Value
     let name = expr.symVal
+    if name == "Callable":
+      return value.valueImplementsCallable(scope)
     # Some built-ins are both annotations/namespaces and legal nominal names in
     # user code; let local nominal declarations win for bare annotations.
     if scope != nil and
@@ -4008,6 +4047,30 @@ proc applySelector(selector, target: Value): Value =
         staticLookup(result, segment)
     if result.kind == vkVoid:
       return VOID
+
+proc callNamedMap(named: NamedArgs): Value =
+  var entries = initOrderedTable[string, Value]()
+  for i, name in named.names:
+    if named.values[i].kind != vkVoid:
+      entries[name] = named.values[i]
+  newMap(entries)
+
+proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs): Value =
+  var props = initOrderedTable[string, Value]()
+  props["named"] = callNamedMap(named)
+  var body = newSeq[Value](args.len)
+  for i, arg in args:
+    body[i] = arg
+  newNode(builtinBinding(scope, "Call"), props = props, body = body)
+
+proc applyUserCallable(callee: Value, args: openArray[Value], named: NamedArgs,
+                       dispatchScope: Scope): Value =
+  let protocol = builtinBinding(dispatchScope, "Callable")
+  let message = protocol.protocolMessages["apply"]
+  let implFn = resolveProtocolMessage(dispatchScope, message, callee)
+  let envelope = callEnvelope(dispatchScope, args, named)
+  var callArgs = [callee, envelope]
+  applyCall(implFn, callArgs, NamedArgs(), dispatchScope)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil): Value =
@@ -4277,6 +4340,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     applyCall(implFn, args, named, dispatchScope)
   of vkNode:
     if not callee.isSelector:
+      if callee.valueImplementsCallable(dispatchScope):
+        return applyUserCallable(callee, args, named, dispatchScope)
       raise newException(GeneError, "value is not callable: " & $callee.kind)
     if named.len != 0:
       raise newException(GeneError, "selector calls do not accept named arguments")

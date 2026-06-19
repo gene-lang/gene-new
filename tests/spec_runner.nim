@@ -250,6 +250,12 @@ suite "spec — typed variable boundaries from design":
                "\"Selector\"")
     check_eval("(fn keep-callable [f : Callable] f) (keep-callable +)",
                "(native-fn +)")
+    check_eval("(type AddN ^props {^n Int}) " &
+               "(impl Callable AddN " &
+               "  (message apply [self call] (+ self/n (call ~ /0)))) " &
+               "(fn invoke [f : Callable] (f 2)) " &
+               "(invoke (AddN ^n 3))",
+               "5")
 
 suite "spec — generic functions from design":
   test "generic function calls infer type parameters locally":
