@@ -120,6 +120,22 @@ suite "spec — macros from design":
         "(macro second! [[_ value]] `%value) " &
         "(second! [only-one])"), newGlobalScope())
 
+  test "macro typed patterns match syntax values":
+    check_eval("(macro eval-node! [(form : Node)] `%form) " &
+               "(eval-node! (+ 1 2))",
+               "3")
+    check_eval("(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
+               "(keep-syms! [a b])",
+               "[a b]")
+    expect GeneError:
+      discard run(compileSource(
+        "(macro eval-node! [(form : Node)] `%form) " &
+        "(eval-node! 1)"), newGlobalScope())
+    expect GeneError:
+      discard run(compileSource(
+        "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
+        "(keep-syms! [a 1])"), newGlobalScope())
+
   test "template macros expand in default arguments":
     check_eval("(macro seven! [] 7) (fn f [x = (seven!)] x) (f)", "7")
 

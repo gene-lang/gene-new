@@ -744,6 +744,93 @@ proc macroMetaAsMap(target: Value): Value =
       entries[key] = val
   newMap(entries)
 
+proc macroMatchesTypeExpr(expr, value: Value): bool
+
+proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
+  case name
+  of "Any":
+    (true, true)
+  of "Never":
+    (true, false)
+  of "Nil":
+    (true, value.kind == vkNil)
+  of "Void":
+    (true, value.kind == vkVoid)
+  of "Bool":
+    (true, value.kind == vkBool)
+  of "Str", "String":
+    (true, value.kind == vkString)
+  of "Char":
+    (true, value.kind == vkChar)
+  of "Sym", "Symbol":
+    (true, value.kind == vkSymbol)
+  of "Int", "Integer":
+    (true, value.kind == vkInt)
+  of "Number":
+    (true, value.kind in {vkInt, vkFloat})
+  of "Float", "F32", "F64":
+    (true, value.kind == vkFloat)
+  of "List":
+    (true, value.kind == vkList)
+  of "Map", "PropMap":
+    (true, value.kind == vkMap)
+  of "Gene", "Node":
+    (true, value.kind == vkNode)
+  of "Selector":
+    (true, value.kind == vkNode and value.head.isSymbol("select"))
+  else:
+    (false, false)
+
+proc macroMatchesTypeExpr(expr, value: Value): bool =
+  case expr.kind
+  of vkSymbol:
+    let builtin = macroMatchesBuiltinType(expr.symVal, value)
+    if builtin.known:
+      return builtin.ok
+    raise newException(GeneError, "unknown macro type annotation: " & expr.symVal)
+  of vkNode:
+    if expr.head.kind == vkSymbol:
+      case expr.head.symVal
+      of "|":
+        for alt in expr.body:
+          if macroMatchesTypeExpr(alt, value):
+            return true
+        return false
+      of "opt":
+        if expr.body.len != 1:
+          raise newException(GeneError, "(opt T) expects one macro type")
+        return value.kind == vkNil or macroMatchesTypeExpr(expr.body[0], value)
+      of "List":
+        if value.kind != vkList:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(List T) expects one macro item type")
+        for item in value.listItems:
+          if not macroMatchesTypeExpr(expr.body[0], item):
+            return false
+        return true
+      of "Map", "PropMap":
+        if value.kind != vkMap:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len notin [1, 2]:
+          raise newException(GeneError, "(Map K V) expects macro key and value types")
+        let valueType = expr.body[^1]
+        for key, item in value.mapEntries:
+          if expr.body.len == 2 and not macroMatchesTypeExpr(expr.body[0], newSym(key)):
+            return false
+          if not macroMatchesTypeExpr(valueType, item):
+            return false
+        return true
+      else:
+        discard
+    raise newException(GeneError, "unsupported macro type annotation")
+  else:
+    raise newException(GeneError, "unsupported macro type annotation")
+
 proc macroTryMatch(pattern, target: Value,
                    env: var Table[string, Value]): bool
 
@@ -837,8 +924,13 @@ proc macroTryMatch(pattern, target: Value,
     true
   of vkNode:
     if pattern.isTypedPattern:
-      raise newException(GeneError,
-        "macro typed parameter patterns are not implemented")
+      pattern.requireTypedPatternShape()
+      if not macroMatchesTypeExpr(pattern.body[1], target):
+        return false
+      let name = pattern.head.symVal
+      if name != "_":
+        env[name] = target
+      return true
     if pattern.head.kind == vkSymbol:
       case pattern.head.symVal
       of "unquote":

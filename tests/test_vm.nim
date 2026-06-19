@@ -433,6 +433,18 @@ suite "vm — macros":
     ck "(macro rest-items! [[head tail...]] `(quote %tail)) " &
        "(rest-items! [1 2 3])",
        "[2 3]"
+    ck "(macro eval-node! [(form : Node)] `%form) " &
+       "(eval-node! (+ 1 2))",
+       "3"
+    ck "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
+       "(keep-syms! [a b])",
+       "[a b]"
+    expect GeneError:
+      discard runStr("(macro eval-node! [(form : Node)] `%form) " &
+                     "(eval-node! 1)")
+    expect GeneError:
+      discard runStr("(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
+                     "(keep-syms! [a 1])")
     ck "(macro named-pair! [^entry [k v]] `(+ %k %v)) " &
        "(named-pair! ^entry [2 3])",
        "5"
