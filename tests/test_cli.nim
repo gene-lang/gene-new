@@ -108,6 +108,40 @@ suite "cli — gene repl":
     check "eval cannot use import; add imports to Env" in ran.output
     check ran.output.strip.splitLines[^1] == "3"
 
+suite "cli — gene parse/fmt/compile":
+  setup:
+    createDir(cliDir)
+
+  test "parse prints canonical multi-form source":
+    let path = writeCliProgram("parse_subject.gene",
+      "(var x   1)\n" &
+      "[x   2]\n")
+    let ran = runGene(["parse", path])
+    check ran.exitCode == 0
+    check ran.output.strip.splitLines == @[
+      "(var x 1)",
+      "[x 2]"
+    ]
+
+  test "fmt uses the same canonical source-unit printer":
+    let path = writeCliProgram("fmt_subject.gene",
+      "(quote (x @line   7 ^name \"Ada\"))\n" &
+      "#{^b 2 ^a   1}")
+    let ran = runGene(["fmt", path])
+    check ran.exitCode == 0
+    check ran.output.strip.splitLines == @[
+      "(quote (x @line 7 ^name \"Ada\"))",
+      "#{^b 2 ^a 1}"
+    ]
+
+  test "compile prints bytecode without executing forms":
+    let path = writeCliProgram("compile_subject.gene",
+      "(panic \"compile should not run\")")
+    let ran = runGene(["compile", path])
+    check ran.exitCode == 0
+    check "opPanic" in ran.output
+    check "Panic:" notin ran.output
+
 suite "cli — gene doc":
   setup:
     createDir(cliDir)
