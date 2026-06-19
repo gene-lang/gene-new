@@ -33,6 +33,7 @@ type
 
   MacroDef = object
     params: seq[string]
+    named: seq[NamedParam]
     rest: string
     body: seq[Value]
 
@@ -454,17 +455,22 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
         continue
       discard c.parseParamAdornment(items, i)
 
-proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[string], rest: string] =
+proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[string],
+                                                         named: seq[NamedParam],
+                                                         rest: string] =
   let specs = c.paramSpecs(paramList)
-  if specs.named.len != 0:
-    raise newException(GeneError, "macro named parameters are not implemented")
   for t in specs.positionalTypes:
     if t.kind != vkNil:
       raise newException(GeneError, "macro parameter type annotations are not implemented")
   for defaultValue in specs.positionalDefaults:
     if defaultValue.optional:
       raise newException(GeneError, "macro parameter defaults are not implemented")
-  (specs.positional, specs.rest)
+  for p in specs.named:
+    if p.typeExpr.kind != vkNil:
+      raise newException(GeneError, "macro parameter type annotations are not implemented")
+    if p.defaultValue.optional:
+      raise newException(GeneError, "macro parameter defaults are not implemented")
+  (specs.positional, specs.named, specs.rest)
 
 proc macroTemplateValue(expr: Value, env: Table[string, Value],
                         c: var Compiler): Value
@@ -558,6 +564,11 @@ proc expandMacroQuasiNodeParts(node: Value, env: Table[string, Value],
   var props = initOrderedTable[string, Value]()
   for key, item in node.props:
     props[key] = expandMacroQuasi(item, env, depth, c, hygiene)
+  let head =
+    if node.head.kind == vkSymbol:
+      hygienicSymbol(node.head, hygiene)
+    else:
+      expandMacroQuasi(node.head, env, depth, c, hygiene)
   var body: seq[Value]
   for item in node.body:
     let splice = macroSpliceExpr(item, env, c, depth)
@@ -565,8 +576,8 @@ proc expandMacroQuasiNodeParts(node: Value, env: Table[string, Value],
       body.appendMacroSplice(splice.value)
     else:
       body.add expandMacroQuasi(item, env, depth, c, hygiene)
-  newNode(hygienicSymbol(node.head, hygiene), props = props, body = body,
-          meta = meta, immutable = node.nodeImmutable)
+  newNode(head, props = props, body = body, meta = meta,
+          immutable = node.nodeImmutable)
 
 proc expandMacroQuasiNode(node: Value, env: Table[string, Value],
                           depth: int, c: var Compiler,
@@ -633,8 +644,6 @@ proc macroTemplateValue(expr: Value, env: Table[string, Value],
   expr
 
 proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
-  if node.props.len != 0:
-    raise newException(GeneError, "macro calls with props are not implemented")
   let args = node.body
   if args.len < def.params.len:
     raise newException(GeneError, "macro expects at least " & $def.params.len &
@@ -645,6 +654,20 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
   var env = initTable[string, Value]()
   for i, name in def.params:
     env[name] = args[i]
+  for p in def.named:
+    if not node.props.hasKey(p.arg):
+      raise newException(GeneError,
+        "macro missing named argument: " & p.arg)
+    env[p.local] = node.props[p.arg]
+  for key, _ in node.props:
+    var found = false
+    for p in def.named:
+      if p.arg == key:
+        found = true
+        break
+    if not found:
+      raise newException(GeneError,
+        "macro got unexpected named argument: " & key)
   if def.rest.len > 0:
     var rest: seq[Value]
     for i in def.params.len ..< args.len:
@@ -680,7 +703,9 @@ proc compileMacro(c: var Compiler, node: Value) =
   var macroBody: seq[Value]
   for i in 2 ..< body.len:
     macroBody.add body[i]
-  c.macros[body[0].symVal] = MacroDef(params: sig.params, rest: sig.rest,
+  c.macros[body[0].symVal] = MacroDef(params: sig.params,
+                                      named: sig.named,
+                                      rest: sig.rest,
                                       body: macroBody)
   c.hasMacros = true
   c.emitConst NIL

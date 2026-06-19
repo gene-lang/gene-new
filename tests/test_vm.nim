@@ -380,6 +380,24 @@ suite "vm — quasiquote templates":
     expect GeneError: discard compileSource("(quasiquote)")
     expect GeneError: discard compileSource("(quasiquote (unquote))")
 
+suite "vm — macros":
+  test "macro calls bind named syntax props":
+    ck "(macro scaled! [value ^by n] `(+ %value %n)) " &
+       "(scaled! ^by 3 7)",
+       "10"
+    ck "(macro scaled! [value ^by amount] `(+ %value %amount)) " &
+       "(scaled! ^by 4 9)",
+       "13"
+    ck "(macro tagged! [value ^tag t] `(quote (%t %value))) " &
+       "(tagged! ^tag item 7)",
+       "(item 7)"
+    expect GeneError:
+      discard runStr("(macro scaled! [value ^by n] `(+ %value %n)) " &
+                     "(scaled! 7)")
+    expect GeneError:
+      discard runStr("(macro scaled! [value ^by n] `(+ %value %n)) " &
+                     "(scaled! ^other 3 7)")
+
 suite "vm — arithmetic":
   test "addition":
     ck "(+ 1 2 3)", "6"

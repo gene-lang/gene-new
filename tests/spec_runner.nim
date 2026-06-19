@@ -77,6 +77,25 @@ suite "spec — macros from design":
                "[(ignore! (set hit 1)) hit]",
                "[7 0]")
 
+  test "macro call props bind named syntax parameters":
+    check_eval("(macro scaled! [value ^by n] `(+ %value %n)) " &
+               "(scaled! ^by 3 7)",
+               "10")
+    check_eval("(macro scaled! [value ^by amount] `(+ %value %amount)) " &
+               "(scaled! ^by 4 9)",
+               "13")
+    check_eval("(macro tagged! [value ^tag t] `(quote (%t %value))) " &
+               "(tagged! ^tag item 7)",
+               "(item 7)")
+    expect GeneError:
+      discard run(compileSource(
+        "(macro scaled! [value ^by n] `(+ %value %n)) " &
+        "(scaled! 7)"), newGlobalScope())
+    expect GeneError:
+      discard run(compileSource(
+        "(macro scaled! [value ^by n] `(+ %value %n)) " &
+        "(scaled! ^other 3 7)"), newGlobalScope())
+
   test "template macros expand in default arguments":
     check_eval("(macro seven! [] 7) (fn f [x = (seven!)] x) (f)", "7")
 
