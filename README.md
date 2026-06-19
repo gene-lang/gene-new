@@ -71,8 +71,12 @@ participates in equality or hashing.
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, first-class `Cell`/`AtomicCell` mutable references,
-  list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, first-class `Env` values with explicit `eval node ^in env`,
-  `gene run` entrypoint invocation, GIR disassembly via `gene compile`, and built-ins
+  list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
+  `read-one`/`read-all`, first-class `Env` values with explicit
+  `eval node ^in env`, explicit Env imports/capabilities, `^policy`
+  max-step limits, `gene run` entrypoint invocation, line-oriented
+  `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
+  and built-ins
   (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
   update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
   AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
@@ -117,7 +121,9 @@ constants:
 `gene parse <file>` prints the canonical parsed forms without executing them
 (a read → print round-trip; props print immediately after the head). `gene fmt
 <file>` uses that same canonical printer as the MVP formatter. `gene compile
-<file>` prints the compiled GIR bytecode without running it.
+<file>` prints the compiled GIR bytecode without running it. `gene doc <file>`
+loads the module, skips `main`, and prints module metadata plus root
+declarations.
 
 ## Project layout
 

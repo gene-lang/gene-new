@@ -107,3 +107,27 @@ suite "cli — gene repl":
     check ran.exitCode == 0
     check "eval cannot use import; add imports to Env" in ran.output
     check ran.output.strip.splitLines[^1] == "3"
+
+suite "cli — gene doc":
+  setup:
+    createDir(cliDir)
+
+  test "prints module metadata and declarations without calling main":
+    let path = writeCliProgram("doc_subject.gene",
+      "(mod docs @doc \"module docs\") " &
+      "(var answer 42) " &
+      "(fn helper [] answer) " &
+      "(fn main [] (panic \"doc should not call main\"))")
+    let ran = runGene(["doc", path])
+    check ran.exitCode == 0
+    let lines = ran.output.strip.splitLines
+    check lines[0] == "Module: docs"
+    check lines[1] == "Path: " & normalizedPath(absolutePath(path))
+    check lines[2] == "Doc: module docs"
+    check lines[3] == "Declarations:"
+    check lines[4 .. ^1] == @[
+      "- answer : Int",
+      "- helper : Fn",
+      "- main : Fn"
+    ]
+    check "this-mod" notin ran.output

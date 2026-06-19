@@ -7,8 +7,9 @@
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
+##   gene doc <file>     print module metadata and declarations
 
-import std/[os, strutils, tables]
+import std/[algorithm, os, strutils, tables]
 import gene/[compiler, gir, printer, reader, types, vm]
 
 proc usage() =
@@ -21,6 +22,7 @@ proc usage() =
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
+  echo "  gene doc <file.gene>    print module metadata and declarations"
 
 proc readSourceFile(path: string): string =
   if not fileExists(path):
@@ -173,6 +175,38 @@ proc cmdCompile(path: string) =
     stderr.writeLine "Error: " & e.msg
     quit(1)
 
+proc cmdDoc(path: string) =
+  if not fileExists(path):
+    stderr.writeLine "Error: file not found: " & path
+    quit(1)
+  try:
+    let absPath = normalizedPath(absolutePath(path))
+    let app = newApplication(parentDir(absPath))
+    let module = app.loadFileModule(absPath)
+    echo "Module: " & module.moduleName
+    echo "Path: " & module.modulePath
+    let meta = module.moduleMeta
+    if meta.hasKey("doc") and meta["doc"].kind == vkString:
+      echo "Doc: " & meta["doc"].strVal
+    echo "Declarations:"
+    var names: seq[string]
+    let rootScope = module.moduleRootNamespace.nsScope
+    for name in rootScope.vars.keys:
+      if name != "this-mod":
+        names.add name
+    names.sort()
+    for name in names:
+      echo "- " & name & " : " & declarationKind(rootScope.vars[name])
+  except ReadError as e:
+    stderr.writeLine "Read error: " & e.msg
+    quit(1)
+  except GenePanic as e:
+    stderr.writeLine "Panic: " & e.msg
+    quit(1)
+  except GeneError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
 proc main() =
   if paramCount() == 0:
     usage()
@@ -206,6 +240,11 @@ proc main() =
       stderr.writeLine "Error: 'compile' needs a file path"
       quit(1)
     cmdCompile(paramStr(2))
+  of "doc":
+    if paramCount() < 2:
+      stderr.writeLine "Error: 'doc' needs a file path"
+      quit(1)
+    cmdDoc(paramStr(2))
   of "-h", "--help", "help":
     usage()
   else:

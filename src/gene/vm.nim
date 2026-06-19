@@ -1061,7 +1061,7 @@ proc sortedBindingNames(scope: Scope): seq[string] =
     result.add key
   result.sort()
 
-proc declarationKind(value: Value): string =
+proc declarationKind*(value: Value): string =
   case value.kind
   of vkNil: "Nil"
   of vkVoid: "Void"
