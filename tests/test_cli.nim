@@ -131,3 +131,27 @@ suite "cli — gene doc":
       "- main : Fn"
     ]
     check "this-mod" notin ran.output
+
+  test "prints namespace declarations recursively":
+    let path = writeCliProgram("doc_namespaces.gene",
+      "(mod docs) " &
+      "(ns util " &
+      "  (var answer 42) " &
+      "  (fn double [x] (+ x x)) " &
+      "  (ns nested (var flag true)))")
+    let ran = runGene(["doc", path])
+    check ran.exitCode == 0
+    let lines = ran.output.strip.splitLines
+    check lines == @[
+      "Module: docs",
+      "Path: " & normalizedPath(absolutePath(path)),
+      "Declarations:",
+      "- util : Namespace",
+      "Namespaces:",
+      "Namespace util:",
+      "- answer : Int",
+      "- double : Fn",
+      "- nested : Namespace",
+      "Namespace util/nested:",
+      "- flag : Bool"
+    ]

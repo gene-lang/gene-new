@@ -175,6 +175,25 @@ proc cmdCompile(path: string) =
     stderr.writeLine "Error: " & e.msg
     quit(1)
 
+proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
+  for name in scope.vars.keys:
+    if includeThisModule or name != "this-mod":
+      result.add name
+  result.sort()
+
+proc writeDocDeclarations(scope: Scope, includeThisModule = false) =
+  for name in docDeclarationNames(scope, includeThisModule):
+    echo "- " & name & " : " & declarationKind(scope.vars[name])
+
+proc collectDocNamespaces(ns: Value, prefix: string,
+                          namespaces: var seq[tuple[path: string, ns: Value]]) =
+  for name in docDeclarationNames(ns.nsScope):
+    let value = ns.nsScope.vars[name]
+    if value.kind == vkNamespace:
+      let path = if prefix.len == 0: name else: prefix & "/" & name
+      namespaces.add (path: path, ns: value)
+      collectDocNamespaces(value, path, namespaces)
+
 proc cmdDoc(path: string) =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
@@ -189,14 +208,15 @@ proc cmdDoc(path: string) =
     if meta.hasKey("doc") and meta["doc"].kind == vkString:
       echo "Doc: " & meta["doc"].strVal
     echo "Declarations:"
-    var names: seq[string]
     let rootScope = module.moduleRootNamespace.nsScope
-    for name in rootScope.vars.keys:
-      if name != "this-mod":
-        names.add name
-    names.sort()
-    for name in names:
-      echo "- " & name & " : " & declarationKind(rootScope.vars[name])
+    writeDocDeclarations(rootScope)
+    var namespaces: seq[tuple[path: string, ns: Value]]
+    collectDocNamespaces(module.moduleRootNamespace, "", namespaces)
+    if namespaces.len > 0:
+      echo "Namespaces:"
+      for item in namespaces:
+        echo "Namespace " & item.path & ":"
+        writeDocDeclarations(item.ns.nsScope)
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)
