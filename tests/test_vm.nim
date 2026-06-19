@@ -814,6 +814,28 @@ suite "vm — env and eval":
     expect GeneError:
       discard runStr("(env ^capabilities [1])")
 
+  test "eval policy max-steps limits execution":
+    ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max-steps 20}))",
+       "3"
+    ck "(type EvalPolicy ^props {^max-steps Int}) " &
+       "(var p (EvalPolicy ^max-steps 20)) " &
+       "(eval (quote (+ 1 2)) ^in (env ^policy p))",
+       "3"
+    ck "(try (eval (quote (while true nil)) " &
+       "           ^in (env ^policy {^max-steps 20})) " &
+       "catch {^message m} m)",
+       "\"eval max steps exceeded\""
+    ck "(try (eval (quote (eval (quote (while true nil)) ^in (env))) " &
+       "           ^in (env ^policy {^max-steps 40})) " &
+       "catch {^message m} m)",
+       "\"eval max steps exceeded\""
+    expect GeneError:
+      discard runStr("(env ^policy [1])")
+    expect GeneError:
+      discard runStr("(env ^policy {^max-steps \"bad\"})")
+    expect GeneError:
+      discard runStr("(env ^policy {^max-steps -1})")
+
   test "eval compile failures are typed CompileError values":
     ck "(try (eval (quote (var)) ^in (env)) " &
        "catch (CompileError ^message m) m)",

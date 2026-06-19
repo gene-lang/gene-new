@@ -197,6 +197,12 @@ type
   ## type; the value layer keeps only this base reference.
   RuntimeContext* = ref object of RootObj
 
+  ## Shared instruction budget for policy-limited eval scopes. Budgets can be
+  ## chained so nested evals with their own policy still consume the outer budget.
+  EvalBudget* = ref object
+    remaining*: int64
+    parent*: EvalBudget
+
   ## Lexical environment for the VM (a Nim ORC ref, so pure scope/namespace
   ## cycles are collectable). A first-class `Env` (design Section 11.1) is a
   ## later, richer concept.
@@ -217,6 +223,7 @@ type
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
+    evalBudget*: EvalBudget
     ownsActors*: bool
     actorFailureStrategy*: ActorFailureStrategy
     ownedActors*: seq[Value]

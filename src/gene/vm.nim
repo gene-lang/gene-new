@@ -31,7 +31,10 @@ proc newScope*(parent: Scope = nil,
     if application != nil: application
     elif parent != nil: parent.application
     else: nil
-  Scope(application: owner, parent: parent)
+  let budget =
+    if parent != nil: parent.evalBudget
+    else: nil
+  Scope(application: owner, parent: parent, evalBudget: budget)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
   var s = scope
@@ -1168,6 +1171,35 @@ proc bindingsFromMap(name: string, value: Value): Table[string, Value] =
   result = initTable[string, Value]()
   for k, v in value.mapEntries:
     result[k] = v
+
+proc evalPolicyProp(policy: Value, name: string): Value =
+  case policy.kind
+  of vkMap:
+    if policy.mapEntries.hasKey(name): policy.mapEntries[name] else: VOID
+  of vkNode:
+    if policy.props.hasKey(name): policy.props[name] else: VOID
+  else:
+    VOID
+
+proc evalPolicyMaxSteps(policy: Value): int64 =
+  if policy.kind in {vkNil, vkVoid}:
+    return -1
+  if policy.kind notin {vkMap, vkNode}:
+    raise newException(GeneError, "env ^policy must be a map or node")
+  let maxSteps = evalPolicyProp(policy, "max-steps")
+  if maxSteps.kind in {vkNil, vkVoid}:
+    return -1
+  if maxSteps.kind != vkInt or not maxSteps.intFitsInt64 or maxSteps.intVal < 0:
+    raise newException(GeneError,
+      "env ^policy ^max-steps must be a non-negative Int")
+  maxSteps.intVal
+
+proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
+  let maxSteps = evalPolicyMaxSteps(policy)
+  if maxSteps < 0:
+    parent
+  else:
+    EvalBudget(remaining: maxSteps, parent: parent)
 
 proc biEnvExtend(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -2527,13 +2559,24 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   else:
     raise newException(GeneError, "derive must return a declaration node or list")
 
+proc consumeEvalStep(budget: EvalBudget) =
+  var current = budget
+  while current != nil:
+    if current.remaining <= 0:
+      raise newException(GeneError, "eval max steps exceeded")
+    dec current.remaining
+    current = current.parent
+
 proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
              stopOnYield: bool,
              validateImplRequirements = true): RunStop =
+  let evalBudget = scope.evalBudget
   while true:
     {.computedGoto.}
     if ip >= chunk.instructions.len:
       break
+    if evalBudget != nil:
+      consumeEvalStep(evalBudget)
     let inst = addr chunk.instructions[ip]
     let op = inst[].op
     inc ip
@@ -2656,6 +2699,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         raise newException(GeneError, "env ^module must be a Module or Namespace")
       if capabilities.kind != vkNil and capabilities.kind != vkMap:
         raise newException(GeneError, "env ^capabilities must be a map")
+      discard evalPolicyMaxSteps(policy)
       var imports: seq[Value]
       let app = scope.application()
       for item in importsValue.listItems:
@@ -2668,6 +2712,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       if env.kind != vkEnv:
         raise newException(GeneError, "eval ^in must be an Env")
       let evalScope = newScope(materializeEvalParent(env))
+      evalScope.evalBudget = evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
       let evalChunk =
         try:
           compileEvalForm(node)
