@@ -3287,6 +3287,34 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
           applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope)
       stack.setLen(calleeIndex)
       stack.add value
+    of opCallSplice:
+      var named: NamedArgs
+      let proto = chunk.listBuilds[inst[].intArg]
+      let partCount = proto.splices.len
+      let namedCount = inst[].names.len
+      let partsStart = stack.len - partCount
+      if partsStart < 0 or partsStart < namedCount + 1:
+        raise newException(GeneError, "VM stack underflow in call")
+      let calleeIndex = partsStart - namedCount - 1
+      let callee = stack[calleeIndex]
+      if inst[].names.len > 0:
+        named.names = inst[].names
+        named.values = newSeq[Value](inst[].names.len)
+        for i in 0 ..< inst[].names.len:
+          named.values[i] = stack[calleeIndex + 1 + i]
+      var args: seq[Value]
+      for i, part in stack.toOpenArray(partsStart, stack.high):
+        if proto.splices[i]:
+          appendSplicedBody(args, part)
+        else:
+          args.add part
+      let value =
+        if args.len == 0:
+          applyCall(callee, [], named, scope)
+        else:
+          applyCall(callee, args, named, scope)
+      stack.setLen(calleeIndex)
+      stack.add value
     of opMatch:
       let target = stack.pop()
       let mp = chunk.matches[inst[].intArg]

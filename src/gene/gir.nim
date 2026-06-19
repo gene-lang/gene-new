@@ -34,6 +34,7 @@ type
     opMakeImpl
     opImport
     opCall
+    opCallSplice
     opMatch           # pop target, run the first matching branch in a child scope
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
     opMatchBindReplace # pop target, destructure and replace existing loop binds
@@ -295,6 +296,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " import=" & $inst.intArg
   of opCall:
     result.add " argc=" & $inst.intArg
+    if inst.names.len > 0:
+      result.add " names=" & formatNames(inst.names)
+  of opCallSplice:
+    result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
   of opMatch:

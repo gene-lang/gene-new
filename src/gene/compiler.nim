@@ -1671,15 +1671,84 @@ proc compilePath(c: var Compiler, node: Value) =
   compileExpr(c, parts[0])
   discard c.emit(opCall, 1)
 
+proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
+  case value.kind
+  of vkSymbol:
+    if value.symVal.len > 3 and value.symVal.endsWith("..."):
+      return (true, desugarPath(value.symVal[0..^4]))
+  of vkNode:
+    if value.head.isSymbol("..."):
+      if value.props.len != 0 or value.meta.len != 0 or value.body.len != 1:
+        raise newException(GeneError, "spread requires one expression")
+      return (true, value.body[0])
+  else:
+    discard
+  (false, NIL)
+
+proc isStandaloneSpreadMarker(value: Value): bool =
+  value.kind == vkSymbol and value.symVal == "..."
+
+proc compileEvaluatedListItem(c: var Compiler, item: Value) =
+  if item.kind == vkSymbol and item.symVal != "/" and '/' in item.symVal:
+    compileExpr(c, desugarPath(item.symVal))
+  else:
+    compileExpr(c, item)
+
+proc compileSpreadPart(c: var Compiler, item: Value, forList: bool) =
+  if forList:
+    compileEvaluatedListItem(c, item)
+  else:
+    compileExpr(c, item)
+
+proc compileSpreadValues(c: var Compiler, values: openArray[Value], start: int,
+                         forList: bool, splices: var seq[bool],
+                         hasSplice: var bool) =
+  var i = start
+  while i < values.len:
+    let item = values[i]
+    if item.isStandaloneSpreadMarker:
+      raise newException(GeneError, "spread marker requires a preceding value")
+    if i + 1 < values.len and values[i + 1].isStandaloneSpreadMarker:
+      compileSpreadPart(c, item, forList)
+      splices.add true
+      hasSplice = true
+      i += 2
+      continue
+    let spread = item.valueSpreadExpr
+    if spread.spread:
+      compileExpr(c, spread.expr)
+      splices.add true
+      hasSplice = true
+    else:
+      compileSpreadPart(c, item, forList)
+      splices.add false
+    inc i
+
+proc compileListValue(c: var Compiler, value: Value) =
+  var splices: seq[bool]
+  var hasSplice = false
+  compileSpreadValues(c, value.listItems, 0, forList = true, splices, hasSplice)
+  if hasSplice:
+    let idx = c.chunk.addListBuild(ListBuildProto(splices: splices,
+                                                  immutable: value.listImmutable))
+    discard c.emit(opMakeListSplice, idx)
+  else:
+    discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
+
 proc compileCall(c: var Compiler, node: Value) =
   compileExpr(c, node.head)
   var names: seq[string]
   for k, value in node.props:
     names.add k
     compileExpr(c, value)
-  for arg in node.body:
-    compileExpr(c, arg)
-  discard c.emit(opCall, node.body.len, names = names)
+  var splices: seq[bool]
+  var hasSplice = false
+  compileSpreadValues(c, node.body, 0, forList = false, splices, hasSplice)
+  if hasSplice:
+    let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
+    discard c.emit(opCallSplice, idx, names = names)
+  else:
+    discard c.emit(opCall, node.body.len, names = names)
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   if node.body.len == 0:
@@ -1691,10 +1760,15 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   for k, value in node.props:
     names.add k
     compileExpr(c, value)
+  var splices = @[false]
+  var hasSplice = false
   compileExpr(c, newSym("self"))
-  for i in 1 ..< node.body.len:
-    compileExpr(c, node.body[i])
-  discard c.emit(opCall, node.body.len, names = names)
+  compileSpreadValues(c, node.body, 1, forList = false, splices, hasSplice)
+  if hasSplice:
+    let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
+    discard c.emit(opCallSplice, idx, names = names)
+  else:
+    discard c.emit(opCall, node.body.len, names = names)
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body
@@ -2136,12 +2210,7 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   of vkNode:
     compileNode(c, node, allowModDecl)
   of vkList:
-    for item in node.listItems:
-      if item.kind == vkSymbol and item.symVal != "/" and '/' in item.symVal:
-        compileExpr(c, desugarPath(item.symVal))
-      else:
-        compileExpr(c, item)
-    discard c.emit(opMakeList, node.listItems.len, flag = node.listImmutable)
+    compileListValue(c, node)
   of vkMap:
     var keys: seq[string]
     for k, value in node.mapEntries:

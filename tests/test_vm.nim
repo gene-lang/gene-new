@@ -250,6 +250,31 @@ suite "compiler — GIR emission":
         sawMakeListSplice = true
     check sawMakeListSplice
 
+  test "emits runtime construction for value-position spreads":
+    let callChunk = compileSource("(f xs... 3)")
+    var sawCallSplice = false
+    for inst in callChunk.instructions:
+      if inst.op == opCallSplice:
+        sawCallSplice = true
+        check callChunk.listBuilds[inst.intArg].splices == @[true, false]
+    check sawCallSplice
+
+    let postfixCallChunk = compileSource("(f [1 2]... 3)")
+    sawCallSplice = false
+    for inst in postfixCallChunk.instructions:
+      if inst.op == opCallSplice:
+        sawCallSplice = true
+        check postfixCallChunk.listBuilds[inst.intArg].splices == @[true, false]
+    check sawCallSplice
+
+    let listChunk = compileSource("[1 xs... 4]")
+    var sawListSplice = false
+    for inst in listChunk.instructions:
+      if inst.op == opMakeListSplice:
+        sawListSplice = true
+        check listChunk.listBuilds[inst.intArg].splices == @[false, true, false]
+    check sawListSplice
+
   test "emits optional and default parameter specs":
     let fnChunk = compileSource("(fn f [x y? ^scale = (+ x 1)] [x y scale])")
     let proto = fnChunk.functions[0]
@@ -325,6 +350,20 @@ suite "vm — literals and self-evaluation":
     ck "", "nil"
   test "vector evaluates its elements":
     ck "[1 (+ 1 2) 3]", "[1 3 3]"
+  test "value-position spread flattens lists and nodes":
+    ck "(var xs [2 3]) (+ 1 xs... 4)", "10"
+    ck "(var xs [2 3]) [1 xs... 4]", "[1 2 3 4]"
+    ck "(var xs #[2 3]) #[1 xs...]", "#[1 2 3]"
+    ck "(var n (quote (pair 2 3))) [1 n... 4]", "[1 2 3 4]"
+    ck "(var xs [[2 3]]) [1 xs/0... 4]", "[1 2 3 4]"
+    ck "[1 [2 3]... 4]", "[1 2 3 4]"
+    ck "(var f (fn [x ^scale, ys...] [x scale ys])) " &
+       "(f ^scale 9 [1 2]... 3)",
+       "[1 9 [2 3]]"
+    expect GeneError:
+      discard runStr("(var x 1) (+ x...)")
+    expect GeneError:
+      discard runStr("(+ ... [1])")
   test "map evaluates its values":
     ck "{^a (+ 1 1) ^b 3}", "{^a 2 ^b 3}"
   test "map and node storage drops void props":

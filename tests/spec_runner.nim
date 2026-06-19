@@ -58,6 +58,16 @@ suite "spec — reader surface from design":
     expect ReadError: discard read("$\"hello ${name\"")
     expect ReadError: discard read("'ab'")
 
+suite "spec — value spread from design":
+  test "spread flattens values in calls and list literals":
+    check_eval("(var xs [1 2]) (fn collect [items...] items) (collect xs... 3)",
+               "[1 2 3]")
+    check_eval("(fn collect [items...] items) (collect [1 2]... 3)",
+               "[1 2 3]")
+    check_eval("(var xs [2 3]) [1 xs... 4]", "[1 2 3 4]")
+    check_eval("[1 [2 3]... 4]", "[1 2 3 4]")
+    check_eval("(var n (quote (pair 2 3))) [1 n... 4]", "[1 2 3 4]")
+
 suite "spec — templates from design":
   test "quasiquote unquote builds generated nodes":
     check_eval("(var name \"Ada\") `(div %name)", "(div \"Ada\")")
