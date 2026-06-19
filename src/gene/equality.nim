@@ -7,7 +7,7 @@
 ## Mutable/immutable representation does not affect equality (e.g. [1 2 3]
 ## equals #[1 2 3]).
 
-import std/[tables, hashes]
+import std/[tables, hashes, sets]
 import ./types
 
 proc equal*(a, b: Value): bool
@@ -96,3 +96,48 @@ proc hash*(v: Value): Hash =
      vkReplyTo, vkType, vkProtocol, vkProtocolMessage:
     h = h !& hash(v.bits)
   !$h
+
+proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
+  if v.kind in {vkList, vkMap, vkNode}:
+    if seen.contains(v.bits):
+      return true
+    seen.incl v.bits
+
+  case v.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
+     vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
+     vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
+     vkProtocol, vkProtocolMessage:
+    true
+  of vkCell, vkAtomicCell:
+    false
+  of vkList:
+    if not v.listImmutable:
+      return false
+    for item in v.listItems:
+      if not isHashStable(item, seen):
+        return false
+    true
+  of vkMap:
+    if not v.mapImmutable:
+      return false
+    for _, val in v.mapEntries:
+      if not isHashStable(val, seen):
+        return false
+    true
+  of vkNode:
+    if not v.nodeImmutable:
+      return false
+    if not isHashStable(v.head, seen):
+      return false
+    for _, val in v.props:
+      if not isHashStable(val, seen):
+        return false
+    for item in v.body:
+      if not isHashStable(item, seen):
+        return false
+    true
+
+proc isHashStable*(v: Value): bool =
+  var seen = initHashSet[uint64]()
+  isHashStable(v, seen)

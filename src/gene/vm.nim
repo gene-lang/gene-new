@@ -385,6 +385,13 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
   newBool(same(args[0], args[1]))
 
+proc biHash(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "hash expects 1 argument, got " & $args.len)
+  if not isHashStable(args[0]):
+    raise newException(GeneError, "hash expects a hash-stable value")
+  newInt(int64(hash(args[0])))
+
 proc biNot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1: raise newException(GeneError, "not expects 1 argument")
   newBool(not isTruthy(args[0]))
@@ -1651,6 +1658,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define(">=", newNativeFn(">=", comparison(">=", `>=`)))
   result.define("=", newNativeFn("=", biEq))
   result.define("same?", newNativeFn("same?", biSame))
+  result.define("hash", newNativeFn("hash", biHash))
   result.define("not", newNativeFn("not", biNot))
   result.define("head", newNativeFn("head", biHead))
   result.define("props", newNativeFn("props", biProps))

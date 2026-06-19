@@ -91,6 +91,20 @@ suite "value — equality":
     check same(newStr("x"), newStr("x"))
     check not same(newList(@[newInt(1)]), newList(@[newInt(1)]))
 
+  test "hash is meta-blind and restricted to stable values":
+    var metaA = initOrderedTable[string, Value]()
+    var metaB = initOrderedTable[string, Value]()
+    metaA["line"] = newInt(1)
+    metaB["line"] = newInt(2)
+    let a = newNode(newSym("x"), body = @[newInt(1)], meta = metaA,
+                    immutable = true)
+    let b = newNode(newSym("x"), body = @[newInt(1)], meta = metaB,
+                    immutable = true)
+    check hash(a) == hash(b)
+    check isHashStable(newList(@[newInt(1)], immutable = true))
+    check not isHashStable(newList(@[newInt(1)]))
+    check not isHashStable(newList(@[newCell(newInt(1))], immutable = true))
+
 suite "value — reference counting":
   # Managed values are manually heap-allocated and refcounted via Value's
   # =copy/=sink/=dup/=destroy hooks. This stress builds and drops nested, aliased

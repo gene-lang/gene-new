@@ -107,6 +107,16 @@ suite "spec — equality and identity from design":
     check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",
                "[true false true]")
 
+  test "hash follows equality for hash-stable values":
+    check_eval("[(= (hash #[1 2]) (hash (freeze [1 2]))) " &
+               " (= (hash (quote #(x @line 1 ^a 2))) " &
+               "    (hash (quote #(x @line 99 ^a 2))))]",
+               "[true true]")
+    check_eval("(try (hash [1 2]) catch {^message m} m)",
+               "\"hash expects a hash-stable value\"")
+    check_eval("(try (hash #[(cell 1)]) catch {^message m} m)",
+               "\"hash expects a hash-stable value\"")
+
   test "freeze helpers make mutability explicit":
     check_eval("[(freeze-shallow [1 [2]]) " &
                " (freeze [1 {^a [2]}]) " &

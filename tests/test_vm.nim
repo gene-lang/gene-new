@@ -423,6 +423,15 @@ suite "vm — comparison and logic":
     ck "(= 2 2)", "true"
     ck "(= [1 2] [1 2])", "true"
     ck "(= 1 2)", "false"
+  test "hash follows stable structural equality":
+    ck "(= (hash #[1 2]) (hash (freeze [1 2])))", "true"
+    ck "(= (hash (quote #(x @line 1 ^a 2))) " &
+       "   (hash (quote #(x @line 99 ^a 2))))", "true"
+    ck "(try (hash [1 2]) catch {^message m} m)",
+       "\"hash expects a hash-stable value\""
+    ck "(try (hash #[(cell 1)]) catch {^message m} m)",
+       "\"hash expects a hash-stable value\""
+    expect GeneError: discard runStr("(hash)")
   test "same compares scalar values and heap identity":
     ck "(same? 2 2)", "true"
     ck "(same? \"x\" \"x\")", "true"

@@ -81,7 +81,7 @@ participates in equality or hashing.
   entrypoint invocation, line-oriented
   `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
   and built-ins
-  (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in
+  (`+ - * / < > <= >= = same? hash not $ to-str head props body meta assoc-in
   update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
   AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
