@@ -155,3 +155,32 @@ suite "cli — gene doc":
       "Namespace util/nested:",
       "- flag : Bool"
     ]
+
+  test "prints normalized import targets":
+    let depPath = writeCliProgram("dep_for_doc.gene",
+      "(var dep 1)")
+    let path = writeCliProgram("doc_imports.gene",
+      "(mod docs) " &
+      "(import [dep : local-dep] from \"./dep_for_doc\") " &
+      "(ns source (var item 2)) " &
+      "(import source [item : local-item]) " &
+      "(var done true)")
+    let ran = runGene(["doc", path])
+    check ran.exitCode == 0
+    let lines = ran.output.strip.splitLines
+    check lines == @[
+      "Module: docs",
+      "Path: " & normalizedPath(absolutePath(path)),
+      "Imports:",
+      "- from \"./dep_for_doc\" -> " & normalizedPath(absolutePath(depPath)) &
+        " [dep : local-dep]",
+      "- source [item : local-item]",
+      "Declarations:",
+      "- done : Bool",
+      "- local-dep : Int",
+      "- local-item : Int",
+      "- source : Namespace",
+      "Namespaces:",
+      "Namespace source:",
+      "- item : Int"
+    ]

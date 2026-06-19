@@ -1779,7 +1779,7 @@ proc isWithinPackageRoot(app: Application, path: string): bool =
     else: root & $DirSep
   path.startsWith(prefix)
 
-proc resolveModulePath(app: Application, rawPath: string): string =
+proc resolveModulePath*(app: Application, rawPath: string): string =
   ## Normalize a `from "path"` string to a stable absolute module identity.
   var p = rawPath
   if splitFile(p).ext.len == 0:

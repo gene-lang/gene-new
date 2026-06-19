@@ -123,8 +123,8 @@ constants:
 (a read → print round-trip; props print immediately after the head). `gene fmt
 <file>` uses that same canonical printer as the MVP formatter. `gene compile
 <file>` prints the compiled GIR bytecode without running it. `gene doc <file>`
-loads the module, skips `main`, and prints module metadata plus root and
-namespace declarations.
+loads the module, skips `main`, and prints module metadata, normalized imports,
+and root and namespace declarations.
 
 ## Project layout
 

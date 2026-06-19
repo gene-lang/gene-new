@@ -7,7 +7,7 @@
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
-##   gene doc <file>     print module metadata and declarations
+##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
 import gene/[compiler, gir, printer, reader, types, vm]
@@ -22,7 +22,7 @@ proc usage() =
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
-  echo "  gene doc <file.gene>    print module metadata and declarations"
+  echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
 
 proc readSourceFile(path: string): string =
   if not fileExists(path):
@@ -194,6 +194,55 @@ proc collectDocNamespaces(ns: Value, prefix: string,
       namespaces.add (path: path, ns: value)
       collectDocNamespaces(value, path, namespaces)
 
+proc collectDocImports(chunk: Chunk, imports: var seq[ImportSpec]) =
+  if chunk == nil:
+    return
+  for spec in chunk.imports:
+    imports.add spec
+  for subchunk in chunk.subchunks:
+    collectDocImports(subchunk, imports)
+  for fn in chunk.functions:
+    collectDocImports(fn.chunk, imports)
+  for loop in chunk.forLoops:
+    collectDocImports(loop.body, imports)
+  for match in chunk.matches:
+    for clause in match.clauses:
+      collectDocImports(clause.body, imports)
+    collectDocImports(match.elseBody, imports)
+  for attempt in chunk.tries:
+    collectDocImports(attempt.body, imports)
+    for clause in attempt.catches:
+      collectDocImports(clause.body, imports)
+    collectDocImports(attempt.ensureBody, imports)
+
+proc docSelectionText(sel: ImportSelection): string =
+  if sel.name == sel.local:
+    sel.name
+  else:
+    sel.name & " : " & sel.local
+
+proc docImportText(app: Application, spec: ImportSpec): string =
+  if spec.fromModule:
+    result = "- from \"" & spec.modulePath & "\" -> " &
+      app.resolveModulePath(spec.modulePath)
+  else:
+    result = "- " & spec.nsSegments.join("/")
+  if spec.alias.len > 0:
+    result.add " ^as " & spec.alias
+  if spec.selections.len > 0:
+    var selections: seq[string]
+    for sel in spec.selections:
+      selections.add docSelectionText(sel)
+    result.add " [" & selections.join(", ") & "]"
+
+proc writeDocImports(app: Application, chunk: Chunk) =
+  var imports: seq[ImportSpec]
+  collectDocImports(chunk, imports)
+  if imports.len > 0:
+    echo "Imports:"
+    for spec in imports:
+      echo docImportText(app, spec)
+
 proc cmdDoc(path: string) =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
@@ -201,12 +250,14 @@ proc cmdDoc(path: string) =
   try:
     let absPath = normalizedPath(absolutePath(path))
     let app = newApplication(parentDir(absPath))
+    let chunk = compileSource(readSourceFile(absPath))
     let module = app.loadFileModule(absPath)
     echo "Module: " & module.moduleName
     echo "Path: " & module.modulePath
     let meta = module.moduleMeta
     if meta.hasKey("doc") and meta["doc"].kind == vkString:
       echo "Doc: " & meta["doc"].strVal
+    writeDocImports(app, chunk)
     echo "Declarations:"
     let rootScope = module.moduleRootNamespace.nsScope
     writeDocDeclarations(rootScope)
