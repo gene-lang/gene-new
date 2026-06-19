@@ -117,9 +117,9 @@ proc parseBracedUnicodeEscape(r: var Reader): Rune =
     raise newException(ReadError, "Unicode character escape is not a scalar value")
   Rune(int32(code))
 
-proc parseCharEscape(r: var Reader): Rune =
+proc parseEscapeRune(r: var Reader, context: string): Rune =
   if r.pos >= r.src.len:
-    raise newException(ReadError, "unterminated character literal")
+    raise newException(ReadError, "unterminated " & context)
   let esc = r.nextChar()
   r.advance()
   case esc
@@ -139,6 +139,9 @@ proc parseCharEscape(r: var Reader): Rune =
     r.parseFixedUnicodeEscape(8)
   else:
     raise newException(ReadError, "unknown character escape")
+
+proc parseCharEscape(r: var Reader): Rune =
+  r.parseEscapeRune("character literal")
 
 proc parseCharLiteral(r: var Reader): string =
   r.advance() # consume opening '
@@ -275,15 +278,7 @@ proc tokenize(r: var Reader) =
             break
           if c2 == '\\':
             r.advance()
-            let esc = r.nextChar()
-            case esc
-            of 'n': lexeme.add '\n'
-            of 'r': lexeme.add '\r'
-            of 't': lexeme.add '\t'
-            of '\\': lexeme.add '\\'
-            of '\"': lexeme.add '\"'
-            else: lexeme.add esc
-            r.advance()
+            lexeme.add r.parseEscapeRune("string literal").toUTF8()
           else:
             lexeme.add c2
             r.advance()

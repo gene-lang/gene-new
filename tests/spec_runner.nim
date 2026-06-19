@@ -43,6 +43,9 @@ suite "spec — reader surface from design":
     check_read("(a #_ b c)", "(a c)")
     check_read("(a #_ b)", "(a)")
 
+  test "strings decode Unicode escapes":
+    check_read("\"\\u00E9\\u{1F600}\"", "\"é😀\"")
+
   test "malformed syntax is rejected":
     expect ReadError: discard read("(a b")
     expect ReadError: discard read(")")

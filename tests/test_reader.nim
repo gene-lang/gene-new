@@ -20,6 +20,9 @@ suite "reader — atoms and containers":
   test "bool false":         check_read("false",      "false")
   test "nil":                check_read("nil",        "nil")
   test "string":             check_read("\"hello\"",  "\"hello\"")
+  test "string escapes":
+    check_read("\"line\\n\\\"slash\\\\\"", "\"line\\n\\\"slash\\\\\"")
+    check_read("\"\\u00E9\\u{1F600}\"", "\"é😀\"")
 
 suite "reader — char literals":
   test "ASCII char":
@@ -144,6 +147,10 @@ suite "reader — malformed input is rejected":
   test "invalid Unicode char escape":
     expect ReadError: discard read("'\\uD800'")
     expect ReadError: discard read("'\\U00110000'")
+  test "invalid string escape":
+    expect ReadError: discard read("\"\\q\"")
+    expect ReadError: discard read("\"\\uD800\"")
+    expect ReadError: discard read("\"\\u{110000}\"")
   test "stray closing paren":
     expect ReadError: discard read(")")
   test "stray closing bracket":
