@@ -734,7 +734,9 @@ suite "vm — selectors":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"
     ck "(var xs [10 20 30]) xs/size", "3"
-    ck "(var xs []) xs/first", "void"
+    ck "(var xs [10 20 30]) [xs/empty? xs/first xs/last]",
+       "[false 10 30]"
+    ck "(var xs []) [xs/empty? xs/first xs/last]", "[true void void]"
   test "selectors read node props, body indexes, and projections":
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/1", "20"
@@ -1397,6 +1399,10 @@ suite "vm — streams":
     ck "(var s (to_pairs_stream {^a 1 ^b 2})) " &
        "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
        "[[a 1] [b 2] false]"
+    ck "(var s (to_pairs_stream {^a 1})) " &
+       "(var pair (s ~ Stream/next)) " &
+       "(fn key [x : Sym] x) (key pair/0)",
+       "a"
 
   test "stream map transforms pulled values":
     ck "(var s (map (to_stream [1 2 3]) (fn [x] (* x 2)))) " &

@@ -402,7 +402,7 @@ proc parsePropKey(r: var Reader): string =
   let keyForm = r.parseForm()
   if keyForm.kind == vkSymbol: keyForm.symVal else: ""
 
-proc desugarPath(lexeme: string): Value =
+proc desugarPath*(lexeme: string): Value =
   if lexeme == "/": return newSym("/")
   if '/' notin lexeme: return newSym(lexeme)
 

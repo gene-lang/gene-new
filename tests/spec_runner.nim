@@ -482,6 +482,10 @@ suite "spec — streams from design":
                "     (pairs ~ Stream/next)) " &
                " (into (to_pairs_stream {^a 1}) {})]",
                "[3 4 false [a 1] {^a 1}]")
+    check_eval("(var pairs (to_pairs_stream {^a 1})) " &
+               "(var pair (pairs ~ Stream/next)) " &
+               "(fn key [x : Sym] x) (key pair/0)",
+               "a")
 
   test "stream helpers are lazy":
     check_eval("(var hits (cell 0)) " &
@@ -556,6 +560,13 @@ suite "spec — streams from design":
                " (names ~ Stream/next) " &
                " (names ~ Stream/has_next)]",
                "[\"Ada\" \"Bob\" false]")
+
+  test "list selectors expose fixed members":
+    check_eval("(var xs [10 20 30]) " &
+               "[(xs ~ /size) (xs ~ /empty?) (xs ~ /first) (xs ~ /last)]",
+               "[3 false 10 30]")
+    check_eval("(var xs []) [(xs ~ /empty?) (xs ~ /first) (xs ~ /last)]",
+               "[true void void]")
 
   test "complex selector stages adapt stream helpers":
     check_eval("(var users [{^name \"Ada\" ^adult true} " &

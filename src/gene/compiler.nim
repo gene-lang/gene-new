@@ -2137,7 +2137,10 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
     compileNode(c, node, allowModDecl)
   of vkList:
     for item in node.listItems:
-      compileExpr(c, item)
+      if item.kind == vkSymbol and item.symVal != "/" and '/' in item.symVal:
+        compileExpr(c, desugarPath(item.symVal))
+      else:
+        compileExpr(c, item)
     discard c.emit(opMakeList, node.listItems.len, flag = node.listImmutable)
   of vkMap:
     var keys: seq[string]
