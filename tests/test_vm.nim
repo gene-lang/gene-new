@@ -799,6 +799,21 @@ suite "vm — env and eval":
        "(eval (quote x) ^in child)",
        "20"
 
+  test "eval sees explicit Env capabilities":
+    ck "(var e (env ^capabilities {^fs \"sandbox\"})) " &
+       "(eval (quote fs) ^in e)",
+       "\"sandbox\""
+    ck "(var e (env ^bindings {^fs \"binding\"} " &
+       "           ^capabilities {^fs \"capability\"})) " &
+       "(eval (quote fs) ^in e)",
+       "\"binding\""
+    ck "(var base (env ^capabilities {^fs \"sandbox\"})) " &
+       "(var child (base ~ Env/extend {^x 1})) " &
+       "(eval (quote [fs x]) ^in child)",
+       "[\"sandbox\" 1]"
+    expect GeneError:
+      discard runStr("(env ^capabilities [1])")
+
   test "eval compile failures are typed CompileError values":
     ck "(try (eval (quote (var)) ^in (env)) " &
        "catch (CompileError ^message m) m)",

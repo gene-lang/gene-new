@@ -572,6 +572,12 @@ suite "spec — Env and eval from design":
                "catch (CompileError ^message m) m)",
                "\"eval cannot use import; add imports to Env\"")
 
+  test "eval sees explicit Env capability values":
+    check_eval("(var e (env ^bindings {^fs \"binding\"} " &
+               "           ^capabilities {^fs \"capability\" ^net \"closed\"})) " &
+               "[(eval (quote fs) ^in e) (eval (quote net) ^in e)]",
+               "[\"binding\" \"closed\"]")
+
 suite "spec — parser helpers from design":
   test "read-one feeds eval and read-all returns a stream":
     check_eval("(eval (read-one \"(+ 1 2)\") ^in (env))", "3")

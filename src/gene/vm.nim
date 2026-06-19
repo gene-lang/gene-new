@@ -2350,6 +2350,13 @@ proc materializeEvalParent(env: Value): Scope =
     current = importScope
 
   for itemEnv in chain:
+    let capabilities = itemEnv.envCapabilities
+    if capabilities.kind != vkNil:
+      let capabilityScope = newScope(current)
+      for k, v in bindingsFromMap("env ^capabilities", capabilities):
+        capabilityScope.defineOverlay(k, v)
+      current = capabilityScope
+
     let bindingScope = newScope(current)
     for k, v in itemEnv.envBindings:
       bindingScope.defineOverlay(k, v)

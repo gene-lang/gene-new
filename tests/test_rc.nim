@@ -46,6 +46,8 @@ when defined(geneRcStats):
 
     test "eval overlays without escaping functions are reclaimed":
       check leakedManaged("(eval (quote (+ 1 2)) ^in (env))") == 0
+      check leakedManaged("(eval (quote cap) " &
+                          "^in (env ^capabilities {^cap [1]}))") == 0
 
     test "eval named functions are reclaimed when the result does not escape":
       check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
