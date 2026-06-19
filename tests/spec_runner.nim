@@ -440,8 +440,8 @@ suite "spec — mutable containers from design":
                "(m ~ Map/put! \"b\" 2) " &
                "(var n (quote (user ^name \"Ada\"))) " &
                "(n ~ Node/set-prop! \"name\" \"Bob\") " &
-               "[xs xs2 ys m (n ~ /name)]",
-               "[#[1 2 3] #[1 20 3] [9 2] {^a 1 ^b 2} \"Bob\"]")
+               "[xs xs2 ys (m ~ Map/get \"b\") (n ~ /name)]",
+               "[#[1 2 3] #[1 20 3] [9 2] 2 \"Bob\"]")
 
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":
@@ -567,6 +567,15 @@ suite "spec — streams from design":
     check_eval("(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
                "((select %to_stream %(map /name) %(take 2) %(into [])) users)",
                "[\"Ada\" \"Bob\"]")
+
+  test "selector key wrappers force dynamic key lookup":
+    check_eval("(var field \"name\") " &
+               "(var get-name (select %(key field))) " &
+               "(get-name {^name \"Ada\"})",
+               "\"Ada\"")
+    check_eval("(var plus +) " &
+               "[((select %plus) 4) ((select %(key plus)) 4)]",
+               "[4 void]")
 
   test "declarations is an ordinary stream selector stage":
     check_eval("(ns m (var b 2) (var a 1)) " &

@@ -285,6 +285,9 @@ proc isSymbol(v: Value, name: string): bool =
 proc isSelector(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("select")
 
+proc isSelectorKeySegment(v: Value): bool =
+  v.kind == vkNode and v.head.isSymbol("selector-key") and v.body.len == 1
+
 proc requireNums(name: string, args: openArray[Value]) =
   for a in args:
     if not a.isNumber:
@@ -1107,6 +1110,10 @@ proc biThaw(args: openArray[Value]): Value {.nimcall.} =
   requireOne("thaw", args)
   thawValue(args[0])
 
+proc biSelectorKey(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("key", args)
+  newNode(newSym("selector-key"), body = @[args[0]])
+
 proc keySegment(name: string, segment: Value): string =
   case segment.kind
   of vkSymbol:
@@ -1609,6 +1616,12 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].putMapEntry(keySegment("Map/put!", args[1]), args[2])
   args[2]
 
+proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Map/get expects 2 arguments, got " & $args.len)
+  requireMap("Map/get", args[0])
+  args[0].mapEntries.getOrDefault(keySegment("Map/get", args[1]), VOID)
+
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
@@ -1812,11 +1825,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))
   result.define("thaw", newNativeFn("thaw", biThaw))
+  result.define("key", newNativeFn("key", biSelectorKey))
   let listScope = newScope(result)
   listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
   listScope.define("set!", newNativeFn("List/set!", biListSetBang))
   result.define("List", newNamespace("List", listScope))
   let mapScope = newScope(result)
+  mapScope.define("get", newNativeFn("Map/get", biMapGet))
   mapScope.define("put!", newNativeFn("Map/put!", biMapPutBang))
   result.define("Map", newNamespace("Map", mapScope))
   let nodeScope = newScope(result)
@@ -4181,7 +4196,9 @@ proc applySelector(selector, target: Value): Value =
           var callArgs = [result]
           applyCall(segment, callArgs, NamedArgs())
       of vkNode:
-        if segment.isSelectorCallStage:
+        if segment.isSelectorKeySegment:
+          staticLookup(result, segment.body[0])
+        elif segment.isSelectorCallStage:
           applySelectorCallStage(segment, result)
         elif segment.isSelector:
           block:

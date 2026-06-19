@@ -770,6 +770,19 @@ suite "vm — dynamic selectors":
        "\"Ada\""
   test "callable dynamic segments act as selector stages":
     ck "(var stage not) (var s /%stage) (s false)", "true"
+  test "dynamic selector keys can be forced explicitly":
+    ck "(var field \"name\") " &
+       "(var get (select %(key field))) " &
+       "(get {^name \"Ada\"})",
+       "\"Ada\""
+    ck "(var plus +) " &
+       "[((select %plus) 4) ((select %(key plus)) 4)]",
+       "[4 void]"
+    ck "(var field \"name\") " &
+       "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
+       "(var names ((select %to_stream %(key field)) users)) " &
+       "[(names ~ Stream/next) (names ~ Stream/next) (names ~ Stream/has_next)]",
+       "[\"Ada\" \"Bob\" false]"
   test "complex selector stages adapt stream helpers":
     ck "(var users [{^name \"Ada\" ^adult true} " &
        "            {^name \"Tim\" ^adult false} " &
@@ -855,6 +868,11 @@ suite "vm — container update built-ins":
     ck "(var m {^a 1}) [(m ~ Map/put! \"a\" void) (m ~ /a)]", "[void void]"
     expect GeneError:
       discard runStr("(#{^a 1} ~ Map/put! \"a\" 2)")
+  test "Map/get reads entries without selector staging":
+    ck "(var m {^a 1}) [(m ~ Map/get \"a\") (m ~ Map/get \"missing\")]",
+       "[1 void]"
+    ck "(var m {^a 1}) (m ~ Map/get (quote a))", "1"
+    expect GeneError: discard runStr("(Map/get [1] \"a\")")
 
   test "Node/set-prop! mutates mutable node props":
     ck "(var n (quote (user ^name \"Ada\"))) " &
