@@ -86,6 +86,19 @@ suite "errors — checked rows":
                      "(fn quiet ^errors [] [] (fail (Boom ^message \"x\"))) " &
                      "(quiet)")
 
+  test "^errors rows normalize Never and duplicates":
+    ck "(fn quiet ^errors [Never] [] 1) (quiet)", "1"
+    expect GeneError:
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error Boom) " &
+                     "(fn quiet ^errors [Never] [] (fail (Boom ^message \"x\"))) " &
+                     "(quiet)")
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(fn raise-boom ^errors [Never Boom Boom] [] (fail (Boom ^message \"x\"))) " &
+       "(try (raise-boom) catch (Boom ^message m) m)",
+       "\"x\""
+
   test "undeclared recoverable errors are rejected":
     expect GeneError:
       discard runStr("(type AError ^props {^message Str} ^impl [Error]) " &

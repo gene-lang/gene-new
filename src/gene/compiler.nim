@@ -979,6 +979,9 @@ proc rejectReservedEffects(node: Value) =
   if node.props.hasKey("effects"):
     raise newException(GeneError, "^effects is reserved for a future static effect system")
 
+proc isNeverErrorRowEntry(value: Value): bool =
+  value.kind == vkSymbol and value.symVal == "Never"
+
 proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: int] =
   rejectReservedEffects(node)
   if not node.props.hasKey("errors"):
@@ -987,7 +990,19 @@ proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: i
   if row.kind != vkList:
     raise newException(GeneError, "^errors must be a list")
   result.checks = true
+  var normalized: seq[Value]
   for errorType in row.listItems:
+    if errorType.isNeverErrorRowEntry:
+      continue
+    var duplicate = false
+    for existing in normalized:
+      if equal(existing, errorType):
+        duplicate = true
+        break
+    if duplicate:
+      continue
+    normalized.add errorType
+  for errorType in normalized:
     compileExpr(c, errorType)
     inc result.count
 

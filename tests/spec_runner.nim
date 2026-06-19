@@ -303,6 +303,16 @@ suite "spec — static effects from design":
                             "(impl Run Job " &
                             "  (message run ^effects [fs] [self] 1))")
 
+suite "spec — checked errors from design":
+  test "Never contributes no errors and rows deduplicate":
+    check_eval("(fn quiet ^errors [Never] [] 1) (quiet)", "1")
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(fn raise-boom ^errors [Never Boom Boom] [] " &
+               "  (fail (Boom ^message \"x\"))) " &
+               "(try (raise-boom) catch (Boom ^message m) m)",
+               "\"x\"")
+
 suite "spec — pattern destructuring from design":
   test "match and catch bindings are branch-local":
     expect GeneError:

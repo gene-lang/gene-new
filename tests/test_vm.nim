@@ -139,6 +139,15 @@ suite "compiler — GIR emission":
     check catchBody.instructions[0].op == opLoadLocal
     check catchBody.instructions[0].name == "m"
 
+  test "normalizes checked error rows":
+    let neverChunk = compileSource("(fn f ^errors [Never Never] [] 1)")
+    check neverChunk.functions[0].checksErrors
+    check neverChunk.functions[0].errorTypeCount == 0
+
+    let dedupeChunk = compileSource("(fn f ^errors [Boom Never Boom] [] 1)")
+    check dedupeChunk.functions[0].checksErrors
+    check dedupeChunk.functions[0].errorTypeCount == 1
+
   test "emits slots for imported bindings":
     let selectedChunk = compileSource(
       "(import [foo, bar : baz] from \"./lib\") (fn use [] [foo baz])")
