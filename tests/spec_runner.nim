@@ -144,6 +144,11 @@ suite "spec — numeric boundaries from design":
       discard run(compileSource("(fn fixed [x : I64] x) " &
                                 "(fixed 9223372036854775808)"),
                   newGlobalScope())
+    check_eval("(fn single [x : F32] x) (single 3.5)", "3.5")
+    check_eval("(try (fn single [x : F32] x) (single 1e39) " &
+               "catch (TypeError ^expected e) e)",
+               "\"F32\"")
+    check_eval("(fn double [x : F64] 1) (double 1e39)", "1")
 
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":

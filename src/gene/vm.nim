@@ -1,6 +1,6 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, os, sets, strutils, tables]
+import std/[algorithm, math, os, sets, strutils, tables]
 import ./[compiler, equality, gir, printer, reader, types]
 
 type
@@ -3455,6 +3455,17 @@ proc intInDecimalRange(value: Value, low, high: string): bool =
     intCompare(value, newIntFromDecimal(low)) >= 0 and
     intCompare(value, newIntFromDecimal(high)) <= 0
 
+const F32_MAX_FINITE = 3.4028234663852886e38
+
+proc floatInF32Range(value: Value): bool =
+  if value.kind != vkFloat:
+    return false
+  case classify(value.floatVal)
+  of fcNan, fcInf, fcNegInf:
+    true
+  else:
+    abs(value.floatVal) <= F32_MAX_FINITE
+
 proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   case name
   of "Any":
@@ -3499,8 +3510,10 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.intInDecimalRange("0", "18446744073709551615"))
   of "Number":
     (true, value.kind in {vkInt, vkFloat})
-  of "Float", "F32", "F64":
+  of "Float", "F64":
     (true, value.kind == vkFloat)
+  of "F32":
+    (true, value.floatInF32Range)
   of "List":
     (true, value.kind == vkList)
   of "Map", "PropMap":

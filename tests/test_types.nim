@@ -168,6 +168,10 @@ suite "types — function boundaries":
     expect GeneError: discard runStr("(fn f [x : I32] x) (f 2147483648)")
     expect GeneError: discard runStr("(fn f [x : I64] x) (f 9223372036854775808)")
     expect GeneError: discard runStr("(fn f [x : U64] x) (f 18446744073709551616)")
+    ck "(fn f [x : F32] x) (f 3.5)", "3.5"
+    ck "(fn f [x : F64] 1) (f 1e39)", "1"
+    ck "(try (fn f [x : F32] x) (f 1e39) " &
+       "catch (TypeError ^expected e) e)", "\"F32\""
     ck "(type Byte ^props {^value U8}) (var b (Byte ^value 255)) b/value", "255"
     expect GeneError:
       discard runStr("(type Byte ^props {^value U8}) (Byte ^value 256)")
