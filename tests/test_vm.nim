@@ -448,11 +448,14 @@ suite "vm — special forms":
     expect GeneError:
       discard runStr("(scope (var local 1) local) local")
     expect GeneError:
+      discard runStr("(supervisor ^strategy stop (var local 1) local) local")
+    expect GeneError:
       discard runStr("(scope (var t (spawn (do (var child 1) child))) " &
                      "(await t) child)")
     ck "(var scope 3) scope", "3"
     ck "(var spawn 1) spawn", "1"
     ck "(var await 2) await", "2"
+    ck "(var supervisor 4) supervisor", "4"
 
   test "await propagates recoverable task errors":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -1042,6 +1045,44 @@ suite "vm — actors":
        "catch (Boom ^message m) m) " &
        "(a ~ actor/try-send 1)",
        "false"
+
+  test "supervisors own actors and apply failure strategies":
+    ck "(var a (supervisor ^strategy stop " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
+       "(a ~ actor/try-send 1)",
+       "false"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var seen (cell 0)) " &
+       "(supervisor ^strategy restart " &
+       "  (var a (actor/spawn ^init (fn [] 10) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (if (= msg 1) " &
+       "        (fail (Boom ^message \"bad\")) " &
+       "        (do " &
+       "          (seen ~ Cell/set state) " &
+       "          (actor/continue (+ state msg))))))) " &
+       "  (a ~ actor/send 1) " &
+       "  (a ~ actor/send 5) " &
+       "  (seen ~ Cell/get))",
+       "10"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var a nil) " &
+       "[(try " &
+       "   (supervisor ^strategy escalate " &
+       "     (set a (actor/spawn ^init (fn [] 0) " &
+       "       ^handle (fn [ctx state msg] " &
+       "         (fail (Boom ^message \"bad\"))))) " &
+       "     (a ~ actor/send 1)) " &
+       "   catch (Boom ^message m) m) " &
+       " (a ~ actor/try-send 2)]",
+       "[\"bad\" false]"
+    expect GeneError:
+      discard runStr("(supervisor nil)")
+    expect GeneError:
+      discard runStr("(supervisor ^strategy unknown nil)")
 
   test "actor handler must return an ActorStep":
     ck "(var a : (ActorRef Int) " &

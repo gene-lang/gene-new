@@ -49,6 +49,22 @@ proc closeOwnedActors(scope: Scope) =
       scope.ownedActors[i].closeActor()
   scope.ownedActors.setLen(0)
 
+proc actorOwnerFailureStrategy(scope: Scope): ActorFailureStrategy =
+  var s = scope
+  while s != nil:
+    if s.ownsActors:
+      return s.actorFailureStrategy
+    s = s.parent
+  afsStop
+
+proc supervisorStrategy(name: string): ActorFailureStrategy =
+  case name
+  of "restart": afsRestart
+  of "stop": afsStop
+  of "escalate": afsEscalate
+  else:
+    raise newException(GeneError, "unsupported supervisor strategy: " & name)
+
 proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   if names.len == 0:
     return
@@ -699,17 +715,35 @@ proc pumpActor(actor: Value, scope: Scope) =
   try:
     while actor.actorQueueLen > 0 and not actor.actorClosed:
       let message = actor.popActorMessage()
-      var args = [newActorContext(actor), actor.actorState, message]
-      let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
-      if step.kind != vkActorStep:
-        raiseTypeError("actor handler return", "ActorStep", step, scope)
-      if step.actorStepContinue:
-        actor.setActorState(step.actorStepState)
-      else:
+      try:
+        var args = [newActorContext(actor), actor.actorState, message]
+        let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
+        if step.kind != vkActorStep:
+          raiseTypeError("actor handler return", "ActorStep", step, scope)
+        if step.actorStepContinue:
+          actor.setActorState(step.actorStepState)
+        else:
+          actor.closeActor()
+      except GenePanic:
         actor.closeActor()
-  except CatchableError:
-    actor.closeActor()
-    raise
+        raise
+      except CatchableError:
+        if actor.actorFailureStrategy == afsRestart:
+          let initFn = actor.actorRestartInit
+          if initFn.kind == vkNil:
+            actor.closeActor()
+            raise
+          try:
+            actor.setActorState(applyCall(initFn, [], NamedArgs(), scope))
+          except GenePanic:
+            actor.closeActor()
+            raise
+          except CatchableError:
+            actor.closeActor()
+            raise
+        else:
+          actor.closeActor()
+          raise
   finally:
     actor.setActorProcessing(false)
 
@@ -723,8 +757,13 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let messageType = actorOptionalNamedValue(call, "type")
   let closedMessageType =
     if messageType.kind == vkNil: NIL else: closeTypeExpr(messageType, scope)
+  let failureStrategy =
+    if scope == nil: afsStop else: scope.actorOwnerFailureStrategy()
+  let restartInit =
+    if failureStrategy == afsRestart: initFn else: NIL
   let state = applyCall(initFn, [], NamedArgs(), scope)
-  result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType)
+  result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType,
+                       restartInit, failureStrategy)
   if scope != nil:
     scope.registerOwnedActor(result)
 
@@ -2722,10 +2761,19 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
     of opTaskScope:
       let taskScope = newScope(scope)
       taskScope.ownsActors = true
+      taskScope.actorFailureStrategy = afsStop
       try:
         stack.add run(chunk.subchunks[inst[].intArg], taskScope)
       finally:
         taskScope.closeOwnedActors()
+    of opSupervisor:
+      let supervisorScope = newScope(scope)
+      supervisorScope.ownsActors = true
+      supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
+      try:
+        stack.add run(chunk.subchunks[inst[].intArg], supervisorScope)
+      finally:
+        supervisorScope.closeOwnedActors()
     of opSpawn:
       let taskScope = newScope(scope)
       try:

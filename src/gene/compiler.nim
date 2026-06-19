@@ -1344,6 +1344,23 @@ proc compileTaskScope(c: var Compiler, node: Value) =
   let body = c.compileSubBody(node.body, scoped = true)
   discard c.emit(opTaskScope, c.chunk.addSubchunk(body))
 
+proc compileSupervisor(c: var Compiler, node: Value) =
+  for key in node.props.keys:
+    if key != "strategy":
+      raise newException(GeneError,
+        "supervisor got unexpected named argument: " & key)
+  if not node.props.hasKey("strategy"):
+    raise newException(GeneError, "supervisor requires ^strategy")
+  let strategyExpr = node.props["strategy"]
+  if strategyExpr.kind != vkSymbol:
+    raise newException(GeneError, "supervisor ^strategy must be a name")
+  let strategy = strategyExpr.symVal
+  if strategy notin ["restart", "stop", "escalate"]:
+    raise newException(GeneError,
+      "unsupported supervisor strategy: " & strategy)
+  let body = c.compileSubBody(node.body, scoped = true)
+  discard c.emit(opSupervisor, c.chunk.addSubchunk(body), name = strategy)
+
 proc compileSpawn(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:
     raise newException(GeneError, "spawn expects one expression")
@@ -1561,6 +1578,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "scope":
       compileTaskScope(c, node)
+      return
+    of "supervisor":
+      compileSupervisor(c, node)
       return
     of "spawn":
       compileSpawn(c, node)

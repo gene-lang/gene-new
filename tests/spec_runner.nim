@@ -503,6 +503,28 @@ suite "spec — actors from design":
                "  (a ~ actor/try-send 1))",
                "false")
 
+  test "supervisor owns actors and restarts after recoverable handler errors":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(var seen (cell 0)) " &
+               "(supervisor ^strategy restart " &
+               "  (var a (actor/spawn ^init (fn [] 10) " &
+               "    ^handle (fn [ctx state msg] " &
+               "      (if (= msg 1) " &
+               "        (fail (Boom ^message \"bad\")) " &
+               "        (do " &
+               "          (seen ~ Cell/set state) " &
+               "          (actor/continue (+ state msg))))))) " &
+               "  (a ~ actor/send 1) " &
+               "  (a ~ actor/send 5) " &
+               "  (seen ~ Cell/get))",
+               "10")
+    check_eval("(var a (supervisor ^strategy stop " &
+               "  (actor/spawn ^init (fn [] 0) " &
+               "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
+               "(a ~ actor/try-send 1)",
+               "false")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

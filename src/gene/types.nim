@@ -70,6 +70,11 @@ type
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
 
+  ActorFailureStrategy* = enum
+    afsStop
+    afsRestart
+    afsEscalate
+
   Value* = object
     bits*: uint64
 
@@ -213,6 +218,7 @@ type
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
     ownsActors*: bool
+    actorFailureStrategy*: ActorFailureStrategy
     ownedActors*: seq[Value]
 
   ## Runtime call metadata for envelope-aware native functions. Positional
@@ -348,8 +354,10 @@ type
     queue: seq[Value]
     processing: bool
     state: Value
+    restartInit: Value
     handler: Value
     messageType: Value
+    failureStrategy: ActorFailureStrategy
 
   ActorContextData = ref object of GeneObjectData
     actor: Value
@@ -1299,8 +1307,14 @@ proc setActorState*(v, state: Value) =
 proc actorHandler*(v: Value): Value =
   actorData(v).handler
 
+proc actorRestartInit*(v: Value): Value =
+  actorData(v).restartInit
+
 proc actorMessageType*(v: Value): Value =
   actorData(v).messageType
+
+proc actorFailureStrategy*(v: Value): ActorFailureStrategy =
+  actorData(v).failureStrategy
 
 proc setActorMessageType*(v, messageType: Value) =
   actorData(v).messageType = messageType
@@ -1845,9 +1859,11 @@ proc escapeWeakFunctions*(v: Value): Value =
   of vkActorRef:
     let data = actorData(v)
     let escapedState = escapeWeakFunctions(data.state)
+    let escapedRestartInit = escapeWeakFunctions(data.restartInit)
     let escapedHandler = escapeWeakFunctions(data.handler)
     var escapedQueue = newSeq[Value](data.queue.len)
     var changed = escapedState.bits != data.state.bits or
+      escapedRestartInit.bits != data.restartInit.bits or
       escapedHandler.bits != data.handler.bits
     for i, item in data.queue:
       escapedQueue[i] = escapeWeakFunctions(item)
@@ -1861,8 +1877,10 @@ proc escapeWeakFunctions*(v: Value): Value =
                         queue: escapedQueue,
                         processing: data.processing,
                         state: escapedState,
+                        restartInit: escapedRestartInit,
                         handler: escapedHandler,
-                        messageType: data.messageType))
+                        messageType: data.messageType,
+                        failureStrategy: data.failureStrategy))
   of vkActorContext:
     let actor = v.actorContextActor
     let escapedActor = escapeWeakFunctions(actor)
@@ -1913,7 +1931,14 @@ proc newCheckedChannel*(source, itemType: Value, itemScope: Scope): Value =
   boxObject(ChannelData(objKind: okChannel, state: data.state,
                         itemType: itemType, itemScope: itemScope))
 
-proc newActorRef*(capacity: int, state, handler, messageType: Value): Value =
+proc newActorRef*(capacity: int, state, handler, messageType: Value,
+                  restartInit: Value = NIL,
+                  failureStrategy: ActorFailureStrategy = afsStop): Value =
+  let storedRestartInit =
+    if restartInit.kind == vkFunction:
+      functionForScopeStorage(restartInit, restartInit.fnScope)
+    else:
+      restartInit
   let storedHandler =
     if handler.kind == vkFunction:
       functionForScopeStorage(handler, handler.fnScope)
@@ -1923,8 +1948,10 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value): Value =
                       lifecycle: ActorLifecycle(),
                       capacity: capacity,
                       state: escapeWeakFunctions(state),
+                      restartInit: storedRestartInit,
                       handler: storedHandler,
-                      messageType: messageType))
+                      messageType: messageType,
+                      failureStrategy: failureStrategy))
 
 proc newActorContext*(actor: Value): Value =
   boxObject(ActorContextData(objKind: okActorContext, actor: actor))

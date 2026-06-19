@@ -43,6 +43,7 @@ type
     opIteratorNext    # pop a stream iterator, push next item
     opTry             # run a body with catch clauses and an ensure block
     opTaskScope       # run a structured task scope body
+    opSupervisor      # run a supervised actor-owner body
     opSpawn           # run a child task body and push a Task handle
     opAwait           # pop a Task and push/rethrow its completed result
     opFail            # pop an Error value and raise it through GeneError
@@ -305,6 +306,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " try=" & $inst.intArg
   of opTaskScope, opSpawn:
     result.add " body=" & $inst.intArg
+  of opSupervisor:
+    result.add " body=" & $inst.intArg & " strategy=" & inst.name
   of opFail, opPanic:
     discard
   of opJumpIfFalse, opJump:
