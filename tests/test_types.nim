@@ -173,5 +173,10 @@ suite "types — function boundaries":
 
   test "callable annotation accepts callables only":
     ck "(fn call-it [f : Callable] (f {^name \"Ada\"})) (call-it /name)", "\"Ada\""
+    ck "(fn keep-native [f : NativeFn] f) (keep-native +)", "(native-fn +)"
+    ck "(try (fn keep-native [f : NativeFn] f) (keep-native (fn [] nil)) " &
+       "catch (TypeError ^expected e) e)", "\"NativeFn\""
+    ck "(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
+       "catch (TypeError ^expected e) e)", "\"Fn\""
     ck "(try (fn keep [f : Callable] f) (keep (quote (not-callable))) " &
        "catch (TypeError ^expected e) e)", "\"Callable\""

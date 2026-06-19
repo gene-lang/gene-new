@@ -3208,7 +3208,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkNode:
     if value.head.kind == vkType: value.head else: newSym("Node")
   of vkFunction: newSym("Fn")
-  of vkNativeFn: newSym("Callable")
+  of vkNativeFn: newSym("NativeFn")
   of vkNamespace: newSym("Namespace")
   of vkModule: newSym("Module")
   of vkEnv: newSym("Env")
@@ -3500,6 +3500,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkNode)
   of "Fn", "Function":
     (true, value.kind == vkFunction)
+  of "NativeFn":
+    (true, value.kind == vkNativeFn)
   of "Callable":
     (true, value.kind in {vkFunction, vkNativeFn, vkType, vkProtocolMessage} or
       (value.kind == vkNode and value.isSelector))

@@ -165,6 +165,15 @@ suite "spec — typed variable boundaries from design":
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
 
+  test "native functions have an explicit boundary type":
+    check_eval("(fn keep-native [f : NativeFn] f) (keep-native +)",
+               "(native-fn +)")
+    check_eval("(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
+               "catch (TypeError ^expected e) e)",
+               "\"Fn\"")
+    check_eval("(fn keep-callable [f : Callable] f) (keep-callable +)",
+               "(native-fn +)")
+
 suite "spec — generic functions from design":
   test "generic function calls infer type parameters locally":
     check_eval("(fn (identity item) [x : item] : item x) " &
