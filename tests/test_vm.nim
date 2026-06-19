@@ -330,6 +330,12 @@ suite "vm — strings and interpolation":
     ck "[(to-str \"Ada\") (to-str (quote (user ^name \"Ada\")))]",
        "[\"Ada\" \"(user ^name \\\"Ada\\\")\"]"
 
+  test "strings iterate explicitly by chars and bytes":
+    ck "[(chars \"Aé\") (bytes \"Aé\")]", "[['A' 'é'] [65 195 169]]"
+    ck "(try (chars 1) catch {^message m} m)", "\"chars expects a Str\""
+    ck "(try (bytes) catch {^message m} m)",
+       "\"bytes expects 1 argument, got 0\""
+
   test "dollar concatenates display text":
     ck "(var concat $) (concat \"name=\" \"Ada\" \" score=\" 10)",
        "\"name=Ada score=10\""

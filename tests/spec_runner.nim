@@ -132,6 +132,10 @@ suite "spec — macros from design":
                "[0 99]")
 
 suite "spec — strings from design":
+  test "strings expose explicit chars and bytes iteration":
+    check_eval("[(chars \"Aé\") (bytes \"Aé\")]",
+               "[['A' 'é'] [65 195 169]]")
+
   test "dollar interpolation calls to-str-style display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
     check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")

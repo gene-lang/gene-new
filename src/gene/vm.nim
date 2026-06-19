@@ -1,6 +1,6 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, math, os, sets, strutils, tables]
+import std/[algorithm, math, os, sets, strutils, tables, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
 type
@@ -401,6 +401,10 @@ proc biNot(args: openArray[Value]): Value {.nimcall.} =
 proc requireOne(name: string, args: openArray[Value]) =
   if args.len != 1:
     raise newException(GeneError, name & " expects 1 argument, got " & $args.len)
+
+proc requireStr(name: string, value: Value) =
+  if value.kind != vkString:
+    raise newException(GeneError, name & " expects a Str")
 
 proc biHead(args: openArray[Value]): Value {.nimcall.} =
   requireOne("head", args)
@@ -1598,6 +1602,22 @@ proc biToStr(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to-str", args)
   newStr(displayStr(args[0]))
 
+proc biChars(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("chars", args)
+  requireStr("chars", args[0])
+  var items: seq[Value]
+  for r in args[0].strVal.runes:
+    items.add newChar(r)
+  newList(items)
+
+proc biBytes(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("bytes", args)
+  requireStr("bytes", args[0])
+  var items: seq[Value]
+  for b in args[0].strVal:
+    items.add newInt(int64(ord(b)))
+  newList(items)
+
 proc biDollar(args: openArray[Value]): Value {.nimcall.} =
   var resultStr = ""
   for arg in args:
@@ -1732,6 +1752,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
   result.define("to-str", newNativeFn("to-str", biToStr))
+  result.define("chars", newNativeFn("chars", biChars))
+  result.define("bytes", newNativeFn("bytes", biBytes))
   result.define("$", newNativeFn("$", biDollar))
   result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))
