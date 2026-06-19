@@ -251,6 +251,18 @@ suite "spec — generic functions from design":
                "(first (ints))",
                "7")
 
+suite "spec — static effects from design":
+  test "^effects rows are reserved in MVP":
+    expect GeneError:
+      discard compileSource("(fn f ^effects [fs] [] 1)")
+    expect GeneError:
+      discard compileSource("(protocol Run " &
+                            "  (message run ^effects [fs] [self]))")
+    expect GeneError:
+      discard compileSource("(protocol Run (message run [self])) " &
+                            "(impl Run Job " &
+                            "  (message run ^effects [fs] [self] 1))")
+
 suite "spec — pattern destructuring from design":
   test "match and catch bindings are branch-local":
     expect GeneError:

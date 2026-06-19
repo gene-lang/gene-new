@@ -118,6 +118,17 @@ suite "errors — checked rows":
     ck "(fn bad ^errors [CompileError] [] (fail (CompileError ^message \"compile\"))) " &
        "(try (bad) catch (CompileError ^message m) m)", "\"compile\""
 
+  test "^effects is reserved":
+    expect GeneError:
+      discard compileSource("(fn f ^effects [fs] [] 1)")
+    expect GeneError:
+      discard compileSource("(protocol Run " &
+                            "  (message run ^effects [fs] [self]))")
+    expect GeneError:
+      discard compileSource("(protocol Run (message run [self])) " &
+                            "(impl Run Job " &
+                            "  (message run ^effects [fs] [self] 1))")
+
 suite "errors — ensure":
   test "ensure runs on success":
     ck "(var log \"\") (try 42 ensure (set log \"ran\")) log", "\"ran\""

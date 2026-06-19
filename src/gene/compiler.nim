@@ -975,7 +975,12 @@ proc compileMacro(c: var Compiler, node: Value) =
   c.hasMacros = true
   c.emitConst NIL
 
+proc rejectReservedEffects(node: Value) =
+  if node.props.hasKey("effects"):
+    raise newException(GeneError, "^effects is reserved for a future static effect system")
+
 proc compileErrorRow(c: var Compiler, node: Value): tuple[checks: bool, count: int] =
+  rejectReservedEffects(node)
   if not node.props.hasKey("errors"):
     return
   let row = node.props["errors"]
@@ -1762,6 +1767,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
                                     body[i].body, 1)
       continue
     let message = messageName(body[i])
+    rejectReservedEffects(body[i])
     if seen.hasKey(message):
       raise newException(GeneError, "duplicate protocol message: " & message)
     seen[message] = true
