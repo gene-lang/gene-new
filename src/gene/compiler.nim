@@ -31,12 +31,19 @@ type
     typeExpr: Value
     defaultValue: ParamDefault
 
+  MacroDefault = object
+    optional: bool
+    hasExpr: bool
+    defaultExpr: Value
+
   MacroParam = object
     pattern: Value
+    defaultValue: MacroDefault
 
   MacroNamedParam = object
     arg: string
     pattern: Value
+    defaultValue: MacroDefault
 
   MacroDef = object
     params: seq[MacroParam]
@@ -471,9 +478,16 @@ proc macroTypedPattern(pattern, typeExpr: Value): Value =
       "macro parameter type annotation requires a binding name")
   newNode(pattern, body = @[newSym(":"), typeExpr])
 
+proc implicitMacroDefault(): MacroDefault =
+  MacroDefault(optional: true)
+
+proc macroDefaultExpr(expr: Value): MacroDefault =
+  MacroDefault(optional: true, hasExpr: true, defaultExpr: expr)
+
 proc parseMacroFlatAdornment(items: openArray[Value], i: var int,
-                             pattern: Value): Value =
-  result = pattern
+                             pattern: Value): tuple[pattern: Value,
+                                                    defaultValue: MacroDefault] =
+  result.pattern = pattern
   while i < items.len:
     case items[i].symbolText
     of ":":
@@ -481,14 +495,18 @@ proc parseMacroFlatAdornment(items: openArray[Value], i: var int,
       if i >= items.len:
         raise newException(GeneError,
           "macro parameter annotation requires a type")
-      if result.isTypedPattern:
+      if result.pattern.isTypedPattern:
         raise newException(GeneError,
           "macro parameter already has a type annotation")
-      result = macroTypedPattern(result, items[i])
+      result.pattern = macroTypedPattern(result.pattern, items[i])
       inc i
     of "=":
-      raise newException(GeneError,
-        "macro parameter defaults are not implemented")
+      inc i
+      if i >= items.len:
+        raise newException(GeneError,
+          "macro parameter default requires a value")
+      result.defaultValue = macroDefaultExpr(items[i])
+      inc i
     else:
       break
 
@@ -503,6 +521,7 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
   let items = paramList.listItems
   var i = 0
   var sawRest = false
+  var sawOptionalPositional = false
   while i < items.len:
     let item = items[i]
     let s = item.symbolText
@@ -511,9 +530,15 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
       if sawRest:
         raise newException(GeneError, "parameter cannot follow a rest parameter")
       inc i
-      let pattern = parseMacroFlatAdornment(items, i, item)
-      validateMacroParamPattern(pattern)
-      result.params.add MacroParam(pattern: pattern)
+      let adornment = parseMacroFlatAdornment(items, i, item)
+      if adornment.defaultValue.optional:
+        sawOptionalPositional = true
+      elif sawOptionalPositional:
+        raise newException(GeneError,
+          "required positional parameter cannot follow an optional positional parameter")
+      validateMacroParamPattern(adornment.pattern)
+      result.params.add MacroParam(pattern: adornment.pattern,
+                                   defaultValue: adornment.defaultValue)
     of ",":
       inc i
     of "^", "^^":
@@ -525,9 +550,8 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
       let argSpec = splitOptionalName(items[i].symVal)
       if argSpec.name.len == 0:
         raise newException(GeneError, "named parameter requires a name")
-      if argSpec.optional:
-        raise newException(GeneError,
-          "macro parameter defaults are not implemented")
+      var defaultValue =
+        if argSpec.optional: implicitMacroDefault() else: MacroDefault()
       let arg = argSpec.name
       inc i
       var pattern = newSym(arg)
@@ -542,25 +566,30 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
               raise newException(GeneError,
                 "named parameter local requires a name")
             if localSpec.optional:
-              raise newException(GeneError,
-                "macro parameter defaults are not implemented")
+              defaultValue = implicitMacroDefault()
             pattern = newSym(localSpec.name)
           else:
             pattern = maybePattern
           inc i
-      pattern = parseMacroFlatAdornment(items, i, pattern)
-      validateMacroParamPattern(pattern)
-      result.named.add MacroNamedParam(arg: arg, pattern: pattern)
+      let adornment = parseMacroFlatAdornment(items, i, pattern)
+      if adornment.defaultValue.optional:
+        defaultValue = adornment.defaultValue
+      validateMacroParamPattern(adornment.pattern)
+      result.named.add MacroNamedParam(arg: arg, pattern: adornment.pattern,
+                                       defaultValue: defaultValue)
     of ":":
       raise newException(GeneError,
         "macro parameter annotation requires a parameter")
     of "=":
       raise newException(GeneError,
-        "macro parameter defaults are not implemented")
+        "macro parameter default requires a parameter")
     else:
       if sawRest:
         raise newException(GeneError, "parameter cannot follow a rest parameter")
       if s.isRestParam:
+        if sawOptionalPositional:
+          raise newException(GeneError,
+            "rest parameter cannot follow an optional positional parameter")
         result.rest = s[0 .. ^4]
         if result.rest.len == 0:
           raise newException(GeneError, "rest parameter requires a name")
@@ -573,14 +602,21 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
         let spec = splitOptionalName(s)
         if spec.name.len == 0:
           raise newException(GeneError, "parameter requires a name")
-        if spec.optional:
-          raise newException(GeneError,
-            "macro parameter defaults are not implemented")
+        var defaultValue =
+          if spec.optional: implicitMacroDefault() else: MacroDefault()
         var pattern = newSym(spec.name)
         inc i
-        pattern = parseMacroFlatAdornment(items, i, pattern)
-        validateMacroParamPattern(pattern)
-        result.params.add MacroParam(pattern: pattern)
+        let adornment = parseMacroFlatAdornment(items, i, pattern)
+        if adornment.defaultValue.optional:
+          defaultValue = adornment.defaultValue
+        if defaultValue.optional:
+          sawOptionalPositional = true
+        elif sawOptionalPositional:
+          raise newException(GeneError,
+            "required positional parameter cannot follow an optional positional parameter")
+        validateMacroParamPattern(adornment.pattern)
+        result.params.add MacroParam(pattern: adornment.pattern,
+                                     defaultValue: defaultValue)
   result
 
 proc macroTemplateValue(expr: Value, env: Table[string, Value],
@@ -1017,22 +1053,49 @@ proc bindMacroPattern(pattern, target: Value,
     raise newException(GeneError, "macro " & what & " pattern did not match")
   env = trial
 
+proc requiredMacroParamCount(params: openArray[MacroParam]): int =
+  for param in params:
+    if param.defaultValue.optional:
+      return
+    inc result
+
+proc bindMacroImplicitVoid(pattern: Value, env: var Table[string, Value]) =
+  for name in patternBindingNames(pattern):
+    env[name] = VOID
+
+proc bindMacroDefault(c: var Compiler, pattern: Value,
+                      defaultValue: MacroDefault,
+                      env: var Table[string, Value],
+                      what: string) =
+  if defaultValue.hasExpr:
+    bindMacroPattern(pattern, macroTemplateValue(defaultValue.defaultExpr, env, c),
+                     env, what)
+  else:
+    bindMacroImplicitVoid(pattern, env)
+
 proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
   let args = node.body
-  if args.len < def.params.len:
-    raise newException(GeneError, "macro expects at least " & $def.params.len &
+  let requiredParams = requiredMacroParamCount(def.params)
+  if args.len < requiredParams:
+    raise newException(GeneError, "macro expects at least " & $requiredParams &
       " argument(s), got " & $args.len)
-  if def.rest.len == 0 and args.len != def.params.len:
-    raise newException(GeneError, "macro expects " & $def.params.len &
+  if def.rest.len == 0 and args.len > def.params.len:
+    raise newException(GeneError, "macro expects at most " & $def.params.len &
       " argument(s), got " & $args.len)
   var env = initTable[string, Value]()
   for i, param in def.params:
-    bindMacroPattern(param.pattern, args[i], env, "argument")
+    if i < args.len:
+      bindMacroPattern(param.pattern, args[i], env, "argument")
+    elif param.defaultValue.optional:
+      c.bindMacroDefault(param.pattern, param.defaultValue, env, "argument")
   for p in def.named:
-    if not node.props.hasKey(p.arg):
+    if node.props.hasKey(p.arg):
+      bindMacroPattern(p.pattern, node.props[p.arg], env, "named argument")
+    elif p.defaultValue.optional:
+      c.bindMacroDefault(p.pattern, p.defaultValue, env, "named argument")
+    else:
       raise newException(GeneError,
         "macro missing named argument: " & p.arg)
-    bindMacroPattern(p.pattern, node.props[p.arg], env, "named argument")
   for key, _ in node.props:
     var found = false
     for p in def.named:

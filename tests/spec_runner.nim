@@ -146,6 +146,20 @@ suite "spec — macros from design":
         "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
         "(keep-syms! [a 1])"), newGlobalScope())
 
+  test "macro parameter defaults bind syntax values":
+    check_eval("(macro default-value! [x = 7] `%x) " &
+               "[(default-value!) (default-value! 9)]",
+               "[7 9]")
+    check_eval("(macro second-or-first! [x y = x] `%y) " &
+               "[(second-or-first! (+ 1 2)) (second-or-first! 1 4)]",
+               "[3 4]")
+    check_eval("(macro named-default! [^value v = (+ 2 3)] `%v) " &
+               "[(named-default!) (named-default! ^value 8)]",
+               "[5 8]")
+    check_eval("(macro optional! [x?] `%x) (optional!)", "void")
+    expect GeneError:
+      discard compileSource("(macro bad! [x = 1 y] `%y)")
+
   test "template macros expand in default arguments":
     check_eval("(macro seven! [] 7) (fn f [x = (seven!)] x) (f)", "7")
 

@@ -460,6 +460,18 @@ suite "vm — macros":
     expect GeneError:
       discard runStr("(macro second! [[_ value]] `%value) " &
                      "(second! [only-one])")
+    ck "(macro default-value! [x = 7] `%x) " &
+       "[(default-value!) (default-value! 9)]",
+       "[7 9]"
+    ck "(macro second-or-first! [x y = x] `%y) " &
+       "[(second-or-first! (+ 1 2)) (second-or-first! 1 4)]",
+       "[3 4]"
+    ck "(macro named-default! [^value v = (+ 2 3)] `%v) " &
+       "[(named-default!) (named-default! ^value 8)]",
+       "[5 8]"
+    ck "(macro optional! [x?] `%x) (optional!)", "void"
+    expect GeneError:
+      discard compileSource("(macro bad! [x = 1 y] `%y)")
 
 suite "vm — arithmetic":
   test "addition":
