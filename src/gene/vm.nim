@@ -1226,18 +1226,63 @@ proc evalPolicyProp(policy: Value, name: string): Value =
   else:
     VOID
 
+proc validateEvalPolicyPropName(name: string) =
+  case name
+  of "max-steps", "max-memory-mb", "timeout-ms",
+     "allow-ffi", "allow-native-compile":
+    discard
+  else:
+    raise newException(GeneError,
+      "env ^policy got unexpected field: " & name)
+
+proc validateEvalPolicyPropNames(policy: Value) =
+  case policy.kind
+  of vkMap:
+    for name in policy.mapEntries.keys:
+      validateEvalPolicyPropName(name)
+  of vkNode:
+    for name in policy.props.keys:
+      validateEvalPolicyPropName(name)
+  else:
+    discard
+
+proc evalPolicyNonNegativeInt(policy: Value, name: string): int64 =
+  let value = evalPolicyProp(policy, name)
+  if value.kind in {vkNil, vkVoid}:
+    return -1
+  if value.kind != vkInt or not value.intFitsInt64 or value.intVal < 0:
+    raise newException(GeneError,
+      "env ^policy ^" & name & " must be a non-negative Int")
+  value.intVal
+
+proc rejectUnsupportedEvalLimit(policy: Value, name: string) =
+  if evalPolicyProp(policy, name).kind notin {vkNil, vkVoid}:
+    discard evalPolicyNonNegativeInt(policy, name)
+    raise newException(GeneError,
+      "env ^policy ^" & name & " is not supported yet")
+
+proc validateEvalPolicyFlag(policy: Value, name: string) =
+  let value = evalPolicyProp(policy, name)
+  if value.kind in {vkNil, vkVoid}:
+    return
+  if value.kind != vkBool:
+    raise newException(GeneError,
+      "env ^policy ^" & name & " must be a Bool")
+  if value.boolVal:
+    raise newException(GeneError,
+      "env ^policy ^" & name & " true is not supported yet")
+
 proc evalPolicyMaxSteps(policy: Value): int64 =
   if policy.kind in {vkNil, vkVoid}:
     return -1
   if policy.kind notin {vkMap, vkNode}:
     raise newException(GeneError, "env ^policy must be a map or node")
-  let maxSteps = evalPolicyProp(policy, "max-steps")
-  if maxSteps.kind in {vkNil, vkVoid}:
-    return -1
-  if maxSteps.kind != vkInt or not maxSteps.intFitsInt64 or maxSteps.intVal < 0:
-    raise newException(GeneError,
-      "env ^policy ^max-steps must be a non-negative Int")
-  maxSteps.intVal
+  validateEvalPolicyPropNames(policy)
+  rejectUnsupportedEvalLimit(policy, "max-memory-mb")
+  rejectUnsupportedEvalLimit(policy, "timeout-ms")
+  validateEvalPolicyFlag(policy, "allow-ffi")
+  validateEvalPolicyFlag(policy, "allow-native-compile")
+  evalPolicyNonNegativeInt(policy, "max-steps")
 
 proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
   let maxSteps = evalPolicyMaxSteps(policy)

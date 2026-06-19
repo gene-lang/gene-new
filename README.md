@@ -75,7 +75,8 @@ participates in equality or hashing.
   `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
   first-class `Env` values with explicit
   `eval node ^in env`, explicit Env imports/capabilities, `^policy`
-  max-step limits, `gene run` entrypoint invocation, line-oriented
+  max-step limits with validation for reserved policy fields, `gene run`
+  entrypoint invocation, line-oriented
   `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
   and built-ins
   (`+ - * / < > <= >= = same? not $ to-str head props body meta assoc-in

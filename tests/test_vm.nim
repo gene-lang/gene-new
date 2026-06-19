@@ -817,8 +817,12 @@ suite "vm — env and eval":
   test "eval policy max-steps limits execution":
     ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max-steps 20}))",
        "3"
-    ck "(type EvalPolicy ^props {^max-steps Int}) " &
-       "(var p (EvalPolicy ^max-steps 20)) " &
+    ck "(type EvalPolicy ^props {^max-steps Int " &
+       "                         ^allow-ffi? Bool " &
+       "                         ^allow-native-compile? Bool}) " &
+       "(var p (EvalPolicy ^max-steps 20 " &
+       "                   ^allow-ffi false " &
+       "                   ^allow-native-compile false)) " &
        "(eval (quote (+ 1 2)) ^in (env ^policy p))",
        "3"
     ck "(try (eval (quote (while true nil)) " &
@@ -835,6 +839,18 @@ suite "vm — env and eval":
       discard runStr("(env ^policy {^max-steps \"bad\"})")
     expect GeneError:
       discard runStr("(env ^policy {^max-steps -1})")
+    expect GeneError:
+      discard runStr("(env ^policy {^max-memory-mb 128})")
+    expect GeneError:
+      discard runStr("(env ^policy {^timeout-ms 5000})")
+    expect GeneError:
+      discard runStr("(env ^policy {^allow-ffi true})")
+    expect GeneError:
+      discard runStr("(env ^policy {^allow-native-compile true})")
+    expect GeneError:
+      discard runStr("(env ^policy {^allow-ffi 1})")
+    expect GeneError:
+      discard runStr("(env ^policy {^max-step 20})")
 
   test "eval compile failures are typed CompileError values":
     ck "(try (eval (quote (var)) ^in (env)) " &

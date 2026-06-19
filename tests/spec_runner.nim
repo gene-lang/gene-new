@@ -579,14 +579,24 @@ suite "spec — Env and eval from design":
                "[\"binding\" \"closed\"]")
 
   test "eval policy can limit execution steps":
-    check_eval("(type EvalPolicy ^props {^max-steps Int}) " &
-               "(var p (EvalPolicy ^max-steps 20)) " &
+    check_eval("(type EvalPolicy ^props {^max-steps Int " &
+               "                         ^allow-ffi? Bool " &
+               "                         ^allow-native-compile? Bool}) " &
+               "(var p (EvalPolicy ^max-steps 20 " &
+               "                   ^allow-ffi false " &
+               "                   ^allow-native-compile false)) " &
                "(eval (quote (+ 1 2)) ^in (env ^policy p))",
                "3")
     check_eval("(try (eval (quote (while true nil)) " &
                "           ^in (env ^policy {^max-steps 20})) " &
                "catch {^message m} m)",
                "\"eval max steps exceeded\"")
+    expect GeneError:
+      discard run(compileSource("(env ^policy {^max-memory-mb 128})"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(env ^policy {^allow-ffi true})"),
+                  newGlobalScope())
 
 suite "spec — parser helpers from design":
   test "read-one feeds eval and read-all returns a stream":
