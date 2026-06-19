@@ -33,6 +33,22 @@ proc newScope*(parent: Scope = nil,
     else: nil
   Scope(application: owner, parent: parent)
 
+proc registerOwnedActor(scope: Scope, actor: Value) =
+  var s = scope
+  while s != nil:
+    if s.ownsActors:
+      s.ownedActors.add actor
+      return
+    s = s.parent
+
+proc closeOwnedActors(scope: Scope) =
+  if scope.ownedActors.len == 0:
+    return
+  for i in countdown(scope.ownedActors.high, 0):
+    if scope.ownedActors[i].kind == vkActorRef:
+      scope.ownedActors[i].closeActor()
+  scope.ownedActors.setLen(0)
+
 proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   if names.len == 0:
     return
@@ -708,7 +724,9 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let closedMessageType =
     if messageType.kind == vkNil: NIL else: closeTypeExpr(messageType, scope)
   let state = applyCall(initFn, [], NamedArgs(), scope)
-  newActorRef(actorMailboxArg(call), state, handler, closedMessageType)
+  result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType)
+  if scope != nil:
+    scope.registerOwnedActor(result)
 
 proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -2703,7 +2721,11 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       stack.add resultVal
     of opTaskScope:
       let taskScope = newScope(scope)
-      stack.add run(chunk.subchunks[inst[].intArg], taskScope)
+      taskScope.ownsActors = true
+      try:
+        stack.add run(chunk.subchunks[inst[].intArg], taskScope)
+      finally:
+        taskScope.closeOwnedActors()
     of opSpawn:
       let taskScope = newScope(scope)
       try:

@@ -490,6 +490,19 @@ suite "spec — actors from design":
                "catch (TypeError ^where w) w)",
                "\"ReplyTo/send value\"")
 
+  test "scope owns spawned actors until scope exit":
+    check_eval("(var a (scope " &
+               "  (actor/spawn ^init (fn [] 0) " &
+               "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
+               "(a ~ actor/try-send 1)",
+               "false")
+    check_eval("(scope " &
+               "  (var a (scope " &
+               "    (actor/spawn ^init (fn [] 0) " &
+               "      ^handle (fn [ctx state msg] (actor/continue state))))) " &
+               "  (a ~ actor/try-send 1))",
+               "false")
+
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &

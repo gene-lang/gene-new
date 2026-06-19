@@ -1025,6 +1025,24 @@ suite "vm — actors":
        "catch (ActorError ^message m) m)",
        "\"actor/ask did not receive a reply\""
 
+  test "task scopes close owned actors on exit":
+    ck "(var a (scope " &
+       "  (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
+       "(a ~ actor/try-send 1)",
+       "false"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var a nil) " &
+       "(try " &
+       "  (scope " &
+       "    (set a (actor/spawn ^init (fn [] 0) " &
+       "      ^handle (fn [ctx state msg] (actor/continue state)))) " &
+       "    (fail (Boom ^message \"x\"))) " &
+       "catch (Boom ^message m) m) " &
+       "(a ~ actor/try-send 1)",
+       "false"
+
   test "actor handler must return an ActorStep":
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &

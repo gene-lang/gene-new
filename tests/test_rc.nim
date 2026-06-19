@@ -67,6 +67,10 @@ when defined(geneRcStats):
       check leakedManaged("(var a (actor/spawn ^init (fn [] 0) " &
                           "  ^handle (fn [ctx state msg] " &
                           "    (actor/continue state))))") == 0
+      check leakedManaged("(scope " &
+                          "  (actor/spawn ^init (fn [] 0) " &
+                          "    ^handle (fn [ctx state msg] " &
+                          "      (actor/continue state))))") == 0
       check leakedManaged("(type Get ^props {^reply (ReplyTo Int)}) " &
                           "(impl Send Get) " &
                           "(var a : (ActorRef Get) " &

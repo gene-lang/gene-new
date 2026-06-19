@@ -212,6 +212,8 @@ type
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
+    ownsActors*: bool
+    ownedActors*: seq[Value]
 
   ## Runtime call metadata for envelope-aware native functions. Positional
   ## arguments stay as an openArray parameter on NativeProc to keep the hot
@@ -337,10 +339,13 @@ type
     itemType: Value
     itemScope: Scope
 
+  ActorLifecycle = ref object
+    closed: bool
+
   ActorData = ref object of GeneObjectData
+    lifecycle: ActorLifecycle
     capacity: int
     queue: seq[Value]
-    closed: bool
     processing: bool
     state: Value
     handler: Value
@@ -1301,7 +1306,7 @@ proc setActorMessageType*(v, messageType: Value) =
   actorData(v).messageType = messageType
 
 proc actorClosed*(v: Value): bool =
-  actorData(v).closed
+  actorData(v).lifecycle.closed
 
 proc actorProcessing*(v: Value): bool =
   actorData(v).processing
@@ -1317,7 +1322,7 @@ proc actorFull*(v: Value): bool =
   data.queue.len >= data.capacity
 
 proc closeActor*(v: Value) =
-  actorData(v).closed = true
+  actorData(v).lifecycle.closed = true
 
 proc pushActorMessage*(v, message: Value) =
   actorData(v).queue.add escapeWeakFunctions(message)
@@ -1841,9 +1846,9 @@ proc escapeWeakFunctions*(v: Value): Value =
     let data = actorData(v)
     let escapedState = escapeWeakFunctions(data.state)
     let escapedHandler = escapeWeakFunctions(data.handler)
+    var escapedQueue = newSeq[Value](data.queue.len)
     var changed = escapedState.bits != data.state.bits or
       escapedHandler.bits != data.handler.bits
-    var escapedQueue = newSeq[Value](data.queue.len)
     for i, item in data.queue:
       escapedQueue[i] = escapeWeakFunctions(item)
       if escapedQueue[i].bits != item.bits:
@@ -1851,9 +1856,9 @@ proc escapeWeakFunctions*(v: Value): Value =
     if not changed:
       return v
     boxObject(ActorData(objKind: okActorRef,
+                        lifecycle: data.lifecycle,
                         capacity: data.capacity,
                         queue: escapedQueue,
-                        closed: data.closed,
                         processing: data.processing,
                         state: escapedState,
                         handler: escapedHandler,
@@ -1875,13 +1880,9 @@ proc escapeWeakFunctions*(v: Value): Value =
   of vkReplyTo:
     let data = replyToData(v)
     let escapedResult = escapeWeakFunctions(data.result)
-    if escapedResult.bits == data.result.bits:
-      return v
-    boxObject(ReplyToData(objKind: okReplyTo,
-                          sent: data.sent,
-                          result: escapedResult,
-                          resultType: data.resultType,
-                          resultScope: data.resultScope))
+    if escapedResult.bits != data.result.bits:
+      data.result = escapedResult
+    v
   else:
     v
 
@@ -1919,6 +1920,7 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value): Value =
     else:
       handler
   boxObject(ActorData(objKind: okActorRef,
+                      lifecycle: ActorLifecycle(),
                       capacity: capacity,
                       state: escapeWeakFunctions(state),
                       handler: storedHandler,
