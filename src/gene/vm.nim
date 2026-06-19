@@ -1618,6 +1618,18 @@ proc biBytes(args: openArray[Value]): Value {.nimcall.} =
     items.add newInt(int64(ord(b)))
   newList(items)
 
+proc biGraphemes(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("graphemes", args)
+  requireStr("graphemes", args[0])
+  let s = args[0].strVal
+  var items: seq[Value]
+  var i = 0
+  while i < s.len:
+    let width = s.graphemeLen(i)
+    items.add newStr(s.substr(i, i + width - 1))
+    i += width
+  newList(items)
+
 proc biDollar(args: openArray[Value]): Value {.nimcall.} =
   var resultStr = ""
   for arg in args:
@@ -1754,6 +1766,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("to-str", newNativeFn("to-str", biToStr))
   result.define("chars", newNativeFn("chars", biChars))
   result.define("bytes", newNativeFn("bytes", biBytes))
+  result.define("graphemes", newNativeFn("graphemes", biGraphemes))
   result.define("$", newNativeFn("$", biDollar))
   result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))

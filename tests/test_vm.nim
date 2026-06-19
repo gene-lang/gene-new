@@ -336,6 +336,13 @@ suite "vm — strings and interpolation":
     ck "(try (bytes) catch {^message m} m)",
        "\"bytes expects 1 argument, got 0\""
 
+  test "graphemes group combining scalars":
+    let s = "e\u0301x"
+    ck "(var s \"" & s & "\") [(chars s) (graphemes s) (bytes s)]",
+       "[['e' '\u0301' 'x'] [\"e\u0301\" \"x\"] [101 204 129 120]]"
+    ck "(try (graphemes 1) catch {^message m} m)",
+       "\"graphemes expects a Str\""
+
   test "dollar concatenates display text":
     ck "(var concat $) (concat \"name=\" \"Ada\" \" score=\" 10)",
        "\"name=Ada score=10\""

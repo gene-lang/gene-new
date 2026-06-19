@@ -136,6 +136,10 @@ suite "spec — strings from design":
     check_eval("[(chars \"Aé\") (bytes \"Aé\")]",
                "[['A' 'é'] [65 195 169]]")
 
+  test "graphemes expose combining scalar clusters":
+    let s = "e\u0301x"
+    check_eval("(graphemes \"" & s & "\")", "[\"e\u0301\" \"x\"]")
+
   test "dollar interpolation calls to-str-style display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
     check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")
