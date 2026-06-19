@@ -1,7 +1,7 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
 import std/[strutils, tables]
-import ./[gir, reader, types]
+import ./[equality, gir, reader, types]
 
 type
   Compiler = object
@@ -31,9 +31,16 @@ type
     typeExpr: Value
     defaultValue: ParamDefault
 
+  MacroParam = object
+    pattern: Value
+
+  MacroNamedParam = object
+    arg: string
+    pattern: Value
+
   MacroDef = object
-    params: seq[string]
-    named: seq[NamedParam]
+    params: seq[MacroParam]
+    named: seq[MacroNamedParam]
     rest: string
     body: seq[Value]
 
@@ -455,22 +462,109 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
         continue
       discard c.parseParamAdornment(items, i)
 
-proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[string],
-                                                         named: seq[NamedParam],
+proc validateMacroParamPattern(pattern: Value) =
+  discard patternBindingNames(pattern)
+
+proc rejectMacroFlatAdornment(items: openArray[Value], i: int) =
+  if i >= items.len:
+    return
+  case items[i].symbolText
+  of ":":
+    raise newException(GeneError,
+      "macro parameter type annotations are not implemented")
+  of "=":
+    raise newException(GeneError,
+      "macro parameter defaults are not implemented")
+  else:
+    discard
+
+proc isMacroNamedTerminator(value: Value): bool =
+  value.kind == vkSymbol and value.symVal in [",", "^", "^^"]
+
+proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam],
+                                                         named: seq[MacroNamedParam],
                                                          rest: string] =
-  let specs = c.paramSpecs(paramList)
-  for t in specs.positionalTypes:
-    if t.kind != vkNil:
-      raise newException(GeneError, "macro parameter type annotations are not implemented")
-  for defaultValue in specs.positionalDefaults:
-    if defaultValue.optional:
-      raise newException(GeneError, "macro parameter defaults are not implemented")
-  for p in specs.named:
-    if p.typeExpr.kind != vkNil:
-      raise newException(GeneError, "macro parameter type annotations are not implemented")
-    if p.defaultValue.optional:
-      raise newException(GeneError, "macro parameter defaults are not implemented")
-  (specs.positional, specs.named, specs.rest)
+  if paramList.kind != vkList:
+    return
+  let items = paramList.listItems
+  var i = 0
+  var sawRest = false
+  while i < items.len:
+    let item = items[i]
+    let s = item.symbolText
+    case s
+    of "":
+      if sawRest:
+        raise newException(GeneError, "parameter cannot follow a rest parameter")
+      validateMacroParamPattern(item)
+      result.params.add MacroParam(pattern: item)
+      inc i
+      rejectMacroFlatAdornment(items, i)
+    of ",":
+      inc i
+    of "^", "^^":
+      if sawRest:
+        raise newException(GeneError, "named parameter cannot follow a rest parameter")
+      inc i
+      if i >= items.len or items[i].kind != vkSymbol:
+        raise newException(GeneError, "named parameter requires a name")
+      let argSpec = splitOptionalName(items[i].symVal)
+      if argSpec.name.len == 0:
+        raise newException(GeneError, "named parameter requires a name")
+      if argSpec.optional:
+        raise newException(GeneError,
+          "macro parameter defaults are not implemented")
+      let arg = argSpec.name
+      inc i
+      var pattern = newSym(arg)
+      if i < items.len:
+        let maybePattern = items[i]
+        let maybeSymbol = maybePattern.symbolText
+        if not maybePattern.isMacroNamedTerminator and
+            maybeSymbol notin [":", "="]:
+          if maybePattern.kind == vkSymbol:
+            let localSpec = splitOptionalName(maybePattern.symVal)
+            if localSpec.name.len == 0:
+              raise newException(GeneError,
+                "named parameter local requires a name")
+            if localSpec.optional:
+              raise newException(GeneError,
+                "macro parameter defaults are not implemented")
+            pattern = newSym(localSpec.name)
+          else:
+            pattern = maybePattern
+          inc i
+      validateMacroParamPattern(pattern)
+      result.named.add MacroNamedParam(arg: arg, pattern: pattern)
+      rejectMacroFlatAdornment(items, i)
+    of ":":
+      raise newException(GeneError,
+        "macro parameter type annotations are not implemented")
+    of "=":
+      raise newException(GeneError,
+        "macro parameter defaults are not implemented")
+    else:
+      if sawRest:
+        raise newException(GeneError, "parameter cannot follow a rest parameter")
+      if s.isRestParam:
+        result.rest = s[0 .. ^4]
+        if result.rest.len == 0:
+          raise newException(GeneError, "rest parameter requires a name")
+        sawRest = true
+        inc i
+      else:
+        let spec = splitOptionalName(s)
+        if spec.name.len == 0:
+          raise newException(GeneError, "parameter requires a name")
+        if spec.optional:
+          raise newException(GeneError,
+            "macro parameter defaults are not implemented")
+        let pattern = newSym(spec.name)
+        validateMacroParamPattern(pattern)
+        result.params.add MacroParam(pattern: pattern)
+        inc i
+      rejectMacroFlatAdornment(items, i)
+  result
 
 proc macroTemplateValue(expr: Value, env: Table[string, Value],
                         c: var Compiler): Value
@@ -643,6 +737,177 @@ proc macroTemplateValue(expr: Value, env: Table[string, Value],
     return expandMacroQuasi(expr.body[0], env, 1, c, hygiene)
   expr
 
+proc macroMetaAsMap(target: Value): Value =
+  var entries = initOrderedTable[string, Value]()
+  if target.kind == vkNode:
+    for key, val in target.meta:
+      entries[key] = val
+  newMap(entries)
+
+proc macroTryMatch(pattern, target: Value,
+                   env: var Table[string, Value]): bool
+
+proc macroPatternItems(target: Value): tuple[items: seq[Value], ok: bool] =
+  case target.kind
+  of vkList:
+    for item in target.listItems:
+      result.items.add item
+    result.ok = true
+  of vkNode:
+    for item in target.body:
+      result.items.add item
+    result.ok = true
+  else:
+    discard
+
+proc macroMatchSequence(patterns, items: seq[Value],
+                        env: var Table[string, Value]): bool =
+  var ps: seq[Value]
+  for pattern in patterns:
+    if not pattern.isSymbol(","):
+      ps.add pattern
+  var restIdx = -1
+  for i, pattern in ps:
+    if pattern.isRestPattern:
+      restIdx = i
+      break
+  var trial = env
+  if restIdx < 0:
+    if ps.len != items.len:
+      return false
+    for i in 0 ..< ps.len:
+      if not macroTryMatch(ps[i], items[i], trial):
+        return false
+    env = trial
+    return true
+  let before = restIdx
+  let after = ps.len - restIdx - 1
+  if items.len < before + after:
+    return false
+  for i in 0 ..< before:
+    if not macroTryMatch(ps[i], items[i], trial):
+      return false
+  let restName = ps[restIdx].symVal[0 .. ^4]
+  if restName != "_":
+    var rest: seq[Value]
+    for i in before ..< items.len - after:
+      rest.add items[i]
+    trial[restName] = newList(rest)
+  for i in 0 ..< after:
+    if not macroTryMatch(ps[restIdx + 1 + i],
+                         items[items.len - after + i], trial):
+      return false
+  env = trial
+  true
+
+proc macroTryMatch(pattern, target: Value,
+                   env: var Table[string, Value]): bool =
+  case pattern.kind
+  of vkSymbol:
+    let name = pattern.symVal
+    if name == "_":
+      return true
+    env[name] = target
+    true
+  of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil, vkVoid:
+    equal(pattern, target)
+  of vkList:
+    let (items, ok) = macroPatternItems(target)
+    if not ok:
+      return false
+    macroMatchSequence(pattern.listItems, items, env)
+  of vkMap:
+    var trial = env
+    for key, valuePattern in pattern.mapEntries:
+      var field: Value
+      case target.kind
+      of vkMap:
+        if not target.mapEntries.hasKey(key):
+          return false
+        field = target.mapEntries[key]
+      of vkNode:
+        if not target.props.hasKey(key):
+          return false
+        field = target.props[key]
+      else:
+        return false
+      if not macroTryMatch(valuePattern, field, trial):
+        return false
+    env = trial
+    true
+  of vkNode:
+    if pattern.isTypedPattern:
+      raise newException(GeneError,
+        "macro typed parameter patterns are not implemented")
+    if pattern.head.kind == vkSymbol:
+      case pattern.head.symVal
+      of "unquote":
+        if pattern.body.len != 1 or pattern.body[0].kind != vkSymbol:
+          raise newException(GeneError, "pattern %name expects a name")
+        if not env.hasKey(pattern.body[0].symVal):
+          raise newException(GeneError,
+            "macro pattern comparison requires an earlier binding: " &
+              pattern.body[0].symVal)
+        return equal(target, env[pattern.body[0].symVal])
+      of "@":
+        if pattern.body.len != 2:
+          raise newException(GeneError,
+            "pattern (@ meta value) expects two patterns")
+        var trial = env
+        if not macroTryMatch(pattern.body[0], macroMetaAsMap(target), trial):
+          return false
+        if not macroTryMatch(pattern.body[1], target, trial):
+          return false
+        env = trial
+        return true
+      of "|":
+        discard patternBindingNames(pattern)
+        for sub in pattern.body:
+          var trial = env
+          if macroTryMatch(sub, target, trial):
+            env = trial
+            return true
+        return false
+      of "&":
+        var trial = env
+        for sub in pattern.body:
+          if not macroTryMatch(sub, target, trial):
+            return false
+        env = trial
+        return true
+      of "not":
+        if pattern.body.len != 1:
+          raise newException(GeneError, "pattern (not p) expects one pattern")
+        discard patternBindingNames(pattern)
+        var throwaway = env
+        return not macroTryMatch(pattern.body[0], target, throwaway)
+      else:
+        discard
+    if target.kind != vkNode:
+      return false
+    if not equal(pattern.head, target.head):
+      return false
+    var trial = env
+    for key, valuePattern in pattern.props:
+      if not target.props.hasKey(key):
+        return false
+      if not macroTryMatch(valuePattern, target.props[key], trial):
+        return false
+    if not macroMatchSequence(pattern.body, target.body, trial):
+      return false
+    env = trial
+    true
+  else:
+    false
+
+proc bindMacroPattern(pattern, target: Value,
+                      env: var Table[string, Value],
+                      what: string) =
+  var trial = env
+  if not macroTryMatch(pattern, target, trial):
+    raise newException(GeneError, "macro " & what & " pattern did not match")
+  env = trial
+
 proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
   let args = node.body
   if args.len < def.params.len:
@@ -652,13 +917,13 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
     raise newException(GeneError, "macro expects " & $def.params.len &
       " argument(s), got " & $args.len)
   var env = initTable[string, Value]()
-  for i, name in def.params:
-    env[name] = args[i]
+  for i, param in def.params:
+    bindMacroPattern(param.pattern, args[i], env, "argument")
   for p in def.named:
     if not node.props.hasKey(p.arg):
       raise newException(GeneError,
         "macro missing named argument: " & p.arg)
-    env[p.local] = node.props[p.arg]
+    bindMacroPattern(p.pattern, node.props[p.arg], env, "named argument")
   for key, _ in node.props:
     var found = false
     for p in def.named:

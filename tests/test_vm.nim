@@ -398,6 +398,26 @@ suite "vm — macros":
       discard runStr("(macro scaled! [value ^by n] `(+ %value %n)) " &
                      "(scaled! ^other 3 7)")
 
+  test "macro parameters destructure syntax patterns":
+    ck "(macro second! [[_ value]] `%value) " &
+       "(second! [ignored (+ 1 2)])",
+       "3"
+    ck "(macro pick-prop! [{^value v}] `%v) " &
+       "(pick-prop! {^value (+ 2 3)})",
+       "5"
+    ck "(macro call-arg! [(call ^arg v)] `%v) " &
+       "(call-arg! (call ^arg (+ 4 5)))",
+       "9"
+    ck "(macro rest-items! [[head tail...]] `(quote %tail)) " &
+       "(rest-items! [1 2 3])",
+       "[2 3]"
+    ck "(macro named-pair! [^entry [k v]] `(+ %k %v)) " &
+       "(named-pair! ^entry [2 3])",
+       "5"
+    expect GeneError:
+      discard runStr("(macro second! [[_ value]] `%value) " &
+                     "(second! [only-one])")
+
 suite "vm — arithmetic":
   test "addition":
     ck "(+ 1 2 3)", "6"

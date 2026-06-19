@@ -96,6 +96,21 @@ suite "spec — macros from design":
         "(macro scaled! [value ^by n] `(+ %value %n)) " &
         "(scaled! ^other 3 7)"), newGlobalScope())
 
+  test "macro parameters destructure syntax patterns":
+    check_eval("(macro second! [[_ value]] `%value) " &
+               "(second! [ignored (+ 1 2)])",
+               "3")
+    check_eval("(macro pick-prop! [{^value v}] `%v) " &
+               "(pick-prop! {^value (+ 2 3)})",
+               "5")
+    check_eval("(macro named-pair! [^entry [k v]] `(+ %k %v)) " &
+               "(named-pair! ^entry [2 3])",
+               "5")
+    expect GeneError:
+      discard run(compileSource(
+        "(macro second! [[_ value]] `%value) " &
+        "(second! [only-one])"), newGlobalScope())
+
   test "template macros expand in default arguments":
     check_eval("(macro seven! [] 7) (fn f [x = (seven!)] x) (f)", "7")
 
