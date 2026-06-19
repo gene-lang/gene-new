@@ -178,5 +178,8 @@ suite "types — function boundaries":
        "catch (TypeError ^expected e) e)", "\"NativeFn\""
     ck "(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
        "catch (TypeError ^expected e) e)", "\"Fn\""
+    ck "(fn keep-selector [s : Selector] s) (keep-selector /name)", "(select name)"
+    ck "(try (fn keep-selector [s : Selector] s) (keep-selector (quote (x))) " &
+       "catch (TypeError ^expected e) e)", "\"Selector\""
     ck "(try (fn keep [f : Callable] f) (keep (quote (not-callable))) " &
        "catch (TypeError ^expected e) e)", "\"Callable\""

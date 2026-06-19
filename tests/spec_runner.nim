@@ -165,12 +165,18 @@ suite "spec — typed variable boundaries from design":
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
 
-  test "native functions have an explicit boundary type":
+  test "callable runtime values have explicit boundary types":
     check_eval("(fn keep-native [f : NativeFn] f) (keep-native +)",
                "(native-fn +)")
     check_eval("(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
                "catch (TypeError ^expected e) e)",
                "\"Fn\"")
+    check_eval("(fn keep-selector [s : Selector] s) (keep-selector /name)",
+               "(select name)")
+    check_eval("(try (fn keep-selector [s : Selector] s) " &
+               "     (keep-selector (quote (name))) " &
+               "catch (TypeError ^expected e) e)",
+               "\"Selector\"")
     check_eval("(fn keep-callable [f : Callable] f) (keep-callable +)",
                "(native-fn +)")
 

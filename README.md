@@ -58,7 +58,7 @@ participates in equality or hashing.
   nominal types
   with construction, schema validation, and single inheritance (`(type T ^props
   {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
-  returns, typed construction, and `Fn`/`NativeFn`/`Callable` values,
+  returns, typed construction, and `Fn`/`NativeFn`/`Selector`/`Callable` values,
   positional/named/rest/default function
   arguments, MVP protocol declarations with `Error`/`Send` marker protocols,
   nominal message dispatch, parent-type implementation applicability, ambiguity
