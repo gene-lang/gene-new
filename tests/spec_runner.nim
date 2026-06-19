@@ -555,6 +555,19 @@ suite "spec — streams from design":
                " (names ~ Stream/has_next)]",
                "[\"Ada\" \"Bob\" false]")
 
+  test "complex selector stages adapt stream helpers":
+    check_eval("(var users [{^name \"Ada\" ^adult true} " &
+               "            {^name \"Tim\" ^adult false} " &
+               "            {^name \"Bob\" ^adult true}]) " &
+               "(var names ((select %to_stream %(filter /adult) name) users)) " &
+               "[(names ~ Stream/next) " &
+               " (names ~ Stream/next) " &
+               " (names ~ Stream/has_next)]",
+               "[\"Ada\" \"Bob\" false]")
+    check_eval("(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
+               "((select %to_stream %(map /name) %(take 2) %(into [])) users)",
+               "[\"Ada\" \"Bob\"]")
+
   test "declarations is an ordinary stream selector stage":
     check_eval("(ns m (var b 2) (var a 1)) " &
                "(var names m/%declarations/name) " &

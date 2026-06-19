@@ -770,6 +770,16 @@ suite "vm — dynamic selectors":
        "\"Ada\""
   test "callable dynamic segments act as selector stages":
     ck "(var stage not) (var s /%stage) (s false)", "true"
+  test "complex selector stages adapt stream helpers":
+    ck "(var users [{^name \"Ada\" ^adult true} " &
+       "            {^name \"Tim\" ^adult false} " &
+       "            {^name \"Bob\" ^adult true}]) " &
+       "(var names ((select %to_stream %(filter /adult) name) users)) " &
+       "[(names ~ Stream/next) (names ~ Stream/next) (names ~ Stream/has_next)]",
+       "[\"Ada\" \"Bob\" false]"
+    ck "(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
+       "((select %to_stream %(map /name) %(take 2) %(into [])) users)",
+       "[\"Ada\" \"Bob\"]"
 
 suite "vm — node projection built-ins":
   test "projection built-ins expose value anatomy":

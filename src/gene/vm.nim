@@ -1341,21 +1341,37 @@ proc pullTakeStream(stream: Value): StreamPullResult {.nimcall.} =
       item: checkedStreamNext(source, "take item"))
   StreamPullResult(has: false, item: NIL)
 
+proc newSelectorCallStage(callee: Value, args: openArray[Value]): Value =
+  var body = newSeqOfCap[Value](args.len + 1)
+  body.add callee
+  for arg in args:
+    body.add arg
+  newNode(newSym("call-stage"), body = body)
+
 proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
+  if args.len == 1:
+    return newSelectorCallStage(newNativeFn("map", biStreamMap), args)
   if args.len != 2:
-    raise newException(GeneError, "map expects 2 arguments, got " & $args.len)
+    raise newException(GeneError, "map expects 1 or 2 arguments, got " & $args.len)
   requireStream("map", args[0])
   newLazyStream(args[0], pullMapStream, callable = args[1])
 
 proc biStreamFilter(args: openArray[Value]): Value {.nimcall.} =
+  if args.len == 1:
+    return newSelectorCallStage(newNativeFn("filter", biStreamFilter), args)
   if args.len != 2:
-    raise newException(GeneError, "filter expects 2 arguments, got " & $args.len)
+    raise newException(GeneError, "filter expects 1 or 2 arguments, got " & $args.len)
   requireStream("filter", args[0])
   newLazyStream(args[0], pullFilterStream, callable = args[1])
 
 proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
+  if args.len == 1:
+    let remaining = requireInt64("take count", args[0])
+    if remaining < 0:
+      raise newException(GeneError, "take count must be non-negative")
+    return newSelectorCallStage(newNativeFn("take", biStreamTake), args)
   if args.len != 2:
-    raise newException(GeneError, "take expects 2 arguments, got " & $args.len)
+    raise newException(GeneError, "take expects 1 or 2 arguments, got " & $args.len)
   requireStream("take", args[0])
   var remaining = requireInt64("take count", args[1])
   if remaining < 0:
@@ -1363,8 +1379,12 @@ proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
   newLazyStream(args[0], pullTakeStream, remaining = remaining)
 
 proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
+  if args.len == 1:
+    if args[0].kind notin {vkList, vkMap}:
+      raise newException(GeneError, "into expects a List or Map target")
+    return newSelectorCallStage(newNativeFn("into", biStreamInto), args)
   if args.len != 2:
-    raise newException(GeneError, "into expects 2 arguments, got " & $args.len)
+    raise newException(GeneError, "into expects 1 or 2 arguments, got " & $args.len)
   requireStream("into", args[0])
   case args[1].kind
   of vkList:
@@ -4074,14 +4094,8 @@ proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
       return true
   false
 
-proc isSelectorStage(v: Value): bool =
-  case v.kind
-  of vkFunction, vkNativeFn:
-    true
-  of vkNode:
-    v.isSelector
-  else:
-    false
+proc isSelectorCallStage(v: Value): bool =
+  v.kind == vkNode and v.head.isSymbol("call-stage") and v.body.len > 0
 
 proc lookupIndex(items: openArray[Value], rawIndex: int64): Value =
   var idx = rawIndex
@@ -4143,19 +4157,38 @@ proc staticLookup(target, segment: Value): Value =
       VOID
   of vkNode:
     if segment.head.isSymbol("unquote"):
-      raise newException(GeneError, "dynamic selector stages are not implemented")
+      raise newException(GeneError, "selector contains an unresolved dynamic segment")
     VOID
   else:
     VOID
+
+proc applySelectorCallStage(stage, target: Value): Value =
+  if stage.body.len == 0:
+    raise newException(GeneError, "selector call stage requires a callee")
+  var callArgs = newSeqOfCap[Value](stage.body.len)
+  callArgs.add target
+  for i in 1 ..< stage.body.len:
+    callArgs.add stage.body[i]
+  applyCall(stage.body[0], callArgs, NamedArgs())
 
 proc applySelector(selector, target: Value): Value =
   result = target
   for segment in selector.body:
     result =
-      if segment.isSelectorStage:
+      case segment.kind
+      of vkFunction, vkNativeFn:
         block:
           var callArgs = [result]
           applyCall(segment, callArgs, NamedArgs())
+      of vkNode:
+        if segment.isSelectorCallStage:
+          applySelectorCallStage(segment, result)
+        elif segment.isSelector:
+          block:
+            var callArgs = [result]
+            applyCall(segment, callArgs, NamedArgs())
+        else:
+          staticLookup(result, segment)
       else:
         staticLookup(result, segment)
     if result.kind == vkVoid:
