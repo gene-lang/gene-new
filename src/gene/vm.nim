@@ -1543,6 +1543,53 @@ proc biUpdateIn(args: openArray[Value]): Value {.nimcall.} =
   let path = selectorPath("update-in", args[1])
   updateAt("update-in", args[0], path, 0, args[2])
 
+proc requireList(name: string, value: Value) =
+  if value.kind != vkList:
+    raise newException(GeneError, name & " expects a List")
+
+proc requireMap(name: string, value: Value) =
+  if value.kind != vkMap:
+    raise newException(GeneError, name & " expects a Map")
+
+proc requireNode(name: string, value: Value) =
+  if value.kind != vkNode:
+    raise newException(GeneError, name & " expects a Node")
+
+proc biListAssoc(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "List/assoc expects 3 arguments, got " & $args.len)
+  requireList("List/assoc", args[0])
+  let index = updateIndex("List/assoc", args[0].listItems.len,
+                          requireInt64("List/assoc", args[1]))
+  var items = copyItems(args[0].listItems)
+  items[index] = (if args[2].kind == vkVoid: NIL else: args[2])
+  newList(items, args[0].listImmutable)
+
+proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "List/set! expects 3 arguments, got " & $args.len)
+  requireList("List/set!", args[0])
+  let index = updateIndex("List/set!", args[0].listItems.len,
+                          requireInt64("List/set!", args[1]))
+  let stored = if args[2].kind == vkVoid: NIL else: args[2]
+  args[0].setListItem(index, stored)
+  stored
+
+proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Map/put! expects 3 arguments, got " & $args.len)
+  requireMap("Map/put!", args[0])
+  args[0].putMapEntry(keySegment("Map/put!", args[1]), args[2])
+  args[2]
+
+proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "Node/set-prop! expects 3 arguments, got " & $args.len)
+  requireNode("Node/set-prop!", args[0])
+  args[0].setNodeProp(keySegment("Node/set-prop!", args[1]), args[2])
+  args[2]
+
 proc displayStr(v: Value): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString: v.strVal else: print(v)
@@ -1689,6 +1736,16 @@ proc buildBuiltins(app: Application): Scope =
   result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))
   result.define("thaw", newNativeFn("thaw", biThaw))
+  let listScope = newScope(result)
+  listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
+  listScope.define("set!", newNativeFn("List/set!", biListSetBang))
+  result.define("List", newNamespace("List", listScope))
+  let mapScope = newScope(result)
+  mapScope.define("put!", newNativeFn("Map/put!", biMapPutBang))
+  result.define("Map", newNamespace("Map", mapScope))
+  let nodeScope = newScope(result)
+  nodeScope.define("set-prop!", newNativeFn("Node/set-prop!", biNodeSetPropBang))
+  result.define("Node", newNamespace("Node", nodeScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
   cellScope.define("get", newNativeFn("Cell/get", biCellGet))

@@ -773,6 +773,34 @@ suite "vm — functional selector updates":
     expect GeneError: discard runStr("(assoc-in 1 /x 2)")
     expect GeneError: discard runStr("(update-in {^score 1} /score 1)")
 
+suite "vm — container update built-ins":
+  test "List/assoc returns an updated copy":
+    ck "(var xs #[1 2 3]) (var ys (xs ~ List/assoc 1 20)) [xs ys]",
+       "[#[1 2 3] #[1 20 3]]"
+    ck "([1 2] ~ List/assoc 1 void)", "[1 nil]"
+
+  test "List/set! mutates mutable lists":
+    ck "(var xs [1 2]) [(xs ~ List/set! 1 9) xs]", "[9 [1 9]]"
+    ck "(var xs [1 2]) [(xs ~ List/set! 0 void) xs]", "[nil [nil 2]]"
+    expect GeneError:
+      discard runStr("(#[1] ~ List/set! 0 2)")
+
+  test "Map/put! mutates mutable maps":
+    ck "(var m {^a 1}) [(m ~ Map/put! \"b\" 2) (m ~ /b)]", "[2 2]"
+    ck "(var m {^a 1}) [(m ~ Map/put! \"a\" void) (m ~ /a)]", "[void void]"
+    expect GeneError:
+      discard runStr("(#{^a 1} ~ Map/put! \"a\" 2)")
+
+  test "Node/set-prop! mutates mutable node props":
+    ck "(var n (quote (user ^name \"Ada\"))) " &
+       "[(n ~ Node/set-prop! \"name\" \"Bob\") (n ~ /name)]",
+       "[\"Bob\" \"Bob\"]"
+    ck "(var n (quote (user ^name \"Ada\"))) " &
+       "[(n ~ Node/set-prop! \"name\" void) (n ~ /name)]",
+       "[void void]"
+    expect GeneError:
+      discard runStr("(#(user ^name \"Ada\") ~ Node/set-prop! \"name\" \"Bob\")")
+
 suite "vm — entrypoint support":
   test "top-level bindings can be looked up and called after run":
     let scope = newGlobalScope()

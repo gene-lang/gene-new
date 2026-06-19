@@ -358,6 +358,19 @@ suite "spec — atomic cells from design":
                " (state ~ AtomicCell/load)]",
                "[0 1 1 true 3]")
 
+suite "spec — mutable containers from design":
+  test "persistent and mutating container updates are explicit":
+    check_eval("(var xs #[1 2 3]) " &
+               "(var xs2 (xs ~ List/assoc 1 20)) " &
+               "(var ys [1 2]) " &
+               "(ys ~ List/set! 0 9) " &
+               "(var m {^a 1}) " &
+               "(m ~ Map/put! \"b\" 2) " &
+               "(var n (quote (user ^name \"Ada\"))) " &
+               "(n ~ Node/set-prop! \"name\" \"Bob\") " &
+               "[xs xs2 ys m (n ~ /name)]",
+               "[#[1 2 3] #[1 20 3] [9 2] {^a 1 ^b 2} \"Bob\"]")
+
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":
     check_eval("[{^a void ^b 1} " &

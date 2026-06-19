@@ -936,6 +936,36 @@ proc nodeImmutable*(v: Value): bool =
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).immutable
 
+proc setListItem*(v: Value, index: int, value: Value) =
+  if v.tagOf != LIST_TAG:
+    raise newException(FieldDefect, "value is not a List")
+  let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable List")
+  p.items[index] = (if value.kind == vkVoid: NIL else: value)
+
+proc putMapEntry*(v: Value, key: string, value: Value) =
+  if v.tagOf != MAP_TAG:
+    raise newException(FieldDefect, "value is not a Map")
+  let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Map")
+  if value.kind == vkVoid:
+    p.entries.del(key)
+  else:
+    p.entries[key] = value
+
+proc setNodeProp*(v: Value, key: string, value: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  if value.kind == vkVoid:
+    p.props.del(key)
+  else:
+    p.props[key] = value
+
 proc fnName*(v: Value): lent string =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
