@@ -61,6 +61,7 @@ suite "reader — sugars":
     check_read("(x @line 7)", "(x @line 7)")
   test "string interpolation":
     check_read("$\"hello ${name}\"", "($ \"hello \" name)")
+    check_read("($ \"hello \" name)", "($ \"hello \" name)")
 
 suite "reader — paths":
   test "absolute path":      check_read("/user/name",   "(select user name)")

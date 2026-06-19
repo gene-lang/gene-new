@@ -628,7 +628,9 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkTilde: return newSym("~")
   of tkDotDotDot: return newSym("...")
   of tkDollar:
-    if r.peekKind() == tkString:
+    let nextTok = r.peek()
+    if nextTok.kind == tkString and nextTok.line == tok.line and
+        nextTok.col == tok.col + 1:
       let s = r.next()
       return parseInterpolatedString(s.lexeme)
     return newSym("$")

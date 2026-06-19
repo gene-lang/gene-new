@@ -15,6 +15,9 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
+proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
+proc builtinBinding(scope: Scope, name: string): Value
+proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value
 proc isSendableValue(value: Value, scope: Scope,
                      seen: var HashSet[uint64]): bool
 proc isSendableValue(value: Value, scope: Scope): bool
@@ -1594,13 +1597,27 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setNodeProp(keySegment("Node/set-prop!", args[1]), args[2])
   args[2]
 
-proc displayStr(v: Value): string =
+proc displayStr(v: Value, scope: Scope = nil): string =
   ## print/println render strings as raw text and everything else via the printer.
-  if v.kind == vkString: v.strVal else: print(v)
+  if v.kind == vkString:
+    return v.strVal
+  if scope != nil and v.kind == vkNode and v.head.kind == vkType:
+    let protocol = builtinBinding(scope, "ToStr")
+    if protocol.kind == vkProtocol and
+        scope.typeImplementsProtocol(v.head, protocol):
+      let message = protocol.protocolMessages["to-str"]
+      let implFn = resolveProtocolMessage(scope, message, v)
+      var callArgs = [v]
+      let rendered = applyCall(implFn, callArgs, NamedArgs(), scope)
+      if rendered.kind != vkString:
+        raiseTypeError("ToStr/to-str", "Str", rendered, scope)
+      return rendered.strVal
+  print(v)
 
-proc biToStr(args: openArray[Value]): Value {.nimcall.} =
+proc biToStr(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to-str", args)
-  newStr(displayStr(args[0]))
+  let scope = if call == nil: nil else: call.dispatchScope
+  newStr(displayStr(args[0], scope))
 
 proc biChars(args: openArray[Value]): Value {.nimcall.} =
   requireOne("chars", args)
@@ -1630,10 +1647,11 @@ proc biGraphemes(args: openArray[Value]): Value {.nimcall.} =
     i += width
   newList(items)
 
-proc biDollar(args: openArray[Value]): Value {.nimcall.} =
+proc biDollar(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call.dispatchScope
   var resultStr = ""
   for arg in args:
-    resultStr.add displayStr(arg)
+    resultStr.add displayStr(arg, scope)
   newStr(resultStr)
 
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
@@ -1686,6 +1704,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Callable", callableProtocol)
   for _, message in callableProtocol.protocolMessages:
     result.define(message.protocolMessageName, message)
+  let toStrProtocol = newProtocol("ToStr", ["to-str"])
+  result.define("ToStr", toStrProtocol)
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
@@ -1763,11 +1783,12 @@ proc buildBuiltins(app: Application): Scope =
   result.define("props", newNativeFn("props", biProps))
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
-  result.define("to-str", newNativeFn("to-str", biToStr))
+  result.define("to-str", newNativeCallFn("to-str", biToStr,
+                                          acceptsNamed = false))
   result.define("chars", newNativeFn("chars", biChars))
   result.define("bytes", newNativeFn("bytes", biBytes))
   result.define("graphemes", newNativeFn("graphemes", biGraphemes))
-  result.define("$", newNativeFn("$", biDollar))
+  result.define("$", newNativeCallFn("$", biDollar, acceptsNamed = false))
   result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))
   result.define("thaw", newNativeFn("thaw", biThaw))

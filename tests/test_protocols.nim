@@ -51,6 +51,17 @@ suite "protocols — declarations and dispatch":
        "(invoke (AddN ^n 3))",
        "5"
 
+  test "ToStr customizes display conversion":
+    ck "(type User ^props {^name Str}) " &
+       "(impl ToStr User (message to-str [self] : Str self/name)) " &
+       "(var user (User ^name \"Ada\")) " &
+       "[(to-str user) ($ \"hello \" user) $\"hi ${user}\"]",
+       "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
+    ck "(type Bad ^props {}) " &
+       "(impl ToStr Bad (message to-str [self] 1)) " &
+       "(try (to-str (Bad)) catch (TypeError ^where w) w)",
+       "\"ToStr/to-str\""
+
   test "namespace protocol messages find receiver-scope impls":
     ck "(ns model " &
        "  (protocol ToName (message to_name [self] : Str)) " &

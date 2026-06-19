@@ -46,6 +46,10 @@ suite "spec — reader surface from design":
   test "strings decode Unicode escapes":
     check_read("\"\\u00E9\\u{1F600}\"", "\"é😀\"")
 
+  test "dollar interpolation keeps the canonical call form distinct":
+    check_read("$\"hello ${name}\"", "($ \"hello \" name)")
+    check_read("($ \"hello \" name)", "($ \"hello \" name)")
+
   test "malformed syntax is rejected":
     expect ReadError: discard read("(a b")
     expect ReadError: discard read(")")
@@ -146,6 +150,11 @@ suite "spec — strings from design":
   test "dollar interpolation calls to-str-style display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
     check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")
+    check_eval("(type User ^props {^name Str}) " &
+               "(impl ToStr User (message to-str [self] : Str self/name)) " &
+               "(var user (User ^name \"Ada\")) " &
+               "$\"hello ${user}\"",
+               "\"hello Ada\"")
 
 suite "spec — equality and identity from design":
   test "same question mark is scalar identity or heap identity":
