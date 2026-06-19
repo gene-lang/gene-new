@@ -2027,6 +2027,12 @@ proc newAtomicCell*(value: Value): Value =
 proc newStream*(items: sink seq[Value]): Value =
   boxObject(StreamData(objKind: okStream, items: items, index: 0, closed: false))
 
+proc newTypedStream*(items: sink seq[Value], itemType, errType: Value,
+                     itemScope: Scope): Value =
+  boxObject(StreamData(objKind: okStream, items: items, index: 0,
+                       itemType: itemType, errType: errType,
+                       itemScope: itemScope, closed: false))
+
 proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope): Value =
   boxObject(StreamData(objKind: okStream, source: source, itemType: itemType,
                        errType: errType, itemScope: itemScope, closed: false))

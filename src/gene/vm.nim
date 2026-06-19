@@ -870,26 +870,71 @@ proc raiseEndOfStream() =
   e.hasErrVal = true
   raise e
 
-proc readFormsFromString(name: string, value: Value): seq[Value] =
+proc builtInTypeHead(scope: Scope, name: string): Value =
+  var root = scope
+  while root != nil and root.parent != nil:
+    root = root.parent
+  if root != nil:
+    var typ: Value
+    if root.lookupOptional(name, typ) and typ.kind == vkType:
+      return typ
+  newSym(name)
+
+proc raiseReaderError(name, message, typeName: string, scope: Scope) =
+  let fullMessage = name & ": " & message
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(fullMessage)
+  var e: ref GeneError
+  new(e)
+  e.msg = fullMessage
+  e.errVal = newNode(builtInTypeHead(scope, typeName), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc readFormsFromString(name: string, value: Value, scope: Scope): seq[Value] =
   if value.kind != vkString:
     raise newException(GeneError, name & " expects a Str")
   try:
-    readAll(value.strVal)
+    result = readAll(value.strVal)
   except ReadError as e:
-    raise newException(GeneError, name & ": " & e.msg)
+    raiseReaderError(name, e.msg, "ParseError", scope)
 
-proc biReadOne(args: openArray[Value]): Value {.nimcall.} =
+proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read-one", args)
-  let forms = readFormsFromString("read-one", args[0])
+  let scope = if call == nil: nil else: call.dispatchScope
+  let forms = readFormsFromString("read-one", args[0], scope)
   if forms.len == 0:
     return NIL
   if forms.len > 1:
     raise newException(GeneError, "read-one expects one form, got " & $forms.len)
   forms[0]
 
-proc biReadAll(args: openArray[Value]): Value {.nimcall.} =
+proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read-all", args)
-  newStream(readFormsFromString("read-all", args[0]))
+  let scope = if call == nil: nil else: call.dispatchScope
+  newStream(readFormsFromString("read-all", args[0], scope))
+
+proc tokenValue(token: Token, tokenType: Value): Value =
+  var props = initOrderedTable[string, Value]()
+  props["kind"] = newSym(token.kind.tokenKindName)
+  props["lexeme"] = newStr(token.lexeme)
+  props["line"] = newInt(int64(token.line))
+  props["col"] = newInt(int64(token.col))
+  newNode(tokenType, props = props, immutable = true)
+
+proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("lex-all", args)
+  if args[0].kind != vkString:
+    raise newException(GeneError, "lex-all expects a Str")
+  let scope = if call == nil: nil else: call.dispatchScope
+  let tokenType = builtInTypeHead(scope, "Token")
+  var tokens: seq[Value]
+  try:
+    for token in lexAll(args[0].strVal):
+      tokens.add token.tokenValue(tokenType)
+  except ReadError as e:
+    raiseReaderError("lex-all", e.msg, "LexError", scope)
+  newTypedStream(tokens, tokenType, newSym("Never"), scope)
 
 proc biToStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_stream", args)
@@ -1516,6 +1561,23 @@ proc buildBuiltins(app: Application): Scope =
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: compileError,
                                 messages: initTable[string, Value]())
+  let parseError = newType("ParseError", compileError, @[], @[], result)
+  result.define("ParseError", parseError)
+  let lexError = newType("LexError", compileError, @[], @[], result)
+  result.define("LexError", lexError)
+  let tokenType = newType("Token", NIL,
+                          @[
+                            TypeField(name: "kind", optional: false,
+                                      typeExpr: newSym("Sym"), scope: result),
+                            TypeField(name: "lexeme", optional: false,
+                                      typeExpr: newSym("Str"), scope: result),
+                            TypeField(name: "line", optional: false,
+                                      typeExpr: newSym("Int"), scope: result),
+                            TypeField(name: "col", optional: false,
+                                      typeExpr: newSym("Int"), scope: result)
+                          ],
+                          @[], result)
+  result.define("Token", tokenType)
   let channelClosed = newType("ChannelClosed", NIL,
                               @[TypeField(name: "message", optional: false,
                                           typeExpr: newSym("Str"), scope: result)],
@@ -1622,8 +1684,12 @@ proc buildBuiltins(app: Application): Scope =
   let envScope = newScope(result)
   envScope.define("extend", newNativeFn("Env/extend", biEnvExtend))
   result.define("Env", newNamespace("Env", envScope))
-  result.define("read-one", newNativeFn("read-one", biReadOne))
-  result.define("read-all", newNativeFn("read-all", biReadAll))
+  result.define("read-one", newNativeCallFn("read-one", biReadOne,
+                                            acceptsNamed = false))
+  result.define("read-all", newNativeCallFn("read-all", biReadAll,
+                                            acceptsNamed = false))
+  result.define("lex-all", newNativeCallFn("lex-all", biLexAll,
+                                           acceptsNamed = false))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
   result.define("map", newNativeFn("map", biStreamMap))

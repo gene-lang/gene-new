@@ -326,6 +326,49 @@ proc tokenize(r: var Reader) =
 
   r.tokens.add Token(kind: tkEof, lexeme: "", line: r.line, col: r.col)
 
+proc tokenKindName*(kind: TokenKind): string =
+  case kind
+  of tkEof: "eof"
+  of tkLParen: "l-paren"
+  of tkRParen: "r-paren"
+  of tkLBracket: "l-bracket"
+  of tkRBracket: "r-bracket"
+  of tkLBrace: "l-brace"
+  of tkRBrace: "r-brace"
+  of tkHashLParen: "hash-l-paren"
+  of tkHashLBracket: "hash-l-bracket"
+  of tkHashLBrace: "hash-l-brace"
+  of tkCaret: "caret"
+  of tkCaretCaret: "caret-caret"
+  of tkAt: "at"
+  of tkAtAt: "at-at"
+  of tkTilde: "tilde"
+  of tkDotDotDot: "dot-dot-dot"
+  of tkString: "string"
+  of tkInt: "int"
+  of tkFloat: "float"
+  of tkSymbol: "symbol"
+  of tkChar: "char"
+  of tkComma: "comma"
+  of tkColon: "colon"
+  of tkEqual: "equal"
+  of tkSemi: "semi"
+  of tkSlash: "slash"
+  of tkPercent: "percent"
+  of tkBacktick: "backtick"
+  of tkDollar: "dollar"
+  of tkUnderscore: "underscore"
+
+proc lexAll*(src: string, includeEof = false): seq[Token] =
+  ## Tokenize source into significant reader tokens. Whitespace and ordinary
+  ## comments are spacing and are not returned; datum comments are returned as
+  ## the `underscore` token because they affect the parser stream.
+  var r = initReader(src)
+  r.tokenize()
+  result = r.tokens
+  if not includeEof and result.len > 0 and result[^1].kind == tkEof:
+    result.setLen(result.len - 1)
+
 proc peek(r: Reader): Token =
   if r.tokIdx < r.tokens.len:
     result = r.tokens[r.tokIdx]

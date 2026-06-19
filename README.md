@@ -72,7 +72,8 @@ participates in equality or hashing.
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, first-class `Cell`/`AtomicCell` mutable references,
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
-  `read-one`/`read-all`, first-class `Env` values with explicit
+  `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
+  first-class `Env` values with explicit
   `eval node ^in env`, explicit Env imports/capabilities, `^policy`
   max-step limits, `gene run` entrypoint invocation, line-oriented
   `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,

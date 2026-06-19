@@ -595,6 +595,13 @@ suite "spec — parser helpers from design":
                "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
                "[(a) (b 2) false]")
 
+  test "lex-all exposes a token stream":
+    check_eval("(fn first-token [s : (Stream Token Never)] (s ~ Stream/next)) " &
+               "(var t (first-token (lex-all \"(+ 1)\"))) " &
+               "(var k t/kind) (var x t/lexeme) " &
+               "(var l t/line) (var c t/col) [k x l c]",
+               "[l-paren \"(\" 1 1]")
+
 suite "spec — modules from design":
   test "explicit mod declarations are top-level and unique":
     check_eval("(mod app) (var x 1) x", "1")

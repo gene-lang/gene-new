@@ -1151,9 +1151,25 @@ suite "vm — streams":
        "[(a) (b 2) false]"
     ck "(try (read-one \"(a\") catch {^message m} m)",
        "\"read-one: unexpected EOF: unclosed '('\""
+    ck "(try (read-one \"(a\") catch (ParseError ^message m) m)",
+       "\"read-one: unexpected EOF: unclosed '('\""
     expect GeneError: discard runStr("(read-one 1)")
     expect GeneError: discard runStr("(read-all 1)")
     expect GeneError: discard runStr("(read-one \"1 2\")")
+
+  test "lex-all exposes typed reader tokens":
+    ck "(var s (lex-all \"(+ 1)\")) " &
+       "(var t (s ~ Stream/next)) " &
+       "(var k t/kind) (var x t/lexeme) (var l t/line) (var c t/col) " &
+       "[k x l c]",
+       "[l-paren \"(\" 1 1]"
+    ck "(fn first-token [s : (Stream Token Never)] (s ~ Stream/next)) " &
+       "(var t (first-token (lex-all \"name\"))) " &
+       "(var k t/kind) (var x t/lexeme) [k x]",
+       "[symbol \"name\"]"
+    ck "(try (lex-all \"\\\"\") catch (LexError ^message m) m)",
+       "\"lex-all: unterminated string literal\""
+    expect GeneError: discard runStr("(lex-all 1)")
 
   test "stream values are opaque display values":
     ck "(to_stream [1 2])", "(stream)"
