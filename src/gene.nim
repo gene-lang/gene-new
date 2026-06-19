@@ -28,8 +28,8 @@ proc readSourceFile(path: string): string =
 
 proc cmdEval(src: string) =
   try:
-    initModuleContext(getCurrentDir())   # relative imports resolve from cwd
-    echo run(compileSource(src), newGlobalScope()).print()
+    let app = initModuleContext(getCurrentDir())
+    echo run(compileEvalSource(src), newGlobalScope(app)).print()
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
     quit(1)

@@ -19,11 +19,22 @@ proc writeCliProgram(name, src: string): string =
   result = cliDir / name
   writeFile(result, src)
 
+proc shellQuote(arg: string): string =
+  if arg.len == 0:
+    return "''"
+  result = "'"
+  for ch in arg:
+    if ch == chr(39):
+      result.add "'\\''"
+    else:
+      result.add ch
+  result.add "'"
+
 proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
   buildGeneCli()
-  var command = geneExe
+  var command = shellQuote(geneExe)
   for arg in args:
-    command.add " " & arg
+    command.add " " & shellQuote(arg)
   execCmdEx(command)
 
 suite "cli — gene run":
@@ -59,3 +70,17 @@ suite "cli — gene run":
     check ran.exitCode == 1
     check "TypeError" in ran.output
     check "main return Int must fit in int64" in ran.output
+
+suite "cli — gene eval":
+  setup:
+    createDir(cliDir)
+
+  test "evaluates source strings and prints the final value":
+    let ran = runGene(["eval", "(var x 2) (+ x 3)"])
+    check ran.exitCode == 0
+    check ran.output.strip == "5"
+
+  test "uses eval authority rules instead of ambient imports":
+    let ran = runGene(["eval", "(import [x] from \"./missing\") x"])
+    check ran.exitCode == 1
+    check "eval cannot use import; add imports to Env" in ran.output

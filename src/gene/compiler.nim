@@ -1657,5 +1657,9 @@ proc compileEvalForm*(form: Value): Chunk =
   let forms = @[form]
   compileForms(forms, allowAmbientImports = false)
 
+proc compileEvalSource*(src: string): Chunk =
+  ## CLI/REPL eval receives source text but still uses eval authority rules.
+  compileForms(readAll(src), allowAmbientImports = false)
+
 proc compileSource*(src: string): Chunk =
   compileForms(readAll(src))
