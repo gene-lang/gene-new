@@ -436,12 +436,14 @@ suite "spec — mutable containers from design":
                "(var xs2 (xs ~ List/assoc 1 20)) " &
                "(var ys [1 2]) " &
                "(ys ~ List/set! 0 9) " &
-               "(var m {^a 1}) " &
-               "(m ~ Map/put! \"b\" 2) " &
+               "(var m #{^a 1}) " &
+               "(var m2 (m ~ Map/assoc \"b\" 2)) " &
+               "(var mm {^a 1}) " &
+               "(mm ~ Map/put! \"b\" 3) " &
                "(var n (quote (user ^name \"Ada\"))) " &
                "(n ~ Node/set-prop! \"name\" \"Bob\") " &
-               "[xs xs2 ys (m ~ Map/get \"b\") (n ~ /name)]",
-               "[#[1 2 3] #[1 20 3] [9 2] 2 \"Bob\"]")
+               "[xs xs2 ys m m2 (mm ~ Map/get \"b\") (n ~ /name)]",
+               "[#[1 2 3] #[1 20 3] [9 2] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
 
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":

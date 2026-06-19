@@ -868,6 +868,11 @@ suite "vm — container update built-ins":
     ck "(var m {^a 1}) [(m ~ Map/put! \"a\" void) (m ~ /a)]", "[void void]"
     expect GeneError:
       discard runStr("(#{^a 1} ~ Map/put! \"a\" 2)")
+  test "Map/assoc returns an updated copy":
+    ck "(var m #{^a 1}) (var n (m ~ Map/assoc \"b\" 2)) [m n]",
+       "[#{^a 1} #{^a 1 ^b 2}]"
+    ck "({^a 1} ~ Map/assoc \"a\" void)", "{}"
+    expect GeneError: discard runStr("(Map/assoc [1] \"a\" 2)")
   test "Map/get reads entries without selector staging":
     ck "(var m {^a 1}) [(m ~ Map/get \"a\") (m ~ Map/get \"missing\")]",
        "[1 void]"

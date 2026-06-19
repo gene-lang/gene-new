@@ -1616,6 +1616,18 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].putMapEntry(keySegment("Map/put!", args[1]), args[2])
   args[2]
 
+proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Map/assoc expects 3 arguments, got " & $args.len)
+  requireMap("Map/assoc", args[0])
+  var entries = copyEntries(args[0].mapEntries)
+  let key = keySegment("Map/assoc", args[1])
+  if args[2].kind == vkVoid:
+    entries.del(key)
+  else:
+    entries[key] = args[2]
+  newMap(entries, args[0].mapImmutable)
+
 proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Map/get expects 2 arguments, got " & $args.len)
@@ -1831,6 +1843,7 @@ proc buildBuiltins(app: Application): Scope =
   listScope.define("set!", newNativeFn("List/set!", biListSetBang))
   result.define("List", newNamespace("List", listScope))
   let mapScope = newScope(result)
+  mapScope.define("assoc", newNativeFn("Map/assoc", biMapAssoc))
   mapScope.define("get", newNativeFn("Map/get", biMapGet))
   mapScope.define("put!", newNativeFn("Map/put!", biMapPutBang))
   result.define("Map", newNamespace("Map", mapScope))
