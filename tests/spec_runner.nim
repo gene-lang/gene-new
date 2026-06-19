@@ -471,12 +471,30 @@ suite "spec — bounded channels from design":
                "(ch ~ Channel/recv)",
                "#[1 #{^a 2}]")
     check_eval("(var ch (channel)) " &
+               "(var captured #[1 #{^a 2}]) " &
+               "(var f (fn [] captured)) " &
+               "(ch ~ Channel/send f) " &
+               "(var g (ch ~ Channel/recv)) " &
+               "(g)",
+               "#[1 #{^a 2}]")
+    check_eval("(var ch (channel)) " &
+               "(var f (fn [x y = x] y)) " &
+               "(ch ~ Channel/send f) " &
+               "(var g (ch ~ Channel/recv)) " &
+               "(g 7)",
+               "7")
+    check_eval("(var ch (channel)) " &
                "(try (ch ~ Channel/send [1]) catch (TypeError ^expected e) e)",
                "\"Send\"")
     check_eval("(var ch (channel)) " &
                "(try (ch ~ Channel/send #[(cell 1)]) " &
                "catch (TypeError ^where w) w)",
                "\"Channel/send item\"")
+    check_eval("(var ch (channel)) " &
+               "(var captured (cell 1)) " &
+               "(var f (fn [] (captured ~ Cell/get))) " &
+               "(try (ch ~ Channel/send f) catch (TypeError ^expected e) e)",
+               "\"Send\"")
 
 suite "spec — actors from design":
   test "actor send processes messages sequentially":

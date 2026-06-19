@@ -15,6 +15,8 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
+proc isSendableValue(value: Value, scope: Scope,
+                     seen: var HashSet[uint64]): bool
 proc isSendableValue(value: Value, scope: Scope): bool
 proc completedTaskFromError(e: ref GeneError): Value
 proc completedTaskFromPanic(e: ref GenePanic): Value
@@ -2255,9 +2257,124 @@ proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
     t = t.typeParent
   false
 
+proc capturedScope(scope: Scope, captureDepth: int): Scope =
+  if captureDepth <= 0:
+    return nil
+  result = scope
+  for _ in 1 ..< captureDepth:
+    if result == nil:
+      return nil
+    result = result.parent
+
+proc capturedSlotSendable(fnScope, visibleScope: Scope, captureDepth, slot: int,
+                          name: string, seen: var HashSet[uint64]): bool =
+  let scope = capturedScope(fnScope, captureDepth)
+  if scope == nil or slot < 0 or slot >= scope.slots.len:
+    return false
+  if not scope.slotDefined(slot):
+    return false
+  isSendableValue(scope.slots[slot], visibleScope, seen)
+
+proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
+                           localDepth: int,
+                           seen: var HashSet[uint64],
+                           ignoredNames: HashSet[string]): bool
+
+proc functionCallLocalNames(proto: FunctionProto): HashSet[string] =
+  result = initHashSet[string]()
+  for name in proto.params:
+    result.incl name
+  if proto.restParam.len > 0:
+    result.incl proto.restParam
+  for param in proto.namedParams:
+    result.incl param.local
+
+proc functionCapturesSendable(value: Value, visibleScope: Scope,
+                              seen: var HashSet[uint64]): bool =
+  let fnScope = value.fnScope
+  if fnScope == nil:
+    return true
+  let code = value.fnCode
+  if code == nil or not (code of FunctionProto):
+    return false
+  let proto = FunctionProto(code)
+  if not chunkCapturesSendable(proto.chunk, fnScope, visibleScope, 0, seen,
+                               initHashSet[string]()):
+    return false
+  let callLocals = functionCallLocalNames(proto)
+  for defaultValue in proto.paramDefaults:
+    if defaultValue.optional and defaultValue.defaultChunk != nil:
+      if not chunkCapturesSendable(defaultValue.defaultChunk, fnScope,
+                                   visibleScope, 0, seen, callLocals):
+        return false
+  for param in proto.namedParams:
+    if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
+      if not chunkCapturesSendable(param.defaultValue.defaultChunk, fnScope,
+                                   visibleScope, 0, seen, callLocals):
+        return false
+  true
+
+proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
+                           localDepth: int,
+                           seen: var HashSet[uint64],
+                           ignoredNames: HashSet[string]): bool =
+  if chunk == nil:
+    return true
+  for inst in chunk.instructions:
+    case inst.op
+    of opLoadOuterLocal:
+      if inst.depth > localDepth:
+        let captureDepth = inst.depth - localDepth
+        if not capturedSlotSendable(fnScope, visibleScope, captureDepth,
+                                    inst.intArg, inst.name, seen):
+          return false
+    of opSetOuterLocal:
+      if inst.depth > localDepth:
+        return false
+    of opLoadName:
+      if not ignoredNames.contains(inst.name):
+        var captured: Value
+        if not fnScope.lookupOptional(inst.name, captured):
+          return false
+        if not isSendableValue(captured, visibleScope, seen):
+          return false
+    of opSetName:
+      return false
+    else:
+      discard
+
+  for body in chunk.subchunks:
+    if not chunkCapturesSendable(body, fnScope, visibleScope,
+                                 localDepth + 1, seen, ignoredNames):
+      return false
+  for loop in chunk.forLoops:
+    if not chunkCapturesSendable(loop.body, fnScope, visibleScope,
+                                 localDepth + 1, seen, ignoredNames):
+      return false
+  for match in chunk.matches:
+    for clause in match.clauses:
+      if not chunkCapturesSendable(clause.body, fnScope, visibleScope,
+                                   localDepth + 1, seen, ignoredNames):
+        return false
+    if not chunkCapturesSendable(match.elseBody, fnScope, visibleScope,
+                                 localDepth + 1, seen, ignoredNames):
+      return false
+  for attempt in chunk.tries:
+    if not chunkCapturesSendable(attempt.body, fnScope, visibleScope,
+                                 localDepth, seen, ignoredNames):
+      return false
+    for clause in attempt.catches:
+      if not chunkCapturesSendable(clause.body, fnScope, visibleScope,
+                                   localDepth + 1, seen, ignoredNames):
+        return false
+    if not chunkCapturesSendable(attempt.ensureBody, fnScope, visibleScope,
+                                 localDepth, seen, ignoredNames):
+      return false
+  true
+
 proc isSendableValue(value: Value, scope: Scope,
                      seen: var HashSet[uint64]): bool =
-  if value.kind in {vkList, vkMap, vkNode}:
+  if value.kind in {vkList, vkMap, vkNode, vkFunction}:
     if seen.contains(value.bits):
       return true
     seen.incl value.bits
@@ -2265,6 +2382,8 @@ proc isSendableValue(value: Value, scope: Scope,
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
      vkNativeFn, vkActorRef, vkReplyTo, vkType, vkProtocol, vkProtocolMessage:
     true
+  of vkFunction:
+    functionCapturesSendable(value, scope, seen)
   of vkNode:
     var sendProtocol: Value
     if value.head.kind == vkType and scope != nil and
@@ -2300,8 +2419,8 @@ proc isSendableValue(value: Value, scope: Scope,
       if not isSendableValue(item, scope, seen):
         return false
     true
-  of vkFunction, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream,
-     vkTask, vkChannel, vkActorContext, vkActorStep:
+  of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
+     vkChannel, vkActorContext, vkActorStep:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =

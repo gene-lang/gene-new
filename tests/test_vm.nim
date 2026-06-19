@@ -992,11 +992,34 @@ suite "vm — channels":
        "(ch ~ Channel/recv)",
        "#[1 #{^a 2}]"
     ck "(var ch (channel)) " &
+       "(var captured #[1 #{^a 2}]) " &
+       "(var f (fn [] captured)) " &
+       "(ch ~ Channel/send f) " &
+       "(var g (ch ~ Channel/recv)) " &
+       "(g)",
+       "#[1 #{^a 2}]"
+    ck "(var ch (channel)) " &
+       "(var f (fn [x y = x] y)) " &
+       "(ch ~ Channel/send f) " &
+       "(var g (ch ~ Channel/recv)) " &
+       "(g 7)",
+       "7"
+    ck "(var ch (channel)) " &
        "(try (ch ~ Channel/send [1]) catch (TypeError ^expected e) e)",
        "\"Send\""
     ck "(var ch (channel)) " &
        "(try (ch ~ Channel/send #[(cell 1)]) catch (TypeError ^where w) w)",
        "\"Channel/send item\""
+    ck "(var ch (channel)) " &
+       "(var captured (cell 1)) " &
+       "(var f (fn [] (captured ~ Cell/get))) " &
+       "(try (ch ~ Channel/send f) catch (TypeError ^expected e) e)",
+       "\"Send\""
+    ck "(var ch (channel)) " &
+       "(var captured 1) " &
+       "(var f (fn [] (set captured (+ captured 1)))) " &
+       "(try (ch ~ Channel/send f) catch (TypeError ^expected e) e)",
+       "\"Send\""
     ck "(type Msg ^props {^x Int} ^impl [Send]) " &
        "(impl Send Msg) " &
        "(var ch (channel)) " &
