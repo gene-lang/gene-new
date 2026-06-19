@@ -465,18 +465,32 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
 proc validateMacroParamPattern(pattern: Value) =
   discard patternBindingNames(pattern)
 
-proc rejectMacroFlatAdornment(items: openArray[Value], i: int) =
-  if i >= items.len:
-    return
-  case items[i].symbolText
-  of ":":
+proc macroTypedPattern(pattern, typeExpr: Value): Value =
+  if pattern.kind != vkSymbol or pattern.isRestPattern:
     raise newException(GeneError,
-      "macro parameter type annotations are not implemented")
-  of "=":
-    raise newException(GeneError,
-      "macro parameter defaults are not implemented")
-  else:
-    discard
+      "macro parameter type annotation requires a binding name")
+  newNode(pattern, body = @[newSym(":"), typeExpr])
+
+proc parseMacroFlatAdornment(items: openArray[Value], i: var int,
+                             pattern: Value): Value =
+  result = pattern
+  while i < items.len:
+    case items[i].symbolText
+    of ":":
+      inc i
+      if i >= items.len:
+        raise newException(GeneError,
+          "macro parameter annotation requires a type")
+      if result.isTypedPattern:
+        raise newException(GeneError,
+          "macro parameter already has a type annotation")
+      result = macroTypedPattern(result, items[i])
+      inc i
+    of "=":
+      raise newException(GeneError,
+        "macro parameter defaults are not implemented")
+    else:
+      break
 
 proc isMacroNamedTerminator(value: Value): bool =
   value.kind == vkSymbol and value.symVal in [",", "^", "^^"]
@@ -496,10 +510,10 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
     of "":
       if sawRest:
         raise newException(GeneError, "parameter cannot follow a rest parameter")
-      validateMacroParamPattern(item)
-      result.params.add MacroParam(pattern: item)
       inc i
-      rejectMacroFlatAdornment(items, i)
+      let pattern = parseMacroFlatAdornment(items, i, item)
+      validateMacroParamPattern(pattern)
+      result.params.add MacroParam(pattern: pattern)
     of ",":
       inc i
     of "^", "^^":
@@ -534,12 +548,12 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
           else:
             pattern = maybePattern
           inc i
+      pattern = parseMacroFlatAdornment(items, i, pattern)
       validateMacroParamPattern(pattern)
       result.named.add MacroNamedParam(arg: arg, pattern: pattern)
-      rejectMacroFlatAdornment(items, i)
     of ":":
       raise newException(GeneError,
-        "macro parameter type annotations are not implemented")
+        "macro parameter annotation requires a parameter")
     of "=":
       raise newException(GeneError,
         "macro parameter defaults are not implemented")
@@ -552,6 +566,9 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
           raise newException(GeneError, "rest parameter requires a name")
         sawRest = true
         inc i
+        if i < items.len and items[i].symbolText in [":", "="]:
+          raise newException(GeneError,
+            "rest parameter cannot have an annotation or default")
       else:
         let spec = splitOptionalName(s)
         if spec.name.len == 0:
@@ -559,11 +576,11 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
         if spec.optional:
           raise newException(GeneError,
             "macro parameter defaults are not implemented")
-        let pattern = newSym(spec.name)
+        var pattern = newSym(spec.name)
+        inc i
+        pattern = parseMacroFlatAdornment(items, i, pattern)
         validateMacroParamPattern(pattern)
         result.params.add MacroParam(pattern: pattern)
-        inc i
-      rejectMacroFlatAdornment(items, i)
   result
 
 proc macroTemplateValue(expr: Value, env: Table[string, Value],

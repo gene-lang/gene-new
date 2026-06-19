@@ -436,12 +436,21 @@ suite "vm — macros":
     ck "(macro eval-node! [(form : Node)] `%form) " &
        "(eval-node! (+ 1 2))",
        "3"
+    ck "(macro eval-flat! [form : Node] `%form) " &
+       "(eval-flat! (+ 2 3))",
+       "5"
     ck "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
        "(keep-syms! [a b])",
+       "[a b]"
+    ck "(macro keep-entry! [^entry item : (List Sym)] `(quote %item)) " &
+       "(keep-entry! ^entry [a b])",
        "[a b]"
     expect GeneError:
       discard runStr("(macro eval-node! [(form : Node)] `%form) " &
                      "(eval-node! 1)")
+    expect GeneError:
+      discard runStr("(macro eval-flat! [form : Node] `%form) " &
+                     "(eval-flat! 1)")
     expect GeneError:
       discard runStr("(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
                      "(keep-syms! [a 1])")

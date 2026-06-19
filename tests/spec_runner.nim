@@ -124,13 +124,23 @@ suite "spec — macros from design":
     check_eval("(macro eval-node! [(form : Node)] `%form) " &
                "(eval-node! (+ 1 2))",
                "3")
+    check_eval("(macro eval-flat! [form : Node] `%form) " &
+               "(eval-flat! (+ 2 3))",
+               "5")
     check_eval("(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
                "(keep-syms! [a b])",
+               "[a b]")
+    check_eval("(macro keep-entry! [^entry item : (List Sym)] `(quote %item)) " &
+               "(keep-entry! ^entry [a b])",
                "[a b]")
     expect GeneError:
       discard run(compileSource(
         "(macro eval-node! [(form : Node)] `%form) " &
         "(eval-node! 1)"), newGlobalScope())
+    expect GeneError:
+      discard run(compileSource(
+        "(macro eval-flat! [form : Node] `%form) " &
+        "(eval-flat! 1)"), newGlobalScope())
     expect GeneError:
       discard run(compileSource(
         "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
