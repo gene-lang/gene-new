@@ -429,6 +429,13 @@ suite "vm — comparison and logic":
     ck "(same? [1 2] [1 2])", "false"
     ck "(var xs [1 2]) (same? xs xs)", "true"
     expect GeneError: discard runStr("(same? 1)")
+  test "freeze and thaw convert container mutability explicitly":
+    ck "(freeze-shallow [1 [2]])", "#[1 [2]]"
+    ck "(freeze [1 {^a [2]}])", "#[1 #{^a #[2]}]"
+    ck "(thaw (freeze [1 {^a [2]}]))", "[1 {^a [2]}]"
+    ck "(try (freeze [(cell 1)]) catch {^message m} m)",
+       "\"freeze cannot freeze Cell\""
+    expect GeneError: discard runStr("(freeze)")
   test "not":
     ck "(not false)", "true"
     ck "(not nil)", "true"

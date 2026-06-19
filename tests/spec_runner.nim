@@ -107,6 +107,14 @@ suite "spec — equality and identity from design":
     check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",
                "[true false true]")
 
+  test "freeze helpers make mutability explicit":
+    check_eval("[(freeze-shallow [1 [2]]) " &
+               " (freeze [1 {^a [2]}]) " &
+               " (thaw (freeze [1 {^a [2]}]))]",
+               "[#[1 [2]] #[1 #{^a #[2]}] [1 {^a [2]}]]")
+    check_eval("(try (freeze [(cell 1)]) catch {^message m} m)",
+               "\"freeze cannot freeze Cell\"")
+
 suite "spec — numeric boundaries from design":
   test "Int has mathematical integer semantics":
     check_eval("[(+ 9223372036854775807 1) " &

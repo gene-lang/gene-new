@@ -55,6 +55,7 @@ when defined(geneRcStats):
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
       check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0
+      check leakedManaged("(freeze [1 {^a [2]}])") == 0
       check leakedManaged("(fn gen [] (yield 1)) " &
                           "(var s (gen)) " &
                           "(s ~ Stream/next) " &

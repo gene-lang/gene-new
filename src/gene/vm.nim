@@ -920,6 +920,108 @@ proc copyEntries(entries: PropTable): PropTable =
   for key, val in entries:
     result[key] = val
 
+proc freezeValue(value: Value): Value
+proc thawValue(value: Value): Value
+
+proc freezeEntries(entries: PropTable): PropTable =
+  result = initOrderedTable[string, Value]()
+  for key, val in entries:
+    result[key] = freezeValue(val)
+
+proc thawEntries(entries: PropTable): PropTable =
+  result = initOrderedTable[string, Value]()
+  for key, val in entries:
+    result[key] = thawValue(val)
+
+proc freezeRejectName(value: Value): string =
+  case value.kind
+  of vkFunction: "Fn"
+  of vkNativeFn: "NativeFn"
+  of vkNamespace: "Namespace"
+  of vkModule: "Module"
+  of vkEnv: "Env"
+  of vkCell: "Cell"
+  of vkAtomicCell: "AtomicCell"
+  of vkStream: "Stream"
+  of vkTask: "Task"
+  of vkChannel: "Channel"
+  of vkActorRef: "ActorRef"
+  of vkActorContext: "ActorContext"
+  of vkActorStep: "ActorStep"
+  of vkReplyTo: "ReplyTo"
+  else: $value.kind
+
+proc freezeValue(value: Value): Value =
+  case value.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
+     vkType, vkProtocol, vkProtocolMessage:
+    value
+  of vkList:
+    var items = newSeq[Value](value.listItems.len)
+    for i, item in value.listItems:
+      items[i] = freezeValue(item)
+    newList(items, immutable = true)
+  of vkMap:
+    newMap(freezeEntries(value.mapEntries), immutable = true)
+  of vkNode:
+    var body = newSeq[Value](value.body.len)
+    for i, item in value.body:
+      body[i] = freezeValue(item)
+    newNode(freezeValue(value.head),
+            props = freezeEntries(value.props),
+            body = body,
+            meta = freezeEntries(value.meta),
+            immutable = true)
+  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
+     vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
+     vkActorStep, vkReplyTo:
+    raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
+
+proc thawValue(value: Value): Value =
+  case value.kind
+  of vkList:
+    var items = newSeq[Value](value.listItems.len)
+    for i, item in value.listItems:
+      items[i] = thawValue(item)
+    newList(items, immutable = false)
+  of vkMap:
+    newMap(thawEntries(value.mapEntries), immutable = false)
+  of vkNode:
+    var body = newSeq[Value](value.body.len)
+    for i, item in value.body:
+      body[i] = thawValue(item)
+    newNode(thawValue(value.head),
+            props = thawEntries(value.props),
+            body = body,
+            meta = thawEntries(value.meta),
+            immutable = false)
+  else:
+    value
+
+proc biFreezeShallow(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("freeze-shallow", args)
+  case args[0].kind
+  of vkList:
+    newList(copyItems(args[0].listItems), immutable = true)
+  of vkMap:
+    newMap(copyEntries(args[0].mapEntries), immutable = true)
+  of vkNode:
+    newNode(args[0].head,
+            props = copyEntries(args[0].props),
+            body = copyItems(args[0].body),
+            meta = copyEntries(args[0].meta),
+            immutable = true)
+  else:
+    args[0]
+
+proc biFreeze(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("freeze", args)
+  freezeValue(args[0])
+
+proc biThaw(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("thaw", args)
+  thawValue(args[0])
+
 proc keySegment(name: string, segment: Value): string =
   case segment.kind
   of vkSymbol:
@@ -1396,6 +1498,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define("meta", newNativeFn("meta", biMeta))
   result.define("to-str", newNativeFn("to-str", biToStr))
   result.define("$", newNativeFn("$", biDollar))
+  result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
+  result.define("freeze", newNativeFn("freeze", biFreeze))
+  result.define("thaw", newNativeFn("thaw", biThaw))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
   cellScope.define("get", newNativeFn("Cell/get", biCellGet))
