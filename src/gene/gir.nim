@@ -142,6 +142,7 @@ type
   TypeProto* = ref object
     name*: string
     fields*: seq[TypeField]      # own (non-inherited) field schema
+    bodyFields*: seq[TypeBodyField] # own (non-inherited) body schema
     requiredImplCount*: int
     deriveProtocolCount*: int
     deriveRequests*: seq[Value]

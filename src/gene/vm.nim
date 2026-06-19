@@ -2978,7 +2978,8 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
             raise newException(GeneError, "type ^impl entries must be protocols")
           requiredProtocols[i] = protocol
       let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
-                        derivedProtocols, proto.deriveRequests)
+                        derivedProtocols, proto.deriveRequests,
+                        proto.bodyFields)
       if proto.requiredImplCount > 0:
         scope.requiredImplTypes.add typ
       for i, protocol in derivedProtocols:
@@ -4203,11 +4204,46 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                                   returnType, resultValue, callScope)
     resultValue
   of vkType:
-    # Construct a typed instance: a node with the type as head, validated props.
-    if args.len != 0:
+    # Construct a typed instance: a node with the type as head and validated
+    # props/body fields.
+    let fields = callee.typeFields
+    let bodyFields = callee.typeBodyFields
+    if args.len != 0 and bodyFields.len == 0:
       raise newException(GeneError,
         "constructing " & callee.typeName & " takes named fields only")
-    let fields = callee.typeFields
+    var body: seq[Value]
+    var restBody = -1
+    for i, f in bodyFields:
+      if f.rest:
+        restBody = i
+        break
+    if restBody < 0:
+      if args.len != bodyFields.len:
+        raise newException(GeneError,
+          "constructing " & callee.typeName & " expects " &
+          $bodyFields.len & " body item(s), got " & $args.len)
+      for i, f in bodyFields:
+        let fieldScope = f.typeBodyFieldScope(callee.typeScope)
+        body.add adaptBoundary("body field " & $i & " for " &
+                               callee.typeName, f.typeExpr, args[i],
+                               fieldScope)
+    else:
+      if args.len < restBody:
+        raise newException(GeneError,
+          "constructing " & callee.typeName & " expects at least " &
+          $restBody & " body item(s), got " & $args.len)
+      for i in 0 ..< restBody:
+        let f = bodyFields[i]
+        let fieldScope = f.typeBodyFieldScope(callee.typeScope)
+        body.add adaptBoundary("body field " & $i & " for " &
+                               callee.typeName, f.typeExpr, args[i],
+                               fieldScope)
+      let restType = bodyFields[restBody]
+      let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
+      for i in restBody ..< args.len:
+        body.add adaptBoundary("body field " & $i & " for " &
+                               callee.typeName, restType.typeExpr, args[i],
+                               fieldScope)
     var props = initOrderedTable[string, Value]()
     for f in fields:
       if named.hasArg(f.name):
@@ -4232,7 +4268,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           break
       if not known:
         raise newException(GeneError, callee.typeName & " has no field '" & key & "'")
-    newNode(callee, props = props)
+    newNode(callee, props = props, body = body)
   of vkProtocolMessage:
     if args.len == 0:
       raise newException(GeneError,

@@ -383,6 +383,7 @@ type
     name: string
     parent: Value         # parent Type value, or NIL
     fields: seq[TypeField]
+    bodyFields: seq[TypeBodyField]
     scope: Scope          # strong only for future escaped-type anchoring
     weakScope: pointer    # defining scope for scope-owned type metadata
     requiredProtocols: seq[Value]
@@ -395,6 +396,12 @@ type
     typeExpr*: Value      # annotation syntax, or NIL for `Any`
     scope*: Scope         # strong only for future escaped-field anchoring
     weakScope*: pointer   # defining scope for scope-owned field metadata
+
+  TypeBodyField* = object
+    rest*: bool            # trailing `T...` body schema
+    typeExpr*: Value       # annotation syntax, or NIL for `Any`
+    scope*: Scope
+    weakScope*: pointer
 
   ProtocolData = ref object of GeneObjectData
     name: string
@@ -1415,6 +1422,12 @@ proc typeFields*(v: Value): seq[TypeField] =
     raise newException(FieldDefect, "value is not a Type")
   TypeData(objData(v)).fields
 
+proc typeBodyFields*(v: Value): seq[TypeBodyField] =
+  ## Full body schema, parent fields first (inheritance is merged at newType).
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).bodyFields
+
 proc typeScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -1425,6 +1438,14 @@ proc typeScope*(v: Value): Scope =
     cast[Scope](data.weakScope)
 
 proc typeFieldScope*(field: TypeField, fallback: Scope): Scope =
+  if field.scope != nil:
+    field.scope
+  elif field.weakScope != nil:
+    cast[Scope](field.weakScope)
+  else:
+    fallback
+
+proc typeBodyFieldScope*(field: TypeBodyField, fallback: Scope): Scope =
   if field.scope != nil:
     field.scope
   elif field.weakScope != nil:
@@ -2056,12 +2077,15 @@ proc newGeneratorStream*(code: FunctionCode, scope: Scope,
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,
               derivedProtocols: sink seq[Value] = @[],
-              deriveRequests: sink seq[Value] = @[]): Value =
+              deriveRequests: sink seq[Value] = @[],
+              ownBodyFields: seq[TypeBodyField] = @[]): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
+  var bodyFields: seq[TypeBodyField]
   if parent.kind == vkType:
     fields = typeFields(parent)
+    bodyFields = typeBodyFields(parent)
   for f in ownFields:
     for inherited in fields:
       if inherited.name == f.name:
@@ -2071,7 +2095,16 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     if owned.scope == nil and owned.weakScope == nil:
       owned.weakScope = cast[pointer](scope)
     fields.add owned
+  if ownBodyFields.len > 0 and bodyFields.len > 0 and bodyFields[^1].rest:
+    raise newException(GeneError,
+      "type " & name & " cannot add body fields after inherited rest body field")
+  for f in ownBodyFields:
+    var owned = f
+    if owned.scope == nil and owned.weakScope == nil:
+      owned.weakScope = cast[pointer](scope)
+    bodyFields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
+                     bodyFields: bodyFields,
                      weakScope: cast[pointer](scope),
                      requiredProtocols: requiredProtocols,
                      derivedProtocols: derivedProtocols,

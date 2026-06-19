@@ -201,6 +201,20 @@ suite "spec — nominal types from design":
                                 "(type Dog ^is Animal ^props {^name Any})"),
                   newGlobalScope())
 
+  test "type body schemas validate positional node body":
+    check_eval("(type Note ^props {^text Str}) " &
+               "(type Task ^props {^id Int} ^body [Note...]) " &
+               "(var t (Task ^id 1 (Note ^text \"a\") (Note ^text \"b\"))) " &
+               "[(t ~ /id) ((t ~ /0) ~ /text) ((t ~ /1) ~ /text)]",
+               "[1 \"a\" \"b\"]")
+    check_eval("(type Pair ^body [Int Str]) " &
+               "(try (Pair 1 2) catch (TypeError ^where w) w)",
+               "\"body field 1 for Pair\"")
+
+  test "type layout promises are reserved":
+    expect GeneError:
+      discard compileSource("(type Packed ^sealed true ^props {})")
+
 suite "spec — typed variable boundaries from design":
   test "var annotations check gradual boundaries":
     check_eval("(var result : Int (eval (quote (+ 20 22)) ^in (env))) result",

@@ -1689,13 +1689,43 @@ proc deriveProtocolExpr(request: Value): Value =
   else:
     request
 
+proc parseTypeBodySchema(schema: Value): seq[TypeBodyField] =
+  if schema.kind != vkList:
+    raise newException(GeneError, "type ^body must be a list")
+  var sawRest = false
+  for item in schema.listItems:
+    if item.isSymbol(","):
+      continue
+    if sawRest:
+      raise newException(GeneError,
+        "type ^body rest field must be the final body field")
+    if item.kind == vkSymbol and item.symVal.endsWith("..."):
+      let name = item.symVal[0 .. ^4]
+      if name.len == 0:
+        raise newException(GeneError, "type ^body rest field requires a type")
+      result.add TypeBodyField(rest: true, typeExpr: newSym(name))
+      sawRest = true
+    else:
+      result.add TypeBodyField(typeExpr: item)
+
+proc rejectUnknownTypeProps(node: Value) =
+  for key in node.props.keys:
+    if key in ["props", "body", "impl", "derive", "is"]:
+      continue
+    if key in ["sealed", "repr"]:
+      raise newException(GeneError,
+        "type ^" & key & " is reserved for future native layout optimization")
+    raise newException(GeneError,
+      "type got unexpected named argument: " & key)
+
 proc compileType(c: var Compiler, node: Value) =
-  ## (type Name ^props {...} ^is Parent ^impl [P] ^derive [P]) — field
-  ## annotations and protocol references are checked at runtime. Derive requests
-  ## are passed to protocol-local derive forms after the type is created.
+  ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]) —
+  ## field annotations and protocol references are checked at runtime. Derive
+  ## requests are passed to protocol-local derive forms after the type is created.
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "type requires a name")
+  rejectUnknownTypeProps(node)
   let name = body[0].symVal
   var fields: seq[TypeField]
   if node.props.hasKey("props"):
@@ -1709,6 +1739,9 @@ proc compileType(c: var Compiler, node: Value) =
       else:
         fields.add TypeField(name: key, optional: false,
                              typeExpr: schema.mapEntries[key])
+  var bodyFields: seq[TypeBodyField]
+  if node.props.hasKey("body"):
+    bodyFields = parseTypeBodySchema(node.props["body"])
   var requiredImplCount = 0
   if node.props.hasKey("impl"):
     let required = node.props["impl"]
@@ -1737,6 +1770,7 @@ proc compileType(c: var Compiler, node: Value) =
   discard c.emit(opMakeType,
                  c.chunk.addType(TypeProto(name: name,
                                            fields: fields,
+                                           bodyFields: bodyFields,
                                            requiredImplCount: requiredImplCount,
                                            deriveProtocolCount: deriveProtocolCount,
                                            deriveRequests: deriveRequests)))

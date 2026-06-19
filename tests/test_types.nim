@@ -13,10 +13,26 @@ suite "types — declaration and construction":
   test "construction binds the declared fields":
     ck "(type Task ^props {^id Int ^title Str}) (var t (Task ^id 1 ^title \"x\")) t/title",
        "\"x\""
+  test "construction binds typed body fields":
+    ck "(type Pair ^body [Int Str]) (var p (Pair 7 \"seven\")) " &
+       "[(p ~ /0) (p ~ /1)]",
+       "[7 \"seven\"]"
+    ck "(type Values ^body [Int...]) (var v (Values 1 2 3)) " &
+       "[(v ~ /0) (v ~ /1) (v ~ /2)]",
+       "[1 2 3]"
+    ck "(type Entry ^props {^name Str} ^body [Int...]) " &
+       "(var e (Entry ^name \"scores\" 1 2)) " &
+       "[(e ~ /name) (e ~ /0) (e ~ /1)]",
+       "[\"scores\" 1 2]"
   test "the instance head is the type value":
     ck "(type Task ^props {^id Int}) (= (head (Task ^id 1)) Task)", "true"
   test "distinct types are not equal":
     ck "(type A ^props {^x Int}) (type B ^props {^x Int}) (= A B)", "false"
+  test "type declarations reject unsupported props":
+    expect GeneError:
+      discard compileSource("(type T ^sealed true ^props {})")
+    expect GeneError:
+      discard compileSource("(type T ^unknown 1 ^props {})")
 
 suite "types — schema validation":
   test "a missing required field is rejected":
@@ -38,11 +54,23 @@ suite "types — schema validation":
       discard runStr("(type Task ^props {^id Int ^title Str}) (Task ^id \"bad\" ^title \"x\")")
     ck "(try (type Task ^props {^id Int}) (Task ^id \"bad\") " &
        "catch (TypeError ^expected e) e)", "\"Int\""
+  test "body schemas are checked at construction":
+    expect GeneError:
+      discard runStr("(type Pair ^body [Int Str]) (Pair 1)")
+    expect GeneError:
+      discard runStr("(type Pair ^body [Int Str]) (Pair 1 \"ok\" 3)")
+    ck "(try (type Values ^body [Int...]) (Values 1 \"bad\") " &
+       "catch (TypeError ^where w) w)", "\"body field 1 for Values\""
 
 suite "types — single inheritance":
   test "a child inherits parent fields":
     ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
        "(var d (Dog ^name \"Rex\" ^breed \"Lab\")) d/name", "\"Rex\""
+  test "a child inherits parent body fields":
+    ck "(type Row ^body [Int]) (type LabeledRow ^is Row ^props {^label Str} ^body [Str]) " &
+       "(var r (LabeledRow ^label \"a\" 7 \"ok\")) " &
+       "[(r ~ /label) (r ~ /0) (r ~ /1)]",
+       "[\"a\" 7 \"ok\"]"
   test "a child requires inherited required fields":
     expect GeneError:
       discard runStr("(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
