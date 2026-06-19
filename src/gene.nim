@@ -2,12 +2,13 @@
 ##
 ## Subcommands (a subset of design Section 18):
 ##   gene eval "<src>"   evaluate a source string, print the result
+##   gene repl           read/eval/print source lines from stdin
 ##   gene run  <file>    load and execute a .gene file, then call main if present
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
 
-import std/[os, tables]
+import std/[os, strutils, tables]
 import gene/[compiler, gir, printer, reader, types, vm]
 
 proc usage() =
@@ -15,6 +16,7 @@ proc usage() =
   echo ""
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
+  echo "  gene repl              read/eval/print source lines from stdin"
   echo "  gene run <file.gene> [args...] execute a file, then call main if present"
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
@@ -39,6 +41,26 @@ proc cmdEval(src: string) =
   except GeneError as e:
     stderr.writeLine "Error: " & e.msg
     quit(1)
+
+proc cmdRepl() =
+  let app = initModuleContext(getCurrentDir())
+  let scope = newGlobalScope(app)
+  var line: string
+  while stdin.readLine(line):
+    let trimmed = line.strip()
+    if trimmed.len == 0:
+      continue
+    if trimmed in [":quit", ":exit", "quit", "exit"]:
+      break
+    try:
+      echo run(compileEvalSource(line, useLocalSlots = false), scope).print()
+    except ReadError as e:
+      stderr.writeLine "Read error: " & e.msg
+    except GenePanic as e:
+      stderr.writeLine "Panic: " & e.msg
+      quit(1)
+    except GeneError as e:
+      stderr.writeLine "Error: " & e.msg
 
 proc argsList(args: openArray[string]): Value =
   var values = newSeq[Value](args.len)
@@ -162,6 +184,8 @@ proc main() =
       stderr.writeLine "Error: 'eval' needs a source string"
       quit(1)
     cmdEval(paramStr(2))
+  of "repl":
+    cmdRepl()
   of "run":
     if paramCount() < 2:
       stderr.writeLine "Error: 'run' needs a file path"

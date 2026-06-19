@@ -1632,9 +1632,11 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
     c.emitConst node
 
 proc compileForms*(forms: openArray[Value],
-                   allowAmbientImports = true): Chunk =
+                   allowAmbientImports = true,
+                   useLocalSlots = true): Chunk =
   var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports)
-  c.enableLocalSlots()
+  if useLocalSlots:
+    c.enableLocalSlots()
   if forms.len == 0:
     c.emitConst NIL
   else:
@@ -1643,8 +1645,9 @@ proc compileForms*(forms: openArray[Value],
       if i < forms.high:
         discard c.emit(opPop)
   discard c.emit(opReturn)
-  c.chunk.localNames = c.localNames
-  c.chunk.mirrorSlots = true
+  if useLocalSlots:
+    c.chunk.localNames = c.localNames
+    c.chunk.mirrorSlots = true
   c.chunk
 
 proc compileForm*(form: Value): Chunk =
@@ -1657,9 +1660,10 @@ proc compileEvalForm*(form: Value): Chunk =
   let forms = @[form]
   compileForms(forms, allowAmbientImports = false)
 
-proc compileEvalSource*(src: string): Chunk =
+proc compileEvalSource*(src: string, useLocalSlots = true): Chunk =
   ## CLI/REPL eval receives source text but still uses eval authority rules.
-  compileForms(readAll(src), allowAmbientImports = false)
+  compileForms(readAll(src), allowAmbientImports = false,
+               useLocalSlots = useLocalSlots)
 
 proc compileSource*(src: string): Chunk =
   compileForms(readAll(src))

@@ -37,6 +37,14 @@ proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
     command.add " " & shellQuote(arg)
   execCmdEx(command)
 
+proc runGeneInput(args: openArray[string],
+                  input: string): tuple[output: string, exitCode: int] =
+  buildGeneCli()
+  var command = shellQuote(geneExe)
+  for arg in args:
+    command.add " " & shellQuote(arg)
+  execCmdEx(command, input = input)
+
 suite "cli — gene run":
   setup:
     createDir(cliDir)
@@ -84,3 +92,18 @@ suite "cli — gene eval":
     let ran = runGene(["eval", "(import [x] from \"./missing\") x"])
     check ran.exitCode == 1
     check "eval cannot use import; add imports to Env" in ran.output
+
+suite "cli — gene repl":
+  setup:
+    createDir(cliDir)
+
+  test "retains declarations across input lines":
+    let ran = runGeneInput(["repl"], "(var x 2)\n(+ x 3)\n")
+    check ran.exitCode == 0
+    check ran.output.strip.splitLines == @["2", "5"]
+
+  test "uses eval authority rules for each input line":
+    let ran = runGeneInput(["repl"], "(import [x] from \"./missing\")\n(+ 1 2)\n")
+    check ran.exitCode == 0
+    check "eval cannot use import; add imports to Env" in ran.output
+    check ran.output.strip.splitLines[^1] == "3"
