@@ -53,6 +53,12 @@ suite "reader — char literals":
 
 suite "reader — sugars":
   test "pipe folding":       check_read("(a; b; c)",    "(((a) b) c)")
+  test "pipe slot form":
+    check_read("(x; parse; (or _ default))", "(or ((x) parse) default)")
+    check_read("(x; f _ y)", "(f (x) y)")
+  test "pipe with flipped call":
+    check_read("(xs ~ filter; ~ map f; ~ take 10)",
+               "(take (map (filter xs) f) 10)")
   test "flipped call":       check_read("(x ~ f a b)", "(f x a b)")
   test "flipped standalone": check_read("(~ f a b)",   "(~ f a b)")
   test "spread":             check_read("x...",         "(... x)")

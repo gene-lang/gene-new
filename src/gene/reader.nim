@@ -437,6 +437,94 @@ proc parseList(r: var Reader, closing: TokenKind, immutable = false): Value =
   discard r.next() # consume closing
   result = newList(items, immutable)
 
+proc containsPipeSlot(value: Value): bool
+
+proc containsPipeSlot(entries: PropTable): bool =
+  for _, value in entries:
+    if containsPipeSlot(value):
+      return true
+
+proc containsPipeSlot(values: seq[Value]): bool =
+  for value in values:
+    if containsPipeSlot(value):
+      return true
+
+proc containsPipeSlot(value: Value): bool =
+  case value.kind
+  of vkSymbol:
+    value.symVal == "_"
+  of vkList:
+    containsPipeSlot(value.listItems)
+  of vkMap:
+    containsPipeSlot(value.mapEntries)
+  of vkNode:
+    containsPipeSlot(value.head) or containsPipeSlot(value.props) or
+      containsPipeSlot(value.body) or containsPipeSlot(value.meta)
+  else:
+    false
+
+proc replacePipeSlot(value, replacement: Value): Value
+
+proc replacePipeSlot(entries: PropTable, replacement: Value): PropTable =
+  result = initOrderedTable[string, Value]()
+  for key, value in entries:
+    result[key] = replacePipeSlot(value, replacement)
+
+proc replacePipeSlot(values: seq[Value], replacement: Value): seq[Value] =
+  result = newSeqOfCap[Value](values.len)
+  for value in values:
+    result.add replacePipeSlot(value, replacement)
+
+proc replacePipeSlot(value, replacement: Value): Value =
+  case value.kind
+  of vkSymbol:
+    if value.symVal == "_": replacement else: value
+  of vkList:
+    newList(replacePipeSlot(value.listItems, replacement), value.listImmutable)
+  of vkMap:
+    newMap(replacePipeSlot(value.mapEntries, replacement), value.mapImmutable)
+  of vkNode:
+    newNode(replacePipeSlot(value.head, replacement),
+            replacePipeSlot(value.props, replacement),
+            replacePipeSlot(value.body, replacement),
+            replacePipeSlot(value.meta, replacement),
+            value.nodeImmutable)
+  else:
+    value
+
+proc finishNodeSegment(head: Value, props: PropTable, body: seq[Value],
+                       meta: PropTable, immutable: bool): Value =
+  # Flipped call sugar: (x ~ f a) -> (f x a)
+  if body.len > 0 and body[0].kind == vkSymbol and body[0].symVal == "~":
+    # (head ~ f b1 b2 ...)
+    if body.len >= 2:
+      let f = body[1]
+      var args = newSeqOfCap[Value](body.len - 1)
+      args.add head
+      for i in 2 ..< body.len:
+        args.add body[i]
+      return newNode(f, props, args, meta, immutable)
+  newNode(head, props, body, meta, immutable)
+
+proc pipeSegmentExpr(forms: seq[Value], props: PropTable, meta: PropTable,
+                     immutable: bool): Value =
+  if forms.len == 0:
+    return NIL
+  if forms.len == 1 and props.len == 0 and meta.len == 0:
+    return forms[0]
+  var body = newSeqOfCap[Value](max(0, forms.len - 1))
+  for i in 1 ..< forms.len:
+    body.add forms[i]
+  finishNodeSegment(forms[0], props, body, meta, immutable)
+
+proc finishPipeSegment(head: Value, props: PropTable, body: seq[Value],
+                       meta: PropTable, immutable, inPipe: bool): Value =
+  if inPipe and (containsPipeSlot(body) or containsPipeSlot(props) or
+                 containsPipeSlot(meta)):
+    let segment = pipeSegmentExpr(body, props, meta, immutable)
+    return replacePipeSlot(segment, head)
+  finishNodeSegment(head, props, body, meta, immutable)
+
 proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var head = NIL
   var props = initOrderedTable[string, Value]()
@@ -444,6 +532,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var body = newSeq[Value]()
 
   var first = true
+  var inPipe = false
   while true:
     r.skipDatumComments()
     let k = r.peekKind()
@@ -484,12 +573,13 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     of tkSemi:
       # Pipe folding: (a; b) -> ((a) b)
       discard r.next()
-      let prevNode = newNode(head, props, body, meta, immutable)
+      let prevNode = finishPipeSegment(head, props, body, meta, immutable, inPipe)
       head = prevNode
       props = initOrderedTable[string, Value]()
       meta = initOrderedTable[string, Value]()
       body = @[]
       first = false
+      inPipe = true
     of tkComma:
       discard r.next()
     else:
@@ -504,19 +594,16 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     raise newException(ReadError, "unexpected EOF: unclosed '('")
   discard r.next()
 
-  # Flipped call sugar: (x ~ f a) -> (f x a)
-  if body.len > 0 and body[0].kind == vkSymbol and body[0].symVal == "~":
-    # (head ~ f b1 b2 ...)
+  if inPipe:
+    result = finishPipeSegment(head, props, body, meta, immutable, inPipe)
+  elif body.len > 0 and body[0].kind == vkSymbol and body[0].symVal == "~":
+    # Flipped call sugar: (x ~ f a) -> (f x a)
     if body.len >= 2:
       let f = body[1]
       let args = @[head] & body[2..^1]
       result = newNode(f, props, args, meta, immutable)
     else:
       result = newNode(head, props, body, meta, immutable)
-  elif head.kind == vkSymbol and head.symVal == "~":
-    # Keep omitted-self flipped calls distinct; the compiler inserts `self`
-    # only when that lexical binding is available.
-    result = newNode(head, props, body, meta, immutable)
   else:
     result = newNode(head, props, body, meta, immutable)
 

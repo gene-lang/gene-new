@@ -30,6 +30,8 @@ suite "spec — reader surface from design":
     check_read("(fn f [^server : Http/Server] nil)",
                "(fn f [^ server : Http/Server] nil)")
     check_read("(~ f a)", "(~ f a)")
+    check_read("(x; parse; (or _ default))", "(or ((x) parse) default)")
+    check_read("(x ~ parse; (or _ default))", "(or (parse x) default)")
 
   test "template unquote supports interpolation and dynamic paths":
     check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
