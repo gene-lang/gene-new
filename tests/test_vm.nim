@@ -706,6 +706,12 @@ suite "vm — functions and closures":
     # frame stack too, so deep recursion through it no longer grows the Nim stack.
     ck "(fn count [n : Int] : Int (if (= n 0) 0 (+ 1 (count (- n 1))))) " &
        "(count 200000)", "200000"
+  test "deep recursion through an ^errors function uses heap frames":
+    # ^errors functions also push heap frames now; the loop's exception handler
+    # applies the undeclared-error boundary on unwind, so deep recursion through
+    # a checked function no longer grows the Nim stack on the success path.
+    ck "(fn count ^errors [] [n] (if (= n 0) 0 (+ 1 (count (- n 1))))) " &
+       "(count 200000)", "200000"
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
 
