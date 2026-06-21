@@ -2945,9 +2945,20 @@ type
     kind: RunStopKind
     value: Value
 
-proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
-             stopOnYield: bool,
-             validateImplRequirements = true): RunStop
+  ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
+  ## function calls push one of these instead of recursing through Nim, so a call
+  ## chain lives on the heap — the foundation for suspendable/resumable tasks
+  ## (design §13/§17). Each frame owns its operand stack and instruction pointer.
+  Frame = object
+    chunk: Chunk
+    scope: Scope
+    stack: seq[Value]
+    ip: int
+    validateImpls: bool
+
+proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
+             ipArg: var int, stopOnYield: bool,
+             validateArg = true): RunStop
 
 proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
   if decl.kind != vkNode:
@@ -3003,14 +3014,48 @@ proc consumeEvalStep(budget: EvalBudget) =
     dec current.remaining
     current = current.parent
 
-proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
-             stopOnYield: bool,
-             validateImplRequirements = true): RunStop =
-  let evalBudget = scope.evalBudget
+proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
+             ipArg: var int, stopOnYield: bool,
+             validateArg = true): RunStop =
+  # Stage 1 of structured concurrency: the "current frame" lives in registers
+  # below, and simple Gene function calls push the caller onto `frames` and
+  # switch registers to the callee instead of recursing through Nim. A call chain
+  # therefore lives on the heap (suspendable later) and pure function recursion
+  # no longer grows the Nim stack. The initial frame's stack/ip alias the var
+  # params so generators can still persist and resume them.
+  var frames: seq[Frame]
+  var chunk = chunkArg
+  var scope = scopeArg
+  var stack = move stackArg
+  var ip = ipArg
+  var validateImplRequirements = validateArg
+  var evalBudget = scope.evalBudget
+
+  template frameReturn(rawValue: Value) =
+    ## Return `rawValue` from the current frame: pop to the caller and push the
+    ## result, or — if this is the outermost frame — return to runLoop's caller.
+    let retValue = escapeWeakFunctions(rawValue)
+    if validateImplRequirements:
+      scope.validateRequiredImpls()
+    if frames.len == 0:
+      stackArg = move stack
+      ipArg = ip
+      return RunStop(kind: rskReturn, value: retValue)
+    releaseRunStack(stack)
+    var caller = frames.pop()
+    chunk = caller.chunk
+    scope = caller.scope
+    stack = move caller.stack
+    ip = caller.ip
+    validateImplRequirements = caller.validateImpls
+    evalBudget = scope.evalBudget
+    stack.add retValue
+
   while true:
     {.computedGoto.}
     if ip >= chunk.instructions.len:
-      break
+      frameReturn(NIL)
+      continue
     if evalBudget != nil:
       consumeEvalStep(evalBudget)
     let inst = addr chunk.instructions[ip]
@@ -3267,7 +3312,6 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         scope.define(sel.local, v)
       stack.add NIL
     of opCall:
-      var named: NamedArgs
       let argCount = inst[].intArg
       let namedCount = inst[].names.len
       let argsStart = stack.len - argCount
@@ -3275,10 +3319,40 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         raise newException(GeneError, "VM stack underflow in call")
       let calleeIndex = argsStart - namedCount - 1
       let callee = stack[calleeIndex]
-      if inst[].names.len > 0:
+      # Fast path: a simple Gene function call becomes a heap frame push (no Nim
+      # recursion). simpleCall guarantees no named/rest/defaults/types/errors/
+      # yield, so the only setup is arity + positional slots.
+      if namedCount == 0 and callee.kind == vkFunction:
+        let code = callee.fnCode
+        if code != nil and code of FunctionProto:
+          let proto = FunctionProto(code)
+          if proto.simpleCall:
+            let positional = callee.fnParams
+            if argCount != positional.len:
+              raise newException(GeneError,
+                "function '" & callee.fnName & "' expects " &
+                $proto.requiredPositional & ".." & $positional.len &
+                " argument(s), got " & $argCount)
+            let callScope = newScope(callee.fnScope)
+            callScope.prepareSlots(proto.localNames)
+            for i in 0 ..< argCount:
+              callScope.defineSlot(proto.positionalSlots[i], positional[i],
+                                   stack[argsStart + i])
+            stack.setLen(calleeIndex)        # consume callee + args
+            frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                             ip: ip, validateImpls: validateImplRequirements)
+            chunk = proto.chunk
+            scope = callScope
+            stack = acquireRunStack()
+            ip = 0
+            validateImplRequirements = true
+            evalBudget = callScope.evalBudget
+            continue
+      var named: NamedArgs
+      if namedCount > 0:
         named.names = inst[].names
-        named.values = newSeq[Value](inst[].names.len)
-        for i in 0 ..< inst[].names.len:
+        named.values = newSeq[Value](namedCount)
+        for i in 0 ..< namedCount:
           named.values[i] = stack[calleeIndex + 1 + i]
       # Call-site node for the Call envelope (design §3). Looked up only for
       # envelope-building callees; the hot Fn and plain-native paths skip it.
@@ -3434,13 +3508,15 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       finally:
         supervisorScope.closeOwnedActors()
     of opSpawn:
-      # TODO(scheduler): synchronous prototype — the task body runs to completion
-      # right here. The design (§13/§17, impl-order steps 9/12/14) requires an M:N
-      # cooperative scheduler with suspendable/resumable TaskFrames, channel
-      # sender/receiver wait queues, and cancellation. Building that needs the VM
-      # to suspend/resume mid-execution (resumable frames), which the current
-      # recursive run/applyCall loop cannot do. See README "Concurrency is a
-      # synchronous prototype".
+      # TODO(scheduler): still a synchronous prototype — the task body runs to
+      # completion right here. Stage 1 (the explicit call-frame stack above) is
+      # the foundation: simple Gene calls no longer recurse through Nim, so a call
+      # chain lives on the heap. Remaining work (design §13/§17, impl-order steps
+      # 9/12/14): an M:N scheduler with runnable/suspended/completed TaskFrames,
+      # suspending await across the frame stack, channel sender/receiver wait
+      # queues + backpressure, cancellation, and moving the non-simple-call and
+      # native paths onto frames too. See README "Concurrency is a synchronous
+      # prototype".
       let taskScope = newScope(scope)
       try:
         stack.add newCompletedTask(run(chunk.subchunks[inst[].intArg], taskScope))
@@ -3462,8 +3538,12 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         raise newException(GeneError, "yield is only valid in a generator")
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in yield")
-      result = RunStop(kind: rskYield, value: escapeWeakFunctions(stack[^1]))
-      return
+      # A generator suspends in its own (outermost) frame; simpleCall callees
+      # never yield, so `frames` is empty here and stack/ip persist via the args.
+      let yielded = escapeWeakFunctions(stack[^1])
+      stackArg = move stack
+      ipArg = ip
+      return RunStop(kind: rskYield, value: yielded)
     of opJumpIfFalse:
       let cond = stack.pop()
       if not cond.isTruthy:
@@ -3471,11 +3551,7 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
     of opJump:
       ip = inst[].intArg
     of opReturn:
-      result = RunStop(kind: rskReturn,
-                       value: escapeWeakFunctions(if stack.len > 0: stack.pop() else: NIL))
-      if validateImplRequirements:
-        scope.validateRequiredImpls()
-      return
+      frameReturn(if stack.len > 0: stack.pop() else: NIL)
     of opCheckType:
       if stack.len == 0:
         raise newException(GeneError, "VM stack underflow in type check")
@@ -3483,16 +3559,14 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
                                 stack[^1], scope)
     of opDeclareType:
       scope.declareType(inst[].name, chunk.constants[inst[].intArg])
-  result = RunStop(kind: rskReturn, value: NIL)
-  if validateImplRequirements:
-    scope.validateRequiredImpls()
+    # All exits are via frameReturn / opYield above; the loop never falls through.
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   scope.prepareChunkScope(chunk)
   var stack: seq[Value]
   var ip = 0
   let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
-                        validateImplRequirements = validateImplRequirements)
+                        validateArg = validateImplRequirements)
   if stopped.kind == rskYield:
     raise newException(GeneError, "yield is only valid in a generator")
   stopped.value
@@ -3507,7 +3581,7 @@ proc runPooled(chunk: Chunk, scope: Scope,
   var stopped: RunStop
   try:
     stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
-                      validateImplRequirements = validateImplRequirements)
+                      validateArg = validateImplRequirements)
   finally:
     releaseRunStack(stack)
   if stopped.kind == rskYield:
@@ -3523,7 +3597,7 @@ proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
   let stopped = runLoop(proto.chunk, stream.streamGeneratorScope,
                         stream.streamGeneratorStack, ip,
                         stopOnYield = true,
-                        validateImplRequirements = false)
+                        validateArg = false)
   stream.setStreamGeneratorIp(ip)
   case stopped.kind
   of rskYield:

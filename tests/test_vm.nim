@@ -696,6 +696,11 @@ suite "vm — functions and closures":
     ck "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
   test "recursion via a named function declaration":
     ck "(fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)", "55"
+  test "deep non-tail recursion runs on the heap frame stack, not the Nim stack":
+    # Pre-trampoline this recursed one Nim frame per call and overflowed the
+    # OS stack. Now simple calls push heap Frames, so deep call chains succeed.
+    ck "(fn count [n] (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 200000)",
+       "200000"
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
 
