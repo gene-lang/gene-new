@@ -3434,6 +3434,13 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
       finally:
         supervisorScope.closeOwnedActors()
     of opSpawn:
+      # TODO(scheduler): synchronous prototype — the task body runs to completion
+      # right here. The design (§13/§17, impl-order steps 9/12/14) requires an M:N
+      # cooperative scheduler with suspendable/resumable TaskFrames, channel
+      # sender/receiver wait queues, and cancellation. Building that needs the VM
+      # to suspend/resume mid-execution (resumable frames), which the current
+      # recursive run/applyCall loop cannot do. See README "Concurrency is a
+      # synchronous prototype".
       let taskScope = newScope(scope)
       try:
         stack.add newCompletedTask(run(chunk.subchunks[inst[].intArg], taskScope))

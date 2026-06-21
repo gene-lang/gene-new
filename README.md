@@ -92,6 +92,15 @@ participates in equality or hashing.
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
 
+> **Concurrency is a synchronous prototype — not yet stable.** The `spawn`/`await`,
+> `channel`, and `actor` surface exists and is callable, but it runs synchronously:
+> `spawn` executes the task body to completion immediately, `await` reads the stored
+> result, and channel/actor operations raise rather than suspend on would-block. The
+> design's M:N cooperative scheduler with suspendable/resumable task frames, channel
+> sender/receiver wait queues, backpressure, and cancellation (design §13/§17,
+> implementation-order steps 9/12/14) is not built yet. Don't rely on concurrency
+> semantics.
+
 ## Quick start
 
 Requires Nim ≥ 2.0.
