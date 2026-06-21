@@ -3379,10 +3379,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         raise newException(GeneError, "VM stack underflow in call")
       let calleeIndex = partsStart - namedCount - 1
       let callee = stack[calleeIndex]
-      if inst[].names.len > 0:
+      if namedCount > 0:
         named.names = inst[].names
-        named.values = newSeq[Value](inst[].names.len)
-        for i in 0 ..< inst[].names.len:
+        named.values = newSeq[Value](namedCount)
+        for i in 0 ..< namedCount:
           named.values[i] = stack[calleeIndex + 1 + i]
       var args: seq[Value]
       for i, part in stack.toOpenArray(partsStart, stack.high):
@@ -3390,6 +3390,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           appendSplicedBody(args, part)
         else:
           args.add part
+      # Fast path: a spread call to a simple Gene function becomes a heap frame
+      # push, same as opCall (no Nim recursion).
+      if namedCount == 0 and callee.kind == vkFunction:
+        let code = callee.fnCode
+        if code != nil and code of FunctionProto:
+          let fnProto = FunctionProto(code)
+          if fnProto.simpleCall and args.len == callee.fnParams.len:
+            let positional = callee.fnParams
+            let callScope = newScope(callee.fnScope)
+            callScope.prepareSlots(fnProto.localNames)
+            for i in 0 ..< args.len:
+              callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
+            stack.setLen(calleeIndex)
+            frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                             ip: ip, validateImpls: validateImplRequirements)
+            chunk = fnProto.chunk
+            scope = callScope
+            stack = acquireRunStack()
+            ip = 0
+            validateImplRequirements = true
+            evalBudget = callScope.evalBudget
+            continue
       let site =
         if callee.kind == vkFunction or
             (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
