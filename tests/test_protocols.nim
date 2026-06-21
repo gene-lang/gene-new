@@ -210,3 +210,14 @@ suite "protocols — declarations and dispatch":
       discard runStr("(protocol P (message a [self])) " &
                      "(type T ^props {}) " &
                      "(impl P T (message a [self] 1) (message b [self] 2))")
+
+  test "deep recursion through a protocol message uses heap frames":
+    # Message dispatch resolves to the receiver's impl at the call site and pushes
+    # a heap frame, instead of double-recursing through applyCall. Deep recursion
+    # through a method therefore no longer grows the Nim stack.
+    ck "(protocol Count (message down [self n])) " &
+       "(type Counter ^props {}) " &
+       "(impl Count Counter " &
+       "  (message down [self n] (if (= n 0) 0 (+ 1 (down self (- n 1)))))) " &
+       "(down (Counter) 200000)",
+       "200000"

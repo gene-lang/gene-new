@@ -3356,7 +3356,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if argsStart < 0 or argsStart < namedCount + 1:
           raise newException(GeneError, "VM stack underflow in call")
         let calleeIndex = argsStart - namedCount - 1
-        let callee = stack[calleeIndex]
+        var callee = stack[calleeIndex]
+        # Protocol-message dispatch (e.g. `(run obj)`) resolves to the receiver's
+        # impl up front, so the call rides the same frame-push paths below instead
+        # of double-recursing through applyCall (message dispatch + impl call).
+        if callee.kind == vkProtocolMessage and argCount >= 1:
+          callee = resolveProtocolMessage(scope, callee, stack[argsStart])
         # Frame-push paths: route Gene function calls onto the explicit frame stack
         # instead of recursing through Nim. ^errors functions push a frame too and
         # carry their error boundary (translated by the loop's handler on throw);
@@ -3463,7 +3468,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if partsStart < 0 or partsStart < namedCount + 1:
           raise newException(GeneError, "VM stack underflow in call")
         let calleeIndex = partsStart - namedCount - 1
-        let callee = stack[calleeIndex]
+        var callee = stack[calleeIndex]
         if namedCount > 0:
           named.names = inst[].names
           named.values = newSeq[Value](namedCount)
@@ -3475,6 +3480,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             appendSplicedBody(args, part)
           else:
             args.add part
+        # Resolve protocol-message dispatch to the receiver's impl up front (see
+        # opCall) so spread message calls ride the frame-push paths below too.
+        if callee.kind == vkProtocolMessage and args.len >= 1:
+          callee = resolveProtocolMessage(scope, callee, args[0])
         # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
         # frame stack (^errors included; only generators fall through to applyCall).
         if callee.kind == vkFunction:
