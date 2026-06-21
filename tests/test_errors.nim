@@ -158,6 +158,46 @@ suite "errors — ensure":
        "\"ran\""
   test "try returns the body value, not the ensure value":
     ck "(try 42 ensure 99)", "42"
+  test "nested ensures run inner-first as an error re-raises":
+    # An ordering counter: the inner ensure stamps 1, the outer stamps 2.
+    ck "(type Boom ^props {^message Str} ^impl [Error]) (impl Error Boom) " &
+       "(var n 0) (var i 0) (var o 0) " &
+       "(try (try (try (fail (Boom ^message \"x\")) " &
+       "               ensure (do (set n (+ n 1)) (set i n))) " &
+       "          ensure (do (set n (+ n 1)) (set o n))) catch _ 0) [i o]", "[1 2]"
+  test "the catch value survives the ensure that runs after it":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) (impl Error Boom) " &
+       "(var ran 0) " &
+       "(var r (try (fail (Boom ^message \"x\")) catch _ 7 ensure (set ran 1))) " &
+       "[r ran]", "[7 1]"
+
+suite "errors — try on the frame stack":
+  test "deep recursion through a try-wrapped function does not overflow":
+    # Each level used to start a nested runLoop for the try body and overflow the
+    # Nim stack in the low hundreds; the try body now runs as a heap Frame.
+    ck "(fn f [n] (try (if (= n 0) 0 (+ 1 (f (- n 1)))) catch _ -1)) (f 200000)",
+       "200000"
+  test "an inner try catches before the enclosing ^errors boundary applies":
+    # The undeclared error is caught by the function's own inner try, so the
+    # ^errors row never sees it — the function returns normally.
+    ck "(type Boom ^props {^message Str} ^impl [Error]) (impl Error Boom) " &
+       "(fn quiet ^errors [] [] (try (fail (Boom ^message \"x\")) catch _ 42)) " &
+       "(quiet)", "42"
+  test "an error escaping an inner try still hits the ^errors boundary":
+    # No catch matches inside quiet, so the undeclared error escapes the function
+    # body and the ^errors [] boundary rejects it.
+    expect GeneError:
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) (impl Error Boom) " &
+                     "(fn quiet ^errors [] [] (try (fail (Boom ^message \"x\")) ensure 1)) " &
+                     "(quiet)")
+  test "an error raised in a catch body unwinds to the enclosing try":
+    ck "(type A ^props {^message Str} ^impl [Error]) (impl Error A) " &
+       "(type B ^props {^message Str} ^impl [Error]) (impl Error B) " &
+       "(try (try (fail (A ^message \"a\")) catch (A) (fail (B ^message \"b\"))) " &
+       "     catch (B ^message m) m)", "\"b\""
+  test "an error raised in an ensure body overrides and unwinds outward":
+    ck "(type A ^props {^message Str} ^impl [Error]) (impl Error A) " &
+       "(try (try 5 ensure (fail (A ^message \"e\"))) catch (A ^message m) m)", "\"e\""
 
 suite "errors — panic":
   test "panic is not caught by try":

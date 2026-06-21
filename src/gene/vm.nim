@@ -2963,6 +2963,18 @@ type
     checksErrors: bool      # this frame is an ^errors function (translate on throw)
     errorTypes: seq[Value]  # declared error rows, when checksErrors
     fnName: string          # function name, for the undeclared-error message
+    isTryBody: bool         # this frame is a `try` body (run ensure / pop handler
+                            # on normal completion; coordinates with `handlers`)
+
+  TryHandler = object
+    ## An active `try` region on the VM's handler stack. The try body runs as a
+    ## Frame (so deep recursion through try-wrapped code stays on the heap); this
+    ## record lets the dispatch loop's exception handler find the catch clauses
+    ## and ensure block when an error unwinds back to `framesLen`.
+    tp: TryProto
+    scope: Scope            # enclosing scope, for catch matching and ensure
+    framesLen: int          # frames.len at try entry; the handler fires when an
+                            # unwinding error pops back to this depth
 
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
                             e: ref GeneError): ref GeneError =
@@ -3059,665 +3071,767 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curChecksErrors = false
   var curErrorTypes: seq[Value] = @[]
   var curFnName = ""
+  var curIsTryBody = false      # current frame is a `try` body (see Frame.isTryBody)
+  var handlers: seq[TryHandler] # active `try` regions, innermost last
+
+  template loadFrameRegs(f: Frame) =
+    ## Restore the per-frame registers (everything except the operand stack, which
+    ## each caller handles explicitly) from a popped Frame.
+    chunk = f.chunk
+    scope = f.scope
+    ip = f.ip
+    validateImplRequirements = f.validateImpls
+    returnType = f.returnType
+    returnLabel = f.returnLabel
+    curChecksErrors = f.checksErrors
+    curErrorTypes = f.errorTypes
+    curFnName = f.fnName
+    curIsTryBody = f.isTryBody
+    evalBudget = scope.evalBudget
 
   template frameReturn(rawValue: Value) =
     ## Return `rawValue` from the current frame: adapt it to the frame's declared
     ## return type, then pop to the caller and push the result — or, if this is
-    ## the outermost frame, return to runLoop's caller.
+    ## the outermost frame, return to runLoop's caller. A `try` body completing
+    ## normally instead runs its ensure block and resumes the enclosing frame.
     var retValue = escapeWeakFunctions(rawValue)
     if returnType.kind != vkNil:
       retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
     if validateImplRequirements:
       scope.validateRequiredImpls()
-    if frames.len == 0:
+    if curIsTryBody:
+      # The try body succeeded: drop its handler, run ensure, then hand its value
+      # back to the enclosing frame (the owner pushed by opTry).
+      releaseRunStack(stack)
+      let h = handlers.pop()
+      if h.tp.ensureBody != nil:
+        discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+      var owner = frames.pop()
+      stack = move owner.stack
+      loadFrameRegs(owner)
+      stack.add retValue
+    elif frames.len == 0:
       stackArg = move stack
       ipArg = ip
       return RunStop(kind: rskReturn, value: retValue)
-    releaseRunStack(stack)
-    var caller = frames.pop()
-    chunk = caller.chunk
-    scope = caller.scope
-    stack = move caller.stack
-    ip = caller.ip
-    validateImplRequirements = caller.validateImpls
-    returnType = caller.returnType
-    returnLabel = caller.returnLabel
-    curChecksErrors = caller.checksErrors
-    curErrorTypes = caller.errorTypes
-    curFnName = caller.fnName
-    evalBudget = scope.evalBudget
-    stack.add retValue
+    else:
+      releaseRunStack(stack)
+      var caller = frames.pop()
+      stack = move caller.stack
+      loadFrameRegs(caller)
+      stack.add retValue
 
-  try:
-    while true:
-      {.computedGoto.}
-      if ip >= chunk.instructions.len:
-        frameReturn(NIL)
-        continue
-      if evalBudget != nil:
-        consumeEvalStep(evalBudget)
-      let inst = addr chunk.instructions[ip]
-      let op = inst[].op
-      inc ip
-      case op
-      of opPushConst:
-        stack.add chunk.constants[inst[].intArg]
-      of opLoadName:
-        stack.add scope.lookup(inst[].name)
-      of opLoadLocal:
-        stack.add scope.loadSlot(inst[].intArg, inst[].name)
-      of opLoadOuterLocal:
-        stack.add scope.loadSlotAt(inst[].depth, inst[].intArg, inst[].name)
-      of opDefineName:
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in var")
-        scope.define(inst[].name, stack[^1])
-      of opDefineLocal:
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in var")
-        scope.defineSlot(inst[].intArg, inst[].name, stack[^1])
-      of opSetName:
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in set")
-        scope.assign(inst[].name, stack[^1])
-      of opSetLocal:
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in set")
-        scope.assignSlot(inst[].intArg, inst[].name, stack[^1])
-      of opSetOuterLocal:
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in set")
-        scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[^1])
-      of opPop:
-        discard stack.pop()
-      of opMakeList:
-        var items = newSeq[Value](inst[].intArg)
-        if inst[].intArg > 0:
-          for i in countdown(inst[].intArg - 1, 0):
-            items[i] = stack.pop()
-        stack.add newList(items, inst[].flag)
-      of opMakeListSplice:
-        let proto = chunk.listBuilds[inst[].intArg]
-        var parts = newSeq[Value](proto.splices.len)
-        if proto.splices.len > 0:
-          for i in countdown(proto.splices.len - 1, 0):
-            parts[i] = stack.pop()
-        var items: seq[Value]
-        for i, part in parts:
-          if proto.splices[i]:
-            appendSplicedBody(items, part)
-          else:
-            items.add part
-        stack.add newList(items, proto.immutable)
-      of opMakeMap:
-        var values = newSeq[Value](inst[].intArg)
-        if inst[].intArg > 0:
-          for i in countdown(inst[].intArg - 1, 0):
-            values[i] = stack.pop()
-        var entries = initOrderedTable[string, Value]()
-        for i, key in inst[].names:
-          if values[i].kind != vkVoid:
-            entries[key] = values[i]
-        stack.add newMap(entries, inst[].flag)
-      of opMakeNode:
-        let proto = chunk.nodeBuilds[inst[].intArg]
-        var bodyParts = newSeq[Value](proto.bodyCount)
-        if proto.bodyCount > 0:
-          for i in countdown(proto.bodyCount - 1, 0):
-            bodyParts[i] = stack.pop()
-        var props = initOrderedTable[string, Value]()
-        if proto.propNames.len > 0:
-          var propValues = newSeq[Value](proto.propNames.len)
-          for i in countdown(proto.propNames.len - 1, 0):
-            propValues[i] = stack.pop()
-          for i, key in proto.propNames:
-            if propValues[i].kind != vkVoid:
-              props[key] = propValues[i]
-        var meta = initOrderedTable[string, Value]()
-        if proto.metaNames.len > 0:
-          var metaValues = newSeq[Value](proto.metaNames.len)
-          for i in countdown(proto.metaNames.len - 1, 0):
-            metaValues[i] = stack.pop()
-          for i, key in proto.metaNames:
-            if metaValues[i].kind != vkVoid:
-              meta[key] = metaValues[i]
-        let head = stack.pop()
-        var body: seq[Value]
-        for i, part in bodyParts:
-          if proto.bodySplices.len > 0 and proto.bodySplices[i]:
-            mergeSplicedNodePart(props, body, part)
-          else:
-            body.add part
-        stack.add newNode(head, props = props, body = body, meta = meta,
-                          immutable = proto.immutable)
-      of opMakeSelector:
-        var body = newSeq[Value](inst[].intArg)
-        if inst[].intArg > 0:
-          for i in countdown(inst[].intArg - 1, 0):
-            body[i] = stack.pop()
-        stack.add newNode(newSym("select"), body = body)
-      of opMakeFn:
-        let proto = chunk.functions[inst[].intArg]
-        let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
-        stack.add newFunction(proto.name, proto.params, proto, scope,
-                              proto.checksErrors, errorTypes)
-      of opMakeEnv:
-        let policy = stack.pop()
-        let capabilities = stack.pop()
-        let module = stack.pop()
-        let importsValue = stack.pop()
-        let parent = stack.pop()
-        let bindingMap = stack.pop()
-        if bindingMap.kind != vkMap:
-          raise newException(GeneError, "env ^bindings must be a map")
-        if parent.kind != vkNil and parent.kind != vkEnv:
-          raise newException(GeneError, "env ^parent must be an Env")
-        if importsValue.kind != vkList:
-          raise newException(GeneError, "env ^imports must be a list")
-        if module.kind != vkNil and module.kind notin {vkModule, vkNamespace}:
-          raise newException(GeneError, "env ^module must be a Module or Namespace")
-        if capabilities.kind != vkNil and capabilities.kind != vkMap:
-          raise newException(GeneError, "env ^capabilities must be a map")
-        discard evalPolicyMaxSteps(policy)
-        var imports: seq[Value]
-        let app = scope.application()
-        for item in importsValue.listItems:
-          imports.add normalizeEnvImport(app, item)
-        stack.add newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
-                         imports, module, capabilities, policy)
-      of opEval:
-        let env = stack.pop()
-        let node = stack.pop()
-        if env.kind != vkEnv:
-          raise newException(GeneError, "eval ^in must be an Env")
-        let evalScope = newScope(materializeEvalParent(env))
-        evalScope.evalBudget = evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
-        let evalChunk =
-          try:
-            compileEvalForm(node)
-          except GeneError as e:
-            raiseCompileError(scope, e.msg)
-            newChunk()
-        stack.add run(evalChunk, evalScope)
-      of opMakeType:
-        let proto = chunk.typeProtos[inst[].intArg]
-        let parent = stack.pop()
-        if parent.kind != vkNil and parent.kind != vkType:
-          raise newException(GeneError, "type ^is must be a type")
-        var derivedProtocols = newSeq[Value](proto.deriveProtocolCount)
-        if proto.deriveProtocolCount > 0:
-          for i in countdown(proto.deriveProtocolCount - 1, 0):
-            let protocol = stack.pop()
-            if protocol.kind != vkProtocol:
-              raise newException(GeneError, "type ^derive entries must be protocols")
-            derivedProtocols[i] = protocol
-        var requiredProtocols = newSeq[Value](proto.requiredImplCount)
-        if proto.requiredImplCount > 0:
-          for i in countdown(proto.requiredImplCount - 1, 0):
-            let protocol = stack.pop()
-            if protocol.kind != vkProtocol:
-              raise newException(GeneError, "type ^impl entries must be protocols")
-            requiredProtocols[i] = protocol
-        let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
-                          derivedProtocols, proto.deriveRequests,
-                          proto.bodyFields)
-        if proto.requiredImplCount > 0:
-          scope.requiredImplTypes.add typ
-        for i, protocol in derivedProtocols:
-          applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
-        stack.add typ
-      of opMakeProtocol:
-        let proto = chunk.protocolProtos[inst[].intArg]
-        var deriveFn = NIL
-        if proto.deriveFn != nil:
-          deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
-                                 proto.deriveFn, scope)
-          deriveFn = functionForScopeStorage(deriveFn, scope)
-        let protocol = newProtocol(proto.name, proto.messageNames, deriveFn)
-        for _, message in protocol.protocolMessages:
-          scope.define(message.protocolMessageName, message)
-        stack.add protocol
-      of opMakeImpl:
-        let proto = chunk.implProtos[inst[].intArg]
-        var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
-        if proto.messages.len > 0:
-          for i in countdown(proto.messages.len - 1, 0):
-            messageErrorTypes[i] =
-              stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
-        let receiver = stack.pop()
-        let protocol = stack.pop()
-        var messages = initTable[string, Value]()
-        for i, message in proto.messages:
-          let fn = newFunction(message.fn.name, message.fn.params, message.fn,
-                               scope, message.fn.checksErrors,
-                               messageErrorTypes[i])
-          messages[message.name] = functionForScopeStorage(fn, scope)
-        scope.registerImpl(protocol, receiver, messages)
-        stack.add NIL
-      of opMakeNamespace:
-        # Run the ns body in a fresh child scope; its bindings become the
-        # namespace's exports. Bind the namespace in the enclosing scope.
-        let nsScope = newScope(scope)
-        discard run(chunk.subchunks[inst[].intArg], nsScope)
-        let ns = newNamespace(inst[].name, nsScope)
-        scope.define(inst[].name, ns)
-        stack.add ns
-      of opSetModuleName:
-        var module: Value
-        if scope.lookupOptional("this-mod", module):
-          if module.kind == vkModule:
-            module.setModuleName(inst[].name)
-            if inst[].intArg >= 0 and inst[].intArg < chunk.constants.len:
-              let metaValue = chunk.constants[inst[].intArg]
-              if metaValue.kind == vkMap:
-                module.setModuleMeta(copyEntries(metaValue.mapEntries))
-          elif module.kind == vkNamespace and module.nsIsModuleRoot:
-            module.setNsName(inst[].name)
-        stack.add NIL
-      of opImport:
-        let spec = chunk.imports[inst[].intArg]
-        var source: Value
-        if spec.fromModule:
+  while true:
+    try:
+      while true:
+        {.computedGoto.}
+        if ip >= chunk.instructions.len:
+          frameReturn(NIL)
+          continue
+        if evalBudget != nil:
+          consumeEvalStep(evalBudget)
+        let inst = addr chunk.instructions[ip]
+        let op = inst[].op
+        inc ip
+        case op
+        of opPushConst:
+          stack.add chunk.constants[inst[].intArg]
+        of opLoadName:
+          stack.add scope.lookup(inst[].name)
+        of opLoadLocal:
+          stack.add scope.loadSlot(inst[].intArg, inst[].name)
+        of opLoadOuterLocal:
+          stack.add scope.loadSlotAt(inst[].depth, inst[].intArg, inst[].name)
+        of opDefineName:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in var")
+          scope.define(inst[].name, stack[^1])
+        of opDefineLocal:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in var")
+          scope.defineSlot(inst[].intArg, inst[].name, stack[^1])
+        of opSetName:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in set")
+          scope.assign(inst[].name, stack[^1])
+        of opSetLocal:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in set")
+          scope.assignSlot(inst[].intArg, inst[].name, stack[^1])
+        of opSetOuterLocal:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in set")
+          scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[^1])
+        of opPop:
+          discard stack.pop()
+        of opMakeList:
+          var items = newSeq[Value](inst[].intArg)
+          if inst[].intArg > 0:
+            for i in countdown(inst[].intArg - 1, 0):
+              items[i] = stack.pop()
+          stack.add newList(items, inst[].flag)
+        of opMakeListSplice:
+          let proto = chunk.listBuilds[inst[].intArg]
+          var parts = newSeq[Value](proto.splices.len)
+          if proto.splices.len > 0:
+            for i in countdown(proto.splices.len - 1, 0):
+              parts[i] = stack.pop()
+          var items: seq[Value]
+          for i, part in parts:
+            if proto.splices[i]:
+              appendSplicedBody(items, part)
+            else:
+              items.add part
+          stack.add newList(items, proto.immutable)
+        of opMakeMap:
+          var values = newSeq[Value](inst[].intArg)
+          if inst[].intArg > 0:
+            for i in countdown(inst[].intArg - 1, 0):
+              values[i] = stack.pop()
+          var entries = initOrderedTable[string, Value]()
+          for i, key in inst[].names:
+            if values[i].kind != vkVoid:
+              entries[key] = values[i]
+          stack.add newMap(entries, inst[].flag)
+        of opMakeNode:
+          let proto = chunk.nodeBuilds[inst[].intArg]
+          var bodyParts = newSeq[Value](proto.bodyCount)
+          if proto.bodyCount > 0:
+            for i in countdown(proto.bodyCount - 1, 0):
+              bodyParts[i] = stack.pop()
+          var props = initOrderedTable[string, Value]()
+          if proto.propNames.len > 0:
+            var propValues = newSeq[Value](proto.propNames.len)
+            for i in countdown(proto.propNames.len - 1, 0):
+              propValues[i] = stack.pop()
+            for i, key in proto.propNames:
+              if propValues[i].kind != vkVoid:
+                props[key] = propValues[i]
+          var meta = initOrderedTable[string, Value]()
+          if proto.metaNames.len > 0:
+            var metaValues = newSeq[Value](proto.metaNames.len)
+            for i in countdown(proto.metaNames.len - 1, 0):
+              metaValues[i] = stack.pop()
+            for i, key in proto.metaNames:
+              if metaValues[i].kind != vkVoid:
+                meta[key] = metaValues[i]
+          let head = stack.pop()
+          var body: seq[Value]
+          for i, part in bodyParts:
+            if proto.bodySplices.len > 0 and proto.bodySplices[i]:
+              mergeSplicedNodePart(props, body, part)
+            else:
+              body.add part
+          stack.add newNode(head, props = props, body = body, meta = meta,
+                            immutable = proto.immutable)
+        of opMakeSelector:
+          var body = newSeq[Value](inst[].intArg)
+          if inst[].intArg > 0:
+            for i in countdown(inst[].intArg - 1, 0):
+              body[i] = stack.pop()
+          stack.add newNode(newSym("select"), body = body)
+        of opMakeFn:
+          let proto = chunk.functions[inst[].intArg]
+          let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
+          stack.add newFunction(proto.name, proto.params, proto, scope,
+                                proto.checksErrors, errorTypes)
+        of opMakeEnv:
+          let policy = stack.pop()
+          let capabilities = stack.pop()
+          let module = stack.pop()
+          let importsValue = stack.pop()
+          let parent = stack.pop()
+          let bindingMap = stack.pop()
+          if bindingMap.kind != vkMap:
+            raise newException(GeneError, "env ^bindings must be a map")
+          if parent.kind != vkNil and parent.kind != vkEnv:
+            raise newException(GeneError, "env ^parent must be an Env")
+          if importsValue.kind != vkList:
+            raise newException(GeneError, "env ^imports must be a list")
+          if module.kind != vkNil and module.kind notin {vkModule, vkNamespace}:
+            raise newException(GeneError, "env ^module must be a Module or Namespace")
+          if capabilities.kind != vkNil and capabilities.kind != vkMap:
+            raise newException(GeneError, "env ^capabilities must be a map")
+          discard evalPolicyMaxSteps(policy)
+          var imports: seq[Value]
           let app = scope.application()
-          source = loadModuleValue(app, app.resolveModulePath(spec.modulePath))
-        else:
-          # Namespace path: resolve segments against the current scope.
-          source = scope.lookup(spec.nsSegments[0])
-          for i in 1 ..< spec.nsSegments.len:
-            if source.kind == vkModule:
-              source = source.moduleRootNamespace
-            if source.kind != vkNamespace:
-              raise newException(GeneError,
-                "import: '" & spec.nsSegments[0 ..< i].join("/") & "' is not a namespace")
-            source = source.exportedBinding(spec.nsSegments[i])
-        let sourceNs =
-          case source.kind
-          of vkModule:
-            source.moduleRootNamespace
-          of vkNamespace:
-            source
+          for item in importsValue.listItems:
+            imports.add normalizeEnvImport(app, item)
+          stack.add newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
+                           imports, module, capabilities, policy)
+        of opEval:
+          let env = stack.pop()
+          let node = stack.pop()
+          if env.kind != vkEnv:
+            raise newException(GeneError, "eval ^in must be an Env")
+          let evalScope = newScope(materializeEvalParent(env))
+          evalScope.evalBudget = evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
+          let evalChunk =
+            try:
+              compileEvalForm(node)
+            except GeneError as e:
+              raiseCompileError(scope, e.msg)
+              newChunk()
+          stack.add run(evalChunk, evalScope)
+        of opMakeType:
+          let proto = chunk.typeProtos[inst[].intArg]
+          let parent = stack.pop()
+          if parent.kind != vkNil and parent.kind != vkType:
+            raise newException(GeneError, "type ^is must be a type")
+          var derivedProtocols = newSeq[Value](proto.deriveProtocolCount)
+          if proto.deriveProtocolCount > 0:
+            for i in countdown(proto.deriveProtocolCount - 1, 0):
+              let protocol = stack.pop()
+              if protocol.kind != vkProtocol:
+                raise newException(GeneError, "type ^derive entries must be protocols")
+              derivedProtocols[i] = protocol
+          var requiredProtocols = newSeq[Value](proto.requiredImplCount)
+          if proto.requiredImplCount > 0:
+            for i in countdown(proto.requiredImplCount - 1, 0):
+              let protocol = stack.pop()
+              if protocol.kind != vkProtocol:
+                raise newException(GeneError, "type ^impl entries must be protocols")
+              requiredProtocols[i] = protocol
+          let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
+                            derivedProtocols, proto.deriveRequests,
+                            proto.bodyFields)
+          if proto.requiredImplCount > 0:
+            scope.requiredImplTypes.add typ
+          for i, protocol in derivedProtocols:
+            applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
+          stack.add typ
+        of opMakeProtocol:
+          let proto = chunk.protocolProtos[inst[].intArg]
+          var deriveFn = NIL
+          if proto.deriveFn != nil:
+            deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
+                                   proto.deriveFn, scope)
+            deriveFn = functionForScopeStorage(deriveFn, scope)
+          let protocol = newProtocol(proto.name, proto.messageNames, deriveFn)
+          for _, message in protocol.protocolMessages:
+            scope.define(message.protocolMessageName, message)
+          stack.add protocol
+        of opMakeImpl:
+          let proto = chunk.implProtos[inst[].intArg]
+          var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
+          if proto.messages.len > 0:
+            for i in countdown(proto.messages.len - 1, 0):
+              messageErrorTypes[i] =
+                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
+          let receiver = stack.pop()
+          let protocol = stack.pop()
+          var messages = initTable[string, Value]()
+          for i, message in proto.messages:
+            let fn = newFunction(message.fn.name, message.fn.params, message.fn,
+                                 scope, message.fn.checksErrors,
+                                 messageErrorTypes[i])
+            messages[message.name] = functionForScopeStorage(fn, scope)
+          scope.registerImpl(protocol, receiver, messages)
+          stack.add NIL
+        of opMakeNamespace:
+          # Run the ns body in a fresh child scope; its bindings become the
+          # namespace's exports. Bind the namespace in the enclosing scope.
+          let nsScope = newScope(scope)
+          discard run(chunk.subchunks[inst[].intArg], nsScope)
+          let ns = newNamespace(inst[].name, nsScope)
+          scope.define(inst[].name, ns)
+          stack.add ns
+        of opSetModuleName:
+          var module: Value
+          if scope.lookupOptional("this-mod", module):
+            if module.kind == vkModule:
+              module.setModuleName(inst[].name)
+              if inst[].intArg >= 0 and inst[].intArg < chunk.constants.len:
+                let metaValue = chunk.constants[inst[].intArg]
+                if metaValue.kind == vkMap:
+                  module.setModuleMeta(copyEntries(metaValue.mapEntries))
+            elif module.kind == vkNamespace and module.nsIsModuleRoot:
+              module.setNsName(inst[].name)
+          stack.add NIL
+        of opImport:
+          let spec = chunk.imports[inst[].intArg]
+          var source: Value
+          if spec.fromModule:
+            let app = scope.application()
+            source = loadModuleValue(app, app.resolveModulePath(spec.modulePath))
           else:
-            VOID
-        if sourceNs.kind != vkNamespace:
-          raise newException(GeneError, "import source is not a namespace")
-        scope.makeImplsVisible(sourceNs.nsScope)
-        if spec.alias.len > 0:
-          scope.define(spec.alias, source)
-        for sel in spec.selections:
-          let v = sourceNs.exportedBinding(sel.name)
-          if v.kind == vkVoid:
-            raise newException(GeneError, "module/namespace has no export: " & sel.name)
-          scope.define(sel.local, v)
-        stack.add NIL
-      of opCall:
-        let argCount = inst[].intArg
-        let namedCount = inst[].names.len
-        let argsStart = stack.len - argCount
-        if argsStart < 0 or argsStart < namedCount + 1:
-          raise newException(GeneError, "VM stack underflow in call")
-        let calleeIndex = argsStart - namedCount - 1
-        var callee = stack[calleeIndex]
-        # Protocol-message dispatch (e.g. `(run obj)`) resolves to the receiver's
-        # impl up front, so the call rides the same frame-push paths below instead
-        # of double-recursing through applyCall (message dispatch + impl call).
-        if callee.kind == vkProtocolMessage and argCount >= 1:
-          callee = resolveProtocolMessage(scope, callee, stack[argsStart])
-        # Frame-push paths: route Gene function calls onto the explicit frame stack
-        # instead of recursing through Nim. ^errors functions push a frame too and
-        # carry their error boundary (translated by the loop's handler on throw);
-        # only generators (which return a stream) still go through applyCall below.
-        if callee.kind == vkFunction:
-          let code = callee.fnCode
-          if code != nil and code of FunctionProto:
-            let proto = FunctionProto(code)
-            if namedCount == 0 and proto.simpleCall:
-              # Hottest path: arity + positional slots only.
-              let positional = callee.fnParams
-              if argCount != positional.len:
+            # Namespace path: resolve segments against the current scope.
+            source = scope.lookup(spec.nsSegments[0])
+            for i in 1 ..< spec.nsSegments.len:
+              if source.kind == vkModule:
+                source = source.moduleRootNamespace
+              if source.kind != vkNamespace:
                 raise newException(GeneError,
-                  "function '" & callee.fnName & "' expects " &
-                  $proto.requiredPositional & ".." & $positional.len &
-                  " argument(s), got " & $argCount)
-              let callScope = newScope(callee.fnScope)
-              callScope.prepareSlots(proto.localNames)
-              for i in 0 ..< argCount:
-                callScope.defineSlot(proto.positionalSlots[i], positional[i],
-                                     stack[argsStart + i])
-              stack.setLen(calleeIndex)        # consume callee + args
-              frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                               ip: ip, validateImpls: validateImplRequirements,
-                               returnType: returnType, returnLabel: returnLabel,
-                               checksErrors: curChecksErrors,
-                               errorTypes: curErrorTypes, fnName: curFnName)
-              chunk = proto.chunk
-              scope = callScope
-              stack = acquireRunStack()
-              ip = 0
-              validateImplRequirements = true
-              returnType = NIL
-              returnLabel = ""
-              curChecksErrors = false        # simpleCall never declares ^errors
-              curErrorTypes = @[]
-              curFnName = ""
-              evalBudget = callScope.evalBudget
-              continue
-            elif not proto.isGenerator:
-              # General call (named / defaults / rest / typed / generic / ^errors):
-              # bind via the shared helper, then push a frame carrying the return
-              # type to adapt and the callee's error boundary to translate on throw.
-              var named: NamedArgs
-              if namedCount > 0:
-                named.names = inst[].names
-                named.values = newSeq[Value](namedCount)
-                for i in 0 ..< namedCount:
-                  named.values[i] = stack[calleeIndex + 1 + i]
-              let bound =
-                if argCount == 0:
-                  bindCallScope(callee, proto, [], named)
-                else:
-                  bindCallScope(callee, proto,
-                                stack.toOpenArray(argsStart, stack.high), named)
-              stack.setLen(calleeIndex)
-              var lbl = ""
-              if bound.returnType.kind != vkNil:
-                lbl = "return from '" & callee.fnName & "'"
-              frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                               ip: ip, validateImpls: validateImplRequirements,
-                               returnType: returnType, returnLabel: returnLabel,
-                               checksErrors: curChecksErrors,
-                               errorTypes: curErrorTypes, fnName: curFnName)
-              chunk = proto.chunk
-              scope = bound.scope
-              stack = acquireRunStack()
-              ip = 0
-              validateImplRequirements = true
-              returnType = bound.returnType
-              returnLabel = lbl
-              curChecksErrors = proto.checksErrors
-              curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
-              curFnName = if proto.checksErrors: callee.fnName else: ""
-              evalBudget = bound.scope.evalBudget
-              continue
-        var named: NamedArgs
-        if namedCount > 0:
-          named.names = inst[].names
-          named.values = newSeq[Value](namedCount)
-          for i in 0 ..< namedCount:
-            named.values[i] = stack[calleeIndex + 1 + i]
-        # Call-site node for the Call envelope (design §3). Looked up only for
-        # envelope-building callees; the hot Fn and plain-native paths skip it.
-        let site =
-          if callee.kind == vkFunction or
-              (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
-            NIL
-          else:
-            chunk.callSites.getOrDefault(ip - 1, NIL)
-        let value =
-          if argCount == 0:
-            applyCall(callee, [], named, scope, site)
-          else:
-            applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope, site)
-        stack.setLen(calleeIndex)
-        stack.add value
-      of opCallSplice:
-        var named: NamedArgs
-        let proto = chunk.listBuilds[inst[].intArg]
-        let partCount = proto.splices.len
-        let namedCount = inst[].names.len
-        let partsStart = stack.len - partCount
-        if partsStart < 0 or partsStart < namedCount + 1:
-          raise newException(GeneError, "VM stack underflow in call")
-        let calleeIndex = partsStart - namedCount - 1
-        var callee = stack[calleeIndex]
-        if namedCount > 0:
-          named.names = inst[].names
-          named.values = newSeq[Value](namedCount)
-          for i in 0 ..< namedCount:
-            named.values[i] = stack[calleeIndex + 1 + i]
-        var args: seq[Value]
-        for i, part in stack.toOpenArray(partsStart, stack.high):
-          if proto.splices[i]:
-            appendSplicedBody(args, part)
-          else:
-            args.add part
-        # Resolve protocol-message dispatch to the receiver's impl up front (see
-        # opCall) so spread message calls ride the frame-push paths below too.
-        if callee.kind == vkProtocolMessage and args.len >= 1:
-          callee = resolveProtocolMessage(scope, callee, args[0])
-        # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
-        # frame stack (^errors included; only generators fall through to applyCall).
-        if callee.kind == vkFunction:
-          let code = callee.fnCode
-          if code != nil and code of FunctionProto:
-            let fnProto = FunctionProto(code)
-            if namedCount == 0 and fnProto.simpleCall and
-                args.len == callee.fnParams.len:
-              let positional = callee.fnParams
-              let callScope = newScope(callee.fnScope)
-              callScope.prepareSlots(fnProto.localNames)
-              for i in 0 ..< args.len:
-                callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
-              stack.setLen(calleeIndex)
-              frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                               ip: ip, validateImpls: validateImplRequirements,
-                               returnType: returnType, returnLabel: returnLabel,
-                               checksErrors: curChecksErrors,
-                               errorTypes: curErrorTypes, fnName: curFnName)
-              chunk = fnProto.chunk
-              scope = callScope
-              stack = acquireRunStack()
-              ip = 0
-              validateImplRequirements = true
-              returnType = NIL
-              returnLabel = ""
-              curChecksErrors = false        # simpleCall never declares ^errors
-              curErrorTypes = @[]
-              curFnName = ""
-              evalBudget = callScope.evalBudget
-              continue
-            elif not fnProto.isGenerator:
-              let bound = bindCallScope(callee, fnProto, args, named)
-              stack.setLen(calleeIndex)
-              var lbl = ""
-              if bound.returnType.kind != vkNil:
-                lbl = "return from '" & callee.fnName & "'"
-              frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                               ip: ip, validateImpls: validateImplRequirements,
-                               returnType: returnType, returnLabel: returnLabel,
-                               checksErrors: curChecksErrors,
-                               errorTypes: curErrorTypes, fnName: curFnName)
-              chunk = fnProto.chunk
-              scope = bound.scope
-              stack = acquireRunStack()
-              ip = 0
-              validateImplRequirements = true
-              returnType = bound.returnType
-              returnLabel = lbl
-              curChecksErrors = fnProto.checksErrors
-              curErrorTypes = if fnProto.checksErrors: callee.fnErrorTypes else: @[]
-              curFnName = if fnProto.checksErrors: callee.fnName else: ""
-              evalBudget = bound.scope.evalBudget
-              continue
-        let site =
-          if callee.kind == vkFunction or
-              (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
-            NIL
-          else:
-            chunk.callSites.getOrDefault(ip - 1, NIL)
-        let value =
-          if args.len == 0:
-            applyCall(callee, [], named, scope, site)
-          else:
-            applyCall(callee, args, named, scope, site)
-        stack.setLen(calleeIndex)
-        stack.add value
-      of opMatch:
-        let target = stack.pop()
-        let mp = chunk.matches[inst[].intArg]
-        var handled = false
-        for cl in mp.clauses:
+                  "import: '" & spec.nsSegments[0 ..< i].join("/") & "' is not a namespace")
+              source = source.exportedBinding(spec.nsSegments[i])
+          let sourceNs =
+            case source.kind
+            of vkModule:
+              source.moduleRootNamespace
+            of vkNamespace:
+              source
+            else:
+              VOID
+          if sourceNs.kind != vkNamespace:
+            raise newException(GeneError, "import source is not a namespace")
+          scope.makeImplsVisible(sourceNs.nsScope)
+          if spec.alias.len > 0:
+            scope.define(spec.alias, source)
+          for sel in spec.selections:
+            let v = sourceNs.exportedBinding(sel.name)
+            if v.kind == vkVoid:
+              raise newException(GeneError, "module/namespace has no export: " & sel.name)
+            scope.define(sel.local, v)
+          stack.add NIL
+        of opCall:
+          let argCount = inst[].intArg
+          let namedCount = inst[].names.len
+          let argsStart = stack.len - argCount
+          if argsStart < 0 or argsStart < namedCount + 1:
+            raise newException(GeneError, "VM stack underflow in call")
+          let calleeIndex = argsStart - namedCount - 1
+          var callee = stack[calleeIndex]
+          # Protocol-message dispatch (e.g. `(run obj)`) resolves to the receiver's
+          # impl up front, so the call rides the same frame-push paths below instead
+          # of double-recursing through applyCall (message dispatch + impl call).
+          if callee.kind == vkProtocolMessage and argCount >= 1:
+            callee = resolveProtocolMessage(scope, callee, stack[argsStart])
+          # Frame-push paths: route Gene function calls onto the explicit frame stack
+          # instead of recursing through Nim. ^errors functions push a frame too and
+          # carry their error boundary (translated by the loop's handler on throw);
+          # only generators (which return a stream) still go through applyCall below.
+          if callee.kind == vkFunction:
+            let code = callee.fnCode
+            if code != nil and code of FunctionProto:
+              let proto = FunctionProto(code)
+              if namedCount == 0 and proto.simpleCall:
+                # Hottest path: arity + positional slots only.
+                let positional = callee.fnParams
+                if argCount != positional.len:
+                  raise newException(GeneError,
+                    "function '" & callee.fnName & "' expects " &
+                    $proto.requiredPositional & ".." & $positional.len &
+                    " argument(s), got " & $argCount)
+                let callScope = newScope(callee.fnScope)
+                callScope.prepareSlots(proto.localNames)
+                for i in 0 ..< argCount:
+                  callScope.defineSlot(proto.positionalSlots[i], positional[i],
+                                       stack[argsStart + i])
+                stack.setLen(calleeIndex)        # consume callee + args
+                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                                 ip: ip, validateImpls: validateImplRequirements,
+                                 returnType: returnType, returnLabel: returnLabel,
+                                 checksErrors: curChecksErrors,
+                                 errorTypes: curErrorTypes, fnName: curFnName,
+                                 isTryBody: curIsTryBody)
+                chunk = proto.chunk
+                scope = callScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false        # simpleCall never declares ^errors
+                curErrorTypes = @[]
+                curFnName = ""
+                curIsTryBody = false
+                evalBudget = callScope.evalBudget
+                continue
+              elif not proto.isGenerator:
+                # General call (named / defaults / rest / typed / generic / ^errors):
+                # bind via the shared helper, then push a frame carrying the return
+                # type to adapt and the callee's error boundary to translate on throw.
+                var named: NamedArgs
+                if namedCount > 0:
+                  named.names = inst[].names
+                  named.values = newSeq[Value](namedCount)
+                  for i in 0 ..< namedCount:
+                    named.values[i] = stack[calleeIndex + 1 + i]
+                let bound =
+                  if argCount == 0:
+                    bindCallScope(callee, proto, [], named)
+                  else:
+                    bindCallScope(callee, proto,
+                                  stack.toOpenArray(argsStart, stack.high), named)
+                stack.setLen(calleeIndex)
+                var lbl = ""
+                if bound.returnType.kind != vkNil:
+                  lbl = "return from '" & callee.fnName & "'"
+                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                                 ip: ip, validateImpls: validateImplRequirements,
+                                 returnType: returnType, returnLabel: returnLabel,
+                                 checksErrors: curChecksErrors,
+                                 errorTypes: curErrorTypes, fnName: curFnName,
+                                 isTryBody: curIsTryBody)
+                chunk = proto.chunk
+                scope = bound.scope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = bound.returnType
+                returnLabel = lbl
+                curChecksErrors = proto.checksErrors
+                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
+                curFnName = if proto.checksErrors: callee.fnName else: ""
+                curIsTryBody = false
+                evalBudget = bound.scope.evalBudget
+                continue
+          var named: NamedArgs
+          if namedCount > 0:
+            named.names = inst[].names
+            named.values = newSeq[Value](namedCount)
+            for i in 0 ..< namedCount:
+              named.values[i] = stack[calleeIndex + 1 + i]
+          # Call-site node for the Call envelope (design §3). Looked up only for
+          # envelope-building callees; the hot Fn and plain-native paths skip it.
+          let site =
+            if callee.kind == vkFunction or
+                (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+              NIL
+            else:
+              chunk.callSites.getOrDefault(ip - 1, NIL)
+          let value =
+            if argCount == 0:
+              applyCall(callee, [], named, scope, site)
+            else:
+              applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope, site)
+          stack.setLen(calleeIndex)
+          stack.add value
+        of opCallSplice:
+          var named: NamedArgs
+          let proto = chunk.listBuilds[inst[].intArg]
+          let partCount = proto.splices.len
+          let namedCount = inst[].names.len
+          let partsStart = stack.len - partCount
+          if partsStart < 0 or partsStart < namedCount + 1:
+            raise newException(GeneError, "VM stack underflow in call")
+          let calleeIndex = partsStart - namedCount - 1
+          var callee = stack[calleeIndex]
+          if namedCount > 0:
+            named.names = inst[].names
+            named.values = newSeq[Value](namedCount)
+            for i in 0 ..< namedCount:
+              named.values[i] = stack[calleeIndex + 1 + i]
+          var args: seq[Value]
+          for i, part in stack.toOpenArray(partsStart, stack.high):
+            if proto.splices[i]:
+              appendSplicedBody(args, part)
+            else:
+              args.add part
+          # Resolve protocol-message dispatch to the receiver's impl up front (see
+          # opCall) so spread message calls ride the frame-push paths below too.
+          if callee.kind == vkProtocolMessage and args.len >= 1:
+            callee = resolveProtocolMessage(scope, callee, args[0])
+          # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
+          # frame stack (^errors included; only generators fall through to applyCall).
+          if callee.kind == vkFunction:
+            let code = callee.fnCode
+            if code != nil and code of FunctionProto:
+              let fnProto = FunctionProto(code)
+              if namedCount == 0 and fnProto.simpleCall and
+                  args.len == callee.fnParams.len:
+                let positional = callee.fnParams
+                let callScope = newScope(callee.fnScope)
+                callScope.prepareSlots(fnProto.localNames)
+                for i in 0 ..< args.len:
+                  callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
+                stack.setLen(calleeIndex)
+                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                                 ip: ip, validateImpls: validateImplRequirements,
+                                 returnType: returnType, returnLabel: returnLabel,
+                                 checksErrors: curChecksErrors,
+                                 errorTypes: curErrorTypes, fnName: curFnName,
+                                 isTryBody: curIsTryBody)
+                chunk = fnProto.chunk
+                scope = callScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false        # simpleCall never declares ^errors
+                curErrorTypes = @[]
+                curFnName = ""
+                curIsTryBody = false
+                evalBudget = callScope.evalBudget
+                continue
+              elif not fnProto.isGenerator:
+                let bound = bindCallScope(callee, fnProto, args, named)
+                stack.setLen(calleeIndex)
+                var lbl = ""
+                if bound.returnType.kind != vkNil:
+                  lbl = "return from '" & callee.fnName & "'"
+                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                                 ip: ip, validateImpls: validateImplRequirements,
+                                 returnType: returnType, returnLabel: returnLabel,
+                                 checksErrors: curChecksErrors,
+                                 errorTypes: curErrorTypes, fnName: curFnName,
+                                 isTryBody: curIsTryBody)
+                chunk = fnProto.chunk
+                scope = bound.scope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = bound.returnType
+                returnLabel = lbl
+                curChecksErrors = fnProto.checksErrors
+                curErrorTypes = if fnProto.checksErrors: callee.fnErrorTypes else: @[]
+                curFnName = if fnProto.checksErrors: callee.fnName else: ""
+                curIsTryBody = false
+                evalBudget = bound.scope.evalBudget
+                continue
+          let site =
+            if callee.kind == vkFunction or
+                (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+              NIL
+            else:
+              chunk.callSites.getOrDefault(ip - 1, NIL)
+          let value =
+            if args.len == 0:
+              applyCall(callee, [], named, scope, site)
+            else:
+              applyCall(callee, args, named, scope, site)
+          stack.setLen(calleeIndex)
+          stack.add value
+        of opMatch:
+          let target = stack.pop()
+          let mp = chunk.matches[inst[].intArg]
+          var handled = false
+          for cl in mp.clauses:
+            var binds = initTable[string, Value]()
+            if tryMatch(cl.pattern, target, scope, binds):
+              let branchScope = newScope(scope)
+              branchScope.prepareChunkScope(cl.body)
+              branchScope.bindMatchedValues(binds, replaceExisting = false)
+              stack.add run(cl.body, branchScope,
+                            validateImplRequirements = validateImplRequirements)
+              handled = true
+              break
+          if not handled:
+            if mp.elseBody != nil:
+              stack.add run(mp.elseBody, newScope(scope),
+                            validateImplRequirements = validateImplRequirements)
+            else:
+              raiseMatchError(scope, "no matching pattern")
+        of opMatchBind:
+          let target = stack.pop()
           var binds = initTable[string, Value]()
-          if tryMatch(cl.pattern, target, scope, binds):
-            let branchScope = newScope(scope)
-            branchScope.prepareChunkScope(cl.body)
-            branchScope.bindMatchedValues(binds, replaceExisting = false)
-            stack.add run(cl.body, branchScope,
-                          validateImplRequirements = validateImplRequirements)
-            handled = true
-            break
-        if not handled:
-          if mp.elseBody != nil:
-            stack.add run(mp.elseBody, newScope(scope),
-                          validateImplRequirements = validateImplRequirements)
-          else:
-            raiseMatchError(scope, "no matching pattern")
-      of opMatchBind:
-        let target = stack.pop()
-        var binds = initTable[string, Value]()
-        if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
-          raiseMatchError(scope, "destructuring pattern did not match")
-        scope.bindMatchedValues(binds, replaceExisting = false)
-        stack.add target
-      of opMatchBindReplace:
-        let target = stack.pop()
-        var binds = initTable[string, Value]()
-        if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
-          raiseMatchError(scope, "destructuring pattern did not match")
-        scope.bindMatchedValues(binds, replaceExisting = true)
-        stack.add target
-      of opForEach:
-        let coll = stack.pop()
-        let fp = chunk.forLoops[inst[].intArg]
-        for item in forItems(coll):
-          let loopScope = newScope(scope)
-          loopScope.prepareChunkScope(fp.body)
+          if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
+            raiseMatchError(scope, "destructuring pattern did not match")
+          scope.bindMatchedValues(binds, replaceExisting = false)
+          stack.add target
+        of opMatchBindReplace:
+          let target = stack.pop()
           var binds = initTable[string, Value]()
-          if not tryMatch(fp.pattern, item, loopScope, binds):
-            raiseMatchError(loopScope, "for pattern did not match an item")
-          loopScope.bindMatchedValues(binds, replaceExisting = false)
-          discard run(fp.body, loopScope)
-        stack.add NIL
-      of opMakeIterator:
-        stack.add iteratorStream(stack.pop())
-      of opIteratorHasNext:
-        let stream = stack.pop()
-        requireStream("for iterator", stream)
-        stack.add newBool(stream.streamHasNext)
-      of opIteratorNext:
-        let stream = stack.pop()
-        requireStream("for iterator", stream)
-        if not stream.streamHasNext:
-          raiseEndOfStream()
-        stack.add checkedStreamNext(stream, "for item")
-      of opTry:
-        let tp = chunk.tries[inst[].intArg]
-        var resultVal = NIL
-        try:
+          if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
+            raiseMatchError(scope, "destructuring pattern did not match")
+          scope.bindMatchedValues(binds, replaceExisting = true)
+          stack.add target
+        of opForEach:
+          let coll = stack.pop()
+          let fp = chunk.forLoops[inst[].intArg]
+          for item in forItems(coll):
+            let loopScope = newScope(scope)
+            loopScope.prepareChunkScope(fp.body)
+            var binds = initTable[string, Value]()
+            if not tryMatch(fp.pattern, item, loopScope, binds):
+              raiseMatchError(loopScope, "for pattern did not match an item")
+            loopScope.bindMatchedValues(binds, replaceExisting = false)
+            discard run(fp.body, loopScope)
+          stack.add NIL
+        of opMakeIterator:
+          stack.add iteratorStream(stack.pop())
+        of opIteratorHasNext:
+          let stream = stack.pop()
+          requireStream("for iterator", stream)
+          stack.add newBool(stream.streamHasNext)
+        of opIteratorNext:
+          let stream = stack.pop()
+          requireStream("for iterator", stream)
+          if not stream.streamHasNext:
+            raiseEndOfStream()
+          stack.add checkedStreamNext(stream, "for item")
+        of opTry:
+          # Run the try body as a Frame on the heap stack (not a nested runLoop), so
+          # deep recursion through try-wrapped code does not grow the Nim stack. The
+          # catch clauses and ensure block run on the error/exit path — on normal
+          # completion via frameReturn, on a thrown error via the dispatch loop's
+          # exception handler below — both keyed off the TryHandler pushed here.
+          let tp = chunk.tries[inst[].intArg]
+          frames.add Frame(chunk: chunk, scope: scope, stack: move stack, ip: ip,
+                           validateImpls: validateImplRequirements,
+                           returnType: returnType, returnLabel: returnLabel,
+                           checksErrors: curChecksErrors, errorTypes: curErrorTypes,
+                           fnName: curFnName, isTryBody: curIsTryBody)
+          handlers.add TryHandler(tp: tp, scope: scope, framesLen: frames.len)
+          chunk = tp.body                 # shares the enclosing scope
+          stack = acquireRunStack()
+          ip = 0
+          validateImplRequirements = false
+          returnType = NIL
+          returnLabel = ""
+          curChecksErrors = false
+          curErrorTypes = @[]
+          curFnName = ""
+          curIsTryBody = true
+          evalBudget = scope.evalBudget
+          continue
+        of opTaskScope:
+          let taskScope = newScope(scope)
+          taskScope.ownsActors = true
+          taskScope.actorFailureStrategy = afsStop
           try:
-            resultVal = run(tp.body, scope, validateImplRequirements = false)
-          except GeneError as e:       # recoverable; GenePanic is NOT a GeneError
-            let errVal =
-              if e.hasErrVal: e.errVal
-              else:
-                var props = initOrderedTable[string, Value]()
-                props["message"] = newStr(e.msg)
-                newNode(newSym("Error"), props = props)
-            var handled = false
-            for cl in tp.catches:
-              var binds = initTable[string, Value]()
-              if tryMatch(cl.pattern, errVal, scope, binds):
-                let catchScope = newScope(scope)
-                catchScope.prepareChunkScope(cl.body)
-                catchScope.bindMatchedValues(binds, replaceExisting = false)
-                resultVal = run(cl.body, catchScope,
-                                validateImplRequirements = validateImplRequirements)
-                handled = true
-                break
-            if not handled:
-              raise                    # re-raise; the finally still runs ensure
-        finally:
-          if tp.ensureBody != nil:
-            discard run(tp.ensureBody, scope, validateImplRequirements = false)
-        stack.add resultVal
-      of opTaskScope:
-        let taskScope = newScope(scope)
-        taskScope.ownsActors = true
-        taskScope.actorFailureStrategy = afsStop
-        try:
-          stack.add run(chunk.subchunks[inst[].intArg], taskScope)
-        finally:
-          taskScope.closeOwnedActors()
-      of opSupervisor:
-        let supervisorScope = newScope(scope)
-        supervisorScope.ownsActors = true
-        supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
-        try:
-          stack.add run(chunk.subchunks[inst[].intArg], supervisorScope)
-        finally:
-          supervisorScope.closeOwnedActors()
-      of opSpawn:
-        # TODO(scheduler): still a synchronous prototype — the task body runs to
-        # completion right here. Stage 1 (the explicit call-frame stack above) is
-        # the foundation: simple Gene calls no longer recurse through Nim, so a call
-        # chain lives on the heap. Remaining work (design §13/§17, impl-order steps
-        # 9/12/14): an M:N scheduler with runnable/suspended/completed TaskFrames,
-        # suspending await across the frame stack, channel sender/receiver wait
-        # queues + backpressure, cancellation, and moving the non-simple-call and
-        # native paths onto frames too. See README "Concurrency is a synchronous
-        # prototype".
-        let taskScope = newScope(scope)
-        try:
-          stack.add newCompletedTask(run(chunk.subchunks[inst[].intArg], taskScope))
-        except GeneError as e:
-          stack.add completedTaskFromError(e)
-        except GenePanic as e:
-          stack.add completedTaskFromPanic(e)
-      of opAwait:
-        stack.add awaitTaskValue(stack.pop())
-      of opFail:
-        let errVal = stack.pop()
-        if not scope.isErrorValue(errVal):
-          raise newException(GeneError, "fail expects an Error value")
-        raiseFailedValue(errVal)
-      of opPanic:
-        raisePanicValue(stack.pop())
-      of opYield:
-        if not stopOnYield:
-          raise newException(GeneError, "yield is only valid in a generator")
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in yield")
-        # A generator suspends in its own (outermost) frame; simpleCall callees
-        # never yield, so `frames` is empty here and stack/ip persist via the args.
-        let yielded = escapeWeakFunctions(stack[^1])
-        stackArg = move stack
-        ipArg = ip
-        return RunStop(kind: rskYield, value: yielded)
-      of opJumpIfFalse:
-        let cond = stack.pop()
-        if not cond.isTruthy:
+            stack.add run(chunk.subchunks[inst[].intArg], taskScope)
+          finally:
+            taskScope.closeOwnedActors()
+        of opSupervisor:
+          let supervisorScope = newScope(scope)
+          supervisorScope.ownsActors = true
+          supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
+          try:
+            stack.add run(chunk.subchunks[inst[].intArg], supervisorScope)
+          finally:
+            supervisorScope.closeOwnedActors()
+        of opSpawn:
+          # TODO(scheduler): still a synchronous prototype — the task body runs to
+          # completion right here. Stage 1 (the explicit call-frame stack above) is
+          # the foundation: simple Gene calls no longer recurse through Nim, so a call
+          # chain lives on the heap. Remaining work (design §13/§17, impl-order steps
+          # 9/12/14): an M:N scheduler with runnable/suspended/completed TaskFrames,
+          # suspending await across the frame stack, channel sender/receiver wait
+          # queues + backpressure, cancellation, and moving the non-simple-call and
+          # native paths onto frames too. See README "Concurrency is a synchronous
+          # prototype".
+          let taskScope = newScope(scope)
+          try:
+            stack.add newCompletedTask(run(chunk.subchunks[inst[].intArg], taskScope))
+          except GeneError as e:
+            stack.add completedTaskFromError(e)
+          except GenePanic as e:
+            stack.add completedTaskFromPanic(e)
+        of opAwait:
+          stack.add awaitTaskValue(stack.pop())
+        of opFail:
+          let errVal = stack.pop()
+          if not scope.isErrorValue(errVal):
+            raise newException(GeneError, "fail expects an Error value")
+          raiseFailedValue(errVal)
+        of opPanic:
+          raisePanicValue(stack.pop())
+        of opYield:
+          if not stopOnYield:
+            raise newException(GeneError, "yield is only valid in a generator")
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in yield")
+          # A generator suspends in its own (outermost) frame; simpleCall callees
+          # never yield, so `frames` is empty here and stack/ip persist via the args.
+          let yielded = escapeWeakFunctions(stack[^1])
+          stackArg = move stack
+          ipArg = ip
+          return RunStop(kind: rskYield, value: yielded)
+        of opJumpIfFalse:
+          let cond = stack.pop()
+          if not cond.isTruthy:
+            ip = inst[].intArg
+        of opJump:
           ip = inst[].intArg
-      of opJump:
-        ip = inst[].intArg
-      of opReturn:
-        frameReturn(if stack.len > 0: stack.pop() else: NIL)
-      of opCheckType:
-        if stack.len == 0:
-          raise newException(GeneError, "VM stack underflow in type check")
-        stack[^1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
-                                  stack[^1], scope)
-      of opDeclareType:
-        scope.declareType(inst[].name, chunk.constants[inst[].intArg])
-      # All exits are via frameReturn / opYield above; the loop never falls through.
-  except GeneError as e:
-    # An error is unwinding the frame stack: translate it at the current
-    # frame's ^errors boundary, then at each suspended caller's, exactly as the
-    # nested applyCall try/excepts would have, before propagating onward.
-    var err = translateErrorBoundary(curChecksErrors, curErrorTypes,
-                                     curFnName, e)
-    while frames.len > 0:
-      let f = frames.pop()
-      err = translateErrorBoundary(f.checksErrors, f.errorTypes, f.fnName, err)
-    raise err
+        of opReturn:
+          frameReturn(if stack.len > 0: stack.pop() else: NIL)
+        of opCheckType:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in type check")
+          stack[^1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
+                                    stack[^1], scope)
+        of opDeclareType:
+          scope.declareType(inst[].name, chunk.constants[inst[].intArg])
+        # All exits are via frameReturn / opYield above; the loop never falls through.
+    except GeneError as e:
+      # A recoverable error is unwinding the frame stack. Walk outward from the
+      # current frame: give each enclosing `try` (a TryHandler, keyed by frame
+      # depth) a chance to catch, run ensure blocks, and translate ^errors
+      # boundaries on the function frames crossed. A catch that fires resumes the
+      # outer dispatch loop with its result; otherwise the error propagates out.
+      var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
+      while true:
+        if handlers.len > 0 and handlers[^1].framesLen == frames.len:
+          # Unwound back to this try's level. Resume in the enclosing (owner) frame
+          # and run the catch clauses + ensure there: an error or panic they raise
+          # then re-enters this unwind from the owner, so outer trys and their
+          # ensure blocks still apply (matching the old nested run()/finally).
+          let h = handlers.pop()
+          releaseRunStack(stack)        # discard the try body's operand stack
+          let ownerValidate = frames[^1].validateImpls
+          let errVal =
+            if err.hasErrVal: err.errVal
+            else:
+              var props = initOrderedTable[string, Value]()
+              props["message"] = newStr(err.msg)
+              newNode(newSym("Error"), props = props)
+          var owner = frames.pop()
+          stack = move owner.stack
+          loadFrameRegs(owner)
+          var caught = false
+          var catchResult = NIL
+          var raised: ref CatchableError = nil
+          for cl in h.tp.catches:
+            var binds = initTable[string, Value]()
+            if tryMatch(cl.pattern, errVal, h.scope, binds):
+              let catchScope = newScope(h.scope)
+              catchScope.prepareChunkScope(cl.body)
+              catchScope.bindMatchedValues(binds, replaceExisting = false)
+              try:
+                catchResult = run(cl.body, catchScope,
+                                  validateImplRequirements = ownerValidate)
+                caught = true
+              except GeneError as ce: raised = ce
+              except GenePanic as cp: raised = cp
+              break
+          if h.tp.ensureBody != nil:
+            # ensure always runs; an exception it raises overrides any in-flight one.
+            try:
+              discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+            except GeneError as ee:
+              raised = ee
+              caught = false
+            except GenePanic as ep:
+              raised = ep
+              caught = false
+          if raised != nil:
+            if raised of GenePanic:
+              # Run the remaining (outer) ensures, then propagate the panic.
+              while handlers.len > 0:
+                let hh = handlers.pop()
+                if hh.tp.ensureBody != nil:
+                  discard run(hh.tp.ensureBody, hh.scope,
+                              validateImplRequirements = false)
+              raise raised
+            # A GeneError from catch/ensure unwinds onward from the owner context.
+            err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName,
+                                         cast[ref GeneError](raised))
+          elif caught:
+            stack.add catchResult       # resume the enclosing frame after the try
+            break
+          else:
+            # No catch matched: keep unwinding the (possibly re-labelled) error.
+            err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+        elif frames.len == 0:
+          raise err
+        else:
+          releaseRunStack(stack)
+          var f = frames.pop()
+          stack = move f.stack
+          loadFrameRegs(f)
+          err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+      # Reached only via `break` (a catch fired): fall through to the outer
+      # `while true`, re-entering dispatch with the catch result on the stack.
+    except GenePanic as p:
+      # Panics are not catchable, but ensure blocks still run as the panic unwinds
+      # out of every active `try` (innermost first), matching the old `finally`.
+      while handlers.len > 0:
+        let h = handlers.pop()
+        if h.tp.ensureBody != nil:
+          discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+      raise p
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   scope.prepareChunkScope(chunk)
