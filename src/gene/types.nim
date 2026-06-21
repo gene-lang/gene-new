@@ -1979,6 +1979,30 @@ proc newCompletedTask*(value: Value): Value =
   boxObject(TaskData(objKind: okTask, done: true,
                      result: escapeWeakFunctions(value)))
 
+proc newPendingTask*(): Value =
+  ## A task whose computation has not finished yet. The scheduler fills in the
+  ## outcome with completeTask/failTask/panicTask once its fiber settles.
+  boxObject(TaskData(objKind: okTask, done: false))
+
+proc completeTask*(v, value: Value) =
+  let data = taskData(v)
+  data.done = true
+  data.result = escapeWeakFunctions(value)
+
+proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+  let data = taskData(v)
+  data.done = true
+  data.errorMsg = message
+  data.errorValue = escapeWeakFunctions(value)
+  data.hasErrorValue = hasValue
+
+proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+  let data = taskData(v)
+  data.done = true
+  data.panicMsg = message
+  data.panicValue = escapeWeakFunctions(value)
+  data.hasPanicValue = hasValue
+
 proc newFailedTask*(message: string, value: Value = NIL,
                     hasValue = false): Value =
   boxObject(TaskData(objKind: okTask, done: true,

@@ -24,6 +24,28 @@ proc isSendableValue(value: Value, scope: Scope): bool
 proc completedTaskFromError(e: ref GeneError): Value
 proc completedTaskFromPanic(e: ref GenePanic): Value
 
+type
+  SuspendError = object of CatchableError
+    ## Raised by a blocking native (channel send/recv) while a scheduled fiber is
+    ## running, to suspend the whole Gene task. It is NOT a GeneError, so Gene
+    ## `try/catch` never catches it; the dispatch loop turns it into rskSuspend and
+    ## the scheduler parks the fiber on `waitChannel` until the channel is ready.
+    channel: Value
+    isSend: bool
+    sendValue: Value
+
+# `currentFiberActive` gates channel suspension: only a fiber the scheduler is
+# running suspends. Root-level channel use keeps its original synchronous behavior.
+var currentFiberActive {.threadvar.}: bool
+
+# Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
+# moving it from the wait list to the run queue. Defined with the scheduler below.
+proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
+
+# Run one runnable fiber to its next park/completion; false if none are runnable.
+# Lets a blocking root-level channel op cooperatively pump the scheduler.
+proc schedulerRunOne(): bool
+
 # ---------------------------------------------------------------------------
 # Scope
 # ---------------------------------------------------------------------------
@@ -584,13 +606,25 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len != 2:
     raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
   requireChannel("Channel/send", args[0])
+  while args[0].channelFull and not args[0].channelClosed:
+    if currentFiberActive:
+      # Inside a scheduled fiber: park the whole task until space frees up.
+      var se: ref SuspendError
+      new(se)
+      se.msg = "Channel/send suspends on a full channel"
+      se.channel = args[0]
+      se.isSend = true
+      se.sendValue = args[1]
+      raise se
+    # At the root: cooperatively run a fiber (a receiver may drain), then retry.
+    if not schedulerRunOne():
+      raise newException(GeneError, "Channel/send would suspend on a full channel")
   if args[0].channelClosed:
     raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
-  if args[0].channelFull:
-    raise newException(GeneError, "Channel/send would suspend on a full channel")
   let scope = if call == nil: nil else: call[].dispatchScope
   args[0].pushChannel(checkedChannelSendItem(args[0], args[1],
                                              "Channel/send item", scope))
+  wakeChannelWaiters(args[0], wakeSenders = false)   # a buffered value may wake a receiver
   NIL
 
 proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -607,13 +641,25 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
-  if args[0].channelLen > 0:
-    let scope = if call == nil: nil else: call[].dispatchScope
-    return checkedChannelItem(args[0], args[0].popChannel(),
-                              "Channel/recv item", scope)
-  if args[0].channelClosed:
-    raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
-  raise newException(GeneError, "Channel/recv would suspend on an empty channel")
+  while args[0].channelLen == 0:
+    if args[0].channelClosed:
+      raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
+    if currentFiberActive:
+      # Inside a scheduled fiber: park the whole task until a value arrives.
+      var se: ref SuspendError
+      new(se)
+      se.msg = "Channel/recv suspends on an empty channel"
+      se.channel = args[0]
+      se.isSend = false
+      raise se
+    # At the root: cooperatively run a fiber (a sender may push), then retry.
+    if not schedulerRunOne():
+      raise newException(GeneError, "Channel/recv would suspend on an empty channel")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let item = checkedChannelItem(args[0], args[0].popChannel(),
+                                "Channel/recv item", scope)
+  wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a sender
+  return item
 
 proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/try-recv", args)
@@ -2943,6 +2989,7 @@ type
   RunStopKind = enum
     rskReturn
     rskYield
+    rskSuspend            # fiber parked on a channel; its continuation is captured
 
   RunStop = object
     kind: RunStopKind
@@ -2976,6 +3023,42 @@ type
     framesLen: int          # frames.len at try entry; the handler fires when an
                             # unwinding error pops back to this depth
 
+  Fiber = ref object
+    ## A suspendable Gene task: the full runLoop continuation captured on the heap.
+    ## A fresh fiber carries just chunk/scope (started = false); once it suspends,
+    ## every register, the operand stack, and the frame/handler stacks are saved
+    ## here so the scheduler can resume it later. `task` is the (Task T E) value it
+    ## settles; `waitChannel`/`waitIsSend` record what it is parked on.
+    chunk: Chunk
+    scope: Scope
+    stack: seq[Value]
+    ip: int
+    frames: seq[Frame]
+    handlers: seq[TryHandler]
+    validateImpls: bool
+    returnType: Value
+    returnLabel: string
+    checksErrors: bool
+    errorTypes: seq[Value]
+    fnName: string
+    isTryBody: bool
+    started: bool          # false until first scheduled (resume restores the rest)
+    task: Value            # the Task value this fiber settles on completion
+    waitChannel: Value     # channel the fiber is parked on, when suspended
+    waitIsSend: bool       # parked on send (vs recv)
+    waitSendValue: Value   # value to deliver when a parked send resumes
+
+# Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
+# work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
+# on a channel. `currentFiberActive` gates channel suspension: only a scheduled
+# fiber suspends — root-level channel use keeps its original synchronous behavior.
+var schedRunQueue {.threadvar.}: seq[Fiber]
+var schedWaiters {.threadvar.}: seq[Fiber]
+
+proc spawnFiber(chunk: Chunk, scope: Scope): Value
+proc pumpUntilDone(task: Value)
+proc drainRunnable()
+
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
                             e: ref GeneError): ref GeneError =
   ## Apply one ^errors boundary as an exception unwinds the frame stack: declared
@@ -2991,7 +3074,7 @@ proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
-             validateArg = true): RunStop
+             validateArg = true, fiber: Fiber = nil): RunStop
 
 proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
   if decl.kind != vkNode:
@@ -3049,7 +3132,7 @@ proc consumeEvalStep(budget: EvalBudget) =
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
-             validateArg = true): RunStop =
+             validateArg = true, fiber: Fiber = nil): RunStop =
   # Stage 1 of structured concurrency: the "current frame" lives in registers
   # below, and simple Gene function calls push the caller onto `frames` and
   # switch registers to the callee instead of recursing through Nim. A call chain
@@ -3073,6 +3156,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curFnName = ""
   var curIsTryBody = false      # current frame is a `try` body (see Frame.isTryBody)
   var handlers: seq[TryHandler] # active `try` regions, innermost last
+
+  if fiber != nil and fiber.started:
+    # Resuming a parked fiber: restore the full continuation captured at suspend.
+    chunk = fiber.chunk
+    scope = fiber.scope
+    stack = move fiber.stack
+    ip = fiber.ip
+    frames = move fiber.frames
+    handlers = move fiber.handlers
+    validateImplRequirements = fiber.validateImpls
+    returnType = fiber.returnType
+    returnLabel = fiber.returnLabel
+    curChecksErrors = fiber.checksErrors
+    curErrorTypes = fiber.errorTypes
+    curFnName = fiber.fnName
+    curIsTryBody = fiber.isTryBody
+    evalBudget = scope.evalBudget
 
   template loadFrameRegs(f: Frame) =
     ## Restore the per-frame registers (everything except the operand stack, which
@@ -3681,7 +3781,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           taskScope.ownsActors = true
           taskScope.actorFailureStrategy = afsStop
           try:
-            stack.add run(chunk.subchunks[inst[].intArg], taskScope)
+            let bodyResult = run(chunk.subchunks[inst[].intArg], taskScope)
+            drainRunnable()   # leaving a scope makes progress on its live children
+            stack.add bodyResult
           finally:
             taskScope.closeOwnedActors()
         of opSupervisor:
@@ -3693,24 +3795,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           finally:
             supervisorScope.closeOwnedActors()
         of opSpawn:
-          # TODO(scheduler): still a synchronous prototype — the task body runs to
-          # completion right here. Stage 1 (the explicit call-frame stack above) is
-          # the foundation: simple Gene calls no longer recurse through Nim, so a call
-          # chain lives on the heap. Remaining work (design §13/§17, impl-order steps
-          # 9/12/14): an M:N scheduler with runnable/suspended/completed TaskFrames,
-          # suspending await across the frame stack, channel sender/receiver wait
-          # queues + backpressure, cancellation, and moving the non-simple-call and
-          # native paths onto frames too. See README "Concurrency is a synchronous
-          # prototype".
+          # Spawn a child task as a scheduler fiber: its body runs eagerly until it
+          # completes or parks on a channel op (see the scheduler above). A
+          # non-blocking body settles immediately, like the old inline prototype; a
+          # blocking body parks and yields a pending Task that await/drain drives.
+          # (Still a single-worker cooperative scheduler; M:N is future work. Channel
+          # suspension is live; await-suspension and cancellation are not yet.)
           let taskScope = newScope(scope)
-          try:
-            stack.add newCompletedTask(run(chunk.subchunks[inst[].intArg], taskScope))
-          except GeneError as e:
-            stack.add completedTaskFromError(e)
-          except GenePanic as e:
-            stack.add completedTaskFromPanic(e)
+          stack.add spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
         of opAwait:
-          stack.add awaitTaskValue(stack.pop())
+          # Drive the scheduler until the awaited task settles, then read it.
+          let task = stack.pop()
+          if task.kind == vkTask and not task.taskDone:
+            pumpUntilDone(task)
+          stack.add awaitTaskValue(task)
         of opFail:
           let errVal = stack.pop()
           if not scope.isErrorValue(errVal):
@@ -3832,6 +3930,32 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if h.tp.ensureBody != nil:
           discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
       raise p
+    except SuspendError as se:
+      # A blocking channel op asked to park this fiber. Capture the whole
+      # continuation into `fiber` and hand control back to the scheduler. The
+      # suspending op is re-executed on resume, so rewind ip to it (ip-1); the
+      # operand stack still holds its callee + args (opCall had not consumed them).
+      # `try` handlers travel along in `handlers`, so ensure blocks do not run.
+      if fiber == nil:
+        raise newException(GeneError, "internal: suspended outside a fiber")
+      fiber.chunk = chunk
+      fiber.scope = scope
+      fiber.ip = ip - 1
+      fiber.validateImpls = validateImplRequirements
+      fiber.returnType = returnType
+      fiber.returnLabel = returnLabel
+      fiber.checksErrors = curChecksErrors
+      fiber.errorTypes = curErrorTypes
+      fiber.fnName = curFnName
+      fiber.isTryBody = curIsTryBody
+      fiber.started = true
+      fiber.waitChannel = se.channel
+      fiber.waitIsSend = se.isSend
+      fiber.waitSendValue = se.sendValue
+      fiber.frames = move frames
+      fiber.handlers = move handlers
+      fiber.stack = move stack
+      return RunStop(kind: rskSuspend, value: NIL)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   scope.prepareChunkScope(chunk)
@@ -3860,6 +3984,91 @@ proc runPooled(chunk: Chunk, scope: Scope,
     raise newException(GeneError, "yield is only valid in a generator")
   stopped.value
 
+# ---------------------------------------------------------------------------
+# Cooperative task scheduler (design §13.1). Fibers are suspendable Gene tasks;
+# they park on channel ops and resume when a counterpart op makes progress. This
+# is a single-worker cooperative prototype — the M:N worker pool is future work.
+# ---------------------------------------------------------------------------
+
+proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
+  ## Move one fiber parked on `channel` — a receiver, or a sender when
+  ## `wakeSenders` — from the wait list onto the run queue (FIFO over waiters).
+  for i in 0 ..< schedWaiters.len:
+    let f = schedWaiters[i]
+    if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+      schedWaiters.delete(i)
+      f.waitChannel = NIL
+      schedRunQueue.add f
+      return
+
+proc runFiber(f: Fiber) =
+  ## Run or resume `f` until it completes or parks. On completion settle its task;
+  ## on suspend the dispatch loop has already captured the continuation into `f`
+  ## and recorded the wait reason, so park it on the wait list.
+  if not f.started:
+    f.scope.prepareChunkScope(f.chunk)
+  var dummyStack: seq[Value]
+  var dummyIp = 0
+  let savedActive = currentFiberActive
+  currentFiberActive = true
+  var stop: RunStop
+  var settled = false
+  try:
+    stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
+                   validateArg = true, fiber = f)
+  except GeneError as e:
+    settled = true
+    if e.hasErrVal: failTask(f.task, e.msg, e.errVal, hasValue = true)
+    else: failTask(f.task, e.msg)
+  except GenePanic as e:
+    settled = true
+    if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
+    else: panicTask(f.task, e.msg)
+  finally:
+    currentFiberActive = savedActive
+  if settled:
+    return
+  case stop.kind
+  of rskReturn:
+    completeTask(f.task, stop.value)
+  of rskSuspend:
+    schedWaiters.add f
+  of rskYield:
+    failTask(f.task, "yield is only valid in a generator")
+
+proc spawnFiber(chunk: Chunk, scope: Scope): Value =
+  ## Create a child task + fiber and run it eagerly until it completes or parks.
+  ## A non-blocking body settles immediately (as the old inline prototype did); a
+  ## blocking body parks and yields a pending Task driven later by await/drain.
+  let task = newPendingTask()
+  let f = Fiber(chunk: chunk, scope: scope, task: task, started: false)
+  runFiber(f)
+  task
+
+proc schedulerRunOne(): bool =
+  ## Run one runnable fiber to its next park/completion. Returns false if none.
+  if schedRunQueue.len == 0:
+    return false
+  let f = schedRunQueue[0]
+  schedRunQueue.delete(0)
+  runFiber(f)
+  true
+
+proc pumpUntilDone(task: Value) =
+  ## Drive the run queue until `task` settles. Each runnable fiber advances to its
+  ## next park/completion; a parked fiber resumes only when a channel op wakes it.
+  ## If the queue drains with the task unfinished, it can never finish.
+  while not task.taskDone:
+    if not schedulerRunOne():
+      raise newException(GeneError,
+        "deadlock: awaited task is blocked with no runnable task to unblock it")
+
+proc drainRunnable() =
+  ## Advance every currently-runnable fiber to its next park/completion. Used at
+  ## scope exit to make progress on spawned children; parked fibers stay parked.
+  while schedulerRunOne():
+    discard
+
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
   let code = stream.streamGeneratorCode
   if code == nil or not (code of FunctionProto):
@@ -3877,6 +4086,8 @@ proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
   of rskReturn:
     stream.closeStream()
     StreamPullResult(has: false, item: NIL)
+  of rskSuspend:
+    raise newException(GeneError, "generator cannot suspend on a channel")
 
 proc positionalDefault(proto: FunctionProto, index: int): ParamDefault =
   if index < proto.paramDefaults.len:

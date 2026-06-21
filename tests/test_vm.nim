@@ -1244,6 +1244,40 @@ suite "vm — channels":
     expect GeneError: discard runStr("(Channel/send 1 2)")
     expect GeneError: discard runStr("(Channel/recv 1)")
 
+suite "vm — cooperative scheduler":
+  test "a task blocked on recv is woken by a sender task":
+    # The consumer parks on an empty channel; the producer's send wakes it and the
+    # whole task resumes — real cooperative suspension across the frame stack.
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var c (spawn (ch ~ Channel/recv))) " &
+       "  (var p (spawn (ch ~ Channel/send 7))) " &
+       "  (await c))", "7"
+  test "a producer that fills the channel parks until the root drains it":
+    # send on a full channel parks the producer fiber; each root recv frees space
+    # and wakes it to push the next value.
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var p (spawn (do (ch ~ Channel/send 1) (ch ~ Channel/send 2) 99))) " &
+       "  (var a (ch ~ Channel/recv)) (var b (ch ~ Channel/recv)) " &
+       "  [a b (await p)])", "[1 2 99]"
+  test "multiple producers blocked on a full channel are all drained":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var p1 (spawn (ch ~ Channel/send 10))) " &
+       "  (var p2 (spawn (ch ~ Channel/send 20))) " &
+       "  (+ (ch ~ Channel/recv) (ch ~ Channel/recv)))", "30"
+  test "suspension preserves a deep call chain across the channel block":
+    # The recv happens inside a nested call; resuming restores the whole frame
+    # stack, so the caller continues correctly after the value arrives.
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (fn get-one [c] (+ 1 (c ~ Channel/recv))) " &
+       "  (var t (spawn (get-one ch))) " &
+       "  (var p (spawn (ch ~ Channel/send 41))) " &
+       "  (await t))", "42"
+  test "await with no way to make progress is a deadlock error":
+    expect GeneError:
+      discard runStr("(scope (var ch (channel ^capacity 1)) " &
+                     "  (var c (spawn (ch ~ Channel/recv))) " &
+                     "  (await c))")
+
 suite "vm — actors":
   test "actor values are opaque display values":
     ck "(actor/spawn ^init (fn [] 0) " &
