@@ -3044,9 +3044,10 @@ type
     isTryBody: bool
     started: bool          # false until first scheduled (resume restores the rest)
     task: Value            # the Task value this fiber settles on completion
-    waitChannel: Value     # channel the fiber is parked on, when suspended
+    waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
     waitIsSend: bool       # parked on send (vs recv)
     waitSendValue: Value   # value to deliver when a parked send resumes
+    waitTask: Value        # task the fiber is parked on, when suspended in `await`
 
 # Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
 # work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
@@ -3188,6 +3189,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = f.fnName
     curIsTryBody = f.isTryBody
     evalBudget = scope.evalBudget
+
+  template captureContinuation(resumeIp: int) =
+    ## Save the whole running continuation into `fiber` so the scheduler can resume
+    ## it later. `resumeIp` is the instruction to re-execute on resume (the parking
+    ## op, whose operands are still on the stack). The caller sets the wait reason.
+    fiber.chunk = chunk
+    fiber.scope = scope
+    fiber.ip = resumeIp
+    fiber.validateImpls = validateImplRequirements
+    fiber.returnType = returnType
+    fiber.returnLabel = returnLabel
+    fiber.checksErrors = curChecksErrors
+    fiber.errorTypes = curErrorTypes
+    fiber.fnName = curFnName
+    fiber.isTryBody = curIsTryBody
+    fiber.started = true
+    fiber.frames = move frames
+    fiber.handlers = move handlers
+    fiber.stack = move stack
 
   template frameReturn(rawValue: Value) =
     ## Return `rawValue` from the current frame: adapt it to the frame's declared
@@ -3804,10 +3824,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let taskScope = newScope(scope)
           stack.add spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
         of opAwait:
-          # Drive the scheduler until the awaited task settles, then read it.
-          let task = stack.pop()
+          # Await a task. Inside a scheduled fiber, park on the task (the scheduler
+          # runs others and wakes us when it settles) and re-execute opAwait on
+          # resume — the task is still on the stack. At the root, drive the queue.
+          let task = stack[^1]
           if task.kind == vkTask and not task.taskDone:
+            if currentFiberActive:
+              captureContinuation(ip - 1)   # task stays on the stack for re-execution
+              fiber.waitTask = task
+              fiber.waitChannel = NIL
+              return RunStop(kind: rskSuspend, value: NIL)
             pumpUntilDone(task)
+          discard stack.pop()
           stack.add awaitTaskValue(task)
         of opFail:
           let errVal = stack.pop()
@@ -3938,23 +3966,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # `try` handlers travel along in `handlers`, so ensure blocks do not run.
       if fiber == nil:
         raise newException(GeneError, "internal: suspended outside a fiber")
-      fiber.chunk = chunk
-      fiber.scope = scope
-      fiber.ip = ip - 1
-      fiber.validateImpls = validateImplRequirements
-      fiber.returnType = returnType
-      fiber.returnLabel = returnLabel
-      fiber.checksErrors = curChecksErrors
-      fiber.errorTypes = curErrorTypes
-      fiber.fnName = curFnName
-      fiber.isTryBody = curIsTryBody
-      fiber.started = true
+      captureContinuation(ip - 1)   # re-execute the channel op (operands still on stack)
       fiber.waitChannel = se.channel
       fiber.waitIsSend = se.isSend
       fiber.waitSendValue = se.sendValue
-      fiber.frames = move frames
-      fiber.handlers = move handlers
-      fiber.stack = move stack
+      fiber.waitTask = NIL
       return RunStop(kind: rskSuspend, value: NIL)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
@@ -4001,10 +4017,23 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
       schedRunQueue.add f
       return
 
+proc wakeTaskWaiters(task: Value) =
+  ## Move every fiber parked in `await` on `task` onto the run queue. A completed
+  ## task wakes all of its awaiters (unlike a channel, which wakes one counterpart).
+  var i = 0
+  while i < schedWaiters.len:
+    let f = schedWaiters[i]
+    if same(f.waitTask, task):
+      schedWaiters.delete(i)
+      f.waitTask = NIL
+      schedRunQueue.add f
+    else:
+      inc i
+
 proc runFiber(f: Fiber) =
-  ## Run or resume `f` until it completes or parks. On completion settle its task;
-  ## on suspend the dispatch loop has already captured the continuation into `f`
-  ## and recorded the wait reason, so park it on the wait list.
+  ## Run or resume `f` until it completes or parks. On completion settle its task
+  ## and wake anyone awaiting it; on suspend the dispatch loop has already captured
+  ## the continuation into `f`, so park it on the wait list.
   if not f.started:
     f.scope.prepareChunkScope(f.chunk)
   var dummyStack: seq[Value]
@@ -4026,15 +4055,16 @@ proc runFiber(f: Fiber) =
     else: panicTask(f.task, e.msg)
   finally:
     currentFiberActive = savedActive
-  if settled:
-    return
-  case stop.kind
-  of rskReturn:
-    completeTask(f.task, stop.value)
-  of rskSuspend:
-    schedWaiters.add f
-  of rskYield:
-    failTask(f.task, "yield is only valid in a generator")
+  if not settled:
+    case stop.kind
+    of rskReturn:
+      completeTask(f.task, stop.value)
+    of rskSuspend:
+      schedWaiters.add f
+    of rskYield:
+      failTask(f.task, "yield is only valid in a generator")
+  if f.task.taskDone:
+    wakeTaskWaiters(f.task)   # awaiters parked on this task can now resume
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value =
   ## Create a child task + fiber and run it eagerly until it completes or parks.

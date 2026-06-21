@@ -1277,6 +1277,21 @@ suite "vm — cooperative scheduler":
       discard runStr("(scope (var ch (channel ^capacity 1)) " &
                      "  (var c (spawn (ch ~ Channel/recv))) " &
                      "  (await c))")
+  test "a task awaiting another parks until it settles":
+    # `doubler` awaits `producer` while producer is still blocked on recv; it parks
+    # on the task (does not busy-pump) and resumes once producer completes.
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var producer (spawn (do (ch ~ Channel/recv) 5))) " &
+       "  (var doubler (spawn (* 2 (await producer)))) " &
+       "  (ch ~ Channel/send 1) " &
+       "  (await doubler))", "10"
+  test "a chain of awaiting tasks resolves in order":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var a (spawn (do (ch ~ Channel/recv) 1))) " &
+       "  (var b (spawn (+ 10 (await a)))) " &
+       "  (var c (spawn (+ 100 (await b)))) " &
+       "  (ch ~ Channel/send 0) " &
+       "  (await c))", "111"
 
 suite "vm — actors":
   test "actor values are opaque display values":
