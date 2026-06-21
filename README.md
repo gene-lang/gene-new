@@ -176,8 +176,12 @@ See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 
 `sizeof(Value) == sizeof(uint64)`. Compound values are manually heap-allocated
 with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks drive
-reference counting automatically, so values free at count 0 — no global table, no
-per-read lock, no leak. Symbols are interned to immediate ids. Build with
+reference counting automatically, so acyclic values free at count 0 — no global
+table, no per-read lock. The common `scope → closure → scope` cycle is broken with
+weak captured-scope edges, but reference cycles among *mutable* heap objects (e.g.
+a self-referential `cell`) are not yet collected — closing that gap to meet the
+tracing-GC requirement in `docs/design.md` §11.1/§13 is tracked work. Symbols are
+interned to immediate ids. Build with
 `-d:geneRcStats` to expose `liveManaged` for retain/release auditing. (RC is
 non-atomic for the single-threaded MVP; see `TODO(vm-shared-rc)` in
 `src/gene/types.nim` for the planned per-object atomic-on-publish upgrade.)

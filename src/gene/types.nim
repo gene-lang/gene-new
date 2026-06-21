@@ -12,8 +12,14 @@
 ##
 ## Managed objects are manually heap-allocated and reference counted. Each starts
 ## with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks
-## drive retain/release automatically, so values free at count 0 — no global table,
-## no per-read lock, no leak. (Adopted from the older Gene runtime.)
+## drive retain/release automatically, so acyclic values free at count 0 — no
+## global table, no per-read lock. (Adopted from the older Gene runtime.)
+##
+## Cycles: the `scope -> closure -> scope` case is broken with weak captured-scope
+## edges (see `Scope`/`GeneFunction`). Cycles among mutable ORC-backed objects
+## reached through a `Value` (e.g. a self-referential `cell`) are NOT yet collected
+## — ORC cannot trace through the NaN-boxed pointer. design.md §11.1/§13 requires
+## tracing collection of these; see `tests/test_rc.nim`. (Adopted from older Gene.)
 ##
 ## TODO(vm-shared-rc): RC is non-atomic and assumes single-threaded mutation, which
 ## matches the current MVP. When the M:N scheduler lands, give each managed object a
@@ -778,6 +784,12 @@ proc rcRelease(bits: uint64) =
     dec p.refCount
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
   of OBJECT_TAG:
+    # TODO(orc-cycles): this manual GC_unref frees ORC objects immediately at
+    # refcount 0, which is incompatible with ORC's deferred cycle collector.
+    # As a result, cycles among mutable OBJECT_TAG objects reached through a
+    # Value (e.g. a self-referential cell) leak (design.md §11.1/§13; tracked by
+    # the "KNOWN GAP" suite in tests/test_rc.nim). Fix: make OBJECT_TAG objects
+    # fully ORC-managed (no manual free here) and add a `=trace` hook on Value.
     GC_unref(cast[GeneObjectData](cast[pointer](payload)))
   else: discard
 
