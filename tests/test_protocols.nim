@@ -43,6 +43,12 @@ suite "protocols — declarations and dispatch":
        "((PickNamed) ^name \"Ada\")",
        "\"Ada\""
 
+  test "the Call envelope carries the source call site":
+    ck "(type Probe ^props {}) " &
+       "(impl Callable Probe (message apply [self call] call/site)) " &
+       "(var p (Probe)) (p 7 8)",
+       "(p 7 8)"
+
   test "Callable boundaries accept values with visible impls":
     ck "(type AddN ^props {^n Int}) " &
        "(impl Callable AddN " &

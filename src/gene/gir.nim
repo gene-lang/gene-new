@@ -4,7 +4,7 @@
 ## prototypes. It is the handoff boundary between syntax compilation and runtime
 ## execution.
 
-import std/strutils
+import std/[strutils, tables]
 import ./[printer, types]
 
 type
@@ -176,12 +176,14 @@ type
     typeProtos*: seq[TypeProto]
     protocolProtos*: seq[ProtocolProto]
     implProtos*: seq[ImplProto]
+    callSites*: Table[int, Value]   # opCall/opCallSplice index -> source node (design §3 `Call ^site`)
 
 proc newChunk*(): Chunk =
   Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
         imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
-        typeProtos: @[], protocolProtos: @[], implProtos: @[])
+        typeProtos: @[], protocolProtos: @[], implProtos: @[],
+        callSites: initTable[int, Value]())
 
 proc addListBuild*(chunk: Chunk, lp: ListBuildProto): int =
   result = chunk.listBuilds.len

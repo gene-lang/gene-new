@@ -242,6 +242,7 @@ type
     namedNames*: seq[string]
     namedValues*: seq[Value]
     dispatchScope*: Scope
+    site*: Value             # the source call-site node, or NIL (design §3)
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}

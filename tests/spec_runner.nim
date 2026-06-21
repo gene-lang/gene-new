@@ -328,6 +328,11 @@ suite "spec — typed variable boundaries from design":
                "(fn invoke [f : Callable] (f 2)) " &
                "(invoke (AddN ^n 3))",
                "5")
+    # The Call envelope exposes the source call site (design §3 `^site? Node`).
+    check_eval("(type Probe ^props {}) " &
+               "(impl Callable Probe (message apply [self call] call/site)) " &
+               "(var p (Probe)) (p 1 2)",
+               "(p 1 2)")
 
 suite "spec — generic functions from design":
   test "generic function calls infer type parameters locally":

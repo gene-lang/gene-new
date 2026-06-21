@@ -1746,9 +1746,9 @@ proc compileCall(c: var Compiler, node: Value) =
   compileSpreadValues(c, node.body, 0, forList = false, splices, hasSplice)
   if hasSplice:
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
-    discard c.emit(opCallSplice, idx, names = names)
+    c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
   else:
-    discard c.emit(opCall, node.body.len, names = names)
+    c.chunk.callSites[c.emit(opCall, node.body.len, names = names)] = node
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   if node.body.len == 0:
@@ -1766,9 +1766,9 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   compileSpreadValues(c, node.body, 1, forList = false, splices, hasSplice)
   if hasSplice:
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
-    discard c.emit(opCallSplice, idx, names = names)
+    c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
   else:
-    discard c.emit(opCall, node.body.len, names = names)
+    c.chunk.callSites[c.emit(opCall, node.body.len, names = names)] = node
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body

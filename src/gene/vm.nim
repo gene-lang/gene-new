@@ -270,7 +270,7 @@ proc getArg(named: NamedArgs, name: string): Value =
   raise newException(GeneError, "missing named argument: " & name)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
-               dispatchScope: Scope = nil): Value
+               dispatchScope: Scope = nil, site: Value = NIL): Value
 proc typeExprLabel(expr: Value): string
 
 # ---------------------------------------------------------------------------
@@ -3280,11 +3280,19 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
         named.values = newSeq[Value](inst[].names.len)
         for i in 0 ..< inst[].names.len:
           named.values[i] = stack[calleeIndex + 1 + i]
+      # Call-site node for the Call envelope (design §3). Looked up only for
+      # envelope-building callees; the hot Fn and plain-native paths skip it.
+      let site =
+        if callee.kind == vkFunction or
+            (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+          NIL
+        else:
+          chunk.callSites.getOrDefault(ip - 1, NIL)
       let value =
         if argCount == 0:
-          applyCall(callee, [], named, scope)
+          applyCall(callee, [], named, scope, site)
         else:
-          applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope)
+          applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope, site)
       stack.setLen(calleeIndex)
       stack.add value
     of opCallSplice:
@@ -3308,11 +3316,17 @@ proc runLoop(chunk: Chunk, scope: Scope, stack: var seq[Value], ip: var int,
           appendSplicedBody(args, part)
         else:
           args.add part
+      let site =
+        if callee.kind == vkFunction or
+            (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+          NIL
+        else:
+          chunk.callSites.getOrDefault(ip - 1, NIL)
       let value =
         if args.len == 0:
-          applyCall(callee, [], named, scope)
+          applyCall(callee, [], named, scope, site)
         else:
-          applyCall(callee, args, named, scope)
+          applyCall(callee, args, named, scope, site)
       stack.setLen(calleeIndex)
       stack.add value
     of opMatch:
@@ -4259,25 +4273,28 @@ proc callNamedMap(named: NamedArgs): Value =
       entries[name] = named.values[i]
   newMap(entries)
 
-proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs): Value =
+proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
+                  site: Value = NIL): Value =
   var props = initOrderedTable[string, Value]()
   props["named"] = callNamedMap(named)
+  if site.kind != vkNil:
+    props["site"] = site
   var body = newSeq[Value](args.len)
   for i, arg in args:
     body[i] = arg
   newNode(builtinBinding(scope, "Call"), props = props, body = body)
 
 proc applyUserCallable(callee: Value, args: openArray[Value], named: NamedArgs,
-                       dispatchScope: Scope): Value =
+                       dispatchScope: Scope, site: Value = NIL): Value =
   let protocol = builtinBinding(dispatchScope, "Callable")
   let message = protocol.protocolMessages["apply"]
   let implFn = resolveProtocolMessage(dispatchScope, message, callee)
-  let envelope = callEnvelope(dispatchScope, args, named)
+  let envelope = callEnvelope(dispatchScope, args, named, site)
   var callArgs = [callee, envelope]
   applyCall(implFn, callArgs, NamedArgs(), dispatchScope)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
-               dispatchScope: Scope = nil): Value =
+               dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
   of vkNativeFn:
     let impl = callee.nativeImpl
@@ -4299,7 +4316,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     var call = NativeCall(calleeName: callee.nativeFnName,
                           namedNames: named.names,
                           namedValues: named.values,
-                          dispatchScope: dispatchScope)
+                          dispatchScope: dispatchScope,
+                          site: site)
     callImpl(args, addr call)
   of vkFunction:
     let positional = callee.fnParams
@@ -4541,11 +4559,11 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       raise newException(GeneError,
         "protocol message '" & callee.protocolMessageName & "' expects a receiver")
     let implFn = resolveProtocolMessage(dispatchScope, callee, args[0])
-    applyCall(implFn, args, named, dispatchScope)
+    applyCall(implFn, args, named, dispatchScope, site)
   of vkNode:
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):
-        return applyUserCallable(callee, args, named, dispatchScope)
+        return applyUserCallable(callee, args, named, dispatchScope, site)
       raise newException(GeneError, "value is not callable: " & $callee.kind)
     if named.len != 0:
       raise newException(GeneError, "selector calls do not accept named arguments")
