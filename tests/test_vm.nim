@@ -701,6 +701,11 @@ suite "vm — functions and closures":
     # OS stack. Now simple calls push heap Frames, so deep call chains succeed.
     ck "(fn count [n] (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 200000)",
        "200000"
+  test "deep recursion through a typed (general-path) function uses heap frames":
+    # Typed params / return types take the general call path; it is now on the
+    # frame stack too, so deep recursion through it no longer grows the Nim stack.
+    ck "(fn count [n : Int] : Int (if (= n 0) 0 (+ 1 (count (- n 1))))) " &
+       "(count 200000)", "200000"
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
 

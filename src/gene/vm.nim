@@ -271,6 +271,8 @@ proc getArg(named: NamedArgs, name: string): Value =
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value
+proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
+                   named: NamedArgs): tuple[scope: Scope, returnType: Value]
 proc typeExprLabel(expr: Value): string
 
 # ---------------------------------------------------------------------------
@@ -2955,6 +2957,8 @@ type
     stack: seq[Value]
     ip: int
     validateImpls: bool
+    returnType: Value       # instantiated return-type to adapt on return, or NIL
+    returnLabel: string     # "return from '<fn>'" label for the adaptation error
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
@@ -3030,11 +3034,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var ip = ipArg
   var validateImplRequirements = validateArg
   var evalBudget = scope.evalBudget
+  var returnType = NIL          # current frame's return-type to adapt, or NIL
+  var returnLabel = ""
 
   template frameReturn(rawValue: Value) =
-    ## Return `rawValue` from the current frame: pop to the caller and push the
-    ## result, or — if this is the outermost frame — return to runLoop's caller.
-    let retValue = escapeWeakFunctions(rawValue)
+    ## Return `rawValue` from the current frame: adapt it to the frame's declared
+    ## return type, then pop to the caller and push the result — or, if this is
+    ## the outermost frame, return to runLoop's caller.
+    var retValue = escapeWeakFunctions(rawValue)
+    if returnType.kind != vkNil:
+      retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
     if validateImplRequirements:
       scope.validateRequiredImpls()
     if frames.len == 0:
@@ -3048,6 +3057,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     stack = move caller.stack
     ip = caller.ip
     validateImplRequirements = caller.validateImpls
+    returnType = caller.returnType
+    returnLabel = caller.returnLabel
     evalBudget = scope.evalBudget
     stack.add retValue
 
@@ -3319,14 +3330,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         raise newException(GeneError, "VM stack underflow in call")
       let calleeIndex = argsStart - namedCount - 1
       let callee = stack[calleeIndex]
-      # Fast path: a simple Gene function call becomes a heap frame push (no Nim
-      # recursion). simpleCall guarantees no named/rest/defaults/types/errors/
-      # yield, so the only setup is arity + positional slots.
-      if namedCount == 0 and callee.kind == vkFunction:
+      # Frame-push paths: route Gene function calls onto the explicit frame stack
+      # instead of recursing through Nim. checksErrors functions (need a Nim
+      # try/except boundary) and generators (return a stream) still go through
+      # applyCall below.
+      if callee.kind == vkFunction:
         let code = callee.fnCode
         if code != nil and code of FunctionProto:
           let proto = FunctionProto(code)
-          if proto.simpleCall:
+          if namedCount == 0 and proto.simpleCall:
+            # Hottest path: arity + positional slots only.
             let positional = callee.fnParams
             if argCount != positional.len:
               raise newException(GeneError,
@@ -3340,13 +3353,47 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                    stack[argsStart + i])
             stack.setLen(calleeIndex)        # consume callee + args
             frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                             ip: ip, validateImpls: validateImplRequirements)
+                             ip: ip, validateImpls: validateImplRequirements,
+                             returnType: returnType, returnLabel: returnLabel)
             chunk = proto.chunk
             scope = callScope
             stack = acquireRunStack()
             ip = 0
             validateImplRequirements = true
+            returnType = NIL
+            returnLabel = ""
             evalBudget = callScope.evalBudget
+            continue
+          elif not proto.checksErrors and not proto.isGenerator:
+            # General call (named / defaults / rest / typed / generic): bind via
+            # the shared helper, then push a frame with the return-type to adapt.
+            var named: NamedArgs
+            if namedCount > 0:
+              named.names = inst[].names
+              named.values = newSeq[Value](namedCount)
+              for i in 0 ..< namedCount:
+                named.values[i] = stack[calleeIndex + 1 + i]
+            let bound =
+              if argCount == 0:
+                bindCallScope(callee, proto, [], named)
+              else:
+                bindCallScope(callee, proto,
+                              stack.toOpenArray(argsStart, stack.high), named)
+            stack.setLen(calleeIndex)
+            var lbl = ""
+            if bound.returnType.kind != vkNil:
+              lbl = "return from '" & callee.fnName & "'"
+            frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                             ip: ip, validateImpls: validateImplRequirements,
+                             returnType: returnType, returnLabel: returnLabel)
+            chunk = proto.chunk
+            scope = bound.scope
+            stack = acquireRunStack()
+            ip = 0
+            validateImplRequirements = true
+            returnType = bound.returnType
+            returnLabel = lbl
+            evalBudget = bound.scope.evalBudget
             continue
       var named: NamedArgs
       if namedCount > 0:
@@ -3390,13 +3437,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           appendSplicedBody(args, part)
         else:
           args.add part
-      # Fast path: a spread call to a simple Gene function becomes a heap frame
-      # push, same as opCall (no Nim recursion).
-      if namedCount == 0 and callee.kind == vkFunction:
+      # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
+      # frame stack (checksErrors / generators fall through to applyCall).
+      if callee.kind == vkFunction:
         let code = callee.fnCode
         if code != nil and code of FunctionProto:
           let fnProto = FunctionProto(code)
-          if fnProto.simpleCall and args.len == callee.fnParams.len:
+          if namedCount == 0 and fnProto.simpleCall and
+              args.len == callee.fnParams.len:
             let positional = callee.fnParams
             let callScope = newScope(callee.fnScope)
             callScope.prepareSlots(fnProto.localNames)
@@ -3404,13 +3452,34 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
             stack.setLen(calleeIndex)
             frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                             ip: ip, validateImpls: validateImplRequirements)
+                             ip: ip, validateImpls: validateImplRequirements,
+                             returnType: returnType, returnLabel: returnLabel)
             chunk = fnProto.chunk
             scope = callScope
             stack = acquireRunStack()
             ip = 0
             validateImplRequirements = true
+            returnType = NIL
+            returnLabel = ""
             evalBudget = callScope.evalBudget
+            continue
+          elif not fnProto.checksErrors and not fnProto.isGenerator:
+            let bound = bindCallScope(callee, fnProto, args, named)
+            stack.setLen(calleeIndex)
+            var lbl = ""
+            if bound.returnType.kind != vkNil:
+              lbl = "return from '" & callee.fnName & "'"
+            frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
+                             ip: ip, validateImpls: validateImplRequirements,
+                             returnType: returnType, returnLabel: returnLabel)
+            chunk = fnProto.chunk
+            scope = bound.scope
+            stack = acquireRunStack()
+            ip = 0
+            validateImplRequirements = true
+            returnType = bound.returnType
+            returnLabel = lbl
+            evalBudget = bound.scope.evalBudget
             continue
       let site =
         if callee.kind == vkFunction or
@@ -4396,6 +4465,148 @@ proc applyUserCallable(callee: Value, args: openArray[Value], named: NamedArgs,
   var callArgs = [callee, envelope]
   applyCall(implFn, callArgs, NamedArgs(), dispatchScope)
 
+proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
+                   named: NamedArgs): tuple[scope: Scope, returnType: Value] =
+  ## Build a fully-bound call scope for a non-simple function call: arity check,
+  ## named-arg validation, generic inference, per-parameter type adaptation,
+  ## defaults, and rest gathering. Returns the scope plus the instantiated return
+  ## type (NIL if none). Shared by applyCall (recursive path) and the opCall /
+  ## opCallSplice frame push (trampoline). It does not run the body, nor handle
+  ## generators or ^errors — those stay with the caller.
+  let positional = callee.fnParams
+  let requiredPositional = proto.requiredPositionalCount()
+  if proto.restParam.len == 0:
+    if args.len < requiredPositional or args.len > positional.len:
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' expects " & $requiredPositional &
+        ".." & $positional.len &
+        " argument(s), got " & $args.len)
+  elif args.len < positional.len:
+    raise newException(GeneError,
+      "function '" & callee.fnName & "' expects at least " & $positional.len &
+      " argument(s), got " & $args.len)
+  for key in named.names:
+    var found = false
+    for p in proto.namedParams:
+      if p.arg == key:
+        found = true
+        break
+    if not found:
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' got unexpected named argument: " & key)
+
+  let callScope = newScope(callee.fnScope)
+  callScope.prepareSlots(proto.localNames)
+  var typeBindings: Table[string, Value]
+  if proto.typeParams.len > 0:
+    typeBindings = initTable[string, Value]()
+    let providedForInference = min(args.len, positional.len)
+    for i in 0 ..< providedForInference:
+      if proto.hasParamTypes and i < proto.paramTypes.len and
+          proto.paramTypes[i].kind != vkNil:
+        if not inferTypeExpr(proto.paramTypes[i], args[i], callScope,
+                             proto.typeParams, typeBindings):
+          let expected = substituteTypeParams(proto.paramTypes[i], typeBindings,
+                                              proto.typeParams)
+          raiseTypeError("parameter '" & positional[i] & "'",
+                         expected.typeExprLabel, args[i], callScope)
+    for p in proto.namedParams:
+      if named.hasArg(p.arg) and proto.hasNamedParamTypes and
+          p.typeExpr.kind != vkNil:
+        let value = named.getArg(p.arg)
+        if not inferTypeExpr(p.typeExpr, value, callScope,
+                             proto.typeParams, typeBindings):
+          let expected = substituteTypeParams(p.typeExpr, typeBindings,
+                                              proto.typeParams)
+          raiseTypeError("parameter '" & p.local & "'",
+                         expected.typeExprLabel, value, callScope)
+  let providedPositional = min(args.len, positional.len)
+  for i in 0 ..< providedPositional:
+    var value = args[i]
+    var declaredType = NIL
+    if proto.hasParamTypes and i < proto.paramTypes.len and
+        proto.paramTypes[i].kind != vkNil:
+      let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
+                                         proto.typeParams)
+      declaredType = typeExpr
+      value = adaptBoundary("parameter '" & positional[i] & "'",
+                            typeExpr, value, callScope)
+    if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
+      callScope.defineSlot(proto.positionalSlots[i], positional[i], value)
+    else:
+      callScope.define(positional[i], value)
+    if declaredType.kind != vkNil:
+      callScope.declareType(positional[i], declaredType)
+  for pIndex, p in proto.namedParams:
+    if named.hasArg(p.arg):
+      var value = named.getArg(p.arg)
+      var declaredType = NIL
+      if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+        let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
+                                           proto.typeParams)
+        declaredType = typeExpr
+        value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
+                              value, callScope)
+      if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
+        callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+      else:
+        callScope.define(p.local, value)
+      if declaredType.kind != vkNil:
+        callScope.declareType(p.local, declaredType)
+  for i in providedPositional ..< positional.len:
+    let fallback = proto.positionalDefault(i)
+    if not fallback.optional:
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' missing positional argument: " & positional[i])
+    let value = fallback.defaultValue(callScope)
+    var boundValue = value
+    var declaredType = NIL
+    if proto.hasParamTypes and i < proto.paramTypes.len and
+        proto.paramTypes[i].kind != vkNil:
+      let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
+                                         proto.typeParams)
+      declaredType = typeExpr
+      boundValue = adaptBoundary("parameter '" & positional[i] & "'",
+                                 typeExpr, value, callScope)
+    if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
+      callScope.defineSlot(proto.positionalSlots[i], positional[i], boundValue)
+    else:
+      callScope.define(positional[i], boundValue)
+    if declaredType.kind != vkNil:
+      callScope.declareType(positional[i], declaredType)
+  if proto.restParam.len > 0:
+    var rest = newSeq[Value](args.len - positional.len)
+    for i in 0 ..< rest.len:
+      rest[i] = args[positional.len + i]
+    if proto.restSlot >= 0:
+      callScope.defineSlot(proto.restSlot, proto.restParam, newList(rest))
+    else:
+      callScope.define(proto.restParam, newList(rest))
+  for pIndex, p in proto.namedParams:
+    if not named.hasArg(p.arg):
+      if p.defaultValue.optional:
+        var value = p.defaultValue.defaultValue(callScope)
+        var declaredType = NIL
+        if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+          let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
+                                             proto.typeParams)
+          declaredType = typeExpr
+          value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
+                                value, callScope)
+        if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
+          callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+        else:
+          callScope.define(p.local, value)
+        if declaredType.kind != vkNil:
+          callScope.declareType(p.local, declaredType)
+      else:
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' missing named argument: " & p.arg)
+  var rt = NIL
+  if proto.hasReturnType:
+    rt = instantiateTypeExpr(proto.returnType, typeBindings, proto.typeParams)
+  (callScope, rt)
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
@@ -4439,139 +4650,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       for i in 0 ..< args.len:
         callScope.defineSlot(proto.positionalSlots[i], positional[i], args[i])
       return runPooled(proto.chunk, callScope)
-    let requiredPositional = proto.requiredPositionalCount()
-    if proto.restParam.len == 0:
-      if args.len < requiredPositional or args.len > positional.len:
-        raise newException(GeneError,
-          "function '" & callee.fnName & "' expects " & $requiredPositional &
-          ".." & $positional.len &
-          " argument(s), got " & $args.len)
-    elif args.len < positional.len:
-      raise newException(GeneError,
-        "function '" & callee.fnName & "' expects at least " & $positional.len &
-        " argument(s), got " & $args.len)
-    for key in named.names:
-      var found = false
-      for p in proto.namedParams:
-        if p.arg == key:
-          found = true
-          break
-      if not found:
-        raise newException(GeneError,
-          "function '" & callee.fnName & "' got unexpected named argument: " & key)
-
-    let callScope = newScope(callee.fnScope)
-    callScope.prepareSlots(proto.localNames)
-    var typeBindings: Table[string, Value]
-    if proto.typeParams.len > 0:
-      typeBindings = initTable[string, Value]()
-      let providedForInference = min(args.len, positional.len)
-      for i in 0 ..< providedForInference:
-        if proto.hasParamTypes and i < proto.paramTypes.len and
-            proto.paramTypes[i].kind != vkNil:
-          if not inferTypeExpr(proto.paramTypes[i], args[i], callScope,
-                               proto.typeParams, typeBindings):
-            let expected = substituteTypeParams(proto.paramTypes[i], typeBindings,
-                                                proto.typeParams)
-            raiseTypeError("parameter '" & positional[i] & "'",
-                           expected.typeExprLabel, args[i], callScope)
-      for p in proto.namedParams:
-        if named.hasArg(p.arg) and proto.hasNamedParamTypes and
-            p.typeExpr.kind != vkNil:
-          let value = named.getArg(p.arg)
-          if not inferTypeExpr(p.typeExpr, value, callScope,
-                               proto.typeParams, typeBindings):
-            let expected = substituteTypeParams(p.typeExpr, typeBindings,
-                                                proto.typeParams)
-            raiseTypeError("parameter '" & p.local & "'",
-                           expected.typeExprLabel, value, callScope)
-    let providedPositional = min(args.len, positional.len)
-    for i in 0 ..< providedPositional:
-      var value = args[i]
-      var declaredType = NIL
-      if proto.hasParamTypes and i < proto.paramTypes.len and
-          proto.paramTypes[i].kind != vkNil:
-        let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
-                                           proto.typeParams)
-        declaredType = typeExpr
-        value = adaptBoundary("parameter '" & positional[i] & "'",
-                              typeExpr, value, callScope)
-      if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
-        callScope.defineSlot(proto.positionalSlots[i], positional[i], value)
-      else:
-        callScope.define(positional[i], value)
-      if declaredType.kind != vkNil:
-        callScope.declareType(positional[i], declaredType)
-    for pIndex, p in proto.namedParams:
-      if named.hasArg(p.arg):
-        var value = named.getArg(p.arg)
-        var declaredType = NIL
-        if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
-          let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
-                                             proto.typeParams)
-          declaredType = typeExpr
-          value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
-                                value, callScope)
-        if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
-          callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
-        else:
-          callScope.define(p.local, value)
-        if declaredType.kind != vkNil:
-          callScope.declareType(p.local, declaredType)
-    for i in providedPositional ..< positional.len:
-      let fallback = proto.positionalDefault(i)
-      if not fallback.optional:
-        raise newException(GeneError,
-          "function '" & callee.fnName & "' missing positional argument: " & positional[i])
-      let value = fallback.defaultValue(callScope)
-      var boundValue = value
-      var declaredType = NIL
-      if proto.hasParamTypes and i < proto.paramTypes.len and
-          proto.paramTypes[i].kind != vkNil:
-        let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
-                                           proto.typeParams)
-        declaredType = typeExpr
-        boundValue = adaptBoundary("parameter '" & positional[i] & "'",
-                                   typeExpr, value, callScope)
-      if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
-        callScope.defineSlot(proto.positionalSlots[i], positional[i], boundValue)
-      else:
-        callScope.define(positional[i], boundValue)
-      if declaredType.kind != vkNil:
-        callScope.declareType(positional[i], declaredType)
-    if proto.restParam.len > 0:
-      var rest = newSeq[Value](args.len - positional.len)
-      for i in 0 ..< rest.len:
-        rest[i] = args[positional.len + i]
-      if proto.restSlot >= 0:
-        callScope.defineSlot(proto.restSlot, proto.restParam, newList(rest))
-      else:
-        callScope.define(proto.restParam, newList(rest))
-    for pIndex, p in proto.namedParams:
-      if not named.hasArg(p.arg):
-        if p.defaultValue.optional:
-          var value = p.defaultValue.defaultValue(callScope)
-          var declaredType = NIL
-          if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
-            let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
-                                               proto.typeParams)
-            declaredType = typeExpr
-            value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
-                                  value, callScope)
-          if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
-            callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
-          else:
-            callScope.define(p.local, value)
-          if declaredType.kind != vkNil:
-            callScope.declareType(p.local, declaredType)
-        else:
-          raise newException(GeneError,
-            "function '" & callee.fnName & "' missing named argument: " & p.arg)
+    let (callScope, returnType) = bindCallScope(callee, proto, args, named)
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
-      if proto.hasReturnType:
-        let returnType = instantiateTypeExpr(proto.returnType, typeBindings,
-                                             proto.typeParams)
+      if returnType.kind != vkNil:
         resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                     returnType, resultValue, callScope)
       return resultValue
@@ -4585,9 +4667,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         raise
       raise newException(GeneError,
         "function '" & callee.fnName & "' raised an undeclared error")
-    if proto.hasReturnType:
-      let returnType = instantiateTypeExpr(proto.returnType, typeBindings,
-                                           proto.typeParams)
+    if returnType.kind != vkNil:
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                   returnType, resultValue, callScope)
     resultValue
