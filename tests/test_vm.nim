@@ -1292,6 +1292,20 @@ suite "vm — cooperative scheduler":
        "  (var c (spawn (+ 100 (await b)))) " &
        "  (ch ~ Channel/send 0) " &
        "  (await c))", "111"
+  test "an actor handler can suspend on a channel mid-message":
+    # The handler recvs from a channel while processing a message: its fiber parks,
+    # the scheduler runs a producer task to feed the channel, and the handler
+    # resumes and finishes the message. Proves actor handlers run as fibers.
+    ck "(var out (cell 0)) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(fn handle [ctx state msg] " &
+       "  (var got (ch ~ Channel/recv)) " &
+       "  (out ~ Cell/set (+ msg got)) " &
+       "  (actor/continue state)) " &
+       "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+       "(var p (spawn (ch ~ Channel/send 100))) " &
+       "(a ~ actor/send 5) " &
+       "(out ~ Cell/get)", "105"
 
 suite "vm — actors":
   test "actor values are opaque display values":

@@ -29,10 +29,11 @@ type
     ## Raised by a blocking native (channel send/recv) while a scheduled fiber is
     ## running, to suspend the whole Gene task. It is NOT a GeneError, so Gene
     ## `try/catch` never catches it; the dispatch loop turns it into rskSuspend and
-    ## the scheduler parks the fiber on `waitChannel` until the channel is ready.
+    ## the scheduler parks the fiber on `waitChannel`/`waitActor` until it is ready.
     channel: Value
     isSend: bool
     sendValue: Value
+    actor: Value      # actor whose full mailbox parked this send (xor `channel`)
 
 # `currentFiberActive` gates channel suspension: only a fiber the scheduler is
 # running suspends. Root-level channel use keeps its original synchronous behavior.
@@ -45,6 +46,14 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(): bool
+
+# Actor message processing runs each handler as a scheduler fiber. scheduleActor
+# enqueues the next message's handler fiber if the actor is idle; driveActor pumps
+# the scheduler until the actor is idle (used by root send/ask to stay synchronous);
+# wakeActorSenders wakes a fiber parked on a previously-full mailbox.
+proc scheduleActor(actor: Value, scope: Scope)
+proc driveActor(actor: Value)
+proc wakeActorSenders(actor: Value)
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -779,44 +788,10 @@ proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
                                         "ReplyTo/send value", scope))
   NIL
 
-proc pumpActor(actor: Value, scope: Scope) =
-  if actor.actorProcessing:
-    return
-  actor.setActorProcessing(true)
-  try:
-    while actor.actorQueueLen > 0 and not actor.actorClosed:
-      let message = actor.popActorMessage()
-      try:
-        var args = [newActorContext(actor), actor.actorState, message]
-        let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
-        if step.kind != vkActorStep:
-          raiseTypeError("actor handler return", "ActorStep", step, scope)
-        if step.actorStepContinue:
-          actor.setActorState(step.actorStepState)
-        else:
-          actor.closeActor()
-      except GenePanic:
-        actor.closeActor()
-        raise
-      except CatchableError:
-        if actor.actorFailureStrategy == afsRestart:
-          let initFn = actor.actorRestartInit
-          if initFn.kind == vkNil:
-            actor.closeActor()
-            raise
-          try:
-            actor.setActorState(applyCall(initFn, [], NamedArgs(), scope))
-          except GenePanic:
-            actor.closeActor()
-            raise
-          except CatchableError:
-            actor.closeActor()
-            raise
-        else:
-          actor.closeActor()
-          raise
-  finally:
-    actor.setActorProcessing(false)
+# Actor message processing now runs each handler as a scheduler fiber (see
+# makeActorFiber / scheduleActor / runFiber further below), so the old synchronous
+# pumpActor loop is gone — handlers can suspend on channel/await, and full-mailbox
+# sends park the sender.
 
 proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
@@ -843,13 +818,26 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     raise newException(GeneError, "actor/send expects 2 arguments, got " & $args.len)
   requireActor("actor/send", args[0])
   let scope = actorDispatchScope(call)
-  if args[0].actorClosed:
+  let actor = args[0]
+  while actor.actorFull and not actor.actorClosed:
+    if currentFiberActive:
+      # Inside a scheduled fiber: park this task until the mailbox drains.
+      var se: ref SuspendError
+      new(se)
+      se.msg = "actor/send suspends on a full mailbox"
+      se.actor = actor
+      se.isSend = true
+      raise se
+    # At the root: cooperatively run the actor's handler fiber to free a slot.
+    if not schedulerRunOne():
+      raise newException(GeneError, "actor/send would suspend on a full mailbox")
+  if actor.actorClosed:
     raiseActorClosed(scope)
-  if args[0].actorFull:
-    raise newException(GeneError, "actor/send would suspend on a full mailbox")
-  args[0].pushActorMessage(checkedActorMessage(args[0], args[1],
-                                               "actor/send message", scope))
-  args[0].pumpActor(scope)
+  actor.pushActorMessage(checkedActorMessage(actor, args[1],
+                                             "actor/send message", scope))
+  scheduleActor(actor, scope)
+  if not currentFiberActive:
+    driveActor(actor)   # root send stays synchronous: process the message now
   NIL
 
 proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -861,7 +849,9 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   let scope = actorDispatchScope(call)
   args[0].pushActorMessage(checkedActorMessage(args[0], args[1],
                                                "actor/try-send message", scope))
-  args[0].pumpActor(scope)
+  scheduleActor(args[0], scope)
+  if not currentFiberActive:
+    driveActor(args[0])
   TRUE
 
 proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -870,16 +860,20 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   requireActor("actor/ask", args[0])
   let scope = actorDispatchScope(call)
   let reply = newReplyTo()
+  let actor = args[0]
   try:
-    if args[0].actorClosed:
+    while actor.actorFull and not actor.actorClosed:
+      # ask drives the actor to completion, so cooperatively free a slot either way.
+      if not schedulerRunOne():
+        raise newException(GeneError, "actor/ask would suspend on a full mailbox")
+    if actor.actorClosed:
       raiseActorClosed(scope)
-    if args[0].actorFull:
-      raise newException(GeneError, "actor/ask would suspend on a full mailbox")
     var buildArgs = [reply]
     let message = applyCall(args[1], buildArgs, NamedArgs(), scope)
-    args[0].pushActorMessage(checkedActorMessage(args[0], message,
-                                                 "actor/ask message", scope))
-    args[0].pumpActor(scope)
+    actor.pushActorMessage(checkedActorMessage(actor, message,
+                                               "actor/ask message", scope))
+    scheduleActor(actor, scope)
+    driveActor(actor)   # drive the handler to a reply (ask resolves to a Task)
     if not reply.replyToSent:
       return completedActorErrorTask(scope, "actor/ask did not receive a reply")
     newCompletedTask(reply.replyToResult)
@@ -3043,10 +3037,14 @@ type
     fnName: string
     isTryBody: bool
     started: bool          # false until first scheduled (resume restores the rest)
-    task: Value            # the Task value this fiber settles on completion
+    task: Value            # the Task this fiber settles, for spawn/await fibers
+    actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
+    actorReturnType: Value # handler return type to adapt the ActorStep against
+    actorScope: Scope      # dispatch scope for the actor (state checks / supervision)
     waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
     waitIsSend: bool       # parked on send (vs recv)
     waitSendValue: Value   # value to deliver when a parked send resumes
+    waitActor: Value       # actor the fiber is parked on, when send hit a full mailbox
     waitTask: Value        # task the fiber is parked on, when suspended in `await`
 
 # Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
@@ -3966,8 +3964,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # `try` handlers travel along in `handlers`, so ensure blocks do not run.
       if fiber == nil:
         raise newException(GeneError, "internal: suspended outside a fiber")
-      captureContinuation(ip - 1)   # re-execute the channel op (operands still on stack)
+      captureContinuation(ip - 1)   # re-execute the channel/actor op (operands on stack)
       fiber.waitChannel = se.channel
+      fiber.waitActor = se.actor
       fiber.waitIsSend = se.isSend
       fiber.waitSendValue = se.sendValue
       fiber.waitTask = NIL
@@ -4030,41 +4029,120 @@ proc wakeTaskWaiters(task: Value) =
     else:
       inc i
 
+proc makeActorFiber(actor, msg: Value, scope: Scope): Fiber =
+  ## Build a fiber that runs the actor's handler on one message. Returns nil if the
+  ## handler is not a fiber-able Gene function (the caller then processes inline).
+  let handler = actor.actorHandler
+  if handler.kind != vkFunction or handler.fnCode == nil or
+      not (handler.fnCode of FunctionProto):
+    return nil
+  let proto = FunctionProto(handler.fnCode)
+  if proto.isGenerator:
+    return nil
+  let args = [newActorContext(actor), actor.actorState, msg]
+  let bound = bindCallScope(handler, proto, args, NamedArgs())
+  Fiber(chunk: proto.chunk, scope: bound.scope, actorOwner: actor,
+        actorReturnType: bound.returnType, actorScope: scope, started: false)
+
+proc scheduleActor(actor: Value, scope: Scope) =
+  ## If the actor is idle (no live handler fiber) and has a queued message, start
+  ## processing it: pop the message, wake a parked sender (a slot just freed), mark
+  ## the actor busy, and enqueue its handler fiber on the run queue.
+  if actor.actorProcessing or actor.actorClosed or actor.actorQueueLen == 0:
+    return
+  let msg = actor.popActorMessage()
+  wakeActorSenders(actor)
+  actor.setActorProcessing(true)
+  let f = makeActorFiber(actor, msg, scope)
+  if f == nil:
+    # Non-fiber handler (no current surface produces this): process inline.
+    actor.setActorProcessing(false)
+    var args = [newActorContext(actor), actor.actorState, msg]
+    let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
+    if step.kind != vkActorStep:
+      raiseTypeError("actor handler return", "ActorStep", step, scope)
+    if step.actorStepContinue: actor.setActorState(step.actorStepState)
+    else: actor.closeActor()
+    scheduleActor(actor, scope)
+  else:
+    schedRunQueue.add f
+
 proc runFiber(f: Fiber) =
-  ## Run or resume `f` until it completes or parks. On completion settle its task
-  ## and wake anyone awaiting it; on suspend the dispatch loop has already captured
-  ## the continuation into `f`, so park it on the wait list.
+  ## Run or resume `f` until it completes or parks. A spawn/await fiber settles its
+  ## task and wakes its awaiters; an actor handler fiber applies its ActorStep (or
+  ## failure strategy) and advances the actor to its next message. A parked fiber
+  ## had its continuation captured by the dispatch loop, so just keep it on the
+  ## wait list.
   if not f.started:
     f.scope.prepareChunkScope(f.chunk)
   var dummyStack: seq[Value]
   var dummyIp = 0
   let savedActive = currentFiberActive
   currentFiberActive = true
-  var stop: RunStop
-  var settled = false
+  let actor = f.actorOwner
   try:
-    stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
-                   validateArg = true, fiber = f)
-  except GeneError as e:
-    settled = true
-    if e.hasErrVal: failTask(f.task, e.msg, e.errVal, hasValue = true)
-    else: failTask(f.task, e.msg)
-  except GenePanic as e:
-    settled = true
-    if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
-    else: panicTask(f.task, e.msg)
-  finally:
+    let stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
+                       validateArg = true, fiber = f)
     currentFiberActive = savedActive
-  if not settled:
-    case stop.kind
-    of rskReturn:
-      completeTask(f.task, stop.value)
-    of rskSuspend:
-      schedWaiters.add f
-    of rskYield:
-      failTask(f.task, "yield is only valid in a generator")
-  if f.task.taskDone:
-    wakeTaskWaiters(f.task)   # awaiters parked on this task can now resume
+    if actor != NIL:
+      case stop.kind
+      of rskReturn:
+        actor.setActorProcessing(false)
+        var step = stop.value
+        if f.actorReturnType.kind != vkNil:
+          step = adaptBoundary("return from actor handler", f.actorReturnType,
+                               step, f.actorScope)
+        if step.kind != vkActorStep:
+          raiseTypeError("actor handler return", "ActorStep", step, f.actorScope)
+        if step.actorStepContinue: actor.setActorState(step.actorStepState)
+        else: actor.closeActor()
+        scheduleActor(actor, f.actorScope)
+      of rskSuspend:
+        schedWaiters.add f          # handler parked mid-message; actor stays busy
+      of rskYield:
+        actor.setActorProcessing(false)
+        actor.closeActor()
+        raise newException(GeneError, "actor handler cannot yield")
+    else:
+      case stop.kind
+      of rskReturn:
+        completeTask(f.task, stop.value)
+        wakeTaskWaiters(f.task)
+      of rskSuspend:
+        schedWaiters.add f
+      of rskYield:
+        failTask(f.task, "yield is only valid in a generator")
+        wakeTaskWaiters(f.task)
+  except GeneError as e:
+    currentFiberActive = savedActive
+    if actor != NIL:
+      actor.setActorProcessing(false)
+      if actor.actorFailureStrategy == afsRestart and
+          actor.actorRestartInit.kind != vkNil:
+        try:
+          actor.setActorState(applyCall(actor.actorRestartInit, [], NamedArgs(),
+                                         f.actorScope))
+        except CatchableError:
+          actor.closeActor()
+          raise
+        scheduleActor(actor, f.actorScope)    # recovered; process the next message
+      else:
+        actor.closeActor()
+        raise
+    else:
+      if e.hasErrVal: failTask(f.task, e.msg, e.errVal, hasValue = true)
+      else: failTask(f.task, e.msg)
+      wakeTaskWaiters(f.task)
+  except GenePanic as e:
+    currentFiberActive = savedActive
+    if actor != NIL:
+      actor.setActorProcessing(false)
+      actor.closeActor()
+      raise
+    else:
+      if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
+      else: panicTask(f.task, e.msg)
+      wakeTaskWaiters(f.task)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value =
   ## Create a child task + fiber and run it eagerly until it completes or parks.
@@ -4098,6 +4176,26 @@ proc drainRunnable() =
   ## scope exit to make progress on spawned children; parked fibers stay parked.
   while schedulerRunOne():
     discard
+
+proc wakeActorSenders(actor: Value) =
+  ## Wake one fiber parked on a previously-full mailbox of `actor` (FIFO), now that
+  ## a slot has freed up; it re-executes its send on resume.
+  for i in 0 ..< schedWaiters.len:
+    let f = schedWaiters[i]
+    if same(f.waitActor, actor):
+      schedWaiters.delete(i)
+      f.waitActor = NIL
+      schedRunQueue.add f
+      return
+
+proc driveActor(actor: Value) =
+  ## Pump the scheduler until `actor` is idle (its mailbox is drained and no handler
+  ## fiber is live) or closed. Used by root-level send/ask so they stay synchronous:
+  ## the message is fully processed before the call returns.
+  while not actor.actorClosed and
+      (actor.actorProcessing or actor.actorQueueLen > 0):
+    if not schedulerRunOne():
+      break
 
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
   let code = stream.streamGeneratorCode
