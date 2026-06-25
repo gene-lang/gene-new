@@ -107,12 +107,14 @@ participates in equality or hashing.
 > monotonic deadlines. `Channel/send`/`Channel/recv`, timers, and actor mailbox
 > backpressure suspend and resume the whole task by capturing its heap frame
 > stack. `actor/ask ^timeout-ms N` fails the pending request with `ActorError`
-> if no reply arrives before the timer. Root-level `await` still drives the run
-> queue until the task settles. Structured scopes wait for live child tasks on
-> normal exit, cancel children on error/cancellation, and run `ensure` cleanup
-> before cancellation is observed. `Task/detach` explicitly removes a task from
-> structured scope ownership. What is *not* built yet: the design's M:N worker
-> pool, async-I/O, and stable production concurrency semantics.
+> if no reply arrives before the timer. `supervisor ^events ch` emits best-effort
+> `ActorFailure` events for actor handler failures. Root-level `await` still
+> drives the run queue until the task settles. Structured scopes wait for live
+> child tasks on normal exit, cancel children on error/cancellation, and run
+> `ensure` cleanup before cancellation is observed. `Task/detach` explicitly
+> removes a task from structured scope ownership. What is *not* built yet: the
+> design's M:N worker pool, async-I/O, guaranteed failure-event delivery, and
+> stable production concurrency semantics.
 
 ## Quick start
 

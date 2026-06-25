@@ -1040,6 +1040,29 @@ suite "spec — actors from design":
                "  (a ~ actor/send 5) " &
                "  (seen ~ Cell/get))",
                "10")
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(var events (channel ^capacity 4)) " &
+               "(var seen (cell 0)) " &
+               "(supervisor ^strategy restart ^events events " &
+               "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
+               "    ^handle (fn [ctx state msg] " &
+               "      (if (= msg 1) " &
+               "        (fail (Boom ^message \"bad\")) " &
+               "        (do " &
+               "          (seen ~ Cell/set state) " &
+               "          (actor/continue (+ state msg))))))) " &
+               "  (spawn (a ~ actor/send 1)) " &
+               "  (spawn (a ~ actor/send 5)) " &
+               "  (sleep 1) " &
+               "  (var event (events ~ Channel/recv)) " &
+               "  [(seen ~ Cell/get) " &
+               "   (match event " &
+               "     (when (ActorFailure ^failed-message failed " &
+               "                         ^error (Boom ^message m) " &
+               "                         ^panic p ^strategy s) " &
+               "       [failed m p s]))])",
+               "[10 [1 \"bad\" false restart]]")
     check_eval("(var a (supervisor ^strategy stop " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &

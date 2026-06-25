@@ -1902,7 +1902,7 @@ proc compileTaskScope(c: var Compiler, node: Value) =
 
 proc compileSupervisor(c: var Compiler, node: Value) =
   for key in node.props.keys:
-    if key != "strategy":
+    if key notin ["strategy", "events"]:
       raise newException(GeneError,
         "supervisor got unexpected named argument: " & key)
   if not node.props.hasKey("strategy"):
@@ -1914,8 +1914,12 @@ proc compileSupervisor(c: var Compiler, node: Value) =
   if strategy notin ["restart", "stop", "escalate"]:
     raise newException(GeneError,
       "unsupported supervisor strategy: " & strategy)
+  let hasEvents = node.props.hasKey("events")
+  if hasEvents:
+    compileExpr(c, node.props["events"])
   let body = c.compileSubBody(node.body, scoped = true)
-  discard c.emit(opSupervisor, c.chunk.addSubchunk(body), name = strategy)
+  discard c.emit(opSupervisor, c.chunk.addSubchunk(body), name = strategy,
+                 flag = hasEvents)
 
 proc compileSpawn(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:

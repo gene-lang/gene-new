@@ -1625,6 +1625,7 @@ Long-lived actor trees use supervisors:
 ```gene
 (supervisor
   ^strategy restart
+  ^events failures
   (actor/spawn
     ^init make-state
     ^handle worker-handler))
@@ -1637,6 +1638,14 @@ MVP supervision strategies:
 - `escalate`: report failure to the parent supervisor.
 
 A recoverable error escaping an actor handler stops that actor and produces a failure event for its supervisor. A panic also terminates the actor/task and is escalated. Native memory corruption or an unsafe foreign crash remains process-fatal.
+
+MVP supervisors may be given `^events failure-channel`. The runtime emits
+`ActorFailure` values to that channel on actor handler failure without blocking
+the failing actor path. An event includes the actor reference, failed message,
+error value, display message, panic flag, and active supervisor strategy. If the
+event channel is closed or full, the MVP drops the event rather than masking or
+blocking failure handling; stronger delivery and dead-letter policies are future
+runtime work.
 
 Restart policy must define whether queued messages are retained, discarded, or moved to a dead-letter channel. The MVP default should discard the message that caused failure and retain later queued messages only for explicitly restartable actors.
 

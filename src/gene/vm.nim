@@ -172,6 +172,14 @@ proc actorOwnerFailureStrategy(scope: Scope): ActorFailureStrategy =
     s = s.parent
   afsStop
 
+proc actorOwnerFailureEvents(scope: Scope): Value =
+  var s = scope
+  while s != nil:
+    if s.ownsActors:
+      return s.supervisorEvents
+    s = s.parent
+  NIL
+
 proc supervisorStrategy(name: string): ActorFailureStrategy =
   case name
   of "restart": afsRestart
@@ -797,6 +805,39 @@ proc actorErrorValue(scope: Scope, message: string): Value =
     head = actorError
   newNode(head, props = props)
 
+proc actorFailureStrategyName(strategy: ActorFailureStrategy): string =
+  case strategy
+  of afsStop: "stop"
+  of afsRestart: "restart"
+  of afsEscalate: "escalate"
+
+proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
+                            message: string, errorValue: Value,
+                            panic: bool): Value =
+  var props = initOrderedTable[string, Value]()
+  props["actor"] = actor
+  props["failed-message"] = failedMessage
+  props["message"] = newStr(message)
+  props["error"] = errorValue
+  props["panic"] = if panic: TRUE else: FALSE
+  props["strategy"] = newSym(actorFailureStrategyName(actor.actorFailureStrategy))
+  var head = newSym("ActorFailure")
+  var failureType: Value
+  if scope != nil and scope.lookupOptional("ActorFailure", failureType) and
+      failureType.kind == vkType:
+    head = failureType
+  newNode(head, props = props)
+
+proc emitSupervisorFailure(actor, failedMessage: Value, scope: Scope,
+                           message: string, errorValue: Value,
+                           panic = false) =
+  let sink = actor.actorFailureEvents
+  if sink.kind != vkChannel or sink.channelClosed or sink.channelFull:
+    return
+  sink.pushChannel(supervisorFailureValue(scope, actor, failedMessage, message,
+                                          errorValue, panic))
+  wakeChannelWaiters(sink, wakeSenders = false)
+
 proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
                    hasValue = false): bool =
   if reply.kind != vkReplyTo or reply.replyToSent:
@@ -961,11 +1002,13 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     if messageType.kind == vkNil: NIL else: closeTypeExpr(messageType, scope)
   let failureStrategy =
     if scope == nil: afsStop else: scope.actorOwnerFailureStrategy()
+  let failureEvents =
+    if scope == nil: NIL else: scope.actorOwnerFailureEvents()
   let restartInit =
     if failureStrategy == afsRestart: initFn else: NIL
   let state = applyCall(initFn, [], NamedArgs(), scope)
   result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType,
-                       restartInit, failureStrategy)
+                       restartInit, failureStrategy, failureEvents)
   if scope != nil:
     scope.registerOwnedActor(result)
 
@@ -2223,6 +2266,26 @@ proc buildBuiltins(app: Application): Scope =
                                 messages: initTable[string, Value]())
   let actorClosed = newType("ActorClosed", actorError, @[], @[], result)
   result.define("ActorClosed", actorClosed)
+  let actorFailure = newType("ActorFailure", NIL,
+                             @[
+                               TypeField(name: "actor", optional: false,
+                                         typeExpr: newSym("Any"), scope: result),
+                               TypeField(name: "failed-message", optional: false,
+                                         typeExpr: newSym("Any"), scope: result),
+                               TypeField(name: "message", optional: false,
+                                         typeExpr: newSym("Str"), scope: result),
+                               TypeField(name: "error", optional: false,
+                                         typeExpr: newSym("Any"), scope: result),
+                               TypeField(name: "panic", optional: false,
+                                         typeExpr: newSym("Bool"), scope: result),
+                               TypeField(name: "strategy", optional: false,
+                                         typeExpr: newSym("Sym"), scope: result)
+                             ],
+                             @[sendProtocol], result)
+  result.define("ActorFailure", actorFailure)
+  result.impls.add ProtocolImpl(protocol: sendProtocol,
+                                receiver: actorFailure,
+                                messages: initTable[string, Value]())
   result.define("+", newNativeFn("+", biAdd))
   result.define("-", newNativeFn("-", biSub))
   result.define("*", newNativeFn("*", biMul))
@@ -3488,6 +3551,7 @@ type
     actorReturnType: Value # handler return type to adapt the ActorStep against
     actorScope: Scope      # dispatch scope for the actor (state checks / supervision)
     actorAskReply: Value   # ReplyTo for actor/ask messages, or NIL for sends
+    actorMessage: Value    # current actor mailbox message, for failure events
     waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
     waitIsSend: bool       # parked on send (vs recv)
     waitSendValue: Value   # value to deliver when a parked send resumes
@@ -4347,9 +4411,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           finally:
             taskScope.closeOwnedActors()
         of opSupervisor:
+          let eventSink =
+            if inst[].flag:
+              let sink = stack.pop()
+              requireChannel("supervisor ^events", sink)
+              sink
+            else:
+              NIL
           let supervisorScope = newScope(scope)
           supervisorScope.ownsActors = true
           supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
+          supervisorScope.supervisorEvents = eventSink
           try:
             stack.add run(chunk.subchunks[inst[].intArg], supervisorScope)
           finally:
@@ -4671,7 +4743,7 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   let bound = bindCallScope(handler, proto, args, NamedArgs())
   Fiber(chunk: proto.chunk, scope: bound.scope, actorOwner: actor,
         actorReturnType: bound.returnType, actorScope: scope,
-        actorAskReply: item.reply, started: false)
+        actorAskReply: item.reply, actorMessage: item.message, started: false)
 
 proc scheduleActor(actor: Value, scope: Scope) =
   ## If the actor is idle (no live handler fiber) and has a queued message, start
@@ -4770,6 +4842,9 @@ proc runFiber(f: Fiber) =
     if isActorFiber:
       actor.setActorProcessing(false)
       let askSettled = failReplyTask(f.actorAskReply, e)
+      let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
+      emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
+                            errorValue)
       case actor.actorFailureStrategy
       of afsRestart:
         if actor.actorRestartInit.kind == vkNil:
@@ -4801,6 +4876,9 @@ proc runFiber(f: Fiber) =
       actor.setActorProcessing(false)
       actor.closeActor()
       discard panicReplyTask(f.actorAskReply, e)
+      let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
+      emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
+                            errorValue, panic = true)
       raise
     else:
       if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
