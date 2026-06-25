@@ -745,6 +745,7 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
   let scope = if call == nil: nil else: call[].dispatchScope
   args[0].pushChannel(checkedChannelSendItem(args[0], args[1],
                                              "Channel/try-send item", scope))
+  wakeChannelWaiters(args[0], wakeSenders = false)  # a new value may wake a parked receiver
   TRUE
 
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -776,8 +777,10 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
   if args[0].channelLen == 0:
     return VOID
   let scope = if call == nil: nil else: call[].dispatchScope
-  checkedChannelItem(args[0], args[0].popChannel(), "Channel/try-recv item",
-                     scope)
+  let item = checkedChannelItem(args[0], args[0].popChannel(), "Channel/try-recv item",
+                                scope)
+  wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a parked sender
+  item
 
 proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/close", args)
@@ -5093,6 +5096,7 @@ proc runFiber(f: Fiber) =
   var dummyIp = 0
   let savedActive = currentFiberActive
   currentFiberActive = true
+  defer: currentFiberActive = savedActive
   let actor = f.actorOwner
   let isActorFiber = actor.kind == vkActorRef
   try:
@@ -5103,7 +5107,6 @@ proc runFiber(f: Fiber) =
                        validateArg = true, fiber = f,
                        injectCancel = injectCancel,
                        instructionBudget = schedulerInstructionBudget)
-    currentFiberActive = savedActive
     if isActorFiber:
       case stop.kind
       of rskReturn:
@@ -5147,7 +5150,6 @@ proc runFiber(f: Fiber) =
         failTask(f.task, "yield is only valid in a generator")
         wakeTaskWaiters(f.task)
   except GeneError as e:
-    currentFiberActive = savedActive
     if isActorFiber:
       actor.setActorProcessing(false)
       let askSettled = failReplyTask(f.actorAskReply, e)
@@ -5180,7 +5182,6 @@ proc runFiber(f: Fiber) =
       else: failTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
   except GenePanic as e:
-    currentFiberActive = savedActive
     if isActorFiber:
       closeActorAndCancelMailbox(actor)
       discard panicReplyTask(f.actorAskReply, e)
@@ -5195,7 +5196,6 @@ proc runFiber(f: Fiber) =
   except CatchableError as e:
     if not (e of GeneCancel):
       raise
-    currentFiberActive = savedActive
     if isActorFiber:
       closeActorAndCancelMailbox(actor)
       if not cancelReplyTask(f.actorAskReply):
@@ -5258,13 +5258,16 @@ proc schedulerRunOneUntil(deadline: MonoTime): bool =
   true
 
 proc cancelScheduledTask(task: Value): bool =
-  ## Move a task's own continuation back to runnable state so runFiber can inject
-  ## GeneCancel and let ensure blocks unwind. Fibers merely awaiting this task are
-  ## left parked; wakeTaskWaiters runs after the task finally settles.
+  ## Mark the task's own continuation for cancellation and move any parked
+  ## continuation back to the run queue so runFiber can inject GeneCancel and
+  ## let ensure blocks unwind. If the fiber is already in the run queue, it
+  ## stays there — runFiber checks taskCancelRequested dynamically on entry.
+  ## Fibers merely awaiting this task are left parked; wakeTaskWaiters runs
+  ## after the task finally settles.
   var i = 0
   while i < schedRunQueue.len:
     if schedRunQueue[i].task.taskSharesState(task):
-      result = true
+      result = true   # already runnable; runFiber will inject cancel on next turn
       inc i
     else:
       inc i

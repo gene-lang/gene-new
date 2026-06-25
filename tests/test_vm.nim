@@ -1656,6 +1656,28 @@ suite "vm — cooperative scheduler":
        "(await t) " &
        "(out ~ Cell/get)", "0"
 
+  test "try-send in a fiber wakes a peer parked in recv":
+    # Regression: biChannelTrySend was missing wakeChannelWaiters.
+    # The receiver fiber runs first (schedRunQueue ordering), parks on the empty
+    # channel, and the try-send fiber runs second. Without the fix, the receiver
+    # stays in schedWaiters after try-send and the await deadlocks.
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (ch ~ Channel/recv))) " &
+       "  (spawn (ch ~ Channel/try-send 42)) " &
+       "  (await t))", "42"
+
+  test "try-recv in a fiber wakes a peer parked in send":
+    # Regression: biChannelTryRecv was missing wakeChannelWaiters.
+    # Fill the channel at root, spawn a sender (parks when it runs), then spawn a
+    # try-recv (runs second, pops the item). Without the fix, the parked sender
+    # stays in schedWaiters after try-recv and the await deadlocks.
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (ch ~ Channel/send 1) " &
+       "  (var t (spawn (ch ~ Channel/send 2))) " &
+       "  (spawn (ch ~ Channel/try-recv)) " &
+       "  (await t) " &
+       "  (ch ~ Channel/recv))", "2"
+
 suite "vm — actors":
   test "actor values are opaque display values":
     ck "(actor/spawn ^init (fn [] 0) " &
