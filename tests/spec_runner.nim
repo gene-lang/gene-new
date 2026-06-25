@@ -789,6 +789,15 @@ suite "spec — structured tasks from design":
                "(out ~ Cell/get)",
                "9")
 
+  test "detached tasks outlive scope ownership":
+    check_eval("(var out (cell 0)) " &
+               "(scope " &
+               "  (var t (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
+               "  (t ~ Task/detach) " &
+               "  nil) " &
+               "[(out ~ Cell/get) (sleep 10) (out ~ Cell/get)]",
+               "[0 nil 1]")
+
   test "Task annotations accept task handles":
     check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
 

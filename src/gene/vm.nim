@@ -107,6 +107,19 @@ proc registerOwnedTask(scope: Scope, task: Value) =
       return
     s = s.parent
 
+proc unregisterOwnedTask(scope: Scope, task: Value): bool =
+  var s = scope
+  while s != nil:
+    if s.ownsTasks:
+      var i = 0
+      while i < s.ownedTasks.len:
+        if s.ownedTasks[i].taskSharesState(task):
+          s.ownedTasks.delete(i)
+          result = true
+        else:
+          inc i
+    s = s.parent
+
 proc requestTaskCancellation(task: Value) =
   if task.kind != vkTask or task.taskDone:
     return
@@ -608,6 +621,13 @@ proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
   requireTask("Task/cancel", args[0])
   args[0].requestTaskCancellation()
   NIL
+
+proc biTaskDetach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Task/detach", args)
+  requireTask("Task/detach", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard scope.unregisterOwnedTask(args[0])
+  args[0]
 
 proc requireChannel(name: string, value: Value) =
   if value.kind != vkChannel:
@@ -2274,6 +2294,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Ffi", newNamespace("Ffi", ffiTypeScope))
   let taskScope = newScope(result)
   taskScope.define("cancel", newNativeFn("Task/cancel", biTaskCancel))
+  taskScope.define("detach", newNativeCallFn("Task/detach", biTaskDetach,
+                                             acceptsNamed = false))
   result.define("Task", newNamespace("Task", taskScope))
   result.define("channel", newNativeCallFn("channel", biChannel))
   let channelScope = newScope(result)

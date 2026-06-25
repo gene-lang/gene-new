@@ -1366,6 +1366,29 @@ suite "vm — cooperative scheduler":
        "    (fail (Boom ^message \"stop\"))) " &
        "  catch (Boom) nil) " &
        "(out ~ Cell/get)", "9"
+
+  test "detached tasks are not awaited on normal scope exit":
+    ck "(var out (cell 0)) " &
+       "(scope " &
+       "  (var t (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
+       "  (t ~ Task/detach) " &
+       "  nil) " &
+       "[(out ~ Cell/get) (sleep 10) (out ~ Cell/get)]",
+       "[0 nil 1]"
+
+  test "detached tasks are not cancelled on scope error exit":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var out (cell 0)) " &
+       "(try " &
+       "  (scope " &
+       "    (var t (spawn (do (sleep 5) (out ~ Cell/set 9)))) " &
+       "    (t ~ Task/detach) " &
+       "    (fail (Boom ^message \"stop\"))) " &
+       "  catch (Boom) nil) " &
+       "[(out ~ Cell/get) (sleep 10) (out ~ Cell/get)]",
+       "[0 nil 9]"
+
   test "an actor handler can suspend on a channel mid-message":
     # The handler recvs from a channel while processing a message: its fiber parks,
     # the scheduler runs a producer task to feed the channel, and the handler

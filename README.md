@@ -95,7 +95,7 @@ participates in equality or hashing.
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
   Module/root_namespace Module/name Module/path Module/meta Module/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
-  Stream/next Stream/close sleep print println`).
+  Stream/next Stream/close Task/cancel Task/detach sleep print println`).
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
@@ -108,8 +108,9 @@ participates in equality or hashing.
 > heap frame stack. Root-level `await` still drives the run queue until the task
 > settles. Structured scopes wait for live child tasks on normal exit, cancel
 > children on error/cancellation, and run `ensure` cleanup before cancellation is
-> observed. What is *not* built yet: the design's M:N worker pool, async-I/O,
-> detached lifetimes, and stable production concurrency semantics.
+> observed. `Task/detach` explicitly removes a task from structured scope
+> ownership. What is *not* built yet: the design's M:N worker pool, async-I/O,
+> and stable production concurrency semantics.
 
 ## Quick start
 
