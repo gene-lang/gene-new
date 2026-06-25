@@ -1312,6 +1312,18 @@ suite "vm — cooperative scheduler":
        "  (t ~ Task/cancel) " &
        "  (ch ~ Channel/send 99) " &
        "  (out ~ Cell/get))", "0"
+  test "task scope normal exit waits for live child tasks":
+    ck "(var out (cell 0)) " &
+       "(scope (var ch (channel ^capacity 1)) " &
+       "  (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 7))) " &
+       "  (spawn (ch ~ Channel/send 1)) " &
+       "  nil) " &
+       "(out ~ Cell/get)", "7"
+  test "task scope normal exit reports deadlocked child tasks":
+    expect GeneError:
+      discard runStr("(scope (var ch (channel ^capacity 1)) " &
+                     "  (spawn (ch ~ Channel/recv)) " &
+                     "  nil)")
   test "task scope error exit cancels pending child tasks":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error Boom) " &

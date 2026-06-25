@@ -631,6 +631,15 @@ suite "spec — structured tasks from design":
                "  (+ (await a) (await b)))",
                "10")
 
+  test "scope normal exit waits for live child tasks":
+    check_eval("(var out (cell 0)) " &
+               "(scope (var ch (channel ^capacity 1)) " &
+               "  (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 7))) " &
+               "  (spawn (ch ~ Channel/send 1)) " &
+               "  nil) " &
+               "(out ~ Cell/get)",
+               "7")
+
   test "await propagates recoverable task errors":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error Boom) " &

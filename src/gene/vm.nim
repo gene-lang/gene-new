@@ -55,6 +55,9 @@ proc cancelScheduledTask(task: Value)
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(): bool
 
+# Drive the scheduler until the given task settles, or raise on deadlock.
+proc pumpUntilDone(task: Value)
+
 # Actor message processing runs each handler as a scheduler fiber. scheduleActor
 # enqueues the next message's handler fiber if the actor is idle; driveActor pumps
 # the scheduler until the actor is idle (used by root send/ask to stay synchronous);
@@ -105,6 +108,15 @@ proc cancelOwnedTasks(scope: Scope) =
       task.cancelTask()
       cancelScheduledTask(task)
       wakeTaskWaiters(task)
+  scope.ownedTasks.setLen(0)
+
+proc waitOwnedTasks(scope: Scope) =
+  if scope.ownedTasks.len == 0:
+    return
+  for i in 0 ..< scope.ownedTasks.len:
+    let task = scope.ownedTasks[i]
+    if task.kind == vkTask and not task.taskDone:
+      pumpUntilDone(task)
   scope.ownedTasks.setLen(0)
 
 proc closeOwnedActors(scope: Scope) =
@@ -3143,8 +3155,6 @@ var schedRunQueue {.threadvar.}: seq[Fiber]
 var schedWaiters {.threadvar.}: seq[Fiber]
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value
-proc pumpUntilDone(task: Value)
-proc drainRunnable()
 
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
                             e: ref GeneError): ref GeneError =
@@ -3890,7 +3900,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           try:
             try:
               let bodyResult = run(chunk.subchunks[inst[].intArg], taskScope)
-              drainRunnable()   # leaving a scope makes progress on its live children
+              taskScope.waitOwnedTasks()
               stack.add bodyResult
             except GeneError:
               taskScope.cancelOwnedTasks()
@@ -4321,12 +4331,6 @@ proc pumpUntilDone(task: Value) =
     if not schedulerRunOne():
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
-
-proc drainRunnable() =
-  ## Advance every currently-runnable fiber to its next park/completion. Used at
-  ## scope exit to make progress on spawned children; parked fibers stay parked.
-  while schedulerRunOne():
-    discard
 
 proc wakeActorSenders(actor: Value) =
   ## Wake one fiber parked on a previously-full mailbox of `actor` (FIFO), now that
