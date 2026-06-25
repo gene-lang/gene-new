@@ -95,7 +95,7 @@ participates in equality or hashing.
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
   Module/root_namespace Module/name Module/path Module/meta Module/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
-  Stream/next Stream/close print println`).
+  Stream/next Stream/close sleep print println`).
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
@@ -103,13 +103,13 @@ participates in equality or hashing.
 > **Concurrency is an early cooperative prototype — not yet stable.** Tasks now run
 > on a single-worker cooperative scheduler: `spawn` runs a task body until it
 > completes or *parks* on a blocking channel op, actor mailbox send/ask, or
-> `await`. `Channel/send`/`Channel/recv` and actor mailbox backpressure suspend and
-> resume the whole task by capturing its heap frame stack. Root-level `await` still
-> drives the run queue until the task settles. Structured scopes wait for live child
-> tasks on normal exit, cancel children on error/cancellation, and run `ensure`
-> cleanup before cancellation is observed. What is *not* built yet: the design's M:N
-> worker pool, timers/async-I/O, detached lifetimes, and stable production
-> concurrency semantics.
+> `await`; `sleep` parks a task on a timer. `Channel/send`/`Channel/recv`, timers,
+> and actor mailbox backpressure suspend and resume the whole task by capturing its
+> heap frame stack. Root-level `await` still drives the run queue until the task
+> settles. Structured scopes wait for live child tasks on normal exit, cancel
+> children on error/cancellation, and run `ensure` cleanup before cancellation is
+> observed. What is *not* built yet: the design's M:N worker pool, async-I/O,
+> detached lifetimes, and stable production concurrency semantics.
 
 ## Quick start
 

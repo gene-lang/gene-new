@@ -1292,10 +1292,27 @@ suite "vm — cooperative scheduler":
        "  (var c (spawn (+ 100 (await b)))) " &
        "  (ch ~ Channel/send 0) " &
        "  (await c))", "111"
+  test "sleep parks only the current task":
+    ck "(scope (var out (cell 0)) " &
+       "  (var slow (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
+       "  (var fast (spawn (out ~ Cell/set 2))) " &
+       "  (await fast) " &
+       "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
+       "[2 1 1]"
+  test "root channel waits can be unblocked by sleeping tasks":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (spawn (do (sleep 5) (ch ~ Channel/send 7))) " &
+       "  (ch ~ Channel/recv))", "7"
   test "cancelling a pending task makes await observe cancellation":
     expect GeneCancel:
       discard runStr("(scope (var ch (channel ^capacity 1)) " &
                      "  (var t (spawn (ch ~ Channel/recv))) " &
+                     "  (t ~ Task/cancel) " &
+                     "  (await t))")
+  test "cancelling a sleeping task wakes it for cleanup":
+    expect GeneCancel:
+      discard runStr("(scope " &
+                     "  (var t (spawn (sleep 1000))) " &
                      "  (t ~ Task/cancel) " &
                      "  (await t))")
   test "cancelling a task wakes fibers awaiting it":
@@ -1363,6 +1380,15 @@ suite "vm — cooperative scheduler":
        "(var p (spawn (ch ~ Channel/send 100))) " &
        "(a ~ actor/send 5) " &
        "(out ~ Cell/get)", "105"
+  test "an actor handler can suspend on a timer mid-message":
+    ck "(var out (cell 0)) " &
+       "(fn handle [ctx state msg] " &
+       "  (sleep 5) " &
+       "  (out ~ Cell/set msg) " &
+       "  (actor/continue state)) " &
+       "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+       "(a ~ actor/send 42) " &
+       "(out ~ Cell/get)", "42"
   test "actor ask returns a pending task instead of driving synchronously":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send Get) " &

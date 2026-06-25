@@ -727,6 +727,14 @@ suite "spec — structured tasks from design":
                "  (+ (await a) (await b)))",
                "10")
 
+  test "timer waits suspend only the current task":
+    check_eval("(scope (var out (cell 0)) " &
+               "  (var slow (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
+               "  (var fast (spawn (out ~ Cell/set 2))) " &
+               "  (await fast) " &
+               "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
+               "[2 1 1]")
+
   test "scope normal exit waits for live child tasks":
     check_eval("(var out (cell 0)) " &
                "(scope (var ch (channel ^capacity 1)) " &

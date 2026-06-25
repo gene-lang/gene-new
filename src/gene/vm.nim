@@ -1,6 +1,7 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, math, os, sets, strutils, tables, unicode]
+import std/[algorithm, dynlib, math, monotimes, os, sets, strutils, tables,
+            times, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
 type
@@ -32,11 +33,13 @@ type
     ## Raised by a blocking native (channel send/recv) while a scheduled fiber is
     ## running, to suspend the whole Gene task. It is NOT a GeneError, so Gene
     ## `try/catch` never catches it; the dispatch loop turns it into rskSuspend and
-    ## the scheduler parks the fiber on `waitChannel`/`waitActor` until it is ready.
+    ## the scheduler parks the fiber until its wait condition is ready.
     channel: Value
     isSend: bool
     sendValue: Value
     actor: Value      # actor whose full mailbox parked this send (xor `channel`)
+    timer: bool
+    deadline: MonoTime
 
 # `currentFiberActive` gates suspension: only a fiber the scheduler is running
 # parks on blocking channel/actor operations. Root-level channel use keeps its
@@ -57,6 +60,7 @@ proc cancelScheduledTask(task: Value): bool
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(): bool
+proc schedulerRunOneUntil(deadline: MonoTime): bool
 
 # Drive the scheduler until the given task settles, or raise on deadlock.
 proc pumpUntilDone(task: Value)
@@ -2004,6 +2008,31 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   stdout.write "\n"
   NIL
 
+proc timerDeadline(milliseconds: int64): MonoTime =
+  getMonoTime() + initDuration(milliseconds = milliseconds)
+
+proc biSleep(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("sleep", args)
+  let milliseconds = requireInt64("sleep", args[0])
+  if milliseconds < 0:
+    raise newException(GeneError, "sleep duration must be non-negative")
+  if milliseconds == 0:
+    return NIL
+  let deadline = timerDeadline(milliseconds)
+  if currentFiberActive:
+    var se: ref SuspendError
+    new(se)
+    se.timer = true
+    se.deadline = deadline
+    raise se
+  while getMonoTime() < deadline:
+    if not schedulerRunOneUntil(deadline):
+      let remaining = deadline - getMonoTime()
+      if remaining <= initDuration():
+        break
+      os.sleep(max(1, int(min(remaining.inMilliseconds, int64(high(int))))))
+  NIL
+
 proc requireFfiLoad(name: string, value: Value) =
   if value.kind != vkFfiLoad:
     raise newException(GeneError, name & " expects an Ffi/Load capability")
@@ -2317,6 +2346,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
   result.define("update-in", newNativeFn("update-in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
+  result.define("sleep", newNativeFn("sleep", biSleep))
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
 
@@ -3422,14 +3452,18 @@ type
     waitSendValue: Value   # value to deliver when a parked send resumes
     waitActor: Value       # actor the fiber is parked on, when send hit a full mailbox
     waitTask: Value        # task the fiber is parked on, when suspended in `await`
+    waitTimer: bool        # fiber is parked until `waitDeadline`
+    waitDeadline: MonoTime
 
 # Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
 # work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
-# on a channel, actor mailbox, or task await. `currentFiberActive` gates
+# on a channel, actor mailbox, task await, or timer. `currentFiberActive` gates
 # suspension: only a scheduled fiber parks — root-level channel use keeps its
 # original synchronous behavior.
 var schedRunQueue {.threadvar.}: seq[Fiber]
 var schedWaiters {.threadvar.}: seq[Fiber]
+
+proc enqueueRunnable(f: Fiber)
 
 proc cancelOwnedActor(actor: Value) =
   ## Scope/supervisor shutdown owns actor lifetime. Closing the mailbox is not
@@ -3456,8 +3490,7 @@ proc cancelOwnedActor(actor: Value) =
       schedWaiters.delete(i)
     elif f.waitActor.kind == vkActorRef and same(f.waitActor, actor):
       schedWaiters.delete(i)
-      f.waitActor = NIL
-      schedRunQueue.add f
+      enqueueRunnable(f)
     else:
       inc i
 
@@ -4021,11 +4054,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
-          let value =
-            if argCount == 0:
-              applyCall(callee, [], named, scope, site)
-            else:
-              applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope, site)
+          var value: Value
+          try:
+            value =
+              if argCount == 0:
+                applyCall(callee, [], named, scope, site)
+              else:
+                applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope, site)
+          except SuspendError as se:
+            if not se.timer:
+              raise
+            if fiber == nil:
+              raise newException(GeneError, "internal: suspended outside a fiber")
+            stack.setLen(calleeIndex)
+            stack.add NIL
+            captureContinuation(ip)   # resume after sleep; nil is already pushed
+            fiber.waitTimer = true
+            fiber.waitDeadline = se.deadline
+            return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(calleeIndex)
           stack.add value
         of opCallSplice:
@@ -4117,11 +4163,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
-          let value =
-            if args.len == 0:
-              applyCall(callee, [], named, scope, site)
-            else:
-              applyCall(callee, args, named, scope, site)
+          var value: Value
+          try:
+            value =
+              if args.len == 0:
+                applyCall(callee, [], named, scope, site)
+              else:
+                applyCall(callee, args, named, scope, site)
+          except SuspendError as se:
+            if not se.timer:
+              raise
+            if fiber == nil:
+              raise newException(GeneError, "internal: suspended outside a fiber")
+            stack.setLen(calleeIndex)
+            stack.add NIL
+            captureContinuation(ip)
+            fiber.waitTimer = true
+            fiber.waitDeadline = se.deadline
+            return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(calleeIndex)
           stack.add value
         of opMatch:
@@ -4257,6 +4316,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               captureContinuation(ip - 1)   # task stays on the stack for re-execution
               fiber.waitTask = task
               fiber.waitChannel = NIL
+              fiber.waitActor = NIL
+              fiber.waitTimer = false
               return RunStop(kind: rskSuspend, value: NIL)
             pumpUntilDone(task)
           discard stack.pop()
@@ -4410,6 +4471,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       fiber.waitIsSend = se.isSend
       fiber.waitSendValue = se.sendValue
       fiber.waitTask = NIL
+      fiber.waitTimer = se.timer
+      fiber.waitDeadline = se.deadline
       return RunStop(kind: rskSuspend, value: NIL)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
@@ -4445,9 +4508,43 @@ proc runPooled(chunk: Chunk, scope: Scope,
 
 # ---------------------------------------------------------------------------
 # Cooperative task scheduler (design §13.1). Fibers are suspendable Gene tasks;
-# they park on channel ops and resume when a counterpart op makes progress. This
-# is a single-worker cooperative prototype — the M:N worker pool is future work.
+# they park on channel ops, task awaits, actor mailbox backpressure, and timers.
+# This is a single-worker cooperative prototype — the M:N worker pool is future
+# work.
 # ---------------------------------------------------------------------------
+
+proc clearWaitReason(f: Fiber) =
+  f.waitChannel = NIL
+  f.waitActor = NIL
+  f.waitTask = NIL
+  f.waitTimer = false
+
+proc enqueueRunnable(f: Fiber) =
+  clearWaitReason(f)
+  schedRunQueue.add f
+
+proc wakeExpiredTimers(now = getMonoTime()) =
+  var i = 0
+  while i < schedWaiters.len:
+    let f = schedWaiters[i]
+    if f.waitTimer and f.waitDeadline <= now:
+      schedWaiters.delete(i)
+      enqueueRunnable(f)
+    else:
+      inc i
+
+proc nextTimerDeadline(): tuple[has: bool, deadline: MonoTime] =
+  for f in schedWaiters:
+    if f.waitTimer:
+      if not result.has or f.waitDeadline < result.deadline:
+        result.has = true
+        result.deadline = f.waitDeadline
+
+proc sleepUntil(deadline: MonoTime) =
+  let remaining = deadline - getMonoTime()
+  if remaining <= initDuration():
+    return
+  os.sleep(max(1, int(min(remaining.inMilliseconds, int64(high(int))))))
 
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
   ## Move one fiber parked on `channel` — a receiver, or a sender when
@@ -4456,8 +4553,7 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
     let f = schedWaiters[i]
     if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
       schedWaiters.delete(i)
-      f.waitChannel = NIL
-      schedRunQueue.add f
+      enqueueRunnable(f)
       return
 
 proc wakeTaskWaiters(task: Value) =
@@ -4468,8 +4564,7 @@ proc wakeTaskWaiters(task: Value) =
     let f = schedWaiters[i]
     if f.waitTask.taskSharesState(task):
       schedWaiters.delete(i)
-      f.waitTask = NIL
-      schedRunQueue.add f
+      enqueueRunnable(f)
     else:
       inc i
 
@@ -4633,9 +4728,36 @@ proc spawnFiber(chunk: Chunk, scope: Scope): Value =
   task
 
 proc schedulerRunOne(): bool =
-  ## Run one runnable fiber to its next park/completion. Returns false if none.
-  if schedRunQueue.len == 0:
-    return false
+  ## Run one runnable fiber to its next park/completion. If only timer waiters
+  ## remain, sleep until the next timer expires and run the awakened fiber.
+  wakeExpiredTimers()
+  while schedRunQueue.len == 0:
+    let next = nextTimerDeadline()
+    if not next.has:
+      return false
+    sleepUntil(next.deadline)
+    wakeExpiredTimers()
+  let f = schedRunQueue[0]
+  schedRunQueue.delete(0)
+  if f.task.kind == vkTask and f.task.taskDone:
+    wakeTaskWaiters(f.task)
+    return true
+  runFiber(f)
+  true
+
+proc schedulerRunOneUntil(deadline: MonoTime): bool =
+  ## Run one fiber, waiting for timers only up to `deadline`. Used by root-level
+  ## sleep so it can advance already-scheduled work without oversleeping its own
+  ## timer.
+  wakeExpiredTimers()
+  while schedRunQueue.len == 0:
+    let next = nextTimerDeadline()
+    if not next.has:
+      return false
+    if next.deadline > deadline:
+      return false
+    sleepUntil(next.deadline)
+    wakeExpiredTimers()
   let f = schedRunQueue[0]
   schedRunQueue.delete(0)
   if f.task.kind == vkTask and f.task.taskDone:
@@ -4660,10 +4782,7 @@ proc cancelScheduledTask(task: Value): bool =
     let f = schedWaiters[i]
     if f.task.taskSharesState(task):
       schedWaiters.delete(i)
-      f.waitChannel = NIL
-      f.waitActor = NIL
-      f.waitTask = NIL
-      schedRunQueue.add f
+      enqueueRunnable(f)
       result = true
     else:
       inc i
@@ -4684,8 +4803,7 @@ proc wakeActorSenders(actor: Value) =
     let f = schedWaiters[i]
     if same(f.waitActor, actor):
       schedWaiters.delete(i)
-      f.waitActor = NIL
-      schedRunQueue.add f
+      enqueueRunnable(f)
       return
 
 proc driveActor(actor: Value) =
