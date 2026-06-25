@@ -1457,6 +1457,25 @@ suite "vm — cooperative scheduler":
        "          (actor/continue state)))))) " &
        "  (var t (spawn (await (a ~ actor/ask (fn [reply] (Get ^reply reply)))))) " &
        "  (await t))", "41"
+
+  test "actor ask timeout fails pending request and ignores late reply":
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(var out (cell 0)) " &
+       "(fn handle [ctx state msg] " &
+       "  (var (Get ^reply reply) msg) " &
+       "  (var got (ch ~ Channel/recv)) " &
+       "  (reply ~ ReplyTo/send got) " &
+       "  (out ~ Cell/set got) " &
+       "  (actor/continue state)) " &
+       "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+       "(var pending (actor/ask ^timeout-ms 5 a (fn [reply] (Get ^reply reply)))) " &
+       "(var err (try (await pending) catch (ActorError ^message m) m)) " &
+       "(ch ~ Channel/send 7) " &
+       "[err (sleep 1) (out ~ Cell/get)]",
+       "[\"actor/ask timed out\" nil 7]"
+
   test "a cancelled actor ask task is not completed by a late reply":
     expect GeneCancel:
       discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &

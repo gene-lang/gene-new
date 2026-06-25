@@ -965,6 +965,23 @@ suite "spec — actors from design":
                "42")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send Get) " &
+               "(var ch (channel ^capacity 1)) " &
+               "(var out (cell 0)) " &
+               "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
+               "  (var (Get ^reply reply) msg) " &
+               "  (var got (ch ~ Channel/recv)) " &
+               "  (reply ~ ReplyTo/send got) " &
+               "  (out ~ Cell/set got) " &
+               "  (actor/continue state)) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(var pending (actor/ask ^timeout-ms 5 counter (fn [reply] (Get ^reply reply)))) " &
+               "(var err (try (await pending) catch (ActorError ^message m) m)) " &
+               "(ch ~ Channel/send 7) " &
+               "[err (sleep 1) (out ~ Cell/get)]",
+               "[\"actor/ask timed out\" nil 7]")
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &

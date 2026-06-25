@@ -61,6 +61,8 @@ proc cancelScheduledTask(task: Value): bool
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(): bool
 proc schedulerRunOneUntil(deadline: MonoTime): bool
+proc timerDeadline(milliseconds: int64): MonoTime
+proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
 # Drive the scheduler until the given task settles, or raise on deadlock.
 proc pumpUntilDone(task: Value)
@@ -854,6 +856,20 @@ proc actorAskTaskView(task, reply: Value, scope: Scope): Value =
     else: nil
   newCheckedTask(task, resultType, errorType, boundaryScope)
 
+proc actorAskTimeoutArg(call: ptr NativeCall): int64 =
+  result = -1
+  if call == nil:
+    return
+  for name in call[].namedNames:
+    if name != "timeout-ms":
+      raise newException(GeneError,
+        "actor/ask got unexpected named argument: " & name)
+  let index = nativeNamedIndex(call, "timeout-ms")
+  if index >= 0:
+    result = requireInt64("actor/ask timeout-ms", call[].namedValues[index])
+    if result < 0:
+      raise newException(GeneError, "actor/ask timeout-ms must be non-negative")
+
 proc actorMailboxArg(call: ptr NativeCall): int =
   result = 16
   if call == nil:
@@ -1000,6 +1016,7 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   requireActor("actor/ask", args[0])
   let scope = actorDispatchScope(call)
   let actor = args[0]
+  let timeoutMs = actorAskTimeoutArg(call)
   try:
     while actor.actorFull and not actor.actorClosed:
       if currentFiberActive:
@@ -1020,6 +1037,8 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     actor.pushActorMessage(checkedActorMessage(actor, message,
                                                "actor/ask message", scope),
                             reply)
+    if timeoutMs >= 0:
+      scheduleAskTimeout(task, reply, scope, timeoutMs)
     scheduleActor(actor, scope)
     actorAskTaskView(task, reply, scope)
   except GeneError as e:
@@ -2319,8 +2338,7 @@ proc buildBuiltins(app: Application): Scope =
   actorScope.define("try-send", newNativeCallFn("actor/try-send",
                                                biActorTrySend,
                                                acceptsNamed = false))
-  actorScope.define("ask", newNativeCallFn("actor/ask", biActorAsk,
-                                           acceptsNamed = false))
+  actorScope.define("ask", newNativeCallFn("actor/ask", biActorAsk))
   actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
   actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
   result.define("actor", newNamespace("actor", actorScope))
@@ -3478,6 +3496,12 @@ type
     waitTimer: bool        # fiber is parked until `waitDeadline`
     waitDeadline: MonoTime
 
+  AskTimeout = object
+    task: Value
+    reply: Value
+    scope: Scope
+    deadline: MonoTime
+
 # Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
 # work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
 # on a channel, actor mailbox, task await, or timer. `currentFiberActive` gates
@@ -3487,6 +3511,7 @@ const schedulerInstructionBudget = 2048
 
 var schedRunQueue {.threadvar.}: seq[Fiber]
 var schedWaiters {.threadvar.}: seq[Fiber]
+var schedAskTimeouts {.threadvar.}: seq[AskTimeout]
 
 proc enqueueRunnable(f: Fiber)
 
@@ -4559,15 +4584,38 @@ proc enqueueRunnable(f: Fiber) =
   clearWaitReason(f)
   schedRunQueue.add f
 
-proc wakeExpiredTimers(now = getMonoTime()) =
+proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
+  schedAskTimeouts.add AskTimeout(task: task, reply: reply, scope: scope,
+                                  deadline: timerDeadline(timeoutMs))
+
+proc failExpiredAskTimeouts(now: MonoTime): bool =
+  var i = 0
+  while i < schedAskTimeouts.len:
+    let item = schedAskTimeouts[i]
+    if item.task.kind != vkTask or item.task.taskDone:
+      schedAskTimeouts.delete(i)
+    elif item.deadline <= now:
+      const message = "actor/ask timed out"
+      failTask(item.task, message, actorErrorValue(item.scope, message),
+               hasValue = true)
+      wakeTaskWaiters(item.task)
+      schedAskTimeouts.delete(i)
+      result = true
+    else:
+      inc i
+
+proc wakeExpiredTimers(now = getMonoTime()): bool =
   var i = 0
   while i < schedWaiters.len:
     let f = schedWaiters[i]
     if f.waitTimer and f.waitDeadline <= now:
       schedWaiters.delete(i)
       enqueueRunnable(f)
+      result = true
     else:
       inc i
+  if failExpiredAskTimeouts(now):
+    result = true
 
 proc nextTimerDeadline(): tuple[has: bool, deadline: MonoTime] =
   for f in schedWaiters:
@@ -4575,6 +4623,11 @@ proc nextTimerDeadline(): tuple[has: bool, deadline: MonoTime] =
       if not result.has or f.waitDeadline < result.deadline:
         result.has = true
         result.deadline = f.waitDeadline
+  for item in schedAskTimeouts:
+    if item.task.kind == vkTask and not item.task.taskDone:
+      if not result.has or item.deadline < result.deadline:
+        result.has = true
+        result.deadline = item.deadline
 
 proc sleepUntil(deadline: MonoTime) =
   let remaining = deadline - getMonoTime()
@@ -4771,13 +4824,15 @@ proc spawnFiber(chunk: Chunk, scope: Scope): Value =
 proc schedulerRunOne(): bool =
   ## Run one runnable fiber to its next park/completion. If only timer waiters
   ## remain, sleep until the next timer expires and run the awakened fiber.
-  wakeExpiredTimers()
+  if wakeExpiredTimers() and schedRunQueue.len == 0:
+    return true
   while schedRunQueue.len == 0:
     let next = nextTimerDeadline()
     if not next.has:
       return false
     sleepUntil(next.deadline)
-    wakeExpiredTimers()
+    if wakeExpiredTimers() and schedRunQueue.len == 0:
+      return true
   let f = schedRunQueue[0]
   schedRunQueue.delete(0)
   if f.task.kind == vkTask and f.task.taskDone:
@@ -4790,7 +4845,8 @@ proc schedulerRunOneUntil(deadline: MonoTime): bool =
   ## Run one fiber, waiting for timers only up to `deadline`. Used by root-level
   ## sleep so it can advance already-scheduled work without oversleeping its own
   ## timer.
-  wakeExpiredTimers()
+  if wakeExpiredTimers() and schedRunQueue.len == 0:
+    return true
   while schedRunQueue.len == 0:
     let next = nextTimerDeadline()
     if not next.has:
@@ -4798,7 +4854,8 @@ proc schedulerRunOneUntil(deadline: MonoTime): bool =
     if next.deadline > deadline:
       return false
     sleepUntil(next.deadline)
-    wakeExpiredTimers()
+    if wakeExpiredTimers() and schedRunQueue.len == 0:
+      return true
   let f = schedRunQueue[0]
   schedRunQueue.delete(0)
   if f.task.kind == vkTask and f.task.taskDone:
