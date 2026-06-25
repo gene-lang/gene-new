@@ -59,7 +59,7 @@ participates in equality or hashing.
   with construction, schema validation, and single inheritance (`(type T ^props
   {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
   returns, typed construction, fixed-width numeric, C ABI scalar, and opaque
-  C pointer/owned-handle/slice boundaries, and
+  C pointer/owned-handle/slice plus boxed `Buffer` boundaries, and
   `Fn`/`NativeFn`/`Selector`/`Callable` values,
   positional/named/rest/default function
   arguments, MVP protocol declarations with `Error`/`Send` marker protocols,
@@ -77,6 +77,7 @@ participates in equality or hashing.
   a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
   `geneCall`, native module initializer/registration hooks, and opaque C pointer
   and slice constructors),
+  boxed `Buffer` values with checked element boundaries,
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
   `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
   first-class `Env` values with explicit

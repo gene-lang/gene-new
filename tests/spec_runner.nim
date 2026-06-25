@@ -326,6 +326,23 @@ suite "spec — numeric boundaries from design":
       discard run(compileSource("((fn [s : (C/Slice C/Char)] s) other)"),
                   scope)
 
+  test "Buffer annotations are Gene-owned typed storage":
+    check_eval("(var b (buffer C/UInt8 [1 2])) " &
+               "[(Buffer/len b) (Buffer/get b 1) " &
+               "(Buffer/set! b 0 9) (Buffer/to_list b)]",
+               "[2 2 9 [9 2]]")
+    check_eval("((fn [b : (Buffer C/UInt8)] true) " &
+               "(buffer C/UInt8 [1 2]))",
+               "true")
+    check_eval("((fn [b : (Buffer Int)] true) (buffer [1 2]))", "true")
+    expect GeneError:
+      discard run(compileSource("(buffer C/UInt8 [256])"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("((fn [b : (Buffer C/UInt8)] b) " &
+                                "(buffer C/Int32 [1]))"),
+                  newGlobalScope())
+
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:
@@ -407,6 +424,10 @@ suite "spec — generic functions from design":
                "  (s ~ Stream/next)) " &
                "(first (ints))",
                "7")
+    check_eval("(fn (first item) [b : (Buffer item)] : item " &
+               "  (Buffer/get b 0)) " &
+               "(first (buffer [5 6]))",
+               "5")
 
 suite "spec — static effects from design":
   test "^effects rows are reserved in MVP":

@@ -129,6 +129,17 @@ when defined(geneRcStats):
       check functions.listItems[0].call().intVal == 42
       functions = NIL
 
+    test "returned buffers strengthen contained functions":
+      var functions = NIL
+      block:
+        var scope = newGlobalScope()
+        functions = run(compileSource(
+          "(var x 40) (fn f [] (+ x 2)) (buffer [f])"), scope)
+        scope = nil
+      GC_fullCollect()
+      check functions.bufferItem(0).call().intVal == 42
+      functions = NIL
+
     test "returned lazy streams keep mapper scopes alive":
       var stream = NIL
       block:

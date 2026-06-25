@@ -77,6 +77,7 @@ type
     vkReplyTo   ## one-shot actor request/reply capability
     vkCPtr      ## opaque C pointer / owned foreign handle
     vkCSlice    ## opaque non-owning C pointer + element count
+    vkBuffer    ## Gene-owned typed contiguous storage
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -290,6 +291,7 @@ type
     okReplyTo
     okCPtr
     okCSlice
+    okBuffer
     okType
     okProtocol
     okProtocolMessage
@@ -421,6 +423,11 @@ type
     length: int
     targetType: Value
     mutable: bool
+
+  BufferData = ref object of GeneObjectData
+    elemType: Value
+    elemScope: Scope
+    items: seq[Value]
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -884,6 +891,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okReplyTo: vkReplyTo
     of okCPtr: vkCPtr
     of okCSlice: vkCSlice
+    of okBuffer: vkBuffer
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1585,6 +1593,35 @@ proc cSliceMutable*(v: Value): bool =
 proc cSliceIsNull*(v: Value): bool =
   cSliceData(v).address == nil
 
+proc bufferData(v: Value): BufferData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okBuffer:
+    raise newException(FieldDefect, "value is not a Buffer")
+  BufferData(objData(v))
+
+proc bufferElemType*(v: Value): Value =
+  bufferData(v).elemType
+
+proc bufferElemScope*(v: Value): Scope =
+  bufferData(v).elemScope
+
+proc bufferLen*(v: Value): int =
+  bufferData(v).items.len
+
+proc bufferItems*(v: Value): seq[Value] =
+  bufferData(v).items
+
+proc bufferItem*(v: Value, index: int): Value =
+  let data = bufferData(v)
+  if index < 0 or index >= data.items.len:
+    raise newException(FieldDefect, "buffer index out of range")
+  data.items[index]
+
+proc setBufferItem*(v: Value, index: int, item: Value) =
+  let data = bufferData(v)
+  if index < 0 or index >= data.items.len:
+    raise newException(FieldDefect, "buffer index out of range")
+  data.items[index] = escapeWeakFunctions(item)
+
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -2125,6 +2162,19 @@ proc escapeWeakFunctions*(v: Value): Value =
     v
   of vkCSlice:
     v
+  of vkBuffer:
+    let data = bufferData(v)
+    var changed = false
+    var items = newSeq[Value](data.items.len)
+    for i, item in data.items:
+      let escaped = escapeWeakFunctions(item)
+      items[i] = escaped
+      if escaped.bits != item.bits:
+        changed = true
+    if not changed:
+      return v
+    boxObject(BufferData(objKind: okBuffer, elemType: data.elemType,
+                         elemScope: data.elemScope, items: items))
   else:
     v
 
@@ -2260,6 +2310,16 @@ proc newCSlice*(address: pointer, length: int, targetType: Value = NIL,
     raise newException(GeneError, "C slice length must be non-negative")
   boxObject(CSliceData(objKind: okCSlice, address: address, length: length,
                        targetType: targetType, mutable: mutable))
+
+proc newBuffer*(elemType: Value = NIL, items: sink seq[Value] = @[],
+                elemScope: Scope = nil): Value =
+  for i in 0 ..< items.len:
+    if items[i].kind == vkVoid:
+      items[i] = NIL
+    else:
+      items[i] = escapeWeakFunctions(items[i])
+  boxObject(BufferData(objKind: okBuffer, elemType: elemType,
+                       elemScope: elemScope, items: items))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

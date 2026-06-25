@@ -138,6 +138,11 @@ proc print*(v: Value): string =
       "(c-slice null " & $v.cSliceLen & ")"
     else:
       "(c-slice " & $v.cSliceLen & ")"
+  of vkBuffer:
+    let elemType =
+      if v.bufferElemType.kind == vkNil: "Any"
+      else: v.bufferElemType.print()
+    "(buffer " & elemType & " " & $v.bufferLen & ")"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

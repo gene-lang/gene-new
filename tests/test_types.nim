@@ -158,6 +158,14 @@ suite "types — function boundaries":
        "(first (nums))",
        "4"
 
+  test "generic functions infer buffer element types":
+    ck "(fn (first item) [b : (Buffer item)] : item (Buffer/get b 0)) " &
+       "(first (buffer [4 5]))",
+       "4"
+    ck "(try (fn (choose item) [b : (Buffer item) fallback : item] fallback) " &
+       "(choose (buffer [1]) \"bad\") catch (TypeError ^expected e) e)",
+       "\"Int\""
+
   test "task annotations check results and recoverable errors at await":
     ck "(scope " &
        "  (fn use [t : (Task Int Never)] (await t)) " &
@@ -315,6 +323,31 @@ suite "types — function boundaries":
     expect GeneError:
       discard run(compileSource("((fn [s : (C/Slice C/Char)] s) other)"),
                   scope)
+
+  test "Buffer annotations check Gene-owned typed storage":
+    ck "(var b (buffer [1 2 3])) " &
+       "[(Buffer/len b) (Buffer/get b 0) (Buffer/get b -1) " &
+       "(Buffer/to_list b) (Buffer/elem-type b)]",
+       "[3 1 3 [1 2 3] Int]"
+    ck "(var b (buffer C/UInt8 [1 2])) " &
+       "[(Buffer/set! b 1 255) (Buffer/to_list b) " &
+       "((fn [x : (Buffer C/UInt8)] true) b)]",
+       "[255 [1 255] true]"
+    ck "((fn [b : (Buffer Int)] true) (buffer [1 2]))", "true"
+    ck "(try (buffer C/UInt8 [1 256]) " &
+       "catch (TypeError ^expected e) e)", "\"C/UInt8\""
+    expect GeneError:
+      discard runStr("(var b (buffer C/UInt8 [1])) (Buffer/set! b 0 256)")
+    expect GeneError:
+      discard runStr("((fn [b : (Buffer C/UInt8)] b) (buffer C/Int32 [1]))")
+    expect GeneError:
+      discard runStr("(hash (buffer [1]))")
+
+    let scope = newGlobalScope()
+    scope.define("native-buf", newBuffer(newSym("C/Char"),
+                                         @[newInt(65), newInt(66)]))
+    check run(compileSource("((fn [b : (Buffer C/Char)] b) native-buf)"),
+              scope).print() == "(buffer C/Char 2)"
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""

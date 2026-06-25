@@ -15,6 +15,9 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
+proc commonRuntimeTypeExpr(values: openArray[Value]): Value
+proc matchesBufferType(args: openArray[Value], value: Value,
+                       scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc builtinBinding(scope: Scope, name: string): Value
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value
@@ -1200,6 +1203,7 @@ proc freezeRejectName(value: Value): string =
   of vkReplyTo: "ReplyTo"
   of vkCPtr: "C pointer"
   of vkCSlice: "C slice"
+  of vkBuffer: "Buffer"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
@@ -1225,7 +1229,7 @@ proc freezeValue(value: Value): Value =
             immutable = true)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
-     vkActorStep, vkReplyTo, vkCPtr, vkCSlice:
+     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -1321,6 +1325,7 @@ proc declarationKind*(value: Value): string =
   of vkReplyTo: "ReplyTo"
   of vkCPtr: "CPtr"
   of vkCSlice: "CSlice"
+  of vkBuffer: "Buffer"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1807,6 +1812,98 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setNodeProp(keySegment("Node/set-prop!", args[1]), args[2])
   args[2]
 
+proc requireBuffer(name: string, value: Value) =
+  if value.kind != vkBuffer:
+    raise newException(GeneError, name & " expects a Buffer")
+
+proc bufferTypeExprArg(name: string, value: Value): Value =
+  if value.kind == vkNode and value.head.isSymbol("c-abi-type") and
+      value.body.len == 1 and value.body[0].kind == vkSymbol:
+    return newSym("C/" & value.body[0].symVal)
+  case value.kind
+  of vkSymbol, vkNode, vkType:
+    value
+  else:
+    raise newException(GeneError,
+      name & " expects a type expression or C ABI descriptor")
+
+proc isAnyTypeValue(expr: Value): bool =
+  expr.kind == vkNil or (expr.kind == vkSymbol and expr.symVal == "Any")
+
+proc checkedBufferItem(buffer, item: Value, where: string,
+                       fallbackScope: Scope): Value =
+  let stored = if item.kind == vkVoid: NIL else: item
+  let elemType = buffer.bufferElemType
+  if elemType.isAnyTypeValue:
+    return stored
+  let elemScope =
+    if buffer.bufferElemScope == nil: fallbackScope
+    else: buffer.bufferElemScope
+  adaptBoundary(where, elemType, stored, elemScope)
+
+proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call.dispatchScope
+  var elemType: Value
+  var source: Value
+  case args.len
+  of 1:
+    requireList("buffer", args[0])
+    source = args[0]
+    elemType = commonRuntimeTypeExpr(source.listItems)
+  of 2:
+    elemType = bufferTypeExprArg("buffer", args[0])
+    requireList("buffer", args[1])
+    source = args[1]
+  else:
+    raise newException(GeneError,
+      "buffer expects 1 or 2 arguments, got " & $args.len)
+
+  elemType = closeTypeExpr(elemType, scope)
+  var items: seq[Value]
+  for item in source.listItems:
+    let stored = if item.kind == vkVoid: NIL else: item
+    if elemType.isAnyTypeValue:
+      items.add stored
+    else:
+      items.add adaptBoundary("buffer item", elemType, stored, scope)
+  newBuffer(elemType, items)
+
+proc biBufferLen(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Buffer/len", args)
+  requireBuffer("Buffer/len", args[0])
+  newInt(args[0].bufferLen)
+
+proc biBufferGet(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "Buffer/get expects 2 arguments, got " & $args.len)
+  requireBuffer("Buffer/get", args[0])
+  readIndex(args[0].bufferItems, requireInt64("Buffer/get", args[1]))
+
+proc biBufferSetBang(args: openArray[Value],
+                     call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "Buffer/set! expects 3 arguments, got " & $args.len)
+  requireBuffer("Buffer/set!", args[0])
+  let index = updateIndex("Buffer/set!", args[0].bufferLen,
+                          requireInt64("Buffer/set!", args[1]))
+  let scope = if call == nil: nil else: call.dispatchScope
+  let stored = checkedBufferItem(args[0], args[2], "Buffer/set! item", scope)
+  args[0].setBufferItem(index, stored)
+  stored
+
+proc biBufferToList(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Buffer/to_list", args)
+  requireBuffer("Buffer/to_list", args[0])
+  newList(copyItems(args[0].bufferItems))
+
+proc biBufferElemType(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Buffer/elem-type", args)
+  requireBuffer("Buffer/elem-type", args[0])
+  let elemType = args[0].bufferElemType
+  if elemType.kind == vkNil: newSym("Any") else: elemType
+
 proc displayStr(v: Value, scope: Scope = nil): string =
   ## print/println render strings as raw text and everything else via the printer.
   if v.kind == vkString:
@@ -2021,6 +2118,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("freeze", newNativeFn("freeze", biFreeze))
   result.define("thaw", newNativeFn("thaw", biThaw))
   result.define("key", newNativeFn("key", biSelectorKey))
+  result.define("buffer", newNativeCallFn("buffer", biBuffer,
+                                          acceptsNamed = false))
   let listScope = newScope(result)
   listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
   listScope.define("set!", newNativeFn("List/set!", biListSetBang))
@@ -2033,6 +2132,14 @@ proc buildBuiltins(app: Application): Scope =
   let nodeScope = newScope(result)
   nodeScope.define("set-prop!", newNativeFn("Node/set-prop!", biNodeSetPropBang))
   result.define("Node", newNamespace("Node", nodeScope))
+  let bufferScope = newScope(result)
+  bufferScope.define("len", newNativeFn("Buffer/len", biBufferLen))
+  bufferScope.define("get", newNativeFn("Buffer/get", biBufferGet))
+  bufferScope.define("set!", newNativeCallFn("Buffer/set!", biBufferSetBang,
+                                             acceptsNamed = false))
+  bufferScope.define("to_list", newNativeFn("Buffer/to_list", biBufferToList))
+  bufferScope.define("elem-type", newNativeFn("Buffer/elem-type", biBufferElemType))
+  result.define("Buffer", newNamespace("Buffer", bufferScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
   cellScope.define("get", newNativeFn("Cell/get", biCellGet))
@@ -2812,7 +2919,7 @@ proc isSendableValue(value: Value, scope: Scope,
         return false
     true
   of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
-     vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice:
+     vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice, vkBuffer:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -4577,8 +4684,6 @@ proc typeExprEqual(a, b: Value): bool =
 proc typeNode(name: string, body: sink seq[Value] = @[]): Value =
   newNode(newSym(name), body = body)
 
-proc commonRuntimeTypeExpr(values: openArray[Value]): Value
-
 proc runtimeTypeExpr(value: Value): Value =
   case value.kind
   of vkNil: newSym("Nil")
@@ -4591,6 +4696,12 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkSymbol: newSym("Sym")
   of vkList:
     typeNode("List", @[commonRuntimeTypeExpr(value.listItems)])
+  of vkBuffer:
+    let elemType = value.bufferElemType
+    if elemType.kind == vkNil:
+      newSym("Buffer")
+    else:
+      typeNode("Buffer", @[elemType])
   of vkMap:
     var values: seq[Value]
     for _, item in value.mapEntries:
@@ -4717,6 +4828,21 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
           if not inferTypeExpr(expr.body[0], item, scope, typeParams, bindings):
             return false
         return true
+      of "Buffer":
+        if value.kind != vkBuffer:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Buffer T) expects one item type")
+        let itemType =
+          if value.bufferElemType.kind == vkNil:
+            newSym("Any")
+          else:
+            value.bufferElemType
+        if expr.body[0].kind == vkSymbol and expr.body[0].symVal in typeParams:
+          return bindings.bindTypeParam(expr.body[0].symVal, itemType)
+        return matchesBufferType(expr.body, value, scope)
       of "Map", "PropMap":
         if value.kind != vkMap:
           return false
@@ -5007,6 +5133,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.floatInF32Range)
   of "List":
     (true, value.kind == vkList)
+  of "Buffer":
+    (true, value.kind == vkBuffer)
   of "Map", "PropMap":
     (true, value.kind == vkMap)
   of "Gene", "Node":
@@ -5164,6 +5292,22 @@ proc matchesCSliceType(name: string, args: openArray[Value],
     return false
   cPtrTargetMatches(args[0], value.cSliceTargetType, scope)
 
+proc matchesBufferType(args: openArray[Value], value: Value,
+                       scope: Scope): bool =
+  if value.kind != vkBuffer:
+    return false
+  if args.len == 0:
+    return true
+  if args.len != 1:
+    raise newException(GeneError, "(Buffer T) expects one item type")
+  let expected = closeTypeExpr(args[0], scope)
+  if expected.isAnyTypeValue:
+    return true
+  let actual = value.bufferElemType
+  if actual.kind == vkNil or actual.isAnyTypeValue:
+    return false
+  typeExprEqual(expected, closeTypeExpr(actual, value.bufferElemScope))
+
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   if expr.kind == vkNil:
     return true
@@ -5205,6 +5349,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         return matchesCPtrType(expr.head.symVal, expr.body, value, scope)
       of "C/Slice":
         return matchesCSliceType(expr.head.symVal, expr.body, value, scope)
+      of "Buffer":
+        return matchesBufferType(expr.body, value, scope)
       of "|":
         for alt in expr.body:
           if matchesTypeExpr(alt, value, scope):
