@@ -12,6 +12,14 @@ type
   GeneRootGetProc* = proc(root: GeneRoot): Value
   GeneRootReleaseProc* = proc(root: GeneRoot)
   GeneCallProc* = proc(callee: Value, call: GeneCall): GeneResult
+  GeneModuleDefineProc* = proc(module: GeneModule, name: string,
+                               value: Value): GeneResult
+  GeneModuleDefineNativeProc* = proc(module: GeneModule, name: string,
+                                     impl: NativeProc): GeneResult
+  GeneModuleDefineNativeCallProc* = proc(module: GeneModule, name: string,
+                                         impl: NativeCallProc,
+                                         acceptsNamed: bool): GeneResult
+  GeneModuleInitProc* = proc(api: ptr GeneApi, module: GeneModule): GeneResult
 
   GeneStatus* = enum
     gsOk
@@ -36,14 +44,39 @@ type
     errorValue*: Value
     hasErrorValue*: bool
 
+  GeneModule* = ref object
+    value: Value
+    scope: Scope
+
   GeneApi* = object
     version*: int
+    featureCount*: int
     root*: GeneRootProc
     rootGet*: GeneRootGetProc
     rootRelease*: GeneRootReleaseProc
     call*: GeneCallProc
+    moduleDefine*: GeneModuleDefineProc
+    moduleDefineNative*: GeneModuleDefineNativeProc
+    moduleDefineNativeCall*: GeneModuleDefineNativeCallProc
 
 const GeneApiVersion* = 1
+const GeneApiFeatureCount* = 7
+
+proc geneApi*(): GeneApi
+
+proc errorResult(e: ref GeneError): GeneResult =
+  result.status = gsError
+  result.message = e.msg
+  result.hasErrorValue = e.hasErrVal
+  if e.hasErrVal:
+    result.errorValue = e.errVal
+
+proc panicResult(e: ref GenePanic): GeneResult =
+  result.status = gsPanic
+  result.message = e.msg
+  result.hasErrorValue = e.hasErrVal
+  if e.hasErrVal:
+    result.errorValue = e.errVal
 
 proc geneRoot*(value: Value): GeneRoot =
   GeneRoot(value: value)
@@ -65,18 +98,69 @@ proc geneCall*(callee: Value, call: GeneCall): GeneResult =
     result.value = vm.call(callee, call.args, call.namedNames, call.namedValues,
                            call.dispatchScope, call.site)
   except GeneError as e:
-    result.status = gsError
-    result.message = e.msg
-    result.hasErrorValue = e.hasErrVal
-    if e.hasErrVal:
-      result.errorValue = e.errVal
+    result = errorResult(e)
   except GenePanic as e:
-    result.status = gsPanic
-    result.message = e.msg
-    result.hasErrorValue = e.hasErrVal
-    if e.hasErrVal:
-      result.errorValue = e.errVal
+    result = panicResult(e)
+
+proc newGeneModule*(name: string, path = "",
+                    scope: Scope = nil): GeneModule =
+  let moduleScope =
+    if scope == nil: newGlobalScope()
+    else: scope
+  let moduleValue = bindThisModule(moduleScope, name, path)
+  GeneModule(value: moduleValue, scope: moduleScope)
+
+proc geneModuleValue*(module: GeneModule): Value =
+  if module == nil:
+    raise newException(GeneError, "native module is nil")
+  module.value
+
+proc geneModuleScope*(module: GeneModule): Scope =
+  if module == nil:
+    raise newException(GeneError, "native module is nil")
+  module.scope
+
+proc geneModuleDefine*(module: GeneModule, name: string,
+                       value: Value): GeneResult =
+  try:
+    module.geneModuleScope.define(name, value)
+    result.status = gsOk
+    result.value = value
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneModuleDefineNative*(module: GeneModule, name: string,
+                             impl: NativeProc): GeneResult =
+  geneModuleDefine(module, name, newNativeFn(name, impl))
+
+proc geneModuleDefineNativeCall*(module: GeneModule, name: string,
+                                 impl: NativeCallProc,
+                                 acceptsNamed: bool): GeneResult =
+  geneModuleDefine(module, name,
+                   newNativeCallFn(name, impl, acceptsNamed = acceptsNamed))
+
+proc geneInitModule*(init: GeneModuleInitProc, module: GeneModule,
+                     api: GeneApi = geneApi()): GeneResult =
+  if init == nil:
+    result.status = gsError
+    result.message = "native module initializer is nil"
+    return
+  var runtimeApi = api
+  try:
+    result = init(addr runtimeApi, module)
+    if result.status == gsOk:
+      result.value = module.geneModuleValue
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
 
 proc geneApi*(): GeneApi =
-  GeneApi(version: GeneApiVersion, root: geneRoot, rootGet: geneRootGet,
-          rootRelease: geneRootRelease, call: geneCall)
+  GeneApi(version: GeneApiVersion, featureCount: GeneApiFeatureCount,
+          root: geneRoot, rootGet: geneRootGet,
+          rootRelease: geneRootRelease, call: geneCall,
+          moduleDefine: geneModuleDefine,
+          moduleDefineNative: geneModuleDefineNative,
+          moduleDefineNativeCall: geneModuleDefineNativeCall)

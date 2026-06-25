@@ -74,7 +74,7 @@ participates in equality or hashing.
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, first-class `Cell`/`AtomicCell` mutable references,
   a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
-  and a `geneCall` trampoline over the dynamic `Callable` path),
+  `geneCall`, and native module initializer/registration hooks),
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
   `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
   first-class `Env` values with explicit

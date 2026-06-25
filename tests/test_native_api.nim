@@ -1,5 +1,34 @@
 import gene/[compiler, native_api, printer, types, vm]
-import std/[tables, unittest]
+import std/[strutils, tables, unittest]
+
+proc nativeInc(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 1 or args[0].kind != vkInt:
+    raise newException(GeneError, "inc expects one Int")
+  newInt(args[0].intVal + 1)
+
+proc nativeModuleEnvelopeEcho(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  if call == nil:
+    raise newException(GeneError, "native envelope missing")
+  var items = @[newStr(call[].calleeName), newInt(args.len),
+                newInt(call[].namedNames.len)]
+  if call[].namedNames.len > 0:
+    items.add newSym(call[].namedNames[0])
+    items.add call[].namedValues[0]
+  if args.len > 0:
+    items.add args[0]
+  newList(items)
+
+proc initNativeSample(api: ptr GeneApi,
+                      module: GeneModule): GeneResult {.nimcall.} =
+  result = api[].moduleDefine(module, "answer", newInt(40))
+  if result.status != gsOk:
+    return
+  result = api[].moduleDefineNative(module, "inc", nativeInc)
+  if result.status != gsOk:
+    return
+  result = api[].moduleDefineNativeCall(module, "envelope",
+                                        nativeModuleEnvelopeEcho, true)
 
 suite "native api — roots and trampoline":
   test "roots retain values until released":
@@ -68,5 +97,24 @@ suite "native api — roots and trampoline":
     let called = api.call(callee, GeneCall(args: @[newInt(21)],
                                            dispatchScope: scope))
     check api.version == GeneApiVersion
+    check api.featureCount == GeneApiFeatureCount
     check called.status == gsOk
     check called.value.print() == "42"
+
+  test "native module initializer registers exports through the API table":
+    let module = newGeneModule("sample-native")
+    let initialized = geneInitModule(initNativeSample, module)
+    check initialized.status == gsOk
+    check initialized.value.moduleName == "sample-native"
+
+    let scope = geneModuleScope(module)
+    check run(compileSource("(+ answer (inc 1))"), scope).print() == "42"
+    check run(compileSource("(envelope ^tag \"ok\" 3)"), scope).print() ==
+      "[\"envelope\" 1 1 tag \"ok\" 3]"
+
+  test "native module registration failures return status values":
+    let module = newGeneModule("dupe-native")
+    check geneModuleDefine(module, "x", newInt(1)).status == gsOk
+    let duplicate = geneModuleDefine(module, "x", newInt(2))
+    check duplicate.status == gsError
+    check duplicate.message.contains("duplicate binding: x")
