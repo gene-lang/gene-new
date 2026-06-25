@@ -1000,6 +1000,9 @@ proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     raise newException(GeneError, "reply has already been sent")
   let scope = actorDispatchScope(call)
   let task = args[0].replyToTask
+  if task.kind == vkTask and task.taskDone:
+    args[0].cancelReplyTo()
+    return NIL
   args[0].sendReplyTo(checkedReplyValue(args[0], args[1],
                                         "ReplyTo/send value", scope))
   if task.kind == vkTask:

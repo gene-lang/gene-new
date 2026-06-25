@@ -993,6 +993,27 @@ suite "spec — actors from design":
                "(ch ~ Channel/send 7) " &
                "[err (sleep 1) (out ~ Cell/get)]",
                "[\"actor/ask timed out\" nil 7]")
+    check_eval("(scope " &
+               "  (type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
+               "(var saved (cell nil)) " &
+               "(var ch (channel ^capacity 1)) " &
+               "(fn handle [ctx state msg] " &
+               "  (var (Get ^reply reply) msg) " &
+               "  (var got (ch ~ Channel/recv)) " &
+               "  (try (reply ~ ReplyTo/send got) catch {^message m} m) " &
+               "  (actor/continue state)) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(var pending (actor/ask ^timeout-ms 5 counter " &
+               "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
+               "(var err (try (await pending) catch (ActorError ^message m) m)) " &
+               "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
+               "                  catch {^message m} m)) " &
+               "(var second-late (try ((saved ~ Cell/get) ~ ReplyTo/send 10) " &
+               "                   catch {^message m} m)) " &
+               "[err first-late second-late])",
+               "[\"actor/ask timed out\" nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send Get) " &
                "(var counter : (ActorRef Get) " &
@@ -1023,6 +1044,27 @@ suite "spec — actors from design":
                                 "  nil) " &
                                 "(await pending)"),
                   newGlobalScope())
+    check_eval("(scope " &
+               "  (type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
+               "(var saved (cell nil)) " &
+               "(var ch (channel ^capacity 1)) " &
+               "(fn handle [ctx state msg] " &
+               "  (var (Get ^reply reply) msg) " &
+               "  (var got (ch ~ Channel/recv)) " &
+               "  (try (reply ~ ReplyTo/send got) catch {^message m} m) " &
+               "  (actor/continue state)) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(var pending (counter ~ actor/ask " &
+               "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
+               "(pending ~ Task/cancel) " &
+               "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
+               "                  catch {^message m} m)) " &
+               "(var second-late (try ((saved ~ Cell/get) ~ ReplyTo/send 10) " &
+               "                   catch {^message m} m)) " &
+               "[first-late second-late])",
+               "[nil \"reply has already been sent\"]")
     expect GeneCancel:
       discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
                                 "(impl Error Boom) " &

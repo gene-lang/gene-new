@@ -1506,6 +1506,26 @@ suite "vm — cooperative scheduler":
        "(ch ~ Channel/send 7) " &
        "[err (sleep 1) (out ~ Cell/get)]",
        "[\"actor/ask timed out\" nil 7]"
+    ck "(scope " &
+       "  (type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(var saved (cell nil)) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(fn handle [ctx state msg] " &
+       "  (var (Get ^reply reply) msg) " &
+       "  (var got (ch ~ Channel/recv)) " &
+       "  (try (reply ~ ReplyTo/send got) catch {^message m} m) " &
+       "  (actor/continue state)) " &
+       "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+       "(var pending (actor/ask ^timeout-ms 5 a " &
+       "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
+       "(var err (try (await pending) catch (ActorError ^message m) m)) " &
+       "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
+       "                  catch {^message m} m)) " &
+       "(var second-late (try ((saved ~ Cell/get) ~ ReplyTo/send 10) " &
+       "                   catch {^message m} m)) " &
+       "[err first-late second-late])",
+       "[\"actor/ask timed out\" nil \"reply has already been sent\"]"
 
   test "a cancelled actor ask task is not completed by a late reply":
     expect GeneCancel:
@@ -1527,6 +1547,26 @@ suite "vm — cooperative scheduler":
                      "(ch ~ Channel/send 7) " &
                      "(a ~ actor/send (Tick)) " &
                      "(await pending)")
+    ck "(scope " &
+       "  (type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(var saved (cell nil)) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(fn handle [ctx state msg] " &
+       "  (var (Get ^reply reply) msg) " &
+       "  (var got (ch ~ Channel/recv)) " &
+       "  (try (reply ~ ReplyTo/send got) catch {^message m} m) " &
+       "  (actor/continue state)) " &
+       "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+       "(var pending (a ~ actor/ask " &
+       "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
+       "(pending ~ Task/cancel) " &
+       "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
+       "                  catch {^message m} m)) " &
+       "(var second-late (try ((saved ~ Cell/get) ~ ReplyTo/send 10) " &
+       "                   catch {^message m} m)) " &
+       "[first-late second-late])",
+       "[nil \"reply has already been sent\"]"
 
   test "closing an owned actor cancels a scheduled ask reply":
     expect GeneCancel:

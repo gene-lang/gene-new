@@ -1552,6 +1552,12 @@ proc setReplyToResultType*(v, resultType: Value, scope: Scope) =
   data.resultType = resultType
   data.resultScope = scope
 
+proc cancelReplyTo*(v: Value) =
+  let data = replyToData(v)
+  data.sent = true
+  data.result = NIL
+  data.task = NIL
+
 proc completeTask*(v, value: Value)
 
 proc sendReplyTo*(v, result: Value) =
