@@ -802,6 +802,24 @@ suite "spec — actors from design":
                "catch (TypeError ^where w) w)",
                "\"ReplyTo/send value\"")
 
+  test "scope shutdown cancels pending actor asks":
+    expect GeneCancel:
+      discard run(compileSource("(type Get ^props {^reply (ReplyTo Int)}) " &
+                                "(impl Send Get) " &
+                                "(var pending nil) " &
+                                "(scope " &
+                                "  (var a (actor/spawn ^init (fn [] 41) " &
+                                "    ^handle (fn [ctx state msg] " &
+                                "      (match msg " &
+                                "        (when (Get ^reply reply) " &
+                                "          (reply ~ ReplyTo/send state) " &
+                                "          (actor/continue state)))))) " &
+                                "  (set pending (a ~ actor/ask " &
+                                "    (fn [reply] (Get ^reply reply)))) " &
+                                "  nil) " &
+                                "(await pending)"),
+                  newGlobalScope())
+
   test "scope owns spawned actors until scope exit":
     check_eval("(var a (scope " &
                "  (actor/spawn ^init (fn [] 0) " &

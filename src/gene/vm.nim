@@ -65,6 +65,7 @@ proc pumpUntilDone(task: Value)
 proc scheduleActor(actor: Value, scope: Scope)
 proc driveActor(actor: Value)
 proc wakeActorSenders(actor: Value)
+proc cancelOwnedActor(actor: Value)
 
 # ---------------------------------------------------------------------------
 # Scope
@@ -124,7 +125,7 @@ proc closeOwnedActors(scope: Scope) =
     return
   for i in countdown(scope.ownedActors.high, 0):
     if scope.ownedActors[i].kind == vkActorRef:
-      scope.ownedActors[i].closeActor()
+      cancelOwnedActor(scope.ownedActors[i])
   scope.ownedActors.setLen(0)
 
 proc actorOwnerFailureStrategy(scope: Scope): ActorFailureStrategy =
@@ -3153,6 +3154,38 @@ type
 # original synchronous behavior.
 var schedRunQueue {.threadvar.}: seq[Fiber]
 var schedWaiters {.threadvar.}: seq[Fiber]
+
+proc cancelOwnedActor(actor: Value) =
+  ## Scope/supervisor shutdown owns actor lifetime. Closing the mailbox is not
+  ## enough: queued asks and already-scheduled handler fibers would otherwise keep
+  ## pending tasks alive, and parked handlers could resume after owner exit.
+  actor.closeActor()
+  for item in actor.drainActorMessages():
+    discard cancelReplyTask(item.reply)
+
+  var i = 0
+  while i < schedRunQueue.len:
+    let f = schedRunQueue[i]
+    if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
+      discard cancelReplyTask(f.actorAskReply)
+      schedRunQueue.delete(i)
+    else:
+      inc i
+
+  i = 0
+  while i < schedWaiters.len:
+    let f = schedWaiters[i]
+    if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
+      discard cancelReplyTask(f.actorAskReply)
+      schedWaiters.delete(i)
+    elif f.waitActor.kind == vkActorRef and same(f.waitActor, actor):
+      schedWaiters.delete(i)
+      f.waitActor = NIL
+      schedRunQueue.add f
+    else:
+      inc i
+
+  actor.setActorProcessing(false)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value
 

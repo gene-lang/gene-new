@@ -1405,6 +1405,11 @@ proc actorFull*(v: Value): bool =
 proc closeActor*(v: Value) =
   actorData(v).lifecycle.closed = true
 
+proc drainActorMessages*(v: Value): seq[ActorMessage] =
+  let data = actorData(v)
+  result = data.queue
+  data.queue.setLen(0)
+
 proc pushActorMessage*(v, message: Value) =
   actorData(v).queue.add ActorMessage(message: escapeWeakFunctions(message),
                                       reply: NIL)

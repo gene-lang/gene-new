@@ -1398,6 +1398,41 @@ suite "vm — cooperative scheduler":
                      "(a ~ actor/send (Tick)) " &
                      "(await pending)")
 
+  test "closing an owned actor cancels a scheduled ask reply":
+    expect GeneCancel:
+      discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
+                     "(impl Send Get) " &
+                     "(var pending nil) " &
+                     "(scope " &
+                     "  (var a (actor/spawn ^init (fn [] 41) " &
+                     "    ^handle (fn [ctx state msg] " &
+                     "      (match msg " &
+                     "        (when (Get ^reply reply) " &
+                     "          (reply ~ ReplyTo/send state) " &
+                     "          (actor/continue state)))))) " &
+                     "  (set pending (a ~ actor/ask " &
+                     "    (fn [reply] (Get ^reply reply)))) " &
+                     "  nil) " &
+                     "(await pending)")
+
+  test "closing an owned actor removes blocked handler fibers":
+    ck "(var out (cell 0)) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(scope " &
+       "  (var a (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (var got (ch ~ Channel/recv)) " &
+       "      (out ~ Cell/set got) " &
+       "      (actor/continue state)))) " &
+       "  (a ~ actor/send 1) " &
+       "  nil) " &
+       "(ch ~ Channel/send 7) " &
+       "(var gate (channel ^capacity 1)) " &
+       "(var t (spawn (gate ~ Channel/recv))) " &
+       "(gate ~ Channel/send 1) " &
+       "(await t) " &
+       "(out ~ Cell/get)", "0"
+
 suite "vm — actors":
   test "actor values are opaque display values":
     ck "(actor/spawn ^init (fn [] 0) " &
