@@ -1882,6 +1882,9 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   stdout.write "\n"
   NIL
 
+proc cAbiTypeValue(name: string): Value =
+  newNode(newSym("c-abi-type"), body = @[newSym(name)])
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -2026,6 +2029,13 @@ proc buildBuiltins(app: Application): Scope =
   atomicCellScope.define("compare-exchange",
     newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
+  let cScope = newScope(result)
+  for name in ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32",
+               "Int64", "UInt64", "Float", "Double", "Char", "UChar",
+               "Short", "UShort", "Int", "UInt", "Long", "ULong",
+               "Size", "PtrDiff", "Bool", "Void", "CStr"]:
+    cScope.define(name, cAbiTypeValue(name))
+  result.define("C", newNamespace("C", cScope))
   let taskScope = newScope(result)
   taskScope.define("cancel", newNativeFn("Task/cancel", biTaskCancel))
   result.define("Task", newNamespace("Task", taskScope))
@@ -4517,7 +4527,16 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
     VOID
 
 proc typeExprLabel(expr: Value): string =
-  if expr.kind == vkNil: "Any" else: expr.print()
+  if expr.kind == vkNil:
+    return "Any"
+  if expr.kind == vkNode and expr.head.isSymbol("path"):
+    var parts: seq[string]
+    for part in expr.body:
+      if part.kind != vkSymbol:
+        return expr.print()
+      parts.add part.symVal
+    return parts.join("/")
+  expr.print()
 
 proc isAnyType(expr: Value): bool =
   expr.kind == vkNil or (expr.kind == vkSymbol and expr.symVal == "Any")
@@ -4836,7 +4855,64 @@ proc floatInF32Range(value: Value): bool =
   else:
     abs(value.floatVal) <= F32_MAX_FINITE
 
+proc strHasInteriorNul(value: Value): bool =
+  value.kind == vkString and '\0' in value.strVal
+
+proc matchesCAbiType(name: string, value: Value): tuple[known, ok: bool] =
+  case name
+  of "C/Int8":
+    (true, value.intInRange(-128'i64, 127'i64))
+  of "C/UInt8":
+    (true, value.intInRange(0'i64, 255'i64))
+  of "C/Int16":
+    (true, value.intInRange(-32768'i64, 32767'i64))
+  of "C/UInt16":
+    (true, value.intInRange(0'i64, 65535'i64))
+  of "C/Int32":
+    (true, value.intInRange(-2147483648'i64, 2147483647'i64))
+  of "C/UInt32":
+    (true, value.intInRange(0'i64, 4294967295'i64))
+  of "C/Int64":
+    (true, value.intInRange(low(int64), high(int64)))
+  of "C/UInt64":
+    (true, value.intInDecimalRange("0", "18446744073709551615"))
+  of "C/Char":
+    (true, value.kind == vkChar or value.intInRange(-128'i64, 127'i64))
+  of "C/UChar":
+    (true, value.kind == vkChar or value.intInRange(0'i64, 255'i64))
+  of "C/Short":
+    (true, value.intInRange(-32768'i64, 32767'i64))
+  of "C/UShort":
+    (true, value.intInRange(0'i64, 65535'i64))
+  of "C/Int":
+    (true, value.intInRange(-2147483648'i64, 2147483647'i64))
+  of "C/UInt":
+    (true, value.intInRange(0'i64, 4294967295'i64))
+  of "C/Long":
+    (true, value.intInRange(low(int64), high(int64)))
+  of "C/ULong":
+    (true, value.intInDecimalRange("0", "18446744073709551615"))
+  of "C/Size":
+    (true, value.intInDecimalRange("0", "18446744073709551615"))
+  of "C/PtrDiff":
+    (true, value.intInRange(low(int64), high(int64)))
+  of "C/Float":
+    (true, value.floatInF32Range)
+  of "C/Double":
+    (true, value.kind == vkFloat)
+  of "C/Bool":
+    (true, value.kind == vkBool)
+  of "C/Void":
+    (true, value.kind in {vkNil, vkVoid})
+  of "C/CStr":
+    (true, value.kind == vkString and not value.strHasInteriorNul)
+  else:
+    (false, false)
+
 proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
+  let cAbi = matchesCAbiType(name, value)
+  if cAbi.known:
+    return cAbi
   case name
   of "Any":
     (true, true)
@@ -4951,6 +5027,9 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         return resolved
     expr
   of vkNode:
+    if expr.head.isSymbol("path") and expr.body.len == 2 and
+        expr.body[0].isSymbol("C") and expr.body[1].kind == vkSymbol:
+      return newSym("C/" & expr.body[1].symVal)
     var changed = false
     var props = initOrderedTable[string, Value]()
     for key, value in expr.props:
@@ -5027,6 +5106,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   of vkNode:
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
+      of "path":
+        return matchesTypeExpr(closeTypeExpr(expr, scope), value, scope)
       of "|":
         for alt in expr.body:
           if matchesTypeExpr(alt, value, scope):

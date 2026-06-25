@@ -232,6 +232,20 @@ suite "types — function boundaries":
     expect GeneError:
       discard runStr("(type Byte ^props {^value U8}) (Byte ^value 256)")
 
+  test "C ABI scalar annotations are explicit checked boundaries":
+    ck "C/Int32", "(c-abi-type Int32)"
+    ck "(fn f [x : C/Int32] x) [(f -2147483648) (f 2147483647)]",
+       "[-2147483648 2147483647]"
+    ck "(fn f [x : C/UInt8] x) [(f 0) (f 255)]", "[0 255]"
+    ck "(fn f [x : C/Bool] x) (f true)", "true"
+    ck "(fn f [x : C/CStr] x) (f \"ok\")", "\"ok\""
+    ck "(try (fn f [x : C/Int32] x) (f 2147483648) " &
+       "catch (TypeError ^expected e) e)", "\"C/Int32\""
+    ck "(try (fn f [x : C/CStr] x) (f \"bad\\0str\") " &
+       "catch (TypeError ^expected e) e)", "\"C/CStr\""
+    expect GeneError: discard runStr("(fn f [x : C/UInt8] x) (f -1)")
+    expect GeneError: discard runStr("(fn f [x : C/Bool] x) (f 1)")
+
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
     ck "(fn f [x : (opt Int)] x) (f nil)", "nil"

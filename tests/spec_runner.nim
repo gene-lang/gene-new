@@ -266,6 +266,22 @@ suite "spec — numeric boundaries from design":
                "\"F32\"")
     check_eval("(fn double [x : F64] 1) (double 1e39)", "1")
 
+  test "C ABI scalar annotations are explicit range checked boundaries":
+    check_eval("C/Int32", "(c-abi-type Int32)")
+    check_eval("(fn int32 [x : C/Int32] x) " &
+               "[(int32 -2147483648) (int32 2147483647)]",
+               "[-2147483648 2147483647]")
+    check_eval("(fn byte [x : C/UInt8] x) [(byte 0) (byte 255)]",
+               "[0 255]")
+    check_eval("(fn cbool [x : C/Bool] x) (cbool false)", "false")
+    check_eval("(fn cstr [x : C/CStr] x) (cstr \"ok\")", "\"ok\"")
+    check_eval("(try (fn int32 [x : C/Int32] x) (int32 2147483648) " &
+               "catch (TypeError ^expected e) e)",
+               "\"C/Int32\"")
+    check_eval("(try (fn cstr [x : C/CStr] x) (cstr \"bad\\0str\") " &
+               "catch (TypeError ^expected e) e)",
+               "\"C/CStr\"")
+
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:
