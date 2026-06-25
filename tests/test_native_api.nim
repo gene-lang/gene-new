@@ -162,6 +162,10 @@ suite "native api — roots and trampoline":
     check api.bufferSet(buffer.value, 0, newInt(256), scope).status == gsError
     check api.bufferLen(newInt(1)).status == gsError
 
+    let ffiLoad = api.newFfiLoad()
+    check ffiLoad.kind == vkFfiLoad
+    check ffiLoad.print() == "(ffi-load)"
+
   test "native module initializer registers exports through the API table":
     let module = newGeneModule("sample-native")
     let initialized = geneInitModule(initNativeSample, module)

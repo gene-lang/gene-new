@@ -1,6 +1,6 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, math, os, sets, strutils, tables, unicode]
+import std/[algorithm, dynlib, math, os, sets, strutils, tables, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
 type
@@ -1204,6 +1204,8 @@ proc freezeRejectName(value: Value): string =
   of vkCPtr: "C pointer"
   of vkCSlice: "C slice"
   of vkBuffer: "Buffer"
+  of vkFfiLoad: "Ffi/Load"
+  of vkFfiLibrary: "Ffi/Library"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
@@ -1229,7 +1231,8 @@ proc freezeValue(value: Value): Value =
             immutable = true)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
-     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer:
+     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkFfiLoad,
+     vkFfiLibrary:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -1326,6 +1329,8 @@ proc declarationKind*(value: Value): string =
   of vkCPtr: "CPtr"
   of vkCSlice: "CSlice"
   of vkBuffer: "Buffer"
+  of vkFfiLoad: "FfiLoad"
+  of vkFfiLibrary: "FfiLibrary"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1999,6 +2004,45 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   stdout.write "\n"
   NIL
 
+proc requireFfiLoad(name: string, value: Value) =
+  if value.kind != vkFfiLoad:
+    raise newException(GeneError, name & " expects an Ffi/Load capability")
+
+proc requireFfiLibrary(name: string, value: Value) =
+  if value.kind != vkFfiLibrary:
+    raise newException(GeneError, name & " expects an Ffi/Library")
+
+proc unloadFfiLibrary(handle: pointer) {.nimcall.} =
+  unloadLib(cast[LibHandle](handle))
+
+proc biFfiOpen(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "ffi/open expects 2 arguments, got " & $args.len)
+  requireFfiLoad("ffi/open", args[0])
+  requireStr("ffi/open", args[1])
+  let path = args[1].strVal
+  let handle = loadLib(path)
+  if handle == nil:
+    raise newException(GeneError, "ffi/open failed to load library: " & path)
+  newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary)
+
+proc biFfiLibraryClose(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Ffi/Library/close", args)
+  requireFfiLibrary("Ffi/Library/close", args[0])
+  args[0].closeFfiLibrary()
+  NIL
+
+proc biFfiLibraryClosed(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Ffi/Library/closed?", args)
+  requireFfiLibrary("Ffi/Library/closed?", args[0])
+  newBool(args[0].ffiLibraryClosed)
+
+proc biFfiLibraryPath(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Ffi/Library/path", args)
+  requireFfiLibrary("Ffi/Library/path", args[0])
+  newStr(args[0].ffiLibraryPath)
+
 proc requireCPtr(name: string, value: Value) =
   if value.kind != vkCPtr:
     raise newException(GeneError, name & " expects a C pointer")
@@ -2016,6 +2060,9 @@ proc biCPtrClosed(args: openArray[Value]): Value {.nimcall.} =
 
 proc cAbiTypeValue(name: string): Value =
   newNode(newSym("c-abi-type"), body = @[newSym(name)])
+
+proc ffiTypeValue(name: string): Value =
+  newNode(newSym("ffi-type"), body = @[newSym(name)])
 
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
@@ -2182,6 +2229,20 @@ proc buildBuiltins(app: Application): Scope =
                "OwnedPtr", "Slice"]:
     cScope.define(name, cAbiTypeValue(name))
   result.define("C", newNamespace("C", cScope))
+  let ffiScope = newScope(result)
+  ffiScope.define("open", newNativeFn("ffi/open", biFfiOpen))
+  result.define("ffi", newNamespace("ffi", ffiScope))
+  let ffiTypeScope = newScope(result)
+  ffiTypeScope.define("Load", ffiTypeValue("Load"))
+  let ffiLibraryScope = newScope(ffiTypeScope)
+  ffiLibraryScope.define("close",
+                         newNativeFn("Ffi/Library/close", biFfiLibraryClose))
+  ffiLibraryScope.define("closed?",
+                         newNativeFn("Ffi/Library/closed?", biFfiLibraryClosed))
+  ffiLibraryScope.define("path",
+                         newNativeFn("Ffi/Library/path", biFfiLibraryPath))
+  ffiTypeScope.define("Library", newNamespace("Ffi/Library", ffiLibraryScope))
+  result.define("Ffi", newNamespace("Ffi", ffiTypeScope))
   let taskScope = newScope(result)
   taskScope.define("cancel", newNativeFn("Task/cancel", biTaskCancel))
   result.define("Task", newNamespace("Task", taskScope))
@@ -2935,7 +2996,8 @@ proc isSendableValue(value: Value, scope: Scope,
         return false
     true
   of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
-     vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice, vkBuffer:
+     vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice, vkBuffer,
+     vkFfiLoad, vkFfiLibrary:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -4789,6 +4851,8 @@ proc runtimeTypeExpr(value: Value): Value =
       if value.cSliceTargetType.kind == vkNil: newSym("Any")
       else: value.cSliceTargetType
     typeNode("C/Slice", @[targetType])
+  of vkFfiLoad: newSym("Ffi/Load")
+  of vkFfiLibrary: newSym("Ffi/Library")
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -5151,6 +5215,10 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkList)
   of "Buffer":
     (true, value.kind == vkBuffer)
+  of "Ffi/Load":
+    (true, value.kind == vkFfiLoad)
+  of "Ffi/Library":
+    (true, value.kind == vkFfiLibrary)
   of "Map", "PropMap":
     (true, value.kind == vkMap)
   of "Gene", "Node":
@@ -5217,8 +5285,11 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
     expr
   of vkNode:
     if expr.head.isSymbol("path") and expr.body.len == 2 and
-        expr.body[0].isSymbol("C") and expr.body[1].kind == vkSymbol:
-      return newSym("C/" & expr.body[1].symVal)
+        expr.body[1].kind == vkSymbol:
+      if expr.body[0].isSymbol("C"):
+        return newSym("C/" & expr.body[1].symVal)
+      if expr.body[0].isSymbol("Ffi"):
+        return newSym("Ffi/" & expr.body[1].symVal)
     let closedHead = closeTypeExpr(expr.head, scope)
     var changed = closedHead.bits != expr.head.bits
     var props = initOrderedTable[string, Value]()

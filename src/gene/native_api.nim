@@ -32,6 +32,7 @@ type
   GeneBufferGetProc* = proc(buffer: Value, index: int): GeneResult
   GeneBufferSetProc* = proc(buffer: Value, index: int, item: Value,
                             scope: Scope): GeneResult
+  GeneNewFfiLoadProc* = proc(): Value
   GeneModuleInitProc* = proc(api: ptr GeneApi, module: GeneModule): GeneResult
 
   GeneStatus* = enum
@@ -80,9 +81,10 @@ type
     bufferLen*: GeneBufferLenProc
     bufferGet*: GeneBufferGetProc
     bufferSet*: GeneBufferSetProc
+    newFfiLoad*: GeneNewFfiLoadProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 16
+const GeneApiFeatureCount* = 17
 
 proc geneApi*(): GeneApi
 
@@ -226,6 +228,9 @@ proc geneBufferSet*(buffer: Value, index: int, item: Value,
   except GenePanic as e:
     result = panicResult(e)
 
+proc geneNewFfiLoad*(): Value =
+  newFfiLoadCapability()
+
 proc geneInitModule*(init: GeneModuleInitProc, module: GeneModule,
                      api: GeneApi = geneApi()): GeneResult =
   if init == nil:
@@ -257,4 +262,5 @@ proc geneApi*(): GeneApi =
           newBuffer: geneNewBuffer,
           bufferLen: geneBufferLen,
           bufferGet: geneBufferGet,
-          bufferSet: geneBufferSet)
+          bufferSet: geneBufferSet,
+          newFfiLoad: geneNewFfiLoad)

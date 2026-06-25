@@ -78,6 +78,8 @@ type
     vkCPtr      ## opaque C pointer / owned foreign handle
     vkCSlice    ## opaque non-owning C pointer + element count
     vkBuffer    ## Gene-owned typed contiguous storage
+    vkFfiLoad   ## explicit authority to load native libraries at runtime
+    vkFfiLibrary ## loaded native library handle
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -255,6 +257,7 @@ type
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   CPtrReleaseProc* = proc(address: pointer) {.nimcall.}
+  FfiLibraryCloseProc* = proc(handle: pointer) {.nimcall.}
 
   GeneFunction = object
     refCount: int
@@ -292,6 +295,8 @@ type
     okCPtr
     okCSlice
     okBuffer
+    okFfiLoad
+    okFfiLibrary
     okType
     okProtocol
     okProtocolMessage
@@ -428,6 +433,14 @@ type
     elemType: Value
     elemScope: Scope
     items: seq[Value]
+
+  FfiLoadData = ref object of GeneObjectData
+
+  FfiLibraryData = ref object of GeneObjectData
+    handle: pointer
+    path: string
+    closed: bool
+    close: FfiLibraryCloseProc
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -892,6 +905,8 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okCPtr: vkCPtr
     of okCSlice: vkCSlice
     of okBuffer: vkBuffer
+    of okFfiLoad: vkFfiLoad
+    of okFfiLibrary: vkFfiLibrary
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1622,6 +1637,29 @@ proc setBufferItem*(v: Value, index: int, item: Value) =
     raise newException(FieldDefect, "buffer index out of range")
   data.items[index] = escapeWeakFunctions(item)
 
+proc ffiLibraryData(v: Value): FfiLibraryData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiLibrary:
+    raise newException(FieldDefect, "value is not an FFI library")
+  FfiLibraryData(objData(v))
+
+proc ffiLibraryHandle*(v: Value): pointer =
+  ffiLibraryData(v).handle
+
+proc ffiLibraryPath*(v: Value): string =
+  ffiLibraryData(v).path
+
+proc ffiLibraryClosed*(v: Value): bool =
+  ffiLibraryData(v).closed
+
+proc closeFfiLibrary*(v: Value) =
+  let data = ffiLibraryData(v)
+  if data.closed:
+    return
+  if data.close != nil and data.handle != nil:
+    data.close(data.handle)
+  data.handle = nil
+  data.closed = true
+
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -2175,6 +2213,8 @@ proc escapeWeakFunctions*(v: Value): Value =
       return v
     boxObject(BufferData(objKind: okBuffer, elemType: data.elemType,
                          elemScope: data.elemScope, items: items))
+  of vkFfiLoad, vkFfiLibrary:
+    v
   else:
     v
 
@@ -2320,6 +2360,16 @@ proc newBuffer*(elemType: Value = NIL, items: sink seq[Value] = @[],
       items[i] = escapeWeakFunctions(items[i])
   boxObject(BufferData(objKind: okBuffer, elemType: elemType,
                        elemScope: elemScope, items: items))
+
+proc newFfiLoadCapability*(): Value =
+  boxObject(FfiLoadData(objKind: okFfiLoad))
+
+proc newFfiLibrary*(handle: pointer, path: string,
+                    close: FfiLibraryCloseProc): Value =
+  if handle == nil:
+    raise newException(GeneError, "FFI library handle must not be nil")
+  boxObject(FfiLibraryData(objKind: okFfiLibrary, handle: handle,
+                           path: path, close: close))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

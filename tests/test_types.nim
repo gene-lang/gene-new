@@ -1,11 +1,26 @@
 import gene/[compiler, types, vm, printer]
-import std/unittest
+import std/[dynlib, unittest]
 
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
 
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
+
+proc loadableFfiLibrary(): string =
+  var candidates: seq[string] = @[]
+  when defined(macosx):
+    candidates = @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
+  elif defined(linux):
+    candidates = @["libc.so.6", "libm.so.6"]
+  elif defined(windows):
+    candidates = @["kernel32.dll"]
+  for candidate in candidates:
+    let handle = loadLib(candidate)
+    if handle != nil:
+      unloadLib(handle)
+      return candidate
+  ""
 
 suite "types — declaration and construction":
   test "type declaration yields a Type value":
@@ -348,6 +363,39 @@ suite "types — function boundaries":
                                          @[newInt(65), newInt(66)]))
     check run(compileSource("((fn [b : (Buffer C/Char)] b) native-buf)"),
               scope).print() == "(buffer C/Char 2)"
+
+  test "FFI load capability gates runtime library loading":
+    ck "Ffi/Load", "(ffi-type Load)"
+
+    let scope = newGlobalScope()
+    scope.define("native", newFfiLoadCapability())
+    check run(compileSource("((fn [cap : Ffi/Load] cap) native)"),
+              scope).print() == "(ffi-load)"
+    expect GeneError:
+      discard run(compileSource("((fn [cap : Ffi/Load] cap) nil)"), scope)
+    expect GeneError:
+      discard run(compileSource("(ffi/open nil \"libmissing-gene-new\")"), scope)
+    expect GeneError:
+      discard run(compileSource("(ffi/open native \"libmissing-gene-new\")"),
+                  scope)
+
+    let libName = loadableFfiLibrary()
+    if libName.len > 0:
+      scope.define("lib-name", newStr(libName))
+      let lib = run(compileSource("(ffi/open native lib-name)"), scope)
+      check lib.kind == vkFfiLibrary
+      check lib.ffiLibraryPath == libName
+      check not lib.ffiLibraryClosed
+
+      scope.define("lib", lib)
+      check run(compileSource("((fn [handle : Ffi/Library] handle) lib)"),
+                scope).print() == "(ffi-library)"
+      check run(compileSource("(Ffi/Library/closed? lib)"),
+                scope).print() == "false"
+      check run(compileSource("(Ffi/Library/path lib)"), scope).strVal == libName
+      check run(compileSource("(Ffi/Library/close lib)"), scope).print() == "nil"
+      check run(compileSource("(Ffi/Library/closed? lib)"),
+                scope).print() == "true"
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""

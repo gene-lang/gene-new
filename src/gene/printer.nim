@@ -143,6 +143,13 @@ proc print*(v: Value): string =
       if v.bufferElemType.kind == vkNil: "Any"
       else: v.bufferElemType.print()
     "(buffer " & elemType & " " & $v.bufferLen & ")"
+  of vkFfiLoad:
+    "(ffi-load)"
+  of vkFfiLibrary:
+    if v.ffiLibraryClosed:
+      "(ffi-library closed)"
+    else:
+      "(ffi-library)"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

@@ -343,6 +343,21 @@ suite "spec — numeric boundaries from design":
                                 "(buffer C/Int32 [1]))"),
                   newGlobalScope())
 
+  test "FFI runtime loading requires explicit authority":
+    check_eval("Ffi/Load", "(ffi-type Load)")
+    let scope = newGlobalScope()
+    scope.define("native", newFfiLoadCapability())
+    check run(compileSource("((fn [cap : Ffi/Load] cap) native)"),
+              scope).print() == "(ffi-load)"
+    expect GeneError:
+      discard run(compileSource("((fn [cap : Ffi/Load] cap) nil)"), scope)
+    expect GeneError:
+      discard run(compileSource("(ffi/open nil \"libmissing-gene-new\")"),
+                  scope)
+    expect GeneError:
+      discard run(compileSource("(ffi/open native \"libmissing-gene-new\")"),
+                  scope)
+
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:

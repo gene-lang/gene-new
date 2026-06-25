@@ -76,8 +76,11 @@ participates in equality or hashing.
   recursion, first-class `Cell`/`AtomicCell` mutable references,
   a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
   `geneCall`, native module initializer/registration hooks, and opaque C pointer
-  and slice constructors plus checked Buffer accessors),
+  and slice constructors plus checked Buffer accessors and host-created
+  `Ffi/Load` authority values),
   boxed `Buffer` values with checked element boundaries,
+  explicit runtime FFI library loading through `ffi/open` and opaque
+  `Ffi/Library` handles,
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
   `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
   first-class `Env` values with explicit
