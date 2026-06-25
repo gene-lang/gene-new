@@ -1339,6 +1339,9 @@ proc taskErrorType*(v: Value): Value =
 proc taskBoundaryScope*(v: Value): Scope =
   taskData(v).boundaryScope
 
+proc taskSharesState*(a, b: Value): bool =
+  a.kind == vkTask and b.kind == vkTask and taskData(a).state == taskData(b).state
+
 proc clearTaskPayload*(v: Value) =
   let data = taskState(v)
   data.awaited = true

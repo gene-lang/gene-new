@@ -817,6 +817,16 @@ proc failMissingReply(reply: Value, scope: Scope): bool =
   const message = "actor/ask did not receive a reply"
   failReplyTask(reply, message, actorErrorValue(scope, message), hasValue = true)
 
+proc actorAskTaskView(task, reply: Value, scope: Scope): Value =
+  let resultType =
+    if reply.replyToResultType.kind == vkNil: newSym("Any")
+    else: reply.replyToResultType
+  let errorType = builtinBinding(scope, "ActorError")
+  let boundaryScope =
+    if errorType.kind == vkType: errorType.typeScope
+    else: nil
+  newCheckedTask(task, resultType, errorType, boundaryScope)
+
 proc actorMailboxArg(call: ptr NativeCall): int =
   result = 16
   if call == nil:
@@ -984,7 +994,7 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
                                                "actor/ask message", scope),
                             reply)
     scheduleActor(actor, scope)
-    task
+    actorAskTaskView(task, reply, scope)
   except GeneError as e:
     completedTaskFromError(e)
   except GenePanic as e:
@@ -2850,9 +2860,20 @@ proc checkedTaskResult(task, value: Value): Value =
   adaptBoundary("await task result", resultType, value,
                 taskBoundaryScopeOr(task))
 
+proc isBoundaryTypeError(value: Value, scope: Scope): bool =
+  if value.kind != vkNode:
+    return false
+  var typeError: Value
+  scope != nil and scope.lookupOptional("TypeError", typeError) and
+    typeError.kind == vkType and value.head.isSubtypeOf(typeError)
+
 proc checkTaskError(task: Value, hasValue: bool, value: Value) =
   let errorType = task.taskErrorType
   if errorType.kind == vkNil or not hasValue:
+    return
+  # Boundary TypeError is raised by the boundary itself, not classified as the
+  # task's domain error E.
+  if isBoundaryTypeError(value, taskBoundaryScopeOr(task)):
     return
   discard adaptBoundary("await task error", errorType, value,
                         taskBoundaryScopeOr(task))
@@ -4227,7 +4248,7 @@ proc wakeTaskWaiters(task: Value) =
   var i = 0
   while i < schedWaiters.len:
     let f = schedWaiters[i]
-    if same(f.waitTask, task):
+    if f.waitTask.taskSharesState(task):
       schedWaiters.delete(i)
       f.waitTask = NIL
       schedRunQueue.add f
@@ -4411,7 +4432,7 @@ proc cancelScheduledTask(task: Value): bool =
   ## left parked; wakeTaskWaiters runs after the task finally settles.
   var i = 0
   while i < schedRunQueue.len:
-    if same(schedRunQueue[i].task, task):
+    if schedRunQueue[i].task.taskSharesState(task):
       result = true
       inc i
     else:
@@ -4419,7 +4440,7 @@ proc cancelScheduledTask(task: Value): bool =
   i = 0
   while i < schedWaiters.len:
     let f = schedWaiters[i]
-    if same(f.task, task):
+    if f.task.taskSharesState(task):
       schedWaiters.delete(i)
       f.waitChannel = NIL
       f.waitActor = NIL

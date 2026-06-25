@@ -810,6 +810,21 @@ suite "spec — actors from design":
                "41")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send Get) " &
+               "(scope " &
+               "  (var counter : (ActorRef Get) " &
+               "    (actor/spawn ^init (fn [] 41) " &
+               "      ^handle (fn [ctx state msg] " &
+               "        (match msg " &
+               "          (when (Get ^reply reply) " &
+               "            (reply ~ ReplyTo/send state) " &
+               "            (actor/continue state)))))) " &
+               "  (fn (choose result err) [t : (Task result err) fallback : result] " &
+               "    fallback) " &
+               "  (try (choose (counter ~ actor/ask (fn [reply] (Get ^reply reply))) \"bad\") " &
+               "       catch (TypeError ^expected e) e))",
+               "\"Int\"")
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var got (ch ~ Channel/recv)) " &

@@ -217,6 +217,24 @@ suite "errors — ensure":
                   scope)
     check childCancellationEnsureRan
 
+  test "checked task cancellation runs child ensure before await observes cancellation":
+    childCancellationEnsureRan = false
+    let scope = newGlobalScope()
+    scope.define("mark-child-cancellation-ensure",
+                 newNativeFn("mark-child-cancellation-ensure",
+                             markChildCancellationEnsure))
+    expect GeneCancel:
+      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+                                "  (var t : (Task Int Never) " &
+                                "    (spawn " &
+                                "      (try (ch ~ Channel/recv) " &
+                                "           ensure " &
+                                "             (mark-child-cancellation-ensure)))) " &
+                                "  (t ~ Task/cancel) " &
+                                "  (await t))"),
+                  scope)
+    check childCancellationEnsureRan
+
 suite "errors — try on the frame stack":
   test "deep recursion through a try-wrapped function does not overflow":
     # Each level used to start a nested runLoop for the try body and overflow the

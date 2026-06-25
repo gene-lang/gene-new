@@ -1509,6 +1509,21 @@ suite "vm — actors":
        "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
        "(await (a ~ actor/ask (fn [reply] (Get ^reply reply))))",
        "41"
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(scope " &
+       "  (var a : (ActorRef Get) " &
+       "    (actor/spawn ^init (fn [] 41) " &
+       "      ^handle (fn [ctx state msg] " &
+       "        (match msg " &
+       "          (when (Get ^reply reply) " &
+       "            (reply ~ ReplyTo/send state) " &
+       "            (actor/continue state)))))) " &
+       "  (fn (choose result err) [t : (Task result err) fallback : result] " &
+       "    fallback) " &
+       "  (try (choose (a ~ actor/ask (fn [reply] (Get ^reply reply))) \"bad\") " &
+       "       catch (TypeError ^expected e) e))",
+       "\"Int\""
 
   test "actor ask enforces ReplyTo result type and reports missing replies":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &

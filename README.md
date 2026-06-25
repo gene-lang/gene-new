@@ -94,14 +94,14 @@ participates in equality or hashing.
 
 > **Concurrency is an early cooperative prototype — not yet stable.** Tasks now run
 > on a single-worker cooperative scheduler: `spawn` runs a task body until it
-> completes or *parks* on a blocking channel op, `Channel/send`/`Channel/recv`
-> actually suspend and resume the whole task (its heap frame stack is captured as a
-> continuation), and `await` drives the run queue until a task settles. What is *not*
-> built yet: the design's M:N worker pool, `await`-suspension (await currently pumps
-> the scheduler rather than parking), channel/actor backpressure beyond simple
-> rendezvous, timers/async-I/O, and cancellation (design §13/§17, implementation-order
-> steps 9/12/14). Actor mailbox sends still raise rather than suspend. Don't rely on
-> concurrency semantics yet.
+> completes or *parks* on a blocking channel op, actor mailbox send/ask, or
+> `await`. `Channel/send`/`Channel/recv` and actor mailbox backpressure suspend and
+> resume the whole task by capturing its heap frame stack. Root-level `await` still
+> drives the run queue until the task settles. Structured scopes wait for live child
+> tasks on normal exit, cancel children on error/cancellation, and run `ensure`
+> cleanup before cancellation is observed. What is *not* built yet: the design's M:N
+> worker pool, timers/async-I/O, detached lifetimes, and stable production
+> concurrency semantics.
 
 ## Quick start
 
