@@ -843,6 +843,19 @@ suite "spec — bounded channels from design":
                " (ch ~ Channel/recv) " &
                " (try (ch ~ Channel/recv) catch (ChannelClosed ^message m) m)]",
                "[1 2 \"channel is closed\"]")
+    check_eval("(scope (var ch (channel ^capacity 1)) " &
+               "  (var t (spawn (try (ch ~ Channel/recv) " &
+               "                  catch (ChannelClosed ^message m) m))) " &
+               "  (spawn (ch ~ Channel/close)) " &
+               "  (await t))",
+               "\"channel is closed\"")
+    check_eval("(scope (var ch (channel ^capacity 1)) " &
+               "  (ch ~ Channel/send 1) " &
+               "  (var t (spawn (try (ch ~ Channel/send 2) " &
+               "                  catch (ChannelClosed ^message m) m))) " &
+               "  (spawn (ch ~ Channel/close)) " &
+               "  (await t))",
+               "\"channel is closed\"")
 
   test "try-send and try-recv expose non-suspending channel checks":
     check_eval("(var ch (channel ^capacity 1)) " &

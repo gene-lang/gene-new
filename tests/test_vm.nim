@@ -1321,6 +1321,37 @@ suite "vm — cooperative scheduler":
     ck "(scope (var ch (channel ^capacity 1)) " &
        "  (spawn (do (sleep 5) (ch ~ Channel/send 7))) " &
        "  (ch ~ Channel/recv))", "7"
+  test "closing a channel wakes parked receivers and senders":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (try (ch ~ Channel/recv) " &
+       "                  catch (ChannelClosed ^message m) m))) " &
+       "  (spawn (ch ~ Channel/close)) " &
+       "  (await t))",
+       "\"channel is closed\""
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (ch ~ Channel/send 1) " &
+       "  (var t (spawn (try (ch ~ Channel/send 2) " &
+       "                  catch (ChannelClosed ^message m) m))) " &
+       "  (spawn (ch ~ Channel/close)) " &
+       "  (await t))",
+       "\"channel is closed\""
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var a (spawn (try (ch ~ Channel/recv) " &
+       "                  catch (ChannelClosed ^message m) m))) " &
+       "  (var b (spawn (try (ch ~ Channel/recv) " &
+       "                  catch (ChannelClosed ^message m) m))) " &
+       "  (spawn (ch ~ Channel/close)) " &
+       "  [(await a) (await b)])",
+       "[\"channel is closed\" \"channel is closed\"]"
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (ch ~ Channel/send 1) " &
+       "  (var a (spawn (try (ch ~ Channel/send 2) " &
+       "                  catch (ChannelClosed ^message m) m))) " &
+       "  (var b (spawn (try (ch ~ Channel/send 3) " &
+       "                  catch (ChannelClosed ^message m) m))) " &
+       "  (spawn (ch ~ Channel/close)) " &
+       "  [(await a) (await b)])",
+       "[\"channel is closed\" \"channel is closed\"]"
   test "cancelling a pending task makes await observe cancellation":
     expect GeneCancel:
       discard runStr("(scope (var ch (channel ^capacity 1)) " &

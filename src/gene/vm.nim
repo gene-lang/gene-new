@@ -49,6 +49,7 @@ var currentFiberActive {.threadvar.}: bool
 # Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
 # moving it from the wait list to the run queue. Defined with the scheduler below.
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
+proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool)
 
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
@@ -782,6 +783,8 @@ proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   requireOne("Channel/close", args)
   requireChannel("Channel/close", args[0])
   args[0].closeChannel()
+  wakeAllChannelWaiters(args[0], wakeSenders = false)
+  wakeAllChannelWaiters(args[0], wakeSenders = true)
   NIL
 
 proc requireActor(name: string, value: Value) =
@@ -4762,6 +4765,19 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
       schedWaiters.delete(i)
       enqueueRunnable(f)
       return
+
+proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
+  ## Channel close changes the state observed by every parked counterpart:
+  ## receivers on an empty channel and senders on a full one must all resume and
+  ## re-run their operation so they can raise ChannelClosed.
+  var i = 0
+  while i < schedWaiters.len:
+    let f = schedWaiters[i]
+    if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+      schedWaiters.delete(i)
+      enqueueRunnable(f)
+    else:
+      inc i
 
 proc wakeTaskWaiters(task: Value) =
   ## Move every fiber parked in `await` on `task` onto the run queue. A completed
