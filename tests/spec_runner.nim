@@ -647,6 +647,21 @@ suite "spec — structured tasks from design":
                                 "  (try (await t) catch _ \"caught\"))"),
                   newGlobalScope())
 
+  test "scope error exit cancels pending child tasks":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(var ch (channel ^capacity 1)) " &
+               "(var out (cell 0)) " &
+               "(try " &
+               "  (scope " &
+               "    (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 1))) " &
+               "    (fail (Boom ^message \"stop\"))) " &
+               "  catch (Boom) nil) " &
+               "(ch ~ Channel/send 1) " &
+               "(scope nil) " &
+               "(out ~ Cell/get)",
+               "0")
+
   test "Task annotations accept task handles":
     check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
 

@@ -88,6 +88,25 @@ proc registerOwnedActor(scope: Scope, actor: Value) =
       return
     s = s.parent
 
+proc registerOwnedTask(scope: Scope, task: Value) =
+  var s = scope
+  while s != nil:
+    if s.ownsTasks:
+      s.ownedTasks.add task
+      return
+    s = s.parent
+
+proc cancelOwnedTasks(scope: Scope) =
+  if scope.ownedTasks.len == 0:
+    return
+  for i in countdown(scope.ownedTasks.high, 0):
+    let task = scope.ownedTasks[i]
+    if task.kind == vkTask and not task.taskDone:
+      task.cancelTask()
+      cancelScheduledTask(task)
+      wakeTaskWaiters(task)
+  scope.ownedTasks.setLen(0)
+
 proc closeOwnedActors(scope: Scope) =
   if scope.ownedActors.len == 0:
     return
@@ -3865,12 +3884,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           continue
         of opTaskScope:
           let taskScope = newScope(scope)
+          taskScope.ownsTasks = true
           taskScope.ownsActors = true
           taskScope.actorFailureStrategy = afsStop
           try:
-            let bodyResult = run(chunk.subchunks[inst[].intArg], taskScope)
-            drainRunnable()   # leaving a scope makes progress on its live children
-            stack.add bodyResult
+            try:
+              let bodyResult = run(chunk.subchunks[inst[].intArg], taskScope)
+              drainRunnable()   # leaving a scope makes progress on its live children
+              stack.add bodyResult
+            except GeneError:
+              taskScope.cancelOwnedTasks()
+              raise
+            except GenePanic:
+              taskScope.cancelOwnedTasks()
+              raise
+            except GeneCancel:
+              taskScope.cancelOwnedTasks()
+              raise
           finally:
             taskScope.closeOwnedActors()
         of opSupervisor:
@@ -3889,7 +3919,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # (Still a single-worker cooperative scheduler; M:N and cancellation are
           # future work.)
           let taskScope = newScope(scope)
-          stack.add spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
+          let task = spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
+          scope.registerOwnedTask(task)
+          stack.add task
         of opAwait:
           # Await a task. Inside a scheduled fiber, park on the task (the scheduler
           # runs others and wakes us when it settles) and re-execute opAwait on

@@ -232,6 +232,8 @@ type
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
     evalBudget*: EvalBudget
+    ownsTasks*: bool
+    ownedTasks*: seq[Value]
     ownsActors*: bool
     actorFailureStrategy*: ActorFailureStrategy
     ownedActors*: seq[Value]
