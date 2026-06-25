@@ -1698,6 +1698,26 @@ suite "vm — actors":
        "[10 [1 \"bad\" false restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error Boom) " &
+       "(var events (channel ^capacity 1)) " &
+       "(var dead (channel ^capacity 2)) " &
+       "(events ~ Channel/send \"busy\") " &
+       "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+       "  (var a (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (fail (Boom ^message \"bad\"))))) " &
+       "  (a ~ actor/send 1) " &
+       "  (sleep 1) " &
+       "  (var event (dead ~ Channel/recv)) " &
+       "  (var busy (events ~ Channel/recv)) " &
+       "  [busy " &
+       "   (match event " &
+       "     (when (ActorFailure ^failed-message failed " &
+       "                         ^error (Boom ^message m) " &
+       "                         ^strategy s) " &
+       "       [failed m s]))])",
+       "[\"busy\" [1 \"bad\" restart]]"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
        "(var a nil) " &
        "[(try " &
        "   (supervisor ^strategy escalate " &
@@ -1738,6 +1758,8 @@ suite "vm — actors":
       discard runStr("(supervisor ^strategy unknown nil)")
     expect GeneError:
       discard runStr("(supervisor ^strategy stop ^events 1 nil)")
+    expect GeneError:
+      discard runStr("(supervisor ^strategy stop ^dead-letter 1 nil)")
 
   test "actor handler must return an ActorStep":
     ck "(var a : (ActorRef Int) " &

@@ -316,8 +316,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " body=" & $inst.intArg
   of opSupervisor:
     result.add " body=" & $inst.intArg & " strategy=" & inst.name
-    if inst.flag:
-      result.add " events"
+    if inst.names.len > 0:
+      result.add " sinks=" & formatNames(inst.names)
   of opFail, opPanic:
     discard
   of opJumpIfFalse, opJump:

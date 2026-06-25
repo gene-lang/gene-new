@@ -243,6 +243,7 @@ type
     ownsActors*: bool
     actorFailureStrategy*: ActorFailureStrategy
     supervisorEvents*: Value
+    supervisorDeadLetters*: Value
     ownedActors*: seq[Value]
 
   ## Runtime call metadata for envelope-aware native functions. Positional
@@ -402,6 +403,7 @@ type
     messageType: Value
     failureStrategy: ActorFailureStrategy
     failureEvents: Value
+    failureDeadLetters: Value
 
   ActorContextData = ref object of GeneObjectData
     actor: Value
@@ -1465,6 +1467,9 @@ proc actorFailureStrategy*(v: Value): ActorFailureStrategy =
 proc actorFailureEvents*(v: Value): Value =
   actorData(v).failureEvents
 
+proc actorFailureDeadLetters*(v: Value): Value =
+  actorData(v).failureDeadLetters
+
 proc setActorMessageType*(v, messageType: Value) =
   actorData(v).messageType = messageType
 
@@ -2296,7 +2301,8 @@ proc newCheckedChannel*(source, itemType: Value, itemScope: Scope): Value =
 proc newActorRef*(capacity: int, state, handler, messageType: Value,
                   restartInit: Value = NIL,
                   failureStrategy: ActorFailureStrategy = afsStop,
-                  failureEvents: Value = NIL): Value =
+                  failureEvents: Value = NIL,
+                  failureDeadLetters: Value = NIL): Value =
   let storedRestartInit =
     if restartInit.kind == vkFunction:
       functionForScopeStorage(restartInit, restartInit.fnScope)
@@ -2315,7 +2321,8 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                       handler: storedHandler,
                       messageType: messageType,
                       failureStrategy: failureStrategy,
-                      failureEvents: failureEvents))
+                      failureEvents: failureEvents,
+                      failureDeadLetters: failureDeadLetters))
 
 proc newActorContext*(actor: Value): Value =
   boxObject(ActorContextData(objKind: okActorContext, actor: actor))

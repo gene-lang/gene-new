@@ -1626,6 +1626,7 @@ Long-lived actor trees use supervisors:
 (supervisor
   ^strategy restart
   ^events failures
+  ^dead-letter dead
   (actor/spawn
     ^init make-state
     ^handle worker-handler))
@@ -1642,10 +1643,12 @@ A recoverable error escaping an actor handler stops that actor and produces a fa
 MVP supervisors may be given `^events failure-channel`. The runtime emits
 `ActorFailure` values to that channel on actor handler failure without blocking
 the failing actor path. An event includes the actor reference, failed message,
-error value, display message, panic flag, and active supervisor strategy. If the
-event channel is closed or full, the MVP drops the event rather than masking or
-blocking failure handling; stronger delivery and dead-letter policies are future
-runtime work.
+error value, display message, panic flag, and active supervisor strategy. A
+supervisor may also be given `^dead-letter channel`; when the primary event
+channel is closed, full, or rejects the event, the runtime attempts to write the
+same `ActorFailure` to the dead-letter channel. If both channels are unavailable,
+the MVP drops the event rather than masking or blocking failure handling;
+stronger delivery and backpressure policies are future runtime work.
 
 Restart policy must define whether queued messages are retained, discarded, or moved to a dead-letter channel. The MVP default should discard the message that caused failure and retain later queued messages only for explicitly restartable actors.
 

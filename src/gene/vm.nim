@@ -180,6 +180,14 @@ proc actorOwnerFailureEvents(scope: Scope): Value =
     s = s.parent
   NIL
 
+proc actorOwnerFailureDeadLetters(scope: Scope): Value =
+  var s = scope
+  while s != nil:
+    if s.ownsActors:
+      return s.supervisorDeadLetters
+    s = s.parent
+  NIL
+
 proc supervisorStrategy(name: string): ActorFailureStrategy =
   case name
   of "restart": afsRestart
@@ -828,15 +836,25 @@ proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
     head = failureType
   newNode(head, props = props)
 
+proc tryEmitSupervisorFailure(sink, event: Value, scope: Scope): bool =
+  if sink.kind != vkChannel or sink.channelClosed or sink.channelFull:
+    return false
+  try:
+    sink.pushChannel(checkedChannelSendItem(sink, event,
+                                            "supervisor failure event", scope))
+  except CatchableError:
+    return false
+  wakeChannelWaiters(sink, wakeSenders = false)
+  true
+
 proc emitSupervisorFailure(actor, failedMessage: Value, scope: Scope,
                            message: string, errorValue: Value,
                            panic = false) =
-  let sink = actor.actorFailureEvents
-  if sink.kind != vkChannel or sink.channelClosed or sink.channelFull:
+  let event = supervisorFailureValue(scope, actor, failedMessage, message,
+                                     errorValue, panic)
+  if tryEmitSupervisorFailure(actor.actorFailureEvents, event, scope):
     return
-  sink.pushChannel(supervisorFailureValue(scope, actor, failedMessage, message,
-                                          errorValue, panic))
-  wakeChannelWaiters(sink, wakeSenders = false)
+  discard tryEmitSupervisorFailure(actor.actorFailureDeadLetters, event, scope)
 
 proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
                    hasValue = false): bool =
@@ -1004,11 +1022,14 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     if scope == nil: afsStop else: scope.actorOwnerFailureStrategy()
   let failureEvents =
     if scope == nil: NIL else: scope.actorOwnerFailureEvents()
+  let failureDeadLetters =
+    if scope == nil: NIL else: scope.actorOwnerFailureDeadLetters()
   let restartInit =
     if failureStrategy == afsRestart: initFn else: NIL
   let state = applyCall(initFn, [], NamedArgs(), scope)
   result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType,
-                       restartInit, failureStrategy, failureEvents)
+                       restartInit, failureStrategy, failureEvents,
+                       failureDeadLetters)
   if scope != nil:
     scope.registerOwnedActor(result)
 
@@ -4411,8 +4432,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           finally:
             taskScope.closeOwnedActors()
         of opSupervisor:
+          var hasEvents = false
+          var hasDeadLetters = false
+          for sinkName in inst[].names:
+            if sinkName == "events":
+              hasEvents = true
+            elif sinkName == "dead-letter":
+              hasDeadLetters = true
+          let deadLetterSink =
+            if hasDeadLetters:
+              let sink = stack.pop()
+              requireChannel("supervisor ^dead-letter", sink)
+              sink
+            else:
+              NIL
           let eventSink =
-            if inst[].flag:
+            if hasEvents:
               let sink = stack.pop()
               requireChannel("supervisor ^events", sink)
               sink
@@ -4422,6 +4457,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           supervisorScope.ownsActors = true
           supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
           supervisorScope.supervisorEvents = eventSink
+          supervisorScope.supervisorDeadLetters = deadLetterSink
           try:
             stack.add run(chunk.subchunks[inst[].intArg], supervisorScope)
           finally:
