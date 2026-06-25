@@ -1292,6 +1292,26 @@ suite "vm — cooperative scheduler":
        "  (var c (spawn (+ 100 (await b)))) " &
        "  (ch ~ Channel/send 0) " &
        "  (await c))", "111"
+  test "cancelling a pending task makes await observe cancellation":
+    expect GeneCancel:
+      discard runStr("(scope (var ch (channel ^capacity 1)) " &
+                     "  (var t (spawn (ch ~ Channel/recv))) " &
+                     "  (t ~ Task/cancel) " &
+                     "  (await t))")
+  test "cancelling a task wakes fibers awaiting it":
+    expect GeneCancel:
+      discard runStr("(scope (var ch (channel ^capacity 1)) " &
+                     "  (var t (spawn (ch ~ Channel/recv))) " &
+                     "  (var w (spawn (await t))) " &
+                     "  (t ~ Task/cancel) " &
+                     "  (await w))")
+  test "cancelled task fibers do not resume when their blocker clears":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var out (cell 0)) " &
+       "  (var t (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 1)))) " &
+       "  (t ~ Task/cancel) " &
+       "  (ch ~ Channel/send 99) " &
+       "  (out ~ Cell/get))", "0"
   test "an actor handler can suspend on a channel mid-message":
     # The handler recvs from a channel while processing a message: its fiber parks,
     # the scheduler runs a producer task to feed the channel, and the handler
@@ -1332,6 +1352,26 @@ suite "vm — cooperative scheduler":
        "          (actor/continue state)))))) " &
        "  (var t (spawn (await (a ~ actor/ask (fn [reply] (Get ^reply reply)))))) " &
        "  (await t))", "41"
+  test "a cancelled actor ask task is not completed by a late reply":
+    expect GeneCancel:
+      discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
+                     "(impl Send Get) " &
+                     "(type Tick ^impl [Send]) " &
+                     "(impl Send Tick) " &
+                     "(var ch (channel ^capacity 1)) " &
+                     "(fn handle [ctx state msg] " &
+                     "  (match msg " &
+                     "    (when (Get ^reply reply) " &
+                     "      (var got (ch ~ Channel/recv)) " &
+                     "      (reply ~ ReplyTo/send got) " &
+                     "      (actor/continue state)) " &
+                     "    (when (Tick) (actor/continue state)))) " &
+                     "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+                     "(var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                     "(pending ~ Task/cancel) " &
+                     "(ch ~ Channel/send 7) " &
+                     "(a ~ actor/send (Tick)) " &
+                     "(await pending)")
 
 suite "vm — actors":
   test "actor values are opaque display values":

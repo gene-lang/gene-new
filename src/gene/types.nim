@@ -45,6 +45,8 @@ type
     ## Unrecoverable failure (`panic`). Not caught by `try/catch`.
     errVal*: Value
     hasErrVal*: bool
+  GeneCancel* = object of CatchableError
+    ## Cooperative task cancellation. Not caught by ordinary Gene `try/catch`.
 
   ValueKind* = enum
     vkNil       ## explicit absence (`nil` : Nil)
@@ -1277,6 +1279,7 @@ proc taskAwaited*(v: Value): bool =
 proc cancelTask*(v: Value) =
   let data = taskData(v)
   if not data.done:
+    data.done = true
     data.cancelled = true
 
 proc taskResult*(v: Value): Value =
@@ -2010,11 +2013,15 @@ proc newPendingTask*(): Value =
 
 proc completeTask*(v, value: Value) =
   let data = taskData(v)
+  if data.done:
+    return
   data.done = true
   data.result = escapeWeakFunctions(value)
 
 proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
   let data = taskData(v)
+  if data.done:
+    return
   data.done = true
   data.errorMsg = message
   data.errorValue = escapeWeakFunctions(value)
@@ -2022,6 +2029,8 @@ proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) 
 
 proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
   let data = taskData(v)
+  if data.done:
+    return
   data.done = true
   data.panicMsg = message
   data.panicValue = escapeWeakFunctions(value)

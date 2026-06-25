@@ -47,6 +47,10 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
 
+# Remove a cancelled task's own fiber from scheduler queues. Awaiters are woken
+# separately so they can observe cancellation through `await`.
+proc cancelScheduledTask(task: Value)
+
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(): bool
@@ -550,6 +554,8 @@ proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Task/cancel", args)
   requireTask("Task/cancel", args[0])
   args[0].cancelTask()
+  cancelScheduledTask(args[0])
+  wakeTaskWaiters(args[0])
   NIL
 
 proc requireChannel(name: string, value: Value) =
@@ -737,6 +743,17 @@ proc panicReplyTask(reply: Value, message: string, errVal: Value = NIL,
   if task.kind != vkTask or task.taskDone:
     return false
   panicTask(task, message, errVal, hasValue)
+  wakeTaskWaiters(task)
+  true
+
+proc cancelReplyTask(reply: Value): bool =
+  if reply.kind != vkReplyTo or reply.replyToSent:
+    return false
+  let task = reply.replyToTask
+  if task.kind != vkTask:
+    return false
+  if not task.taskDone:
+    task.cancelTask()
   wakeTaskWaiters(task)
   true
 
@@ -2810,6 +2827,9 @@ proc awaitTaskValue(task: Value): Value =
       e.errVal = value
       e.hasErrVal = true
     raise e
+  if task.taskCancelled:
+    task.clearTaskPayload()
+    raise newException(GeneCancel, "task was cancelled")
   result = task.taskResult
   task.clearTaskPayload()
 
@@ -3958,6 +3978,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 caught = true
               except GeneError as ce: raised = ce
               except GenePanic as cp: raised = cp
+              except GeneCancel as cc: raised = cc
               break
           if h.tp.ensureBody != nil:
             # ensure always runs; an exception it raises overrides any in-flight one.
@@ -3969,9 +3990,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             except GenePanic as ep:
               raised = ep
               caught = false
+            except GeneCancel as ec:
+              raised = ec
+              caught = false
           if raised != nil:
-            if raised of GenePanic:
-              # Run the remaining (outer) ensures, then propagate the panic.
+            if raised of GenePanic or raised of GeneCancel:
+              # Run the remaining (outer) ensures, then propagate the non-catchable exit.
               while handlers.len > 0:
                 let hh = handlers.pop()
                 if hh.tp.ensureBody != nil:
@@ -4005,6 +4029,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if h.tp.ensureBody != nil:
           discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
       raise p
+    except GeneCancel as c:
+      # Cancellation is separate from recoverable Gene errors: catch clauses do
+      # not see it, but cleanup still runs as the task unwinds.
+      while handlers.len > 0:
+        let h = handlers.pop()
+        if h.tp.ensureBody != nil:
+          discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+      raise c
     except SuspendError as se:
       # A blocking channel op asked to park this fiber. Capture the whole
       # continuation into `fiber` and hand control back to the scheduler. The
@@ -4201,6 +4233,16 @@ proc runFiber(f: Fiber) =
       if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
       else: panicTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
+  except GeneCancel:
+    currentFiberActive = savedActive
+    if actor != NIL:
+      actor.setActorProcessing(false)
+      actor.closeActor()
+      if not cancelReplyTask(f.actorAskReply):
+        raise
+    else:
+      f.task.cancelTask()
+      wakeTaskWaiters(f.task)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value =
   ## Create a child task + fiber and run it eagerly until it completes or parks.
@@ -4217,8 +4259,27 @@ proc schedulerRunOne(): bool =
     return false
   let f = schedRunQueue[0]
   schedRunQueue.delete(0)
+  if f.task.kind == vkTask and f.task.taskCancelled:
+    wakeTaskWaiters(f.task)
+    return true
   runFiber(f)
   true
+
+proc cancelScheduledTask(task: Value) =
+  ## Drop a cancelled task's own continuation from scheduler queues. Fibers that
+  ## are merely awaiting this task stay registered and are woken separately.
+  var i = 0
+  while i < schedRunQueue.len:
+    if same(schedRunQueue[i].task, task):
+      schedRunQueue.delete(i)
+    else:
+      inc i
+  i = 0
+  while i < schedWaiters.len:
+    if same(schedWaiters[i].task, task):
+      schedWaiters.delete(i)
+    else:
+      inc i
 
 proc pumpUntilDone(task: Value) =
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its

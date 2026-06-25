@@ -7,6 +7,14 @@ template ck(src, expected: string) =
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
 
+var cancellationEnsureRan = false
+
+proc markCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "mark-cancellation-ensure expects no arguments")
+  cancellationEnsureRan = true
+  NIL
+
 suite "errors — fail and catch":
   test "a typed failed value is caught and bound":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -170,6 +178,19 @@ suite "errors — ensure":
        "(var ran 0) " &
        "(var r (try (fail (Boom ^message \"x\")) catch _ 7 ensure (set ran 1))) " &
        "[r ran]", "[7 1]"
+  test "cancellation is not caught but still runs ensure":
+    cancellationEnsureRan = false
+    let scope = newGlobalScope()
+    scope.define("mark-cancellation-ensure",
+                 newNativeFn("mark-cancellation-ensure", markCancellationEnsure))
+    expect GeneCancel:
+      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+                                "  (var t (spawn (ch ~ Channel/recv))) " &
+                                "  (t ~ Task/cancel) " &
+                                "  (try (await t) catch _ \"caught\" " &
+                                "       ensure (mark-cancellation-ensure)))"),
+                  scope)
+    check cancellationEnsureRan
 
 suite "errors — try on the frame stack":
   test "deep recursion through a try-wrapped function does not overflow":

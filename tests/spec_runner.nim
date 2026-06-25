@@ -639,6 +639,14 @@ suite "spec — structured tasks from design":
                "  (try (await t) catch (Boom ^message m) m))",
                "\"boom\"")
 
+  test "await propagates task cancellation outside catch":
+    expect GeneCancel:
+      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+                                "  (var t (spawn (ch ~ Channel/recv))) " &
+                                "  (t ~ Task/cancel) " &
+                                "  (try (await t) catch _ \"caught\"))"),
+                  newGlobalScope())
+
   test "Task annotations accept task handles":
     check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
 
