@@ -343,6 +343,7 @@ type
 
   TaskData = ref object of GeneObjectData
     done: bool
+    cancelRequested: bool
     cancelled: bool
     awaited: bool
     result: Value
@@ -1275,13 +1276,22 @@ proc taskDone*(v: Value): bool =
 proc taskCancelled*(v: Value): bool =
   taskData(v).cancelled
 
+proc taskCancelRequested*(v: Value): bool =
+  taskData(v).cancelRequested
+
 proc taskAwaited*(v: Value): bool =
   taskData(v).awaited
 
 proc cancelTask*(v: Value) =
   let data = taskData(v)
   if not data.done:
+    data.cancelRequested = true
+
+proc finishTaskCancel*(v: Value) =
+  let data = taskData(v)
+  if not data.done:
     data.done = true
+    data.cancelRequested = false
     data.cancelled = true
 
 proc taskResult*(v: Value): Value =
@@ -1314,6 +1324,7 @@ proc taskHasPanicValue*(v: Value): bool =
 proc clearTaskPayload*(v: Value) =
   let data = taskData(v)
   data.awaited = true
+  data.cancelRequested = false
   data.result = NIL
   data.errorMsg = ""
   data.errorValue = NIL
@@ -1929,6 +1940,7 @@ proc escapeWeakFunctions*(v: Value): Value =
         escapedPanic.bits == data.panicValue.bits:
       return v
     boxObject(TaskData(objKind: okTask, done: data.done,
+                       cancelRequested: data.cancelRequested,
                        cancelled: data.cancelled,
                        awaited: data.awaited,
                        result: escapedResult,
@@ -2023,6 +2035,7 @@ proc completeTask*(v, value: Value) =
   if data.done:
     return
   data.done = true
+  data.cancelRequested = false
   data.result = escapeWeakFunctions(value)
 
 proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
@@ -2030,6 +2043,7 @@ proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) 
   if data.done:
     return
   data.done = true
+  data.cancelRequested = false
   data.errorMsg = message
   data.errorValue = escapeWeakFunctions(value)
   data.hasErrorValue = hasValue
@@ -2039,6 +2053,7 @@ proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false)
   if data.done:
     return
   data.done = true
+  data.cancelRequested = false
   data.panicMsg = message
   data.panicValue = escapeWeakFunctions(value)
   data.hasPanicValue = hasValue

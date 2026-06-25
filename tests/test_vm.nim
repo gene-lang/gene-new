@@ -1337,6 +1337,18 @@ suite "vm — cooperative scheduler":
        "(ch ~ Channel/send 1) " &
        "(scope nil) " &
        "(out ~ Cell/get)", "0"
+  test "task scope error exit waits for child cancellation cleanup":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(var out (cell 0)) " &
+       "(try " &
+       "  (scope " &
+       "    (spawn (try (ch ~ Channel/recv) " &
+       "                ensure (out ~ Cell/set 9))) " &
+       "    (fail (Boom ^message \"stop\"))) " &
+       "  catch (Boom) nil) " &
+       "(out ~ Cell/get)", "9"
   test "an actor handler can suspend on a channel mid-message":
     # The handler recvs from a channel while processing a message: its fiber parks,
     # the scheduler runs a producer task to feed the channel, and the handler

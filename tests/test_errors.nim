@@ -8,11 +8,19 @@ template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
 
 var cancellationEnsureRan = false
+var childCancellationEnsureRan = false
 
 proc markCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "mark-cancellation-ensure expects no arguments")
   cancellationEnsureRan = true
+  NIL
+
+proc markChildCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError,
+      "mark-child-cancellation-ensure expects no arguments")
+  childCancellationEnsureRan = true
   NIL
 
 suite "errors — fail and catch":
@@ -191,6 +199,23 @@ suite "errors — ensure":
                                 "       ensure (mark-cancellation-ensure)))"),
                   scope)
     check cancellationEnsureRan
+
+  test "task cancellation runs child ensure before await observes cancellation":
+    childCancellationEnsureRan = false
+    let scope = newGlobalScope()
+    scope.define("mark-child-cancellation-ensure",
+                 newNativeFn("mark-child-cancellation-ensure",
+                             markChildCancellationEnsure))
+    expect GeneCancel:
+      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+                                "  (var t (spawn " &
+                                "    (try (ch ~ Channel/recv) " &
+                                "         ensure " &
+                                "           (mark-child-cancellation-ensure)))) " &
+                                "  (t ~ Task/cancel) " &
+                                "  (await t))"),
+                  scope)
+    check childCancellationEnsureRan
 
 suite "errors — try on the frame stack":
   test "deep recursion through a try-wrapped function does not overflow":

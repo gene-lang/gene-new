@@ -3,8 +3,9 @@
 Status: **decision doc** (spike result, no shipped threads). Date: 2026-06-22.
 Branch context: `scheduler` (cooperative single-worker scheduler, channel/task/
 actor suspension, explicit `Task/cancel`, and error/cancel scope-exit child-task
-cancellation plus normal-exit child waiting done; actor scope shutdown cancels
-pending asks and parked handlers; OS-thread worker pool deferred).
+cancellation with cleanup plus normal-exit child waiting done; actor scope
+shutdown cancels pending asks and parked handlers; OS-thread worker pool
+deferred).
 
 ## Goal
 
@@ -98,7 +99,9 @@ Notes:
 a genuine design decision — not on the (cheap) refcount tax. The single-worker
 cooperative scheduler is correct and already delivers suspendable tasks, channels,
 await, actor handlers, `actor/ask`, explicit task cancellation, and child-task
-cancellation when a scope exits by error/cancellation, plus normal-exit waiting
+cancellation when a scope exits by error/cancellation. Task cancellation resumes
+parked fibers through the normal `GeneCancel` unwind path, so `ensure` cleanup
+runs before the task is finally observed as cancelled. Normal scope exit waits
 for live child tasks. Owned actor shutdown cancels queued asks and parked handler
 fibers so closed actors cannot resume after their owner exits. When M:N is taken
 up, start with A→B above and treat actors/channels as the unit of parallelism; do

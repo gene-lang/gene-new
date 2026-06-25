@@ -671,6 +671,20 @@ suite "spec — structured tasks from design":
                "(out ~ Cell/get)",
                "0")
 
+  test "scope error exit waits for child cancellation cleanup":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(var ch (channel ^capacity 1)) " &
+               "(var out (cell 0)) " &
+               "(try " &
+               "  (scope " &
+               "    (spawn (try (ch ~ Channel/recv) " &
+               "                ensure (out ~ Cell/set 9))) " &
+               "    (fail (Boom ^message \"stop\"))) " &
+               "  catch (Boom) nil) " &
+               "(out ~ Cell/get)",
+               "9")
+
   test "Task annotations accept task handles":
     check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
 

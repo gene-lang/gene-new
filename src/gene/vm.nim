@@ -47,9 +47,9 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
 
-# Remove a cancelled task's own fiber from scheduler queues. Awaiters are woken
-# separately so they can observe cancellation through `await`.
-proc cancelScheduledTask(task: Value)
+# Schedule a task's own fiber to observe a cancellation request. Awaiters are
+# woken when that fiber finishes cleanup and settles the task as cancelled.
+proc cancelScheduledTask(task: Value): bool
 
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
@@ -100,16 +100,30 @@ proc registerOwnedTask(scope: Scope, task: Value) =
       return
     s = s.parent
 
+proc requestTaskCancellation(task: Value) =
+  if task.kind != vkTask or task.taskDone:
+    return
+  task.cancelTask()
+  let scheduled = cancelScheduledTask(task)
+  if not scheduled and not task.taskDone:
+    task.finishTaskCancel()
+    wakeTaskWaiters(task)
+
 proc cancelOwnedTasks(scope: Scope) =
   if scope.ownedTasks.len == 0:
     return
+  var pending: seq[Value]
   for i in countdown(scope.ownedTasks.high, 0):
     let task = scope.ownedTasks[i]
     if task.kind == vkTask and not task.taskDone:
-      task.cancelTask()
-      cancelScheduledTask(task)
-      wakeTaskWaiters(task)
-  scope.ownedTasks.setLen(0)
+      task.requestTaskCancellation()
+      pending.add task
+  try:
+    for task in pending:
+      if not task.taskDone:
+        pumpUntilDone(task)
+  finally:
+    scope.ownedTasks.setLen(0)
 
 proc waitOwnedTasks(scope: Scope) =
   if scope.ownedTasks.len == 0:
@@ -585,9 +599,7 @@ proc requireTask(name: string, value: Value) =
 proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Task/cancel", args)
   requireTask("Task/cancel", args[0])
-  args[0].cancelTask()
-  cancelScheduledTask(args[0])
-  wakeTaskWaiters(args[0])
+  args[0].requestTaskCancellation()
   NIL
 
 proc requireChannel(name: string, value: Value) =
@@ -785,7 +797,7 @@ proc cancelReplyTask(reply: Value): bool =
   if task.kind != vkTask:
     return false
   if not task.taskDone:
-    task.cancelTask()
+    task.finishTaskCancel()
   wakeTaskWaiters(task)
   true
 
@@ -3083,6 +3095,7 @@ type
     rskReturn
     rskYield
     rskSuspend            # fiber parked on a channel; its continuation is captured
+    rskCancel             # fiber unwound through cancellation cleanup
 
   RunStop = object
     kind: RunStopKind
@@ -3204,7 +3217,8 @@ proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
-             validateArg = true, fiber: Fiber = nil): RunStop
+             validateArg = true, fiber: Fiber = nil,
+             injectCancel = false): RunStop
 
 proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
   if decl.kind != vkNode:
@@ -3262,7 +3276,8 @@ proc consumeEvalStep(budget: EvalBudget) =
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
-             validateArg = true, fiber: Fiber = nil): RunStop =
+             validateArg = true, fiber: Fiber = nil,
+             injectCancel = false): RunStop =
   # Stage 1 of structured concurrency: the "current frame" lives in registers
   # below, and simple Gene function calls push the caller onto `frames` and
   # switch registers to the callee instead of recursing through Nim. A call chain
@@ -3286,6 +3301,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curFnName = ""
   var curIsTryBody = false      # current frame is a `try` body (see Frame.isTryBody)
   var handlers: seq[TryHandler] # active `try` regions, innermost last
+  var cancelAtSafepoint = injectCancel
 
   if fiber != nil and fiber.started:
     # Resuming a parked fiber: restore the full continuation captured at suspend.
@@ -3372,6 +3388,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
   while true:
     try:
+      if cancelAtSafepoint:
+        cancelAtSafepoint = false
+        raise newException(GeneCancel, "task was cancelled")
       while true:
         {.computedGoto.}
         if ip >= chunk.instructions.len:
@@ -4111,6 +4130,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
           discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+      if fiber != nil:
+        return RunStop(kind: rskCancel, value: NIL)
       raise c
     except SuspendError as se:
       # A blocking channel op asked to park this fiber. Capture the whole
@@ -4136,6 +4157,8 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
                         validateArg = validateImplRequirements)
   if stopped.kind == rskYield:
     raise newException(GeneError, "yield is only valid in a generator")
+  if stopped.kind == rskCancel:
+    raise newException(GeneCancel, "task was cancelled")
   stopped.value
 
 proc runPooled(chunk: Chunk, scope: Scope,
@@ -4153,6 +4176,8 @@ proc runPooled(chunk: Chunk, scope: Scope,
     releaseRunStack(stack)
   if stopped.kind == rskYield:
     raise newException(GeneError, "yield is only valid in a generator")
+  if stopped.kind == rskCancel:
+    raise newException(GeneCancel, "task was cancelled")
   stopped.value
 
 # ---------------------------------------------------------------------------
@@ -4239,11 +4264,16 @@ proc runFiber(f: Fiber) =
   let savedActive = currentFiberActive
   currentFiberActive = true
   let actor = f.actorOwner
+  let isActorFiber = actor.kind == vkActorRef
   try:
+    let injectCancel =
+      f.task.kind == vkTask and f.task.taskCancelRequested and
+        not f.task.taskDone
     let stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
-                       validateArg = true, fiber = f)
+                       validateArg = true, fiber = f,
+                       injectCancel = injectCancel)
     currentFiberActive = savedActive
-    if actor != NIL:
+    if isActorFiber:
       case stop.kind
       of rskReturn:
         actor.setActorProcessing(false)
@@ -4261,6 +4291,11 @@ proc runFiber(f: Fiber) =
         scheduleActor(actor, f.actorScope)
       of rskSuspend:
         schedWaiters.add f          # handler parked mid-message; actor stays busy
+      of rskCancel:
+        actor.setActorProcessing(false)
+        actor.closeActor()
+        if not cancelReplyTask(f.actorAskReply):
+          raise newException(GeneCancel, "task was cancelled")
       of rskYield:
         actor.setActorProcessing(false)
         actor.closeActor()
@@ -4272,12 +4307,15 @@ proc runFiber(f: Fiber) =
         wakeTaskWaiters(f.task)
       of rskSuspend:
         schedWaiters.add f
+      of rskCancel:
+        f.task.finishTaskCancel()
+        wakeTaskWaiters(f.task)
       of rskYield:
         failTask(f.task, "yield is only valid in a generator")
         wakeTaskWaiters(f.task)
   except GeneError as e:
     currentFiberActive = savedActive
-    if actor != NIL:
+    if isActorFiber:
       actor.setActorProcessing(false)
       let askSettled = failReplyTask(f.actorAskReply, e)
       if actor.actorFailureStrategy == afsRestart and
@@ -4299,7 +4337,7 @@ proc runFiber(f: Fiber) =
       wakeTaskWaiters(f.task)
   except GenePanic as e:
     currentFiberActive = savedActive
-    if actor != NIL:
+    if isActorFiber:
       actor.setActorProcessing(false)
       actor.closeActor()
       if not panicReplyTask(f.actorAskReply, e):
@@ -4308,15 +4346,17 @@ proc runFiber(f: Fiber) =
       if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
       else: panicTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
-  except GeneCancel:
+  except CatchableError as e:
+    if not (e of GeneCancel):
+      raise
     currentFiberActive = savedActive
-    if actor != NIL:
+    if isActorFiber:
       actor.setActorProcessing(false)
       actor.closeActor()
       if not cancelReplyTask(f.actorAskReply):
         raise
     else:
-      f.task.cancelTask()
+      f.task.finishTaskCancel()
       wakeTaskWaiters(f.task)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value =
@@ -4324,7 +4364,8 @@ proc spawnFiber(chunk: Chunk, scope: Scope): Value =
   ## A non-blocking body settles immediately (as the old inline prototype did); a
   ## blocking body parks and yields a pending Task driven later by await/drain.
   let task = newPendingTask()
-  let f = Fiber(chunk: chunk, scope: scope, task: task, started: false)
+  let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
+                started: false)
   runFiber(f)
   task
 
@@ -4334,25 +4375,33 @@ proc schedulerRunOne(): bool =
     return false
   let f = schedRunQueue[0]
   schedRunQueue.delete(0)
-  if f.task.kind == vkTask and f.task.taskCancelled:
+  if f.task.kind == vkTask and f.task.taskDone:
     wakeTaskWaiters(f.task)
     return true
   runFiber(f)
   true
 
-proc cancelScheduledTask(task: Value) =
-  ## Drop a cancelled task's own continuation from scheduler queues. Fibers that
-  ## are merely awaiting this task stay registered and are woken separately.
+proc cancelScheduledTask(task: Value): bool =
+  ## Move a task's own continuation back to runnable state so runFiber can inject
+  ## GeneCancel and let ensure blocks unwind. Fibers merely awaiting this task are
+  ## left parked; wakeTaskWaiters runs after the task finally settles.
   var i = 0
   while i < schedRunQueue.len:
     if same(schedRunQueue[i].task, task):
-      schedRunQueue.delete(i)
+      result = true
+      inc i
     else:
       inc i
   i = 0
   while i < schedWaiters.len:
-    if same(schedWaiters[i].task, task):
+    let f = schedWaiters[i]
+    if same(f.task, task):
       schedWaiters.delete(i)
+      f.waitChannel = NIL
+      f.waitActor = NIL
+      f.waitTask = NIL
+      schedRunQueue.add f
+      result = true
     else:
       inc i
 
@@ -4404,6 +4453,8 @@ proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
     StreamPullResult(has: false, item: NIL)
   of rskSuspend:
     raise newException(GeneError, "generator cannot suspend on a channel")
+  of rskCancel:
+    raise newException(GeneCancel, "task was cancelled")
 
 proc positionalDefault(proto: FunctionProto, index: int): ParamDefault =
   if index < proto.paramDefaults.len:
