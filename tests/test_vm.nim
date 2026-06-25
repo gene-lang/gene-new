@@ -1272,6 +1272,43 @@ suite "vm — cooperative scheduler":
        "  (var t (spawn (get-one ch))) " &
        "  (var p (spawn (ch ~ Channel/send 41))) " &
        "  (await t))", "42"
+  test "suspension preserves match, for, and catch sub-bodies":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (match 1 " &
+       "                  (when 1 (ch ~ Channel/recv))))) " &
+       "  (spawn (ch ~ Channel/send 7)) " &
+       "  (await t))", "7"
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var out (cell 0)) " &
+       "  (var t (spawn (for x [1] " &
+       "                  (out ~ Cell/set (ch ~ Channel/recv))))) " &
+       "  (spawn (ch ~ Channel/send 8)) " &
+       "  (await t) " &
+       "  (out ~ Cell/get))", "8"
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (try (fail (Error ^message \"x\")) " &
+       "                  catch _ (ch ~ Channel/recv)))) " &
+       "  (spawn (ch ~ Channel/send 9)) " &
+       "  (await t))", "9"
+  test "suspension preserves scope, supervisor, eval, and namespace sub-bodies":
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (scope (ch ~ Channel/recv)))) " &
+       "  (spawn (ch ~ Channel/send 7)) " &
+       "  (await t))", "7"
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (supervisor ^strategy stop " &
+       "                  (ch ~ Channel/recv)))) " &
+       "  (spawn (ch ~ Channel/send 8)) " &
+       "  (await t))", "8"
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var e (env ^bindings {^ch ch})) " &
+       "  (var t (spawn (eval (quote (ch ~ Channel/recv)) ^in e))) " &
+       "  (spawn (ch ~ Channel/send 9)) " &
+       "  (await t))", "9"
+    ck "(scope (var ch (channel ^capacity 1)) " &
+       "  (var t (spawn (ns m (var x (ch ~ Channel/recv))))) " &
+       "  (spawn (ch ~ Channel/send 10)) " &
+       "  ((await t) ~ Namespace/lookup (quote x)))", "10"
   test "await with no way to make progress is a deadlock error":
     expect GeneError:
       discard runStr("(scope (var ch (channel ^capacity 1)) " &
@@ -1416,6 +1453,22 @@ suite "vm — cooperative scheduler":
        "    (fail (Boom ^message \"stop\"))) " &
        "  catch (Boom) nil) " &
        "(out ~ Cell/get)", "9"
+
+  test "task cancellation cleanup can suspend before await observes cancellation":
+    let scope = newGlobalScope()
+    expect GeneCancel:
+      discard run(compileSource("(var out (cell 0)) " &
+                                "(scope (var ch (channel ^capacity 1)) " &
+                                "  (var t (spawn " &
+                                "    (try (ch ~ Channel/recv) " &
+                                "         ensure " &
+                                "           (do (sleep 1) " &
+                                "               (out ~ Cell/set 9))))) " &
+                                "  (sleep 1) " &
+                                "  (t ~ Task/cancel) " &
+                                "  (await t))"),
+                  scope)
+    check scope.lookup("out").cellValue.intVal == 9
 
   test "detached tasks are not awaited on normal scope exit":
     ck "(var out (cell 0)) " &

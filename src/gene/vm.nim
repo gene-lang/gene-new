@@ -3525,6 +3525,19 @@ type
     kind: RunStopKind
     value: Value
 
+  FrameKind = enum
+    fkNormal
+    fkTryBody
+    fkCatchBody
+    fkEnsureValueBody
+    fkEnsureErrorBody
+    fkEnsurePanicBody
+    fkEnsureCancelBody
+    fkForBody
+    fkTaskScopeBody
+    fkSupervisorBody
+    fkNamespaceBody
+
   ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
   ## function calls push one of these instead of recursing through Nim, so a call
   ## chain lives on the heap — the foundation for suspendable/resumable tasks
@@ -3540,8 +3553,19 @@ type
     checksErrors: bool      # this frame is an ^errors function (translate on throw)
     errorTypes: seq[Value]  # declared error rows, when checksErrors
     fnName: string          # function name, for the undeclared-error message
-    isTryBody: bool         # this frame is a `try` body (run ensure / pop handler
-                            # on normal completion; coordinates with `handlers`)
+    kind: FrameKind         # current-frame completion behavior
+    ensureValue: Value      # value to preserve across an ensure body
+    ensureBody: Chunk       # ensure to run after catch/no-catch/cancellation exits
+    ensureScope: Scope
+    pendingError: ref GeneError
+    pendingPanic: ref GenePanic
+    pendingCancel: ref GeneCancel
+    forItems: seq[Value]
+    forIndex: int           # next item index for fkForBody
+    forPattern: Value
+    forBody: Chunk
+    ownedScope: Scope
+    namespaceName: string
 
   TryHandler = object
     ## An active `try` region on the VM's handler stack. The try body runs as a
@@ -3571,7 +3595,19 @@ type
     checksErrors: bool
     errorTypes: seq[Value]
     fnName: string
-    isTryBody: bool
+    frameKind: FrameKind
+    ensureValue: Value
+    ensureBody: Chunk
+    ensureScope: Scope
+    pendingError: ref GeneError
+    pendingPanic: ref GenePanic
+    pendingCancel: ref GeneCancel
+    forItems: seq[Value]
+    forIndex: int
+    forPattern: Value
+    forBody: Chunk
+    ownedScope: Scope
+    namespaceName: string
     started: bool          # false until first scheduled (resume restores the rest)
     task: Value            # the Task this fiber settles, for spawn/await fibers
     actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
@@ -3605,6 +3641,13 @@ var schedWaiters {.threadvar.}: seq[Fiber]
 var schedAskTimeouts {.threadvar.}: seq[AskTimeout]
 
 proc enqueueRunnable(f: Fiber)
+
+proc inCancelCleanup(f: Fiber): bool =
+  if f.frameKind == fkEnsureCancelBody:
+    return true
+  for frame in f.frames:
+    if frame.kind == fkEnsureCancelBody:
+      return true
 
 proc wakeAllActorSenders(actor: Value) =
   var i = 0
@@ -3746,7 +3789,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curChecksErrors = false
   var curErrorTypes: seq[Value] = @[]
   var curFnName = ""
-  var curIsTryBody = false      # current frame is a `try` body (see Frame.isTryBody)
+  var curFrameKind = fkNormal
+  var curEnsureValue = NIL
+  var curEnsureBody: Chunk = nil
+  var curEnsureScope: Scope = nil
+  var curPendingError: ref GeneError = nil
+  var curPendingPanic: ref GenePanic = nil
+  var curPendingCancel: ref GeneCancel = nil
+  var curForItems: seq[Value] = @[]
+  var curForIndex = 0
+  var curForPattern = NIL
+  var curForBody: Chunk = nil
+  var curOwnedScope: Scope = nil
+  var curNamespaceName = ""
   var handlers: seq[TryHandler] # active `try` regions, innermost last
   var cancelAtSafepoint = injectCancel
   var remainingBudget = instructionBudget
@@ -3765,7 +3820,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curChecksErrors = fiber.checksErrors
     curErrorTypes = fiber.errorTypes
     curFnName = fiber.fnName
-    curIsTryBody = fiber.isTryBody
+    curFrameKind = fiber.frameKind
+    curEnsureValue = fiber.ensureValue
+    curEnsureBody = fiber.ensureBody
+    curEnsureScope = fiber.ensureScope
+    curPendingError = fiber.pendingError
+    curPendingPanic = fiber.pendingPanic
+    curPendingCancel = fiber.pendingCancel
+    curForItems = move fiber.forItems
+    curForIndex = fiber.forIndex
+    curForPattern = fiber.forPattern
+    curForBody = fiber.forBody
+    curOwnedScope = fiber.ownedScope
+    curNamespaceName = fiber.namespaceName
     evalBudget = scope.evalBudget
 
   template loadFrameRegs(f: Frame) =
@@ -3780,7 +3847,63 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curChecksErrors = f.checksErrors
     curErrorTypes = f.errorTypes
     curFnName = f.fnName
-    curIsTryBody = f.isTryBody
+    curFrameKind = f.kind
+    curEnsureValue = f.ensureValue
+    curEnsureBody = f.ensureBody
+    curEnsureScope = f.ensureScope
+    curPendingError = f.pendingError
+    curPendingPanic = f.pendingPanic
+    curPendingCancel = f.pendingCancel
+    curForItems = move f.forItems
+    curForIndex = f.forIndex
+    curForPattern = f.forPattern
+    curForBody = f.forBody
+    curOwnedScope = f.ownedScope
+    curNamespaceName = f.namespaceName
+    evalBudget = scope.evalBudget
+
+  template pushFrame() =
+    frames.add Frame(chunk: chunk, scope: scope, stack: move stack, ip: ip,
+                     validateImpls: validateImplRequirements,
+                     returnType: returnType, returnLabel: returnLabel,
+                     checksErrors: curChecksErrors,
+                     errorTypes: curErrorTypes, fnName: curFnName,
+                     kind: curFrameKind, ensureValue: curEnsureValue,
+                     ensureBody: curEnsureBody, ensureScope: curEnsureScope,
+                     pendingError: curPendingError,
+                     pendingPanic: curPendingPanic,
+                     pendingCancel: curPendingCancel,
+                     forItems: move curForItems, forIndex: curForIndex,
+                     forPattern: curForPattern, forBody: curForBody,
+                     ownedScope: curOwnedScope,
+                     namespaceName: curNamespaceName)
+
+  template enterFrame(nextChunk: Chunk, nextScope: Scope, nextValidate: bool,
+                      nextKind: FrameKind = fkNormal) =
+    chunk = nextChunk
+    scope = nextScope
+    scope.prepareChunkScope(chunk)
+    stack = acquireRunStack()
+    ip = 0
+    validateImplRequirements = nextValidate
+    returnType = NIL
+    returnLabel = ""
+    curChecksErrors = false
+    curErrorTypes = @[]
+    curFnName = ""
+    curFrameKind = nextKind
+    curEnsureValue = NIL
+    curEnsureBody = nil
+    curEnsureScope = nil
+    curPendingError = nil
+    curPendingPanic = nil
+    curPendingCancel = nil
+    curForItems = @[]
+    curForIndex = 0
+    curForPattern = NIL
+    curForBody = nil
+    curOwnedScope = nil
+    curNamespaceName = ""
     evalBudget = scope.evalBudget
 
   template captureContinuation(resumeIp: int) =
@@ -3796,7 +3919,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.checksErrors = curChecksErrors
     fiber.errorTypes = curErrorTypes
     fiber.fnName = curFnName
-    fiber.isTryBody = curIsTryBody
+    fiber.frameKind = curFrameKind
+    fiber.ensureValue = curEnsureValue
+    fiber.ensureBody = curEnsureBody
+    fiber.ensureScope = curEnsureScope
+    fiber.pendingError = curPendingError
+    fiber.pendingPanic = curPendingPanic
+    fiber.pendingCancel = curPendingCancel
+    fiber.forItems = move curForItems
+    fiber.forIndex = curForIndex
+    fiber.forPattern = curForPattern
+    fiber.forBody = curForBody
+    fiber.ownedScope = curOwnedScope
+    fiber.namespaceName = curNamespaceName
     fiber.started = true
     fiber.frames = move frames
     fiber.handlers = move handlers
@@ -3812,17 +3947,104 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
     if validateImplRequirements:
       scope.validateRequiredImpls()
-    if curIsTryBody:
+    if curFrameKind == fkEnsureErrorBody:
+      raise curPendingError
+    elif curFrameKind == fkEnsurePanicBody:
+      raise curPendingPanic
+    elif curFrameKind == fkEnsureCancelBody:
+      raise curPendingCancel
+    elif curFrameKind == fkEnsureValueBody:
+      releaseRunStack(stack)
+      let preserved = curEnsureValue
+      var owner = frames.pop()
+      stack = move owner.stack
+      loadFrameRegs(owner)
+      stack.add preserved
+    elif curFrameKind == fkForBody:
+      releaseRunStack(stack)
+      if curForIndex < curForItems.len:
+        let item = curForItems[curForIndex]
+        inc curForIndex
+        let ownerScope = frames[^1].scope
+        let loopScope = newScope(ownerScope)
+        loopScope.prepareChunkScope(curForBody)
+        var binds = initTable[string, Value]()
+        if not tryMatch(curForPattern, item, loopScope, binds):
+          raiseMatchError(loopScope, "for pattern did not match an item")
+        loopScope.bindMatchedValues(binds, replaceExisting = false)
+        chunk = curForBody
+        scope = loopScope
+        stack = acquireRunStack()
+        ip = 0
+        validateImplRequirements = true
+        returnType = NIL
+        returnLabel = ""
+        curChecksErrors = false
+        curErrorTypes = @[]
+        curFnName = ""
+        curFrameKind = fkForBody
+        evalBudget = scope.evalBudget
+      else:
+        var owner = frames.pop()
+        stack = move owner.stack
+        loadFrameRegs(owner)
+        stack.add NIL
+    elif curFrameKind == fkTaskScopeBody:
+      let owned = curOwnedScope
+      curFrameKind = fkNormal
+      try:
+        owned.waitOwnedTasks()
+      finally:
+        owned.closeOwnedActors()
+      releaseRunStack(stack)
+      var owner = frames.pop()
+      stack = move owner.stack
+      loadFrameRegs(owner)
+      stack.add retValue
+    elif curFrameKind == fkSupervisorBody:
+      let owned = curOwnedScope
+      curFrameKind = fkNormal
+      owned.closeOwnedActors()
+      releaseRunStack(stack)
+      var owner = frames.pop()
+      stack = move owner.stack
+      loadFrameRegs(owner)
+      stack.add retValue
+    elif curFrameKind == fkNamespaceBody:
+      let nsScope = curOwnedScope
+      let nsName = curNamespaceName
+      releaseRunStack(stack)
+      var owner = frames.pop()
+      stack = move owner.stack
+      loadFrameRegs(owner)
+      let ns = newNamespace(nsName, nsScope)
+      scope.define(nsName, ns)
+      stack.add ns
+    elif curFrameKind == fkTryBody:
       # The try body succeeded: drop its handler, run ensure, then hand its value
       # back to the enclosing frame (the owner pushed by opTry).
       releaseRunStack(stack)
       let h = handlers.pop()
       if h.tp.ensureBody != nil:
-        discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
-      var owner = frames.pop()
-      stack = move owner.stack
-      loadFrameRegs(owner)
-      stack.add retValue
+        enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureValueBody)
+        curEnsureValue = retValue
+      else:
+        var owner = frames.pop()
+        stack = move owner.stack
+        loadFrameRegs(owner)
+        stack.add retValue
+    elif curFrameKind == fkCatchBody:
+      releaseRunStack(stack)
+      if curEnsureBody != nil:
+        let body = curEnsureBody
+        let cleanupScope = curEnsureScope
+        enterFrame(body, cleanupScope, false, fkEnsureValueBody)
+        curEnsureValue = retValue
+      else:
+        var owner = frames.pop()
+        stack = move owner.stack
+        loadFrameRegs(owner)
+        stack.add retValue
     elif frames.len == 0:
       stackArg = move stack
       ipArg = ip
@@ -3996,7 +4218,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             except GeneError as e:
               raiseCompileError(scope, e.msg)
               newChunk()
-          stack.add run(evalChunk, evalScope)
+          pushFrame()
+          enterFrame(evalChunk, evalScope, true)
+          continue
         of opMakeType:
           let proto = chunk.typeProtos[inst[].intArg]
           let parent = stack.pop()
@@ -4056,10 +4280,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # Run the ns body in a fresh child scope; its bindings become the
           # namespace's exports. Bind the namespace in the enclosing scope.
           let nsScope = newScope(scope)
-          discard run(chunk.subchunks[inst[].intArg], nsScope)
-          let ns = newNamespace(inst[].name, nsScope)
-          scope.define(inst[].name, ns)
-          stack.add ns
+          pushFrame()
+          enterFrame(chunk.subchunks[inst[].intArg], nsScope,
+                     validateImplRequirements, fkNamespaceBody)
+          curOwnedScope = nsScope
+          curNamespaceName = inst[].name
+          continue
         of opSetModuleName:
           var module: Value
           if scope.lookupOptional("this-mod", module):
@@ -4142,12 +4368,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   callScope.defineSlot(proto.positionalSlots[i], positional[i],
                                        stack[argsStart + i])
                 stack.setLen(calleeIndex)        # consume callee + args
-                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                                 ip: ip, validateImpls: validateImplRequirements,
-                                 returnType: returnType, returnLabel: returnLabel,
-                                 checksErrors: curChecksErrors,
-                                 errorTypes: curErrorTypes, fnName: curFnName,
-                                 isTryBody: curIsTryBody)
+                pushFrame()
                 chunk = proto.chunk
                 scope = callScope
                 stack = acquireRunStack()
@@ -4158,7 +4379,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curChecksErrors = false        # simpleCall never declares ^errors
                 curErrorTypes = @[]
                 curFnName = ""
-                curIsTryBody = false
+                curFrameKind = fkNormal
                 evalBudget = callScope.evalBudget
                 continue
               elif not proto.isGenerator:
@@ -4181,12 +4402,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if bound.returnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                                 ip: ip, validateImpls: validateImplRequirements,
-                                 returnType: returnType, returnLabel: returnLabel,
-                                 checksErrors: curChecksErrors,
-                                 errorTypes: curErrorTypes, fnName: curFnName,
-                                 isTryBody: curIsTryBody)
+                pushFrame()
                 chunk = proto.chunk
                 scope = bound.scope
                 stack = acquireRunStack()
@@ -4197,7 +4413,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curChecksErrors = proto.checksErrors
                 curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
                 curFnName = if proto.checksErrors: callee.fnName else: ""
-                curIsTryBody = false
+                curFrameKind = fkNormal
                 evalBudget = bound.scope.evalBudget
                 continue
           var named: NamedArgs
@@ -4273,12 +4489,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 for i in 0 ..< args.len:
                   callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
                 stack.setLen(calleeIndex)
-                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                                 ip: ip, validateImpls: validateImplRequirements,
-                                 returnType: returnType, returnLabel: returnLabel,
-                                 checksErrors: curChecksErrors,
-                                 errorTypes: curErrorTypes, fnName: curFnName,
-                                 isTryBody: curIsTryBody)
+                pushFrame()
                 chunk = fnProto.chunk
                 scope = callScope
                 stack = acquireRunStack()
@@ -4289,7 +4500,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curChecksErrors = false        # simpleCall never declares ^errors
                 curErrorTypes = @[]
                 curFnName = ""
-                curIsTryBody = false
+                curFrameKind = fkNormal
                 evalBudget = callScope.evalBudget
                 continue
               elif not fnProto.isGenerator:
@@ -4298,12 +4509,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if bound.returnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                frames.add Frame(chunk: chunk, scope: scope, stack: move stack,
-                                 ip: ip, validateImpls: validateImplRequirements,
-                                 returnType: returnType, returnLabel: returnLabel,
-                                 checksErrors: curChecksErrors,
-                                 errorTypes: curErrorTypes, fnName: curFnName,
-                                 isTryBody: curIsTryBody)
+                pushFrame()
                 chunk = fnProto.chunk
                 scope = bound.scope
                 stack = acquireRunStack()
@@ -4314,7 +4520,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curChecksErrors = fnProto.checksErrors
                 curErrorTypes = if fnProto.checksErrors: callee.fnErrorTypes else: @[]
                 curFnName = if fnProto.checksErrors: callee.fnName else: ""
-                curIsTryBody = false
+                curFrameKind = fkNormal
                 evalBudget = bound.scope.evalBudget
                 continue
           let site =
@@ -4353,16 +4559,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let branchScope = newScope(scope)
               branchScope.prepareChunkScope(cl.body)
               branchScope.bindMatchedValues(binds, replaceExisting = false)
-              stack.add run(cl.body, branchScope,
-                            validateImplRequirements = validateImplRequirements)
+              pushFrame()
+              enterFrame(cl.body, branchScope, validateImplRequirements)
               handled = true
               break
           if not handled:
             if mp.elseBody != nil:
-              stack.add run(mp.elseBody, newScope(scope),
-                            validateImplRequirements = validateImplRequirements)
+              let branchScope = newScope(scope)
+              branchScope.prepareChunkScope(mp.elseBody)
+              pushFrame()
+              enterFrame(mp.elseBody, branchScope, validateImplRequirements)
             else:
               raiseMatchError(scope, "no matching pattern")
+          if handled or mp.elseBody != nil:
+            continue
         of opMatchBind:
           let target = stack.pop()
           var binds = initTable[string, Value]()
@@ -4380,15 +4590,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opForEach:
           let coll = stack.pop()
           let fp = chunk.forLoops[inst[].intArg]
-          for item in forItems(coll):
+          let items = forItems(coll)
+          if items.len == 0:
+            stack.add NIL
+            continue
+          block enterFirstForItem:
+            let item = items[0]
             let loopScope = newScope(scope)
             loopScope.prepareChunkScope(fp.body)
             var binds = initTable[string, Value]()
             if not tryMatch(fp.pattern, item, loopScope, binds):
               raiseMatchError(loopScope, "for pattern did not match an item")
             loopScope.bindMatchedValues(binds, replaceExisting = false)
-            discard run(fp.body, loopScope)
-          stack.add NIL
+            pushFrame()
+            enterFrame(fp.body, loopScope, true, fkForBody)
+            curForItems = items
+            curForIndex = 1
+            curForPattern = fp.pattern
+            curForBody = fp.body
+            continue
         of opMakeIterator:
           stack.add iteratorStream(stack.pop())
         of opIteratorHasNext:
@@ -4408,11 +4628,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # completion via frameReturn, on a thrown error via the dispatch loop's
           # exception handler below — both keyed off the TryHandler pushed here.
           let tp = chunk.tries[inst[].intArg]
-          frames.add Frame(chunk: chunk, scope: scope, stack: move stack, ip: ip,
-                           validateImpls: validateImplRequirements,
-                           returnType: returnType, returnLabel: returnLabel,
-                           checksErrors: curChecksErrors, errorTypes: curErrorTypes,
-                           fnName: curFnName, isTryBody: curIsTryBody)
+          pushFrame()
           handlers.add TryHandler(tp: tp, scope: scope, framesLen: frames.len)
           chunk = tp.body                 # shares the enclosing scope
           stack = acquireRunStack()
@@ -4423,7 +4639,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curChecksErrors = false
           curErrorTypes = @[]
           curFnName = ""
-          curIsTryBody = true
+          curFrameKind = fkTryBody
           evalBudget = scope.evalBudget
           continue
         of opTaskScope:
@@ -4431,22 +4647,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           taskScope.ownsTasks = true
           taskScope.ownsActors = true
           taskScope.actorFailureStrategy = afsStop
-          try:
-            try:
-              let bodyResult = run(chunk.subchunks[inst[].intArg], taskScope)
-              taskScope.waitOwnedTasks()
-              stack.add bodyResult
-            except GeneError:
-              taskScope.cancelOwnedTasks()
-              raise
-            except GenePanic:
-              taskScope.cancelOwnedTasks()
-              raise
-            except GeneCancel:
-              taskScope.cancelOwnedTasks()
-              raise
-          finally:
-            taskScope.closeOwnedActors()
+          pushFrame()
+          enterFrame(chunk.subchunks[inst[].intArg], taskScope,
+                     validateImplRequirements, fkTaskScopeBody)
+          curOwnedScope = taskScope
+          continue
         of opSupervisor:
           var hasEvents = false
           var hasDeadLetters = false
@@ -4474,10 +4679,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
           supervisorScope.supervisorEvents = eventSink
           supervisorScope.supervisorDeadLetters = deadLetterSink
-          try:
-            stack.add run(chunk.subchunks[inst[].intArg], supervisorScope)
-          finally:
-            supervisorScope.closeOwnedActors()
+          pushFrame()
+          enterFrame(chunk.subchunks[inst[].intArg], supervisorScope,
+                     validateImplRequirements, fkSupervisorBody)
+          curOwnedScope = supervisorScope
+          continue
         of opSpawn:
           # Spawn a child task as a scheduler fiber. The body is queued instead of
           # running inline, so CPU-only child work still cooperates through VM
@@ -4544,12 +4750,29 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # boundaries on the function frames crossed. A catch that fires resumes the
       # outer dispatch loop with its result; otherwise the error propagates out.
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
+      if curFrameKind == fkTaskScopeBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        try:
+          owned.cancelOwnedTasks()
+        finally:
+          owned.closeOwnedActors()
+      elif curFrameKind == fkSupervisorBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        owned.closeOwnedActors()
+      if curFrameKind == fkCatchBody and curEnsureBody != nil:
+        let body = curEnsureBody
+        let cleanupScope = curEnsureScope
+        releaseRunStack(stack)
+        enterFrame(body, cleanupScope, false, fkEnsureErrorBody)
+        curPendingError = err
+        continue
       while true:
         if handlers.len > 0 and handlers[^1].framesLen == frames.len:
-          # Unwound back to this try's level. Resume in the enclosing (owner) frame
-          # and run the catch clauses + ensure there: an error or panic they raise
-          # then re-enters this unwind from the owner, so outer trys and their
-          # ensure blocks still apply (matching the old nested run()/finally).
+          # Unwound back to this try's level. The owner frame remains on `frames`
+          # while catch/ensure bodies run as ordinary VM frames, so they can park
+          # and resume like the original try body.
           let h = handlers.pop()
           releaseRunStack(stack)        # discard the try body's operand stack
           let ownerValidate = frames[^1].validateImpls
@@ -4559,56 +4782,29 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               var props = initOrderedTable[string, Value]()
               props["message"] = newStr(err.msg)
               newNode(newSym("Error"), props = props)
-          var owner = frames.pop()
-          stack = move owner.stack
-          loadFrameRegs(owner)
           var caught = false
-          var catchResult = NIL
-          var raised: ref CatchableError = nil
           for cl in h.tp.catches:
             var binds = initTable[string, Value]()
             if tryMatch(cl.pattern, errVal, h.scope, binds):
               let catchScope = newScope(h.scope)
               catchScope.prepareChunkScope(cl.body)
               catchScope.bindMatchedValues(binds, replaceExisting = false)
-              try:
-                catchResult = run(cl.body, catchScope,
-                                  validateImplRequirements = ownerValidate)
-                caught = true
-              except GeneError as ce: raised = ce
-              except GenePanic as cp: raised = cp
-              except GeneCancel as cc: raised = cc
+              enterFrame(cl.body, catchScope, ownerValidate, fkCatchBody)
+              curEnsureBody = h.tp.ensureBody
+              curEnsureScope = h.scope
+              caught = true
               break
-          if h.tp.ensureBody != nil:
-            # ensure always runs; an exception it raises overrides any in-flight one.
-            try:
-              discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
-            except GeneError as ee:
-              raised = ee
-              caught = false
-            except GenePanic as ep:
-              raised = ep
-              caught = false
-            except GeneCancel as ec:
-              raised = ec
-              caught = false
-          if raised != nil:
-            if raised of GenePanic or raised of GeneCancel:
-              # Run the remaining (outer) ensures, then propagate the non-catchable exit.
-              while handlers.len > 0:
-                let hh = handlers.pop()
-                if hh.tp.ensureBody != nil:
-                  discard run(hh.tp.ensureBody, hh.scope,
-                              validateImplRequirements = false)
-              raise raised
-            # A GeneError from catch/ensure unwinds onward from the owner context.
-            err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName,
-                                         cast[ref GeneError](raised))
-          elif caught:
-            stack.add catchResult       # resume the enclosing frame after the try
+          if caught:
+            break
+          elif h.tp.ensureBody != nil:
+            enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureErrorBody)
+            curPendingError = err
             break
           else:
             # No catch matched: keep unwinding the (possibly re-labelled) error.
+            var f = frames.pop()
+            stack = move f.stack
+            loadFrameRegs(f)
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
         elif frames.len == 0:
           raise err
@@ -4623,18 +4819,68 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     except GenePanic as p:
       # Panics are not catchable, but ensure blocks still run as the panic unwinds
       # out of every active `try` (innermost first), matching the old `finally`.
+      if curFrameKind == fkTaskScopeBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        try:
+          owned.cancelOwnedTasks()
+        finally:
+          owned.closeOwnedActors()
+      elif curFrameKind == fkSupervisorBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        owned.closeOwnedActors()
+      if curFrameKind == fkCatchBody and curEnsureBody != nil:
+        let body = curEnsureBody
+        let cleanupScope = curEnsureScope
+        releaseRunStack(stack)
+        enterFrame(body, cleanupScope, false, fkEnsurePanicBody)
+        curPendingPanic = p
+        continue
+      var cleanupStarted = false
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
-          discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+          releaseRunStack(stack)
+          enterFrame(h.tp.ensureBody, h.scope, false, fkEnsurePanicBody)
+          curPendingPanic = p
+          cleanupStarted = true
+          break
+      if cleanupStarted:
+        continue
       raise p
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
       # not see it, but cleanup still runs as the task unwinds.
+      if curFrameKind == fkTaskScopeBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        try:
+          owned.cancelOwnedTasks()
+        finally:
+          owned.closeOwnedActors()
+      elif curFrameKind == fkSupervisorBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        owned.closeOwnedActors()
+      if curFrameKind == fkCatchBody and curEnsureBody != nil:
+        let body = curEnsureBody
+        let cleanupScope = curEnsureScope
+        releaseRunStack(stack)
+        enterFrame(body, cleanupScope, false, fkEnsureCancelBody)
+        curPendingCancel = c
+        continue
+      var cleanupStarted = false
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
-          discard run(h.tp.ensureBody, h.scope, validateImplRequirements = false)
+          releaseRunStack(stack)
+          enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureCancelBody)
+          curPendingCancel = c
+          cleanupStarted = true
+          break
+      if cleanupStarted:
+        continue
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
       raise c
@@ -4852,7 +5098,7 @@ proc runFiber(f: Fiber) =
   try:
     let injectCancel =
       f.task.kind == vkTask and f.task.taskCancelRequested and
-        not f.task.taskDone
+        not f.task.taskDone and not f.inCancelCleanup()
     let stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
                        validateArg = true, fiber = f,
                        injectCancel = injectCancel,
