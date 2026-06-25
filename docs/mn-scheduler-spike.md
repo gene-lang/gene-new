@@ -1,7 +1,8 @@
 # M:N Scheduler — Thread-Safety Spike & Staged Plan
 
 Status: **decision doc** (spike result, no shipped threads). Date: 2026-06-22.
-Branch context: `scheduler` (cooperative single-worker scheduler, stages 1–3 done).
+Branch context: `scheduler` (cooperative single-worker scheduler, channel/task/
+actor suspension done; OS-thread worker pool deferred).
 
 ## Goal
 
@@ -88,13 +89,13 @@ Notes:
 - **D. Worker pool.** N OS threads each running the scheduler loop over a shared/
   work-stealing queue; per-thread run-stack pools; pinned global init.
 - **E. Load balancing + the deferred pieces.** Work stealing, cancellation
-  (deferred), timers/async-I/O, fiber-side `actor/ask` parking.
+  (deferred), timers/async-I/O.
 
 ## Recommendation
 
 **Defer the OS-thread worker pool.** It is gated on (B) scope-isolation semantics —
 a genuine design decision — not on the (cheap) refcount tax. The single-worker
 cooperative scheduler is correct and already delivers suspendable tasks, channels,
-await, and actors. When M:N is taken up, start with A→B above and treat actors/
-channels as the unit of parallelism; do not parallelize `spawn`-over-shared-scope
-without first changing its isolation model.
+await, actor handlers, and `actor/ask`. When M:N is taken up, start with A→B above
+and treat actors/channels as the unit of parallelism; do not parallelize
+`spawn`-over-shared-scope without first changing its isolation model.

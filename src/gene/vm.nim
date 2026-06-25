@@ -35,13 +35,17 @@ type
     sendValue: Value
     actor: Value      # actor whose full mailbox parked this send (xor `channel`)
 
-# `currentFiberActive` gates channel suspension: only a fiber the scheduler is
-# running suspends. Root-level channel use keeps its original synchronous behavior.
+# `currentFiberActive` gates suspension: only a fiber the scheduler is running
+# parks on blocking channel/actor operations. Root-level channel use keeps its
+# original synchronous behavior.
 var currentFiberActive {.threadvar.}: bool
 
 # Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
 # moving it from the wait list to the run queue. Defined with the scheduler below.
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
+
+# Wake fibers parked in `await` on a task that has just settled.
+proc wakeTaskWaiters(task: Value)
 
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
@@ -714,8 +718,43 @@ proc actorErrorValue(scope: Scope, message: string): Value =
     head = actorError
   newNode(head, props = props)
 
-proc completedActorErrorTask(scope: Scope, message: string): Value =
-  newFailedTask(message, actorErrorValue(scope, message), hasValue = true)
+proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
+                   hasValue = false): bool =
+  if reply.kind != vkReplyTo or reply.replyToSent:
+    return false
+  let task = reply.replyToTask
+  if task.kind != vkTask or task.taskDone:
+    return false
+  failTask(task, message, errVal, hasValue)
+  wakeTaskWaiters(task)
+  true
+
+proc panicReplyTask(reply: Value, message: string, errVal: Value = NIL,
+                    hasValue = false): bool =
+  if reply.kind != vkReplyTo or reply.replyToSent:
+    return false
+  let task = reply.replyToTask
+  if task.kind != vkTask or task.taskDone:
+    return false
+  panicTask(task, message, errVal, hasValue)
+  wakeTaskWaiters(task)
+  true
+
+proc failReplyTask(reply: Value, e: ref GeneError): bool =
+  if e.hasErrVal:
+    failReplyTask(reply, e.msg, e.errVal, hasValue = true)
+  else:
+    failReplyTask(reply, e.msg)
+
+proc panicReplyTask(reply: Value, e: ref GenePanic): bool =
+  if e.hasErrVal:
+    panicReplyTask(reply, e.msg, e.errVal, hasValue = true)
+  else:
+    panicReplyTask(reply, e.msg)
+
+proc failMissingReply(reply: Value, scope: Scope): bool =
+  const message = "actor/ask did not receive a reply"
+  failReplyTask(reply, message, actorErrorValue(scope, message), hasValue = true)
 
 proc actorMailboxArg(call: ptr NativeCall): int =
   result = 16
@@ -784,8 +823,11 @@ proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args[0].replyToSent:
     raise newException(GeneError, "reply has already been sent")
   let scope = actorDispatchScope(call)
+  let task = args[0].replyToTask
   args[0].sendReplyTo(checkedReplyValue(args[0], args[1],
                                         "ReplyTo/send value", scope))
+  if task.kind == vkTask:
+    wakeTaskWaiters(task)
   NIL
 
 # Actor message processing now runs each handler as a scheduler fiber (see
@@ -859,24 +901,29 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     raise newException(GeneError, "actor/ask expects 2 arguments, got " & $args.len)
   requireActor("actor/ask", args[0])
   let scope = actorDispatchScope(call)
-  let reply = newReplyTo()
   let actor = args[0]
   try:
     while actor.actorFull and not actor.actorClosed:
-      # ask drives the actor to completion, so cooperatively free a slot either way.
+      if currentFiberActive:
+        var se: ref SuspendError
+        new(se)
+        se.msg = "actor/ask suspends on a full mailbox"
+        se.actor = actor
+        se.isSend = true
+        raise se
       if not schedulerRunOne():
         raise newException(GeneError, "actor/ask would suspend on a full mailbox")
     if actor.actorClosed:
       raiseActorClosed(scope)
+    let task = newPendingTask()
+    let reply = newReplyTo(task = task)
     var buildArgs = [reply]
     let message = applyCall(args[1], buildArgs, NamedArgs(), scope)
     actor.pushActorMessage(checkedActorMessage(actor, message,
-                                               "actor/ask message", scope))
+                                               "actor/ask message", scope),
+                            reply)
     scheduleActor(actor, scope)
-    driveActor(actor)   # drive the handler to a reply (ask resolves to a Task)
-    if not reply.replyToSent:
-      return completedActorErrorTask(scope, "actor/ask did not receive a reply")
-    newCompletedTask(reply.replyToResult)
+    task
   except GeneError as e:
     completedTaskFromError(e)
   except GenePanic as e:
@@ -3041,6 +3088,7 @@ type
     actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
     actorReturnType: Value # handler return type to adapt the ActorStep against
     actorScope: Scope      # dispatch scope for the actor (state checks / supervision)
+    actorAskReply: Value   # ReplyTo for actor/ask messages, or NIL for sends
     waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
     waitIsSend: bool       # parked on send (vs recv)
     waitSendValue: Value   # value to deliver when a parked send resumes
@@ -3049,8 +3097,9 @@ type
 
 # Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
 # work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
-# on a channel. `currentFiberActive` gates channel suspension: only a scheduled
-# fiber suspends — root-level channel use keeps its original synchronous behavior.
+# on a channel, actor mailbox, or task await. `currentFiberActive` gates
+# suspension: only a scheduled fiber parks — root-level channel use keeps its
+# original synchronous behavior.
 var schedRunQueue {.threadvar.}: seq[Fiber]
 var schedWaiters {.threadvar.}: seq[Fiber]
 
@@ -3817,8 +3866,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # completes or parks on a channel op (see the scheduler above). A
           # non-blocking body settles immediately, like the old inline prototype; a
           # blocking body parks and yields a pending Task that await/drain drives.
-          # (Still a single-worker cooperative scheduler; M:N is future work. Channel
-          # suspension is live; await-suspension and cancellation are not yet.)
+          # (Still a single-worker cooperative scheduler; M:N and cancellation are
+          # future work.)
           let taskScope = newScope(scope)
           stack.add spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
         of opAwait:
@@ -4029,7 +4078,7 @@ proc wakeTaskWaiters(task: Value) =
     else:
       inc i
 
-proc makeActorFiber(actor, msg: Value, scope: Scope): Fiber =
+proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   ## Build a fiber that runs the actor's handler on one message. Returns nil if the
   ## handler is not a fiber-able Gene function (the caller then processes inline).
   let handler = actor.actorHandler
@@ -4039,10 +4088,11 @@ proc makeActorFiber(actor, msg: Value, scope: Scope): Fiber =
   let proto = FunctionProto(handler.fnCode)
   if proto.isGenerator:
     return nil
-  let args = [newActorContext(actor), actor.actorState, msg]
+  let args = [newActorContext(actor), actor.actorState, item.message]
   let bound = bindCallScope(handler, proto, args, NamedArgs())
   Fiber(chunk: proto.chunk, scope: bound.scope, actorOwner: actor,
-        actorReturnType: bound.returnType, actorScope: scope, started: false)
+        actorReturnType: bound.returnType, actorScope: scope,
+        actorAskReply: item.reply, started: false)
 
 proc scheduleActor(actor: Value, scope: Scope) =
   ## If the actor is idle (no live handler fiber) and has a queued message, start
@@ -4050,19 +4100,21 @@ proc scheduleActor(actor: Value, scope: Scope) =
   ## the actor busy, and enqueue its handler fiber on the run queue.
   if actor.actorProcessing or actor.actorClosed or actor.actorQueueLen == 0:
     return
-  let msg = actor.popActorMessage()
+  let item = actor.popActorMessage()
   wakeActorSenders(actor)
   actor.setActorProcessing(true)
-  let f = makeActorFiber(actor, msg, scope)
+  let f = makeActorFiber(actor, item, scope)
   if f == nil:
     # Non-fiber handler (no current surface produces this): process inline.
     actor.setActorProcessing(false)
-    var args = [newActorContext(actor), actor.actorState, msg]
+    var args = [newActorContext(actor), actor.actorState, item.message]
     let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
     if step.kind != vkActorStep:
       raiseTypeError("actor handler return", "ActorStep", step, scope)
     if step.actorStepContinue: actor.setActorState(step.actorStepState)
     else: actor.closeActor()
+    if item.reply.kind == vkReplyTo and not item.reply.replyToSent:
+      discard failMissingReply(item.reply, scope)
     scheduleActor(actor, scope)
   else:
     schedRunQueue.add f
@@ -4096,6 +4148,9 @@ proc runFiber(f: Fiber) =
           raiseTypeError("actor handler return", "ActorStep", step, f.actorScope)
         if step.actorStepContinue: actor.setActorState(step.actorStepState)
         else: actor.closeActor()
+        if f.actorAskReply.kind == vkReplyTo and
+            not f.actorAskReply.replyToSent:
+          discard failMissingReply(f.actorAskReply, f.actorScope)
         scheduleActor(actor, f.actorScope)
       of rskSuspend:
         schedWaiters.add f          # handler parked mid-message; actor stays busy
@@ -4117,6 +4172,7 @@ proc runFiber(f: Fiber) =
     currentFiberActive = savedActive
     if actor != NIL:
       actor.setActorProcessing(false)
+      let askSettled = failReplyTask(f.actorAskReply, e)
       if actor.actorFailureStrategy == afsRestart and
           actor.actorRestartInit.kind != vkNil:
         try:
@@ -4128,7 +4184,8 @@ proc runFiber(f: Fiber) =
         scheduleActor(actor, f.actorScope)    # recovered; process the next message
       else:
         actor.closeActor()
-        raise
+        if not askSettled:
+          raise
     else:
       if e.hasErrVal: failTask(f.task, e.msg, e.errVal, hasValue = true)
       else: failTask(f.task, e.msg)
@@ -4138,7 +4195,8 @@ proc runFiber(f: Fiber) =
     if actor != NIL:
       actor.setActorProcessing(false)
       actor.closeActor()
-      raise
+      if not panicReplyTask(f.actorAskReply, e):
+        raise
     else:
       if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
       else: panicTask(f.task, e.msg)

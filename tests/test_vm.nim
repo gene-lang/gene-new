@@ -1306,6 +1306,32 @@ suite "vm — cooperative scheduler":
        "(var p (spawn (ch ~ Channel/send 100))) " &
        "(a ~ actor/send 5) " &
        "(out ~ Cell/get)", "105"
+  test "actor ask returns a pending task instead of driving synchronously":
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(var ch (channel ^capacity 1)) " &
+       "(fn handle [ctx state msg] " &
+       "  (var got (ch ~ Channel/recv)) " &
+       "  (match msg " &
+       "    (when (Get ^reply reply) " &
+       "      (reply ~ ReplyTo/send (+ state got)) " &
+       "      (actor/continue state)))) " &
+       "(var a (actor/spawn ^init (fn [] 40) ^handle handle)) " &
+       "(var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+       "(ch ~ Channel/send 2) " &
+       "(await pending)", "42"
+  test "actor ask awaited inside a fiber parks until the reply is sent":
+    ck "(type Get ^props {^reply (ReplyTo Int)}) " &
+       "(impl Send Get) " &
+       "(scope " &
+       "  (var a (actor/spawn ^init (fn [] 41) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (match msg " &
+       "        (when (Get ^reply reply) " &
+       "          (reply ~ ReplyTo/send state) " &
+       "          (actor/continue state)))))) " &
+       "  (var t (spawn (await (a ~ actor/ask (fn [reply] (Get ^reply reply)))))) " &
+       "  (await t))", "41"
 
 suite "vm — actors":
   test "actor values are opaque display values":

@@ -744,6 +744,21 @@ suite "spec — actors from design":
                "41")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send Get) " &
+               "(var ch (channel ^capacity 1)) " &
+               "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
+               "  (var got (ch ~ Channel/recv)) " &
+               "  (match msg " &
+               "    (when (Get ^reply reply) " &
+               "      (reply ~ ReplyTo/send (+ state got)) " &
+               "      (actor/continue state)))) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 40) ^handle handle)) " &
+               "(var pending (counter ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+               "(ch ~ Channel/send 2) " &
+               "(await pending)",
+               "42")
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &

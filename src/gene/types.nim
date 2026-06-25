@@ -359,13 +359,17 @@ type
     itemType: Value
     itemScope: Scope
 
+  ActorMessage* = object
+    message*: Value
+    reply*: Value
+
   ActorLifecycle = ref object
     closed: bool
 
   ActorData = ref object of GeneObjectData
     lifecycle: ActorLifecycle
     capacity: int
-    queue: seq[Value]
+    queue: seq[ActorMessage]
     processing: bool
     state: Value
     restartInit: Value
@@ -385,6 +389,7 @@ type
     result: Value
     resultType: Value
     resultScope: Scope
+    task: Value
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -1396,9 +1401,14 @@ proc closeActor*(v: Value) =
   actorData(v).lifecycle.closed = true
 
 proc pushActorMessage*(v, message: Value) =
-  actorData(v).queue.add escapeWeakFunctions(message)
+  actorData(v).queue.add ActorMessage(message: escapeWeakFunctions(message),
+                                      reply: NIL)
 
-proc popActorMessage*(v: Value): Value =
+proc pushActorMessage*(v, message, reply: Value) =
+  actorData(v).queue.add ActorMessage(message: escapeWeakFunctions(message),
+                                      reply: reply)
+
+proc popActorMessage*(v: Value): ActorMessage =
   let data = actorData(v)
   if data.queue.len == 0:
     raise newException(FieldDefect, "actor mailbox is empty")
@@ -1437,10 +1447,15 @@ proc replyToResultType*(v: Value): Value =
 proc replyToResultScope*(v: Value): Scope =
   replyToData(v).resultScope
 
+proc replyToTask*(v: Value): Value =
+  replyToData(v).task
+
 proc setReplyToResultType*(v, resultType: Value, scope: Scope) =
   let data = replyToData(v)
   data.resultType = resultType
   data.resultScope = scope
+
+proc completeTask*(v, value: Value)
 
 proc sendReplyTo*(v, result: Value) =
   let data = replyToData(v)
@@ -1448,6 +1463,8 @@ proc sendReplyTo*(v, result: Value) =
     raise newException(FieldDefect, "reply has already been sent")
   data.result = escapeWeakFunctions(result)
   data.sent = true
+  if data.task.kind == vkTask:
+    completeTask(data.task, data.result)
 
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
@@ -1932,13 +1949,17 @@ proc escapeWeakFunctions*(v: Value): Value =
     let escapedState = escapeWeakFunctions(data.state)
     let escapedRestartInit = escapeWeakFunctions(data.restartInit)
     let escapedHandler = escapeWeakFunctions(data.handler)
-    var escapedQueue = newSeq[Value](data.queue.len)
+    var escapedQueue = newSeq[ActorMessage](data.queue.len)
     var changed = escapedState.bits != data.state.bits or
       escapedRestartInit.bits != data.restartInit.bits or
       escapedHandler.bits != data.handler.bits
     for i, item in data.queue:
-      escapedQueue[i] = escapeWeakFunctions(item)
-      if escapedQueue[i].bits != item.bits:
+      let escapedMessage = escapeWeakFunctions(item.message)
+      let escapedReply = escapeWeakFunctions(item.reply)
+      escapedQueue[i] = ActorMessage(message: escapedMessage,
+                                     reply: escapedReply)
+      if escapedMessage.bits != item.message.bits or
+          escapedReply.bits != item.reply.bits:
         changed = true
     if not changed:
       return v
@@ -1969,8 +1990,11 @@ proc escapeWeakFunctions*(v: Value): Value =
   of vkReplyTo:
     let data = replyToData(v)
     let escapedResult = escapeWeakFunctions(data.result)
-    if escapedResult.bits != data.result.bits:
+    let escapedTask = escapeWeakFunctions(data.task)
+    if escapedResult.bits != data.result.bits or
+        escapedTask.bits != data.task.bits:
       data.result = escapedResult
+      data.task = escapedTask
     v
   else:
     v
@@ -2060,11 +2084,13 @@ proc newActorStop*(): Value =
   boxObject(ActorStepData(objKind: okActorStep,
                           continueActor: false))
 
-proc newReplyTo*(resultType = NIL, resultScope: Scope = nil): Value =
+proc newReplyTo*(resultType = NIL, resultScope: Scope = nil,
+                 task = NIL): Value =
   boxObject(ReplyToData(objKind: okReplyTo,
                         result: NIL,
                         resultType: resultType,
-                        resultScope: resultScope))
+                        resultScope: resultScope,
+                        task: task))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =
