@@ -3600,13 +3600,28 @@ var schedAskTimeouts {.threadvar.}: seq[AskTimeout]
 
 proc enqueueRunnable(f: Fiber)
 
+proc wakeAllActorSenders(actor: Value) =
+  var i = 0
+  while i < schedWaiters.len:
+    let f = schedWaiters[i]
+    if f.waitActor.kind == vkActorRef and same(f.waitActor, actor):
+      schedWaiters.delete(i)
+      enqueueRunnable(f)
+    else:
+      inc i
+
+proc closeActorAndCancelMailbox(actor: Value) =
+  actor.closeActor()
+  for item in actor.drainActorMessages():
+    discard cancelReplyTask(item.reply)
+  wakeAllActorSenders(actor)
+  actor.setActorProcessing(false)
+
 proc cancelOwnedActor(actor: Value) =
   ## Scope/supervisor shutdown owns actor lifetime. Closing the mailbox is not
   ## enough: queued asks and already-scheduled handler fibers would otherwise keep
   ## pending tasks alive, and parked handlers could resume after owner exit.
-  actor.closeActor()
-  for item in actor.drainActorMessages():
-    discard cancelReplyTask(item.reply)
+  closeActorAndCancelMailbox(actor)
 
   var i = 0
   while i < schedRunQueue.len:
@@ -3623,13 +3638,8 @@ proc cancelOwnedActor(actor: Value) =
     if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
       discard cancelReplyTask(f.actorAskReply)
       schedWaiters.delete(i)
-    elif f.waitActor.kind == vkActorRef and same(f.waitActor, actor):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
     else:
       inc i
-
-  actor.setActorProcessing(false)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value
 
@@ -4799,7 +4809,7 @@ proc scheduleActor(actor: Value, scope: Scope) =
     if step.kind != vkActorStep:
       raiseTypeError("actor handler return", "ActorStep", step, scope)
     if step.actorStepContinue: actor.setActorState(step.actorStepState)
-    else: actor.closeActor()
+    else: closeActorAndCancelMailbox(actor)
     if item.reply.kind == vkReplyTo and not item.reply.replyToSent:
       discard failMissingReply(item.reply, scope)
     scheduleActor(actor, scope)
@@ -4840,7 +4850,7 @@ proc runFiber(f: Fiber) =
         if step.kind != vkActorStep:
           raiseTypeError("actor handler return", "ActorStep", step, f.actorScope)
         if step.actorStepContinue: actor.setActorState(step.actorStepState)
-        else: actor.closeActor()
+        else: closeActorAndCancelMailbox(actor)
         if f.actorAskReply.kind == vkReplyTo and
             not f.actorAskReply.replyToSent:
           discard failMissingReply(f.actorAskReply, f.actorScope)
@@ -4850,13 +4860,11 @@ proc runFiber(f: Fiber) =
       of rskPause:
         enqueueRunnable(f)          # handler stays busy but yields to peers
       of rskCancel:
-        actor.setActorProcessing(false)
-        actor.closeActor()
+        closeActorAndCancelMailbox(actor)
         if not cancelReplyTask(f.actorAskReply):
           raise newException(GeneCancel, "task was cancelled")
       of rskYield:
-        actor.setActorProcessing(false)
-        actor.closeActor()
+        closeActorAndCancelMailbox(actor)
         raise newException(GeneError, "actor handler cannot yield")
     else:
       case stop.kind
@@ -4884,7 +4892,7 @@ proc runFiber(f: Fiber) =
       case actor.actorFailureStrategy
       of afsRestart:
         if actor.actorRestartInit.kind == vkNil:
-          actor.closeActor()
+          closeActorAndCancelMailbox(actor)
           if not askSettled:
             raise
           return
@@ -4892,14 +4900,14 @@ proc runFiber(f: Fiber) =
           actor.setActorState(applyCall(actor.actorRestartInit, [], NamedArgs(),
                                          f.actorScope))
         except CatchableError:
-          actor.closeActor()
+          closeActorAndCancelMailbox(actor)
           raise
         scheduleActor(actor, f.actorScope)    # recovered; process the next message
       of afsEscalate:
-        actor.closeActor()
+        closeActorAndCancelMailbox(actor)
         raise
       of afsStop:
-        actor.closeActor()
+        closeActorAndCancelMailbox(actor)
         if not askSettled:
           raise
     else:
@@ -4909,8 +4917,7 @@ proc runFiber(f: Fiber) =
   except GenePanic as e:
     currentFiberActive = savedActive
     if isActorFiber:
-      actor.setActorProcessing(false)
-      actor.closeActor()
+      closeActorAndCancelMailbox(actor)
       discard panicReplyTask(f.actorAskReply, e)
       let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
       emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
@@ -4925,8 +4932,7 @@ proc runFiber(f: Fiber) =
       raise
     currentFiberActive = savedActive
     if isActorFiber:
-      actor.setActorProcessing(false)
-      actor.closeActor()
+      closeActorAndCancelMailbox(actor)
       if not cancelReplyTask(f.actorAskReply):
         raise
     else:

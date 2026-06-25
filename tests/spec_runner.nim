@@ -1010,6 +1010,20 @@ suite "spec — actors from design":
                                 "  nil) " &
                                 "(await pending)"),
                   newGlobalScope())
+    expect GeneCancel:
+      discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
+                                "(impl Error Boom) " &
+                                "(type Get ^props {^reply (ReplyTo Int)}) " &
+                                "(impl Send Get) " &
+                                "(supervisor ^strategy stop " &
+                                "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
+                                "    ^handle (fn [ctx state msg] " &
+                                "      (fail (Boom ^message \"bad\"))))) " &
+                                "  (var first (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                                "  (var second (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                                "  (sleep 1) " &
+                                "  (await second))"),
+                  newGlobalScope())
 
   test "scope owns spawned actors until scope exit":
     check_eval("(var a (scope " &

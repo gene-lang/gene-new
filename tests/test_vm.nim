@@ -1752,6 +1752,19 @@ suite "vm — actors":
                      "  (var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
                      "  (sleep 1) " &
                      "  \"after\")")
+    expect GeneCancel:
+      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error Boom) " &
+                     "(type Get ^props {^reply (ReplyTo Int)}) " &
+                     "(impl Send Get) " &
+                     "(supervisor ^strategy stop " &
+                     "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
+                     "    ^handle (fn [ctx state msg] " &
+                     "      (fail (Boom ^message \"bad\"))))) " &
+                     "  (var first (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (var second (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (sleep 1) " &
+                     "  (await second))")
     expect GeneError:
       discard runStr("(supervisor nil)")
     expect GeneError:
