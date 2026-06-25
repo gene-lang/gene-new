@@ -4770,8 +4770,13 @@ proc runFiber(f: Fiber) =
     if isActorFiber:
       actor.setActorProcessing(false)
       let askSettled = failReplyTask(f.actorAskReply, e)
-      if actor.actorFailureStrategy == afsRestart and
-          actor.actorRestartInit.kind != vkNil:
+      case actor.actorFailureStrategy
+      of afsRestart:
+        if actor.actorRestartInit.kind == vkNil:
+          actor.closeActor()
+          if not askSettled:
+            raise
+          return
         try:
           actor.setActorState(applyCall(actor.actorRestartInit, [], NamedArgs(),
                                          f.actorScope))
@@ -4779,7 +4784,10 @@ proc runFiber(f: Fiber) =
           actor.closeActor()
           raise
         scheduleActor(actor, f.actorScope)    # recovered; process the next message
-      else:
+      of afsEscalate:
+        actor.closeActor()
+        raise
+      of afsStop:
         actor.closeActor()
         if not askSettled:
           raise
