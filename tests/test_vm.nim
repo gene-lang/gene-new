@@ -1699,6 +1699,16 @@ suite "vm — actors":
        "    \"after\") " &
        "  catch (Boom ^message m) m)",
        "\"bad\""
+    expect GenePanic:
+      discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
+                     "(impl Send Get) " &
+                     "(supervisor ^strategy stop " &
+                     "  (var a (actor/spawn ^init (fn [] 0) " &
+                     "    ^handle (fn [ctx state msg] " &
+                     "      (panic \"halt\")))) " &
+                     "  (var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (sleep 1) " &
+                     "  \"after\")")
     expect GeneError:
       discard runStr("(supervisor nil)")
     expect GeneError:

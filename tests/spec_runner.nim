@@ -1059,6 +1059,18 @@ suite "spec — actors from design":
                "    \"after\") " &
                "  catch (Boom ^message m) m)",
                "\"bad\"")
+    expect GenePanic:
+      discard run(compileSource("(type Get ^props {^reply (ReplyTo Int)}) " &
+                                "(impl Send Get) " &
+                                "(supervisor ^strategy stop " &
+                                "  (var a (actor/spawn ^init (fn [] 0) " &
+                                "    ^handle (fn [ctx state msg] " &
+                                "      (panic \"halt\")))) " &
+                                "  (var pending (a ~ actor/ask " &
+                                "    (fn [reply] (Get ^reply reply)))) " &
+                                "  (sleep 1) " &
+                                "  \"after\")"),
+                  newGlobalScope())
 
 suite "spec — Env and eval from design":
   test "Env/extend creates a child environment":

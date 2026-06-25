@@ -4800,8 +4800,8 @@ proc runFiber(f: Fiber) =
     if isActorFiber:
       actor.setActorProcessing(false)
       actor.closeActor()
-      if not panicReplyTask(f.actorAskReply, e):
-        raise
+      discard panicReplyTask(f.actorAskReply, e)
+      raise
     else:
       if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
       else: panicTask(f.task, e.msg)
