@@ -5604,6 +5604,14 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc call*(callee: Value, args: seq[Value] = @[]): Value =
   applyCall(callee, args, NamedArgs())
 
+proc call*(callee: Value, args: seq[Value], namedNames: seq[string],
+           namedValues: seq[Value], dispatchScope: Scope = nil,
+           site: Value = NIL): Value =
+  if namedNames.len != namedValues.len:
+    raise newException(GeneError, "native call named argument mismatch")
+  applyCall(callee, args, NamedArgs(names: namedNames, values: namedValues),
+            dispatchScope, site)
+
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Load, execute, and cache a module; return its first-class Module value.
   ## Modules run at most once (cache) and import cycles are rejected (loading set).
