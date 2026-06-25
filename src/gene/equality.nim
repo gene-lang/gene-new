@@ -47,7 +47,7 @@ proc equal*(a, b: Value): bool =
     tablesEqual(a.props, b.props)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
-     vkReplyTo, vkCPtr, vkType, vkProtocol, vkProtocolMessage:
+     vkReplyTo, vkCPtr, vkCSlice, vkType, vkProtocol, vkProtocolMessage:
     # callable and opaque runtime values have identity equality
     a.bits == b.bits
 
@@ -62,7 +62,7 @@ proc same*(a, b: Value): bool =
     equal(a, b)
   of vkList, vkMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
-     vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkType, vkProtocol,
+     vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkType, vkProtocol,
      vkProtocolMessage:
     a.bits == b.bits
 
@@ -93,7 +93,7 @@ proc hash*(v: Value): Hash =
     h = h !& acc
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
-     vkReplyTo, vkCPtr, vkType, vkProtocol, vkProtocolMessage:
+     vkReplyTo, vkCPtr, vkCSlice, vkType, vkProtocol, vkProtocolMessage:
     h = h !& hash(v.bits)
   !$h
 
@@ -109,7 +109,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
      vkProtocol, vkProtocolMessage:
     true
-  of vkCell, vkAtomicCell, vkCPtr:
+  of vkCell, vkAtomicCell, vkCPtr, vkCSlice:
     false
   of vkList:
     if not v.listImmutable:

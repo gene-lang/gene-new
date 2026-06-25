@@ -293,6 +293,29 @@ suite "types — function boundaries":
     expect GeneError:
       discard run(compileSource("(C/close p)"), scope)
 
+  test "C slice annotations check target type and non-owning shape":
+    let scope = newGlobalScope()
+    scope.define("slice", newCSlice(cast[pointer](0x5678'u), 4,
+                                    newSym("C/Char")))
+    scope.define("empty", newCSlice(nil, 0, newSym("C/Char")))
+    scope.define("bad-null", newCSlice(nil, 3, newSym("C/Char")))
+    scope.define("other", newCSlice(cast[pointer](0x6789'u), 4,
+                                    newSym("C/Int32")))
+
+    check run(compileSource("((fn [s : (C/Slice C/Char)] s) slice)"),
+              scope).print() == "(c-slice 4)"
+    check run(compileSource("((fn [s : (C/Slice C/Char)] s) empty)"),
+              scope).print() == "(c-slice null 0)"
+    expect GeneError:
+      discard run(compileSource("((fn [s : (C/Slice C/Char)] s) nil)"),
+                  scope)
+    expect GeneError:
+      discard run(compileSource("((fn [s : (C/Slice C/Char)] s) bad-null)"),
+                  scope)
+    expect GeneError:
+      discard run(compileSource("((fn [s : (C/Slice C/Char)] s) other)"),
+                  scope)
+
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
     ck "(fn f [x : (opt Int)] x) (f nil)", "nil"

@@ -106,7 +106,7 @@ suite "native api — roots and trampoline":
     check called.status == gsOk
     check called.value.print() == "42"
 
-  test "versioned API table exposes C pointer construction and close":
+  test "versioned API table exposes C pointer and slice construction":
     releasedPointers = 0
     let api = geneApi()
     let pointerValue = api.newCPtr(cast[pointer](0x1234'u), newSym("C/Char"))
@@ -136,6 +136,12 @@ suite "native api — roots and trampoline":
     let closeBorrowed = api.closeCPtr(pointerValue)
     check closeBorrowed.status == gsError
     check closeBorrowed.message.contains("borrowed C pointer")
+
+    let slice = api.newCSlice(cast[pointer](0x4567'u), 8, newSym("C/Char"))
+    check slice.kind == vkCSlice
+    check slice.cSliceLen == 8
+    check slice.cSliceTargetType.print() == "C/Char"
+    check not slice.cSliceIsNull
 
   test "native module initializer registers exports through the API table":
     let module = newGeneModule("sample-native")

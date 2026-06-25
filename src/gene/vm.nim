@@ -1199,6 +1199,7 @@ proc freezeRejectName(value: Value): string =
   of vkActorStep: "ActorStep"
   of vkReplyTo: "ReplyTo"
   of vkCPtr: "C pointer"
+  of vkCSlice: "C slice"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
@@ -1224,7 +1225,7 @@ proc freezeValue(value: Value): Value =
             immutable = true)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
-     vkActorStep, vkReplyTo, vkCPtr:
+     vkActorStep, vkReplyTo, vkCPtr, vkCSlice:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -1319,6 +1320,7 @@ proc declarationKind*(value: Value): string =
   of vkActorStep: "ActorStep"
   of vkReplyTo: "ReplyTo"
   of vkCPtr: "CPtr"
+  of vkCSlice: "CSlice"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -2054,7 +2056,7 @@ proc buildBuiltins(app: Application): Scope =
                "Short", "UShort", "Int", "UInt", "Long", "ULong",
                "Size", "PtrDiff", "Bool", "Void", "CStr",
                "Ptr", "NullablePtr", "ConstPtr", "NullableConstPtr",
-               "OwnedPtr"]:
+               "OwnedPtr", "Slice"]:
     cScope.define(name, cAbiTypeValue(name))
   result.define("C", newNamespace("C", cScope))
   let taskScope = newScope(result)
@@ -2810,7 +2812,7 @@ proc isSendableValue(value: Value, scope: Scope,
         return false
     true
   of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
-     vkChannel, vkActorContext, vkActorStep, vkCPtr:
+     vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -4655,6 +4657,11 @@ proc runtimeTypeExpr(value: Value): Value =
       if value.cPtrTargetType.kind == vkNil: newSym("Any")
       else: value.cPtrTargetType
     typeNode(name, @[targetType])
+  of vkCSlice:
+    let targetType =
+      if value.cSliceTargetType.kind == vkNil: newSym("Any")
+      else: value.cSliceTargetType
+    typeNode("C/Slice", @[targetType])
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -5145,6 +5152,18 @@ proc matchesCPtrType(name: string, args: openArray[Value],
     return false
   cPtrTargetMatches(args[0], value.cPtrTargetType, scope)
 
+proc matchesCSliceType(name: string, args: openArray[Value],
+                       value: Value, scope: Scope): bool =
+  if args.len != 1:
+    raise newException(GeneError, "(" & name & " T) expects one target type")
+  if value.kind != vkCSlice:
+    return false
+  if value.cSliceLen < 0:
+    return false
+  if value.cSliceIsNull and value.cSliceLen != 0:
+    return false
+  cPtrTargetMatches(args[0], value.cSliceTargetType, scope)
+
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   if expr.kind == vkNil:
     return true
@@ -5184,6 +5203,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
       of "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr",
          "C/OwnedPtr":
         return matchesCPtrType(expr.head.symVal, expr.body, value, scope)
+      of "C/Slice":
+        return matchesCSliceType(expr.head.symVal, expr.body, value, scope)
       of "|":
         for alt in expr.body:
           if matchesTypeExpr(alt, value, scope):

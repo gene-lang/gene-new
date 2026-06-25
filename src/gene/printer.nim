@@ -133,6 +133,11 @@ proc print*(v: Value): string =
       "(" & base & " null)"
     else:
       "(" & base & ")"
+  of vkCSlice:
+    if v.cSliceIsNull:
+      "(c-slice null " & $v.cSliceLen & ")"
+    else:
+      "(c-slice " & $v.cSliceLen & ")"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

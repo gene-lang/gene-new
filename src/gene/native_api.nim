@@ -24,6 +24,8 @@ type
   GeneNewCOwnedPtrProc* = proc(address: pointer, release: CPtrReleaseProc,
                                targetType: Value): Value
   GeneCloseCPtrProc* = proc(value: Value): GeneResult
+  GeneNewCSliceProc* = proc(address: pointer, length: int,
+                            targetType: Value): Value
   GeneModuleInitProc* = proc(api: ptr GeneApi, module: GeneModule): GeneResult
 
   GeneStatus* = enum
@@ -67,9 +69,10 @@ type
     newCConstPtr*: GeneNewCConstPtrProc
     newCOwnedPtr*: GeneNewCOwnedPtrProc
     closeCPtr*: GeneCloseCPtrProc
+    newCSlice*: GeneNewCSliceProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 11
+const GeneApiFeatureCount* = 12
 
 proc geneApi*(): GeneApi
 
@@ -170,6 +173,9 @@ proc geneCloseCPtr*(value: Value): GeneResult =
   except GenePanic as e:
     result = panicResult(e)
 
+proc geneNewCSlice*(address: pointer, length: int, targetType: Value): Value =
+  newCSlice(address, length, targetType)
+
 proc geneInitModule*(init: GeneModuleInitProc, module: GeneModule,
                      api: GeneApi = geneApi()): GeneResult =
   if init == nil:
@@ -196,4 +202,5 @@ proc geneApi*(): GeneApi =
           newCPtr: geneNewCPtr,
           newCConstPtr: geneNewCConstPtr,
           newCOwnedPtr: geneNewCOwnedPtr,
-          closeCPtr: geneCloseCPtr)
+          closeCPtr: geneCloseCPtr,
+          newCSlice: geneNewCSlice)

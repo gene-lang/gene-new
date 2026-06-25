@@ -310,6 +310,22 @@ suite "spec — numeric boundaries from design":
               scope).print() == "[nil true]"
     check releases == 1
 
+  test "C slice annotations are opaque pointer-length boundaries":
+    let scope = newGlobalScope()
+    scope.define("slice", newCSlice(cast[pointer](0x4567'u), 8,
+                                    newSym("C/Char")))
+    scope.define("empty", newCSlice(nil, 0, newSym("C/Char")))
+    scope.define("other", newCSlice(cast[pointer](0x5678'u), 8,
+                                    newSym("C/Int32")))
+
+    check run(compileSource("((fn [s : (C/Slice C/Char)] s) slice)"),
+              scope).print() == "(c-slice 8)"
+    check run(compileSource("((fn [s : (C/Slice C/Char)] s) empty)"),
+              scope).print() == "(c-slice null 0)"
+    expect GeneError:
+      discard run(compileSource("((fn [s : (C/Slice C/Char)] s) other)"),
+                  scope)
+
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:

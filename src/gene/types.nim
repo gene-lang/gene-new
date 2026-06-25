@@ -76,6 +76,7 @@ type
     vkActorStep ## actor handler continuation/stop result
     vkReplyTo   ## one-shot actor request/reply capability
     vkCPtr      ## opaque C pointer / owned foreign handle
+    vkCSlice    ## opaque non-owning C pointer + element count
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -288,6 +289,7 @@ type
     okActorStep
     okReplyTo
     okCPtr
+    okCSlice
     okType
     okProtocol
     okProtocolMessage
@@ -413,6 +415,12 @@ type
     owned: bool
     closed: bool
     release: CPtrReleaseProc
+
+  CSliceData = ref object of GeneObjectData
+    address: pointer
+    length: int
+    targetType: Value
+    mutable: bool
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -875,6 +883,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okActorStep: vkActorStep
     of okReplyTo: vkReplyTo
     of okCPtr: vkCPtr
+    of okCSlice: vkCSlice
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1556,6 +1565,26 @@ proc closeCPtr*(v: Value) =
   data.address = nil
   data.closed = true
 
+proc cSliceData(v: Value): CSliceData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCSlice:
+    raise newException(FieldDefect, "value is not a C slice")
+  CSliceData(objData(v))
+
+proc cSliceAddress*(v: Value): pointer =
+  cSliceData(v).address
+
+proc cSliceLen*(v: Value): int =
+  cSliceData(v).length
+
+proc cSliceTargetType*(v: Value): Value =
+  cSliceData(v).targetType
+
+proc cSliceMutable*(v: Value): bool =
+  cSliceData(v).mutable
+
+proc cSliceIsNull*(v: Value): bool =
+  cSliceData(v).address == nil
+
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -2094,6 +2123,8 @@ proc escapeWeakFunctions*(v: Value): Value =
     v
   of vkCPtr:
     v
+  of vkCSlice:
+    v
   else:
     v
 
@@ -2222,6 +2253,13 @@ proc newCOwnedPtr*(address: pointer, release: CPtrReleaseProc,
   boxObject(CPtrData(objKind: okCPtr, address: address,
                      targetType: targetType, mutable: mutable,
                      owned: true, release: release))
+
+proc newCSlice*(address: pointer, length: int, targetType: Value = NIL,
+                mutable = true): Value =
+  if length < 0:
+    raise newException(GeneError, "C slice length must be non-negative")
+  boxObject(CSliceData(objKind: okCSlice, address: address, length: length,
+                       targetType: targetType, mutable: mutable))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =
