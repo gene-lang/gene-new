@@ -106,9 +106,10 @@ suite "native api — roots and trampoline":
     check called.status == gsOk
     check called.value.print() == "42"
 
-  test "versioned API table exposes C pointer and slice construction":
+  test "versioned API table exposes C pointer slice and buffer construction":
     releasedPointers = 0
     let api = geneApi()
+    let scope = newGlobalScope()
     let pointerValue = api.newCPtr(cast[pointer](0x1234'u), newSym("C/Char"))
     check pointerValue.kind == vkCPtr
     check pointerValue.cPtrMutable
@@ -142,6 +143,24 @@ suite "native api — roots and trampoline":
     check slice.cSliceLen == 8
     check slice.cSliceTargetType.print() == "C/Char"
     check not slice.cSliceIsNull
+
+    let buffer = api.newBuffer(newSym("C/UInt8"),
+                               @[newInt(1), newInt(2)], scope)
+    check buffer.status == gsOk
+    check buffer.value.kind == vkBuffer
+    check buffer.value.bufferElemType.print() == "C/UInt8"
+    check api.bufferLen(buffer.value).value.print() == "2"
+    check api.bufferGet(buffer.value, 1).value.print() == "2"
+    let set = api.bufferSet(buffer.value, 0, newInt(255), scope)
+    check set.status == gsOk
+    check set.value.print() == "255"
+    check api.bufferGet(buffer.value, 0).value.print() == "255"
+    let outOfRange = api.bufferGet(buffer.value, 99)
+    check outOfRange.status == gsOk
+    check outOfRange.value.kind == vkVoid
+    check api.newBuffer(newSym("C/UInt8"), @[newInt(256)], scope).status == gsError
+    check api.bufferSet(buffer.value, 0, newInt(256), scope).status == gsError
+    check api.bufferLen(newInt(1)).status == gsError
 
   test "native module initializer registers exports through the API table":
     let module = newGeneModule("sample-native")

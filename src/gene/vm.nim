@@ -1841,32 +1841,51 @@ proc checkedBufferItem(buffer, item: Value, where: string,
     else: buffer.bufferElemScope
   adaptBoundary(where, elemType, stored, elemScope)
 
+proc newCheckedBuffer*(elemType: Value, items: openArray[Value],
+                       scope: Scope = nil): Value =
+  var checkedType =
+    if elemType.kind == vkNil:
+      commonRuntimeTypeExpr(items)
+    else:
+      bufferTypeExprArg("buffer", elemType)
+  checkedType = closeTypeExpr(checkedType, scope)
+  var checkedItems: seq[Value]
+  for item in items:
+    let stored = if item.kind == vkVoid: NIL else: item
+    if checkedType.isAnyTypeValue:
+      checkedItems.add stored
+    else:
+      checkedItems.add adaptBoundary("buffer item", checkedType, stored, scope)
+  newBuffer(checkedType, checkedItems)
+
+proc getCheckedBufferItem*(buffer: Value, index: int): Value =
+  if buffer.kind != vkBuffer:
+    raise newException(GeneError, "Buffer/get expects a Buffer")
+  readIndex(buffer.bufferItems, int64(index))
+
+proc setCheckedBufferItem*(buffer: Value, index: int, item: Value,
+                           scope: Scope = nil): Value =
+  if buffer.kind != vkBuffer:
+    raise newException(GeneError, "Buffer/set! expects a Buffer")
+  let actualIndex = updateIndex("Buffer/set!", buffer.bufferLen, int64(index))
+  result = checkedBufferItem(buffer, item, "Buffer/set! item", scope)
+  buffer.setBufferItem(actualIndex, result)
+
 proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call.dispatchScope
-  var elemType: Value
   var source: Value
   case args.len
   of 1:
     requireList("buffer", args[0])
     source = args[0]
-    elemType = commonRuntimeTypeExpr(source.listItems)
+    newCheckedBuffer(NIL, source.listItems, scope)
   of 2:
-    elemType = bufferTypeExprArg("buffer", args[0])
     requireList("buffer", args[1])
     source = args[1]
+    newCheckedBuffer(args[0], source.listItems, scope)
   else:
     raise newException(GeneError,
       "buffer expects 1 or 2 arguments, got " & $args.len)
-
-  elemType = closeTypeExpr(elemType, scope)
-  var items: seq[Value]
-  for item in source.listItems:
-    let stored = if item.kind == vkVoid: NIL else: item
-    if elemType.isAnyTypeValue:
-      items.add stored
-    else:
-      items.add adaptBoundary("buffer item", elemType, stored, scope)
-  newBuffer(elemType, items)
 
 proc biBufferLen(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Buffer/len", args)
@@ -1878,7 +1897,7 @@ proc biBufferGet(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "Buffer/get expects 2 arguments, got " & $args.len)
   requireBuffer("Buffer/get", args[0])
-  readIndex(args[0].bufferItems, requireInt64("Buffer/get", args[1]))
+  getCheckedBufferItem(args[0], int(requireInt64("Buffer/get", args[1])))
 
 proc biBufferSetBang(args: openArray[Value],
                      call: ptr NativeCall): Value {.nimcall.} =
@@ -1886,12 +1905,9 @@ proc biBufferSetBang(args: openArray[Value],
     raise newException(GeneError,
       "Buffer/set! expects 3 arguments, got " & $args.len)
   requireBuffer("Buffer/set!", args[0])
-  let index = updateIndex("Buffer/set!", args[0].bufferLen,
-                          requireInt64("Buffer/set!", args[1]))
   let scope = if call == nil: nil else: call.dispatchScope
-  let stored = checkedBufferItem(args[0], args[2], "Buffer/set! item", scope)
-  args[0].setBufferItem(index, stored)
-  stored
+  setCheckedBufferItem(args[0], int(requireInt64("Buffer/set!", args[1])),
+                       args[2], scope)
 
 proc biBufferToList(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Buffer/to_list", args)

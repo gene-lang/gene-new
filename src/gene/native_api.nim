@@ -26,6 +26,12 @@ type
   GeneCloseCPtrProc* = proc(value: Value): GeneResult
   GeneNewCSliceProc* = proc(address: pointer, length: int,
                             targetType: Value): Value
+  GeneNewBufferProc* = proc(elemType: Value, items: seq[Value],
+                            scope: Scope): GeneResult
+  GeneBufferLenProc* = proc(buffer: Value): GeneResult
+  GeneBufferGetProc* = proc(buffer: Value, index: int): GeneResult
+  GeneBufferSetProc* = proc(buffer: Value, index: int, item: Value,
+                            scope: Scope): GeneResult
   GeneModuleInitProc* = proc(api: ptr GeneApi, module: GeneModule): GeneResult
 
   GeneStatus* = enum
@@ -70,9 +76,13 @@ type
     newCOwnedPtr*: GeneNewCOwnedPtrProc
     closeCPtr*: GeneCloseCPtrProc
     newCSlice*: GeneNewCSliceProc
+    newBuffer*: GeneNewBufferProc
+    bufferLen*: GeneBufferLenProc
+    bufferGet*: GeneBufferGetProc
+    bufferSet*: GeneBufferSetProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 12
+const GeneApiFeatureCount* = 16
 
 proc geneApi*(): GeneApi
 
@@ -176,6 +186,46 @@ proc geneCloseCPtr*(value: Value): GeneResult =
 proc geneNewCSlice*(address: pointer, length: int, targetType: Value): Value =
   newCSlice(address, length, targetType)
 
+proc geneNewBuffer*(elemType: Value, items: seq[Value],
+                    scope: Scope): GeneResult =
+  try:
+    result.status = gsOk
+    result.value = newCheckedBuffer(elemType, items, scope)
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneBufferLen*(buffer: Value): GeneResult =
+  try:
+    if buffer.kind != vkBuffer:
+      raise newException(GeneError, "Buffer/len expects a Buffer")
+    result.status = gsOk
+    result.value = newInt(buffer.bufferLen)
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneBufferGet*(buffer: Value, index: int): GeneResult =
+  try:
+    result.status = gsOk
+    result.value = getCheckedBufferItem(buffer, index)
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneBufferSet*(buffer: Value, index: int, item: Value,
+                    scope: Scope): GeneResult =
+  try:
+    result.status = gsOk
+    result.value = setCheckedBufferItem(buffer, index, item, scope)
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
 proc geneInitModule*(init: GeneModuleInitProc, module: GeneModule,
                      api: GeneApi = geneApi()): GeneResult =
   if init == nil:
@@ -203,4 +253,8 @@ proc geneApi*(): GeneApi =
           newCConstPtr: geneNewCConstPtr,
           newCOwnedPtr: geneNewCOwnedPtr,
           closeCPtr: geneCloseCPtr,
-          newCSlice: geneNewCSlice)
+          newCSlice: geneNewCSlice,
+          newBuffer: geneNewBuffer,
+          bufferLen: geneBufferLen,
+          bufferGet: geneBufferGet,
+          bufferSet: geneBufferSet)
