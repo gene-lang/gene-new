@@ -1198,6 +1198,7 @@ proc freezeRejectName(value: Value): string =
   of vkActorContext: "ActorContext"
   of vkActorStep: "ActorStep"
   of vkReplyTo: "ReplyTo"
+  of vkCPtr: "C pointer"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
@@ -1223,7 +1224,7 @@ proc freezeValue(value: Value): Value =
             immutable = true)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
-     vkActorStep, vkReplyTo:
+     vkActorStep, vkReplyTo, vkCPtr:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -1317,6 +1318,7 @@ proc declarationKind*(value: Value): string =
   of vkActorContext: "ActorContext"
   of vkActorStep: "ActorStep"
   of vkReplyTo: "ReplyTo"
+  of vkCPtr: "CPtr"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1882,6 +1884,21 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   stdout.write "\n"
   NIL
 
+proc requireCPtr(name: string, value: Value) =
+  if value.kind != vkCPtr:
+    raise newException(GeneError, name & " expects a C pointer")
+
+proc biCPtrClose(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("C/close", args)
+  requireCPtr("C/close", args[0])
+  args[0].closeCPtr()
+  NIL
+
+proc biCPtrClosed(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("C/closed?", args)
+  requireCPtr("C/closed?", args[0])
+  newBool(args[0].cPtrClosed)
+
 proc cAbiTypeValue(name: string): Value =
   newNode(newSym("c-abi-type"), body = @[newSym(name)])
 
@@ -2030,10 +2047,14 @@ proc buildBuiltins(app: Application): Scope =
     newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
   let cScope = newScope(result)
+  cScope.define("close", newNativeFn("C/close", biCPtrClose))
+  cScope.define("closed?", newNativeFn("C/closed?", biCPtrClosed))
   for name in ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32",
                "Int64", "UInt64", "Float", "Double", "Char", "UChar",
                "Short", "UShort", "Int", "UInt", "Long", "ULong",
-               "Size", "PtrDiff", "Bool", "Void", "CStr"]:
+               "Size", "PtrDiff", "Bool", "Void", "CStr",
+               "Ptr", "NullablePtr", "ConstPtr", "NullableConstPtr",
+               "OwnedPtr"]:
     cScope.define(name, cAbiTypeValue(name))
   result.define("C", newNamespace("C", cScope))
   let taskScope = newScope(result)
@@ -2789,7 +2810,7 @@ proc isSendableValue(value: Value, scope: Scope,
         return false
     true
   of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
-     vkChannel, vkActorContext, vkActorStep:
+     vkChannel, vkActorContext, vkActorStep, vkCPtr:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -4536,6 +4557,11 @@ proc typeExprLabel(expr: Value): string =
         return expr.print()
       parts.add part.symVal
     return parts.join("/")
+  if expr.kind == vkNode and expr.props.len == 0 and expr.meta.len == 0:
+    var parts = @[typeExprLabel(expr.head)]
+    for item in expr.body:
+      parts.add typeExprLabel(item)
+    return "(" & parts.join(" ") & ")"
   expr.print()
 
 proc isAnyType(expr: Value): bool =
@@ -4620,6 +4646,15 @@ proc runtimeTypeExpr(value: Value): Value =
       newSym("ReplyTo")
     else:
       typeNode("ReplyTo", @[resultType])
+  of vkCPtr:
+    let name =
+      if value.cPtrOwned: "C/OwnedPtr"
+      elif value.cPtrMutable: "C/Ptr"
+      else: "C/ConstPtr"
+    let targetType =
+      if value.cPtrTargetType.kind == vkNil: newSym("Any")
+      else: value.cPtrTargetType
+    typeNode(name, @[targetType])
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -4659,6 +4694,9 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
       return bindings.bindTypeParam(expr.symVal, runtimeTypeExpr(value))
     return matchesTypeExpr(expr, value, scope)
   of vkNode:
+    let closedExpr = closeTypeExpr(expr, scope)
+    if closedExpr.bits != expr.bits:
+      return matchesTypeExpr(closedExpr, value, scope)
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
       of "List":
@@ -5030,7 +5068,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
     if expr.head.isSymbol("path") and expr.body.len == 2 and
         expr.body[0].isSymbol("C") and expr.body[1].kind == vkSymbol:
       return newSym("C/" & expr.body[1].symVal)
-    var changed = false
+    let closedHead = closeTypeExpr(expr.head, scope)
+    var changed = closedHead.bits != expr.head.bits
     var props = initOrderedTable[string, Value]()
     for key, value in expr.props:
       let closed = closeTypeExpr(value, scope)
@@ -5050,7 +5089,7 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       if closed.bits != value.bits:
         changed = true
     if changed:
-      newNode(expr.head, props = props, body = body, meta = meta,
+      newNode(closedHead, props = props, body = body, meta = meta,
               immutable = expr.nodeImmutable)
     else:
       expr
@@ -5074,6 +5113,37 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
     if changed: newMap(entries, expr.mapImmutable) else: expr
   else:
     expr
+
+proc cPtrTargetMatches(expected, actual: Value, scope: Scope): bool =
+  let closedExpected = closeTypeExpr(expected, scope)
+  if closedExpected.isAnyType:
+    return true
+  if actual.kind == vkNil:
+    return false
+  let closedActual = closeTypeExpr(actual, scope)
+  typeExprEqual(closedExpected, closedActual)
+
+proc matchesCPtrType(name: string, args: openArray[Value],
+                     value: Value, scope: Scope): bool =
+  if args.len != 1:
+    raise newException(GeneError, "(" & name & " T) expects one target type")
+  let nullable = name == "C/NullablePtr" or name == "C/NullableConstPtr"
+  let needsMutable = name == "C/Ptr" or name == "C/NullablePtr" or
+    name == "C/OwnedPtr"
+  let needsOwned = name == "C/OwnedPtr"
+  if nullable and value.kind == vkNil:
+    return true
+  if value.kind != vkCPtr:
+    return false
+  if value.cPtrClosed:
+    return false
+  if not nullable and value.cPtrIsNull:
+    return false
+  if needsMutable and not value.cPtrMutable:
+    return false
+  if needsOwned and not value.cPtrOwned:
+    return false
+  cPtrTargetMatches(args[0], value.cPtrTargetType, scope)
 
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   if expr.kind == vkNil:
@@ -5104,10 +5174,16 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
       return value.isInstanceOfType(resolved)
     raise newException(GeneError, "unknown type annotation: " & name)
   of vkNode:
+    let closedExpr = closeTypeExpr(expr, scope)
+    if closedExpr.bits != expr.bits:
+      return matchesTypeExpr(closedExpr, value, scope)
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
       of "path":
         return matchesTypeExpr(closeTypeExpr(expr, scope), value, scope)
+      of "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr",
+         "C/OwnedPtr":
+        return matchesCPtrType(expr.head.symVal, expr.body, value, scope)
       of "|":
         for alt in expr.body:
           if matchesTypeExpr(alt, value, scope):

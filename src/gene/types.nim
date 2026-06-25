@@ -7,8 +7,9 @@
 ##   * top 16 bits in 0xFFF1..0xFFF6    -> a void/bool/small-int/char/+0.0/symbol
 ##                                         immediate (no allocation)
 ##   * top 16 bits >= 0xFFF8            -> a *managed* heap pointer (string, list,
-##                                         map, node, function, native function, or
-##                                         large int) carried in the low 48 bits
+##                                         map, node, function, native function,
+##                                         large int, or opaque object) carried in
+##                                         the low 48 bits
 ##
 ## Managed objects are manually heap-allocated and reference counted. Each starts
 ## with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks
@@ -74,6 +75,7 @@ type
     vkActorContext ## opaque actor handler context
     vkActorStep ## actor handler continuation/stop result
     vkReplyTo   ## one-shot actor request/reply capability
+    vkCPtr      ## opaque C pointer / owned foreign handle
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -250,6 +252,7 @@ type
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+  CPtrReleaseProc* = proc(address: pointer) {.nimcall.}
 
   GeneFunction = object
     refCount: int
@@ -284,6 +287,7 @@ type
     okActorContext
     okActorStep
     okReplyTo
+    okCPtr
     okType
     okProtocol
     okProtocolMessage
@@ -401,6 +405,14 @@ type
     resultType: Value
     resultScope: Scope
     task: Value
+
+  CPtrData = ref object of GeneObjectData
+    address: pointer
+    targetType: Value
+    mutable: bool
+    owned: bool
+    closed: bool
+    release: CPtrReleaseProc
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -862,6 +874,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okActorContext: vkActorContext
     of okActorStep: vkActorStep
     of okReplyTo: vkReplyTo
+    of okCPtr: vkCPtr
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1508,6 +1521,41 @@ proc sendReplyTo*(v, result: Value) =
   if data.task.kind == vkTask:
     completeTask(data.task, data.result)
 
+proc cPtrData(v: Value): CPtrData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCPtr:
+    raise newException(FieldDefect, "value is not a C pointer")
+  CPtrData(objData(v))
+
+proc cPtrAddress*(v: Value): pointer =
+  cPtrData(v).address
+
+proc cPtrTargetType*(v: Value): Value =
+  cPtrData(v).targetType
+
+proc cPtrMutable*(v: Value): bool =
+  cPtrData(v).mutable
+
+proc cPtrOwned*(v: Value): bool =
+  cPtrData(v).owned
+
+proc cPtrClosed*(v: Value): bool =
+  cPtrData(v).closed
+
+proc cPtrIsNull*(v: Value): bool =
+  let data = cPtrData(v)
+  data.address == nil
+
+proc closeCPtr*(v: Value) =
+  let data = cPtrData(v)
+  if not data.owned:
+    raise newException(GeneError, "cannot close a borrowed C pointer")
+  if data.closed:
+    return
+  if data.release != nil and data.address != nil:
+    data.release(data.address)
+  data.address = nil
+  data.closed = true
+
 proc typeName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
@@ -2044,6 +2092,8 @@ proc escapeWeakFunctions*(v: Value): Value =
       data.result = escapedResult
       data.task = escapedTask
     v
+  of vkCPtr:
+    v
   else:
     v
 
@@ -2158,6 +2208,20 @@ proc newReplyTo*(resultType = NIL, resultScope: Scope = nil,
                         resultType: resultType,
                         resultScope: resultScope,
                         task: task))
+
+proc newCPtr*(address: pointer, targetType: Value = NIL,
+              mutable = true): Value =
+  boxObject(CPtrData(objKind: okCPtr, address: address,
+                     targetType: targetType, mutable: mutable))
+
+proc newCConstPtr*(address: pointer, targetType: Value = NIL): Value =
+  newCPtr(address, targetType, mutable = false)
+
+proc newCOwnedPtr*(address: pointer, release: CPtrReleaseProc,
+                   targetType: Value = NIL, mutable = true): Value =
+  boxObject(CPtrData(objKind: okCPtr, address: address,
+                     targetType: targetType, mutable: mutable,
+                     owned: true, release: release))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

@@ -58,7 +58,8 @@ participates in equality or hashing.
   nominal types
   with construction, schema validation, and single inheritance (`(type T ^props
   {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
-  returns, typed construction, fixed-width numeric and C ABI scalar boundaries, and
+  returns, typed construction, fixed-width numeric, C ABI scalar, and opaque
+  C pointer/owned-handle boundaries, and
   `Fn`/`NativeFn`/`Selector`/`Callable` values,
   positional/named/rest/default function
   arguments, MVP protocol declarations with `Error`/`Send` marker protocols,
@@ -74,7 +75,8 @@ participates in equality or hashing.
   `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
   recursion, first-class `Cell`/`AtomicCell` mutable references,
   a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
-  `geneCall`, and native module initializer/registration hooks),
+  `geneCall`, native module initializer/registration hooks, and opaque C pointer
+  constructors),
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
   `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
   first-class `Env` values with explicit

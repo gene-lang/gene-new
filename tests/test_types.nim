@@ -246,6 +246,53 @@ suite "types — function boundaries":
     expect GeneError: discard runStr("(fn f [x : C/UInt8] x) (f -1)")
     expect GeneError: discard runStr("(fn f [x : C/Bool] x) (f 1)")
 
+  test "C pointer annotations check mutability nullability and target type":
+    var releases = 0
+    proc releasePtr(address: pointer) {.nimcall.} =
+      inc releases
+
+    let scope = newGlobalScope()
+    scope.define("p", newCPtr(cast[pointer](0x1234'u), newSym("C/Char")))
+    scope.define("constp", newCConstPtr(cast[pointer](0x2345'u), newSym("C/Char")))
+    scope.define("nullp", newCPtr(nil, newSym("C/Char")))
+    scope.define("other", newCPtr(cast[pointer](0x3456'u), newSym("C/Int32")))
+    scope.define("owned",
+                 newCOwnedPtr(cast[pointer](0x4567'u), releasePtr,
+                              newSym("C/Char")))
+
+    check run(compileSource("((fn [p : (C/Ptr C/Char)] p) p)"),
+              scope).print() == "(c-ptr)"
+    check run(compileSource("((fn [p : (C/ConstPtr C/Char)] p) constp)"),
+              scope).print() == "(c-const-ptr)"
+    check run(compileSource("((fn [p : (C/ConstPtr C/Char)] p) p)"),
+              scope).print() == "(c-ptr)"
+    check run(compileSource("((fn [p : (C/NullablePtr C/Char)] true) nil)"),
+              scope).print() == "true"
+    check run(compileSource("((fn [p : (C/OwnedPtr C/Char)] true) owned)"),
+              scope).print() == "true"
+
+    expect GeneError:
+      discard run(compileSource("((fn [p : (C/Ptr C/Char)] p) constp)"),
+                  scope)
+    expect GeneError:
+      discard run(compileSource("((fn [p : (C/Ptr C/Char)] p) nil)"),
+                  scope)
+    expect GeneError:
+      discard run(compileSource("((fn [p : (C/Ptr C/Char)] p) nullp)"),
+                  scope)
+    expect GeneError:
+      discard run(compileSource("((fn [p : (C/Ptr C/Char)] p) other)"),
+                  scope)
+
+    check run(compileSource("[(C/closed? owned) (C/close owned) " &
+                            "(C/closed? owned)]"),
+              scope).print() == "[false nil true]"
+    check releases == 1
+    check run(compileSource("(C/close owned)"), scope).print() == "nil"
+    check releases == 1
+    expect GeneError:
+      discard run(compileSource("(C/close p)"), scope)
+
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
     ck "(fn f [x : (opt Int)] x) (f nil)", "nil"

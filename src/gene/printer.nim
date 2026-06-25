@@ -122,6 +122,17 @@ proc print*(v: Value): string =
     "(actor-step)"
   of vkReplyTo:
     "(reply-to)"
+  of vkCPtr:
+    let base =
+      if v.cPtrOwned: "c-owned-ptr"
+      elif v.cPtrMutable: "c-ptr"
+      else: "c-const-ptr"
+    if v.cPtrClosed:
+      "(" & base & " closed)"
+    elif v.cPtrIsNull:
+      "(" & base & " null)"
+    else:
+      "(" & base & ")"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

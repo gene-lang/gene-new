@@ -282,6 +282,34 @@ suite "spec — numeric boundaries from design":
                "catch (TypeError ^expected e) e)",
                "\"C/CStr\"")
 
+  test "C pointer annotations are opaque checked boundaries":
+    var releases = 0
+    proc releasePtr(address: pointer) {.nimcall.} =
+      inc releases
+
+    let scope = newGlobalScope()
+    scope.define("ptr", newCPtr(cast[pointer](0x1234'u), newSym("C/Char")))
+    scope.define("const_ptr",
+                 newCConstPtr(cast[pointer](0x2345'u), newSym("C/Char")))
+    scope.define("owned",
+                 newCOwnedPtr(cast[pointer](0x3456'u), releasePtr,
+                              newSym("C/Char")))
+
+    check run(compileSource("((fn [p : (C/Ptr C/Char)] p) ptr)"),
+              scope).print() == "(c-ptr)"
+    check run(compileSource("((fn [p : (C/ConstPtr C/Char)] p) const_ptr)"),
+              scope).print() == "(c-const-ptr)"
+    check run(compileSource("((fn [p : (C/NullablePtr C/Char)] true) nil)"),
+              scope).print() == "true"
+    check run(compileSource("((fn [p : (C/OwnedPtr C/Char)] true) owned)"),
+              scope).print() == "true"
+    expect GeneError:
+      discard run(compileSource("((fn [p : (C/Ptr C/Char)] p) const_ptr)"),
+                  scope)
+    check run(compileSource("[(C/close owned) (C/closed? owned)]"),
+              scope).print() == "[nil true]"
+    check releases == 1
+
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:

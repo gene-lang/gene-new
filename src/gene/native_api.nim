@@ -19,6 +19,11 @@ type
   GeneModuleDefineNativeCallProc* = proc(module: GeneModule, name: string,
                                          impl: NativeCallProc,
                                          acceptsNamed: bool): GeneResult
+  GeneNewCPtrProc* = proc(address: pointer, targetType: Value): Value
+  GeneNewCConstPtrProc* = proc(address: pointer, targetType: Value): Value
+  GeneNewCOwnedPtrProc* = proc(address: pointer, release: CPtrReleaseProc,
+                               targetType: Value): Value
+  GeneCloseCPtrProc* = proc(value: Value): GeneResult
   GeneModuleInitProc* = proc(api: ptr GeneApi, module: GeneModule): GeneResult
 
   GeneStatus* = enum
@@ -58,9 +63,13 @@ type
     moduleDefine*: GeneModuleDefineProc
     moduleDefineNative*: GeneModuleDefineNativeProc
     moduleDefineNativeCall*: GeneModuleDefineNativeCallProc
+    newCPtr*: GeneNewCPtrProc
+    newCConstPtr*: GeneNewCConstPtrProc
+    newCOwnedPtr*: GeneNewCOwnedPtrProc
+    closeCPtr*: GeneCloseCPtrProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 7
+const GeneApiFeatureCount* = 11
 
 proc geneApi*(): GeneApi
 
@@ -141,6 +150,26 @@ proc geneModuleDefineNativeCall*(module: GeneModule, name: string,
   geneModuleDefine(module, name,
                    newNativeCallFn(name, impl, acceptsNamed = acceptsNamed))
 
+proc geneNewCPtr*(address: pointer, targetType: Value): Value =
+  newCPtr(address, targetType)
+
+proc geneNewCConstPtr*(address: pointer, targetType: Value): Value =
+  newCConstPtr(address, targetType)
+
+proc geneNewCOwnedPtr*(address: pointer, release: CPtrReleaseProc,
+                       targetType: Value): Value =
+  newCOwnedPtr(address, release, targetType)
+
+proc geneCloseCPtr*(value: Value): GeneResult =
+  try:
+    value.closeCPtr()
+    result.status = gsOk
+    result.value = NIL
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
 proc geneInitModule*(init: GeneModuleInitProc, module: GeneModule,
                      api: GeneApi = geneApi()): GeneResult =
   if init == nil:
@@ -163,4 +192,8 @@ proc geneApi*(): GeneApi =
           rootRelease: geneRootRelease, call: geneCall,
           moduleDefine: geneModuleDefine,
           moduleDefineNative: geneModuleDefineNative,
-          moduleDefineNativeCall: geneModuleDefineNativeCall)
+          moduleDefineNativeCall: geneModuleDefineNativeCall,
+          newCPtr: geneNewCPtr,
+          newCConstPtr: geneNewCConstPtr,
+          newCOwnedPtr: geneNewCOwnedPtr,
+          closeCPtr: geneCloseCPtr)

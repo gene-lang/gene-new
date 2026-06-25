@@ -19,6 +19,11 @@ proc nativeModuleEnvelopeEcho(args: openArray[Value],
     items.add args[0]
   newList(items)
 
+var releasedPointers = 0
+
+proc releaseNativePointer(address: pointer) {.nimcall.} =
+  inc releasedPointers
+
 proc initNativeSample(api: ptr GeneApi,
                       module: GeneModule): GeneResult {.nimcall.} =
   result = api[].moduleDefine(module, "answer", newInt(40))
@@ -100,6 +105,37 @@ suite "native api — roots and trampoline":
     check api.featureCount == GeneApiFeatureCount
     check called.status == gsOk
     check called.value.print() == "42"
+
+  test "versioned API table exposes C pointer construction and close":
+    releasedPointers = 0
+    let api = geneApi()
+    let pointerValue = api.newCPtr(cast[pointer](0x1234'u), newSym("C/Char"))
+    check pointerValue.kind == vkCPtr
+    check pointerValue.cPtrMutable
+    check not pointerValue.cPtrOwned
+    check pointerValue.cPtrTargetType.print() == "C/Char"
+
+    let constPtr = api.newCConstPtr(cast[pointer](0x2345'u), newSym("C/Char"))
+    check constPtr.kind == vkCPtr
+    check not constPtr.cPtrMutable
+    check not constPtr.cPtrOwned
+
+    let owned = api.newCOwnedPtr(cast[pointer](0x3456'u),
+                                 releaseNativePointer,
+                                 newSym("C/Char"))
+    check owned.kind == vkCPtr
+    check owned.cPtrOwned
+    check not owned.cPtrClosed
+    let closed = api.closeCPtr(owned)
+    check closed.status == gsOk
+    check owned.cPtrClosed
+    check releasedPointers == 1
+    discard api.closeCPtr(owned)
+    check releasedPointers == 1
+
+    let closeBorrowed = api.closeCPtr(pointerValue)
+    check closeBorrowed.status == gsError
+    check closeBorrowed.message.contains("borrowed C pointer")
 
   test "native module initializer registers exports through the API table":
     let module = newGeneModule("sample-native")
