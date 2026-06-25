@@ -2839,6 +2839,24 @@ proc completedTaskFromPanic(e: ref GenePanic): Value =
   else:
     newPanickedTask(e.msg)
 
+proc taskBoundaryScopeOr(task: Value, fallback: Scope = nil): Scope =
+  let boundaryScope = task.taskBoundaryScope
+  if boundaryScope == nil: fallback else: boundaryScope
+
+proc checkedTaskResult(task, value: Value): Value =
+  let resultType = task.taskResultType
+  if resultType.kind == vkNil:
+    return value
+  adaptBoundary("await task result", resultType, value,
+                taskBoundaryScopeOr(task))
+
+proc checkTaskError(task: Value, hasValue: bool, value: Value) =
+  let errorType = task.taskErrorType
+  if errorType.kind == vkNil or not hasValue:
+    return
+  discard adaptBoundary("await task error", errorType, value,
+                        taskBoundaryScopeOr(task))
+
 proc awaitTaskValue(task: Value): Value =
   if task.kind != vkTask:
     raise newException(GeneError, "await expects a Task")
@@ -2863,7 +2881,10 @@ proc awaitTaskValue(task: Value): Value =
     let msg = $task.taskErrorMsg
     let hasValue = task.taskHasErrorValue
     let value = task.taskErrorValue
-    task.clearTaskPayload()
+    try:
+      checkTaskError(task, hasValue, value)
+    finally:
+      task.clearTaskPayload()
     var e: ref GeneError
     new(e)
     e.msg = msg
@@ -2874,8 +2895,11 @@ proc awaitTaskValue(task: Value): Value =
   if task.taskCancelled:
     task.clearTaskPayload()
     raise newException(GeneCancel, "task was cancelled")
-  result = task.taskResult
-  task.clearTaskPayload()
+  let value = task.taskResult
+  try:
+    result = checkedTaskResult(task, value)
+  finally:
+    task.clearTaskPayload()
 
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initOrderedTable[string, Value]()
@@ -4527,7 +4551,15 @@ proc runtimeTypeExpr(value: Value): Value =
         if value.streamErrType.kind == vkNil: newSym("Any")
         else: value.streamErrType
       typeNode("Stream", @[itemType, errType])
-  of vkTask: newSym("Task")
+  of vkTask:
+    let resultType = value.taskResultType
+    if resultType.kind == vkNil:
+      newSym("Task")
+    else:
+      let errType =
+        if value.taskErrorType.kind == vkNil: newSym("Any")
+        else: value.taskErrorType
+      typeNode("Task", @[resultType, errType])
   of vkChannel:
     let itemType = value.channelItemType
     if itemType.kind == vkNil:
@@ -4632,6 +4664,24 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
           if not bindings.bindTypeParam(expr.body[0].symVal, itemType):
             return false
         let errType = value.streamErrType
+        if errType.kind != vkNil and expr.body[1].kind == vkSymbol and
+            expr.body[1].symVal in typeParams:
+          if not bindings.bindTypeParam(expr.body[1].symVal, errType):
+            return false
+        return true
+      of "Task":
+        if value.kind != vkTask:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 2:
+          raise newException(GeneError, "(Task result err) expects result and error types")
+        let resultType = value.taskResultType
+        if resultType.kind != vkNil and expr.body[0].kind == vkSymbol and
+            expr.body[0].symVal in typeParams:
+          if not bindings.bindTypeParam(expr.body[0].symVal, resultType):
+            return false
+        let errType = value.taskErrorType
         if errType.kind != vkNil and expr.body[1].kind == vkSymbol and
             expr.body[1].symVal in typeParams:
           if not bindings.bindTypeParam(expr.body[1].symVal, errType):
@@ -5005,6 +5055,14 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           return true
         if expr.body.len != 2:
           raise newException(GeneError, "(Task result err) expects result and error types")
+        let resultType = value.taskResultType
+        if resultType.kind != vkNil and
+            not typeExprEqual(closeTypeExpr(expr.body[0], scope), resultType):
+          return false
+        let errType = value.taskErrorType
+        if errType.kind != vkNil and
+            not typeExprEqual(closeTypeExpr(expr.body[1], scope), errType):
+          return false
         return true
       of "Channel":
         if value.kind != vkChannel:
@@ -5071,6 +5129,13 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Stream") and
       typeExpr.body.len == 2:
     return newCheckedStream(value, typeExpr.body[0], typeExpr.body[1], scope)
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Task") and
+      typeExpr.body.len == 2:
+    let boundaryScope =
+      if scope == nil: nil
+      else: scope.application().builtinsScope()
+    return newCheckedTask(value, closeTypeExpr(typeExpr.body[0], scope),
+                          closeTypeExpr(typeExpr.body[1], scope), boundaryScope)
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Channel") and
       typeExpr.body.len == 1:
     return newCheckedChannel(value, closeTypeExpr(typeExpr.body[0], scope), nil)

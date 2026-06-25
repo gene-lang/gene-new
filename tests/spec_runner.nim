@@ -688,6 +688,26 @@ suite "spec — structured tasks from design":
   test "Task annotations accept task handles":
     check_eval("(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)")
 
+  test "Task annotations validate results and errors when awaited":
+    check_eval("(scope " &
+               "  (fn use [t : (Task Int Never)] (await t)) " &
+               "  (use (spawn 5)))",
+               "5")
+    check_eval("(scope " &
+               "  (fn use [t : (Task Int Never)] " &
+               "    (try (await t) catch (TypeError ^where w) w)) " &
+               "  (use (spawn \"bad\")))",
+               "\"await task result\"")
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(type Other ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Other) " &
+               "(scope " &
+               "  (fn use [t : (Task Int Boom)] " &
+               "    (try (await t) catch (TypeError ^where w) w)) " &
+               "  (use (spawn (fail (Other ^message \"bad\")))))",
+               "\"await task error\"")
+
 suite "spec — bounded channels from design":
   test "channels send, receive, and close in FIFO order":
     check_eval("(var ch (channel ^capacity 2)) " &

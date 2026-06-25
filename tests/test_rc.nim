@@ -64,6 +64,13 @@ when defined(geneRcStats):
                           "(s ~ Stream/next) " &
                           "(s ~ Stream/close)") == 0
       check leakedManaged("(scope (var t (spawn (fn [] 1))) (await t))") == 0
+      check leakedManaged("(scope " &
+                          "  (var t : (Task Int Never) (spawn 1)) " &
+                          "  (await t))") == 0
+      check leakedManaged("(scope " &
+                          "  (fn use [t : (Task Int Never)] " &
+                          "    (try (await t) catch (TypeError) nil)) " &
+                          "  (use (spawn \"bad\")))") == 0
       check leakedManaged("(var ch (channel)) " &
                           "(ch ~ Channel/send 1) " &
                           "(ch ~ Channel/recv)") == 0

@@ -341,7 +341,7 @@ type
     generatorStack: seq[Value]
     generatorIp: int
 
-  TaskData = ref object of GeneObjectData
+  TaskState = ref object
     done: bool
     cancelRequested: bool
     cancelled: bool
@@ -353,6 +353,12 @@ type
     panicMsg: string
     panicValue: Value
     hasPanicValue: bool
+
+  TaskData = ref object of GeneObjectData
+    state: TaskState
+    resultType: Value
+    errorType: Value
+    boundaryScope: Scope
 
   ChannelState = ref object
     items: seq[Value]
@@ -1270,59 +1276,71 @@ proc taskData(v: Value): TaskData =
     raise newException(FieldDefect, "value is not a Task")
   TaskData(objData(v))
 
+proc taskState(v: Value): TaskState =
+  taskData(v).state
+
 proc taskDone*(v: Value): bool =
-  taskData(v).done
+  taskState(v).done
 
 proc taskCancelled*(v: Value): bool =
-  taskData(v).cancelled
+  taskState(v).cancelled
 
 proc taskCancelRequested*(v: Value): bool =
-  taskData(v).cancelRequested
+  taskState(v).cancelRequested
 
 proc taskAwaited*(v: Value): bool =
-  taskData(v).awaited
+  taskState(v).awaited
 
 proc cancelTask*(v: Value) =
-  let data = taskData(v)
+  let data = taskState(v)
   if not data.done:
     data.cancelRequested = true
 
 proc finishTaskCancel*(v: Value) =
-  let data = taskData(v)
+  let data = taskState(v)
   if not data.done:
     data.done = true
     data.cancelRequested = false
     data.cancelled = true
 
 proc taskResult*(v: Value): Value =
-  taskData(v).result
+  taskState(v).result
 
 proc taskHasError*(v: Value): bool =
-  taskData(v).errorMsg.len > 0 or taskData(v).hasErrorValue
+  taskState(v).errorMsg.len > 0 or taskState(v).hasErrorValue
 
 proc taskErrorMsg*(v: Value): lent string =
-  taskData(v).errorMsg
+  taskState(v).errorMsg
 
 proc taskErrorValue*(v: Value): Value =
-  taskData(v).errorValue
+  taskState(v).errorValue
 
 proc taskHasErrorValue*(v: Value): bool =
-  taskData(v).hasErrorValue
+  taskState(v).hasErrorValue
 
 proc taskHasPanic*(v: Value): bool =
-  taskData(v).panicMsg.len > 0 or taskData(v).hasPanicValue
+  taskState(v).panicMsg.len > 0 or taskState(v).hasPanicValue
 
 proc taskPanicMsg*(v: Value): lent string =
-  taskData(v).panicMsg
+  taskState(v).panicMsg
 
 proc taskPanicValue*(v: Value): Value =
-  taskData(v).panicValue
+  taskState(v).panicValue
 
 proc taskHasPanicValue*(v: Value): bool =
-  taskData(v).hasPanicValue
+  taskState(v).hasPanicValue
+
+proc taskResultType*(v: Value): Value =
+  taskData(v).resultType
+
+proc taskErrorType*(v: Value): Value =
+  taskData(v).errorType
+
+proc taskBoundaryScope*(v: Value): Scope =
+  taskData(v).boundaryScope
 
 proc clearTaskPayload*(v: Value) =
-  let data = taskData(v)
+  let data = taskState(v)
   data.awaited = true
   data.cancelRequested = false
   data.result = NIL
@@ -1932,24 +1950,29 @@ proc escapeWeakFunctions*(v: Value): Value =
                          generatorIp: data.generatorIp))
   of vkTask:
     let data = taskData(v)
-    let escapedResult = escapeWeakFunctions(data.result)
-    let escapedError = escapeWeakFunctions(data.errorValue)
-    let escapedPanic = escapeWeakFunctions(data.panicValue)
-    if escapedResult.bits == data.result.bits and
-        escapedError.bits == data.errorValue.bits and
-        escapedPanic.bits == data.panicValue.bits:
+    let state = data.state
+    let escapedResult = escapeWeakFunctions(state.result)
+    let escapedError = escapeWeakFunctions(state.errorValue)
+    let escapedPanic = escapeWeakFunctions(state.panicValue)
+    if escapedResult.bits == state.result.bits and
+        escapedError.bits == state.errorValue.bits and
+        escapedPanic.bits == state.panicValue.bits:
       return v
-    boxObject(TaskData(objKind: okTask, done: data.done,
-                       cancelRequested: data.cancelRequested,
-                       cancelled: data.cancelled,
-                       awaited: data.awaited,
-                       result: escapedResult,
-                       errorMsg: data.errorMsg,
-                       errorValue: escapedError,
-                       hasErrorValue: data.hasErrorValue,
-                       panicMsg: data.panicMsg,
-                       panicValue: escapedPanic,
-                       hasPanicValue: data.hasPanicValue))
+    boxObject(TaskData(objKind: okTask,
+                       state: TaskState(done: state.done,
+                         cancelRequested: state.cancelRequested,
+                         cancelled: state.cancelled,
+                         awaited: state.awaited,
+                         result: escapedResult,
+                         errorMsg: state.errorMsg,
+                         errorValue: escapedError,
+                         hasErrorValue: state.hasErrorValue,
+                         panicMsg: state.panicMsg,
+                         panicValue: escapedPanic,
+                         hasPanicValue: state.hasPanicValue),
+                       resultType: data.resultType,
+                       errorType: data.errorType,
+                       boundaryScope: data.boundaryScope))
   of vkChannel:
     let data = channelData(v)
     var changed = false
@@ -2022,16 +2045,17 @@ proc escapeWeakFunctions*(v: Value): Value =
     v
 
 proc newCompletedTask*(value: Value): Value =
-  boxObject(TaskData(objKind: okTask, done: true,
-                     result: escapeWeakFunctions(value)))
+  boxObject(TaskData(objKind: okTask,
+                     state: TaskState(done: true,
+                       result: escapeWeakFunctions(value))))
 
 proc newPendingTask*(): Value =
   ## A task whose computation has not finished yet. The scheduler fills in the
   ## outcome with completeTask/failTask/panicTask once its fiber settles.
-  boxObject(TaskData(objKind: okTask, done: false))
+  boxObject(TaskData(objKind: okTask, state: TaskState(done: false)))
 
 proc completeTask*(v, value: Value) =
-  let data = taskData(v)
+  let data = taskState(v)
   if data.done:
     return
   data.done = true
@@ -2039,7 +2063,7 @@ proc completeTask*(v, value: Value) =
   data.result = escapeWeakFunctions(value)
 
 proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
-  let data = taskData(v)
+  let data = taskState(v)
   if data.done:
     return
   data.done = true
@@ -2049,7 +2073,7 @@ proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) 
   data.hasErrorValue = hasValue
 
 proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
-  let data = taskData(v)
+  let data = taskState(v)
   if data.done:
     return
   data.done = true
@@ -2060,17 +2084,26 @@ proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false)
 
 proc newFailedTask*(message: string, value: Value = NIL,
                     hasValue = false): Value =
-  boxObject(TaskData(objKind: okTask, done: true,
-                     errorMsg: message,
-                     errorValue: escapeWeakFunctions(value),
-                     hasErrorValue: hasValue))
+  boxObject(TaskData(objKind: okTask,
+                     state: TaskState(done: true,
+                       errorMsg: message,
+                       errorValue: escapeWeakFunctions(value),
+                       hasErrorValue: hasValue)))
 
 proc newPanickedTask*(message: string, value: Value = NIL,
                       hasValue = false): Value =
-  boxObject(TaskData(objKind: okTask, done: true,
-                     panicMsg: message,
-                     panicValue: escapeWeakFunctions(value),
-                     hasPanicValue: hasValue))
+  boxObject(TaskData(objKind: okTask,
+                     state: TaskState(done: true,
+                       panicMsg: message,
+                       panicValue: escapeWeakFunctions(value),
+                       hasPanicValue: hasValue)))
+
+proc newCheckedTask*(source, resultType, errorType: Value,
+                     boundaryScope: Scope): Value =
+  let data = taskData(source)
+  boxObject(TaskData(objKind: okTask, state: data.state,
+                     resultType: resultType, errorType: errorType,
+                     boundaryScope: boundaryScope))
 
 proc newChannel*(capacity = 16): Value =
   boxObject(ChannelData(objKind: okChannel,

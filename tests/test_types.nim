@@ -158,6 +158,34 @@ suite "types — function boundaries":
        "(first (nums))",
        "4"
 
+  test "task annotations check results and recoverable errors at await":
+    ck "(scope " &
+       "  (fn use [t : (Task Int Never)] (await t)) " &
+       "  (use (spawn 7)))",
+       "7"
+    ck "(scope " &
+       "  (fn use [t : (Task Int Never)] " &
+       "    (try (await t) catch (TypeError ^where w) w)) " &
+       "  (use (spawn \"bad\")))",
+       "\"await task result\""
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(type Other ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Other) " &
+       "(scope " &
+       "  (fn use [t : (Task Int Boom)] " &
+       "    (try (await t) catch (TypeError ^where w) w)) " &
+       "  (use (spawn (fail (Other ^message \"bad\")))))",
+       "\"await task error\""
+
+  test "generic functions infer checked task result types":
+    ck "(scope " &
+       "  (var t : (Task Int Never) (spawn 8)) " &
+       "  (fn (await-task result err) [t : (Task result err)] : result " &
+       "    (await t)) " &
+       "  (await-task t))",
+       "8"
+
   test "nominal subtype values pass parent boundaries":
     ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
        "(fn name-of [x : Animal] x/name) (name-of (Dog ^name \"Rex\" ^breed \"Lab\"))",
