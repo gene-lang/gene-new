@@ -727,6 +727,17 @@ suite "spec — structured tasks from design":
                "  (+ (await a) (await b)))",
                "10")
 
+  test "spawn queues child work and CPU tasks yield at safepoints":
+    check_eval("(scope (var out (cell 0)) " &
+               "  (var slow (spawn (do " &
+               "    (var i 0) " &
+               "    (while (< i 5000) (set i (+ i 1))) " &
+               "    (out ~ Cell/set 1)))) " &
+               "  (var fast (spawn (out ~ Cell/set 2))) " &
+               "  (await fast) " &
+               "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
+               "[2 1 1]")
+
   test "timer waits suspend only the current task":
     check_eval("(scope (var out (cell 0)) " &
                "  (var slow (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
@@ -784,6 +795,7 @@ suite "spec — structured tasks from design":
                "  (scope " &
                "    (spawn (try (ch ~ Channel/recv) " &
                "                ensure (out ~ Cell/set 9))) " &
+               "    (sleep 1) " &
                "    (fail (Boom ^message \"stop\"))) " &
                "  catch (Boom) nil) " &
                "(out ~ Cell/get)",

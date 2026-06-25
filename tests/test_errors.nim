@@ -212,6 +212,7 @@ suite "errors — ensure":
                                 "    (try (ch ~ Channel/recv) " &
                                 "         ensure " &
                                 "           (mark-child-cancellation-ensure)))) " &
+                                "  (sleep 1) " &
                                 "  (t ~ Task/cancel) " &
                                 "  (await t))"),
                   scope)
@@ -230,6 +231,7 @@ suite "errors — ensure":
                                 "      (try (ch ~ Channel/recv) " &
                                 "           ensure " &
                                 "             (mark-child-cancellation-ensure)))) " &
+                                "  (sleep 1) " &
                                 "  (t ~ Task/cancel) " &
                                 "  (await t))"),
                   scope)

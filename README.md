@@ -101,16 +101,17 @@ participates in equality or hashing.
   Functions containing `yield` return lazy streams.
 
 > **Concurrency is an early cooperative prototype — not yet stable.** Tasks now run
-> on a single-worker cooperative scheduler: `spawn` runs a task body until it
-> completes or *parks* on a blocking channel op, actor mailbox send/ask, or
-> `await`; `sleep` parks a task on a timer. `Channel/send`/`Channel/recv`, timers,
-> and actor mailbox backpressure suspend and resume the whole task by capturing its
-> heap frame stack. Root-level `await` still drives the run queue until the task
-> settles. Structured scopes wait for live child tasks on normal exit, cancel
-> children on error/cancellation, and run `ensure` cleanup before cancellation is
-> observed. `Task/detach` explicitly removes a task from structured scope
-> ownership. What is *not* built yet: the design's M:N worker pool, async-I/O,
-> and stable production concurrency semantics.
+> on a single-worker cooperative scheduler: `spawn` queues a task body, scheduled
+> fibers yield at VM safepoints, blocking channel ops, actor mailbox send/ask,
+> `await`, and `sleep` park only the current task, and timers wake parked tasks on
+> monotonic deadlines. `Channel/send`/`Channel/recv`, timers, and actor mailbox
+> backpressure suspend and resume the whole task by capturing its heap frame
+> stack. Root-level `await` still drives the run queue until the task settles.
+> Structured scopes wait for live child tasks on normal exit, cancel children on
+> error/cancellation, and run `ensure` cleanup before cancellation is observed.
+> `Task/detach` explicitly removes a task from structured scope ownership. What is
+> *not* built yet: the design's M:N worker pool, async-I/O, and stable production
+> concurrency semantics.
 
 ## Quick start
 

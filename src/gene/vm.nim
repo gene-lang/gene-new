@@ -3410,6 +3410,7 @@ type
     rskReturn
     rskYield
     rskSuspend            # fiber parked on a channel; its continuation is captured
+    rskPause              # fiber yielded cooperatively at a scheduler safepoint
     rskCancel             # fiber unwound through cancellation cleanup
 
   RunStop = object
@@ -3482,6 +3483,8 @@ type
 # on a channel, actor mailbox, task await, or timer. `currentFiberActive` gates
 # suspension: only a scheduled fiber parks — root-level channel use keeps its
 # original synchronous behavior.
+const schedulerInstructionBudget = 2048
+
 var schedRunQueue {.threadvar.}: seq[Fiber]
 var schedWaiters {.threadvar.}: seq[Fiber]
 
@@ -3536,7 +3539,7 @@ proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
              validateArg = true, fiber: Fiber = nil,
-             injectCancel = false): RunStop
+             injectCancel = false, instructionBudget = 0): RunStop
 
 proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
   if decl.kind != vkNode:
@@ -3595,7 +3598,7 @@ proc consumeEvalStep(budget: EvalBudget) =
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
              validateArg = true, fiber: Fiber = nil,
-             injectCancel = false): RunStop =
+             injectCancel = false, instructionBudget = 0): RunStop =
   # Stage 1 of structured concurrency: the "current frame" lives in registers
   # below, and simple Gene function calls push the caller onto `frames` and
   # switch registers to the callee instead of recursing through Nim. A call chain
@@ -3620,6 +3623,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curIsTryBody = false      # current frame is a `try` body (see Frame.isTryBody)
   var handlers: seq[TryHandler] # active `try` regions, innermost last
   var cancelAtSafepoint = injectCancel
+  var remainingBudget = instructionBudget
 
   if fiber != nil and fiber.started:
     # Resuming a parked fiber: restore the full continuation captured at suspend.
@@ -3714,6 +3718,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if ip >= chunk.instructions.len:
           frameReturn(NIL)
           continue
+        if instructionBudget > 0:
+          if remainingBudget <= 0:
+            if fiber == nil:
+              raise newException(GeneError,
+                "internal: scheduler pause outside a fiber")
+            captureContinuation(ip)
+            return RunStop(kind: rskPause, value: NIL)
+          dec remainingBudget
         if evalBudget != nil:
           consumeEvalStep(evalBudget)
         let inst = addr chunk.instructions[ip]
@@ -4318,12 +4330,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           finally:
             supervisorScope.closeOwnedActors()
         of opSpawn:
-          # Spawn a child task as a scheduler fiber: its body runs eagerly until it
-          # completes or parks on a channel op (see the scheduler above). A
-          # non-blocking body settles immediately, like the old inline prototype; a
-          # blocking body parks and yields a pending Task that await/drain drives.
-          # (Still a single-worker cooperative scheduler; M:N and cancellation are
-          # future work.)
+          # Spawn a child task as a scheduler fiber. The body is queued instead of
+          # running inline, so CPU-only child work still cooperates through VM
+          # safepoints. (Still a single-worker scheduler; M:N workers are future
+          # work.)
           let taskScope = newScope(scope)
           let task = spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
           scope.registerOwnedTask(task)
@@ -4505,6 +4515,8 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
                         validateArg = validateImplRequirements)
   if stopped.kind == rskYield:
     raise newException(GeneError, "yield is only valid in a generator")
+  if stopped.kind == rskPause:
+    raise newException(GeneError, "internal: scheduler pause outside a fiber")
   if stopped.kind == rskCancel:
     raise newException(GeneCancel, "task was cancelled")
   stopped.value
@@ -4524,6 +4536,8 @@ proc runPooled(chunk: Chunk, scope: Scope,
     releaseRunStack(stack)
   if stopped.kind == rskYield:
     raise newException(GeneError, "yield is only valid in a generator")
+  if stopped.kind == rskPause:
+    raise newException(GeneError, "internal: scheduler pause outside a fiber")
   if stopped.kind == rskCancel:
     raise newException(GeneCancel, "task was cancelled")
   stopped.value
@@ -4651,7 +4665,8 @@ proc runFiber(f: Fiber) =
         not f.task.taskDone
     let stop = runLoop(f.chunk, f.scope, dummyStack, dummyIp, stopOnYield = false,
                        validateArg = true, fiber = f,
-                       injectCancel = injectCancel)
+                       injectCancel = injectCancel,
+                       instructionBudget = schedulerInstructionBudget)
     currentFiberActive = savedActive
     if isActorFiber:
       case stop.kind
@@ -4671,6 +4686,8 @@ proc runFiber(f: Fiber) =
         scheduleActor(actor, f.actorScope)
       of rskSuspend:
         schedWaiters.add f          # handler parked mid-message; actor stays busy
+      of rskPause:
+        enqueueRunnable(f)          # handler stays busy but yields to peers
       of rskCancel:
         actor.setActorProcessing(false)
         actor.closeActor()
@@ -4687,6 +4704,8 @@ proc runFiber(f: Fiber) =
         wakeTaskWaiters(f.task)
       of rskSuspend:
         schedWaiters.add f
+      of rskPause:
+        enqueueRunnable(f)
       of rskCancel:
         f.task.finishTaskCancel()
         wakeTaskWaiters(f.task)
@@ -4740,13 +4759,13 @@ proc runFiber(f: Fiber) =
       wakeTaskWaiters(f.task)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value =
-  ## Create a child task + fiber and run it eagerly until it completes or parks.
-  ## A non-blocking body settles immediately (as the old inline prototype did); a
-  ## blocking body parks and yields a pending Task driven later by await/drain.
+  ## Create a child task + fiber and enqueue it for scheduler execution. This keeps
+  ## spawn asynchronous even when the body is CPU-only; await/drain/root blocking
+  ## operations drive the run queue until the task completes or parks.
   let task = newPendingTask()
   let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
                 started: false)
-  runFiber(f)
+  enqueueRunnable(f)
   task
 
 proc schedulerRunOne(): bool =
@@ -4856,6 +4875,8 @@ proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
     StreamPullResult(has: false, item: NIL)
   of rskSuspend:
     raise newException(GeneError, "generator cannot suspend on a channel")
+  of rskPause:
+    raise newException(GeneError, "internal: generator paused by scheduler")
   of rskCancel:
     raise newException(GeneCancel, "task was cancelled")
 

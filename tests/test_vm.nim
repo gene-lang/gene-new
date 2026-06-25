@@ -1292,6 +1292,24 @@ suite "vm — cooperative scheduler":
        "  (var c (spawn (+ 100 (await b)))) " &
        "  (ch ~ Channel/send 0) " &
        "  (await c))", "111"
+
+  test "spawn queues child work instead of running inline":
+    ck "(scope (var out (cell 0)) " &
+       "  (var t (spawn (out ~ Cell/set 1))) " &
+       "  [(out ~ Cell/get) (await t) (out ~ Cell/get)])",
+       "[0 1 1]"
+
+  test "CPU-bound fibers yield at scheduler safepoints":
+    ck "(scope (var out (cell 0)) " &
+       "  (var slow (spawn (do " &
+       "    (var i 0) " &
+       "    (while (< i 5000) (set i (+ i 1))) " &
+       "    (out ~ Cell/set 1)))) " &
+       "  (var fast (spawn (out ~ Cell/set 2))) " &
+       "  (await fast) " &
+       "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
+       "[2 1 1]"
+
   test "sleep parks only the current task":
     ck "(scope (var out (cell 0)) " &
        "  (var slow (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
@@ -1363,6 +1381,7 @@ suite "vm — cooperative scheduler":
        "  (scope " &
        "    (spawn (try (ch ~ Channel/recv) " &
        "                ensure (out ~ Cell/set 9))) " &
+       "    (sleep 1) " &
        "    (fail (Boom ^message \"stop\"))) " &
        "  catch (Boom) nil) " &
        "(out ~ Cell/get)", "9"
