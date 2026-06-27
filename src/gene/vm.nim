@@ -4853,12 +4853,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           stack.add NIL
-        of opCallLocal1, opCallOuterLocal1:
-          if stack.len < 1:
+        of opCallName0, opCallName1, opCallLocal1, opCallOuterLocal1:
+          let argCount =
+            if inst[].op == opCallName0: 0 else: 1
+          if stack.len < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
-          let argsStart = stack.len - 1
+          let argsStart = stack.len - argCount
           var callee =
-            if inst[].op == opCallLocal1:
+            if inst[].op == opCallName0 or inst[].op == opCallName1:
+              scope.lookup(inst[].name)
+            elif inst[].op == opCallLocal1:
               let slot = inst[].intArg
               if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
                 scope.slots[slot]
@@ -4876,26 +4880,30 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 outer.slots[slot]
               else:
                 scope.loadSlotAt(inst[].depth, slot, inst[].name)
-          if callee.kind == vkProtocolMessage:
+          if callee.kind == vkProtocolMessage and argCount >= 1:
             callee = resolveProtocolMessage(scope, callee, stack[argsStart])
           if callee.kind == vkFunction:
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
               if proto.nativeOp != ncoNone:
-                let native = applyNativeCompiled(callee, proto,
-                  stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                let native =
+                  if argCount == 0:
+                    applyNativeCompiled(callee, proto, [], NamedArgs())
+                  else:
+                    applyNativeCompiled(callee, proto,
+                      stack.toOpenArray(argsStart, stack.high), NamedArgs())
                 if native.handled:
                   stack.setLen(argsStart)
                   stack.add native.value
                   continue
               if proto.simpleCall:
                 let positional = callee.fnParams
-                if positional.len != 1:
+                if positional.len != argCount:
                   raise newException(GeneError,
                     "function '" & callee.fnName & "' expects " &
                     $proto.requiredPositional & ".." & $positional.len &
-                    " argument(s), got 1")
+                    " argument(s), got " & $argCount)
                 let callScope =
                   if proto.needsCallScope:
                     let created =
@@ -4905,8 +4913,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(proto.localNames)
                         fresh
-                    created.bindSimpleCallSlots(
-                      proto, stack.toOpenArray(argsStart, stack.high))
+                    if argCount > 0:
+                      created.bindSimpleCallSlots(
+                        proto, stack.toOpenArray(argsStart, stack.high))
                     created
                   else:
                     callee.fnScope
@@ -4927,8 +4936,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 evalBudget = callScope.evalBudget
                 continue
               elif not proto.isGenerator:
-                let bound = bindCallScope(callee, proto,
-                  stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                let bound =
+                  if argCount == 0:
+                    bindCallScope(callee, proto, [], NamedArgs())
+                  else:
+                    bindCallScope(callee, proto,
+                      stack.toOpenArray(argsStart, stack.high), NamedArgs())
                 stack.setLen(argsStart)
                 var lbl = ""
                 if bound.returnType.kind != vkNil:
@@ -4953,8 +4966,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
-          let value = applyCall(callee, stack.toOpenArray(argsStart, stack.high),
-                                NamedArgs(), scope, site)
+          var value: Value
+          try:
+            value =
+              if argCount == 0:
+                applyCall(callee, [], NamedArgs(), scope, site)
+              else:
+                applyCall(callee, stack.toOpenArray(argsStart, stack.high),
+                          NamedArgs(), scope, site)
+          except SuspendError as se:
+            if not se.timer:
+              raise
+            if fiber == nil:
+              raise newException(GeneError, "internal: suspended outside a fiber")
+            stack.setLen(argsStart)
+            stack.add NIL
+            captureContinuation(ip)
+            fiber.waitTimer = true
+            fiber.waitDeadline = se.deadline
+            return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(argsStart)
           stack.add value
         of opCall0, opCall1, opCall2, opCall:

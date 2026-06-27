@@ -2247,6 +2247,10 @@ proc compileListValue(c: var Compiler, value: Value) =
     discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
 proc compileCall(c: var Compiler, node: Value) =
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
+    if not c.hasLexicalBinding(node.head.symVal):
+      c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
+      return
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 2:
     let fastKind = nativeFastLoadKind(node.head.symVal)
     if fastKind != nfkNone and not c.hasLexicalBinding(node.head.symVal):
@@ -2265,6 +2269,10 @@ proc compileCall(c: var Compiler, node: Value) =
       compileExpr(c, node.body[0])
       c.chunk.callSites[c.emit(direct.op, direct.slot, name = node.head.symVal,
                                depth = direct.depth)] = node
+      return
+    if not c.hasLexicalBinding(node.head.symVal):
+      compileExpr(c, node.body[0])
+      c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal)] = node
       return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]
