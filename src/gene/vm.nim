@@ -561,44 +561,56 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
   newBool(same(args[0], args[1]))
 
 proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
-  if not a.isNumber or not b.isNumber:
-    return (false, NIL)
   case kind
   of nfkAdd:
     if a.kind == vkInt and b.kind == vkInt:
       (true, intAdd(a, b))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newFloat(a.toFloat + b.toFloat))
+    else:
+      (false, NIL)
   of nfkSub:
     if a.kind == vkInt and b.kind == vkInt:
       (true, intSub(a, b))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newFloat(a.toFloat - b.toFloat))
+    else:
+      (false, NIL)
   of nfkMul:
     if a.kind == vkInt and b.kind == vkInt:
       (true, intMul(a, b))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newFloat(a.toFloat * b.toFloat))
+    else:
+      (false, NIL)
   of nfkLt:
     if a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) < 0))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat < b.toFloat))
+    else:
+      (false, NIL)
   of nfkGt:
     if a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) > 0))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat > b.toFloat))
+    else:
+      (false, NIL)
   of nfkLe:
     if a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) <= 0))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat <= b.toFloat))
+    else:
+      (false, NIL)
   of nfkGe:
     if a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) >= 0))
-    else:
+    elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat >= b.toFloat))
+    else:
+      (false, NIL)
   else:
     (false, NIL)
 
@@ -3251,8 +3263,9 @@ proc releaseCallScope(scope: Scope) =
   for i in 0 ..< scope.slots.len:
     scope.slots[i] = NIL
   scope.slotDefinedBits = 0
-  for i in 0 ..< scope.slotDefinedOverflow.len:
-    scope.slotDefinedOverflow[i] = false
+  if scope.slotDefinedOverflow.len != 0:
+    for i in 0 ..< scope.slotDefinedOverflow.len:
+      scope.slotDefinedOverflow[i] = false
   scope.vars.clear()
   scope.varTypes.clear()
   scope.impls.setLen(0)
@@ -4339,6 +4352,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      errorTypes: curErrorTypes, fnName: curFnName,
                      kind: curFrameKind, extra: frameExtra)
 
+  template pushFrameFastNormal() =
+    frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
+                     stack: move stack, ip: ip,
+                     validateImpls: validateImplRequirements,
+                     returnType: returnType, returnLabel: returnLabel,
+                     checksErrors: curChecksErrors,
+                     errorTypes: curErrorTypes, fnName: curFnName,
+                     kind: fkNormal, extra: nil)
+
+  template pushCallFrame() =
+    if curFrameKind == fkNormal and curEnsureBody == nil and
+        curForItems.len == 0 and curOwnedScope == nil and
+        curPendingError == nil and curPendingPanic == nil and
+        curPendingCancel == nil:
+      pushFrameFastNormal()
+    else:
+      pushFrame()
+
   template enterFrame(nextChunk: Chunk, nextScope: Scope, nextValidate: bool,
                       nextKind: FrameKind = fkNormal) =
     chunk = nextChunk
@@ -4822,6 +4853,110 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           stack.add NIL
+        of opCallLocal1, opCallOuterLocal1:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in direct call")
+          let argsStart = stack.len - 1
+          var callee =
+            if inst[].op == opCallLocal1:
+              let slot = inst[].intArg
+              if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+                scope.slots[slot]
+              else:
+                scope.loadSlot(slot, inst[].name)
+            else:
+              let slot = inst[].intArg
+              let outer =
+                if inst[].depth == 1:
+                  scope.parent
+                else:
+                  scope.scopeAtDepth(inst[].depth, inst[].name)
+              if outer != nil and slot >= 0 and slot < outer.slots.len and
+                  outer.slotDefined(slot):
+                outer.slots[slot]
+              else:
+                scope.loadSlotAt(inst[].depth, slot, inst[].name)
+          if callee.kind == vkProtocolMessage:
+            callee = resolveProtocolMessage(scope, callee, stack[argsStart])
+          if callee.kind == vkFunction:
+            let code = callee.fnCode
+            if code != nil and code of FunctionProto:
+              let proto = FunctionProto(code)
+              if proto.nativeOp != ncoNone:
+                let native = applyNativeCompiled(callee, proto,
+                  stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                if native.handled:
+                  stack.setLen(argsStart)
+                  stack.add native.value
+                  continue
+              if proto.simpleCall:
+                let positional = callee.fnParams
+                if positional.len != 1:
+                  raise newException(GeneError,
+                    "function '" & callee.fnName & "' expects " &
+                    $proto.requiredPositional & ".." & $positional.len &
+                    " argument(s), got 1")
+                let callScope =
+                  if proto.needsCallScope:
+                    let created =
+                      if proto.poolCallScope:
+                        acquireCallScope(callee.fnScope, proto.localNames)
+                      else:
+                        let fresh = newScope(callee.fnScope)
+                        fresh.prepareSlots(proto.localNames)
+                        fresh
+                    created.bindSimpleCallSlots(
+                      proto, stack.toOpenArray(argsStart, stack.high))
+                    created
+                  else:
+                    callee.fnScope
+                stack.setLen(argsStart)
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = callScope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = proto.needsCallScope
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = callScope.evalBudget
+                continue
+              elif not proto.isGenerator:
+                let bound = bindCallScope(callee, proto,
+                  stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                stack.setLen(argsStart)
+                var lbl = ""
+                if bound.returnType.kind != vkNil:
+                  lbl = "return from '" & callee.fnName & "'"
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = bound.scope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = bound.returnType
+                returnLabel = lbl
+                curChecksErrors = proto.checksErrors
+                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = bound.scope.evalBudget
+                continue
+          let site =
+            if callee.kind == vkFunction or
+                (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+              NIL
+            else:
+              chunk.callSites.getOrDefault(ip - 1, NIL)
+          let value = applyCall(callee, stack.toOpenArray(argsStart, stack.high),
+                                NamedArgs(), scope, site)
+          stack.setLen(argsStart)
+          stack.add value
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
@@ -4892,7 +5027,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 else:
                   callee.fnScope
                 stack.setLen(calleeIndex)        # consume callee + args
-                pushFrame()
+                pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
@@ -4925,7 +5060,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if bound.returnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                pushFrame()
+                pushCallFrame()
                 chunk = proto.chunk
                 scope = bound.scope
                 stack = acquireRunStack()
@@ -5092,9 +5227,49 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opNativeFast2:
           if stack.len < 2:
             raise newException(GeneError, "VM stack underflow in native fast call")
-          let b = stack.pop()
-          let a = stack.pop()
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          stack.setLen(top - 2)
           let kind = NativeFastKind(inst[].intArg)
+          let fastNative = tryFastNativeKind2(kind, a, b)
+          if fastNative.handled:
+            stack.add fastNative.value
+          else:
+            let callee = scope.loadNativeFast(kind, inst[].name)
+            var args = [a, b]
+            stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opNativeFastConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in native fast const call")
+          let a = stack.pop()
+          let b = chunk.constants[inst[].depth]
+          let kind = NativeFastKind(inst[].intArg)
+          if a.kind == vkInt and b.kind == vkInt:
+            case kind
+            of nfkAdd:
+              stack.add intAdd(a, b)
+              continue
+            of nfkSub:
+              stack.add intSub(a, b)
+              continue
+            of nfkMul:
+              stack.add intMul(a, b)
+              continue
+            of nfkLt:
+              stack.add newBool(intCompare(a, b) < 0)
+              continue
+            of nfkGt:
+              stack.add newBool(intCompare(a, b) > 0)
+              continue
+            of nfkLe:
+              stack.add newBool(intCompare(a, b) <= 0)
+              continue
+            of nfkGe:
+              stack.add newBool(intCompare(a, b) >= 0)
+              continue
+            else:
+              discard
           let fastNative = tryFastNativeKind2(kind, a, b)
           if fastNative.handled:
             stack.add fastNative.value

@@ -111,10 +111,26 @@ proc nativeFastLoadKind(name: string): NativeFastKind =
   of ">=": nfkGe
   else: nfkNone
 
+proc isSelfEvaluatingFastConst(v: Value): bool =
+  case v.kind
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkChar:
+    true
+  else:
+    false
+
 proc hasLexicalBinding(c: Compiler, name: string): bool =
   if c.localSlot(name) >= 0:
     return true
   c.parentSlot(name).slot >= 0
+
+proc lexicalCallSlot(c: Compiler, name: string): tuple[op: OpCode, depth: int, slot: int] =
+  let slot = c.localSlot(name)
+  if slot >= 0:
+    return (opCallLocal1, 0, slot)
+  let outer = c.parentSlot(name)
+  if outer.slot >= 0:
+    return (opCallOuterLocal1, outer.depth, outer.slot)
+  (opCall, -1, -1)
 
 proc emitLoadBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
@@ -2235,8 +2251,20 @@ proc compileCall(c: var Compiler, node: Value) =
     let fastKind = nativeFastLoadKind(node.head.symVal)
     if fastKind != nfkNone and not c.hasLexicalBinding(node.head.symVal):
       compileExpr(c, node.body[0])
-      compileExpr(c, node.body[1])
-      discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
+      if node.body[1].isSelfEvaluatingFastConst:
+        let constIndex = c.chunk.addConst(node.body[1])
+        discard c.emit(opNativeFastConst, ord(fastKind), name = node.head.symVal,
+                       depth = constIndex)
+      else:
+        compileExpr(c, node.body[1])
+        discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
+      return
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 1:
+    let direct = c.lexicalCallSlot(node.head.symVal)
+    if direct.slot >= 0:
+      compileExpr(c, node.body[0])
+      c.chunk.callSites[c.emit(direct.op, direct.slot, name = node.head.symVal,
+                               depth = direct.depth)] = node
       return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]

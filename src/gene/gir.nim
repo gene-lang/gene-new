@@ -36,10 +36,13 @@ type
     opImport
     opCall0
     opCall1
+    opCallLocal1
+    opCallOuterLocal1
     opCall2
     opCall
     opCallSplice
     opNativeFast2
+    opNativeFastConst
     opMatch           # pop target, run the first matching branch in a child scope
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
     opMatchBindReplace # pop target, destructure and replace existing loop binds
@@ -462,6 +465,11 @@ proc formatInstruction(inst: Instruction): string =
     result.add " argc=0"
   of opCall1:
     result.add " argc=1"
+  of opCallLocal1:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=1"
+  of opCallOuterLocal1:
+    result.add " depth=" & $inst.depth & " slot=" & $inst.intArg &
+      " name=" & inst.name & " argc=1"
   of opCall2:
     result.add " argc=2"
   of opCall:
@@ -474,6 +482,8 @@ proc formatInstruction(inst: Instruction): string =
       result.add " names=" & formatNames(inst.names)
   of opNativeFast2:
     result.add " name=" & inst.name
+  of opNativeFastConst:
+    result.add " name=" & inst.name & " const=" & $inst.depth
   of opMatch:
     result.add " match=" & $inst.intArg
   of opMatchBind, opMatchBindReplace:

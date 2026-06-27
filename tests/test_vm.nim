@@ -23,14 +23,13 @@ proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.n
 suite "compiler — GIR emission":
   test "emits a callable-first bytecode sequence":
     let chunk = compileSource("(+ 1 2)")
-    check chunk.instructions.len == 4
+    check chunk.instructions.len == 3
     check chunk.instructions[0].op == opPushConst
     check chunk.constants[chunk.instructions[0].intArg].intVal == 1
-    check chunk.instructions[1].op == opPushConst
-    check chunk.constants[chunk.instructions[1].intArg].intVal == 2
-    check chunk.instructions[2].op == opNativeFast2
-    check chunk.instructions[2].name == "+"
-    check chunk.instructions[3].op == opReturn
+    check chunk.instructions[1].op == opNativeFastConst
+    check chunk.instructions[1].name == "+"
+    check chunk.constants[chunk.instructions[1].depth].intVal == 2
+    check chunk.instructions[2].op == opReturn
 
   test "emits nested function prototypes":
     let chunk = compileSource("(fn inc [x] (+ x 1))")
@@ -49,10 +48,11 @@ suite "compiler — GIR emission":
     check proto.simpleCall
     check proto.restParam == ""
     check proto.namedParams.len == 0
-    check proto.chunk.instructions.len == 4
+    check proto.chunk.instructions.len == 3
     check proto.chunk.instructions[0].op == opLoadLocal
-    check proto.chunk.instructions[2].op == opNativeFast2
-    check proto.chunk.instructions[2].name == "+"
+    check proto.chunk.instructions[1].op == opNativeFastConst
+    check proto.chunk.instructions[1].name == "+"
+    check proto.chunk.constants[proto.chunk.instructions[1].depth].intVal == 1
     check proto.chunk.instructions[^1].op == opReturn
 
   test "marks trivial functions as not requiring a call scope":
@@ -173,7 +173,7 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     var sawOuterFib = false
     for inst in proto.chunk.instructions:
-      if inst.op == opLoadOuterLocal and inst.name == "fib" and
+      if inst.op == opCallOuterLocal1 and inst.name == "fib" and
           inst.depth == 1 and inst.intArg == 0:
         sawOuterFib = true
     check sawOuterFib
@@ -275,7 +275,7 @@ suite "compiler — GIR emission":
     let useProto = chunk.functions[0]
     var sawPing = false
     for inst in useProto.chunk.instructions:
-      if inst.op == opLoadOuterLocal and inst.name == "ping" and
+      if inst.op == opCallOuterLocal1 and inst.name == "ping" and
           inst.depth == 1 and inst.intArg == 0:
         sawPing = true
     check sawPing
@@ -402,15 +402,15 @@ suite "gir — disassembly":
     check dump.contains("constants:")
     check dump.contains("[0] 1")
     check dump.contains("[1] 2")
-    check dump.contains("2: opNativeFast2 name=+")
-    check dump.contains("3: opReturn")
+    check dump.contains("1: opNativeFastConst name=+ const=1")
+    check dump.contains("2: opReturn")
 
   test "prints nested function chunks":
     let dump = compileSource("(fn inc [x] (+ x 1))").disassemble()
     check dump.contains("functions:")
     check dump.contains("[0] inc params=[x]")
     check dump.contains("0: opMakeFn fn=0")
-    check dump.contains("2: opNativeFast2 name=+")
+    check dump.contains("1: opNativeFastConst name=+ const=0")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
