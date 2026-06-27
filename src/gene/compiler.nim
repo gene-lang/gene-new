@@ -105,6 +105,9 @@ proc nativeFastLoadKind(name: string): NativeFastKind =
   of "+": nfkAdd
   of "-": nfkSub
   of "*": nfkMul
+  # Division keeps the regular native-call path for now. Its zero checks and
+  # integer/float result rules need a separate measured fast path, not just
+  # inclusion in the generic binary opNativeFast2 lowering.
   of "<": nfkLt
   of ">": nfkGt
   of "<=": nfkLe
