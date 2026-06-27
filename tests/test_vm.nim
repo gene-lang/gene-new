@@ -173,8 +173,8 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     var sawOuterFib = false
     for inst in proto.chunk.instructions:
-      if inst.op == opCallOuterLocal1 and inst.name == "fib" and
-          inst.depth == 1 and inst.intArg == 0:
+      if inst.op == opCallParentLocal1 and inst.name == "fib" and
+          inst.intArg == 0:
         sawOuterFib = true
     check sawOuterFib
 
@@ -275,8 +275,8 @@ suite "compiler — GIR emission":
     let useProto = chunk.functions[0]
     var sawPing = false
     for inst in useProto.chunk.instructions:
-      if inst.op == opCallOuterLocal1 and inst.name == "ping" and
-          inst.depth == 1 and inst.intArg == 0:
+      if inst.op == opCallParentLocal1 and inst.name == "ping" and
+          inst.intArg == 0:
         sawPing = true
     check sawPing
 

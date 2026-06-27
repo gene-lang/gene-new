@@ -4858,7 +4858,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           stack.add NIL
-        of opCallName0, opCallName1, opCallLocal1, opCallOuterLocal1:
+        of opCallName0, opCallName1, opCallLocal1, opCallParentLocal1,
+            opCallOuterLocal1:
           let argCount =
             if inst[].op == opCallName0: 0 else: 1
           if stack.len < argCount:
@@ -4873,6 +4874,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 scope.slots[slot]
               else:
                 scope.loadSlot(slot, inst[].name)
+            elif inst[].op == opCallParentLocal1:
+              let slot = inst[].intArg
+              let parent = scope.parent
+              if parent != nil and slot >= 0 and slot < parent.slots.len and
+                  parent.slotDefined(slot):
+                parent.slots[slot]
+              else:
+                scope.loadSlotAt(1, slot, inst[].name)
             else:
               let slot = inst[].intArg
               let outer =
@@ -5279,7 +5288,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opNativeFastConst:
           if stack.len < 1:
             raise newException(GeneError, "VM stack underflow in native fast const call")
-          let a = stack.pop()
+          let top = stack.len
+          let a = stack[top - 1]
+          stack.setLen(top - 1)
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
           if a.kind == vkInt and b.kind == vkInt:

@@ -129,6 +129,8 @@ proc lexicalCallSlot(c: Compiler, name: string): tuple[op: OpCode, depth: int, s
     return (opCallLocal1, 0, slot)
   let outer = c.parentSlot(name)
   if outer.slot >= 0:
+    if outer.depth == 1:
+      return (opCallParentLocal1, outer.depth, outer.slot)
     return (opCallOuterLocal1, outer.depth, outer.slot)
   (opCall, -1, -1)
 
