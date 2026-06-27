@@ -342,7 +342,8 @@ proc lookup*(scope: Scope, name: string): Value =
   var s = scope
   while s != nil:
     if s.loadNamedSlot(name, result): return
-    if s.vars.hasKey(name): return s.vars[name]
+    s.vars.withValue(name, value):
+      return value[]
     s = s.parent
   raise newException(GeneError, "undefined symbol: " & name)
 
@@ -351,8 +352,8 @@ proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   while s != nil:
     if s.loadNamedSlot(name, value):
       return true
-    if s.vars.hasKey(name):
-      value = s.vars[name]
+    s.vars.withValue(name, found):
+      value = found[]
       return true
     s = s.parent
   false
@@ -374,7 +375,7 @@ proc assign*(scope: Scope, name: string, v: Value) =
   while s != nil:
     if s.storeNamedSlot(name, v, requireExisting = true):
       return
-    if s.vars.hasKey(name):
+    s.vars.withValue(name, current):
       let value =
         if s.varTypes.hasKey(name): s.assignmentValue(name, v, s.varTypes[name])
         else: v
