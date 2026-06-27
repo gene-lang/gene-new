@@ -4954,6 +4954,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = bound.scope
+                recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
@@ -5098,6 +5099,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = bound.scope
+                recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
@@ -5221,6 +5223,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 pushFrame()
                 chunk = fnProto.chunk
                 scope = bound.scope
+                recycleScope = fnProto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
@@ -7554,8 +7557,13 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       raise newException(GeneError,
         "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
-  let callScope = newScope(callee.fnScope)
-  callScope.prepareSlots(proto.localNames)
+  let callScope =
+    if proto.poolCallScope:
+      acquireCallScope(callee.fnScope, proto.localNames)
+    else:
+      let fresh = newScope(callee.fnScope)
+      fresh.prepareSlots(proto.localNames)
+      fresh
   var typeBindings: Table[string, Value]
   if proto.typeParams.len > 0:
     typeBindings = initTable[string, Value]()
@@ -7741,20 +7749,24 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                     returnType, resultValue, callScope)
       return resultValue
-    var resultValue: Value
     try:
-      resultValue = runPooled(proto.chunk, callScope)
-    except GeneError as e:
-      if not callee.fnChecksErrors:
-        raise
-      if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
-        raise
-      raise newException(GeneError,
-        "function '" & callee.fnName & "' raised an undeclared error")
-    if returnType.kind != vkNil:
-      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                  returnType, resultValue, callScope)
-    resultValue
+      var resultValue: Value
+      try:
+        resultValue = runPooled(proto.chunk, callScope)
+      except GeneError as e:
+        if not callee.fnChecksErrors:
+          raise
+        if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
+          raise
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' raised an undeclared error")
+      if returnType.kind != vkNil:
+        resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+                                    returnType, resultValue, callScope)
+      resultValue
+    finally:
+      if proto.poolCallScope:
+        releaseCallScope(callScope)
   of vkType:
     # Construct a typed instance: a node with the type as head and validated
     # props/body fields.

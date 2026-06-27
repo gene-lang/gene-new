@@ -1496,7 +1496,13 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                    returnType.kind == vkNil and not fnCompiler.sawYield and
                    not specs.hasOptionalPositional
   let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk)
-  let poolCallScope = simpleCall and needsCallScope and
+  var defaultsCanCapture = specs.hasOptionalPositional
+  if not defaultsCanCapture:
+    for p in specs.named:
+      if p.defaultValue.optional:
+        defaultsCanCapture = true
+        break
+  let poolCallScope = needsCallScope and not defaultsCanCapture and
                       chunkCanPoolCallScope(fnCompiler.chunk)
   let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
                                              typeParams, checksErrors,
