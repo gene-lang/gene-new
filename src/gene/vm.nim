@@ -425,6 +425,11 @@ proc hasArg(named: NamedArgs, name: string): bool =
     if key == name: return true
   false
 
+proc argIndex(named: NamedArgs, name: string): int =
+  for i, key in named.names:
+    if key == name: return i
+  -1
+
 proc getArg(named: NamedArgs, name: string): Value =
   for i, key in named.names:
     if key == name: return named.valueAt(i)
@@ -4898,11 +4903,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   stack.add native.value
                   continue
               if proto.simpleCall:
-                let positional = callee.fnParams
-                if positional.len != argCount:
+                let positionalLen = proto.params.len
+                if positionalLen != argCount:
                   raise newException(GeneError,
                     "function '" & callee.fnName & "' expects " &
-                    $proto.requiredPositional & ".." & $positional.len &
+                    $proto.requiredPositional & ".." & $positionalLen &
                     " argument(s), got " & $argCount)
                 let callScope =
                   if proto.needsCallScope:
@@ -5035,11 +5040,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   continue
               if namedCount == 0 and proto.simpleCall:
                 # Hottest path: arity + positional slots only.
-                let positional = callee.fnParams
-                if argCount != positional.len:
+                let positionalLen = proto.params.len
+                if argCount != positionalLen:
                   raise newException(GeneError,
                     "function '" & callee.fnName & "' expects " &
-                    $proto.requiredPositional & ".." & $positional.len &
+                    $proto.requiredPositional & ".." & $positionalLen &
                     " argument(s), got " & $argCount)
                 let callScope =
                   if proto.needsCallScope:
@@ -5176,8 +5181,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   stack.add native.value
                   continue
               if namedCount == 0 and fnProto.simpleCall and
-                  args.len == callee.fnParams.len:
-                let positional = callee.fnParams
+                  args.len == fnProto.params.len:
                 let callScope =
                   if fnProto.needsCallScope:
                     let created =
@@ -7566,9 +7570,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
           raiseTypeError("parameter '" & positional[i] & "'",
                          expected.typeExprLabel, args[i], callScope)
     for p in proto.namedParams:
-      if named.hasArg(p.arg) and proto.hasNamedParamTypes and
-          p.typeExpr.kind != vkNil:
-        let value = named.getArg(p.arg)
+      let namedIndex = named.argIndex(p.arg)
+      if namedIndex >= 0 and proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+        let value = named.valueAt(namedIndex)
         if not inferTypeExpr(p.typeExpr, value, callScope,
                              proto.typeParams, typeBindings):
           let expected = substituteTypeParams(p.typeExpr, typeBindings,
@@ -7593,8 +7597,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     if declaredType.kind != vkNil:
       callScope.declareType(positional[i], declaredType)
   for pIndex, p in proto.namedParams:
-    if named.hasArg(p.arg):
-      var value = named.getArg(p.arg)
+    let namedIndex = named.argIndex(p.arg)
+    if namedIndex >= 0:
+      var value = named.valueAt(namedIndex)
       var declaredType = NIL
       if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
         let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
@@ -7638,7 +7643,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     else:
       callScope.define(proto.restParam, newList(rest))
   for pIndex, p in proto.namedParams:
-    if not named.hasArg(p.arg):
+    if named.argIndex(p.arg) < 0:
       if p.defaultValue.optional:
         var value = p.defaultValue.defaultValue(callScope)
         var declaredType = NIL
