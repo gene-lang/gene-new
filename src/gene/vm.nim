@@ -3207,6 +3207,14 @@ const MaxCallScopePool = 64
 
 var callScopePool {.threadvar.}: seq[Scope]
 
+proc sameNames(a, b: seq[string]): bool {.inline.} =
+  if a.len != b.len:
+    return false
+  for i in 0 ..< a.len:
+    if a[i] != b[i]:
+      return false
+  true
+
 proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
   if scope.slots.len != names.len:
     scope.slots.setLen(names.len)
@@ -3218,9 +3226,12 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
     for i in 0 ..< scope.slotDefinedOverflow.len:
       scope.slotDefinedOverflow[i] = false
   else:
-    scope.slotDefinedOverflow.setLen(0)
-  scope.slotTypes.setLen(0)
-  scope.slotNames = names
+    if scope.slotDefinedOverflow.len != 0:
+      scope.slotDefinedOverflow.setLen(0)
+  if scope.slotTypes.len != 0:
+    scope.slotTypes.setLen(0)
+  if not sameNames(scope.slotNames, names):
+    scope.slotNames = names
   scope.slotMirror = false
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
@@ -3253,6 +3264,22 @@ proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
     callScopePool.setLen(index)
   result.resetCallScope(parent, names)
 
+proc acquireSimpleCallScope(parent: Scope, names: seq[string]): Scope =
+  if callScopePool.len == 0:
+    result = newScope(parent)
+  else:
+    let index = callScopePool.high
+    result = callScopePool[index]
+    callScopePool.setLen(index)
+  result.application =
+    if parent != nil: parent.application
+    else: nil
+  result.parent = parent
+  result.evalBudget =
+    if parent != nil: parent.evalBudget
+    else: nil
+  result.resetCallScopeSlots(names)
+
 proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
                          args: openArray[Value]) {.inline.} =
   for i in 0 ..< args.len:
@@ -3275,17 +3302,25 @@ proc releaseCallScope(scope: Scope) =
   if scope.slotDefinedOverflow.len != 0:
     for i in 0 ..< scope.slotDefinedOverflow.len:
       scope.slotDefinedOverflow[i] = false
-  scope.vars.clear()
-  scope.varTypes.clear()
-  scope.impls.setLen(0)
-  scope.requiredImplTypes.setLen(0)
-  scope.ownsTasks = false
-  scope.ownedTasks.setLen(0)
-  scope.ownsActors = false
+  if scope.vars.len != 0:
+    scope.vars.clear()
+  if scope.varTypes.len != 0:
+    scope.varTypes.clear()
+  if scope.impls.len != 0:
+    scope.impls.setLen(0)
+  if scope.requiredImplTypes.len != 0:
+    scope.requiredImplTypes.setLen(0)
+  if scope.ownsTasks:
+    scope.ownsTasks = false
+  if scope.ownedTasks.len != 0:
+    scope.ownedTasks.setLen(0)
+  if scope.ownsActors:
+    scope.ownsActors = false
   scope.actorFailureStrategy = afsStop
   scope.supervisorEvents = NIL
   scope.supervisorDeadLetters = NIL
-  scope.ownedActors.setLen(0)
+  if scope.ownedActors.len != 0:
+    scope.ownedActors.setLen(0)
   scope.parent = nil
   scope.application = nil
   scope.evalBudget = nil
@@ -4926,7 +4961,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
-                        acquireCallScope(callee.fnScope, proto.localNames)
+                        acquireSimpleCallScope(callee.fnScope, proto.localNames)
                       else:
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(proto.localNames)
@@ -5064,7 +5099,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
-                        acquireCallScope(callee.fnScope, proto.localNames)
+                        acquireSimpleCallScope(callee.fnScope, proto.localNames)
                       else:
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(proto.localNames)
@@ -5201,7 +5236,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if fnProto.needsCallScope:
                     let created =
                       if fnProto.poolCallScope:
-                        acquireCallScope(callee.fnScope, fnProto.localNames)
+                        acquireSimpleCallScope(callee.fnScope, fnProto.localNames)
                       else:
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(fnProto.localNames)
@@ -7741,7 +7776,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         if proto.needsCallScope:
           let created =
             if proto.poolCallScope:
-              acquireCallScope(callee.fnScope, proto.localNames)
+              acquireSimpleCallScope(callee.fnScope, proto.localNames)
             else:
               let fresh = newScope(callee.fnScope)
               fresh.prepareSlots(proto.localNames)
