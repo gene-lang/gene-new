@@ -3211,14 +3211,6 @@ const MaxCallScopePool = 64
 var callScopePool {.threadvar.}: array[MaxCallScopePool, Scope]
 var callScopePoolLen {.threadvar.}: int
 
-proc sameNames(a, b: seq[string]): bool {.inline.} =
-  if a.len != b.len:
-    return false
-  for i in 0 ..< a.len:
-    if a[i] != b[i]:
-      return false
-  true
-
 proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
   if scope.slots.len != names.len:
     scope.slots.setLen(names.len)
@@ -3234,8 +3226,7 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
       scope.slotDefinedOverflow.setLen(0)
   if scope.slotTypes.len != 0:
     scope.slotTypes.setLen(0)
-  if not sameNames(scope.slotNames, names):
-    scope.slotNames = names
+  scope.slotNames = names
   scope.slotMirror = false
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
