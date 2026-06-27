@@ -444,6 +444,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
                          named: NamedArgs): tuple[handled: bool, value: Value]
+proc applySelector(selector, target: Value): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
@@ -4742,6 +4743,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             for i in countdown(inst[].intArg - 1, 0):
               body[i] = stack.pop()
           stack.add newNode(newSym("select"), body = body)
+        of opApplySelector:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in selector apply")
+          let target = stack.pop()
+          let selector = stack.pop()
+          stack.add applySelector(selector, target)
         of opMakeFn:
           let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)

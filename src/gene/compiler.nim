@@ -2201,7 +2201,7 @@ proc compilePath(c: var Compiler, node: Value) =
     return
   compileSelectorParts(c, parts.toOpenArray(1, parts.high))
   compileExpr(c, parts[0])
-  discard c.emitPlainCall(1)
+  discard c.emit(opApplySelector)
 
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind
