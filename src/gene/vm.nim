@@ -6714,11 +6714,22 @@ proc staticLookup(target, segment: Value): Value =
 proc applySelectorCallStage(stage, target: Value): Value =
   if stage.body.len == 0:
     raise newException(GeneError, "selector call stage requires a callee")
-  var callArgs = newSeqOfCap[Value](stage.body.len)
-  callArgs.add target
-  for i in 1 ..< stage.body.len:
-    callArgs.add stage.body[i]
-  applyCall(stage.body[0], callArgs, NamedArgs())
+  case stage.body.len
+  of 1:
+    var callArgs = [target]
+    applyCall(stage.body[0], callArgs, NamedArgs())
+  of 2:
+    var callArgs = [target, stage.body[1]]
+    applyCall(stage.body[0], callArgs, NamedArgs())
+  of 3:
+    var callArgs = [target, stage.body[1], stage.body[2]]
+    applyCall(stage.body[0], callArgs, NamedArgs())
+  else:
+    var callArgs = newSeqOfCap[Value](stage.body.len)
+    callArgs.add target
+    for i in 1 ..< stage.body.len:
+      callArgs.add stage.body[i]
+    applyCall(stage.body[0], callArgs, NamedArgs())
 
 proc selectorStrict(selector: Value): bool =
   if not selector.props.hasKey("strict"):
