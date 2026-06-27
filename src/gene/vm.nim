@@ -378,13 +378,40 @@ proc assign*(scope: Scope, name: string, v: Value) =
     s = s.parent
   raise newException(GeneError, "set of undefined symbol: " & name)
 
+const MaxInlineNamedArgs = 4
+
 type
   NamedArgs = object
     names: seq[string]
     values: seq[Value]
+    inlineValues: array[MaxInlineNamedArgs, Value]
 
 proc len(named: NamedArgs): int =
   named.names.len
+
+proc valueAt(named: NamedArgs, index: int): Value =
+  if named.values.len == named.names.len:
+    named.values[index]
+  else:
+    named.inlineValues[index]
+
+proc toSeq(named: NamedArgs): seq[Value] =
+  if named.values.len == named.names.len:
+    return named.values
+  result = newSeq[Value](named.names.len)
+  for i in 0 ..< named.names.len:
+    result[i] = named.inlineValues[i]
+
+proc namedArgsFromStack(names: seq[string], stack: openArray[Value],
+                        start: int): NamedArgs =
+  result.names = names
+  if names.len <= MaxInlineNamedArgs:
+    for i in 0 ..< names.len:
+      result.inlineValues[i] = stack[start + i]
+  else:
+    result.values = newSeq[Value](names.len)
+    for i in 0 ..< names.len:
+      result.values[i] = stack[start + i]
 
 proc hasArg(named: NamedArgs, name: string): bool =
   for key in named.names:
@@ -393,7 +420,7 @@ proc hasArg(named: NamedArgs, name: string): bool =
 
 proc getArg(named: NamedArgs, name: string): Value =
   for i, key in named.names:
-    if key == name: return named.values[i]
+    if key == name: return named.valueAt(i)
   raise newException(GeneError, "missing named argument: " & name)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
@@ -4697,10 +4724,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if proto.nativeOp != ncoNone:
                 var nativeNamed: NamedArgs
                 if namedCount > 0:
-                  nativeNamed.names = inst[].names
-                  nativeNamed.values = newSeq[Value](namedCount)
-                  for i in 0 ..< namedCount:
-                    nativeNamed.values[i] = stack[calleeIndex + 1 + i]
+                  nativeNamed = namedArgsFromStack(inst[].names, stack,
+                                                   calleeIndex + 1)
                 let native =
                   if argCount == 0:
                     applyNativeCompiled(callee, proto, [], nativeNamed)
@@ -4757,10 +4782,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 # type to adapt and the callee's error boundary to translate on throw.
                 var named: NamedArgs
                 if namedCount > 0:
-                  named.names = inst[].names
-                  named.values = newSeq[Value](namedCount)
-                  for i in 0 ..< namedCount:
-                    named.values[i] = stack[calleeIndex + 1 + i]
+                  named = namedArgsFromStack(inst[].names, stack,
+                                             calleeIndex + 1)
                 let bound =
                   if argCount == 0:
                     bindCallScope(callee, proto, [], named)
@@ -4787,10 +4810,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
           var named: NamedArgs
           if namedCount > 0:
-            named.names = inst[].names
-            named.values = newSeq[Value](namedCount)
-            for i in 0 ..< namedCount:
-              named.values[i] = stack[calleeIndex + 1 + i]
+            named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
           # Call-site node for the Call envelope (design §3). Looked up only for
           # envelope-building callees; the hot Fn and plain-native paths skip it.
           let site =
@@ -4830,10 +4850,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let calleeIndex = partsStart - namedCount - 1
           var callee = stack[calleeIndex]
           if namedCount > 0:
-            named.names = inst[].names
-            named.values = newSeq[Value](namedCount)
-            for i in 0 ..< namedCount:
-              named.values[i] = stack[calleeIndex + 1 + i]
+            named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
           var args: seq[Value]
           for i, part in stack.toOpenArray(partsStart, stack.high):
             if proto.splices[i]:
@@ -7123,8 +7140,9 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
 proc callNamedMap(named: NamedArgs): Value =
   var entries = initOrderedTable[string, Value]()
   for i, name in named.names:
-    if named.values[i].kind != vkVoid:
-      entries[name] = named.values[i]
+    let value = named.valueAt(i)
+    if value.kind != vkVoid:
+      entries[name] = value
   newMap(entries)
 
 proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
@@ -7311,7 +7329,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         "native function '" & callee.nativeFnName & "' does not accept named arguments")
     var call = NativeCall(calleeName: callee.nativeFnName,
                           namedNames: named.names,
-                          namedValues: named.values,
+                          namedValues: named.toSeq(),
                           dispatchScope: dispatchScope,
                           site: site)
     callImpl(args, addr call)
