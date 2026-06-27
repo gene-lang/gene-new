@@ -560,10 +560,10 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
   newBool(same(args[0], args[1]))
 
-proc tryFastNative2(callee, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
+proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
   if not a.isNumber or not b.isNumber:
     return (false, NIL)
-  case callee.nativeFastKind
+  case kind
   of nfkAdd:
     if a.kind == vkInt and b.kind == vkInt:
       (true, intAdd(a, b))
@@ -601,6 +601,9 @@ proc tryFastNative2(callee, a, b: Value): tuple[handled: bool, value: Value] {.i
       (true, newBool(a.toFloat >= b.toFloat))
   else:
     (false, NIL)
+
+proc tryFastNative2(callee, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
+  tryFastNativeKind2(callee.nativeFastKind, a, b)
 
 proc biHash(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1:
@@ -5091,11 +5094,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow in native fast call")
           let b = stack.pop()
           let a = stack.pop()
-          let callee = scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
-          let fastNative = tryFastNative2(callee, a, b)
+          let kind = NativeFastKind(inst[].intArg)
+          let fastNative = tryFastNativeKind2(kind, a, b)
           if fastNative.handled:
             stack.add fastNative.value
           else:
+            let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
             stack.add applyCall(callee, args, NamedArgs(), scope)
         of opMatch:
