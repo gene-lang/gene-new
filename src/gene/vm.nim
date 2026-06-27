@@ -231,13 +231,13 @@ proc slotIndex(scope: Scope, name: string): int =
       return index
   -1
 
-proc slotDefined(scope: Scope, index: int): bool =
+proc slotDefined(scope: Scope, index: int): bool {.inline.} =
   if index < 64:
     (scope.slotDefinedBits and (1'u64 shl index)) != 0
   else:
     scope.slotDefinedOverflow[index - 64]
 
-proc markSlotDefined(scope: Scope, index: int) =
+proc markSlotDefined(scope: Scope, index: int) {.inline.} =
   if index < 64:
     scope.slotDefinedBits = scope.slotDefinedBits or (1'u64 shl index)
   else:
@@ -3182,7 +3182,7 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
 # Execution
 # ---------------------------------------------------------------------------
 
-proc pop(stack: var seq[Value]): Value =
+proc pop(stack: var seq[Value]): Value {.inline.} =
   if stack.len == 0:
     raise newException(GeneError, "VM stack underflow")
   let index = stack.len - 1
@@ -3194,14 +3194,14 @@ const MaxRunStackPool = 64
 var runStackPool {.threadvar.}: array[MaxRunStackPool, seq[Value]]
 var runStackPoolLen {.threadvar.}: int
 
-proc acquireRunStack(): seq[Value] =
+proc acquireRunStack(): seq[Value] {.inline.} =
   if runStackPoolLen == 0:
     return @[]
   dec runStackPoolLen
   let index = runStackPoolLen
   result = move runStackPool[index]
 
-proc releaseRunStack(stack: var seq[Value]) =
+proc releaseRunStack(stack: var seq[Value]) {.inline.} =
   stack.setLen(0)
   if runStackPoolLen < MaxRunStackPool:
     runStackPool[runStackPoolLen] = move stack
@@ -5557,7 +5557,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           ipArg = ip
           return RunStop(kind: rskYield, value: yielded)
         of opJumpIfFalse:
-          let cond = stack.pop()
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in conditional jump")
+          let top = stack.len - 1
+          let cond = stack[top]
+          stack.setLen(top)
           if not cond.isTruthy:
             ip = inst[].intArg
         of opJump:
