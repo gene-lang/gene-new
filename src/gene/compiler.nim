@@ -392,6 +392,20 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
       discard
   false
 
+proc chunkCanPoolCallScope(chunk: Chunk): bool =
+  if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
+      chunk.matches.len > 0 or chunk.tries.len > 0:
+    return false
+  for inst in chunk.instructions:
+    case inst.op
+    of opMakeFn, opMakeEnv, opMakeNamespace, opMakeType, opMakeProtocol,
+       opMakeImpl, opImport, opMatch, opMatchBind, opMatchBindReplace,
+       opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
+      return false
+    else:
+      discard
+  true
+
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
   if form.kind == vkSymbol:
     return (form.symVal, @[])
@@ -1446,6 +1460,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                    returnType.kind == vkNil and not fnCompiler.sawYield and
                    not specs.hasOptionalPositional
   let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk)
+  let poolCallScope = simpleCall and needsCallScope and
+                      chunkCanPoolCallScope(fnCompiler.chunk)
   let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
                                              typeParams, checksErrors,
                                              fnCompiler.sawYield)
@@ -1466,6 +1482,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                 requiredPositional: specs.requiredPositionalCount,
                 simpleCall: simpleCall,
                 needsCallScope: needsCallScope,
+                poolCallScope: poolCallScope,
                 paramTypes: specs.positionalTypes,
                 hasParamTypes: hasParamTypes,
                 paramDefaults: specs.positionalDefaults,

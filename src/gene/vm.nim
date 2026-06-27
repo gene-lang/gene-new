@@ -3079,6 +3079,81 @@ proc releaseRunStack(stack: var seq[Value]) =
   if runStackPool.len < MaxRunStackPool:
     runStackPool.add stack
 
+const MaxCallScopePool = 64
+
+var callScopePool {.threadvar.}: seq[Scope]
+
+proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
+  if scope.slots.len != names.len:
+    scope.slots.setLen(names.len)
+  for i in 0 ..< scope.slots.len:
+    scope.slots[i] = NIL
+  scope.slotDefinedBits = 0
+  if names.len > 64:
+    scope.slotDefinedOverflow.setLen(names.len - 64)
+    for i in 0 ..< scope.slotDefinedOverflow.len:
+      scope.slotDefinedOverflow[i] = false
+  else:
+    scope.slotDefinedOverflow.setLen(0)
+  scope.slotTypes.setLen(0)
+  scope.slotNames = names
+  scope.slotMirror = false
+
+proc resetCallScope(scope, parent: Scope, names: seq[string]) =
+  scope.application =
+    if parent != nil: parent.application
+    else: nil
+  scope.parent = parent
+  scope.vars.clear()
+  scope.varTypes.clear()
+  scope.impls.setLen(0)
+  scope.requiredImplTypes.setLen(0)
+  scope.evalBudget =
+    if parent != nil: parent.evalBudget
+    else: nil
+  scope.ownsTasks = false
+  scope.ownedTasks.setLen(0)
+  scope.ownsActors = false
+  scope.actorFailureStrategy = afsStop
+  scope.supervisorEvents = NIL
+  scope.supervisorDeadLetters = NIL
+  scope.ownedActors.setLen(0)
+  scope.resetCallScopeSlots(names)
+
+proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
+  if callScopePool.len == 0:
+    result = newScope(parent)
+  else:
+    let index = callScopePool.high
+    result = callScopePool[index]
+    callScopePool.setLen(index)
+  result.resetCallScope(parent, names)
+
+proc releaseCallScope(scope: Scope) =
+  if scope == nil:
+    return
+  for i in 0 ..< scope.slots.len:
+    scope.slots[i] = NIL
+  scope.slotDefinedBits = 0
+  for i in 0 ..< scope.slotDefinedOverflow.len:
+    scope.slotDefinedOverflow[i] = false
+  scope.vars.clear()
+  scope.varTypes.clear()
+  scope.impls.setLen(0)
+  scope.requiredImplTypes.setLen(0)
+  scope.ownsTasks = false
+  scope.ownedTasks.setLen(0)
+  scope.ownsActors = false
+  scope.actorFailureStrategy = afsStop
+  scope.supervisorEvents = NIL
+  scope.supervisorDeadLetters = NIL
+  scope.ownedActors.setLen(0)
+  scope.parent = nil
+  scope.application = nil
+  scope.evalBudget = nil
+  if callScopePool.len < MaxCallScopePool:
+    callScopePool.add scope
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   messages: sink Table[string, Value]) =
   if protocol.kind != vkProtocol:
@@ -3741,6 +3816,7 @@ type
   Frame = object
     chunk: Chunk
     scope: Scope
+    recycleScope: bool
     stack: seq[Value]
     ip: int
     validateImpls: bool
@@ -3781,6 +3857,7 @@ type
     ## settles; `waitChannel`/`waitIsSend` record what it is parked on.
     chunk: Chunk
     scope: Scope
+    recycleScope: bool
     stack: seq[Value]
     ip: int
     frames: seq[Frame]
@@ -4015,6 +4092,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var frames: seq[Frame]
   var chunk = chunkArg
   var scope = scopeArg
+  var recycleScope = false
   var stack = move stackArg
   var ip = ipArg
   var validateImplRequirements = validateArg
@@ -4048,6 +4126,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     # Resuming a parked fiber: restore the full continuation captured at suspend.
     chunk = fiber.chunk
     scope = fiber.scope
+    recycleScope = fiber.recycleScope
     stack = move fiber.stack
     ip = fiber.ip
     frames = move fiber.frames
@@ -4078,6 +4157,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## each caller handles explicitly) from a popped Frame.
     chunk = f.chunk
     scope = f.scope
+    recycleScope = f.recycleScope
     ip = f.ip
     validateImplRequirements = f.validateImpls
     returnType = f.returnType
@@ -4101,7 +4181,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     evalBudget = scope.evalBudget
 
   template pushFrame() =
-    frames.add Frame(chunk: chunk, scope: scope, stack: move stack, ip: ip,
+    frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
+                     stack: move stack, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: returnType, returnLabel: returnLabel,
                      checksErrors: curChecksErrors,
@@ -4120,6 +4201,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       nextKind: FrameKind = fkNormal) =
     chunk = nextChunk
     scope = nextScope
+    recycleScope = false
     scope.prepareChunkScope(chunk)
     stack = acquireRunStack()
     ip = 0
@@ -4150,6 +4232,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## op, whose operands are still on the stack). The caller sets the wait reason.
     fiber.chunk = chunk
     fiber.scope = scope
+    fiber.recycleScope = recycleScope
     fiber.ip = resumeIp
     fiber.validateImpls = validateImplRequirements
     fiber.returnType = returnType
@@ -4175,6 +4258,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.handlers = move handlers
     fiber.stack = move stack
 
+  template releaseCurrentCallScope() =
+    if recycleScope:
+      releaseCallScope(scope)
+      recycleScope = false
+
+  proc releaseFrameCallScope(f: Frame) =
+    if f.recycleScope:
+      releaseCallScope(f.scope)
+
   template frameReturn(rawValue: Value) =
     ## Return `rawValue` from the current frame: adapt it to the frame's declared
     ## return type, then pop to the caller and push the result — or, if this is
@@ -4185,6 +4277,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
     if validateImplRequirements:
       scope.validateRequiredImpls()
+    releaseCurrentCallScope()
     if curFrameKind == fkEnsureErrorBody:
       raise curPendingError
     elif curFrameKind == fkEnsurePanicBody:
@@ -4629,8 +4722,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     " argument(s), got " & $argCount)
                 let callScope =
                   if proto.needsCallScope:
-                    let created = newScope(callee.fnScope)
-                    created.prepareSlots(proto.localNames)
+                    let created =
+                      if proto.poolCallScope:
+                        acquireCallScope(callee.fnScope, proto.localNames)
+                      else:
+                        let fresh = newScope(callee.fnScope)
+                        fresh.prepareSlots(proto.localNames)
+                        fresh
                     for i in 0 ..< argCount:
                       created.defineSlot(proto.positionalSlots[i], positional[i],
                                          stack[argsStart + i])
@@ -4641,6 +4739,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 pushFrame()
                 chunk = proto.chunk
                 scope = callScope
+                recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = proto.needsCallScope
@@ -4762,8 +4861,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let positional = callee.fnParams
                 let callScope =
                   if fnProto.needsCallScope:
-                    let created = newScope(callee.fnScope)
-                    created.prepareSlots(fnProto.localNames)
+                    let created =
+                      if fnProto.poolCallScope:
+                        acquireCallScope(callee.fnScope, fnProto.localNames)
+                      else:
+                        let fresh = newScope(callee.fnScope)
+                        fresh.prepareSlots(fnProto.localNames)
+                        fresh
                     for i in 0 ..< args.len:
                       created.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
                     created
@@ -4773,6 +4877,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 pushFrame()
                 chunk = fnProto.chunk
                 scope = callScope
+                recycleScope = fnProto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = fnProto.needsCallScope
@@ -5032,6 +5137,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # outer dispatch loop with its result; otherwise the error propagates out.
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
       appendVmTrace(err, curFnName, frames)
+      releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5088,6 +5194,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             stack = move f.stack
             loadFrameRegs(f)
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+            releaseCurrentCallScope()
         elif frames.len == 0:
           raise err
         else:
@@ -5096,11 +5203,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack = move f.stack
           loadFrameRegs(f)
           err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+          releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
       # `while true`, re-entering dispatch with the catch result on the stack.
     except GenePanic as p:
       # Panics are not catchable, but ensure blocks still run as the panic unwinds
       # out of every active `try` (innermost first), matching the old `finally`.
+      releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5130,10 +5239,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           break
       if cleanupStarted:
         continue
+      for f in frames:
+        releaseFrameCallScope(f)
       raise p
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
       # not see it, but cleanup still runs as the task unwinds.
+      releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5163,6 +5275,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           break
       if cleanupStarted:
         continue
+      for f in frames:
+        releaseFrameCallScope(f)
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
       raise c
@@ -7220,15 +7334,24 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           " argument(s), got " & $args.len)
       let callScope =
         if proto.needsCallScope:
-          let created = newScope(callee.fnScope)
-          created.prepareSlots(proto.localNames)
+          let created =
+            if proto.poolCallScope:
+              acquireCallScope(callee.fnScope, proto.localNames)
+            else:
+              let fresh = newScope(callee.fnScope)
+              fresh.prepareSlots(proto.localNames)
+              fresh
           for i in 0 ..< args.len:
             created.defineSlot(proto.positionalSlots[i], positional[i], args[i])
           created
         else:
           callee.fnScope
-      return runPooled(proto.chunk, callScope,
-                       validateImplRequirements = proto.needsCallScope)
+      try:
+        return runPooled(proto.chunk, callScope,
+                         validateImplRequirements = proto.needsCallScope)
+      finally:
+        if proto.poolCallScope:
+          releaseCallScope(callScope)
     let (callScope, returnType) = bindCallScope(callee, proto, args, named)
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)

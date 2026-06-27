@@ -61,11 +61,19 @@ suite "compiler — GIR emission":
     check trivial.functions.len == 1
     check trivial.functions[0].simpleCall
     check not trivial.functions[0].needsCallScope
+    check not trivial.functions[0].poolCallScope
 
     let withLocal = compileSource("(fn [x] x)")
     check withLocal.functions.len == 1
     check withLocal.functions[0].simpleCall
     check withLocal.functions[0].needsCallScope
+    check withLocal.functions[0].poolCallScope
+
+    let withClosure = compileSource("(fn [x] (fn [] x))")
+    check withClosure.functions.len == 1
+    check withClosure.functions[0].simpleCall
+    check withClosure.functions[0].needsCallScope
+    check not withClosure.functions[0].poolCallScope
 
   test "emits generic function type parameters":
     let chunk = compileSource("(fn (identity item) [x : item] : item x)")

@@ -109,6 +109,7 @@ type
     requiredPositional*: int
     simpleCall*: bool
     needsCallScope*: bool
+    poolCallScope*: bool
     paramTypes*: seq[Value]
     hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]
