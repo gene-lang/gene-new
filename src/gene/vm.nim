@@ -3190,19 +3190,21 @@ proc pop(stack: var seq[Value]): Value =
 
 const MaxRunStackPool = 64
 
-var runStackPool {.threadvar.}: seq[seq[Value]]
+var runStackPool {.threadvar.}: array[MaxRunStackPool, seq[Value]]
+var runStackPoolLen {.threadvar.}: int
 
 proc acquireRunStack(): seq[Value] =
-  if runStackPool.len == 0:
+  if runStackPoolLen == 0:
     return @[]
-  let index = runStackPool.high
-  result = runStackPool[index]
-  runStackPool.setLen(index)
+  dec runStackPoolLen
+  let index = runStackPoolLen
+  result = move runStackPool[index]
 
 proc releaseRunStack(stack: var seq[Value]) =
   stack.setLen(0)
-  if runStackPool.len < MaxRunStackPool:
-    runStackPool.add stack
+  if runStackPoolLen < MaxRunStackPool:
+    runStackPool[runStackPoolLen] = move stack
+    inc runStackPoolLen
 
 const MaxCallScopePool = 64
 
