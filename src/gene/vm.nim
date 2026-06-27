@@ -4414,7 +4414,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     var retValue = escapeWeakFunctions(rawValue)
     if returnType.kind != vkNil:
       retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
-    if validateImplRequirements:
+    if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     releaseCurrentCallScope()
     if curFrameKind == fkEnsureErrorBody:
@@ -4557,9 +4557,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opLoadNativeFast:
           stack.add scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
-          stack.add scope.loadSlot(inst[].intArg, inst[].name)
+          let slot = inst[].intArg
+          if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+            stack.add scope.slots[slot]
+          else:
+            stack.add scope.loadSlot(slot, inst[].name)
         of opLoadOuterLocal:
-          stack.add scope.loadSlotAt(inst[].depth, inst[].intArg, inst[].name)
+          let slot = inst[].intArg
+          let outer =
+            if inst[].depth == 1:
+              scope.parent
+            else:
+              scope.scopeAtDepth(inst[].depth, inst[].name)
+          if outer != nil and slot >= 0 and slot < outer.slots.len and
+              outer.slotDefined(slot):
+            stack.add outer.slots[slot]
+          else:
+            stack.add scope.loadSlotAt(inst[].depth, slot, inst[].name)
         of opDefineName:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in var")
