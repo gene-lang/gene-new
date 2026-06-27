@@ -4492,7 +4492,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     releaseCurrentCallScope()
-    if curFrameKind == fkEnsureErrorBody:
+    if curFrameKind == fkNormal:
+      if frames.len == 0:
+        stackArg = move stack
+        ipArg = ip
+        return RunStop(kind: rskReturn, value: retValue)
+      else:
+        releaseRunStack(stack)
+        var caller = frames.pop()
+        stack = move caller.stack
+        loadFrameRegs(caller)
+        stack.add retValue
+    elif curFrameKind == fkEnsureErrorBody:
       raise curPendingError
     elif curFrameKind == fkEnsurePanicBody:
       raise curPendingPanic
