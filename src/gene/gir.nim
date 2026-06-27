@@ -108,6 +108,7 @@ type
     params*: seq[string]
     requiredPositional*: int
     simpleCall*: bool
+    needsCallScope*: bool
     paramTypes*: seq[Value]
     hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]

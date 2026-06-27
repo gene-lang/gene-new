@@ -56,6 +56,17 @@ suite "compiler — GIR emission":
     check proto.chunk.instructions[0].name == "+"
     check proto.chunk.instructions[^1].op == opReturn
 
+  test "marks trivial functions as not requiring a call scope":
+    let trivial = compileSource("(fn [] 7)")
+    check trivial.functions.len == 1
+    check trivial.functions[0].simpleCall
+    check not trivial.functions[0].needsCallScope
+
+    let withLocal = compileSource("(fn [x] x)")
+    check withLocal.functions.len == 1
+    check withLocal.functions[0].simpleCall
+    check withLocal.functions[0].needsCallScope
+
   test "emits generic function type parameters":
     let chunk = compileSource("(fn (identity item) [x : item] : item x)")
     let proto = chunk.functions[0]

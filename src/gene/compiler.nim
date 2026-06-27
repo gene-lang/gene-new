@@ -375,6 +375,23 @@ proc compileDefaultExpr(c: Compiler, node: Value): Chunk =
   discard child.emit(opReturn)
   child.chunk
 
+proc chunkNeedsCallScope(chunk: Chunk): bool =
+  if chunk.localNames.len > 0 or chunk.subchunks.len > 0 or
+      chunk.forLoops.len > 0 or chunk.matches.len > 0 or
+      chunk.tries.len > 0:
+    return true
+  for inst in chunk.instructions:
+    case inst.op
+    of opLoadOuterLocal, opSetOuterLocal, opDefineName, opDefineLocal,
+       opSetModuleName, opMakeFn,
+       opMakeNamespace, opMakeType, opMakeProtocol, opMakeImpl, opImport,
+       opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
+       opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
+      return true
+    else:
+      discard
+  false
+
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
   if form.kind == vkSymbol:
     return (form.symVal, @[])
@@ -1428,6 +1445,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                    not hasParamTypes and not hasNamedParamTypes and
                    returnType.kind == vkNil and not fnCompiler.sawYield and
                    not specs.hasOptionalPositional
+  let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk)
   let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
                                              typeParams, checksErrors,
                                              fnCompiler.sawYield)
@@ -1447,6 +1465,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                 restSlot: restSlot,
                 requiredPositional: specs.requiredPositionalCount,
                 simpleCall: simpleCall,
+                needsCallScope: needsCallScope,
                 paramTypes: specs.positionalTypes,
                 hasParamTypes: hasParamTypes,
                 paramDefaults: specs.positionalDefaults,

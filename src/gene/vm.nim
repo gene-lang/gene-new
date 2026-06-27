@@ -4627,18 +4627,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     "function '" & callee.fnName & "' expects " &
                     $proto.requiredPositional & ".." & $positional.len &
                     " argument(s), got " & $argCount)
-                let callScope = newScope(callee.fnScope)
-                callScope.prepareSlots(proto.localNames)
-                for i in 0 ..< argCount:
-                  callScope.defineSlot(proto.positionalSlots[i], positional[i],
-                                       stack[argsStart + i])
+                let callScope =
+                  if proto.needsCallScope:
+                    let created = newScope(callee.fnScope)
+                    created.prepareSlots(proto.localNames)
+                    for i in 0 ..< argCount:
+                      created.defineSlot(proto.positionalSlots[i], positional[i],
+                                         stack[argsStart + i])
+                    created
+                  else:
+                    callee.fnScope
                 stack.setLen(calleeIndex)        # consume callee + args
                 pushFrame()
                 chunk = proto.chunk
                 scope = callScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = proto.needsCallScope
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
@@ -4755,17 +4760,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if namedCount == 0 and fnProto.simpleCall and
                   args.len == callee.fnParams.len:
                 let positional = callee.fnParams
-                let callScope = newScope(callee.fnScope)
-                callScope.prepareSlots(fnProto.localNames)
-                for i in 0 ..< args.len:
-                  callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
+                let callScope =
+                  if fnProto.needsCallScope:
+                    let created = newScope(callee.fnScope)
+                    created.prepareSlots(fnProto.localNames)
+                    for i in 0 ..< args.len:
+                      created.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
+                    created
+                  else:
+                    callee.fnScope
                 stack.setLen(calleeIndex)
                 pushFrame()
                 chunk = fnProto.chunk
                 scope = callScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = fnProto.needsCallScope
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
@@ -7197,11 +7207,17 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
           ".." & $positional.len &
           " argument(s), got " & $args.len)
-      let callScope = newScope(callee.fnScope)
-      callScope.prepareSlots(proto.localNames)
-      for i in 0 ..< args.len:
-        callScope.defineSlot(proto.positionalSlots[i], positional[i], args[i])
-      return runPooled(proto.chunk, callScope)
+      let callScope =
+        if proto.needsCallScope:
+          let created = newScope(callee.fnScope)
+          created.prepareSlots(proto.localNames)
+          for i in 0 ..< args.len:
+            created.defineSlot(proto.positionalSlots[i], positional[i], args[i])
+          created
+        else:
+          callee.fnScope
+      return runPooled(proto.chunk, callScope,
+                       validateImplRequirements = proto.needsCallScope)
     let (callScope, returnType) = bindCallScope(callee, proto, args, named)
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
