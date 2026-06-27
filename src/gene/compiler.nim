@@ -1459,6 +1459,19 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     inc start
 
   let specs = c.paramSpecs(paramList)
+  var seenLocals = initTable[string, bool]()
+  for local in specs.positional:
+    if seenLocals.hasKey(local):
+      raise newException(GeneError, "duplicate parameter binding: " & local)
+    seenLocals[local] = true
+  for p in specs.named:
+    if seenLocals.hasKey(p.local):
+      raise newException(GeneError, "duplicate parameter binding: " & p.local)
+    seenLocals[p.local] = true
+  if specs.rest.len > 0:
+    if seenLocals.hasKey(specs.rest):
+      raise newException(GeneError, "duplicate parameter binding: " & specs.rest)
+    seenLocals[specs.rest] = true
   var fnCompiler = c.childCompiler()
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()

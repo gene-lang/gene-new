@@ -332,6 +332,10 @@ proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
     raise newException(GeneError, "duplicate binding: " & name)
   scope.storeSlot(index, name, v, requireExisting = false)
 
+proc defineFreshCallSlot(scope: Scope, index: int, v: Value) {.inline.} =
+  scope.slots[index] = functionForScopeStorage(v, scope)
+  scope.markSlotDefined(index)
+
 proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
   scope.storeSlot(index, name, v, requireExisting = true)
 
@@ -7610,7 +7614,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       value = adaptBoundary("parameter '" & positional[i] & "'",
                             typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
-      callScope.defineSlot(proto.positionalSlots[i], positional[i], value)
+      callScope.defineFreshCallSlot(proto.positionalSlots[i], value)
     else:
       callScope.define(positional[i], value)
     if declaredType.kind != vkNil:
@@ -7627,7 +7631,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
         value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                               value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
-        callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+        callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
       else:
         callScope.define(p.local, value)
       if declaredType.kind != vkNil:
@@ -7648,7 +7652,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       boundValue = adaptBoundary("parameter '" & positional[i] & "'",
                                  typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
-      callScope.defineSlot(proto.positionalSlots[i], positional[i], boundValue)
+      callScope.defineFreshCallSlot(proto.positionalSlots[i], boundValue)
     else:
       callScope.define(positional[i], boundValue)
     if declaredType.kind != vkNil:
@@ -7658,7 +7662,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     for i in 0 ..< rest.len:
       rest[i] = args[positional.len + i]
     if proto.restSlot >= 0:
-      callScope.defineSlot(proto.restSlot, proto.restParam, newList(rest))
+      callScope.defineFreshCallSlot(proto.restSlot, newList(rest))
     else:
       callScope.define(proto.restParam, newList(rest))
   for pIndex, p in proto.namedParams:
@@ -7673,7 +7677,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
           value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                 value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
-          callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+          callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
         else:
           callScope.define(p.local, value)
         if declaredType.kind != vkNil:

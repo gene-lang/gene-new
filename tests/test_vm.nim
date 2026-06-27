@@ -761,6 +761,10 @@ suite "vm — functions and closures":
     ck "(fn add [a b] (+ a b)) (add 3 4)", "7"
   test "arity mismatch raises":
     expect GeneError: discard runStr("((fn [x] x) 1 2)")
+  test "duplicate parameter bindings are rejected":
+    expect GeneError: discard runStr("(fn [x x] x)")
+    expect GeneError: discard runStr("(fn [x ^scale x] x)")
+    expect GeneError: discard runStr("(fn [x x...] x)")
   test "closures capture their environment":
     ck "(var adder (fn [a] (fn [b] (+ a b)))) ((adder 10) 5)", "15"
   test "lexical capture is by reference to the defining scope":
