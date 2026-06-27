@@ -7,6 +7,13 @@ benchmarks/scripts/bench_fib       # defaults to fib(24)
 benchmarks/scripts/bench_fib 28
 ```
 
+Run the call burst benchmark with:
+
+```bash
+benchmarks/scripts/bench_call_burst             # defaults to 10000 x 1000 calls
+benchmarks/scripts/bench_call_burst 1000 100
+```
+
 The current implementation has a bytecode VM but not the old native compiler
 mode, so `GENE_BENCH_MODE` currently supports only `vm`. The benchmark compiles
 the Gene source once and times VM execution.
@@ -24,3 +31,8 @@ The benchmarked Gene program is:
 ```
 
 `fib(24)` performs 150049 naive recursive `fib` calls and returns `46368`.
+
+## Call Burst
+
+The call burst benchmark compiles three source units once, then measures tight
+bursts of zero-arg, one-arg, and four-arg function calls inside a `while` loop.
