@@ -3185,8 +3185,9 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
 proc pop(stack: var seq[Value]): Value =
   if stack.len == 0:
     raise newException(GeneError, "VM stack underflow")
-  result = stack[^1]
-  stack.setLen(stack.len - 1)
+  let index = stack.len - 1
+  result = move stack[index]
+  stack.setLen(index)
 
 const MaxRunStackPool = 64
 
