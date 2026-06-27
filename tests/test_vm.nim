@@ -67,6 +67,63 @@ suite "compiler — GIR emission":
     check proto.paramTypes[0].print() == "item"
     check proto.returnType.print() == "item"
 
+  test "records generic monomorphization requests":
+    let chunk = compileSource("(fn (identity item) [x : item] : item x) " &
+                              "(identity ^types [Int] 1)")
+    check chunk.monomorphizations.len == 1
+    check chunk.monomorphizations[0].functionName == "identity"
+    check chunk.monomorphizations[0].typeArgs[0].print() == "Int"
+    check "monomorphizations:" in chunk.disassemble()
+
+  test "records direct protocol call dependencies":
+    let chunk = compileSource("(to_name ^protocol ToName ^receiver User user)")
+    check chunk.directProtocolCalls.len == 1
+    check chunk.directProtocolCalls[0].messageName == "to_name"
+    check chunk.directProtocolCalls[0].protocolExpr.print() == "ToName"
+    check chunk.directProtocolCalls[0].receiverExpr.print() == "User"
+    check "direct-protocol-calls:" in chunk.disassemble()
+
+    let flipped = compileSource("(fn f [self] " &
+                                "  (~ ^protocol ToName ^receiver User to_name))")
+    check flipped.functions[0].chunk.directProtocolCalls.len == 1
+    check flipped.functions[0].chunk.directProtocolCalls[0].messageName == "to_name"
+
+  test "marks simple typed Int arithmetic as native compiled":
+    let chunk = compileSource("(fn add [x : Int y : Int] : Int (+ x y))")
+    let proto = chunk.functions[0]
+    check proto.nativeOp == ncoIntAdd
+    check "native=int-add" in chunk.disassemble()
+
+    let i64Chunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y))")
+    check i64Chunk.functions[0].nativeOp == ncoI64Add
+    check "native=i64-add" in i64Chunk.disassemble()
+
+    let f64Chunk = compileSource("(fn mul64 [x : F64 y : F64] : F64 (* x y))")
+    check f64Chunk.functions[0].nativeOp == ncoF64Mul
+    check "native=f64-mul" in f64Chunk.disassemble()
+
+    let dynamicChunk = compileSource("(fn add [x : Int y : Int] : Int (+ y x))")
+    check dynamicChunk.functions[0].nativeOp == ncoNone
+
+    let aotChunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
+                                 "(fn add64_twice [x : I64 y : I64] : I64 " &
+                                 "  (add64 (add64 x y) y))")
+    check aotChunk.functions[0].aotExpr.kind != vkNil
+    check aotChunk.functions[1].aotExpr.kind != vkNil
+    check aotChunk.functions[0].aotFrameKind == afkTypedNative
+    check not aotChunk.functions[0].aotFrameCanSuspend
+    check "aot=c frame=typed-native" in aotChunk.disassemble()
+    check "typed-module-aot:" in aotChunk.disassemble()
+    check "add64 repr=I64 arity=2 frame=typed-native" in aotChunk.disassemble()
+
+    let awaitChunk = compileSource("(fn wait [t : (Task Int Never)] : Int (await t))")
+    check awaitChunk.functions[0].taskFrameKind == tfkVm
+    check "task-frame=vm" in awaitChunk.disassemble()
+
+    let yieldChunk = compileSource("(fn ints [] : (Stream Int Never) (yield 1))")
+    check yieldChunk.functions[0].taskFrameKind == tfkGenerator
+    check "task-frame=generator" in yieldChunk.disassemble()
+
   test "emits local slots for function parameters and locals":
     let chunk = compileSource("(fn f [x ^scale s rest...] " &
                               "  (var y (+ x s)) " &
@@ -712,6 +769,30 @@ suite "vm — functions and closures":
     # a checked function no longer grows the Nim stack on the success path.
     ck "(fn count ^errors [] [n] (if (= n 0) 0 (+ 1 (count (- n 1))))) " &
        "(count 200000)", "200000"
+  test "recoverable errors expose bytecode frame traces":
+    ck "(fn outer [] (inner)) " &
+       "(fn inner [] (var x : Int \"bad\") x) " &
+       "(try (outer) catch (TypeError ^trace t) " &
+       "  [t/0/name t/0/kind t/1/name t/1/kind])",
+       "[\"inner\" \"bytecode\" \"outer\" \"bytecode\"]"
+  test "native-compiled typed Int arithmetic uses dynamic boundary adapters":
+    ck "(fn add [x : Int y : Int] : Int (+ x y)) (add 20 22)", "42"
+    ck "(fn sub [x : Int y : Int] : Int (- x y)) (sub 20 7)", "13"
+    ck "(fn mul [x : Int y : Int] : Int (* x y)) (mul 6 7)", "42"
+    ck "(fn add64 [x : I64 y : I64] : I64 (+ x y)) (add64 20 22)", "42"
+    ck "(fn mul64 [x : F64 y : F64] : F64 (* x y)) (mul64 3.5 2.0)", "7.0"
+    ck "(fn add [x : Int y : Int] : Int (+ x y)) " &
+       "(try (add \"bad\" 1) catch (TypeError ^where w) w)",
+       "\"parameter 'x'\""
+    ck "(fn outer [] (add \"bad\" 1)) " &
+       "(fn add [x : Int y : Int] : Int (+ x y)) " &
+       "(try (outer) catch (TypeError ^trace t) " &
+       "  [t/0/name t/0/kind t/1/name t/1/kind])",
+       "[\"add\" \"typed-native\" \"outer\" \"bytecode\"]"
+    ck "(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
+       "(try (add64 9223372036854775807 1) " &
+       "catch (TypeError ^where w) w)",
+       "\"return from 'add64'\""
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
 
@@ -785,6 +866,18 @@ suite "vm — selectors":
   test "missing selector lookup propagates void":
     ck "(var user {^name \"Ada\"}) user/missing/name", "void"
     ck "(var user {^name nil}) user/name", "nil"
+  test "selector options handle missing lookups explicitly":
+    ck "(var fallback \"unknown\") " &
+       "((select ^default fallback name) {^age 37})",
+       "\"unknown\""
+    ck "((select ^default \"unknown\" name) {^name nil})", "nil"
+    ck "(try ((select ^strict true name) {^age 37}) catch {^message m} m)",
+       "\"selector lookup failed at segment: name\""
+    ck "(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
+       "catch {^message m} m)",
+       "\"selector lookup failed at segment: name\""
+    expect GeneError:
+      discard runStr("((select ^strict 1 name) {^age 37})")
   test "selectors read list indexes and fixed list members":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"

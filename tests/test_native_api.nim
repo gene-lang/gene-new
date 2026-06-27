@@ -1,5 +1,5 @@
 import gene/[compiler, native_api, printer, types, vm]
-import std/[strutils, tables, unittest]
+import std/[dynlib, strutils, tables, unittest]
 
 proc nativeInc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1 or args[0].kind != vkInt:
@@ -23,6 +23,24 @@ var releasedPointers = 0
 
 proc releaseNativePointer(address: pointer) {.nimcall.} =
   inc releasedPointers
+
+proc unloadTestLibrary(address: pointer) {.nimcall.} =
+  unloadLib(cast[LibHandle](address))
+
+proc loadableNativeApiLibrary(): string =
+  var candidates: seq[string] = @[]
+  when defined(macosx):
+    candidates = @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
+  elif defined(linux):
+    candidates = @["libc.so.6", "libm.so.6"]
+  elif defined(windows):
+    candidates = @["kernel32.dll"]
+  for candidate in candidates:
+    let handle = loadLib(candidate)
+    if handle != nil:
+      unloadLib(handle)
+      return candidate
+  ""
 
 proc initNativeSample(api: ptr GeneApi,
                       module: GeneModule): GeneResult {.nimcall.} =
@@ -166,6 +184,93 @@ suite "native api — roots and trampoline":
     check ffiLoad.kind == vkFfiLoad
     check ffiLoad.print() == "(ffi-load)"
 
+  test "versioned API table exposes rooted channel and actor sends":
+    let api = geneApi()
+    let scope = newGlobalScope()
+    let channel = run(compileSource("(channel ^capacity 1)"), scope)
+    let itemRoot = api.root(newInt(7))
+    let sent = api.channelTrySend(channel, itemRoot, scope)
+    check sent.status == gsOk
+    check sent.value == TRUE
+    let full = api.channelTrySend(channel, itemRoot, scope)
+    check full.status == gsOk
+    check full.value == FALSE
+    let received = api.channelTryRecv(channel, scope)
+    check received.status == gsOk
+    check received.value.print() == "7"
+    let empty = api.channelTryRecv(channel, scope)
+    check empty.status == gsOk
+    check empty.value.kind == vkVoid
+    api.rootRelease(itemRoot)
+
+    let typedChannel = run(compileSource("(var ch : (Channel Int) " &
+                                         "  (channel ^capacity 1)) ch"),
+                           scope)
+    let badRoot = api.root(newStr("bad"))
+    let rejected = api.channelTrySend(typedChannel, badRoot, scope)
+    check rejected.status == gsError
+    check rejected.message.contains("native channel item")
+    api.rootRelease(badRoot)
+
+    let actor = run(compileSource(
+      "(actor/spawn ^init (fn [] 0) " &
+      "  ^handle (fn [ctx state msg] (actor/continue (+ state msg))))"),
+      scope)
+    let msgRoot = api.root(newInt(5))
+    let actorSent = api.actorTrySend(actor, msgRoot, scope)
+    check actorSent.status == gsOk
+    check actorSent.value == TRUE
+    check actor.actorState.print() == "5"
+    api.rootRelease(msgRoot)
+
+    let released = api.channelTrySend(channel, msgRoot, scope)
+    check released.status == gsError
+    check released.message.contains("native root has been released")
+
+  test "versioned API table exposes rooted callback handles":
+    let api = geneApi()
+    let scope = newGlobalScope()
+    let callee = run(compileSource("(fn [x] (+ x 10))"), scope)
+    let callback = api.newCallback(callee)
+    check not api.threadAttached()
+    let unattached = api.callCallback(callback,
+                                      GeneCall(args: @[newInt(32)],
+                                               dispatchScope: scope))
+    check unattached.status == gsError
+    check unattached.message.contains("native thread is not attached")
+
+    let attachment = api.attachThread()
+    check api.threadAttached()
+    let called = api.callCallback(callback,
+                                  GeneCall(args: @[newInt(32)],
+                                           dispatchScope: scope))
+    check called.status == gsOk
+    check called.value.print() == "42"
+
+    discard run(compileSource("(type Bad ^props {^message Str} ^impl [Error]) " &
+                              "(impl Error Bad)"),
+                scope)
+    let failer = run(compileSource("(fn [] (fail (Bad ^message \"callback\")))"),
+                     scope)
+    let failingCallback = api.newCallback(failer)
+    let failed = api.callCallback(failingCallback,
+                                  GeneCall(dispatchScope: scope))
+    check failed.status == gsError
+    check failed.hasErrorValue
+    check failed.errorValue.props["message"].strVal == "callback"
+    api.releaseCallback(failingCallback)
+
+    api.releaseCallback(callback)
+    let released = api.callCallback(callback,
+                                    GeneCall(args: @[newInt(1)],
+                                             dispatchScope: scope))
+    check released.status == gsError
+    check released.message.contains("native callback has been released")
+    api.releaseCallback(callback)
+    api.detachThread(attachment)
+    check not api.threadAttached()
+    api.detachThread(attachment)
+
   test "native module initializer registers exports through the API table":
     let module = newGeneModule("sample-native")
     let initialized = geneInitModule(initNativeSample, module)
@@ -176,6 +281,34 @@ suite "native api — roots and trampoline":
     check run(compileSource("(+ answer (inc 1))"), scope).print() == "42"
     check run(compileSource("(envelope ^tag \"ok\" 3)"), scope).print() ==
       "[\"envelope\" 1 1 tag \"ok\" 3]"
+
+  test "native module initializer rejects incompatible API versions":
+    let module = newGeneModule("versioned-native")
+    var incompatible = geneApi()
+    incompatible.version = GeneApiVersion + 1
+    let initialized = geneInitModule(initNativeSample, module, incompatible)
+    check initialized.status == gsError
+    check initialized.message.contains("native API version mismatch")
+
+  test "dynamic native module loading requires an open library initializer":
+    check geneLoadModule(newInt(1), "bad").status == gsError
+    let libName = loadableNativeApiLibrary()
+    if libName.len == 0:
+      checkpoint("no loadable system library available for dynamic module test")
+      check true
+    else:
+      let handle = loadLib(libName)
+      check handle != nil
+      let library = newFfiLibrary(cast[pointer](handle), libName,
+                                  unloadTestLibrary)
+      let missing = geneLoadModule(library, "missing-native",
+                                   initSymbol = "gene_missing_module_init_for_test")
+      check missing.status == gsError
+      check missing.message.contains("native module initializer not found")
+      library.closeFfiLibrary()
+      let closed = geneLoadModule(library, "closed-native")
+      check closed.status == gsError
+      check closed.message.contains("library is closed")
 
   test "native module registration failures return status values":
     let module = newGeneModule("dupe-native")

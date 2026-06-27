@@ -390,12 +390,95 @@ suite "types — function boundaries":
       scope.define("lib", lib)
       check run(compileSource("((fn [handle : Ffi/Library] handle) lib)"),
                 scope).print() == "(ffi-library)"
+      check run(compileSource("(var strlen " &
+                              "  (ffi/bind lib \"strlen\" [C/CStr] C/Size)) " &
+                              "[(strlen \"hello\") " &
+                              " ((fn [f : Ffi/Callable] (f \"Ada\")) strlen) " &
+                              " strlen]"),
+                scope).print() == "[5 3 (ffi-callable strlen)]"
+      let handle = cast[LibHandle](lib.ffiLibraryHandle)
+      if symAddr(handle, "atoi") != nil:
+        check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int) " &
+                                " \"-42\")"),
+                  scope).print() == "-42"
+      if symAddr(handle, "strcmp") != nil:
+        check run(compileSource("((ffi/bind lib \"strcmp\" " &
+                                "  [C/CStr C/CStr] C/Int) \"abc\" \"abc\")"),
+                  scope).print() == "0"
+      if symAddr(handle, "abs") != nil:
+        check run(compileSource("((ffi/bind lib \"abs\" [C/Int] C/Int) -9)"),
+                  scope).print() == "9"
+      if symAddr(handle, "getpid") != nil:
+        let pid = run(compileSource("((ffi/bind lib \"getpid\" [] C/Int))"),
+                      scope)
+        check pid.kind == vkInt
+        check pid.intVal > 0
+      if symAddr(handle, "getenv") != nil:
+        check run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &
+                                "  (quote (C/NullableConstPtr C/Char))) " &
+                                " \"GENE_NEW_TEST_ENV_UNSET\")"),
+                  scope).print() == "(c-const-ptr null)"
+      if symAddr(handle, "getenv") != nil and symAddr(handle, "strlen") != nil:
+        let envPtr = run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &
+                                       "  (quote (C/NullableConstPtr C/Char))) " &
+                                       " \"PATH\")"),
+                         scope)
+        if envPtr.kind == vkCPtr and not envPtr.cPtrIsNull:
+          scope.define("env-ptr", envPtr)
+          let lenResult = run(compileSource(
+            "((ffi/bind lib \"strlen\" [(quote (C/ConstPtr C/Char))] C/Size) env-ptr)"),
+            scope)
+          check lenResult.kind == vkInt
+          check lenResult.intVal > 0
+          scope.define("wrong-env-ptr",
+                       newCConstPtr(envPtr.cPtrAddress, newSym("C/Int32")))
+          if symAddr(handle, "memcmp") != nil:
+            check run(compileSource("((ffi/bind lib \"memcmp\" " &
+                                    "  [(quote (C/ConstPtr C/Char)) " &
+                                    "   (quote (C/ConstPtr C/Char)) C/Size] " &
+                                    "  C/Int) env-ptr env-ptr 1)"),
+                      scope).print() == "0"
+            expect GeneError:
+              discard run(compileSource("((ffi/bind lib \"memcmp\" " &
+                                        "  [(quote (C/ConstPtr C/Char)) " &
+                                        "   (quote (C/ConstPtr C/Char)) C/Size] " &
+                                        "  C/Int) wrong-env-ptr env-ptr 1)"),
+                          scope)
+            expect GeneError:
+              discard run(compileSource("((ffi/bind lib \"memcmp\" " &
+                                        "  [(quote (C/ConstPtr C/Char)) " &
+                                        "   (quote (C/ConstPtr C/Char)) C/Size] " &
+                                        "  C/Int) env-ptr env-ptr -1)"),
+                          scope)
+          if symAddr(handle, "memchr") != nil:
+            check run(compileSource("((ffi/bind lib \"memchr\" " &
+                                    "  [(quote (C/ConstPtr C/Char)) C/Int C/Size] " &
+                                    "  (quote (C/NullableConstPtr C/Char))) " &
+                                    " env-ptr 0 1)"),
+                      scope).print() == "(c-const-ptr null)"
+            expect GeneError:
+              discard run(compileSource("((ffi/bind lib \"memchr\" " &
+                                        "  [(quote (C/ConstPtr C/Char)) C/Int C/Size] " &
+                                        "  (quote (C/NullableConstPtr C/Char))) " &
+                                        " wrong-env-ptr 0 1)"),
+                          scope)
+      if symAddr(handle, "strchr") != nil:
+        check run(compileSource("((ffi/bind lib \"strchr\" [C/CStr C/Int] " &
+                                "  (quote (C/NullableConstPtr C/Char))) " &
+                                " \"abc\" 98)"),
+                  scope).print() == "(c-const-ptr)"
+        check run(compileSource("((ffi/bind lib \"strchr\" [C/CStr C/Int] " &
+                                "  (quote (C/NullableConstPtr C/Char))) " &
+                                " \"abc\" 120)"),
+                  scope).print() == "(c-const-ptr null)"
       check run(compileSource("(Ffi/Library/closed? lib)"),
                 scope).print() == "false"
       check run(compileSource("(Ffi/Library/path lib)"), scope).strVal == libName
       check run(compileSource("(Ffi/Library/close lib)"), scope).print() == "nil"
       check run(compileSource("(Ffi/Library/closed? lib)"),
                 scope).print() == "true"
+      expect GeneError:
+        discard run(compileSource("(strlen \"closed\")"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""

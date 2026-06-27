@@ -78,8 +78,11 @@ type
     vkCPtr      ## opaque C pointer / owned foreign handle
     vkCSlice    ## opaque non-owning C pointer + element count
     vkBuffer    ## Gene-owned typed contiguous storage
+    vkDeviceBuffer ## opaque accelerator/device buffer handle
+    vkCapability ## explicit named runtime authority value
     vkFfiLoad   ## explicit authority to load native libraries at runtime
     vkFfiLibrary ## loaded native library handle
+    vkFfiCallable ## dynamically bound foreign callable
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -297,8 +300,11 @@ type
     okCPtr
     okCSlice
     okBuffer
+    okDeviceBuffer
+    okCapability
     okFfiLoad
     okFfiLibrary
+    okFfiCallable
     okType
     okProtocol
     okProtocolMessage
@@ -438,6 +444,14 @@ type
     elemScope: Scope
     items: seq[Value]
 
+  DeviceBufferData = ref object of GeneObjectData
+    backend: string
+    elemType: Value
+    length: int
+
+  CapabilityData = ref object of GeneObjectData
+    name: string
+
   FfiLoadData = ref object of GeneObjectData
 
   FfiLibraryData = ref object of GeneObjectData
@@ -445,6 +459,14 @@ type
     path: string
     closed: bool
     close: FfiLibraryCloseProc
+
+  FfiCallableData = ref object of GeneObjectData
+    name: string
+    symbol: string
+    address: pointer
+    library: Value
+    paramTypes: seq[Value]
+    returnType: Value
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -526,6 +548,12 @@ when defined(geneRcStats):
 else:
   template trackAlloc = discard
   template trackFree = discard
+
+proc managedLiveCount*(): int =
+  when defined(geneRcStats):
+    liveManaged
+  else:
+    0
 
 proc createObj(T: typedesc): ptr T {.inline.} =
   trackAlloc()
@@ -909,8 +937,11 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okCPtr: vkCPtr
     of okCSlice: vkCSlice
     of okBuffer: vkBuffer
+    of okDeviceBuffer: vkDeviceBuffer
+    of okCapability: vkCapability
     of okFfiLoad: vkFfiLoad
     of okFfiLibrary: vkFfiLibrary
+    of okFfiCallable: vkFfiCallable
     of okType: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
@@ -1103,6 +1134,29 @@ proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).acceptsNamed
+
+proc ffiCallableData(v: Value): FfiCallableData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiCallable:
+    raise newException(FieldDefect, "value is not an FfiCallable")
+  FfiCallableData(objData(v))
+
+proc ffiCallableName*(v: Value): lent string =
+  ffiCallableData(v).name
+
+proc ffiCallableSymbol*(v: Value): lent string =
+  ffiCallableData(v).symbol
+
+proc ffiCallableAddress*(v: Value): pointer =
+  ffiCallableData(v).address
+
+proc ffiCallableLibrary*(v: Value): Value =
+  ffiCallableData(v).library
+
+proc ffiCallableParamTypes*(v: Value): lent seq[Value] =
+  ffiCallableData(v).paramTypes
+
+proc ffiCallableReturnType*(v: Value): Value =
+  ffiCallableData(v).returnType
 
 proc escapeWeakFunctions*(v: Value): Value
 
@@ -1455,6 +1509,9 @@ proc setActorState*(v, state: Value) =
 proc actorHandler*(v: Value): Value =
   actorData(v).handler
 
+proc setActorHandler*(v, handler: Value) =
+  actorData(v).handler = escapeWeakFunctions(handler)
+
 proc actorRestartInit*(v: Value): Value =
   actorData(v).restartInit
 
@@ -1652,6 +1709,28 @@ proc setBufferItem*(v: Value, index: int, item: Value) =
   if index < 0 or index >= data.items.len:
     raise newException(FieldDefect, "buffer index out of range")
   data.items[index] = escapeWeakFunctions(item)
+
+proc deviceBufferData(v: Value): DeviceBufferData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okDeviceBuffer:
+    raise newException(FieldDefect, "value is not a Device/Buffer")
+  DeviceBufferData(objData(v))
+
+proc deviceBufferBackend*(v: Value): string =
+  deviceBufferData(v).backend
+
+proc deviceBufferElemType*(v: Value): Value =
+  deviceBufferData(v).elemType
+
+proc deviceBufferLen*(v: Value): int =
+  deviceBufferData(v).length
+
+proc capabilityData(v: Value): CapabilityData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCapability:
+    raise newException(FieldDefect, "value is not a capability")
+  CapabilityData(objData(v))
+
+proc capabilityName*(v: Value): string =
+  capabilityData(v).name
 
 proc ffiLibraryData(v: Value): FfiLibraryData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiLibrary:
@@ -2229,7 +2308,19 @@ proc escapeWeakFunctions*(v: Value): Value =
       return v
     boxObject(BufferData(objKind: okBuffer, elemType: data.elemType,
                          elemScope: data.elemScope, items: items))
-  of vkFfiLoad, vkFfiLibrary:
+  of vkFfiCallable:
+    let data = ffiCallableData(v)
+    let escapedLibrary = escapeWeakFunctions(data.library)
+    if escapedLibrary.bits == data.library.bits:
+      return v
+    boxObject(FfiCallableData(objKind: okFfiCallable,
+                              name: data.name,
+                              symbol: data.symbol,
+                              address: data.address,
+                              library: escapedLibrary,
+                              paramTypes: data.paramTypes,
+                              returnType: data.returnType))
+  of vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary:
     v
   else:
     v
@@ -2381,8 +2472,23 @@ proc newBuffer*(elemType: Value = NIL, items: sink seq[Value] = @[],
   boxObject(BufferData(objKind: okBuffer, elemType: elemType,
                        elemScope: elemScope, items: items))
 
+proc newDeviceBuffer*(backend: string, elemType: Value, length: int): Value =
+  if backend.len == 0:
+    raise newException(GeneError, "Device/Buffer backend must not be empty")
+  if length < 0:
+    raise newException(GeneError, "Device/Buffer length must be non-negative")
+  boxObject(DeviceBufferData(objKind: okDeviceBuffer,
+                             backend: backend,
+                             elemType: elemType,
+                             length: length))
+
 proc newFfiLoadCapability*(): Value =
   boxObject(FfiLoadData(objKind: okFfiLoad))
+
+proc newCapability*(name: string): Value =
+  if name.len == 0:
+    raise newException(GeneError, "capability name must not be empty")
+  boxObject(CapabilityData(objKind: okCapability, name: name))
 
 proc newFfiLibrary*(handle: pointer, path: string,
                     close: FfiLibraryCloseProc): Value =
@@ -2390,6 +2496,18 @@ proc newFfiLibrary*(handle: pointer, path: string,
     raise newException(GeneError, "FFI library handle must not be nil")
   boxObject(FfiLibraryData(objKind: okFfiLibrary, handle: handle,
                            path: path, close: close))
+
+proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
+                     paramTypes: seq[Value], returnType: Value): Value =
+  if address == nil:
+    raise newException(GeneError, "FFI callable address must not be nil")
+  boxObject(FfiCallableData(objKind: okFfiCallable,
+                            name: name,
+                            symbol: symbol,
+                            address: address,
+                            library: library,
+                            paramTypes: paramTypes,
+                            returnType: returnType))
 
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =

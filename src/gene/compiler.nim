@@ -132,6 +132,14 @@ proc patchJump(c: var Compiler, at: int) =
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
+proc isPath(v: Value, segments: openArray[string]): bool =
+  if v.kind != vkNode or not v.head.isSymbol("path") or v.body.len != segments.len:
+    return false
+  for i, segment in segments:
+    if v.body[i].kind != vkSymbol or v.body[i].symVal != segment:
+      return false
+  true
+
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 
 proc childCompiler(c: Compiler): Compiler =
@@ -172,11 +180,47 @@ proc containsYield(value: Value): bool =
   else:
     false
 
+proc containsAwait(value: Value): bool =
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("await"):
+      return true
+    if value.head.isSymbol("fn") or value.head.isSymbol("quote") or
+        value.head.isSymbol("quasiquote"):
+      return false
+    for _, item in value.props:
+      if containsAwait(item):
+        return true
+    for item in value.body:
+      if containsAwait(item):
+        return true
+    false
+  of vkList:
+    for item in value.listItems:
+      if containsAwait(item):
+        return true
+    false
+  of vkMap:
+    for _, item in value.mapEntries:
+      if containsAwait(item):
+        return true
+    false
+  else:
+    false
+
 proc bodyContainsYield(body: openArray[Value], first: int): bool =
   if first > body.high:
     return false
   for i in first .. body.high:
     if containsYield(body[i]):
+      return true
+  false
+
+proc bodyContainsAwait(body: openArray[Value], first: int): bool =
+  if first > body.high:
+    return false
+  for i in first .. body.high:
+    if containsAwait(body[i]):
       return true
   false
 
@@ -1189,6 +1233,137 @@ proc hasOptionalPositional(specs: ParamSpecs): bool =
     if defaultValue.optional:
       return true
 
+proc nativeScalarType(expr: Value): string =
+  if expr.kind != vkSymbol:
+    return ""
+  case expr.symVal
+  of "Int": "Int"
+  of "I64": "I64"
+  of "F64": "F64"
+  else: ""
+
+proc fixedAotType(expr: Value): string =
+  if expr.kind != vkSymbol:
+    return ""
+  case expr.symVal
+  of "I64": "I64"
+  of "F64": "F64"
+  else: ""
+
+proc nativeArithmeticOp(typeName, opName: string): NativeCompileOp =
+  case typeName
+  of "Int":
+    case opName
+    of "+": ncoIntAdd
+    of "-": ncoIntSub
+    of "*": ncoIntMul
+    else: ncoNone
+  of "I64":
+    case opName
+    of "+": ncoI64Add
+    of "-": ncoI64Sub
+    of "*": ncoI64Mul
+    else: ncoNone
+  of "F64":
+    case opName
+    of "+": ncoF64Add
+    of "-": ncoF64Sub
+    of "*": ncoF64Mul
+    else: ncoNone
+  else:
+    ncoNone
+
+proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
+                           bodyStart: int, returnType: Value,
+                           typeParams: openArray[string],
+                           checksErrors, sawYield: bool): NativeCompileOp =
+  ## First native-compilation slice: direct two-Int arithmetic. The dynamic
+  ## function entry still performs normal boundary checks before this op runs.
+  if typeParams.len != 0 or checksErrors or sawYield:
+    return ncoNone
+  if specs.positional.len != 2 or specs.rest.len != 0 or specs.named.len != 0:
+    return ncoNone
+  if specs.hasOptionalPositional or body.len != bodyStart + 1:
+    return ncoNone
+  let typeName = returnType.nativeScalarType
+  if typeName.len == 0:
+    return ncoNone
+  for t in specs.positionalTypes:
+    if t.nativeScalarType != typeName:
+      return ncoNone
+
+  let expr = body[bodyStart]
+  if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
+      expr.body.len != 2 or expr.head.kind != vkSymbol:
+    return ncoNone
+  if expr.body[0].kind != vkSymbol or expr.body[1].kind != vkSymbol:
+    return ncoNone
+  if expr.body[0].symVal != specs.positional[0] or
+      expr.body[1].symVal != specs.positional[1]:
+    return ncoNone
+
+  nativeArithmeticOp(typeName, expr.head.symVal)
+
+proc aotAvailableFunctions(functions: openArray[FunctionProto],
+                           typeName: string): Table[string, int] =
+  for fn in functions:
+    if fn.aotExpr.kind == vkNil or fn.returnType.fixedAotType != typeName:
+      continue
+    var supported = true
+    for t in fn.paramTypes:
+      if t.fixedAotType != typeName:
+        supported = false
+        break
+    if supported:
+      result[fn.name] = fn.params.len
+
+proc isAotExpr(expr: Value, params: openArray[string], typeName: string,
+               available: Table[string, int]): bool =
+  case expr.kind
+  of vkSymbol:
+    expr.symVal in params
+  of vkInt:
+    typeName == "I64" and expr.intFitsInt64
+  of vkFloat:
+    typeName == "F64"
+  of vkNode:
+    if expr.props.len != 0 or expr.meta.len != 0 or expr.head.kind != vkSymbol:
+      return false
+    let head = expr.head.symVal
+    if head in ["+", "-", "*"]:
+      if expr.body.len != 2:
+        return false
+      return isAotExpr(expr.body[0], params, typeName, available) and
+        isAotExpr(expr.body[1], params, typeName, available)
+    if available.hasKey(head) and available[head] == expr.body.len:
+      for arg in expr.body:
+        if not isAotExpr(arg, params, typeName, available):
+          return false
+      return true
+    false
+  else:
+    false
+
+proc detectAotExpr(c: Compiler, specs: ParamSpecs, body: openArray[Value],
+                   bodyStart: int, returnType: Value,
+                   typeParams: openArray[string],
+                   checksErrors, sawYield: bool): Value =
+  if typeParams.len != 0 or checksErrors or sawYield:
+    return NIL
+  if specs.rest.len != 0 or specs.named.len != 0 or specs.hasOptionalPositional:
+    return NIL
+  if body.len != bodyStart + 1:
+    return NIL
+  let typeName = returnType.fixedAotType
+  if typeName.len == 0:
+    return NIL
+  for t in specs.positionalTypes:
+    if t.fixedAotType != typeName:
+      return NIL
+  let available = aotAvailableFunctions(c.chunk.functions, typeName)
+  let expr = body[bodyStart]
+  if expr.isAotExpr(specs.positional, typeName, available): expr else: NIL
+
 proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
                         typeParams: seq[string] = @[],
@@ -1242,6 +1417,18 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                    not hasParamTypes and not hasNamedParamTypes and
                    returnType.kind == vkNil and not fnCompiler.sawYield and
                    not specs.hasOptionalPositional
+  let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
+                                             typeParams, checksErrors,
+                                             fnCompiler.sawYield)
+  let aotExpr = c.detectAotExpr(specs, body, start, returnType,
+                                typeParams, checksErrors, fnCompiler.sawYield)
+  let aotFrameKind =
+    if aotExpr.kind == vkNil: afkNone
+    else: afkTypedNative
+  let taskFrameKind =
+    if fnCompiler.sawYield: tfkGenerator
+    elif bodyContainsAwait(body, start): tfkVm
+    else: tfkNone
   FunctionProto(name: name, typeParams: typeParams, params: specs.positional,
                 localNames: fnCompiler.localNames,
                 positionalSlots: positionalSlots,
@@ -1257,6 +1444,11 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                 returnType: returnType,
                 hasReturnType: returnType.kind != vkNil,
                 isGenerator: fnCompiler.sawYield,
+                nativeOp: nativeOp,
+                aotExpr: aotExpr,
+                aotFrameKind: aotFrameKind,
+                aotFrameCanSuspend: false,
+                taskFrameKind: taskFrameKind,
                 checksErrors: checksErrors,
                 errorTypeCount: errorTypeCount,
                 chunk: fnCompiler.chunk)
@@ -1412,6 +1604,216 @@ proc nsPathSegments(v: Value): seq[string] =
       result.add seg.symVal
   else:
     raise newException(GeneError, "import source must be a namespace path or `from \"path\"`")
+
+proc literalName(v: Value, context: string): string =
+  case v.kind
+  of vkString:
+    v.strVal
+  of vkSymbol:
+    v.symVal
+  of vkNode:
+    if v.head.isSymbol("path"):
+      var segments: seq[string]
+      for segment in v.body:
+        if segment.kind != vkSymbol:
+          raise newException(GeneError, context & " must be a string, symbol, or symbol path")
+        segments.add segment.symVal
+      segments.join("/")
+    else:
+      raise newException(GeneError, context & " must be a string, symbol, or symbol path")
+  else:
+    raise newException(GeneError, context & " must be a string, symbol, or symbol path")
+
+proc propLiteral(node: Value, key, defaultValue, context: string): string =
+  if not node.props.hasKey(key):
+    return defaultValue
+  literalName(node.props[key], context & " ^" & key)
+
+proc propInt(node: Value, key: string, defaultValue: int,
+             context: string, hasValue: var bool): int =
+  if not node.props.hasKey(key):
+    hasValue = false
+    return defaultValue
+  let value = node.props[key]
+  if value.kind != vkInt:
+    raise newException(GeneError, context & " ^" & key & " must be an Int")
+  hasValue = true
+  int(value.intVal)
+
+proc propBool(node: Value, key: string, defaultValue: bool,
+              context: string): bool =
+  if not node.props.hasKey(key):
+    return defaultValue
+  let value = node.props[key]
+  if value.kind != vkBool:
+    raise newException(GeneError, context & " ^" & key & " must be a Bool")
+  value.boolVal
+
+proc parseFfiParams(params: Value, context = "ffi/fn"): seq[FfiParam] =
+  if params.kind != vkList:
+    raise newException(GeneError, context & " parameters must be a [list]")
+  let items = params.listItems
+  var i = 0
+  while i < items.len:
+    if items[i].isSymbol(","):
+      inc i
+      continue
+    if items[i].kind != vkSymbol:
+      raise newException(GeneError, context & " parameter must start with a name")
+    let name = items[i].symVal
+    inc i
+    if i >= items.len or not items[i].isSymbol(":"):
+      raise newException(GeneError, context & " parameter '" & name & "' requires a type")
+    inc i
+    if i >= items.len:
+      raise newException(GeneError, context & " parameter '" & name & "' is missing a type")
+    result.add FfiParam(name: name, typeExpr: items[i])
+    inc i
+
+proc parseFfiReturn(body: seq[Value], idx: var int, context: string): Value =
+  result = newSym("C/Void")
+  if idx < body.len:
+    if not body[idx].isSymbol(":"):
+      raise newException(GeneError, context & " return type must follow `:`")
+    inc idx
+    if idx >= body.len:
+      raise newException(GeneError, context & " return type is missing")
+    result = body[idx]
+    inc idx
+
+proc parseFfiAggregateFields(context: string, fields: Value,
+                             allowOffsets: bool): seq[FfiStructField] =
+  if fields.kind != vkList:
+    raise newException(GeneError, context & " ^fields must be a [list]")
+  for field in fields.listItems:
+    if field.kind != vkList:
+      raise newException(GeneError, context & " field must be a [field Type] list")
+    let items = field.listItems
+    if items.len < 2 or items[0].kind != vkSymbol:
+      raise newException(GeneError, context & " field must be [name Type]")
+    let validLen =
+      if allowOffsets: items.len in [2, 5]
+      else: items.len == 2
+    if not validLen:
+      raise newException(GeneError,
+        if allowOffsets:
+          context & " field must be [name Type] or [name Type ^offset Int]"
+        else:
+          context & " field must be [name Type]")
+    var hasOffset = false
+    var offset = -1
+    if items.len == 5:
+      if items[2].symbolText notin ["^", "^^"] or
+          items[3].symbolText != "offset" or items[4].kind != vkInt:
+        raise newException(GeneError,
+          context & " field offset must be written as ^offset Int")
+      hasOffset = true
+      offset = int(items[4].intVal)
+    result.add FfiStructField(name: items[0].symVal, typeExpr: items[1],
+                              offset: offset, hasOffset: hasOffset)
+
+proc parseFfiStructFields(fields: Value): seq[FfiStructField] =
+  parseFfiAggregateFields("ffi/struct", fields, allowOffsets = true)
+
+proc parseFfiUnionFields(fields: Value): seq[FfiStructField] =
+  parseFfiAggregateFields("ffi/union", fields, allowOffsets = false)
+
+proc compileFfiFn(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len < 2 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "ffi/fn requires a name and parameter list")
+  let name = body[0].symVal
+  if body[1].kind != vkList:
+    raise newException(GeneError, "ffi/fn requires a parameter list")
+  var ret = newSym("C/Void")
+  var idx = 2
+  if idx < body.len:
+    if not body[idx].isSymbol(":"):
+      raise newException(GeneError, "ffi/fn return type must follow `:`")
+    inc idx
+    if idx >= body.len:
+      raise newException(GeneError, "ffi/fn return type is missing")
+    ret = body[idx]
+    inc idx
+  if idx < body.len:
+    raise newException(GeneError, "ffi/fn has unexpected body forms")
+  let symbol = propLiteral(node, "symbol", name, "ffi/fn")
+  let proto = FfiFnProto(name: name,
+                         library: propLiteral(node, "library", "", "ffi/fn"),
+                         symbol: symbol,
+                         abi: propLiteral(node, "abi", "C", "ffi/fn"),
+                         params: parseFfiParams(body[1]),
+                         returnType: ret,
+                         release: propLiteral(node, "release", "", "ffi/fn"))
+  discard c.chunk.addFfiFn(proto)
+  c.emitConst(newNativeFn(name, nil))
+  c.emitDefineBinding(name)
+
+proc compileFfiStruct(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len != 1 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "ffi/struct requires a name")
+  if not node.props.hasKey("fields"):
+    raise newException(GeneError, "ffi/struct requires ^fields")
+  var hasSize = false
+  var hasAlign = false
+  let proto = FfiStructProto(
+    name: body[0].symVal,
+    layout: propLiteral(node, "layout", "C", "ffi/struct"),
+    size: propInt(node, "size", -1, "ffi/struct", hasSize),
+    hasSize: hasSize,
+    align: propInt(node, "align", -1, "ffi/struct", hasAlign),
+    hasAlign: hasAlign,
+    fields: parseFfiStructFields(node.props["fields"]))
+  discard c.chunk.addFfiStruct(proto)
+  c.emitConst(newSym(proto.name))
+  c.emitDefineBinding(proto.name)
+
+proc compileFfiUnion(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len != 1 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "ffi/union requires a name")
+  if not node.props.hasKey("fields"):
+    raise newException(GeneError, "ffi/union requires ^fields")
+  var hasSize = false
+  var hasAlign = false
+  let proto = FfiUnionProto(
+    name: body[0].symVal,
+    layout: propLiteral(node, "layout", "C", "ffi/union"),
+    size: propInt(node, "size", -1, "ffi/union", hasSize),
+    hasSize: hasSize,
+    align: propInt(node, "align", -1, "ffi/union", hasAlign),
+    hasAlign: hasAlign,
+    fields: parseFfiUnionFields(node.props["fields"]))
+  discard c.chunk.addFfiUnion(proto)
+  c.emitConst(newSym(proto.name))
+  c.emitDefineBinding(proto.name)
+
+proc compileFfiSignature(c: var Compiler, node: Value,
+                         kind: FfiSignatureKind) =
+  let context =
+    if kind == fskCallback: "ffi/callback"
+    else: "ffi/signature"
+  let body = node.body
+  if body.len < 2 or body[0].kind != vkSymbol:
+    raise newException(GeneError, context & " requires a name and parameter list")
+  if body[1].kind != vkList:
+    raise newException(GeneError, context & " requires a parameter list")
+  var idx = 2
+  let ret = parseFfiReturn(body, idx, context)
+  if idx < body.len:
+    raise newException(GeneError, context & " has unexpected body forms")
+  let proto = FfiSignatureProto(
+    name: body[0].symVal,
+    kind: kind,
+    abi: propLiteral(node, "abi", "C", context),
+    params: parseFfiParams(body[1], context),
+    returnType: ret,
+    escaping: propBool(node, "escaping", false, context),
+    runtimeConstructible: kind == fskDynamic)
+  discard c.chunk.addFfiSignature(proto)
+  c.emitConst(newSym(proto.name))
+  c.emitDefineBinding(proto.name)
 
 proc compileImport(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
@@ -1631,25 +2033,43 @@ proc compileQuasiquote(c: var Compiler, node: Value) =
     raise newException(GeneError, "quasiquote expects one template")
   compileQuasiTemplate(c, node.body[0], 1)
 
-proc selectorLiteral(parts: openArray[Value]): Value =
+proc selectorLiteral(parts: openArray[Value],
+                     props: OrderedTable[string, Value]): Value =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
     body[i] = part
-  newNode(newSym("select"), body = body)
+  newNode(newSym("select"), props = props, body = body)
 
 proc isUnquoteSegment(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("unquote")
 
-proc compileSelector(c: var Compiler, parts: openArray[Value]) =
+proc compileSelector(c: var Compiler, node: Value) =
+  let parts = node.body
   var dynamic = false
   for part in parts:
     if part.isUnquoteSegment:
       dynamic = true
       break
-  if not dynamic:
-    c.emitConst selectorLiteral(parts)
+  if not dynamic and node.props.len == 0:
+    c.emitConst selectorLiteral(parts, node.props)
     return
 
+  if node.props.len == 0:
+    for part in parts:
+      if part.isUnquoteSegment:
+        if part.body.len != 1:
+          raise newException(GeneError, "selector unquote requires one expression")
+        compileExpr(c, part.body[0])
+      else:
+        c.emitConst part
+    discard c.emit(opMakeSelector, parts.len)
+    return
+
+  c.emitConst newSym("select")
+  var propNames: seq[string]
+  for key, value in node.props:
+    propNames.add key
+    compileExpr(c, value)
   for part in parts:
     if part.isUnquoteSegment:
       if part.body.len != 1:
@@ -1657,7 +2077,15 @@ proc compileSelector(c: var Compiler, parts: openArray[Value]) =
       compileExpr(c, part.body[0])
     else:
       c.emitConst part
-  discard c.emit(opMakeSelector, parts.len)
+  let idx = c.chunk.addNodeBuild(NodeBuildProto(propNames: propNames,
+                                                bodyCount: parts.len))
+  discard c.emit(opMakeNode, idx)
+
+proc compileSelectorParts(c: var Compiler, parts: openArray[Value]) =
+  var body = newSeq[Value](parts.len)
+  for i, part in parts:
+    body[i] = part
+  compileSelector(c, newNode(newSym("select"), body = body))
 
 proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
@@ -1667,7 +2095,7 @@ proc compilePath(c: var Compiler, node: Value) =
   if parts.len == 1:
     compileExpr(c, parts[0])
     return
-  compileSelector(c, parts.toOpenArray(1, parts.high))
+  compileSelectorParts(c, parts.toOpenArray(1, parts.high))
   compileExpr(c, parts[0])
   discard c.emit(opCall, 1)
 
@@ -1736,9 +2164,31 @@ proc compileListValue(c: var Compiler, value: Value) =
     discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
 proc compileCall(c: var Compiler, node: Value) =
+  if node.props.hasKey("types") and node.head.kind == vkSymbol:
+    let types = node.props["types"]
+    if types.kind != vkList:
+      raise newException(GeneError, "call ^types must be a list")
+    discard c.chunk.addMonomorphization(MonomorphizationSpec(
+      functionName: node.head.symVal,
+      typeArgs: types.listItems))
+  let hasProtocol = node.props.hasKey("protocol")
+  let hasReceiver = node.props.hasKey("receiver")
+  if hasProtocol or hasReceiver:
+    if not (hasProtocol and hasReceiver):
+      raise newException(GeneError,
+        "direct protocol call metadata requires ^protocol and ^receiver")
+    if node.head.kind != vkSymbol:
+      raise newException(GeneError,
+        "direct protocol call metadata requires a message name")
+    discard c.chunk.addDirectProtocolCall(DirectProtocolCallSpec(
+      messageName: node.head.symVal,
+      protocolExpr: node.props["protocol"],
+      receiverExpr: node.props["receiver"]))
   compileExpr(c, node.head)
   var names: seq[string]
   for k, value in node.props:
+    if k in ["types", "protocol", "receiver"]:
+      continue
     names.add k
     compileExpr(c, value)
   var splices: seq[bool]
@@ -1756,8 +2206,23 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   if not c.selfAvailable:
     raise newException(GeneError, "leading `~` requires lexical self")
   compileExpr(c, node.body[0])
+  let hasProtocol = node.props.hasKey("protocol")
+  let hasReceiver = node.props.hasKey("receiver")
+  if hasProtocol or hasReceiver:
+    if not (hasProtocol and hasReceiver):
+      raise newException(GeneError,
+        "direct protocol call metadata requires ^protocol and ^receiver")
+    if node.body[0].kind != vkSymbol:
+      raise newException(GeneError,
+        "direct protocol call metadata requires a message name")
+    discard c.chunk.addDirectProtocolCall(DirectProtocolCallSpec(
+      messageName: node.body[0].symVal,
+      protocolExpr: node.props["protocol"],
+      receiverExpr: node.props["receiver"]))
   var names: seq[string]
   for k, value in node.props:
+    if k in ["types", "protocol", "receiver"]:
+      continue
     names.add k
     compileExpr(c, value)
   var splices = @[false]
@@ -2114,6 +2579,21 @@ proc compileImpl(c: var Compiler, node: Value) =
 
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
+  if h.isPath(["ffi", "fn"]):
+    compileFfiFn(c, node)
+    return
+  if h.isPath(["ffi", "struct"]):
+    compileFfiStruct(c, node)
+    return
+  if h.isPath(["ffi", "union"]):
+    compileFfiUnion(c, node)
+    return
+  if h.isPath(["ffi", "callback"]):
+    compileFfiSignature(c, node, fskCallback)
+    return
+  if h.isPath(["ffi", "signature"]):
+    compileFfiSignature(c, node, fskDynamic)
+    return
   if h.kind == vkSymbol:
     case h.symVal
     of "do":
@@ -2144,7 +2624,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileQuasiquote(c, node)
       return
     of "select":
-      compileSelector(c, node.body)
+      compileSelector(c, node)
       return
     of "path":
       compilePath(c, node)

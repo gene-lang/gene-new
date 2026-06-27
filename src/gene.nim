@@ -7,6 +7,7 @@
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
+##   gene compile --target c <file> print experimental typed-native C
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
@@ -22,6 +23,7 @@ proc usage() =
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
+  echo "  gene compile --target c <file.gene> print experimental typed-native C"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
 
 proc readSourceFile(path: string): string =
@@ -175,6 +177,20 @@ proc cmdCompile(path: string) =
     stderr.writeLine "Error: " & e.msg
     quit(1)
 
+proc cmdCompileC(path: string) =
+  let src = readSourceFile(path)
+  try:
+    echo compileSource(src).emitExperimentalC()
+  except ReadError as e:
+    stderr.writeLine "Read error: " & e.msg
+    quit(1)
+  except GenePanic as e:
+    stderr.writeLine "Panic: " & e.msg
+    quit(1)
+  except GeneError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   for name in scope.vars.keys:
     if includeThisModule or name != "this-mod":
@@ -310,7 +326,21 @@ proc main() =
     if paramCount() < 2:
       stderr.writeLine "Error: 'compile' needs a file path"
       quit(1)
-    cmdCompile(paramStr(2))
+    if paramStr(2) == "--target":
+      if paramCount() < 4:
+        stderr.writeLine "Error: 'compile --target' needs a target and file path"
+        quit(1)
+      if paramStr(3) != "c":
+        stderr.writeLine "Error: unsupported compile target: " & paramStr(3)
+        quit(1)
+      cmdCompileC(paramStr(4))
+    elif paramStr(2) == "--c":
+      if paramCount() < 3:
+        stderr.writeLine "Error: 'compile --c' needs a file path"
+        quit(1)
+      cmdCompileC(paramStr(3))
+    else:
+      cmdCompile(paramStr(2))
   of "doc":
     if paramCount() < 2:
       stderr.writeLine "Error: 'doc' needs a file path"

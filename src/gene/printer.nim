@@ -143,6 +143,14 @@ proc print*(v: Value): string =
       if v.bufferElemType.kind == vkNil: "Any"
       else: v.bufferElemType.print()
     "(buffer " & elemType & " " & $v.bufferLen & ")"
+  of vkDeviceBuffer:
+    let elemType =
+      if v.deviceBufferElemType.kind == vkNil: "Any"
+      else: v.deviceBufferElemType.print()
+    "(device-buffer " & v.deviceBufferBackend & " " & elemType & " " &
+      $v.deviceBufferLen & ")"
+  of vkCapability:
+    "(capability " & v.capabilityName & ")"
   of vkFfiLoad:
     "(ffi-load)"
   of vkFfiLibrary:
@@ -150,6 +158,8 @@ proc print*(v: Value): string =
       "(ffi-library closed)"
     else:
       "(ffi-library)"
+  of vkFfiCallable:
+    "(ffi-callable " & v.ffiCallableName & ")"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

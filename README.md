@@ -76,16 +76,35 @@ participates in equality or hashing.
   recursion, first-class `Cell`/`AtomicCell` mutable references,
   a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
   `geneCall`, native module initializer/registration hooks, and opaque C pointer
-  and slice constructors plus checked Buffer accessors and host-created
-  `Ffi/Load` authority values),
+  and slice constructors plus checked Buffer accessors, version-checked dynamic
+  native-module initializer lookup, and host-created `Ffi/Load` authority
+  values, non-suspending rooted channel/actor send hooks for attached
+  native code, deterministic native callback handles, and explicit native
+  thread attachment before callback entry), experimental idle actor state
+  snapshots and handler upgrades for migration tooling,
   boxed `Buffer` values with checked element boundaries,
   explicit runtime FFI library loading through `ffi/open` and opaque
   `Ffi/Library` handles,
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
   `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
+  a first typed native-compilation prototype for simple two-argument `Int`,
+  `I64`, and `F64` arithmetic functions through the normal dynamic entry
+  adapter, plus experimental C emission for selected fixed-representation
+  typed functions with direct typed calls, selective generic
+  monomorphization manifests, direct protocol-call dependency metadata,
+  typed-module AOT manifests, non-suspending native frame descriptors for
+  selected AOT functions, mixed typed-native/bytecode recoverable-error frame
+  traces, task-frame lowering manifests for resumable functions, and
+  generated `ffi/fn` adapter skeletons for C ABI declarations plus
+  `ffi/struct`, `ffi/union`, callback, and dynamic-signature metadata manifests,
+  generated C ABI type-size/alignment conformance metadata and C struct layout
+  assertions, and runtime `ffi/bind` dynamic calls for MVP C scalar,
+  C-string, opaque pointer, and small multi-argument pointer/size signatures,
+  `Device/Compute` authority plus opaque `Device/Buffer` metadata handles,
   first-class `Env` values with explicit
   `eval node ^in env`, explicit Env imports/capabilities, `^policy`
-  max-step limits with validation for reserved policy fields, `gene run`
+  max-step limits with validation for reserved policy fields, opaque runtime
+  capability library values such as `Fs/ReadDir`, `gene run`
   entrypoint invocation, line-oriented
   `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
   and built-ins
@@ -208,7 +227,8 @@ weak captured-scope edges, but reference cycles among *mutable* heap objects (e.
 a self-referential `cell`) are not yet collected — closing that gap to meet the
 tracing-GC requirement in `docs/design.md` §11.1/§13 is tracked work. Symbols are
 interned to immediate ids. Build with
-`-d:geneRcStats` to expose `liveManaged` for retain/release auditing. (RC is
+`-d:geneRcStats` to expose `liveManaged` and `Runtime/gc-stats` for
+retain/release auditing. (RC is
 non-atomic for the single-threaded MVP; see `TODO(vm-shared-rc)` in
 `src/gene/types.nim` for the planned per-object atomic-on-publish upgrade.)
 

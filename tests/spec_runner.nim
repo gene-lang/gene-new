@@ -4,7 +4,7 @@
 ## examples/web_demo.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[compiler, printer, reader, types, vm]
+import gene/[compiler, gir, printer, reader, types, vm]
 import std/[sequtils, strutils, unittest]
 
 template check_read(src: string, expected: string) =
@@ -190,6 +190,207 @@ suite "spec — macros from design":
                "(fn helper [n] 99) [(recursive! 3) (helper 3)]",
                "[0 99]")
 
+suite "spec — typed native compilation prototype from design":
+  test "simple typed Int arithmetic can use a native direct op":
+    let chunk = compileSource("(fn add [x : Int y : Int] : Int (+ x y))")
+    check chunk.functions[0].nativeOp == ncoIntAdd
+    check "native=int-add" in chunk.disassemble()
+    check_eval("(fn add [x : Int y : Int] : Int (+ x y)) (add 20 22)",
+               "42")
+    check_eval("(fn add [x : Int y : Int] : Int (+ x y)) " &
+               "(try (add \"bad\" 1) catch (TypeError ^where w) w)",
+               "\"parameter 'x'\"")
+    check_eval("(fn outer [] (add \"bad\" 1)) " &
+               "(fn add [x : Int y : Int] : Int (+ x y)) " &
+               "(try (outer) catch (TypeError ^trace t) " &
+               "  [t/0/name t/0/kind t/1/name t/1/kind])",
+               "[\"add\" \"typed-native\" \"outer\" \"bytecode\"]")
+
+  test "fixed representation functions expose an experimental C backend":
+    let chunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
+                              "(fn scale [x : F64 y : F64] : F64 (* x y))")
+    check chunk.functions[0].nativeOp == ncoI64Add
+    check chunk.functions[1].nativeOp == ncoF64Mul
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneFfiAbiTypeInfo" in c
+    check "_Static_assert(sizeof(int64_t) == 8, \"C/Int64 must be 8 bytes\");" in c
+    check "static const GeneFfiAbiTypeInfo gene_ffi_abi_types[] = {" in c
+    check "{\"C/Int64\", \"int64_t\", sizeof(int64_t), GENE_ALIGNOF(int64_t)}," in c
+    check "static const size_t gene_ffi_abi_types_count = 22;" in c
+    check "int64_t gene_native_add64(int64_t x, int64_t y)" in c
+    check "double gene_native_scale(double x, double y)" in c
+    check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) (add64 20 22)",
+               "42")
+
+  test "selected typed functions AOT emit direct typed C calls":
+    let chunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
+                              "(fn add64_twice [x : I64 y : I64] : I64 " &
+                              "  (add64 (add64 x y) y))")
+    check chunk.functions[0].aotExpr.kind != vkNil
+    check chunk.functions[1].aotExpr.kind != vkNil
+    check chunk.functions[0].aotFrameKind == afkTypedNative
+    check not chunk.functions[0].aotFrameCanSuspend
+    check "aot=c frame=typed-native" in chunk.disassemble()
+    check "typed-module-aot:" in chunk.disassemble()
+    check "add64 repr=I64 arity=2 frame=typed-native" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneNativeFrameInfo" in c
+    check "typedef struct GeneAotModuleFunction" in c
+    check "static const GeneNativeFrameInfo gene_frame_add64 = {\"add64\", GENE_NATIVE_FRAME_TYPED};" in c
+    check "(void)&gene_frame_add64;" in c
+    check "static const GeneAotModuleFunction gene_aot_module[] = {" in c
+    check "{\"add64\", \"gene_native_add64\", \"I64\", 2, &gene_frame_add64}," in c
+    check "static const size_t gene_aot_module_count = 2;" in c
+    check "int64_t gene_native_add64_twice(int64_t x, int64_t y)" in c
+    check "return gene_native_add64(gene_native_add64(x, y), y);" in c
+    check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
+               "(fn add64_twice [x : I64 y : I64] : I64 " &
+               "  (add64 (add64 x y) y)) " &
+               "(add64_twice 20 2)",
+               "24")
+
+  test "task-frame lowering metadata is emitted for resumable functions":
+    let chunk = compileSource("(fn wait [t : (Task Int Never)] : Int (await t)) " &
+                              "(fn ints [] : (Stream Int Never) (yield 1))")
+    check chunk.functions[0].taskFrameKind == tfkVm
+    check chunk.functions[1].taskFrameKind == tfkGenerator
+    check "task-frame=vm" in chunk.disassemble()
+    check "task-frame=generator" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneTaskFrameInfo" in c
+    check "static const GeneTaskFrameInfo gene_task_frames[] = {" in c
+    check "{\"wait\", \"vm\", true}," in c
+    check "{\"ints\", \"generator\", false}," in c
+
+  test "direct protocol calls record selected impl dependencies":
+    let source = "(protocol ToName (message to_name [self] : Str)) " &
+                 "(type User ^props {^name Str}) " &
+                 "(impl ToName User (message to_name [self] : Str self/name)) " &
+                 "(to_name ^protocol ToName ^receiver User (User ^name \"Ada\"))"
+    let chunk = compileSource(source)
+    check chunk.directProtocolCalls.len == 1
+    check chunk.directProtocolCalls[0].messageName == "to_name"
+    check chunk.directProtocolCalls[0].protocolExpr.print() == "ToName"
+    check chunk.directProtocolCalls[0].receiverExpr.print() == "User"
+    check "direct-protocol-calls:" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "direct-protocol to_name ToName/User" in c
+    check "static const GeneDirectProtocolCall gene_direct_protocol_calls[] = {" in c
+    check "{\"to_name\", \"ToName\", \"User\"}," in c
+    check "static const size_t gene_direct_protocol_calls_count = 1;" in c
+    check_eval(source, "\"Ada\"")
+    expect GeneError:
+      discard compileSource("(to_name ^protocol ToName x)")
+
+  test "ffi/fn declarations expose generated C wrapper skeletons":
+    let chunk = compileSource("(ffi/fn strlen " &
+                              "  ^library libc ^symbol \"strlen\" ^abi C " &
+                              "  [s : C/CStr] : C/Size)")
+    check chunk.ffiFns.len == 1
+    check chunk.ffiFns[0].name == "strlen"
+    check chunk.ffiFns[0].library == "libc"
+    check chunk.ffiFns[0].symbol == "strlen"
+    check chunk.ffiFns[0].abi == "C"
+    check "ffi-fns:" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "extern size_t strlen(const char * s);" in c
+    check "GeneStatus gene_ffi_strlen" in c
+    check "arg 0 s: C/CStr -> const char *" in c
+    check "result: C/Size -> GeneValue" in c
+    check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
+               "(native-fn strlen)")
+
+  test "ffi/struct declarations expose C layout metadata manifests":
+    let chunk = compileSource("(ffi/struct Timespec " &
+                              "  ^size 16 ^align 8 " &
+                              "  ^fields [[tv_sec C/Long ^offset 0] " &
+                              "           [tv_nsec C/Long ^offset 8]])")
+    check chunk.ffiStructs.len == 1
+    check chunk.ffiStructs[0].name == "Timespec"
+    check chunk.ffiStructs[0].layout == "C"
+    check chunk.ffiStructs[0].hasSize
+    check chunk.ffiStructs[0].size == 16
+    check chunk.ffiStructs[0].hasAlign
+    check chunk.ffiStructs[0].align == 8
+    check chunk.ffiStructs[0].fields.len == 2
+    check chunk.ffiStructs[0].fields[0].name == "tv_sec"
+    check chunk.ffiStructs[0].fields[0].typeExpr.print() == "C/Long"
+    check chunk.ffiStructs[0].fields[0].hasOffset
+    check chunk.ffiStructs[0].fields[0].offset == 0
+    check "ffi-structs:" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneFfiStructInfo" in c
+    check "typedef struct GeneFfiStructFieldInfo" in c
+    check "typedef struct Timespec {" in c
+    check "long tv_sec;" in c
+    check "_Static_assert(sizeof(Timespec) == 16, " &
+      "\"ffi/struct Timespec size mismatch\");" in c
+    check "_Static_assert(GENE_ALIGNOF(Timespec) == 8, " &
+      "\"ffi/struct Timespec align mismatch\");" in c
+    check "_Static_assert(offsetof(Timespec, tv_nsec) == 8, " &
+      "\"ffi/struct Timespec.tv_nsec offset mismatch\");" in c
+    check "static const GeneFfiStructInfo gene_ffi_structs[] = {" in c
+    check "{\"Timespec\", \"C\", 16, 8, 2}," in c
+    check "{\"Timespec\", \"tv_sec\", \"C/Long\", 0}," in c
+    check_eval("(ffi/struct Timespec ^fields [[tv_sec C/Long]]) Timespec",
+               "Timespec")
+
+  test "ffi/union declarations expose C layout metadata manifests":
+    let chunk = compileSource("(ffi/union IntOrDouble " &
+                              "  ^size 8 ^align 8 " &
+                              "  ^fields [[i C/Int] [d C/Double]])")
+    check chunk.ffiUnions.len == 1
+    check chunk.ffiUnions[0].name == "IntOrDouble"
+    check chunk.ffiUnions[0].layout == "C"
+    check chunk.ffiUnions[0].hasSize
+    check chunk.ffiUnions[0].size == 8
+    check chunk.ffiUnions[0].hasAlign
+    check chunk.ffiUnions[0].align == 8
+    check chunk.ffiUnions[0].fields.len == 2
+    check chunk.ffiUnions[0].fields[0].name == "i"
+    check chunk.ffiUnions[0].fields[0].typeExpr.print() == "C/Int"
+    check "ffi-unions:" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneFfiUnionInfo" in c
+    check "typedef struct GeneFfiUnionFieldInfo" in c
+    check "typedef union IntOrDouble {" in c
+    check "int i;" in c
+    check "double d;" in c
+    check "_Static_assert(sizeof(IntOrDouble) == 8, " &
+      "\"ffi/union IntOrDouble size mismatch\");" in c
+    check "_Static_assert(GENE_ALIGNOF(IntOrDouble) == 8, " &
+      "\"ffi/union IntOrDouble align mismatch\");" in c
+    check "static const GeneFfiUnionInfo gene_ffi_unions[] = {" in c
+    check "{\"IntOrDouble\", \"C\", 8, 8, 2}," in c
+    check "{\"IntOrDouble\", \"i\", \"C/Int\"}," in c
+    check_eval("(ffi/union IntOrDouble ^fields [[i C/Int]]) IntOrDouble",
+               "IntOrDouble")
+    expect GeneError:
+      discard compileSource("(ffi/union Bad ^fields [[i C/Int ^offset 0]])")
+
+  test "callback and dynamic FFI signatures expose metadata manifests":
+    let chunk = compileSource(
+      "(ffi/callback Comparator " &
+      "  [lhs : (C/Ptr C/Void) rhs : (C/Ptr C/Void)] : C/Int) " &
+      "(ffi/signature RuntimeCall ^abi C " &
+      "  [value : Any] : C/Int)")
+    check chunk.ffiSignatures.len == 2
+    check chunk.ffiSignatures[0].name == "Comparator"
+    check chunk.ffiSignatures[0].kind == fskCallback
+    check not chunk.ffiSignatures[0].escaping
+    check not chunk.ffiSignatures[0].runtimeConstructible
+    check chunk.ffiSignatures[1].name == "RuntimeCall"
+    check chunk.ffiSignatures[1].kind == fskDynamic
+    check chunk.ffiSignatures[1].runtimeConstructible
+    check "ffi-signatures:" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneFfiSignatureInfo" in c
+    check "static const GeneFfiSignatureInfo gene_ffi_signatures[] = {" in c
+    check "{\"Comparator\", \"callback\", \"C\", " &
+      "\"lhs:(C/Ptr C/Void),rhs:(C/Ptr C/Void)\", \"C/Int\", false, false}," in c
+    check "{\"RuntimeCall\", \"dynamic\", \"C\", \"value:Any\", " &
+      "\"C/Int\", false, true}," in c
+
 suite "spec — strings from design":
   test "strings expose explicit chars and bytes iteration":
     check_eval("[(chars \"Aé\") (bytes \"Aé\")]",
@@ -343,6 +544,24 @@ suite "spec — numeric boundaries from design":
                                 "(buffer C/Int32 [1]))"),
                   newGlobalScope())
 
+  test "Device buffers are opaque native-compute handles":
+    check_eval("(var b (Device/buffer Device/Compute \"mock\" C/Int64 4)) " &
+               "[(Device/Buffer/backend b) " &
+               " (Device/Buffer/elem-type b) " &
+               " (Device/Buffer/len b) " &
+               " ((fn [buf : Device/Buffer] (Device/Buffer/len buf)) b) " &
+               " ((fn [buf : (Device/Buffer C/Int64)] " &
+               "    (Device/Buffer/elem-type buf)) b) " &
+               " b]",
+               "[\"mock\" C/Int64 4 4 C/Int64 (device-buffer mock C/Int64 4)]")
+    expect GeneError:
+      discard run(compileSource("(Device/buffer nil \"mock\" C/Int64 1)"),
+                  newGlobalScope())
+    check_eval("(var b (Device/buffer Device/Compute \"mock\" C/Int64 4)) " &
+               "(try ((fn [buf : (Device/Buffer F64)] buf) b) " &
+               "catch (TypeError ^expected e) e)",
+               "\"(Device/Buffer F64)\"")
+
   test "FFI runtime loading requires explicit authority":
     check_eval("Ffi/Load", "(ffi-type Load)")
     let scope = newGlobalScope()
@@ -443,6 +662,24 @@ suite "spec — generic functions from design":
                "  (Buffer/get b 0)) " &
                "(first (buffer [5 6]))",
                "5")
+
+  test "generic calls can request selective monomorphization metadata":
+    let chunk = compileSource("(fn (identity item) [x : item] : item x) " &
+                              "(identity ^types [Int] 1)")
+    check chunk.monomorphizations.len == 1
+    check chunk.monomorphizations[0].functionName == "identity"
+    check chunk.monomorphizations[0].typeArgs[0].print() == "Int"
+    check "monomorphizations:" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "identity<Int>" in c
+    check "static const GeneMonomorphizationSpec gene_monomorphizations[] = {" in c
+    check "{\"identity\", \"Int\"}," in c
+    check_eval("(fn (identity item) [x : item] : item x) " &
+               "(identity ^types [Int] 1)",
+               "1")
+    expect GeneError:
+      discard compileSource("(fn (identity item) [x : item] : item x) " &
+                            "(identity ^types Int 1)")
 
 suite "spec — static effects from design":
   test "^effects rows are reserved in MVP":
@@ -671,6 +908,18 @@ suite "spec — streams from design":
                " (names ~ Stream/next) " &
                " (names ~ Stream/has_next)]",
                "[\"Ada\" \"Bob\" false]")
+
+  test "selector strict and default options make missing lookup explicit":
+    check_eval("(var fallback \"unknown\") " &
+               "[((select ^default fallback name) {^age 37}) " &
+               " ((select ^default fallback name) {^name nil})]",
+               "[\"unknown\" nil]")
+    check_eval("(try ((select ^strict true name) {^age 37}) " &
+               "catch {^message m} m)",
+               "\"selector lookup failed at segment: name\"")
+    check_eval("(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
+               "catch {^message m} m)",
+               "\"selector lookup failed at segment: name\"")
 
   test "list selectors expose fixed members":
     check_eval("(var xs [10 20 30]) " &
@@ -914,6 +1163,35 @@ suite "spec — actors from design":
                "(counter ~ actor/send 5) " &
                "(out ~ Cell/get)",
                "7")
+
+  test "actor snapshots expose idle state metadata":
+    check_eval("(fn handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
+               "  (actor/continue (+ state msg))) " &
+               "(var counter : (ActorRef Int) " &
+               "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(counter ~ actor/send 2) " &
+               "(counter ~ actor/send 5) " &
+               "(var snap (counter ~ actor/snapshot)) " &
+               "[snap/state snap/mailbox snap/closed snap/processing]",
+               "[7 0 false false]")
+
+  test "actor upgrade replaces idle handlers with migration rollback":
+    check_eval("(fn add [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
+               "  (actor/continue (+ state msg))) " &
+               "(fn mul [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
+               "  (actor/continue (* state msg))) " &
+               "(var counter : (ActorRef Int) " &
+               "  (actor/spawn ^init (fn [] 1) ^handle add)) " &
+               "(counter ~ actor/send 2) " &
+               "(actor/upgrade counter mul ^migrate (fn [state] (+ state 1))) " &
+               "(counter ~ actor/send 3) " &
+               "(var before (counter ~ actor/snapshot)) " &
+               "(var err (try (actor/upgrade counter 99) " &
+               "  catch (TypeError ^where w) w)) " &
+               "(counter ~ actor/send 2) " &
+               "(var after (counter ~ actor/snapshot)) " &
+               "[before/state err after/state]",
+               "[12 \"actor/upgrade handler\" 24]")
 
   test "actor stop closes the actor":
     check_eval("(var a : (ActorRef Int) " &
@@ -1228,6 +1506,24 @@ suite "spec — Env and eval from design":
                "           ^capabilities {^fs \"capability\" ^net \"closed\"})) " &
                "[(eval (quote fs) ^in e) (eval (quote net) ^in e)]",
                "[\"binding\" \"closed\"]")
+
+  test "runtime capabilities are opaque library values":
+    check_eval("[Fs/ReadDir " &
+               " (Capability/name Fs/ReadDir) " &
+               " ((fn [cap : Capability] (Capability/name cap)) Fs/WriteDir)]",
+               "[(capability Fs/ReadDir) \"Fs/ReadDir\" \"Fs/WriteDir\"]")
+    check_eval("(var e (env ^capabilities {^fs Fs/ReadDir})) " &
+               "(eval (quote (Capability/name fs)) ^in e)",
+               "\"Fs/ReadDir\"")
+    check_eval("(var ch (channel)) " &
+               "(try (ch ~ Channel/send Fs/ReadDir) " &
+               "catch (TypeError ^expected e) e)",
+               "\"Send\"")
+
+  test "runtime GC stats expose optimization diagnostics":
+    check_eval("(var stats (Runtime/gc-stats)) " &
+               "[stats/live-managed stats/rc-stats?]",
+               "[0 false]")
 
   test "eval policy can limit execution steps":
     check_eval("(type EvalPolicy ^props {^max-steps Int " &

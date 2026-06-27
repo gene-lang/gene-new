@@ -631,6 +631,17 @@ user/missing/name # => void
 
 `nil` is different: if a key exists and stores `nil`, selector access returns `nil`.
 
+Long-form selectors may opt into explicit missing-value handling:
+
+```gene
+((select ^default "unknown" user name) data) # returns default if any segment is missing
+((select ^strict true user name) data)       # raises if any segment is missing
+```
+
+`^default` is evaluated when the selector is constructed and is returned only
+for missing/`void` lookup. Present `nil` is still returned as `nil`. `^strict
+true` takes precedence over `^default`.
+
 ---
 
 ## 6. Streams, generators, and parser streams
@@ -1673,14 +1684,19 @@ finish current message
 → resume mailbox
 ```
 
-A future API may expose:
+The experimental API exposes:
 
 ```gene
 (actor/upgrade ref new-handler
   ^migrate migrate-state)
 ```
 
-An upgrade never replaces a handler while it is executing. Failure during validation or migration leaves the old handler/state active. This is post-MVP but should constrain actor and module version identity from the beginning.
+The MVP may expose an explicit experimental `(actor/snapshot ref)` operation
+for migration tooling. It is only valid at an idle actor safe point and returns
+the last committed private state plus mailbox/lifecycle metadata; it must not
+replace the normal message protocol for application-level state access.
+
+An upgrade never replaces a handler while it is executing. Failure during validation or migration leaves the old handler/state active. Full live migration policy is post-MVP but should constrain actor and module version identity from the beginning.
 
 ### 13.9 Concurrency scope
 
@@ -1694,7 +1710,7 @@ MVP concurrency includes:
 - `send`, `try-send`, and request/reply;
 - actor scope ownership and basic supervision.
 
-Deferred features include distributed actors, transparent remote references, work stealing across processes, selectable channel operations, ownership-transfer typing, transactional memory, reentrant actors, and live actor upgrades.
+Deferred features include distributed actors, transparent remote references, work stealing across processes, selectable channel operations, ownership-transfer typing, transactional memory, reentrant actors, and stronger live-migration policies.
 
 ---
 
@@ -2418,6 +2434,11 @@ GPU support should build on the same foundations rather than becoming a second u
 
 A GPU buffer is not a `C/Ptr` and should use a distinct device-specific type. CUDA, HIP, Metal, Vulkan, and accelerator libraries can first be exposed through native extension modules. Kernel syntax and compiler-generated device code are separate later design questions.
 
+MVP native-compute scaffolding exposes `Device/Compute` authority and opaque
+`Device/Buffer` handles with backend, element-type, and length metadata only.
+They are not `C/Ptr` values, do not expose raw memory access, and are intended
+as the stable boundary for later CUDA/HIP/Metal/Vulkan extension modules.
+
 ### 16.13 FFI MVP
 
 The first FFI milestone includes:
@@ -2563,6 +2584,10 @@ The v1 VM direction is retained and extended with mixed execution:
 - heap objects for nodes, strings, streams, closures, applications, packages, modules, namespaces, `Env` values, eval overlays, tasks, channels, actors, mailboxes, and boxed immediates with meta;
 - an M:N cooperative task scheduler with GC-aware suspension frames and worker-thread safepoints.
 
+Runtime diagnostics may expose read-only GC/RC counters such as
+`Runtime/gc-stats` so optimization and custom-GC work can be tested without
+exposing object layouts.
+
 `Any` uses dynamic representation. Type annotations enable optimization later: sealed layouts, unboxed fields, and specialized generic instantiations are post-MVP optimizations.
 
 `^sealed` is reserved for a later optimization promise: a type's instance layout is closed enough for flat representation. It is not required in MVP.
@@ -2656,7 +2681,7 @@ Deferred until after the first implementation slice:
 - actor supervision migration and live code replacement;
 - generic constraints, variance, higher-kinded types, and specialization policy;
 - static effect rows;
-- distributed actors and GPU/device-buffer design.
+- distributed actors and GPU kernel/device-execution policy.
 
 ---
 
@@ -2684,7 +2709,7 @@ Deferred until after the first implementation slice:
 - Native extensions use opaque `GeneValue`, explicit roots, and a versioned append-only runtime API table; Nim/VM heap layouts are never public ABI.
 - Temporary FFI marshalling is call-scoped. Retained foreign memory requires explicit pointer/buffer ownership and deterministic cleanup.
 - Escaping callbacks and arbitrary foreign-thread VM entry are deferred until scheduler/rooting rules are implemented.
-- GPU/native compute builds on native modules and typed buffers; device buffers and kernel compilation are later designs.
+- GPU/native compute builds on native modules, typed buffers, and opaque device-buffer handles; kernel compilation is a later design.
 - Typed functions/modules can be compiled incrementally to native code, with boxed runtime-helper fallback for dynamic operations.
 - Native code can call bytecode/dynamic Gene through a rooted `gene_call`-style trampoline; dynamic code calls native typed code through generated boundary adapters.
 - The first AOT backend should probably emit portable C. LLVM/JIT can follow after semantics and the native ABI stabilize.

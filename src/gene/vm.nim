@@ -19,6 +19,9 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value
 proc commonRuntimeTypeExpr(values: openArray[Value]): Value
 proc matchesBufferType(args: openArray[Value], value: Value,
                        scope: Scope): bool
+proc matchesDeviceBufferType(args: openArray[Value], value: Value,
+                             scope: Scope): bool
+proc valueImplementsCallable(value: Value, scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc builtinBinding(scope: Scope, name: string): Value
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value
@@ -395,6 +398,9 @@ proc getArg(named: NamedArgs, name: string): Value =
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value
+proc applyNativeCompiled(callee: Value, proto: FunctionProto,
+                         args: openArray[Value],
+                         named: NamedArgs): tuple[handled: bool, value: Value]
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
@@ -748,6 +754,15 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
   wakeChannelWaiters(args[0], wakeSenders = false)  # a new value may wake a parked receiver
   TRUE
 
+proc nativeChannelTrySend*(channel, item: Value, scope: Scope = nil): bool =
+  requireChannel("native channel try-send", channel)
+  if channel.channelClosed or channel.channelFull:
+    return false
+  channel.pushChannel(checkedChannelSendItem(channel, item,
+                                             "native channel item", scope))
+  wakeChannelWaiters(channel, wakeSenders = false)
+  true
+
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
@@ -781,6 +796,14 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
                                 scope)
   wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a parked sender
   item
+
+proc nativeChannelTryRecv*(channel: Value, scope: Scope = nil): Value =
+  requireChannel("native channel try-recv", channel)
+  if channel.channelLen == 0:
+    return VOID
+  result = checkedChannelItem(channel, channel.popChannel(),
+                              "native channel item", scope)
+  wakeChannelWaiters(channel, wakeSenders = true)
 
 proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/close", args)
@@ -1083,6 +1106,17 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     driveActor(args[0])
   TRUE
 
+proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
+  requireActor("native actor try-send", actor)
+  if actor.actorClosed or actor.actorFull:
+    return false
+  actor.pushActorMessage(checkedActorMessage(actor, message,
+                                             "native actor message", scope))
+  scheduleActor(actor, scope)
+  if not currentFiberActive:
+    driveActor(actor)
+  true
+
 proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "actor/ask expects 2 arguments, got " & $args.len)
@@ -1127,6 +1161,47 @@ proc biActorStop(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "actor/stop expects no arguments")
   newActorStop()
+
+proc biActorSnapshot(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("actor/snapshot", args)
+  requireActor("actor/snapshot", args[0])
+  let actor = args[0]
+  if actor.actorProcessing or actor.actorQueueLen > 0:
+    raise newException(GeneError, "actor/snapshot requires an idle actor")
+  var props = initOrderedTable[string, Value]()
+  props["state"] = actor.actorState
+  props["mailbox"] = newInt(actor.actorQueueLen)
+  props["closed"] = newBool(actor.actorClosed)
+  props["processing"] = newBool(actor.actorProcessing)
+  newNode(newSym("ActorSnapshot"), props = props, immutable = true)
+
+proc biActorUpgrade(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "actor/upgrade expects 2 arguments, got " & $args.len)
+  requireActor("actor/upgrade", args[0])
+  let scope = actorDispatchScope(call)
+  let actor = args[0]
+  let handler = args[1]
+  if actor.actorProcessing or actor.actorQueueLen > 0:
+    raise newException(GeneError, "actor/upgrade requires an idle actor")
+  if not handler.valueImplementsCallable(scope):
+    raiseTypeError("actor/upgrade handler", "Callable", handler, scope)
+  var migrate = NIL
+  for i, name in call[].namedNames:
+    if name == "migrate":
+      migrate = call[].namedValues[i]
+    else:
+      raise newException(GeneError,
+        "actor/upgrade got unexpected named argument: " & name)
+  var nextState = actor.actorState
+  if migrate.kind != vkNil:
+    if not migrate.valueImplementsCallable(scope):
+      raiseTypeError("actor/upgrade migrate", "Callable", migrate, scope)
+    var migrateArgs = [actor.actorState]
+    nextState = applyCall(migrate, migrateArgs, NamedArgs(), scope)
+  actor.setActorState(nextState)
+  actor.setActorHandler(handler)
+  NIL
 
 proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
@@ -1320,8 +1395,11 @@ proc freezeRejectName(value: Value): string =
   of vkCPtr: "C pointer"
   of vkCSlice: "C slice"
   of vkBuffer: "Buffer"
+  of vkDeviceBuffer: "Device/Buffer"
+  of vkCapability: "Capability"
   of vkFfiLoad: "Ffi/Load"
   of vkFfiLibrary: "Ffi/Library"
+  of vkFfiCallable: "Ffi/Callable"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
@@ -1347,8 +1425,8 @@ proc freezeValue(value: Value): Value =
             immutable = true)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
-     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkFfiLoad,
-     vkFfiLibrary:
+     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
+     vkFfiLoad, vkFfiLibrary, vkFfiCallable:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -1445,8 +1523,11 @@ proc declarationKind*(value: Value): string =
   of vkCPtr: "CPtr"
   of vkCSlice: "CSlice"
   of vkBuffer: "Buffer"
+  of vkDeviceBuffer: "DeviceBuffer"
+  of vkCapability: "Capability"
   of vkFfiLoad: "FfiLoad"
   of vkFfiLibrary: "FfiLibrary"
+  of vkFfiCallable: "FfiCallable"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -1937,6 +2018,10 @@ proc requireBuffer(name: string, value: Value) =
   if value.kind != vkBuffer:
     raise newException(GeneError, name & " expects a Buffer")
 
+proc requireDeviceBuffer(name: string, value: Value) =
+  if value.kind != vkDeviceBuffer:
+    raise newException(GeneError, name & " expects a Device/Buffer")
+
 proc bufferTypeExprArg(name: string, value: Value): Value =
   if value.kind == vkNode and value.head.isSymbol("c-abi-type") and
       value.body.len == 1 and value.body[0].kind == vkSymbol:
@@ -2039,6 +2124,40 @@ proc biBufferElemType(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Buffer/elem-type", args)
   requireBuffer("Buffer/elem-type", args[0])
   let elemType = args[0].bufferElemType
+  if elemType.kind == vkNil: newSym("Any") else: elemType
+
+proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 4:
+    raise newException(GeneError,
+      "Device/buffer expects 4 arguments, got " & $args.len)
+  if args[0].kind != vkCapability or args[0].capabilityName != "Device/Compute":
+    raise newException(GeneError,
+      "Device/buffer expects a Device/Compute capability")
+  if args[1].kind != vkString:
+    raiseTypeError("Device/buffer backend", "Str", args[1],
+                   if call == nil: nil else: call.dispatchScope)
+  let scope = if call == nil: nil else: call.dispatchScope
+  let elemType = closeTypeExpr(bufferTypeExprArg("Device/buffer elem-type", args[2]),
+                               scope)
+  let rawLen = requireInt64("Device/buffer length", args[3])
+  if rawLen < 0 or rawLen > int64(high(int)):
+    raise newException(GeneError, "Device/buffer length must be non-negative")
+  newDeviceBuffer(args[1].strVal, elemType, int(rawLen))
+
+proc biDeviceBufferLen(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Device/Buffer/len", args)
+  requireDeviceBuffer("Device/Buffer/len", args[0])
+  newInt(args[0].deviceBufferLen)
+
+proc biDeviceBufferBackend(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Device/Buffer/backend", args)
+  requireDeviceBuffer("Device/Buffer/backend", args[0])
+  newStr(args[0].deviceBufferBackend)
+
+proc biDeviceBufferElemType(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Device/Buffer/elem-type", args)
+  requireDeviceBuffer("Device/Buffer/elem-type", args[0])
+  let elemType = args[0].deviceBufferElemType
   if elemType.kind == vkNil: newSym("Any") else: elemType
 
 proc displayStr(v: Value, scope: Scope = nil): string =
@@ -2168,6 +2287,26 @@ proc biFfiOpen(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "ffi/open failed to load library: " & path)
   newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary)
 
+proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 4:
+    raise newException(GeneError,
+      "ffi/bind expects 4 arguments, got " & $args.len)
+  requireFfiLibrary("ffi/bind", args[0])
+  if args[0].ffiLibraryClosed:
+    raise newException(GeneError, "ffi/bind library is closed")
+  requireStr("ffi/bind symbol", args[1])
+  if args[2].kind != vkList:
+    raise newException(GeneError, "ffi/bind parameter types must be a list")
+  let symbol = args[1].strVal
+  if symbol.len == 0:
+    raise newException(GeneError, "ffi/bind symbol must not be empty")
+  let address = symAddr(cast[LibHandle](args[0].ffiLibraryHandle),
+                        symbol.cstring)
+  if address == nil:
+    raise newException(GeneError, "ffi/bind symbol not found: " & symbol)
+  newFfiCallable(symbol, symbol, address, args[0], args[2].listItems,
+                 args[3])
+
 proc biFfiLibraryClose(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Ffi/Library/close", args)
   requireFfiLibrary("Ffi/Library/close", args[0])
@@ -2187,6 +2326,27 @@ proc biFfiLibraryPath(args: openArray[Value]): Value {.nimcall.} =
 proc requireCPtr(name: string, value: Value) =
   if value.kind != vkCPtr:
     raise newException(GeneError, name & " expects a C pointer")
+
+proc requireCapability(name: string, value: Value) =
+  if value.kind != vkCapability:
+    raise newException(GeneError, name & " expects a Capability")
+
+proc biCapabilityName(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Capability/name", args)
+  requireCapability("Capability/name", args[0])
+  newStr(args[0].capabilityName)
+
+proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "Runtime/gc-stats expects no arguments")
+  var entries = initOrderedTable[string, Value]()
+  entries["live-managed"] = newInt(managedLiveCount())
+  entries["rc-stats?"] =
+    when defined(geneRcStats):
+      TRUE
+    else:
+      FALSE
+  newMap(entries, immutable = true)
 
 proc biCPtrClose(args: openArray[Value]): Value {.nimcall.} =
   requireOne("C/close", args)
@@ -2364,6 +2524,34 @@ proc buildBuiltins(app: Application): Scope =
   bufferScope.define("to_list", newNativeFn("Buffer/to_list", biBufferToList))
   bufferScope.define("elem-type", newNativeFn("Buffer/elem-type", biBufferElemType))
   result.define("Buffer", newNamespace("Buffer", bufferScope))
+  let deviceScope = newScope(result)
+  deviceScope.define("Compute", newCapability("Device/Compute"))
+  deviceScope.define("buffer", newNativeCallFn("Device/buffer", biDeviceBuffer,
+                                               acceptsNamed = false))
+  let deviceBufferScope = newScope(deviceScope)
+  deviceBufferScope.define("len",
+                           newNativeFn("Device/Buffer/len", biDeviceBufferLen))
+  deviceBufferScope.define("backend",
+                           newNativeFn("Device/Buffer/backend",
+                                       biDeviceBufferBackend))
+  deviceBufferScope.define("elem-type",
+                           newNativeFn("Device/Buffer/elem-type",
+                                       biDeviceBufferElemType))
+  deviceScope.define("Buffer", newNamespace("Device/Buffer", deviceBufferScope))
+  result.define("Device", newNamespace("Device", deviceScope))
+  let capabilityScope = newScope(result)
+  capabilityScope.define("name",
+                         newNativeFn("Capability/name", biCapabilityName))
+  result.define("Capability", newNamespace("Capability", capabilityScope))
+  let runtimeScope = newScope(result)
+  runtimeScope.define("gc-stats",
+                      newNativeFn("Runtime/gc-stats", biRuntimeGcStats))
+  result.define("Runtime", newNamespace("Runtime", runtimeScope))
+  let fsScope = newScope(result)
+  fsScope.define("ReadDir", newCapability("Fs/ReadDir"))
+  fsScope.define("WriteDir", newCapability("Fs/WriteDir"))
+  fsScope.define("ReadWriteDir", newCapability("Fs/ReadWriteDir"))
+  result.define("Fs", newNamespace("Fs", fsScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
   cellScope.define("get", newNativeFn("Cell/get", biCellGet))
@@ -2392,9 +2580,11 @@ proc buildBuiltins(app: Application): Scope =
   result.define("C", newNamespace("C", cScope))
   let ffiScope = newScope(result)
   ffiScope.define("open", newNativeFn("ffi/open", biFfiOpen))
+  ffiScope.define("bind", newNativeFn("ffi/bind", biFfiBind))
   result.define("ffi", newNamespace("ffi", ffiScope))
   let ffiTypeScope = newScope(result)
   ffiTypeScope.define("Load", ffiTypeValue("Load"))
+  ffiTypeScope.define("Callable", ffiTypeValue("Callable"))
   let ffiLibraryScope = newScope(ffiTypeScope)
   ffiLibraryScope.define("close",
                          newNativeFn("Ffi/Library/close", biFfiLibraryClose))
@@ -2434,6 +2624,8 @@ proc buildBuiltins(app: Application): Scope =
   actorScope.define("ask", newNativeCallFn("actor/ask", biActorAsk))
   actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
   actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
+  actorScope.define("snapshot", newNativeFn("actor/snapshot", biActorSnapshot))
+  actorScope.define("upgrade", newNativeCallFn("actor/upgrade", biActorUpgrade))
   result.define("actor", newNamespace("actor", actorScope))
   let replyToScope = newScope(result)
   replyToScope.define("send", newNativeCallFn("ReplyTo/send", biReplyToSend,
@@ -2984,7 +3176,8 @@ proc builtinBinding(scope: Scope, name: string): Value =
   root.lookup(name)
 
 proc isBuiltinCallable(value: Value): bool =
-  value.kind in {vkFunction, vkNativeFn, vkType, vkProtocolMessage} or
+  value.kind in {vkFunction, vkNativeFn, vkFfiCallable, vkType,
+                 vkProtocolMessage} or
     (value.kind == vkNode and value.isSelector)
 
 proc valueImplementsCallable(value: Value, scope: Scope): bool =
@@ -3160,7 +3353,7 @@ proc isSendableValue(value: Value, scope: Scope,
     true
   of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
      vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice, vkBuffer,
-     vkFfiLoad, vkFfiLibrary:
+     vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -3631,6 +3824,48 @@ type
     reply: Value
     scope: Scope
     deadline: MonoTime
+
+proc stackFrameValue(name, kind: string): Value =
+  var props = initOrderedTable[string, Value]()
+  props["name"] = newStr(name)
+  props["kind"] = newStr(kind)
+  newNode(newSym("StackFrame"), props = props, immutable = true)
+
+proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
+  if e == nil or traceFrames.len == 0 or not e.hasErrVal or
+      e.errVal.kind != vkNode:
+    return
+  var props = copyEntries(e.errVal.props)
+  var items: seq[Value]
+  if props.hasKey("trace") and props["trace"].kind == vkList:
+    items = copyItems(props["trace"].listItems)
+  for frame in traceFrames:
+    items.add frame
+  props["trace"] = newList(items, immutable = true)
+  e.errVal = newNode(e.errVal.head, props = props,
+                     body = copyItems(e.errVal.body),
+                     meta = copyEntries(e.errVal.meta),
+                     immutable = e.errVal.nodeImmutable)
+
+proc appendVmTrace(e: ref GeneError, curFnName: string,
+                   frames: openArray[Frame]) =
+  var traceFrames: seq[Value]
+  if curFnName.len > 0:
+    traceFrames.add stackFrameValue(curFnName, "bytecode")
+  if frames.len > 0:
+    for i in countdown(frames.len - 1, 0):
+      if frames[i].fnName.len > 0:
+        traceFrames.add stackFrameValue(frames[i].fnName, "bytecode")
+  appendTraceFrames(e, traceFrames)
+
+proc appendNativeTrace(e: ref GeneError, calleeName: string,
+                       proto: FunctionProto) =
+  let kind =
+    if proto.nativeOp != ncoNone or proto.aotFrameKind == afkTypedNative:
+      "typed-native"
+    else:
+      "native"
+  appendTraceFrames(e, [stackFrameValue(calleeName, kind)])
 
 # Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
 # work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
@@ -4357,6 +4592,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
+              if proto.nativeOp != ncoNone:
+                var nativeNamed: NamedArgs
+                if namedCount > 0:
+                  nativeNamed.names = inst[].names
+                  nativeNamed.values = newSeq[Value](namedCount)
+                  for i in 0 ..< namedCount:
+                    nativeNamed.values[i] = stack[calleeIndex + 1 + i]
+                let native =
+                  if argCount == 0:
+                    applyNativeCompiled(callee, proto, [], nativeNamed)
+                  else:
+                    applyNativeCompiled(callee, proto,
+                                        stack.toOpenArray(argsStart, stack.high),
+                                        nativeNamed)
+                if native.handled:
+                  stack.setLen(calleeIndex)
+                  stack.add native.value
+                  continue
               if namedCount == 0 and proto.simpleCall:
                 # Hottest path: arity + positional slots only.
                 let positional = callee.fnParams
@@ -4381,7 +4634,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
                 curErrorTypes = @[]
-                curFnName = ""
+                curFnName = callee.fnName
                 curFrameKind = fkNormal
                 evalBudget = callScope.evalBudget
                 continue
@@ -4415,7 +4668,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
                 curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
-                curFnName = if proto.checksErrors: callee.fnName else: ""
+                curFnName = callee.fnName
                 curFrameKind = fkNormal
                 evalBudget = bound.scope.evalBudget
                 continue
@@ -4484,6 +4737,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let fnProto = FunctionProto(code)
+              if fnProto.nativeOp != ncoNone:
+                let native = applyNativeCompiled(callee, fnProto, args, named)
+                if native.handled:
+                  stack.setLen(calleeIndex)
+                  stack.add native.value
+                  continue
               if namedCount == 0 and fnProto.simpleCall and
                   args.len == callee.fnParams.len:
                 let positional = callee.fnParams
@@ -4753,6 +5012,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # boundaries on the function frames crossed. A catch that fires resumes the
       # outer dispatch loop with its result; otherwise the error propagates out.
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
+      appendVmTrace(err, curFnName, frames)
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5348,9 +5608,117 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   else:
     VOID
 
+proc checkedAddI64(a, b: int64, outValue: var int64): bool {.inline.} =
+  if (b > 0 and a > high(int64) - b) or
+     (b < 0 and a < low(int64) - b):
+    return false
+  outValue = a + b
+  true
+
+proc checkedSubI64(a, b: int64, outValue: var int64): bool {.inline.} =
+  if (b > 0 and a < low(int64) + b) or
+     (b < 0 and a > high(int64) + b):
+    return false
+  outValue = a - b
+  true
+
+proc absMagnitudeI64(v: int64): uint64 {.inline.} =
+  if v < 0: uint64(-(v + 1)) + 1'u64 else: uint64(v)
+
+proc checkedMulI64(a, b: int64, outValue: var int64): bool {.inline.} =
+  if a == 0 or b == 0:
+    outValue = 0
+    return true
+  if a == low(int64) and b == -1: return false
+  if b == low(int64) and a == -1: return false
+  let aa = absMagnitudeI64(a)
+  let bb = absMagnitudeI64(b)
+  let negative = (a < 0) xor (b < 0)
+  let limit = if negative: 1'u64 shl 63 else: uint64(high(int64))
+  if aa > limit div bb:
+    return false
+  let mag = aa * bb
+  if negative:
+    outValue = if mag == (1'u64 shl 63): low(int64) else: -int64(mag)
+  else:
+    outValue = int64(mag)
+  true
+
+proc nativeI64Result(op: NativeCompileOp, lhs, rhs: Value): Value =
+  var nativeResult: int64
+  let ok =
+    case op
+    of ncoI64Add: checkedAddI64(lhs.intVal, rhs.intVal, nativeResult)
+    of ncoI64Sub: checkedSubI64(lhs.intVal, rhs.intVal, nativeResult)
+    of ncoI64Mul: checkedMulI64(lhs.intVal, rhs.intVal, nativeResult)
+    else: false
+  if ok:
+    return newInt(nativeResult)
+  case op
+  of ncoI64Add: intAdd(lhs, rhs)
+  of ncoI64Sub: intSub(lhs, rhs)
+  of ncoI64Mul: intMul(lhs, rhs)
+  else: NIL
+
+proc nativeF64Result(op: NativeCompileOp, lhs, rhs: Value): Value =
+  case op
+  of ncoF64Add: newFloat(lhs.floatVal + rhs.floatVal)
+  of ncoF64Sub: newFloat(lhs.floatVal - rhs.floatVal)
+  of ncoF64Mul: newFloat(lhs.floatVal * rhs.floatVal)
+  else: NIL
+
+proc applyNativeCompiled(callee: Value, proto: FunctionProto,
+                         args: openArray[Value],
+                         named: NamedArgs): tuple[handled: bool, value: Value] =
+  if proto.nativeOp == ncoNone:
+    return (false, NIL)
+  if named.len != 0:
+    return (false, NIL)
+  try:
+    let positional = callee.fnParams
+    if args.len != positional.len:
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
+        ".." & $positional.len & " argument(s), got " & $args.len)
+
+    var lhs = args[0]
+    var rhs = args[1]
+    if proto.hasParamTypes and proto.paramTypes[0].kind != vkNil:
+      lhs = adaptBoundary("parameter '" & positional[0] & "'",
+                          proto.paramTypes[0], lhs, callee.fnScope)
+    if proto.hasParamTypes and proto.paramTypes[1].kind != vkNil:
+      rhs = adaptBoundary("parameter '" & positional[1] & "'",
+                          proto.paramTypes[1], rhs, callee.fnScope)
+
+    let resultValue =
+      case proto.nativeOp
+      of ncoIntAdd:
+        intAdd(lhs, rhs)
+      of ncoIntSub:
+        intSub(lhs, rhs)
+      of ncoIntMul:
+        intMul(lhs, rhs)
+      of ncoI64Add, ncoI64Sub, ncoI64Mul:
+        nativeI64Result(proto.nativeOp, lhs, rhs)
+      of ncoF64Add, ncoF64Sub, ncoF64Mul:
+        nativeF64Result(proto.nativeOp, lhs, rhs)
+      of ncoNone:
+        NIL
+
+    if proto.hasReturnType:
+      return (true, adaptBoundary("return from '" & callee.fnName & "'",
+                                  proto.returnType, resultValue, callee.fnScope))
+    return (true, resultValue)
+  except GeneError as e:
+    appendNativeTrace(e, callee.fnName, proto)
+    raise
+
 proc typeExprLabel(expr: Value): string =
   if expr.kind == vkNil:
     return "Any"
+  if expr.kind == vkNode and expr.head.isSymbol("c-abi-type") and
+      expr.body.len == 1 and expr.body[0].kind == vkSymbol:
+    return "C/" & expr.body[0].symVal
   if expr.kind == vkNode and expr.head.isSymbol("path"):
     var parts: seq[string]
     for part in expr.body:
@@ -5394,6 +5762,12 @@ proc runtimeTypeExpr(value: Value): Value =
       newSym("Buffer")
     else:
       typeNode("Buffer", @[elemType])
+  of vkDeviceBuffer:
+    let elemType = value.deviceBufferElemType
+    if elemType.kind == vkNil:
+      newSym("Device/Buffer")
+    else:
+      typeNode("Device/Buffer", @[elemType])
   of vkMap:
     var values: seq[Value]
     for _, item in value.mapEntries:
@@ -5465,8 +5839,10 @@ proc runtimeTypeExpr(value: Value): Value =
       if value.cSliceTargetType.kind == vkNil: newSym("Any")
       else: value.cSliceTargetType
     typeNode("C/Slice", @[targetType])
+  of vkCapability: newSym("Capability")
   of vkFfiLoad: newSym("Ffi/Load")
   of vkFfiLibrary: newSym("Ffi/Library")
+  of vkFfiCallable: newSym("Ffi/Callable")
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -5537,6 +5913,21 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
         if expr.body[0].kind == vkSymbol and expr.body[0].symVal in typeParams:
           return bindings.bindTypeParam(expr.body[0].symVal, itemType)
         return matchesBufferType(expr.body, value, scope)
+      of "Device/Buffer":
+        if value.kind != vkDeviceBuffer:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Device/Buffer T) expects one item type")
+        let itemType =
+          if value.deviceBufferElemType.kind == vkNil:
+            newSym("Any")
+          else:
+            value.deviceBufferElemType
+        if expr.body[0].kind == vkSymbol and expr.body[0].symVal in typeParams:
+          return bindings.bindTypeParam(expr.body[0].symVal, itemType)
+        return matchesDeviceBufferType(expr.body, value, scope)
       of "Map", "PropMap":
         if value.kind != vkMap:
           return false
@@ -5829,10 +6220,16 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkList)
   of "Buffer":
     (true, value.kind == vkBuffer)
+  of "Device/Buffer":
+    (true, value.kind == vkDeviceBuffer)
+  of "Capability":
+    (true, value.kind == vkCapability)
   of "Ffi/Load":
     (true, value.kind == vkFfiLoad)
   of "Ffi/Library":
     (true, value.kind == vkFfiLibrary)
+  of "Ffi/Callable":
+    (true, value.kind == vkFfiCallable)
   of "Map", "PropMap":
     (true, value.kind == vkMap)
   of "Gene", "Node":
@@ -5844,7 +6241,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   of "Selector":
     (true, value.kind == vkNode and value.isSelector)
   of "Callable":
-    (true, value.kind in {vkFunction, vkNativeFn, vkType, vkProtocolMessage} or
+    (true, value.kind in {vkFunction, vkNativeFn, vkFfiCallable, vkType,
+                          vkProtocolMessage} or
       (value.kind == vkNode and value.isSelector))
   of "Type":
     (true, value.kind == vkType)
@@ -5904,6 +6302,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         return newSym("C/" & expr.body[1].symVal)
       if expr.body[0].isSymbol("Ffi"):
         return newSym("Ffi/" & expr.body[1].symVal)
+      if expr.body[0].isSymbol("Device"):
+        return newSym("Device/" & expr.body[1].symVal)
     let closedHead = closeTypeExpr(expr.head, scope)
     var changed = closedHead.bits != expr.head.bits
     var props = initOrderedTable[string, Value]()
@@ -6009,6 +6409,22 @@ proc matchesBufferType(args: openArray[Value], value: Value,
     return false
   typeExprEqual(expected, closeTypeExpr(actual, value.bufferElemScope))
 
+proc matchesDeviceBufferType(args: openArray[Value], value: Value,
+                             scope: Scope): bool =
+  if value.kind != vkDeviceBuffer:
+    return false
+  if args.len == 0:
+    return true
+  if args.len != 1:
+    raise newException(GeneError, "(Device/Buffer T) expects one item type")
+  let expected = closeTypeExpr(args[0], scope)
+  if expected.isAnyTypeValue:
+    return true
+  let actual = value.deviceBufferElemType
+  if actual.kind == vkNil or actual.isAnyTypeValue:
+    return false
+  typeExprEqual(expected, closeTypeExpr(actual, scope))
+
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   if expr.kind == vkNil:
     return true
@@ -6052,6 +6468,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         return matchesCSliceType(expr.head.symVal, expr.body, value, scope)
       of "Buffer":
         return matchesBufferType(expr.body, value, scope)
+      of "Device/Buffer":
+        return matchesDeviceBufferType(expr.body, value, scope)
       of "|":
         for alt in expr.body:
           if matchesTypeExpr(alt, value, scope):
@@ -6283,12 +6701,30 @@ proc applySelectorCallStage(stage, target: Value): Value =
     callArgs.add stage.body[i]
   applyCall(stage.body[0], callArgs, NamedArgs())
 
+proc selectorStrict(selector: Value): bool =
+  if not selector.props.hasKey("strict"):
+    return false
+  let value = selector.props["strict"]
+  if value.kind != vkBool:
+    raise newException(GeneError, "selector ^strict must be Bool")
+  value.boolVal
+
+proc selectorMissingResult(selector: Value, segment: Value): Value =
+  if selector.selectorStrict:
+    raise newException(GeneError,
+      "selector lookup failed at segment: " & segment.print())
+  if selector.props.hasKey("default"):
+    selector.props["default"]
+  else:
+    VOID
+
 proc applySelector(selector, target: Value): Value =
+  let strict = selector.selectorStrict
   result = target
   for segment in selector.body:
     result =
       case segment.kind
-      of vkFunction, vkNativeFn:
+      of vkFunction, vkNativeFn, vkFfiCallable:
         block:
           var callArgs = [result]
           applyCall(segment, callArgs, NamedArgs())
@@ -6306,7 +6742,239 @@ proc applySelector(selector, target: Value): Value =
       else:
         staticLookup(result, segment)
     if result.kind == vkVoid:
-      return VOID
+      if strict:
+        raise newException(GeneError,
+          "selector lookup failed at segment: " & segment.print())
+      return selector.selectorMissingResult(segment)
+
+proc ensureNoInteriorNul(name: string, text: string) =
+  for ch in text:
+    if ch == '\0':
+      raise newException(GeneError, name & " rejects strings with interior NUL")
+
+proc ffiCIntArg(name: string, value: Value): cint =
+  let raw = requireInt64(name, value)
+  if raw < int64(low(cint)) or raw > int64(high(cint)):
+    raise newException(GeneError, name & " is out of C/Int range")
+  cint(raw)
+
+proc ffiCSizeArg(name: string, value: Value): csize_t =
+  let raw = requireInt64(name, value)
+  if raw < 0:
+    raise newException(GeneError, name & " is out of C/Size range")
+  when sizeof(csize_t) < sizeof(int64):
+    if raw > int64(high(csize_t)):
+      raise newException(GeneError, name & " is out of C/Size range")
+  csize_t(raw)
+
+proc ffiCStrArg(name: string, value: Value): cstring =
+  if value.kind != vkString:
+    raiseTypeError(name, "Str", value, nil)
+  let text = value.strVal
+  ensureNoInteriorNul(name, text)
+  text.cstring
+
+proc isFfiPtrLabel(label: string): bool =
+  label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
+    label.startsWith("(C/ConstPtr ") or label.startsWith("(C/NullableConstPtr ")
+
+proc isFfiNullablePtrLabel(label: string): bool =
+  label.startsWith("(C/NullablePtr ") or
+    label.startsWith("(C/NullableConstPtr ")
+
+proc ffiPointerTarget(label: string): Value =
+  if label.endsWith(")") and label.startsWith("("):
+    let space = label.find(' ')
+    if space >= 0 and space + 1 < label.high:
+      return newSym(label[(space + 1) ..< label.high])
+  NIL
+
+proc ffiPointerResult(label: string, address: pointer): Value =
+  if address == nil and not isFfiNullablePtrLabel(label):
+    raise newException(GeneError, "FFI returned null for non-null pointer result")
+  if label.startsWith("(C/ConstPtr ") or
+      label.startsWith("(C/NullableConstPtr "):
+    newCConstPtr(address, ffiPointerTarget(label))
+  else:
+    newCPtr(address, ffiPointerTarget(label))
+
+proc ffiPointerArg(name, label: string, typeExpr, value: Value): pointer =
+  let checked = adaptBoundary(name, typeExpr, value, nil)
+  if checked.kind == vkNil and isFfiNullablePtrLabel(label):
+    return nil
+  if checked.kind != vkCPtr:
+    raiseTypeError(name, label, value, nil)
+  checked.cPtrAddress
+
+proc applyFfiCallable(callee: Value, args: openArray[Value],
+                      named: NamedArgs): Value =
+  if named.len != 0:
+    raise newException(GeneError,
+      "FFI callable '" & callee.ffiCallableName & "' does not accept named arguments")
+  if callee.ffiCallableLibrary.ffiLibraryClosed:
+    raise newException(GeneError,
+      "FFI callable '" & callee.ffiCallableName & "' library is closed")
+  let params = callee.ffiCallableParamTypes
+  if args.len != params.len:
+    raise newException(GeneError,
+      "FFI callable '" & callee.ffiCallableName & "' expects " &
+      $params.len & " argument(s), got " & $args.len)
+  var paramLabels: seq[string]
+  for param in params:
+    paramLabels.add typeExprLabel(param)
+  let returnLabel = typeExprLabel(callee.ffiCallableReturnType)
+  if paramLabels.len == 0:
+    case returnLabel
+    of "C/Int":
+      type VoidIntProc = proc(): cint {.cdecl.}
+      let fn = cast[VoidIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
+    of "C/Long":
+      type VoidLongProc = proc(): clong {.cdecl.}
+      let fn = cast[VoidLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
+    of "C/Size":
+      type VoidSizeProc = proc(): csize_t {.cdecl.}
+      let fn = cast[VoidSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type VoidPtrProc = proc(): pointer {.cdecl.}
+        let fn = cast[VoidPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn())
+  if paramLabels.len == 1 and paramLabels[0] == "C/Int":
+    let arg0 = ffiCIntArg("FFI argument 0 for '" & callee.ffiCallableName & "'",
+                          args[0])
+    case returnLabel
+    of "C/Int":
+      type IntIntProc = proc(x: cint): cint {.cdecl.}
+      let fn = cast[IntIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type IntLongProc = proc(x: cint): clong {.cdecl.}
+      let fn = cast[IntLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Size":
+      type IntSizeProc = proc(x: cint): csize_t {.cdecl.}
+      let fn = cast[IntSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    else:
+      discard
+  if paramLabels.len == 1 and isFfiPtrLabel(paramLabels[0]):
+    let arg0 = ffiPointerArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
+    case returnLabel
+    of "C/Int":
+      type PtrIntProc = proc(p: pointer): cint {.cdecl.}
+      let fn = cast[PtrIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type PtrLongProc = proc(p: pointer): clong {.cdecl.}
+      let fn = cast[PtrLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Size":
+      type PtrSizeProc = proc(p: pointer): csize_t {.cdecl.}
+      let fn = cast[PtrSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    else:
+      discard
+  if paramLabels.len == 1 and paramLabels[0] == "C/CStr":
+    let ctext = ffiCStrArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Size":
+      type CStrSizeProc = proc(s: cstring): csize_t {.cdecl.}
+      let fn = cast[CStrSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/Int":
+      type CStrIntProc = proc(s: cstring): cint {.cdecl.}
+      let fn = cast[CStrIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type CStrPtrProc = proc(s: cstring): pointer {.cdecl.}
+        let fn = cast[CStrPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(ctext))
+  if paramLabels.len == 2 and paramLabels[0] == "C/CStr" and
+      paramLabels[1] == "C/CStr":
+    let arg0 = ffiCStrArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    let arg1 = ffiCStrArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", args[1])
+    case returnLabel
+    of "C/Int":
+      type CStrCStrIntProc = proc(a, b: cstring): cint {.cdecl.}
+      let fn = cast[CStrCStrIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Size":
+      type CStrCStrSizeProc = proc(a, b: cstring): csize_t {.cdecl.}
+      let fn = cast[CStrCStrSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type CStrCStrPtrProc = proc(a, b: cstring): pointer {.cdecl.}
+        let fn = cast[CStrCStrPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1))
+  if paramLabels.len == 2 and paramLabels[0] == "C/CStr" and
+      paramLabels[1] == "C/Int":
+    let arg0 = ffiCStrArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    let arg1 = ffiCIntArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", args[1])
+    case returnLabel
+    of "C/Int":
+      type CStrIntIntProc = proc(s: cstring, x: cint): cint {.cdecl.}
+      let fn = cast[CStrIntIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Size":
+      type CStrIntSizeProc = proc(s: cstring, x: cint): csize_t {.cdecl.}
+      let fn = cast[CStrIntSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type CStrIntPtrProc = proc(s: cstring, x: cint): pointer {.cdecl.}
+        let fn = cast[CStrIntPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1))
+  if paramLabels.len == 3 and isFfiPtrLabel(paramLabels[0]) and
+      paramLabels[1] == "C/Int" and paramLabels[2] == "C/Size":
+    let arg0 = ffiPointerArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
+    let arg1 = ffiCIntArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", args[1])
+    let arg2 = ffiCSizeArg("FFI argument 2 for '" &
+      callee.ffiCallableName & "'", args[2])
+    case returnLabel
+    of "C/Int":
+      type PtrIntSizeIntProc = proc(p: pointer, x: cint, n: csize_t): cint {.cdecl.}
+      let fn = cast[PtrIntSizeIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Size":
+      type PtrIntSizeSizeProc = proc(p: pointer, x: cint, n: csize_t): csize_t {.cdecl.}
+      let fn = cast[PtrIntSizeSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type PtrIntSizePtrProc = proc(p: pointer, x: cint, n: csize_t): pointer {.cdecl.}
+        let fn = cast[PtrIntSizePtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1, arg2))
+  if paramLabels.len == 3 and isFfiPtrLabel(paramLabels[0]) and
+      isFfiPtrLabel(paramLabels[1]) and paramLabels[2] == "C/Size":
+    let arg0 = ffiPointerArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
+    let arg1 = ffiPointerArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", paramLabels[1], params[1], args[1])
+    let arg2 = ffiCSizeArg("FFI argument 2 for '" &
+      callee.ffiCallableName & "'", args[2])
+    case returnLabel
+    of "C/Int":
+      type PtrPtrSizeIntProc = proc(a, b: pointer, n: csize_t): cint {.cdecl.}
+      let fn = cast[PtrPtrSizeIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    else:
+      discard
+  raise newException(GeneError,
+    "unsupported dynamic FFI signature for '" & callee.ffiCallableName &
+    "': [" & paramLabels.join(",") & "] -> " & returnLabel)
 
 proc callNamedMap(named: NamedArgs): Value =
   var entries = initOrderedTable[string, Value]()
@@ -6503,12 +7171,17 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                           dispatchScope: dispatchScope,
                           site: site)
     callImpl(args, addr call)
+  of vkFfiCallable:
+    applyFfiCallable(callee, args, named)
   of vkFunction:
     let positional = callee.fnParams
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
+    let native = applyNativeCompiled(callee, proto, args, named)
+    if native.handled:
+      return native.value
     if proto.simpleCall and named.len == 0:
       if args.len != positional.len:
         raise newException(GeneError,

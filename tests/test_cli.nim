@@ -142,6 +142,28 @@ suite "cli — gene parse/fmt/compile":
     check "opPanic" in ran.output
     check "Panic:" notin ran.output
 
+  test "compile target c prints experimental typed-native C":
+    let path = writeCliProgram("compile_c_subject.gene",
+      "(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
+      "(ffi/fn strlen ^library libc ^symbol \"strlen\" [s : C/CStr] : C/Size) " &
+      "(fn main [] (panic \"compile c should not run\"))")
+    let ran = runGene(["compile", "--target", "c", path])
+    check ran.exitCode == 0
+    check "#include <stdint.h>" in ran.output
+    check "int64_t gene_native_add64(int64_t x, int64_t y)" in ran.output
+    check "static const GeneAotModuleFunction gene_aot_module[] = {" in ran.output
+    check "{\"add64\", \"gene_native_add64\", \"I64\", 2, &gene_frame_add64}," in ran.output
+    check "extern size_t strlen(const char * s);" in ran.output
+    check "GeneStatus gene_ffi_strlen" in ran.output
+    check "Panic:" notin ran.output
+
+  test "compile rejects reserved native targets explicitly":
+    let path = writeCliProgram("compile_reserved_target.gene",
+      "(fn main [] nil)")
+    let ran = runGene(["compile", "--target", "llvm", path])
+    check ran.exitCode == 1
+    check "unsupported compile target: llvm" in ran.output
+
 suite "cli — gene doc":
   setup:
     createDir(cliDir)

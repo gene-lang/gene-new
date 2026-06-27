@@ -10,7 +10,7 @@
 
 when defined(geneRcStats):
   import gene/[compiler, types, vm]
-  import std/[os, unittest]
+  import std/[os, tables, unittest]
 
   proc leakedManaged(src: string): int =
     ## Managed heap objects surviving one run of `src` after the program scope is
@@ -31,6 +31,14 @@ when defined(geneRcStats):
   suite "rc — closures and scopes (geneRcStats)":
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0
+
+    test "Runtime/gc-stats exposes live managed count":
+      let scope = newGlobalScope()
+      let stats = run(compileSource("(Runtime/gc-stats)"), scope)
+      check stats.kind == vkMap
+      check stats.mapEntries["rc-stats?"].boolVal
+      check stats.mapEntries["live-managed"].kind == vkInt
+      check stats.mapEntries["live-managed"].intVal >= 0
 
     test "transient anonymous closures are reclaimed":
       check leakedManaged("((fn [] (fn [] 1)))") == 0
