@@ -74,6 +74,20 @@ proc main() =
     let v = run(simpleChunk, simpleScope)
     checksum = checksum + v.intVal
 
+  let noArgScope = newGlobalScope()
+  noArgScope.define("seven", run(compileSource("(fn [] 7)"), noArgScope))
+  let noArgChunk = compileSource("(seven)")
+  bench("vm.no_arg_fn.compiled_chunk", 500_000, i):
+    let v = run(noArgChunk, noArgScope)
+    checksum = checksum + v.intVal
+
+  let oneArgScope = newGlobalScope()
+  oneArgScope.define("inc1", run(compileSource("(fn [x] (+ x 1))"), oneArgScope))
+  let oneArgChunk = compileSource("(inc1 9)")
+  bench("vm.one_arg_fn.compiled_chunk", 500_000, i):
+    let v = run(oneArgChunk, oneArgScope)
+    checksum = checksum + v.intVal
+
   let namedScope = newGlobalScope()
   namedScope.define("pick", run(compileSource("(fn [x ^scale] (+ x scale))"), namedScope))
   let namedChunk = compileSource("(pick ^scale 4 6)")

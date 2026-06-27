@@ -59,6 +59,17 @@ proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
   c.chunk.emit Instruction(op: op, intArg: intArg, depth: depth,
                            name: name, names: names, flag: flag)
 
+proc callOpForArity(argCount: int): OpCode =
+  case argCount
+  of 0: opCall0
+  of 1: opCall1
+  of 2: opCall2
+  else: opCall
+
+proc emitPlainCall(c: var Compiler, argCount: int): int =
+  let op = callOpForArity(argCount)
+  c.emit(op, argCount)
+
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
   c.localSlots = initTable[string, int]()
@@ -2097,7 +2108,7 @@ proc compilePath(c: var Compiler, node: Value) =
     return
   compileSelectorParts(c, parts.toOpenArray(1, parts.high))
   compileExpr(c, parts[0])
-  discard c.emit(opCall, 1)
+  discard c.emitPlainCall(1)
 
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind
@@ -2198,7 +2209,12 @@ proc compileCall(c: var Compiler, node: Value) =
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
     c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
   else:
-    c.chunk.callSites[c.emit(opCall, node.body.len, names = names)] = node
+    let callIndex =
+      if names.len == 0:
+        c.emitPlainCall(node.body.len)
+      else:
+        c.emit(opCall, node.body.len, names = names)
+    c.chunk.callSites[callIndex] = node
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   if node.body.len == 0:
@@ -2233,7 +2249,12 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
     c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
   else:
-    c.chunk.callSites[c.emit(opCall, node.body.len, names = names)] = node
+    let callIndex =
+      if names.len == 0:
+        c.emitPlainCall(node.body.len)
+      else:
+        c.emit(opCall, node.body.len, names = names)
+    c.chunk.callSites[callIndex] = node
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body

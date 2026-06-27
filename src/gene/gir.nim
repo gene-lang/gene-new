@@ -33,6 +33,9 @@ type
     opMakeProtocol
     opMakeImpl
     opImport
+    opCall0
+    opCall1
+    opCall2
     opCall
     opCallSplice
     opMatch           # pop target, run the first matching branch in a child scope
@@ -451,6 +454,12 @@ proc formatInstruction(inst: Instruction): string =
     result.add " impl=" & $inst.intArg
   of opImport:
     result.add " import=" & $inst.intArg
+  of opCall0:
+    result.add " argc=0"
+  of opCall1:
+    result.add " argc=1"
+  of opCall2:
+    result.add " argc=2"
   of opCall:
     result.add " argc=" & $inst.intArg
     if inst.names.len > 0:

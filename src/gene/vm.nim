@@ -4571,9 +4571,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           stack.add NIL
-        of opCall:
-          let argCount = inst[].intArg
-          let namedCount = inst[].names.len
+        of opCall0, opCall1, opCall2, opCall:
+          let argCount =
+            case inst[].op
+            of opCall0: 0
+            of opCall1: 1
+            of opCall2: 2
+            else: inst[].intArg
+          let namedCount =
+            if inst[].op == opCall:
+              inst[].names.len
+            else:
+              0
           let argsStart = stack.len - argCount
           if argsStart < 0 or argsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")

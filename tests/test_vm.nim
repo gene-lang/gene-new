@@ -30,7 +30,7 @@ suite "compiler — GIR emission":
     check chunk.constants[chunk.instructions[1].intArg].intVal == 1
     check chunk.instructions[2].op == opPushConst
     check chunk.constants[chunk.instructions[2].intArg].intVal == 2
-    check chunk.instructions[3].op == opCall
+    check chunk.instructions[3].op == opCall2
     check chunk.instructions[3].intArg == 2
     check chunk.instructions[4].op == opReturn
 
@@ -385,7 +385,7 @@ suite "gir — disassembly":
     check dump.contains("[0] 1")
     check dump.contains("[1] 2")
     check dump.contains("0: opLoadName name=+")
-    check dump.contains("3: opCall argc=2")
+    check dump.contains("3: opCall2 argc=2")
     check dump.contains("4: opReturn")
 
   test "prints nested function chunks":
