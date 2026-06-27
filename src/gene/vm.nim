@@ -3205,7 +3205,8 @@ proc releaseRunStack(stack: var seq[Value]) =
 
 const MaxCallScopePool = 64
 
-var callScopePool {.threadvar.}: seq[Scope]
+var callScopePool {.threadvar.}: array[MaxCallScopePool, Scope]
+var callScopePoolLen {.threadvar.}: int
 
 proc sameNames(a, b: seq[string]): bool {.inline.} =
   if a.len != b.len:
@@ -3256,21 +3257,21 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.resetCallScopeSlots(names)
 
 proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
-  if callScopePool.len == 0:
+  if callScopePoolLen == 0:
     result = newScope(parent)
   else:
-    let index = callScopePool.high
-    result = callScopePool[index]
-    callScopePool.setLen(index)
+    dec callScopePoolLen
+    let index = callScopePoolLen
+    result = move callScopePool[index]
   result.resetCallScope(parent, names)
 
 proc acquireSimpleCallScope(parent: Scope, names: seq[string]): Scope =
-  if callScopePool.len == 0:
+  if callScopePoolLen == 0:
     result = newScope(parent)
   else:
-    let index = callScopePool.high
-    result = callScopePool[index]
-    callScopePool.setLen(index)
+    dec callScopePoolLen
+    let index = callScopePoolLen
+    result = move callScopePool[index]
   result.application =
     if parent != nil: parent.application
     else: nil
@@ -3324,8 +3325,9 @@ proc releaseCallScope(scope: Scope) =
   scope.parent = nil
   scope.application = nil
   scope.evalBudget = nil
-  if callScopePool.len < MaxCallScopePool:
-    callScopePool.add scope
+  if callScopePoolLen < MaxCallScopePool:
+    callScopePool[callScopePoolLen] = scope
+    inc callScopePoolLen
 
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   messages: sink Table[string, Value]) =
