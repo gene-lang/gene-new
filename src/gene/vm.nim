@@ -7,6 +7,13 @@ import ./[compiler, equality, gir, printer, reader, types]
 type
   Application* = ref object of RuntimeContext
     builtins: Scope
+    nativeAdd: Value
+    nativeSub: Value
+    nativeMul: Value
+    nativeLt: Value
+    nativeGt: Value
+    nativeLe: Value
+    nativeGe: Value
     moduleCache: Table[string, Value]
     moduleLoading: HashSet[string]
     currentModuleDir: string
@@ -552,6 +559,48 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
   newBool(same(args[0], args[1]))
+
+proc tryFastNative2(callee, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
+  if not a.isNumber or not b.isNumber:
+    return (false, NIL)
+  case callee.nativeFastKind
+  of nfkAdd:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, intAdd(a, b))
+    else:
+      (true, newFloat(a.toFloat + b.toFloat))
+  of nfkSub:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, intSub(a, b))
+    else:
+      (true, newFloat(a.toFloat - b.toFloat))
+  of nfkMul:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, intMul(a, b))
+    else:
+      (true, newFloat(a.toFloat * b.toFloat))
+  of nfkLt:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) < 0))
+    else:
+      (true, newBool(a.toFloat < b.toFloat))
+  of nfkGt:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) > 0))
+    else:
+      (true, newBool(a.toFloat > b.toFloat))
+  of nfkLe:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) <= 0))
+    else:
+      (true, newBool(a.toFloat <= b.toFloat))
+  of nfkGe:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) >= 0))
+    else:
+      (true, newBool(a.toFloat >= b.toFloat))
+  else:
+    (false, NIL)
 
 proc biHash(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1:
@@ -2503,14 +2552,21 @@ proc buildBuiltins(app: Application): Scope =
   result.impls.add ProtocolImpl(protocol: sendProtocol,
                                 receiver: actorFailure,
                                 messages: initTable[string, Value]())
-  result.define("+", newNativeFn("+", biAdd))
-  result.define("-", newNativeFn("-", biSub))
-  result.define("*", newNativeFn("*", biMul))
+  app.nativeAdd = newNativeFn("+", biAdd)
+  app.nativeSub = newNativeFn("-", biSub)
+  app.nativeMul = newNativeFn("*", biMul)
+  app.nativeLt = newNativeFn("<", comparison("<", `<`))
+  app.nativeGt = newNativeFn(">", comparison(">", `>`))
+  app.nativeLe = newNativeFn("<=", comparison("<=", `<=`))
+  app.nativeGe = newNativeFn(">=", comparison(">=", `>=`))
+  result.define("+", app.nativeAdd)
+  result.define("-", app.nativeSub)
+  result.define("*", app.nativeMul)
   result.define("/", newNativeFn("/", biDiv))
-  result.define("<", newNativeFn("<", comparison("<", `<`)))
-  result.define(">", newNativeFn(">", comparison(">", `>`)))
-  result.define("<=", newNativeFn("<=", comparison("<=", `<=`)))
-  result.define(">=", newNativeFn(">=", comparison(">=", `>=`)))
+  result.define("<", app.nativeLt)
+  result.define(">", app.nativeGt)
+  result.define("<=", app.nativeLe)
+  result.define(">=", app.nativeGe)
   result.define("=", newNativeFn("=", biEq))
   result.define("same?", newNativeFn("same?", biSame))
   result.define("hash", newNativeFn("hash", biHash))
@@ -2744,6 +2800,23 @@ proc newGlobalScope*(app: Application): Scope =
 
 proc newGlobalScope*(): Scope =
   newGlobalScope(currentApplication())
+
+proc fastNativeForKind(app: Application, kind: NativeFastKind): Value {.inline.} =
+  case kind
+  of nfkAdd: app.nativeAdd
+  of nfkSub: app.nativeSub
+  of nfkMul: app.nativeMul
+  of nfkLt: app.nativeLt
+  of nfkGt: app.nativeGt
+  of nfkLe: app.nativeLe
+  of nfkGe: app.nativeGe
+  else: NIL
+
+proc loadNativeFast(scope: Scope, kind: NativeFastKind, name: string): Value =
+  let app = scope.application()
+  result = app.fastNativeForKind(kind)
+  if result.kind == vkNil:
+    return scope.lookup(name)
 
 proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
   ## Create the first-class module value for a module root scope. The root
@@ -3156,6 +3229,19 @@ proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
     callScopePool.setLen(index)
   result.resetCallScope(parent, names)
 
+proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
+                         args: openArray[Value]) {.inline.} =
+  for i in 0 ..< args.len:
+    scope.slots[proto.positionalSlots[i]] = args[i]
+  if proto.positionalSlots.len <= 64:
+    var bits = 0'u64
+    for i in 0 ..< args.len:
+      bits = bits or (1'u64 shl proto.positionalSlots[i])
+    scope.slotDefinedBits = bits
+  else:
+    for i in 0 ..< args.len:
+      scope.markSlotDefined(proto.positionalSlots[i])
+
 proc releaseCallScope(scope: Scope) =
   if scope == nil:
     return
@@ -3365,7 +3451,7 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opSetOuterLocal:
       if inst.depth > localDepth:
         return false
-    of opLoadName:
+    of opLoadName, opLoadNativeFast:
       if not ignoredNames.contains(inst.name):
         var captured: Value
         if not fnScope.lookupOptional(inst.name, captured):
@@ -3836,6 +3922,20 @@ type
     fkSupervisorBody
     fkNamespaceBody
 
+  FrameExtra = ref object
+    ensureValue: Value
+    ensureBody: Chunk
+    ensureScope: Scope
+    pendingError: ref GeneError
+    pendingPanic: ref GenePanic
+    pendingCancel: ref GeneCancel
+    forItems: seq[Value]
+    forIndex: int
+    forPattern: Value
+    forBody: Chunk
+    ownedScope: Scope
+    namespaceName: string
+
   ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
   ## function calls push one of these instead of recursing through Nim, so a call
   ## chain lives on the heap — the foundation for suspendable/resumable tasks
@@ -3853,18 +3953,7 @@ type
     errorTypes: seq[Value]  # declared error rows, when checksErrors
     fnName: string          # function name, for the undeclared-error message
     kind: FrameKind         # current-frame completion behavior
-    ensureValue: Value      # value to preserve across an ensure body
-    ensureBody: Chunk       # ensure to run after catch/no-catch/cancellation exits
-    ensureScope: Scope
-    pendingError: ref GeneError
-    pendingPanic: ref GenePanic
-    pendingCancel: ref GeneCancel
-    forItems: seq[Value]
-    forIndex: int           # next item index for fkForBody
-    forPattern: Value
-    forBody: Chunk
-    ownedScope: Scope
-    namespaceName: string
+    extra: FrameExtra       # rare state for try/ensure/for/task/ns frames
 
   TryHandler = object
     ## An active `try` region on the VM's handler stack. The try body runs as a
@@ -4193,36 +4282,59 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = f.errorTypes
     curFnName = f.fnName
     curFrameKind = f.kind
-    curEnsureValue = f.ensureValue
-    curEnsureBody = f.ensureBody
-    curEnsureScope = f.ensureScope
-    curPendingError = f.pendingError
-    curPendingPanic = f.pendingPanic
-    curPendingCancel = f.pendingCancel
-    curForItems = move f.forItems
-    curForIndex = f.forIndex
-    curForPattern = f.forPattern
-    curForBody = f.forBody
-    curOwnedScope = f.ownedScope
-    curNamespaceName = f.namespaceName
+    if f.extra == nil:
+      curEnsureValue = NIL
+      curEnsureBody = nil
+      curEnsureScope = nil
+      curPendingError = nil
+      curPendingPanic = nil
+      curPendingCancel = nil
+      curForItems = @[]
+      curForIndex = 0
+      curForPattern = NIL
+      curForBody = nil
+      curOwnedScope = nil
+      curNamespaceName = ""
+    else:
+      curEnsureValue = f.extra.ensureValue
+      curEnsureBody = f.extra.ensureBody
+      curEnsureScope = f.extra.ensureScope
+      curPendingError = f.extra.pendingError
+      curPendingPanic = f.extra.pendingPanic
+      curPendingCancel = f.extra.pendingCancel
+      curForItems = move f.extra.forItems
+      curForIndex = f.extra.forIndex
+      curForPattern = f.extra.forPattern
+      curForBody = f.extra.forBody
+      curOwnedScope = f.extra.ownedScope
+      curNamespaceName = f.extra.namespaceName
     evalBudget = scope.evalBudget
 
   template pushFrame() =
+    let frameExtra =
+      if curFrameKind == fkNormal and curEnsureBody == nil and
+          curForItems.len == 0 and curOwnedScope == nil and
+          curPendingError == nil and curPendingPanic == nil and
+          curPendingCancel == nil:
+        nil
+      else:
+        FrameExtra(ensureValue: curEnsureValue,
+                   ensureBody: curEnsureBody,
+                   ensureScope: curEnsureScope,
+                   pendingError: curPendingError,
+                   pendingPanic: curPendingPanic,
+                   pendingCancel: curPendingCancel,
+                   forItems: move curForItems, forIndex: curForIndex,
+                   forPattern: curForPattern, forBody: curForBody,
+                   ownedScope: curOwnedScope,
+                   namespaceName: curNamespaceName)
     frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
                      stack: move stack, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: returnType, returnLabel: returnLabel,
                      checksErrors: curChecksErrors,
                      errorTypes: curErrorTypes, fnName: curFnName,
-                     kind: curFrameKind, ensureValue: curEnsureValue,
-                     ensureBody: curEnsureBody, ensureScope: curEnsureScope,
-                     pendingError: curPendingError,
-                     pendingPanic: curPendingPanic,
-                     pendingCancel: curPendingCancel,
-                     forItems: move curForItems, forIndex: curForIndex,
-                     forPattern: curForPattern, forBody: curForBody,
-                     ownedScope: curOwnedScope,
-                     namespaceName: curNamespaceName)
+                     kind: curFrameKind, extra: frameExtra)
 
   template enterFrame(nextChunk: Chunk, nextScope: Scope, nextValidate: bool,
                       nextKind: FrameKind = fkNormal) =
@@ -4442,6 +4554,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack.add chunk.constants[inst[].intArg]
         of opLoadName:
           stack.add scope.lookup(inst[].name)
+        of opLoadNativeFast:
+          stack.add scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
           stack.add scope.loadSlot(inst[].intArg, inst[].name)
         of opLoadOuterLocal:
@@ -4754,12 +4868,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(proto.localNames)
                         fresh
-                    for i in 0 ..< argCount:
-                      created.defineSlot(proto.positionalSlots[i], positional[i],
-                                         stack[argsStart + i])
+                    if argCount > 0:
+                      created.bindSimpleCallSlots(
+                        proto, stack.toOpenArray(argsStart, stack.high))
                     created
-                  else:
-                    callee.fnScope
+                else:
+                  callee.fnScope
                 stack.setLen(calleeIndex)        # consume callee + args
                 pushFrame()
                 chunk = proto.chunk
@@ -4808,6 +4922,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curFrameKind = fkNormal
                 evalBudget = bound.scope.evalBudget
                 continue
+          if namedCount == 0 and argCount == 2 and callee.kind == vkNativeFn:
+            let fastNative = tryFastNative2(callee, stack[argsStart], stack[argsStart + 1])
+            if fastNative.handled:
+              stack.setLen(calleeIndex)
+              stack.add fastNative.value
+              continue
           var named: NamedArgs
           if namedCount > 0:
             named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
@@ -4885,8 +5005,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(fnProto.localNames)
                         fresh
-                    for i in 0 ..< args.len:
-                      created.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
+                    if args.len > 0:
+                      created.bindSimpleCallSlots(fnProto, args)
                     created
                   else:
                     callee.fnScope
@@ -4952,6 +5072,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(calleeIndex)
           stack.add value
+        of opNativeFast2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in native fast call")
+          let b = stack.pop()
+          let a = stack.pop()
+          let callee = scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
+          let fastNative = tryFastNative2(callee, a, b)
+          if fastNative.handled:
+            stack.add fastNative.value
+          else:
+            var args = [a, b]
+            stack.add applyCall(callee, args, NamedArgs(), scope)
         of opMatch:
           let target = stack.pop()
           let mp = chunk.matches[inst[].intArg]
@@ -7311,6 +7443,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
   of vkNativeFn:
+    if named.len == 0 and args.len == 2:
+      let fast = tryFastNative2(callee, args[0], args[1])
+      if fast.handled:
+        return fast.value
     let impl = callee.nativeImpl
     if impl != nil:
       if named.len != 0:
@@ -7359,8 +7495,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
               let fresh = newScope(callee.fnScope)
               fresh.prepareSlots(proto.localNames)
               fresh
-          for i in 0 ..< args.len:
-            created.defineSlot(proto.positionalSlots[i], positional[i], args[i])
+          if args.len > 0:
+            created.bindSimpleCallSlots(proto, args)
           created
         else:
           callee.fnScope

@@ -100,6 +100,22 @@ proc parentFrames(c: Compiler): seq[Table[string, int]] =
     result.add c.localSlots
   result.add c.parentSlots
 
+proc nativeFastLoadKind(name: string): NativeFastKind =
+  case name
+  of "+": nfkAdd
+  of "-": nfkSub
+  of "*": nfkMul
+  of "<": nfkLt
+  of ">": nfkGt
+  of "<=": nfkLe
+  of ">=": nfkGe
+  else: nfkNone
+
+proc hasLexicalBinding(c: Compiler, name: string): bool =
+  if c.localSlot(name) >= 0:
+    return true
+  c.parentSlot(name).slot >= 0
+
 proc emitLoadBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
   if slot >= 0:
@@ -109,7 +125,11 @@ proc emitLoadBinding(c: var Compiler, name: string) =
     if outer.slot >= 0:
       discard c.emit(opLoadOuterLocal, outer.slot, depth = outer.depth, name = name)
     else:
-      discard c.emit(opLoadName, name = name)
+      let fastKind = nativeFastLoadKind(name)
+      if fastKind != nfkNone:
+        discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
+      else:
+        discard c.emit(opLoadName, name = name)
 
 proc emitDefineBinding(c: var Compiler, name: string) =
   if c.useLocalSlots:
@@ -2211,6 +2231,13 @@ proc compileListValue(c: var Compiler, value: Value) =
     discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
 proc compileCall(c: var Compiler, node: Value) =
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 2:
+    let fastKind = nativeFastLoadKind(node.head.symVal)
+    if fastKind != nfkNone and not c.hasLexicalBinding(node.head.symVal):
+      compileExpr(c, node.body[0])
+      compileExpr(c, node.body[1])
+      discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
+      return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]
     if types.kind != vkList:
