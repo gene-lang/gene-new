@@ -475,6 +475,14 @@ suite "gir — disassembly":
     check dump.contains("1: opLoadLocalFast slot=1 name=y")
     check dump.contains("2: opIntAdd2 name=+")
 
+  test "prints same-scope typed integer recur ops":
+    let dump = compileSource(
+      "(var fib (fn [n : Int] : Int " &
+      "  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))").disassemble()
+    check dump.contains("opRecur1LocalIntSubConstSameScope slot=0 name=n const=1")
+    check dump.contains("opRecur1LocalIntSubConstSameScope slot=0 name=n const=2")
+    check dump.contains("opReturnBareInt")
+
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
     check dump.contains("opCallLocal0 slot=0 name=call_once argc=0")

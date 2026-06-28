@@ -694,6 +694,15 @@ proc canUseTypedIntRecur1(proto: FunctionProto): bool =
     proto.returnType.isBareIntType and not proto.isGenerator and
     proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
 
+proc canUseSameScopeTypedIntRecur1(proto: FunctionProto): bool =
+  ## Same-scope recursion mutates only the single parameter slot and restores it
+  ## when the callee returns. Keep this to the minimal no-local/no-subframe shape.
+  proto.canUseTypedIntRecur1 and proto.localNames.len == 1 and
+    proto.positionalSlots[0] == 0 and proto.localNames[0] == proto.params[0] and
+    proto.taskFrameKind == tfkNone and proto.chunk.subchunks.len == 0 and
+    proto.chunk.forLoops.len == 0 and proto.chunk.matches.len == 0 and
+    proto.chunk.tries.len == 0
+
 proc canUseRecur1(proto: FunctionProto): bool =
   proto.selfParentSlot >= 0 and proto.params.len == 1 and
     proto.requiredPositional == 1 and proto.positionalSlots.len == 1 and
@@ -723,8 +732,13 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
             let constIsSmallInt =
               sub.depth >= 0 and sub.depth < proto.chunk.constants.len and
               proto.chunk.constants[sub.depth].isSmallInt
+            let fusedOp =
+              if proto.canUseSameScopeTypedIntRecur1:
+                opRecur1LocalIntSubConstSameScope
+              else:
+                opRecur1LocalIntSubConst
             proto.chunk.instructions[i] = Instruction(
-              op: opRecur1LocalIntSubConst, intArg: paramSlot,
+              op: fusedOp, intArg: paramSlot,
               depth: sub.depth, name: load.name, flag: constIsSmallInt)
             proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
             proto.chunk.instructions[i + 2] = Instruction(op: opNoop)

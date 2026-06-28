@@ -61,6 +61,8 @@ type
     fnName: string          # function name, for the undeclared-error message
     kind: FrameKind         # current-frame completion behavior
     extra: FrameExtra       # rare state for try/ensure/for/task/ns frames
+    restoreSlot: int        # same-scope recur frame restores this local slot
+    restoreValue: Value
 
   TryHandler = object
     ## An active `try` region on the VM's handler stack. The try body runs as a
@@ -5171,6 +5173,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template loadFrameRegs(f: Frame) =
     ## Restore the per-frame registers (everything except the operand stack, which
     ## each caller handles explicitly) from a popped Frame.
+    if f.restoreSlot >= 0:
+      f.scope.slots[f.restoreSlot] = f.restoreValue
     chunk = f.chunk
     scope = f.scope
     recycleScope = f.recycleScope
@@ -5234,7 +5238,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      returnType: returnType, returnLabel: returnLabel,
                      checksErrors: curChecksErrors,
                      errorTypes: curErrorTypes, fnName: curFnName,
-                     kind: curFrameKind, extra: frameExtra)
+                     kind: curFrameKind, extra: frameExtra,
+                     restoreSlot: -1, restoreValue: NIL)
 
   template pushFrameFastNormal() =
     frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
@@ -5243,7 +5248,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      returnType: returnType, returnLabel: returnLabel,
                      checksErrors: curChecksErrors,
                      errorTypes: curErrorTypes, fnName: curFnName,
-                     kind: fkNormal, extra: nil)
+                     kind: fkNormal, extra: nil,
+                     restoreSlot: -1, restoreValue: NIL)
 
   template pushCallFrame() =
     if curFrameKind == fkNormal and curEnsureBody == nil and
@@ -5520,6 +5526,42 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = proto.name
     curFrameKind = fkNormal
     evalBudget = callScope.evalBudget
+    continue
+
+  template enterRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
+    let proto = chunk.owner
+    if not argKnownBareInt and proto.hasParamTypes and proto.paramTypes.len > 0 and
+        proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
+      raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
+    if curFrameKind != fkNormal or curEnsureBody != nil or curForItems.len != 0 or
+        curOwnedScope != nil or curPendingError != nil or curPendingPanic != nil or
+        curPendingCancel != nil:
+      enterRecur1Frame(arg, argKnownBareInt)
+    let slot = proto.positionalSlots[0]
+    let previous = scope.slots[slot]
+    frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
+                     stack: move stack, ip: ip,
+                     validateImpls: validateImplRequirements,
+                     returnType: returnType, returnLabel: returnLabel,
+                     checksErrors: curChecksErrors,
+                     errorTypes: curErrorTypes, fnName: curFnName,
+                     kind: fkNormal, extra: nil,
+                     restoreSlot: slot, restoreValue: previous)
+    scope.slots[slot] = arg
+    stack = acquireRunStack()
+    ip = 0
+    validateImplRequirements = false
+    returnType =
+      if proto.returnKnownBareInt: NIL
+      elif proto.hasReturnType: proto.returnType
+      else: NIL
+    returnLabel = ""
+    curChecksErrors = false
+    curErrorTypes = @[]
+    curFnName = proto.name
+    curFrameKind = fkNormal
+    recycleScope = false
+    evalBudget = scope.evalBudget
     continue
 
   while true:
@@ -6082,7 +6124,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var arg = stack[argsStart]
           stack.setLen(argsStart)
           enterRecur1Frame(arg, inst[].flag)
-        of opRecur1LocalIntSubConst:
+        of opRecur1LocalIntSubConst, opRecur1LocalIntSubConstSameScope:
           let slot = inst[].intArg
           if slot < 0 or slot >= scope.slots.len:
             raise newException(GeneError,
@@ -6102,7 +6144,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             arg = applyCall(callee, args, NamedArgs(), scope)
             argKnownBareInt = false
           ip += 2
-          enterRecur1Frame(arg, argKnownBareInt)
+          if inst[].op == opRecur1LocalIntSubConstSameScope:
+            enterRecur1SameScopeFrame(arg, argKnownBareInt)
+          else:
+            enterRecur1Frame(arg, argKnownBareInt)
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
