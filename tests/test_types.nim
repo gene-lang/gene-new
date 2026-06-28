@@ -493,6 +493,17 @@ suite "types — function boundaries":
                                 " (C/close allocated) " &
                                 " (C/closed? allocated)]"),
                   scope).print() == "[false nil true]"
+        let rawAllocated = run(compileSource(
+          "((ffi/bind lib \"malloc\" [C/Size] " &
+          "   (quote (C/Ptr C/Char))) 8)"),
+          scope)
+        check rawAllocated.kind == vkCPtr
+        check not rawAllocated.cPtrOwned
+        scope.define("raw-allocated", rawAllocated)
+        check run(compileSource(
+          "((ffi/bind lib \"free\" [(quote (C/Ptr C/Char))] C/Void) " &
+          " raw-allocated)"),
+          scope).print() == "nil"
         expect GeneError:
           discard run(compileSource(
             "((ffi/bind lib \"malloc\" [C/Size] " &

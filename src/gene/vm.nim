@@ -9212,6 +9212,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
   let releaseAddress = callee.ffiCallableReleaseAddress
   if paramLabels.len == 0:
     case returnLabel
+    of "C/Void":
+      type VoidVoidProc = proc() {.cdecl.}
+      let fn = cast[VoidVoidProc](callee.ffiCallableAddress)
+      fn()
+      return NIL
     of "C/Int":
       type VoidIntProc = proc(): cint {.cdecl.}
       let fn = cast[VoidIntProc](callee.ffiCallableAddress)
@@ -9255,6 +9260,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[IntCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0))
+    of "C/Void":
+      type IntVoidProc = proc(x: cint) {.cdecl.}
+      let fn = cast[IntVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
     else:
       discard
   if paramLabels.len == 1 and paramLabels[0] == "C/Long":
@@ -9278,6 +9288,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[LongCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0))
+    of "C/Void":
+      type LongVoidProc = proc(x: clong) {.cdecl.}
+      let fn = cast[LongVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type LongPtrProc = proc(x: clong): pointer {.cdecl.}
@@ -9304,6 +9319,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[SizeCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0))
+    of "C/Void":
+      type SizeVoidProc = proc(x: csize_t) {.cdecl.}
+      let fn = cast[SizeVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type SizePtrProc = proc(x: csize_t): pointer {.cdecl.}
@@ -9330,6 +9350,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[PtrCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0))
+    of "C/Void":
+      type PtrVoidProc = proc(p: pointer) {.cdecl.}
+      let fn = cast[PtrVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
     else:
       discard
   if paramLabels.len == 1 and paramLabels[0] == "C/CStr":
@@ -9349,6 +9374,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[CStrCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(ctext))
+    of "C/Void":
+      type CStrVoidProc = proc(s: cstring) {.cdecl.}
+      let fn = cast[CStrVoidProc](callee.ffiCallableAddress)
+      fn(ctext)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type CStrPtrProc = proc(s: cstring): pointer {.cdecl.}
@@ -9374,6 +9404,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[CStrCStrCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0, arg1))
+    of "C/Void":
+      type CStrCStrVoidProc = proc(a, b: cstring) {.cdecl.}
+      let fn = cast[CStrCStrVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type CStrCStrPtrProc = proc(a, b: cstring): pointer {.cdecl.}
@@ -9399,6 +9434,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[CStrIntCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0, arg1))
+    of "C/Void":
+      type CStrIntVoidProc = proc(s: cstring, x: cint) {.cdecl.}
+      let fn = cast[CStrIntVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type CStrIntPtrProc = proc(s: cstring, x: cint): pointer {.cdecl.}
@@ -9428,6 +9468,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[SizeSizeCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0, arg1))
+    of "C/Void":
+      type SizeSizeVoidProc = proc(a, b: csize_t) {.cdecl.}
+      let fn = cast[SizeSizeVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type SizeSizePtrProc = proc(a, b: csize_t): pointer {.cdecl.}
@@ -9455,6 +9500,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[PtrIntSizeCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0, arg1, arg2))
+    of "C/Void":
+      type PtrIntSizeVoidProc = proc(p: pointer, x: cint, n: csize_t) {.cdecl.}
+      let fn = cast[PtrIntSizeVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1, arg2)
+      return NIL
     else:
       if isFfiPtrLabel(returnLabel):
         type PtrIntSizePtrProc = proc(p: pointer, x: cint, n: csize_t): pointer {.cdecl.}
@@ -9478,6 +9528,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[PtrPtrSizeCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0, arg1, arg2))
+    of "C/Void":
+      type PtrPtrSizeVoidProc = proc(a, b: pointer, n: csize_t) {.cdecl.}
+      let fn = cast[PtrPtrSizeVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1, arg2)
+      return NIL
     else:
       discard
   raise newException(GeneError,
