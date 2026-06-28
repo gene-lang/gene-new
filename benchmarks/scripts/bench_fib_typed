@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage:
+#   benchmarks/scripts/bench_fib_typed [n]
+#
+# Defaults to fib(24). Pass a larger n, e.g. 30, for steadier samples.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
+MODE="${GENE_BENCH_MODE:-vm}"
+NIM_BIN="${NIM:-nim}"
+
+case "$MODE" in
+  vm)
+    SOURCE="benchmarks/computation/fibonacci_typed_vm.nim"
+    ;;
+  *)
+    echo "Unknown GENE_BENCH_MODE: $MODE" >&2
+    exit 2
+    ;;
+esac
+
+echo "=== Gene Benchmark ==="
+echo "Date: $(date '+%Y-%m-%d %H:%M:%S %A')"
+echo "Git commit: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+echo "Nim version: $($NIM_BIN --version | head -n 1)"
+echo "Mode: $MODE"
+echo
+
+mkdir -p bin build/nimcache
+CACHE_DIR="build/nimcache/fibonacci-typed-$MODE"
+
+echo "Compiling typed bytecode VM Fibonacci benchmark..."
+rm -f bin/fibonacci_typed 2>/dev/null
+"$NIM_BIN" c --hints:off --mm:orc -d:release -d:danger --path:src \
+  --nimcache:"$CACHE_DIR" --out:bin/fibonacci_typed "$SOURCE" >/dev/null
+
+if [ ! -x "./bin/fibonacci_typed" ]; then
+  echo "Error: bin/fibonacci_typed was not produced" >&2
+  exit 1
+fi
+
+echo
+echo "Running benchmark..."
+./bin/fibonacci_typed "$@"

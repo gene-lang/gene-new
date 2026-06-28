@@ -447,6 +447,15 @@ proc chunkCanPoolCallScope(chunk: Chunk): bool =
       discard
   true
 
+proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
+  if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
+      chunk.matches.len > 0 or chunk.tries.len > 0:
+    return true
+  for inst in chunk.instructions:
+    if inst.op == opSetLocal and inst.intArg == slot:
+      return true
+  false
+
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
   if form.kind == vkSymbol:
     return (form.symVal, @[])
@@ -1497,6 +1506,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   compileBodyFrom(fnCompiler, body, start)
   discard fnCompiler.emit(opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
+  var positionalSlotMaySet: seq[bool]
+  for slot in positionalSlots:
+    positionalSlotMaySet.add fnCompiler.chunk.chunkMaySetSlot(slot)
 
   var hasParamTypes = false
   for t in specs.positionalTypes:
@@ -1537,6 +1549,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   FunctionProto(name: name, typeParams: typeParams, params: specs.positional,
                 localNames: fnCompiler.localNames,
                 positionalSlots: positionalSlots,
+                positionalSlotMaySet: positionalSlotMaySet,
                 namedSlots: namedSlots,
                 restSlot: restSlot,
                 requiredPositional: specs.requiredPositionalCount,

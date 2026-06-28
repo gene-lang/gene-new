@@ -5,6 +5,7 @@ Run the recursive Fibonacci benchmark with:
 ```bash
 benchmarks/scripts/bench_fib       # defaults to fib(24)
 benchmarks/scripts/bench_fib 28
+benchmarks/scripts/bench_fib_typed 30
 ```
 
 Run the call burst benchmark with:
@@ -31,6 +32,9 @@ The benchmarked Gene program is:
 ```
 
 `fib(24)` performs 150049 naive recursive `fib` calls and returns `46368`.
+
+`bench_fib_typed` uses the same recursive program shape but annotates the
+function as `Int -> Int`, so it measures typed call-boundary overhead.
 
 ## Call Burst
 

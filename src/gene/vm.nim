@@ -263,6 +263,11 @@ proc declareType(scope: Scope, name: string, typeExpr: Value) =
   else:
     scope.varTypes[name] = binding
 
+proc declareSlotType(scope: Scope, index: int, typeExpr: Value) {.inline.} =
+  if scope.slotTypes.len < scope.slots.len:
+    scope.slotTypes.setLen(scope.slots.len)
+  scope.slotTypes[index] = TypeBinding(expr: typeExpr, scope: scope)
+
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool) =
   scope.checkSlot(index, name)
@@ -457,6 +462,8 @@ proc typeExprLabel(expr: Value): string
 
 proc isNumber(v: Value): bool = v.kind == vkInt or v.kind == vkFloat
 proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intToFloat else: v.floatVal)
+proc isBareIntType(expr: Value): bool {.inline.} =
+  expr.kind == vkSymbol and expr.symVal == "Int"
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
@@ -3295,6 +3302,30 @@ proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
     for i in 0 ..< args.len:
       scope.markSlotDefined(proto.positionalSlots[i])
 
+proc canFastBindUnaryInt(proto: FunctionProto): bool {.inline.} =
+  proto.typeParams.len == 0 and not proto.checksErrors and
+    proto.params.len == 1 and proto.requiredPositional == 1 and
+    proto.positionalSlots.len == 1 and proto.positionalSlots[0] >= 0 and
+    proto.restParam.len == 0 and proto.namedParams.len == 0 and
+    proto.hasParamTypes and proto.paramTypes.len == 1 and
+    proto.paramTypes[0].isBareIntType and proto.hasReturnType and
+    proto.returnType.isBareIntType and not proto.isGenerator and
+    proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
+
+proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
+                           arg: Value): Scope {.inline.} =
+  result =
+    if proto.poolCallScope:
+      acquireCallScope(parent, proto.localNames)
+    else:
+      let fresh = newScope(parent)
+      fresh.prepareSlots(proto.localNames)
+      fresh
+  let slot = proto.positionalSlots[0]
+  result.defineFreshCallSlot(slot, arg)
+  if proto.positionalSlotMaySet.len == 0 or proto.positionalSlotMaySet[0]:
+    result.declareSlotType(slot, proto.paramTypes[0])
+
 proc releaseCallScope(scope: Scope) =
   if scope == nil:
     return
@@ -4494,7 +4525,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## normally instead runs its ensure block and resumes the enclosing frame.
     var retValue = escapeWeakFunctions(rawValue)
     if returnType.kind != vkNil:
-      retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
+      if not (returnType.isBareIntType and retValue.kind == vkInt):
+        let label =
+          if returnLabel.len == 0 and curFnName.len > 0:
+            "return from '" & curFnName & "'"
+          else:
+            returnLabel
+        retValue = adaptBoundary(label, returnType, retValue, scope)
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     releaseCurrentCallScope()
@@ -5096,30 +5133,42 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 evalBudget = callScope.evalBudget
                 continue
               elif not proto.isGenerator:
-                let bound =
-                  if argCount == 0:
-                    bindCallScope(callee, proto, [], NamedArgs())
-                  else:
-                    bindCallScope(callee, proto,
-                      stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                var boundScope: Scope
+                var boundReturnType: Value
+                var usedUnaryIntFast = false
+                if argCount == 1 and proto.canFastBindUnaryInt and
+                    stack[argsStart].kind == vkInt:
+                  boundScope = bindUnaryIntCallScope(callee.fnScope, proto,
+                                                     stack[argsStart])
+                  boundReturnType = proto.returnType
+                  usedUnaryIntFast = true
+                else:
+                  let bound =
+                    if argCount == 0:
+                      bindCallScope(callee, proto, [], NamedArgs())
+                    else:
+                      bindCallScope(callee, proto,
+                        stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                  boundScope = bound.scope
+                  boundReturnType = bound.returnType
                 stack.setLen(argsStart)
                 var lbl = ""
-                if bound.returnType.kind != vkNil:
+                if boundReturnType.kind != vkNil and not usedUnaryIntFast:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
                 chunk = proto.chunk
-                scope = bound.scope
+                scope = boundScope
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
-                returnType = bound.returnType
+                returnType = boundReturnType
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
                 curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
                 curFnName = callee.fnName
                 curFrameKind = fkNormal
-                evalBudget = bound.scope.evalBudget
+                evalBudget = boundScope.evalBudget
                 continue
           let site =
             if callee.kind == vkFunction or
@@ -7757,8 +7806,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      value = adaptBoundary("parameter '" & positional[i] & "'",
-                            typeExpr, value, callScope)
+      if not (typeExpr.isBareIntType and value.kind == vkInt):
+        value = adaptBoundary("parameter '" & positional[i] & "'",
+                              typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
       callScope.defineFreshCallSlot(proto.positionalSlots[i], value)
     else:
@@ -7774,8 +7824,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
         let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                            proto.typeParams)
         declaredType = typeExpr
-        value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
-                              value, callScope)
+        if not (typeExpr.isBareIntType and value.kind == vkInt):
+          value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
+                                value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
         callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
       else:
@@ -7795,8 +7846,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      boundValue = adaptBoundary("parameter '" & positional[i] & "'",
-                                 typeExpr, value, callScope)
+      if not (typeExpr.isBareIntType and value.kind == vkInt):
+        boundValue = adaptBoundary("parameter '" & positional[i] & "'",
+                                   typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
       callScope.defineFreshCallSlot(proto.positionalSlots[i], boundValue)
     else:
@@ -7820,8 +7872,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
           let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                              proto.typeParams)
           declaredType = typeExpr
-          value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
-                                value, callScope)
+          if not (typeExpr.isBareIntType and value.kind == vkInt):
+            value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
+                                  value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
           callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
         else:
