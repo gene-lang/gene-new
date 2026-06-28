@@ -1500,6 +1500,37 @@ suite "vm — cooperative scheduler":
        "  [(out ~ Cell/get) (await t) (out ~ Cell/get)])",
        "[0 1 1]"
 
+  test "worker-candidate spawns snapshot sendable captures":
+    ck "(scope (var x 1) " &
+       "  (var t (spawn x)) " &
+       "  (set x 2) " &
+       "  (await t))",
+       "1"
+    ck "(scope (var x 1) " &
+       "  (fn read [n] (+ x n)) " &
+       "  (var t (spawn (read 2))) " &
+       "  (set x 10) " &
+       "  (await t))",
+       "3"
+    ck "(scope " &
+       "  (var fib (fn [n : Int] : Int " &
+       "    (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) " &
+       "  (var t (spawn (fib 5))) " &
+       "  (set fib (fn [n : Int] : Int 0)) " &
+       "  (await t))",
+       "5"
+    ck "(scope (var x 41) " &
+       "  (var t (spawn (fn [] (+ x 1)))) " &
+       "  ((await t)))",
+       "42"
+
+  test "non-worker-safe spawns keep cooperative shared captures":
+    ck "(scope (var c (cell 0)) " &
+       "  (var t (spawn (c ~ Cell/get))) " &
+       "  (c ~ Cell/set 2) " &
+       "  (await t))",
+       "2"
+
   test "applications keep scheduler queues isolated":
     let app1 = newApplication()
     let scope1 = newGlobalScope(app1)

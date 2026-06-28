@@ -131,9 +131,10 @@ participates in equality or hashing.
 > `^dead-letter ch` fallback when the primary event sink is unavailable.
 > Spawned fibers publish their captured scope/value graph so threaded builds use
 > atomic RC for captured manual-RC values. Spawn bytecode also marks bodies that
-> do not mutate outer bindings as worker candidates, and the VM keeps that mark
-> only when runtime captures are `Send`; it is classification metadata for the
-> future worker pool, not parallel execution yet.
+> do not mutate outer bindings as worker candidates; when runtime captures are
+> `Send`, the VM queues that task with an isolated snapshot of the captured
+> parent scope. This removes live-parent scope dependence for eligible tasks, but
+> it is still executed by the single cooperative scheduler.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
@@ -241,10 +242,11 @@ retain/release after that marker while thread-local objects stay on the
 non-atomic path. Spawned fibers also publish their captured scope/value graph so
 captured manual-RC values are safe to retain/release from threaded builds.
 Spawned fibers additionally record a worker-candidate bit only when the compiler
-sees no outer-scope mutation and runtime captures satisfy `Send`; unsafe
-shared-scope tasks remain cooperative. Threaded `atomicArc` smoke checks cover
-values, VM behavior, and RC leak accounting, but scope isolation and worker
-orchestration still need to land before true M:N execution.
+sees no outer-scope mutation and runtime captures satisfy `Send`; those eligible
+tasks receive sparse captured-scope snapshots so they no longer read through the
+live parent scope. Unsafe shared-scope tasks remain cooperative. Threaded
+`atomicArc` smoke checks cover values, VM behavior, and RC leak accounting, but
+worker orchestration still needs to land before true M:N execution.
 
 ## License
 

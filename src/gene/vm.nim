@@ -105,7 +105,7 @@ type
     ownedScope: Scope
     namespaceName: string
     started: bool          # false until first scheduled (resume restores the rest)
-    workerSafe: bool       # capture graph can move to a worker once M:N lands
+    workerSafe: bool       # snapshot-isolated; eligible for a future worker pool
     task: Value            # the Task this fiber settles, for spawn/await fibers
     actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
     actorReturnType: Value # handler return type to adapt the ActorStep against
@@ -3765,6 +3765,16 @@ proc capturedSlotSendable(fnScope, visibleScope: Scope, captureDepth, slot: int,
     return false
   isSendableValue(scope.slots[slot], visibleScope, seen)
 
+proc namedCaptureSendable(fnScope, visibleScope: Scope, name: string,
+                          seen: var HashSet[uint64],
+                          ignoredNames: HashSet[string]): bool =
+  if ignoredNames.contains(name):
+    return true
+  var captured: Value
+  if not fnScope.lookupOptional(name, captured):
+    return false
+  isSendableValue(captured, visibleScope, seen)
+
 proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
                            localDepth: int,
                            seen: var HashSet[uint64],
@@ -3812,7 +3822,7 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     return true
   for inst in chunk.instructions:
     case inst.op
-    of opLoadOuterLocal:
+    of opLoadOuterLocal, opCallParentLocal1, opCallOuterLocal1:
       if inst.depth > localDepth:
         let captureDepth = inst.depth - localDepth
         if not capturedSlotSendable(fnScope, visibleScope, captureDepth,
@@ -3821,13 +3831,10 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opSetOuterLocal:
       if inst.depth > localDepth:
         return false
-    of opLoadName, opLoadNativeFast:
-      if not ignoredNames.contains(inst.name):
-        var captured: Value
-        if not fnScope.lookupOptional(inst.name, captured):
-          return false
-        if not isSendableValue(captured, visibleScope, seen):
-          return false
+    of opLoadName, opLoadNativeFast, opCallName0, opCallName1:
+      if not namedCaptureSendable(fnScope, visibleScope, inst.name, seen,
+                                  ignoredNames):
+        return false
     of opSetName:
       return false
     else:
@@ -3922,6 +3929,257 @@ proc isSendableValue(value: Value, scope: Scope): bool =
 proc spawnCanMoveToWorker(scope: Scope, body: Chunk): bool =
   var seen = initHashSet[uint64]()
   chunkCapturesSendable(body, scope, scope, 0, seen, initHashSet[string]())
+
+type
+  CapturedSlot = object
+    depth: int
+    slot: int
+    name: string
+
+  SpawnCaptureSet = object
+    slots: seq[CapturedSlot]
+    names: seq[string]
+    nameSet: HashSet[string]
+
+proc addCaptureSlot(captures: var SpawnCaptureSet, depth, slot: int,
+                    name: string) =
+  for captured in captures.slots:
+    if captured.depth == depth and captured.slot == slot:
+      return
+  captures.slots.add CapturedSlot(depth: depth, slot: slot, name: name)
+
+proc addCaptureName(captures: var SpawnCaptureSet, name: string,
+                    ignoredNames: HashSet[string]) =
+  if ignoredNames.contains(name) or captures.nameSet.contains(name):
+    return
+  captures.nameSet.incl name
+  captures.names.add name
+
+proc collectSpawnCaptures(chunk: Chunk, localDepth: int,
+                          ignoredNames: HashSet[string],
+                          captures: var SpawnCaptureSet) =
+  if chunk == nil:
+    return
+  for inst in chunk.instructions:
+    case inst.op
+    of opLoadOuterLocal, opCallParentLocal1, opCallOuterLocal1:
+      if inst.depth > localDepth:
+        captures.addCaptureSlot(inst.depth - localDepth, inst.intArg, inst.name)
+    of opLoadName, opLoadNativeFast, opCallName0, opCallName1:
+      captures.addCaptureName(inst.name, ignoredNames)
+    else:
+      discard
+
+  for body in chunk.subchunks:
+    collectSpawnCaptures(body, localDepth + 1, ignoredNames, captures)
+  for loop in chunk.forLoops:
+    collectSpawnCaptures(loop.body, localDepth + 1, ignoredNames, captures)
+  for match in chunk.matches:
+    for clause in match.clauses:
+      collectSpawnCaptures(clause.body, localDepth + 1, ignoredNames, captures)
+    collectSpawnCaptures(match.elseBody, localDepth + 1, ignoredNames, captures)
+  for attempt in chunk.tries:
+    collectSpawnCaptures(attempt.body, localDepth, ignoredNames, captures)
+    for clause in attempt.catches:
+      collectSpawnCaptures(clause.body, localDepth + 1, ignoredNames, captures)
+    collectSpawnCaptures(attempt.ensureBody, localDepth, ignoredNames, captures)
+  for proto in chunk.functions:
+    let callLocals = functionCallLocalNames(proto)
+    collectSpawnCaptures(proto.chunk, localDepth + 1, callLocals, captures)
+    for defaultValue in proto.paramDefaults:
+      if defaultValue.optional and defaultValue.defaultChunk != nil:
+        collectSpawnCaptures(defaultValue.defaultChunk, localDepth + 1,
+                             callLocals, captures)
+    for param in proto.namedParams:
+      if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
+        collectSpawnCaptures(param.defaultValue.defaultChunk, localDepth + 1,
+                             callLocals, captures)
+
+proc cloneForCapturedSnapshot(value: Value,
+                              scopeMap: var Table[pointer, Scope]): Value
+
+proc copyChunkCapturesToSnapshots(source: Scope, chunk: Chunk,
+                                  scopeMap: var Table[pointer, Scope],
+                                  ignoredNames: HashSet[string])
+
+proc captureValueAtDepth(source: Scope, depth, slot: int,
+                         name: string): tuple[scope: Scope, value: Value]
+
+proc cloneForCapturedSnapshot(value: Value,
+                              scopeMap: var Table[pointer, Scope]): Value =
+  case value.kind
+  of vkFunction:
+    let sourceScope = value.fnScope
+    if sourceScope != nil:
+      let key = cast[pointer](sourceScope)
+      if scopeMap.hasKey(key):
+        let code = value.fnCode
+        if code != nil and code of FunctionProto:
+          let proto = FunctionProto(code)
+          copyChunkCapturesToSnapshots(sourceScope, proto.chunk, scopeMap,
+                                       initHashSet[string]())
+          let callLocals = functionCallLocalNames(proto)
+          for defaultValue in proto.paramDefaults:
+            if defaultValue.optional and defaultValue.defaultChunk != nil:
+              copyChunkCapturesToSnapshots(sourceScope,
+                                           defaultValue.defaultChunk,
+                                           scopeMap, callLocals)
+          for param in proto.namedParams:
+            if param.defaultValue.optional and
+                param.defaultValue.defaultChunk != nil:
+              copyChunkCapturesToSnapshots(sourceScope,
+                                           param.defaultValue.defaultChunk,
+                                           scopeMap, callLocals)
+        var params: seq[string]
+        for param in value.fnParams:
+          params.add param
+        var errorTypes: seq[Value]
+        for err in value.fnErrorTypes:
+          errorTypes.add cloneForCapturedSnapshot(err, scopeMap)
+        return newFunction(value.fnName, params, value.fnCode, scopeMap[key],
+                           value.fnChecksErrors, errorTypes)
+    value
+  of vkList:
+    var items: seq[Value]
+    var changed = false
+    for item in value.listItems:
+      let cloned = cloneForCapturedSnapshot(item, scopeMap)
+      if cloned.bits != item.bits:
+        changed = true
+      items.add cloned
+    if changed: newList(items, immutable = value.listImmutable)
+    else: value
+  of vkMap:
+    var entries = initOrderedTable[string, Value]()
+    var changed = false
+    for key, item in value.mapEntries:
+      let cloned = cloneForCapturedSnapshot(item, scopeMap)
+      if cloned.bits != item.bits:
+        changed = true
+      entries[key] = cloned
+    if changed: newMap(entries, immutable = value.mapImmutable)
+    else: value
+  of vkNode:
+    let clonedHead = cloneForCapturedSnapshot(value.head, scopeMap)
+    var props = initOrderedTable[string, Value]()
+    var body: seq[Value]
+    var meta = initOrderedTable[string, Value]()
+    var changed = clonedHead.bits != value.head.bits
+    for key, item in value.props:
+      let cloned = cloneForCapturedSnapshot(item, scopeMap)
+      if cloned.bits != item.bits:
+        changed = true
+      props[key] = cloned
+    for item in value.body:
+      let cloned = cloneForCapturedSnapshot(item, scopeMap)
+      if cloned.bits != item.bits:
+        changed = true
+      body.add cloned
+    for key, item in value.meta:
+      let cloned = cloneForCapturedSnapshot(item, scopeMap)
+      if cloned.bits != item.bits:
+        changed = true
+      meta[key] = cloned
+    if changed:
+      newNode(clonedHead, props = props, body = body, meta = meta,
+              immutable = value.nodeImmutable)
+    else:
+      value
+  else:
+    value
+
+proc copyChunkCapturesToSnapshots(source: Scope, chunk: Chunk,
+                                  scopeMap: var Table[pointer, Scope],
+                                  ignoredNames: HashSet[string]) =
+  var captures = SpawnCaptureSet(nameSet: initHashSet[string]())
+  collectSpawnCaptures(chunk, 0, ignoredNames, captures)
+
+  for captured in captures.slots:
+    let loaded = captureValueAtDepth(source, captured.depth, captured.slot,
+                                     captured.name)
+    let snapshot = scopeMap.getOrDefault(cast[pointer](loaded.scope), nil)
+    if snapshot == nil:
+      continue
+    if snapshot.slotDefined(captured.slot):
+      continue
+    snapshot.slots[captured.slot] = loaded.value
+    snapshot.markSlotDefined(captured.slot)
+    snapshot.slots[captured.slot] =
+      cloneForCapturedSnapshot(loaded.value, scopeMap)
+    if snapshot.slotMirror:
+      snapshot.vars[captured.name] = snapshot.slots[captured.slot]
+
+  let rootSnapshot = scopeMap.getOrDefault(cast[pointer](source), nil)
+  if rootSnapshot != nil:
+    for name in captures.names:
+      if rootSnapshot.vars.hasKey(name):
+        continue
+      var value: Value
+      if not source.lookupOptional(name, value):
+        raise newException(GeneError, "undefined symbol: " & name)
+      rootSnapshot.vars[name] = value
+      rootSnapshot.vars[name] = cloneForCapturedSnapshot(value, scopeMap)
+
+proc snapshotTypeBinding(binding: TypeBinding,
+                         scopeMap: var Table[pointer, Scope]): TypeBinding =
+  result.expr = cloneForCapturedSnapshot(binding.expr, scopeMap)
+  if binding.scope != nil:
+    let key = cast[pointer](binding.scope)
+    result.scope = scopeMap.getOrDefault(key, binding.scope)
+  elif binding.weakScope != nil:
+    result.weakScope =
+      cast[pointer](scopeMap.getOrDefault(binding.weakScope,
+                                          cast[Scope](binding.weakScope)))
+
+proc snapshotScopeChain(source: Scope,
+                        scopeMap: var Table[pointer, Scope]): Scope =
+  if source == nil:
+    return nil
+  let app = source.application()
+  let builtins = app.builtinsScope()
+  if source == builtins:
+    return builtins
+  let key = cast[pointer](source)
+  if scopeMap.hasKey(key):
+    return scopeMap[key]
+
+  let parent = snapshotScopeChain(source.parent, scopeMap)
+  result = newScope(parent, application = source.application)
+  scopeMap[key] = result
+  if source.slots.len > 0:
+    result.slots = newSeq[Value](source.slots.len)
+    result.slotDefinedBits = 0
+    if source.slots.len > 64:
+      result.slotDefinedOverflow = newSeq[bool](source.slots.len - 64)
+  result.slotNames = source.slotNames
+  for binding in source.slotTypes:
+    result.slotTypes.add snapshotTypeBinding(binding, scopeMap)
+  result.slotMirror = source.slotMirror
+  for name, binding in source.varTypes:
+    result.varTypes[name] = snapshotTypeBinding(binding, scopeMap)
+  for impl in source.impls:
+    var messages = initTable[string, Value]()
+    for message, fn in impl.messages:
+      messages[message] = cloneForCapturedSnapshot(fn, scopeMap)
+    result.impls.add ProtocolImpl(protocol: impl.protocol,
+                                  receiver: impl.receiver,
+                                  messages: messages)
+  result.requiredImplTypes = source.requiredImplTypes
+  result.evalBudget = source.evalBudget
+
+proc captureValueAtDepth(source: Scope, depth, slot: int,
+                         name: string): tuple[scope: Scope, value: Value] =
+  result.scope = capturedScope(source, depth)
+  if result.scope == nil or slot < 0 or slot >= result.scope.slots.len:
+    raise newException(GeneError, "undefined symbol: " & name)
+  if not result.scope.slotDefined(slot):
+    raise newException(GeneError, "undefined symbol: " & name)
+  result.value = result.scope.slots[slot]
+
+proc snapshotSpawnScope(source: Scope, body: Chunk): Scope =
+  var scopeMap = initTable[pointer, Scope]()
+  result = snapshotScopeChain(source, scopeMap)
+  copyChunkCapturesToSnapshots(source, body, scopeMap, initHashSet[string]())
 
 proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
                        seenValues: var HashSet[uint64],
@@ -6628,12 +6886,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSpawn:
           # Spawn a child task as a scheduler fiber. The body is queued instead of
           # running inline, so CPU-only child work still cooperates through VM
-          # safepoints. (Still a single-worker scheduler; M:N workers are future
-          # work.)
+          # safepoints. Worker-safe tasks receive a sparse captured-scope
+          # snapshot, but this is still a single-worker scheduler; M:N workers
+          # are future work.
           let body = chunk.subchunks[inst[].intArg]
           let workerSafe = inst[].flag and scope.spawnCanMoveToWorker(body)
           publishSpawnCapture(scope, body)
-          let taskScope = newScope(scope)
+          let taskParent =
+            if workerSafe: snapshotSpawnScope(scope, body)
+            else: scope
+          let taskScope = newScope(taskParent)
           let task = spawnFiber(body, taskScope, workerSafe)
           scope.registerOwnedTask(task)
           stack.add task

@@ -1016,6 +1016,28 @@ suite "spec — structured tasks from design":
                "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
                "[2 1 1]")
 
+  test "worker-candidate spawns snapshot Send captures":
+    check_eval("(scope (var x 1) " &
+               "  (var t (spawn x)) " &
+               "  (set x 2) " &
+               "  (await t))",
+               "1")
+    check_eval("(scope (var x 1) " &
+               "  (fn read [n] (+ x n)) " &
+               "  (var t (spawn (read 2))) " &
+               "  (set x 10) " &
+               "  (await t))",
+               "3")
+    check_eval("(scope (var c (cell 0)) " &
+               "  (var t (spawn (c ~ Cell/get))) " &
+               "  (c ~ Cell/set 2) " &
+               "  (await t))",
+               "2")
+    check_eval("(scope (var x 41) " &
+               "  (var t (spawn (fn [] (+ x 1)))) " &
+               "  ((await t)))",
+               "42")
+
   test "timer waits suspend only the current task":
     check_eval("(scope (var out (cell 0)) " &
                "  (var slow (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
