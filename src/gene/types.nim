@@ -264,6 +264,16 @@ type
   CPtrReleaseProc* = proc(address: pointer) {.nimcall.}
   FfiLibraryCloseProc* = proc(handle: pointer) {.nimcall.}
 
+  NativeFastKind* = enum
+    nfkNone
+    nfkAdd
+    nfkSub
+    nfkMul
+    nfkLt
+    nfkGt
+    nfkLe
+    nfkGe
+
   GeneFunction = object
     refCount: int
     name: string
@@ -280,6 +290,7 @@ type
     impl: NativeProc
     callImpl: NativeCallProc
     acceptsNamed: bool
+    fastKind: NativeFastKind
 
   # OBJECT_TAG heap kinds. `GeneObjectData` is the GC-managed (ORC) base; each
   # concrete kind subclasses it and `kind*` dispatches on `objKind`.
@@ -1134,6 +1145,11 @@ proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).acceptsNamed
+
+proc nativeFastKind*(v: Value): NativeFastKind {.inline.} =
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).fastKind
 
 proc ffiCallableData(v: Value): FfiCallableData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiCallable:
@@ -2509,6 +2525,17 @@ proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
                             paramTypes: paramTypes,
                             returnType: returnType))
 
+proc classifyNativeFastKind(name: string): NativeFastKind =
+  case name
+  of "+": nfkAdd
+  of "-": nfkSub
+  of "*": nfkMul
+  of "<": nfkLt
+  of ">": nfkGt
+  of "<=": nfkLe
+  of ">=": nfkGe
+  else: nfkNone
+
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false): Value =
   let p = createObj(GeneNativeFn)
@@ -2516,6 +2543,7 @@ proc newNativeFn*(name: string, impl: NativeProc,
   p.name = name
   p.impl = impl
   p.acceptsNamed = acceptsNamed
+  p.fastKind = classifyNativeFastKind(name)
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNativeCallFn*(name: string, impl: NativeCallProc,
@@ -2525,6 +2553,7 @@ proc newNativeCallFn*(name: string, impl: NativeCallProc,
   p.name = name
   p.callImpl = impl
   p.acceptsNamed = acceptsNamed
+  p.fastKind = nfkNone
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",

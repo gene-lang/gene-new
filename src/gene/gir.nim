@@ -11,6 +11,7 @@ type
   OpCode* = enum
     opPushConst
     opLoadName
+    opLoadNativeFast
     opLoadLocal
     opLoadOuterLocal
     opDefineName
@@ -24,6 +25,7 @@ type
     opMakeMap
     opMakeNode
     opMakeSelector
+    opApplySelector
     opMakeFn
     opMakeNamespace
     opSetModuleName
@@ -33,8 +35,19 @@ type
     opMakeProtocol
     opMakeImpl
     opImport
+    opCall0
+    opCall1
+    opCallName0
+    opCallName1
+    opCallLocal0
+    opCallLocal1
+    opCallParentLocal1
+    opCallOuterLocal1
+    opCall2
     opCall
     opCallSplice
+    opNativeFast2
+    opNativeFastConst
     opMatch           # pop target, run the first matching branch in a child scope
     opMatchBind       # pop target, destructure against a pattern (or MatchError)
     opMatchBindReplace # pop target, destructure and replace existing loop binds
@@ -105,6 +118,8 @@ type
     params*: seq[string]
     requiredPositional*: int
     simpleCall*: bool
+    needsCallScope*: bool
+    poolCallScope*: bool
     paramTypes*: seq[Value]
     hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]
@@ -403,7 +418,7 @@ proc formatInstruction(inst: Instruction): string =
   case inst.op
   of opPushConst:
     result.add " const=" & $inst.intArg
-  of opLoadName, opDefineName, opSetName:
+  of opLoadName, opLoadNativeFast, opDefineName, opSetName:
     result.add " name=" & inst.name
   of opLoadLocal, opDefineLocal, opSetLocal:
     result.add " slot=" & $inst.intArg
@@ -425,6 +440,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " node=" & $inst.intArg
   of opMakeSelector:
     result.add " count=" & $inst.intArg
+  of opApplySelector:
+    discard
   of opMakeFn:
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
@@ -451,6 +468,25 @@ proc formatInstruction(inst: Instruction): string =
     result.add " impl=" & $inst.intArg
   of opImport:
     result.add " import=" & $inst.intArg
+  of opCall0:
+    result.add " argc=0"
+  of opCall1:
+    result.add " argc=1"
+  of opCallName0:
+    result.add " name=" & inst.name & " argc=0"
+  of opCallName1:
+    result.add " name=" & inst.name & " argc=1"
+  of opCallLocal0:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=0"
+  of opCallLocal1:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=1"
+  of opCallParentLocal1:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=1"
+  of opCallOuterLocal1:
+    result.add " depth=" & $inst.depth & " slot=" & $inst.intArg &
+      " name=" & inst.name & " argc=1"
+  of opCall2:
+    result.add " argc=2"
   of opCall:
     result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
@@ -459,6 +495,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
+  of opNativeFast2:
+    result.add " name=" & inst.name
+  of opNativeFastConst:
+    result.add " name=" & inst.name & " const=" & $inst.depth
   of opMatch:
     result.add " match=" & $inst.intArg
   of opMatchBind, opMatchBindReplace:

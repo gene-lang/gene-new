@@ -23,16 +23,13 @@ proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.n
 suite "compiler — GIR emission":
   test "emits a callable-first bytecode sequence":
     let chunk = compileSource("(+ 1 2)")
-    check chunk.instructions.len == 5
-    check chunk.instructions[0].op == opLoadName
-    check chunk.instructions[0].name == "+"
-    check chunk.instructions[1].op == opPushConst
-    check chunk.constants[chunk.instructions[1].intArg].intVal == 1
-    check chunk.instructions[2].op == opPushConst
-    check chunk.constants[chunk.instructions[2].intArg].intVal == 2
-    check chunk.instructions[3].op == opCall
-    check chunk.instructions[3].intArg == 2
-    check chunk.instructions[4].op == opReturn
+    check chunk.instructions.len == 3
+    check chunk.instructions[0].op == opPushConst
+    check chunk.constants[chunk.instructions[0].intArg].intVal == 1
+    check chunk.instructions[1].op == opNativeFastConst
+    check chunk.instructions[1].name == "+"
+    check chunk.constants[chunk.instructions[1].depth].intVal == 2
+    check chunk.instructions[2].op == opReturn
 
   test "emits nested function prototypes":
     let chunk = compileSource("(fn inc [x] (+ x 1))")
@@ -51,10 +48,31 @@ suite "compiler — GIR emission":
     check proto.simpleCall
     check proto.restParam == ""
     check proto.namedParams.len == 0
-    check proto.chunk.instructions.len == 5
-    check proto.chunk.instructions[0].op == opLoadName
-    check proto.chunk.instructions[0].name == "+"
+    check proto.chunk.instructions.len == 3
+    check proto.chunk.instructions[0].op == opLoadLocal
+    check proto.chunk.instructions[1].op == opNativeFastConst
+    check proto.chunk.instructions[1].name == "+"
+    check proto.chunk.constants[proto.chunk.instructions[1].depth].intVal == 1
     check proto.chunk.instructions[^1].op == opReturn
+
+  test "marks trivial functions as not requiring a call scope":
+    let trivial = compileSource("(fn [] 7)")
+    check trivial.functions.len == 1
+    check trivial.functions[0].simpleCall
+    check not trivial.functions[0].needsCallScope
+    check not trivial.functions[0].poolCallScope
+
+    let withLocal = compileSource("(fn [x] x)")
+    check withLocal.functions.len == 1
+    check withLocal.functions[0].simpleCall
+    check withLocal.functions[0].needsCallScope
+    check withLocal.functions[0].poolCallScope
+
+    let withClosure = compileSource("(fn [x] (fn [] x))")
+    check withClosure.functions.len == 1
+    check withClosure.functions[0].simpleCall
+    check withClosure.functions[0].needsCallScope
+    check not withClosure.functions[0].poolCallScope
 
   test "emits generic function type parameters":
     let chunk = compileSource("(fn (identity item) [x : item] : item x)")
@@ -155,8 +173,8 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     var sawOuterFib = false
     for inst in proto.chunk.instructions:
-      if inst.op == opLoadOuterLocal and inst.name == "fib" and
-          inst.depth == 1 and inst.intArg == 0:
+      if inst.op == opCallParentLocal1 and inst.name == "fib" and
+          inst.intArg == 0:
         sawOuterFib = true
     check sawOuterFib
 
@@ -257,8 +275,8 @@ suite "compiler — GIR emission":
     let useProto = chunk.functions[0]
     var sawPing = false
     for inst in useProto.chunk.instructions:
-      if inst.op == opLoadOuterLocal and inst.name == "ping" and
-          inst.depth == 1 and inst.intArg == 0:
+      if inst.op == opCallParentLocal1 and inst.name == "ping" and
+          inst.intArg == 0:
         sawPing = true
     check sawPing
 
@@ -384,16 +402,19 @@ suite "gir — disassembly":
     check dump.contains("constants:")
     check dump.contains("[0] 1")
     check dump.contains("[1] 2")
-    check dump.contains("0: opLoadName name=+")
-    check dump.contains("3: opCall argc=2")
-    check dump.contains("4: opReturn")
+    check dump.contains("1: opNativeFastConst name=+ const=1")
+    check dump.contains("2: opReturn")
 
   test "prints nested function chunks":
     let dump = compileSource("(fn inc [x] (+ x 1))").disassemble()
     check dump.contains("functions:")
     check dump.contains("[0] inc params=[x]")
     check dump.contains("0: opMakeFn fn=0")
-    check dump.contains("0: opLoadName name=+")
+    check dump.contains("1: opNativeFastConst name=+ const=0")
+
+  test "prints direct local zero-arg calls":
+    let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
+    check dump.contains("opCallLocal0 slot=0 name=call_once argc=0")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
@@ -572,6 +593,9 @@ suite "vm — macros":
 suite "vm — arithmetic":
   test "addition":
     ck "(+ 1 2 3)", "6"
+  test "native fast loads respect shadowing":
+    ck "(var + (fn [a b] a)) (+ 1 2)", "1"
+    ck "(var make (fn [] (var + (fn [a b] b)) (fn [x] (+ x 9)))) ((make) 4)", "9"
   test "subtraction and negation":
     ck "(- 10 3 2)", "5"
     ck "(- 7)", "-7"
@@ -741,6 +765,10 @@ suite "vm — functions and closures":
     ck "(fn add [a b] (+ a b)) (add 3 4)", "7"
   test "arity mismatch raises":
     expect GeneError: discard runStr("((fn [x] x) 1 2)")
+  test "duplicate parameter bindings are rejected":
+    expect GeneError: discard runStr("(fn [x x] x)")
+    expect GeneError: discard runStr("(fn [x ^scale x] x)")
+    expect GeneError: discard runStr("(fn [x x...] x)")
   test "closures capture their environment":
     ck "(var adder (fn [a] (fn [b] (+ a b)))) ((adder 10) 5)", "15"
   test "lexical capture is by reference to the defining scope":

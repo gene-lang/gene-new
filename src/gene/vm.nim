@@ -7,6 +7,13 @@ import ./[compiler, equality, gir, printer, reader, types]
 type
   Application* = ref object of RuntimeContext
     builtins: Scope
+    nativeAdd: Value
+    nativeSub: Value
+    nativeMul: Value
+    nativeLt: Value
+    nativeGt: Value
+    nativeLe: Value
+    nativeGe: Value
     moduleCache: Table[string, Value]
     moduleLoading: HashSet[string]
     currentModuleDir: string
@@ -224,13 +231,13 @@ proc slotIndex(scope: Scope, name: string): int =
       return index
   -1
 
-proc slotDefined(scope: Scope, index: int): bool =
+proc slotDefined(scope: Scope, index: int): bool {.inline.} =
   if index < 64:
     (scope.slotDefinedBits and (1'u64 shl index)) != 0
   else:
     scope.slotDefinedOverflow[index - 64]
 
-proc markSlotDefined(scope: Scope, index: int) =
+proc markSlotDefined(scope: Scope, index: int) {.inline.} =
   if index < 64:
     scope.slotDefinedBits = scope.slotDefinedBits or (1'u64 shl index)
   else:
@@ -325,6 +332,10 @@ proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
     raise newException(GeneError, "duplicate binding: " & name)
   scope.storeSlot(index, name, v, requireExisting = false)
 
+proc defineFreshCallSlot(scope: Scope, index: int, v: Value) {.inline.} =
+  scope.slots[index] = functionForScopeStorage(v, scope)
+  scope.markSlotDefined(index)
+
 proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
   scope.storeSlot(index, name, v, requireExisting = true)
 
@@ -335,7 +346,8 @@ proc lookup*(scope: Scope, name: string): Value =
   var s = scope
   while s != nil:
     if s.loadNamedSlot(name, result): return
-    if s.vars.hasKey(name): return s.vars[name]
+    s.vars.withValue(name, value):
+      return value[]
     s = s.parent
   raise newException(GeneError, "undefined symbol: " & name)
 
@@ -344,8 +356,8 @@ proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   while s != nil:
     if s.loadNamedSlot(name, value):
       return true
-    if s.vars.hasKey(name):
-      value = s.vars[name]
+    s.vars.withValue(name, found):
+      value = found[]
       return true
     s = s.parent
   false
@@ -367,7 +379,7 @@ proc assign*(scope: Scope, name: string, v: Value) =
   while s != nil:
     if s.storeNamedSlot(name, v, requireExisting = true):
       return
-    if s.vars.hasKey(name):
+    s.vars.withValue(name, current):
       let value =
         if s.varTypes.hasKey(name): s.assignmentValue(name, v, s.varTypes[name])
         else: v
@@ -378,22 +390,54 @@ proc assign*(scope: Scope, name: string, v: Value) =
     s = s.parent
   raise newException(GeneError, "set of undefined symbol: " & name)
 
+const MaxInlineNamedArgs = 4
+
 type
   NamedArgs = object
     names: seq[string]
     values: seq[Value]
+    inlineValues: array[MaxInlineNamedArgs, Value]
 
 proc len(named: NamedArgs): int =
   named.names.len
+
+proc valueAt(named: NamedArgs, index: int): Value =
+  if named.values.len == named.names.len:
+    named.values[index]
+  else:
+    named.inlineValues[index]
+
+proc toSeq(named: NamedArgs): seq[Value] =
+  if named.values.len == named.names.len:
+    return named.values
+  result = newSeq[Value](named.names.len)
+  for i in 0 ..< named.names.len:
+    result[i] = named.inlineValues[i]
+
+proc namedArgsFromStack(names: seq[string], stack: openArray[Value],
+                        start: int): NamedArgs =
+  result.names = names
+  if names.len <= MaxInlineNamedArgs:
+    for i in 0 ..< names.len:
+      result.inlineValues[i] = stack[start + i]
+  else:
+    result.values = newSeq[Value](names.len)
+    for i in 0 ..< names.len:
+      result.values[i] = stack[start + i]
 
 proc hasArg(named: NamedArgs, name: string): bool =
   for key in named.names:
     if key == name: return true
   false
 
+proc argIndex(named: NamedArgs, name: string): int =
+  for i, key in named.names:
+    if key == name: return i
+  -1
+
 proc getArg(named: NamedArgs, name: string): Value =
   for i, key in named.names:
-    if key == name: return named.values[i]
+    if key == name: return named.valueAt(i)
   raise newException(GeneError, "missing named argument: " & name)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
@@ -401,6 +445,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
                          named: NamedArgs): tuple[handled: bool, value: Value]
+proc applySelector(selector, target: Value): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
@@ -525,6 +570,63 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
   newBool(same(args[0], args[1]))
+
+proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
+  case kind
+  of nfkAdd:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, intAdd(a, b))
+    elif a.isNumber and b.isNumber:
+      (true, newFloat(a.toFloat + b.toFloat))
+    else:
+      (false, NIL)
+  of nfkSub:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, intSub(a, b))
+    elif a.isNumber and b.isNumber:
+      (true, newFloat(a.toFloat - b.toFloat))
+    else:
+      (false, NIL)
+  of nfkMul:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, intMul(a, b))
+    elif a.isNumber and b.isNumber:
+      (true, newFloat(a.toFloat * b.toFloat))
+    else:
+      (false, NIL)
+  of nfkLt:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) < 0))
+    elif a.isNumber and b.isNumber:
+      (true, newBool(a.toFloat < b.toFloat))
+    else:
+      (false, NIL)
+  of nfkGt:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) > 0))
+    elif a.isNumber and b.isNumber:
+      (true, newBool(a.toFloat > b.toFloat))
+    else:
+      (false, NIL)
+  of nfkLe:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) <= 0))
+    elif a.isNumber and b.isNumber:
+      (true, newBool(a.toFloat <= b.toFloat))
+    else:
+      (false, NIL)
+  of nfkGe:
+    if a.kind == vkInt and b.kind == vkInt:
+      (true, newBool(intCompare(a, b) >= 0))
+    elif a.isNumber and b.isNumber:
+      (true, newBool(a.toFloat >= b.toFloat))
+    else:
+      (false, NIL)
+  else:
+    (false, NIL)
+
+proc tryFastNative2(callee, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
+  tryFastNativeKind2(callee.nativeFastKind, a, b)
 
 proc biHash(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1:
@@ -2476,14 +2578,21 @@ proc buildBuiltins(app: Application): Scope =
   result.impls.add ProtocolImpl(protocol: sendProtocol,
                                 receiver: actorFailure,
                                 messages: initTable[string, Value]())
-  result.define("+", newNativeFn("+", biAdd))
-  result.define("-", newNativeFn("-", biSub))
-  result.define("*", newNativeFn("*", biMul))
+  app.nativeAdd = newNativeFn("+", biAdd)
+  app.nativeSub = newNativeFn("-", biSub)
+  app.nativeMul = newNativeFn("*", biMul)
+  app.nativeLt = newNativeFn("<", comparison("<", `<`))
+  app.nativeGt = newNativeFn(">", comparison(">", `>`))
+  app.nativeLe = newNativeFn("<=", comparison("<=", `<=`))
+  app.nativeGe = newNativeFn(">=", comparison(">=", `>=`))
+  result.define("+", app.nativeAdd)
+  result.define("-", app.nativeSub)
+  result.define("*", app.nativeMul)
   result.define("/", newNativeFn("/", biDiv))
-  result.define("<", newNativeFn("<", comparison("<", `<`)))
-  result.define(">", newNativeFn(">", comparison(">", `>`)))
-  result.define("<=", newNativeFn("<=", comparison("<=", `<=`)))
-  result.define(">=", newNativeFn(">=", comparison(">=", `>=`)))
+  result.define("<", app.nativeLt)
+  result.define(">", app.nativeGt)
+  result.define("<=", app.nativeLe)
+  result.define(">=", app.nativeGe)
   result.define("=", newNativeFn("=", biEq))
   result.define("same?", newNativeFn("same?", biSame))
   result.define("hash", newNativeFn("hash", biHash))
@@ -2717,6 +2826,23 @@ proc newGlobalScope*(app: Application): Scope =
 
 proc newGlobalScope*(): Scope =
   newGlobalScope(currentApplication())
+
+proc fastNativeForKind(app: Application, kind: NativeFastKind): Value {.inline.} =
+  case kind
+  of nfkAdd: app.nativeAdd
+  of nfkSub: app.nativeSub
+  of nfkMul: app.nativeMul
+  of nfkLt: app.nativeLt
+  of nfkGt: app.nativeGt
+  of nfkLe: app.nativeLe
+  of nfkGe: app.nativeGe
+  else: NIL
+
+proc loadNativeFast(scope: Scope, kind: NativeFastKind, name: string): Value =
+  let app = scope.application()
+  result = app.fastNativeForKind(kind)
+  if result.kind == vkNil:
+    return scope.lookup(name)
 
 proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
   ## Create the first-class module value for a module root scope. The root
@@ -3057,27 +3183,152 @@ proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
 # Execution
 # ---------------------------------------------------------------------------
 
-proc pop(stack: var seq[Value]): Value =
+proc pop(stack: var seq[Value]): Value {.inline.} =
   if stack.len == 0:
     raise newException(GeneError, "VM stack underflow")
-  result = stack[^1]
-  stack.setLen(stack.len - 1)
+  let index = stack.len - 1
+  result = move stack[index]
+  stack.setLen(index)
 
 const MaxRunStackPool = 64
 
-var runStackPool {.threadvar.}: seq[seq[Value]]
+var runStackPool {.threadvar.}: array[MaxRunStackPool, seq[Value]]
+var runStackPoolLen {.threadvar.}: int
 
-proc acquireRunStack(): seq[Value] =
-  if runStackPool.len == 0:
+proc acquireRunStack(): seq[Value] {.inline.} =
+  if runStackPoolLen == 0:
     return @[]
-  let index = runStackPool.high
-  result = runStackPool[index]
-  runStackPool.setLen(index)
+  dec runStackPoolLen
+  let index = runStackPoolLen
+  result = move runStackPool[index]
 
-proc releaseRunStack(stack: var seq[Value]) =
+proc releaseRunStack(stack: var seq[Value]) {.inline.} =
   stack.setLen(0)
-  if runStackPool.len < MaxRunStackPool:
-    runStackPool.add stack
+  if runStackPoolLen < MaxRunStackPool:
+    runStackPool[runStackPoolLen] = move stack
+    inc runStackPoolLen
+
+const MaxCallScopePool = 64
+
+var callScopePool {.threadvar.}: array[MaxCallScopePool, Scope]
+var callScopePoolLen {.threadvar.}: int
+
+proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
+  if scope.slots.len != names.len:
+    scope.slots.setLen(names.len)
+  for i in 0 ..< scope.slots.len:
+    scope.slots[i] = NIL
+  scope.slotDefinedBits = 0
+  if names.len > 64:
+    scope.slotDefinedOverflow.setLen(names.len - 64)
+    for i in 0 ..< scope.slotDefinedOverflow.len:
+      scope.slotDefinedOverflow[i] = false
+  else:
+    if scope.slotDefinedOverflow.len != 0:
+      scope.slotDefinedOverflow.setLen(0)
+  if scope.slotTypes.len != 0:
+    scope.slotTypes.setLen(0)
+  scope.slotNames = names
+  scope.slotMirror = false
+
+proc resetCallScope(scope, parent: Scope, names: seq[string]) =
+  scope.application =
+    if parent != nil: parent.application
+    else: nil
+  scope.parent = parent
+  scope.vars.clear()
+  scope.varTypes.clear()
+  scope.impls.setLen(0)
+  scope.requiredImplTypes.setLen(0)
+  scope.evalBudget =
+    if parent != nil: parent.evalBudget
+    else: nil
+  scope.ownsTasks = false
+  scope.ownedTasks.setLen(0)
+  scope.ownsActors = false
+  scope.actorFailureStrategy = afsStop
+  scope.supervisorEvents = NIL
+  scope.supervisorDeadLetters = NIL
+  scope.ownedActors.setLen(0)
+  scope.resetCallScopeSlots(names)
+
+proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
+  if callScopePoolLen == 0:
+    result = newScope(parent)
+  else:
+    dec callScopePoolLen
+    let index = callScopePoolLen
+    result = move callScopePool[index]
+  result.resetCallScope(parent, names)
+
+proc acquireSimpleCallScope(parent: Scope, names: seq[string]): Scope =
+  # Only simpleCall functions (no opDefineName/opSetName, no opTaskScope,
+  # no opSupervisor, no opSpawn, no opMakeFn that escapes the scope) reach
+  # this path. That exclusion guarantees vars/varTypes/impls/ownsTasks/
+  # ownedTasks/actor fields are never populated, so we skip their clearing
+  # and only need to zero the slot array (done by resetCallScopeSlots).
+  if callScopePoolLen == 0:
+    result = newScope(parent)
+  else:
+    dec callScopePoolLen
+    let index = callScopePoolLen
+    result = move callScopePool[index]
+  result.application =
+    if parent != nil: parent.application
+    else: nil
+  result.parent = parent
+  result.evalBudget =
+    if parent != nil: parent.evalBudget
+    else: nil
+  result.resetCallScopeSlots(names)
+
+proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
+                         args: openArray[Value]) {.inline.} =
+  for i in 0 ..< args.len:
+    scope.slots[proto.positionalSlots[i]] = args[i]
+  if proto.positionalSlots.len <= 64:
+    var bits = 0'u64
+    for i in 0 ..< args.len:
+      bits = bits or (1'u64 shl proto.positionalSlots[i])
+    scope.slotDefinedBits = bits
+  else:
+    for i in 0 ..< args.len:
+      scope.markSlotDefined(proto.positionalSlots[i])
+
+proc releaseCallScope(scope: Scope) =
+  if scope == nil:
+    return
+  for i in 0 ..< scope.slots.len:
+    scope.slots[i] = NIL
+  scope.slotDefinedBits = 0
+  if scope.slotDefinedOverflow.len != 0:
+    for i in 0 ..< scope.slotDefinedOverflow.len:
+      scope.slotDefinedOverflow[i] = false
+  if scope.vars.len != 0:
+    scope.vars.clear()
+  if scope.varTypes.len != 0:
+    scope.varTypes.clear()
+  if scope.impls.len != 0:
+    scope.impls.setLen(0)
+  if scope.requiredImplTypes.len != 0:
+    scope.requiredImplTypes.setLen(0)
+  if scope.ownsTasks:
+    scope.ownsTasks = false
+  if scope.ownedTasks.len != 0:
+    scope.ownedTasks.setLen(0)
+  if scope.ownsActors:
+    scope.ownsActors = false
+  scope.actorFailureStrategy = afsStop
+  scope.supervisorEvents = NIL
+  scope.supervisorDeadLetters = NIL
+  if scope.ownedActors.len != 0:
+    scope.ownedActors.setLen(0)
+  scope.parent = nil
+  scope.application = nil
+  scope.evalBudget = nil
+  if callScopePoolLen < MaxCallScopePool:
+    callScopePool[callScopePoolLen] = scope
+    inc callScopePoolLen
 
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   messages: sink Table[string, Value]) =
@@ -3263,7 +3514,7 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opSetOuterLocal:
       if inst.depth > localDepth:
         return false
-    of opLoadName:
+    of opLoadName, opLoadNativeFast:
       if not ignoredNames.contains(inst.name):
         var captured: Value
         if not fnScope.lookupOptional(inst.name, captured):
@@ -3734,6 +3985,20 @@ type
     fkSupervisorBody
     fkNamespaceBody
 
+  FrameExtra = ref object
+    ensureValue: Value
+    ensureBody: Chunk
+    ensureScope: Scope
+    pendingError: ref GeneError
+    pendingPanic: ref GenePanic
+    pendingCancel: ref GeneCancel
+    forItems: seq[Value]
+    forIndex: int
+    forPattern: Value
+    forBody: Chunk
+    ownedScope: Scope
+    namespaceName: string
+
   ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
   ## function calls push one of these instead of recursing through Nim, so a call
   ## chain lives on the heap — the foundation for suspendable/resumable tasks
@@ -3741,6 +4006,7 @@ type
   Frame = object
     chunk: Chunk
     scope: Scope
+    recycleScope: bool
     stack: seq[Value]
     ip: int
     validateImpls: bool
@@ -3750,18 +4016,7 @@ type
     errorTypes: seq[Value]  # declared error rows, when checksErrors
     fnName: string          # function name, for the undeclared-error message
     kind: FrameKind         # current-frame completion behavior
-    ensureValue: Value      # value to preserve across an ensure body
-    ensureBody: Chunk       # ensure to run after catch/no-catch/cancellation exits
-    ensureScope: Scope
-    pendingError: ref GeneError
-    pendingPanic: ref GenePanic
-    pendingCancel: ref GeneCancel
-    forItems: seq[Value]
-    forIndex: int           # next item index for fkForBody
-    forPattern: Value
-    forBody: Chunk
-    ownedScope: Scope
-    namespaceName: string
+    extra: FrameExtra       # rare state for try/ensure/for/task/ns frames
 
   TryHandler = object
     ## An active `try` region on the VM's handler stack. The try body runs as a
@@ -3781,6 +4036,7 @@ type
     ## settles; `waitChannel`/`waitIsSend` record what it is parked on.
     chunk: Chunk
     scope: Scope
+    recycleScope: bool
     stack: seq[Value]
     ip: int
     frames: seq[Frame]
@@ -4015,6 +4271,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var frames: seq[Frame]
   var chunk = chunkArg
   var scope = scopeArg
+  var recycleScope = false
   var stack = move stackArg
   var ip = ipArg
   var validateImplRequirements = validateArg
@@ -4048,6 +4305,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     # Resuming a parked fiber: restore the full continuation captured at suspend.
     chunk = fiber.chunk
     scope = fiber.scope
+    recycleScope = fiber.recycleScope
     stack = move fiber.stack
     ip = fiber.ip
     frames = move fiber.frames
@@ -4078,6 +4336,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## each caller handles explicitly) from a popped Frame.
     chunk = f.chunk
     scope = f.scope
+    recycleScope = f.recycleScope
     ip = f.ip
     validateImplRequirements = f.validateImpls
     returnType = f.returnType
@@ -4086,40 +4345,83 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = f.errorTypes
     curFnName = f.fnName
     curFrameKind = f.kind
-    curEnsureValue = f.ensureValue
-    curEnsureBody = f.ensureBody
-    curEnsureScope = f.ensureScope
-    curPendingError = f.pendingError
-    curPendingPanic = f.pendingPanic
-    curPendingCancel = f.pendingCancel
-    curForItems = move f.forItems
-    curForIndex = f.forIndex
-    curForPattern = f.forPattern
-    curForBody = f.forBody
-    curOwnedScope = f.ownedScope
-    curNamespaceName = f.namespaceName
+    if f.extra == nil:
+      curEnsureValue = NIL
+      curEnsureBody = nil
+      curEnsureScope = nil
+      curPendingError = nil
+      curPendingPanic = nil
+      curPendingCancel = nil
+      curForItems = @[]
+      curForIndex = 0
+      curForPattern = NIL
+      curForBody = nil
+      curOwnedScope = nil
+      curNamespaceName = ""
+    else:
+      curEnsureValue = f.extra.ensureValue
+      curEnsureBody = f.extra.ensureBody
+      curEnsureScope = f.extra.ensureScope
+      curPendingError = f.extra.pendingError
+      curPendingPanic = f.extra.pendingPanic
+      curPendingCancel = f.extra.pendingCancel
+      curForItems = move f.extra.forItems
+      curForIndex = f.extra.forIndex
+      curForPattern = f.extra.forPattern
+      curForBody = f.extra.forBody
+      curOwnedScope = f.extra.ownedScope
+      curNamespaceName = f.extra.namespaceName
     evalBudget = scope.evalBudget
 
   template pushFrame() =
-    frames.add Frame(chunk: chunk, scope: scope, stack: move stack, ip: ip,
+    let frameExtra =
+      if curFrameKind == fkNormal and curEnsureBody == nil and
+          curForItems.len == 0 and curOwnedScope == nil and
+          curPendingError == nil and curPendingPanic == nil and
+          curPendingCancel == nil:
+        nil
+      else:
+        FrameExtra(ensureValue: curEnsureValue,
+                   ensureBody: curEnsureBody,
+                   ensureScope: curEnsureScope,
+                   pendingError: curPendingError,
+                   pendingPanic: curPendingPanic,
+                   pendingCancel: curPendingCancel,
+                   forItems: move curForItems, forIndex: curForIndex,
+                   forPattern: curForPattern, forBody: curForBody,
+                   ownedScope: curOwnedScope,
+                   namespaceName: curNamespaceName)
+    frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
+                     stack: move stack, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: returnType, returnLabel: returnLabel,
                      checksErrors: curChecksErrors,
                      errorTypes: curErrorTypes, fnName: curFnName,
-                     kind: curFrameKind, ensureValue: curEnsureValue,
-                     ensureBody: curEnsureBody, ensureScope: curEnsureScope,
-                     pendingError: curPendingError,
-                     pendingPanic: curPendingPanic,
-                     pendingCancel: curPendingCancel,
-                     forItems: move curForItems, forIndex: curForIndex,
-                     forPattern: curForPattern, forBody: curForBody,
-                     ownedScope: curOwnedScope,
-                     namespaceName: curNamespaceName)
+                     kind: curFrameKind, extra: frameExtra)
+
+  template pushFrameFastNormal() =
+    frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
+                     stack: move stack, ip: ip,
+                     validateImpls: validateImplRequirements,
+                     returnType: returnType, returnLabel: returnLabel,
+                     checksErrors: curChecksErrors,
+                     errorTypes: curErrorTypes, fnName: curFnName,
+                     kind: fkNormal, extra: nil)
+
+  template pushCallFrame() =
+    if curFrameKind == fkNormal and curEnsureBody == nil and
+        curForItems.len == 0 and curOwnedScope == nil and
+        curPendingError == nil and curPendingPanic == nil and
+        curPendingCancel == nil:
+      pushFrameFastNormal()
+    else:
+      pushFrame()
 
   template enterFrame(nextChunk: Chunk, nextScope: Scope, nextValidate: bool,
                       nextKind: FrameKind = fkNormal) =
     chunk = nextChunk
     scope = nextScope
+    recycleScope = false
     scope.prepareChunkScope(chunk)
     stack = acquireRunStack()
     ip = 0
@@ -4150,6 +4452,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## op, whose operands are still on the stack). The caller sets the wait reason.
     fiber.chunk = chunk
     fiber.scope = scope
+    fiber.recycleScope = recycleScope
     fiber.ip = resumeIp
     fiber.validateImpls = validateImplRequirements
     fiber.returnType = returnType
@@ -4175,6 +4478,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.handlers = move handlers
     fiber.stack = move stack
 
+  template releaseCurrentCallScope() =
+    if recycleScope:
+      releaseCallScope(scope)
+      recycleScope = false
+
+  proc releaseFrameCallScope(f: Frame) =
+    if f.recycleScope:
+      releaseCallScope(f.scope)
+
   template frameReturn(rawValue: Value) =
     ## Return `rawValue` from the current frame: adapt it to the frame's declared
     ## return type, then pop to the caller and push the result — or, if this is
@@ -4183,9 +4495,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     var retValue = escapeWeakFunctions(rawValue)
     if returnType.kind != vkNil:
       retValue = adaptBoundary(returnLabel, returnType, retValue, scope)
-    if validateImplRequirements:
+    if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
-    if curFrameKind == fkEnsureErrorBody:
+    releaseCurrentCallScope()
+    if curFrameKind == fkNormal:
+      if frames.len == 0:
+        stackArg = move stack
+        ipArg = ip
+        return RunStop(kind: rskReturn, value: retValue)
+      else:
+        releaseRunStack(stack)
+        var caller = frames.pop()
+        stack = move caller.stack
+        loadFrameRegs(caller)
+        stack.add retValue
+    elif curFrameKind == fkEnsureErrorBody:
       raise curPendingError
     elif curFrameKind == fkEnsurePanicBody:
       raise curPendingPanic
@@ -4322,10 +4646,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack.add chunk.constants[inst[].intArg]
         of opLoadName:
           stack.add scope.lookup(inst[].name)
+        of opLoadNativeFast:
+          stack.add scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
-          stack.add scope.loadSlot(inst[].intArg, inst[].name)
+          let slot = inst[].intArg
+          if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+            stack.add scope.slots[slot]
+          else:
+            stack.add scope.loadSlot(slot, inst[].name)
         of opLoadOuterLocal:
-          stack.add scope.loadSlotAt(inst[].depth, inst[].intArg, inst[].name)
+          let slot = inst[].intArg
+          let outer =
+            if inst[].depth == 1:
+              scope.parent
+            else:
+              scope.scopeAtDepth(inst[].depth, inst[].name)
+          if outer != nil and slot >= 0 and slot < outer.slots.len and
+              outer.slotDefined(slot):
+            stack.add outer.slots[slot]
+          else:
+            stack.add scope.loadSlotAt(inst[].depth, slot, inst[].name)
         of opDefineName:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in var")
@@ -4414,6 +4754,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             for i in countdown(inst[].intArg - 1, 0):
               body[i] = stack.pop()
           stack.add newNode(newSym("select"), body = body)
+        of opApplySelector:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in selector apply")
+          let target = stack.pop()
+          let selector = stack.pop()
+          stack.add applySelector(selector, target)
         of opMakeFn:
           let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
@@ -4571,9 +4917,249 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           stack.add NIL
-        of opCall:
-          let argCount = inst[].intArg
-          let namedCount = inst[].names.len
+        of opCallLocal0:
+          let slot = inst[].intArg
+          var callee =
+            if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+              scope.slots[slot]
+            else:
+              scope.loadSlot(slot, inst[].name)
+          if callee.kind == vkFunction:
+            let code = callee.fnCode
+            if code != nil and code of FunctionProto:
+              let proto = FunctionProto(code)
+              if proto.nativeOp != ncoNone:
+                let native = applyNativeCompiled(callee, proto, [], NamedArgs())
+                if native.handled:
+                  stack.add native.value
+                  continue
+              if proto.simpleCall:
+                if proto.params.len != 0:
+                  raise newException(GeneError,
+                    "function '" & callee.fnName & "' expects " &
+                    $proto.requiredPositional & ".." & $proto.params.len &
+                    " argument(s), got 0")
+                let callScope =
+                  if proto.needsCallScope:
+                    if proto.poolCallScope:
+                      acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                    else:
+                      let fresh = newScope(callee.fnScope)
+                      fresh.prepareSlots(proto.localNames)
+                      fresh
+                  else:
+                    callee.fnScope
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = callScope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = proto.needsCallScope
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = callScope.evalBudget
+                continue
+              elif not proto.isGenerator:
+                let bound = bindCallScope(callee, proto, [], NamedArgs())
+                var lbl = ""
+                if bound.returnType.kind != vkNil:
+                  lbl = "return from '" & callee.fnName & "'"
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = bound.scope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = bound.returnType
+                returnLabel = lbl
+                curChecksErrors = proto.checksErrors
+                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = bound.scope.evalBudget
+                continue
+          let site =
+            if callee.kind == vkFunction or
+                (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+              NIL
+            else:
+              chunk.callSites.getOrDefault(ip - 1, NIL)
+          var value: Value
+          try:
+            value = applyCall(callee, [], NamedArgs(), scope, site)
+          except SuspendError as se:
+            if not se.timer:
+              raise
+            if fiber == nil:
+              raise newException(GeneError, "internal: suspended outside a fiber")
+            stack.add NIL
+            captureContinuation(ip)
+            fiber.waitTimer = true
+            fiber.waitDeadline = se.deadline
+            return RunStop(kind: rskSuspend, value: NIL)
+          stack.add value
+        of opCallName0, opCallName1, opCallLocal1, opCallParentLocal1,
+            opCallOuterLocal1:
+          let argCount =
+            if inst[].op == opCallName0: 0 else: 1
+          if stack.len < argCount:
+            raise newException(GeneError, "VM stack underflow in direct call")
+          let argsStart = stack.len - argCount
+          var callee =
+            if inst[].op == opCallName0 or inst[].op == opCallName1:
+              scope.lookup(inst[].name)
+            elif inst[].op == opCallLocal1:
+              let slot = inst[].intArg
+              if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+                scope.slots[slot]
+              else:
+                scope.loadSlot(slot, inst[].name)
+            elif inst[].op == opCallParentLocal1:
+              let slot = inst[].intArg
+              let parent = scope.parent
+              if parent != nil and slot >= 0 and slot < parent.slots.len and
+                  parent.slotDefined(slot):
+                parent.slots[slot]
+              else:
+                scope.loadSlotAt(1, slot, inst[].name)
+            else:
+              let slot = inst[].intArg
+              let outer =
+                if inst[].depth == 1:
+                  scope.parent
+                else:
+                  scope.scopeAtDepth(inst[].depth, inst[].name)
+              if outer != nil and slot >= 0 and slot < outer.slots.len and
+                  outer.slotDefined(slot):
+                outer.slots[slot]
+              else:
+                scope.loadSlotAt(inst[].depth, slot, inst[].name)
+          if callee.kind == vkProtocolMessage and argCount >= 1:
+            callee = resolveProtocolMessage(scope, callee, stack[argsStart])
+          if callee.kind == vkFunction:
+            let code = callee.fnCode
+            if code != nil and code of FunctionProto:
+              let proto = FunctionProto(code)
+              if proto.nativeOp != ncoNone:
+                let native =
+                  if argCount == 0:
+                    applyNativeCompiled(callee, proto, [], NamedArgs())
+                  else:
+                    applyNativeCompiled(callee, proto,
+                      stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                if native.handled:
+                  stack.setLen(argsStart)
+                  stack.add native.value
+                  continue
+              if proto.simpleCall:
+                let positionalLen = proto.params.len
+                if positionalLen != argCount:
+                  raise newException(GeneError,
+                    "function '" & callee.fnName & "' expects " &
+                    $proto.requiredPositional & ".." & $positionalLen &
+                    " argument(s), got " & $argCount)
+                let callScope =
+                  if proto.needsCallScope:
+                    let created =
+                      if proto.poolCallScope:
+                        acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                      else:
+                        let fresh = newScope(callee.fnScope)
+                        fresh.prepareSlots(proto.localNames)
+                        fresh
+                    if argCount > 0:
+                      created.bindSimpleCallSlots(
+                        proto, stack.toOpenArray(argsStart, stack.high))
+                    created
+                  else:
+                    callee.fnScope
+                stack.setLen(argsStart)
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = callScope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = proto.needsCallScope
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = callScope.evalBudget
+                continue
+              elif not proto.isGenerator:
+                let bound =
+                  if argCount == 0:
+                    bindCallScope(callee, proto, [], NamedArgs())
+                  else:
+                    bindCallScope(callee, proto,
+                      stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                stack.setLen(argsStart)
+                var lbl = ""
+                if bound.returnType.kind != vkNil:
+                  lbl = "return from '" & callee.fnName & "'"
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = bound.scope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = bound.returnType
+                returnLabel = lbl
+                curChecksErrors = proto.checksErrors
+                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = bound.scope.evalBudget
+                continue
+          let site =
+            if callee.kind == vkFunction or
+                (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+              NIL
+            else:
+              chunk.callSites.getOrDefault(ip - 1, NIL)
+          var value: Value
+          try:
+            value =
+              if argCount == 0:
+                applyCall(callee, [], NamedArgs(), scope, site)
+              else:
+                applyCall(callee, stack.toOpenArray(argsStart, stack.high),
+                          NamedArgs(), scope, site)
+          except SuspendError as se:
+            if not se.timer:
+              raise
+            if fiber == nil:
+              raise newException(GeneError, "internal: suspended outside a fiber")
+            stack.setLen(argsStart)
+            stack.add NIL
+            captureContinuation(ip)
+            fiber.waitTimer = true
+            fiber.waitDeadline = se.deadline
+            return RunStop(kind: rskSuspend, value: NIL)
+          stack.setLen(argsStart)
+          stack.add value
+        of opCall0, opCall1, opCall2, opCall:
+          let argCount =
+            case inst[].op
+            of opCall0: 0
+            of opCall1: 1
+            of opCall2: 2
+            else: inst[].intArg
+          let namedCount =
+            if inst[].op == opCall:
+              inst[].names.len
+            else:
+              0
           let argsStart = stack.len - argCount
           if argsStart < 0 or argsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")
@@ -4595,10 +5181,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if proto.nativeOp != ncoNone:
                 var nativeNamed: NamedArgs
                 if namedCount > 0:
-                  nativeNamed.names = inst[].names
-                  nativeNamed.values = newSeq[Value](namedCount)
-                  for i in 0 ..< namedCount:
-                    nativeNamed.values[i] = stack[calleeIndex + 1 + i]
+                  nativeNamed = namedArgsFromStack(inst[].names, stack,
+                                                   calleeIndex + 1)
                 let native =
                   if argCount == 0:
                     applyNativeCompiled(callee, proto, [], nativeNamed)
@@ -4612,24 +5196,35 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   continue
               if namedCount == 0 and proto.simpleCall:
                 # Hottest path: arity + positional slots only.
-                let positional = callee.fnParams
-                if argCount != positional.len:
+                let positionalLen = proto.params.len
+                if argCount != positionalLen:
                   raise newException(GeneError,
                     "function '" & callee.fnName & "' expects " &
-                    $proto.requiredPositional & ".." & $positional.len &
+                    $proto.requiredPositional & ".." & $positionalLen &
                     " argument(s), got " & $argCount)
-                let callScope = newScope(callee.fnScope)
-                callScope.prepareSlots(proto.localNames)
-                for i in 0 ..< argCount:
-                  callScope.defineSlot(proto.positionalSlots[i], positional[i],
-                                       stack[argsStart + i])
+                let callScope =
+                  if proto.needsCallScope:
+                    let created =
+                      if proto.poolCallScope:
+                        acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                      else:
+                        let fresh = newScope(callee.fnScope)
+                        fresh.prepareSlots(proto.localNames)
+                        fresh
+                    if argCount > 0:
+                      created.bindSimpleCallSlots(
+                        proto, stack.toOpenArray(argsStart, stack.high))
+                    created
+                else:
+                  callee.fnScope
                 stack.setLen(calleeIndex)        # consume callee + args
-                pushFrame()
+                pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
+                recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = proto.needsCallScope
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
@@ -4644,10 +5239,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 # type to adapt and the callee's error boundary to translate on throw.
                 var named: NamedArgs
                 if namedCount > 0:
-                  named.names = inst[].names
-                  named.values = newSeq[Value](namedCount)
-                  for i in 0 ..< namedCount:
-                    named.values[i] = stack[calleeIndex + 1 + i]
+                  named = namedArgsFromStack(inst[].names, stack,
+                                             calleeIndex + 1)
                 let bound =
                   if argCount == 0:
                     bindCallScope(callee, proto, [], named)
@@ -4658,9 +5251,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if bound.returnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                pushFrame()
+                pushCallFrame()
                 chunk = proto.chunk
                 scope = bound.scope
+                recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
@@ -4672,12 +5266,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curFrameKind = fkNormal
                 evalBudget = bound.scope.evalBudget
                 continue
+          if namedCount == 0 and argCount == 2 and callee.kind == vkNativeFn:
+            let fastNative = tryFastNative2(callee, stack[argsStart], stack[argsStart + 1])
+            if fastNative.handled:
+              stack.setLen(calleeIndex)
+              stack.add fastNative.value
+              continue
           var named: NamedArgs
           if namedCount > 0:
-            named.names = inst[].names
-            named.values = newSeq[Value](namedCount)
-            for i in 0 ..< namedCount:
-              named.values[i] = stack[calleeIndex + 1 + i]
+            named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
           # Call-site node for the Call envelope (design §3). Looked up only for
           # envelope-building callees; the hot Fn and plain-native paths skip it.
           let site =
@@ -4717,10 +5314,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let calleeIndex = partsStart - namedCount - 1
           var callee = stack[calleeIndex]
           if namedCount > 0:
-            named.names = inst[].names
-            named.values = newSeq[Value](namedCount)
-            for i in 0 ..< namedCount:
-              named.values[i] = stack[calleeIndex + 1 + i]
+            named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
           var args: seq[Value]
           for i, part in stack.toOpenArray(partsStart, stack.high):
             if proto.splices[i]:
@@ -4744,19 +5338,29 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   stack.add native.value
                   continue
               if namedCount == 0 and fnProto.simpleCall and
-                  args.len == callee.fnParams.len:
-                let positional = callee.fnParams
-                let callScope = newScope(callee.fnScope)
-                callScope.prepareSlots(fnProto.localNames)
-                for i in 0 ..< args.len:
-                  callScope.defineSlot(fnProto.positionalSlots[i], positional[i], args[i])
+                  args.len == fnProto.params.len:
+                let callScope =
+                  if fnProto.needsCallScope:
+                    let created =
+                      if fnProto.poolCallScope:
+                        acquireSimpleCallScope(callee.fnScope, fnProto.localNames)
+                      else:
+                        let fresh = newScope(callee.fnScope)
+                        fresh.prepareSlots(fnProto.localNames)
+                        fresh
+                    if args.len > 0:
+                      created.bindSimpleCallSlots(fnProto, args)
+                    created
+                  else:
+                    callee.fnScope
                 stack.setLen(calleeIndex)
                 pushFrame()
                 chunk = fnProto.chunk
                 scope = callScope
+                recycleScope = fnProto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = fnProto.needsCallScope
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
@@ -4774,6 +5378,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 pushFrame()
                 chunk = fnProto.chunk
                 scope = bound.scope
+                recycleScope = fnProto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
@@ -4811,6 +5416,61 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(calleeIndex)
           stack.add value
+        of opNativeFast2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in native fast call")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          stack.setLen(top - 2)
+          let kind = NativeFastKind(inst[].intArg)
+          let fastNative = tryFastNativeKind2(kind, a, b)
+          if fastNative.handled:
+            stack.add fastNative.value
+          else:
+            let callee = scope.loadNativeFast(kind, inst[].name)
+            var args = [a, b]
+            stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opNativeFastConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in native fast const call")
+          let top = stack.len
+          let a = stack[top - 1]
+          stack.setLen(top - 1)
+          let b = chunk.constants[inst[].depth]
+          let kind = NativeFastKind(inst[].intArg)
+          if a.kind == vkInt and b.kind == vkInt:
+            case kind
+            of nfkAdd:
+              stack.add intAdd(a, b)
+              continue
+            of nfkSub:
+              stack.add intSub(a, b)
+              continue
+            of nfkMul:
+              stack.add intMul(a, b)
+              continue
+            of nfkLt:
+              stack.add newBool(intCompare(a, b) < 0)
+              continue
+            of nfkGt:
+              stack.add newBool(intCompare(a, b) > 0)
+              continue
+            of nfkLe:
+              stack.add newBool(intCompare(a, b) <= 0)
+              continue
+            of nfkGe:
+              stack.add newBool(intCompare(a, b) >= 0)
+              continue
+            else:
+              discard
+          let fastNative = tryFastNativeKind2(kind, a, b)
+          if fastNative.handled:
+            stack.add fastNative.value
+          else:
+            let callee = scope.loadNativeFast(kind, inst[].name)
+            var args = [a, b]
+            stack.add applyCall(callee, args, NamedArgs(), scope)
         of opMatch:
           let target = stack.pop()
           let mp = chunk.matches[inst[].intArg]
@@ -4990,7 +5650,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           ipArg = ip
           return RunStop(kind: rskYield, value: yielded)
         of opJumpIfFalse:
-          let cond = stack.pop()
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in conditional jump")
+          let top = stack.len - 1
+          let cond = stack[top]
+          stack.setLen(top)
           if not cond.isTruthy:
             ip = inst[].intArg
         of opJump:
@@ -5013,6 +5677,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # outer dispatch loop with its result; otherwise the error propagates out.
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
       appendVmTrace(err, curFnName, frames)
+      releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5069,6 +5734,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             stack = move f.stack
             loadFrameRegs(f)
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+            releaseCurrentCallScope()
         elif frames.len == 0:
           raise err
         else:
@@ -5077,11 +5743,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack = move f.stack
           loadFrameRegs(f)
           err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+          releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
       # `while true`, re-entering dispatch with the catch result on the stack.
     except GenePanic as p:
       # Panics are not catchable, but ensure blocks still run as the panic unwinds
       # out of every active `try` (innermost first), matching the old `finally`.
+      releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5111,10 +5779,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           break
       if cleanupStarted:
         continue
+      for f in frames:
+        releaseFrameCallScope(f)
       raise p
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
       # not see it, but cleanup still runs as the task unwinds.
+      releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
         curFrameKind = fkNormal
@@ -5144,6 +5815,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           break
       if cleanupStarted:
         continue
+      for f in frames:
+        releaseFrameCallScope(f)
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
       raise c
@@ -6695,11 +7368,22 @@ proc staticLookup(target, segment: Value): Value =
 proc applySelectorCallStage(stage, target: Value): Value =
   if stage.body.len == 0:
     raise newException(GeneError, "selector call stage requires a callee")
-  var callArgs = newSeqOfCap[Value](stage.body.len)
-  callArgs.add target
-  for i in 1 ..< stage.body.len:
-    callArgs.add stage.body[i]
-  applyCall(stage.body[0], callArgs, NamedArgs())
+  case stage.body.len
+  of 1:
+    var callArgs = [target]
+    applyCall(stage.body[0], callArgs, NamedArgs())
+  of 2:
+    var callArgs = [target, stage.body[1]]
+    applyCall(stage.body[0], callArgs, NamedArgs())
+  of 3:
+    var callArgs = [target, stage.body[1], stage.body[2]]
+    applyCall(stage.body[0], callArgs, NamedArgs())
+  else:
+    var callArgs = newSeqOfCap[Value](stage.body.len)
+    callArgs.add target
+    for i in 1 ..< stage.body.len:
+      callArgs.add stage.body[i]
+    applyCall(stage.body[0], callArgs, NamedArgs())
 
 proc selectorStrict(selector: Value): bool =
   if not selector.props.hasKey("strict"):
@@ -6979,8 +7663,9 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
 proc callNamedMap(named: NamedArgs): Value =
   var entries = initOrderedTable[string, Value]()
   for i, name in named.names:
-    if named.values[i].kind != vkVoid:
-      entries[name] = named.values[i]
+    let value = named.valueAt(i)
+    if value.kind != vkVoid:
+      entries[name] = value
   newMap(entries)
 
 proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
@@ -7033,8 +7718,13 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       raise newException(GeneError,
         "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
-  let callScope = newScope(callee.fnScope)
-  callScope.prepareSlots(proto.localNames)
+  let callScope =
+    if proto.poolCallScope:
+      acquireCallScope(callee.fnScope, proto.localNames)
+    else:
+      let fresh = newScope(callee.fnScope)
+      fresh.prepareSlots(proto.localNames)
+      fresh
   var typeBindings: Table[string, Value]
   if proto.typeParams.len > 0:
     typeBindings = initTable[string, Value]()
@@ -7049,9 +7739,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
           raiseTypeError("parameter '" & positional[i] & "'",
                          expected.typeExprLabel, args[i], callScope)
     for p in proto.namedParams:
-      if named.hasArg(p.arg) and proto.hasNamedParamTypes and
-          p.typeExpr.kind != vkNil:
-        let value = named.getArg(p.arg)
+      let namedIndex = named.argIndex(p.arg)
+      if namedIndex >= 0 and proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+        let value = named.valueAt(namedIndex)
         if not inferTypeExpr(p.typeExpr, value, callScope,
                              proto.typeParams, typeBindings):
           let expected = substituteTypeParams(p.typeExpr, typeBindings,
@@ -7070,14 +7760,15 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       value = adaptBoundary("parameter '" & positional[i] & "'",
                             typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
-      callScope.defineSlot(proto.positionalSlots[i], positional[i], value)
+      callScope.defineFreshCallSlot(proto.positionalSlots[i], value)
     else:
       callScope.define(positional[i], value)
     if declaredType.kind != vkNil:
       callScope.declareType(positional[i], declaredType)
   for pIndex, p in proto.namedParams:
-    if named.hasArg(p.arg):
-      var value = named.getArg(p.arg)
+    let namedIndex = named.argIndex(p.arg)
+    if namedIndex >= 0:
+      var value = named.valueAt(namedIndex)
       var declaredType = NIL
       if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
         let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
@@ -7086,7 +7777,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
         value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                               value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
-        callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+        callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
       else:
         callScope.define(p.local, value)
       if declaredType.kind != vkNil:
@@ -7107,7 +7798,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       boundValue = adaptBoundary("parameter '" & positional[i] & "'",
                                  typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
-      callScope.defineSlot(proto.positionalSlots[i], positional[i], boundValue)
+      callScope.defineFreshCallSlot(proto.positionalSlots[i], boundValue)
     else:
       callScope.define(positional[i], boundValue)
     if declaredType.kind != vkNil:
@@ -7117,11 +7808,11 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     for i in 0 ..< rest.len:
       rest[i] = args[positional.len + i]
     if proto.restSlot >= 0:
-      callScope.defineSlot(proto.restSlot, proto.restParam, newList(rest))
+      callScope.defineFreshCallSlot(proto.restSlot, newList(rest))
     else:
       callScope.define(proto.restParam, newList(rest))
   for pIndex, p in proto.namedParams:
-    if not named.hasArg(p.arg):
+    if named.argIndex(p.arg) < 0:
       if p.defaultValue.optional:
         var value = p.defaultValue.defaultValue(callScope)
         var declaredType = NIL
@@ -7132,7 +7823,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
           value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                 value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
-          callScope.defineSlot(proto.namedSlots[pIndex], p.local, value)
+          callScope.defineFreshCallSlot(proto.namedSlots[pIndex], value)
         else:
           callScope.define(p.local, value)
         if declaredType.kind != vkNil:
@@ -7149,6 +7840,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
   of vkNativeFn:
+    if named.len == 0 and args.len == 2:
+      let fast = tryFastNative2(callee, args[0], args[1])
+      if fast.handled:
+        return fast.value
     let impl = callee.nativeImpl
     if impl != nil:
       if named.len != 0:
@@ -7167,7 +7862,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         "native function '" & callee.nativeFnName & "' does not accept named arguments")
     var call = NativeCall(calleeName: callee.nativeFnName,
                           namedNames: named.names,
-                          namedValues: named.values,
+                          namedValues: named.toSeq(),
                           dispatchScope: dispatchScope,
                           site: site)
     callImpl(args, addr call)
@@ -7188,11 +7883,26 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
           ".." & $positional.len &
           " argument(s), got " & $args.len)
-      let callScope = newScope(callee.fnScope)
-      callScope.prepareSlots(proto.localNames)
-      for i in 0 ..< args.len:
-        callScope.defineSlot(proto.positionalSlots[i], positional[i], args[i])
-      return runPooled(proto.chunk, callScope)
+      let callScope =
+        if proto.needsCallScope:
+          let created =
+            if proto.poolCallScope:
+              acquireSimpleCallScope(callee.fnScope, proto.localNames)
+            else:
+              let fresh = newScope(callee.fnScope)
+              fresh.prepareSlots(proto.localNames)
+              fresh
+          if args.len > 0:
+            created.bindSimpleCallSlots(proto, args)
+          created
+        else:
+          callee.fnScope
+      try:
+        return runPooled(proto.chunk, callScope,
+                         validateImplRequirements = proto.needsCallScope)
+      finally:
+        if proto.poolCallScope:
+          releaseCallScope(callScope)
     let (callScope, returnType) = bindCallScope(callee, proto, args, named)
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
@@ -7200,20 +7910,24 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                     returnType, resultValue, callScope)
       return resultValue
-    var resultValue: Value
     try:
-      resultValue = runPooled(proto.chunk, callScope)
-    except GeneError as e:
-      if not callee.fnChecksErrors:
-        raise
-      if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
-        raise
-      raise newException(GeneError,
-        "function '" & callee.fnName & "' raised an undeclared error")
-    if returnType.kind != vkNil:
-      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                  returnType, resultValue, callScope)
-    resultValue
+      var resultValue: Value
+      try:
+        resultValue = runPooled(proto.chunk, callScope)
+      except GeneError as e:
+        if not callee.fnChecksErrors:
+          raise
+        if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
+          raise
+        raise newException(GeneError,
+          "function '" & callee.fnName & "' raised an undeclared error")
+      if returnType.kind != vkNil:
+        resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+                                    returnType, resultValue, callScope)
+      resultValue
+    finally:
+      if proto.poolCallScope:
+        releaseCallScope(callScope)
   of vkType:
     # Construct a typed instance: a node with the type as head and validated
     # props/body fields.

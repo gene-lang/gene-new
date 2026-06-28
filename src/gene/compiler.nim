@@ -59,6 +59,17 @@ proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
   c.chunk.emit Instruction(op: op, intArg: intArg, depth: depth,
                            name: name, names: names, flag: flag)
 
+proc callOpForArity(argCount: int): OpCode =
+  case argCount
+  of 0: opCall0
+  of 1: opCall1
+  of 2: opCall2
+  else: opCall
+
+proc emitPlainCall(c: var Compiler, argCount: int): int =
+  let op = callOpForArity(argCount)
+  c.emit(op, argCount)
+
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
   c.localSlots = initTable[string, int]()
@@ -89,6 +100,43 @@ proc parentFrames(c: Compiler): seq[Table[string, int]] =
     result.add c.localSlots
   result.add c.parentSlots
 
+proc nativeFastLoadKind(name: string): NativeFastKind =
+  case name
+  of "+": nfkAdd
+  of "-": nfkSub
+  of "*": nfkMul
+  # Division keeps the regular native-call path for now. Its zero checks and
+  # integer/float result rules need a separate measured fast path, not just
+  # inclusion in the generic binary opNativeFast2 lowering.
+  of "<": nfkLt
+  of ">": nfkGt
+  of "<=": nfkLe
+  of ">=": nfkGe
+  else: nfkNone
+
+proc isSelfEvaluatingFastConst(v: Value): bool =
+  case v.kind
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkChar:
+    true
+  else:
+    false
+
+proc hasLexicalBinding(c: Compiler, name: string): bool =
+  if c.localSlot(name) >= 0:
+    return true
+  c.parentSlot(name).slot >= 0
+
+proc lexicalCallSlot(c: Compiler, name: string): tuple[op: OpCode, depth: int, slot: int] =
+  let slot = c.localSlot(name)
+  if slot >= 0:
+    return (opCallLocal1, 0, slot)
+  let outer = c.parentSlot(name)
+  if outer.slot >= 0:
+    if outer.depth == 1:
+      return (opCallParentLocal1, outer.depth, outer.slot)
+    return (opCallOuterLocal1, outer.depth, outer.slot)
+  (opCall, -1, -1)
+
 proc emitLoadBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
   if slot >= 0:
@@ -98,7 +146,11 @@ proc emitLoadBinding(c: var Compiler, name: string) =
     if outer.slot >= 0:
       discard c.emit(opLoadOuterLocal, outer.slot, depth = outer.depth, name = name)
     else:
-      discard c.emit(opLoadName, name = name)
+      let fastKind = nativeFastLoadKind(name)
+      if fastKind != nfkNone:
+        discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
+      else:
+        discard c.emit(opLoadName, name = name)
 
 proc emitDefineBinding(c: var Compiler, name: string) =
   if c.useLocalSlots:
@@ -363,6 +415,37 @@ proc compileDefaultExpr(c: Compiler, node: Value): Chunk =
   compileExpr(child, node)
   discard child.emit(opReturn)
   child.chunk
+
+proc chunkNeedsCallScope(chunk: Chunk): bool =
+  if chunk.localNames.len > 0 or chunk.subchunks.len > 0 or
+      chunk.forLoops.len > 0 or chunk.matches.len > 0 or
+      chunk.tries.len > 0:
+    return true
+  for inst in chunk.instructions:
+    case inst.op
+    of opLoadOuterLocal, opSetOuterLocal, opDefineName, opDefineLocal,
+       opSetModuleName, opMakeFn,
+       opMakeNamespace, opMakeType, opMakeProtocol, opMakeImpl, opImport,
+       opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
+       opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
+      return true
+    else:
+      discard
+  false
+
+proc chunkCanPoolCallScope(chunk: Chunk): bool =
+  if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
+      chunk.matches.len > 0 or chunk.tries.len > 0:
+    return false
+  for inst in chunk.instructions:
+    case inst.op
+    of opMakeFn, opMakeEnv, opMakeNamespace, opMakeType, opMakeProtocol,
+       opMakeImpl, opImport, opMatch, opMatchBind, opMatchBindReplace,
+       opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
+      return false
+    else:
+      discard
+  true
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
   if form.kind == vkSymbol:
@@ -1379,6 +1462,19 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     inc start
 
   let specs = c.paramSpecs(paramList)
+  var seenLocals = initTable[string, bool]()
+  for local in specs.positional:
+    if seenLocals.hasKey(local):
+      raise newException(GeneError, "duplicate parameter binding: " & local)
+    seenLocals[local] = true
+  for p in specs.named:
+    if seenLocals.hasKey(p.local):
+      raise newException(GeneError, "duplicate parameter binding: " & p.local)
+    seenLocals[p.local] = true
+  if specs.rest.len > 0:
+    if seenLocals.hasKey(specs.rest):
+      raise newException(GeneError, "duplicate parameter binding: " & specs.rest)
+    seenLocals[specs.rest] = true
   var fnCompiler = c.childCompiler()
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()
@@ -1417,6 +1513,15 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                    not hasParamTypes and not hasNamedParamTypes and
                    returnType.kind == vkNil and not fnCompiler.sawYield and
                    not specs.hasOptionalPositional
+  let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk)
+  var defaultsCanCapture = specs.hasOptionalPositional
+  if not defaultsCanCapture:
+    for p in specs.named:
+      if p.defaultValue.optional:
+        defaultsCanCapture = true
+        break
+  let poolCallScope = needsCallScope and not defaultsCanCapture and
+                      chunkCanPoolCallScope(fnCompiler.chunk)
   let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
                                              typeParams, checksErrors,
                                              fnCompiler.sawYield)
@@ -1436,6 +1541,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                 restSlot: restSlot,
                 requiredPositional: specs.requiredPositionalCount,
                 simpleCall: simpleCall,
+                needsCallScope: needsCallScope,
+                poolCallScope: poolCallScope,
                 paramTypes: specs.positionalTypes,
                 hasParamTypes: hasParamTypes,
                 paramDefaults: specs.positionalDefaults,
@@ -2097,7 +2204,7 @@ proc compilePath(c: var Compiler, node: Value) =
     return
   compileSelectorParts(c, parts.toOpenArray(1, parts.high))
   compileExpr(c, parts[0])
-  discard c.emit(opCall, 1)
+  discard c.emit(opApplySelector)
 
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind
@@ -2164,6 +2271,38 @@ proc compileListValue(c: var Compiler, value: Value) =
     discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
 proc compileCall(c: var Compiler, node: Value) =
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
+    let local = c.localSlot(node.head.symVal)
+    if local >= 0:
+      c.chunk.callSites[c.emit(opCallLocal0, local,
+                               name = node.head.symVal)] = node
+      return
+    if not c.hasLexicalBinding(node.head.symVal):
+      c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
+      return
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 2:
+    let fastKind = nativeFastLoadKind(node.head.symVal)
+    if fastKind != nfkNone and not c.hasLexicalBinding(node.head.symVal):
+      compileExpr(c, node.body[0])
+      if node.body[1].isSelfEvaluatingFastConst:
+        let constIndex = c.chunk.addConst(node.body[1])
+        discard c.emit(opNativeFastConst, ord(fastKind), name = node.head.symVal,
+                       depth = constIndex)
+      else:
+        compileExpr(c, node.body[1])
+        discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
+      return
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 1:
+    let direct = c.lexicalCallSlot(node.head.symVal)
+    if direct.slot >= 0:
+      compileExpr(c, node.body[0])
+      c.chunk.callSites[c.emit(direct.op, direct.slot, name = node.head.symVal,
+                               depth = direct.depth)] = node
+      return
+    if not c.hasLexicalBinding(node.head.symVal):
+      compileExpr(c, node.body[0])
+      c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal)] = node
+      return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]
     if types.kind != vkList:
@@ -2198,7 +2337,12 @@ proc compileCall(c: var Compiler, node: Value) =
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
     c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
   else:
-    c.chunk.callSites[c.emit(opCall, node.body.len, names = names)] = node
+    let callIndex =
+      if names.len == 0:
+        c.emitPlainCall(node.body.len)
+      else:
+        c.emit(opCall, node.body.len, names = names)
+    c.chunk.callSites[callIndex] = node
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   if node.body.len == 0:
@@ -2233,7 +2377,12 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
     c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
   else:
-    c.chunk.callSites[c.emit(opCall, node.body.len, names = names)] = node
+    let callIndex =
+      if names.len == 0:
+        c.emitPlainCall(node.body.len)
+      else:
+        c.emit(opCall, node.body.len, names = names)
+    c.chunk.callSites[callIndex] = node
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body
