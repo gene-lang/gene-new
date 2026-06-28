@@ -7226,6 +7226,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
   withScheduler(scope):
+    let workerLease = beginSchedulerWorkerLease()
+    defer:
+      endSchedulerWorkerLease(workerLease)
     scope.prepareChunkScope(chunk)
     var stack: seq[Value]
     var ip = 0

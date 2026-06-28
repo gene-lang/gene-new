@@ -136,10 +136,11 @@ participates in equality or hashing.
 > candidates; when runtime captures are `Send`, the VM queues that task with an
 > isolated snapshot of the captured parent scope. This removes live-parent scope
 > dependence for eligible tasks. In `--mm:atomicArc --threads:on` builds, setting
-> `GENE_WORKERS=N` lets root scheduler pumping for `await`, structured-scope
-> cleanup, channel waits, actor mailbox waits/driving, and `sleep` hand those
-> snapshot-isolated worker candidates to N OS worker threads while unsafe
-> shared-scope tasks stay on the cooperative root lane.
+> `GENE_WORKERS=N` starts an opt-in worker lease for root program execution and
+> root scheduler pumping for `await`, structured-scope cleanup, channel waits,
+> actor mailbox waits/driving, and `sleep`. That lease lets N OS worker threads
+> consume snapshot-isolated worker candidates while unsafe shared-scope tasks
+> stay on the cooperative root lane.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
@@ -251,9 +252,10 @@ sees no outer-scope mutation or nested `spawn`, and runtime captures satisfy
 `Send`; those eligible tasks receive sparse captured-scope snapshots so they no
 longer read through the live parent scope. Unsafe shared-scope tasks remain
 cooperative. Threaded `atomicArc` smoke checks cover values, VM behavior,
-worker-candidate execution, and RC leak accounting. Worker threads now park on a
-condition-variable wakeup when no eligible work is queued, but worker orchestration
-remains experimental and limited to snapshot-isolated leaf candidates.
+root-execution and root-wait worker-candidate execution, and RC leak accounting.
+Worker threads now park on a condition-variable wakeup when no eligible work is
+queued, but worker orchestration remains experimental and limited to
+snapshot-isolated leaf candidates.
 
 ## License
 

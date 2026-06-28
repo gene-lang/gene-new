@@ -16,19 +16,20 @@ publish their captured scope/value graph as well, including task/channel/actor
 interior payloads that are protected by their object locks. Worker-candidate
 spawn bodies now run against sparse captured-scope snapshots once their runtime
 captures satisfy `Send`. In `--mm:atomicArc --threads:on` builds,
-`GENE_WORKERS=N` starts an opt-in worker lane: root scheduler pumping for
-`await`, structured-scope cleanup, channel waits, actor mailbox waits/driving,
-and `sleep` leaves snapshot-isolated worker candidates for OS worker threads
-while unsafe shared-scope work remains on the cooperative root lane. Worker
-candidates are leaf-like: bytecode/runtime eligibility rejects bodies and
-reachable captured functions that contain nested `spawn`. A threaded `atomicArc` smoke gate now
-covers value operations, VM behavior, worker-candidate execution, and RC leak
-accounting, including typed task/channel and actor ask paths. This removes more
-runtime data-race classes and keeps ORC-object atomicity regressions visible, but
-it is still not production M:N: worker lifecycle/load balancing, work stealing,
-async I/O, and production semantics remain open. Idle worker threads now park on
-a condition-variable wakeup instead of polling when no worker-candidate fiber is
-queued.
+`GENE_WORKERS=N` starts an opt-in worker lane for root program execution and
+root scheduler pumping for `await`, structured-scope cleanup, channel waits,
+actor mailbox waits/driving, and `sleep`. That lane lets OS worker threads
+consume snapshot-isolated worker candidates while unsafe shared-scope work
+remains on the cooperative root lane. Worker candidates are leaf-like:
+bytecode/runtime eligibility rejects bodies and reachable captured functions
+that contain nested `spawn`. A threaded `atomicArc` smoke gate now covers value
+operations, VM behavior, worker-candidate execution during root execution and
+root waits, and RC leak accounting, including typed task/channel and actor ask
+paths. This removes more runtime data-race classes and keeps ORC-object
+atomicity regressions visible, but it is still not production M:N: load
+balancing, work stealing, async I/O, and production semantics remain open. Idle
+worker threads now park on a condition-variable wakeup instead of polling when
+no worker-candidate fiber is queued.
 
 ## Goal
 
@@ -129,10 +130,10 @@ Notes:
   manual-RC publication have landed, and `nimble threadcheck`/`nimble verify`
   exercise atomicArc smoke coverage, including the opt-in worker-candidate lane.
 - **D. Worker pool.** N opt-in OS threads can consume snapshot-isolated
-  worker-candidate fibers from the shared scheduler queue. Idle worker parking
-  now uses scheduler condition-variable wakeups. Production lifecycle,
-  load balancing or stealing, timer ownership, per-thread tuning, and pinned
-  global init remain open.
+  worker-candidate fibers from the shared scheduler queue during root execution
+  and root waits. Idle worker parking now uses scheduler condition-variable
+  wakeups. Production load balancing or stealing, timer ownership, per-thread
+  tuning, and pinned global init remain open.
 - **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.
 
 ## Recommendation

@@ -1,4 +1,4 @@
-import gene/[compiler, printer, vm]
+import gene/[compiler, printer, types, vm]
 import std/[os, unittest]
 
 template ck(src, expected: string) =
@@ -28,3 +28,13 @@ suite "threaded scheduler workers":
          "  (spawn (ch ~ Channel/send (+ x 2))) " &
          "  (ch ~ Channel/recv))",
          "42"
+
+  test "root execution lease runs worker-candidate tasks before blocking waits":
+    withGeneWorkers:
+      let task = run(compileSource(
+        "(var t (spawn 42)) " &
+        "(var i 0) " &
+        "(while (< i 200000) (set i (+ i 1))) " &
+        "t"), newGlobalScope())
+      check task.kind == vkTask
+      check task.taskDone
