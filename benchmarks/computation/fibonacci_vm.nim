@@ -1,6 +1,6 @@
-## Recursive Fibonacci benchmark for the current bytecode VM.
+## Recursive Fibonacci benchmarks for the current bytecode VM.
 ##
-## The benchmark compiles the Gene program once, then measures VM execution.
+## The benchmark compiles each Gene program once, then measures VM execution.
 
 import gene/[compiler, printer, types, vm]
 import std/[os, strformat, strutils, times]
@@ -18,24 +18,35 @@ proc fibCallCount(n: int): int64 =
   ## Naive recursive fib(n) makes 2 * fib(n + 1) - 1 calls.
   2'i64 * fibNumber(n + 1) - 1'i64
 
-proc main() =
-  var n = 28
+proc parseFibInput(): int =
+  result = 28
   let args = commandLineParams()
   if args.len > 0:
     try:
-      n = parseInt(args[0])
+      result = parseInt(args[0])
     except ValueError:
       quit("Error: n must be an integer", 1)
-  if n < 0:
+  if result < 0:
     quit("Error: n must be non-negative", 1)
 
-  let source = fmt"""
+proc fibSource(n: int, typed: bool): string =
+  if typed:
+    return fmt"""
 (var fib (fn [n : Int] : Int
   (if (< n 2)
     n
     (+ (fib (- n 1)) (fib (- n 2))))))
 (fib {n})
 """
+  fmt"""
+(var fib (fn [n]
+  (if (< n 2)
+    n
+    (+ (fib (- n 1)) (fib (- n 2))))))
+(fib {n})
+"""
+
+proc runBenchmark(source, label: string, n: int) =
   let chunk = compileSource(source)
   let scope = newGlobalScope()
 
@@ -53,15 +64,22 @@ proc main() =
       echo "Unexpected result kind: ", result.kind, "; value: ", result.print()
       0'i64
 
-  echo fmt"Result: fib({n}) = {intResult}"
-  echo fmt"Time: {duration:.6f} seconds"
-  echo "Mode: bytecode-vm"
+  echo fmt"{label}:"
+  echo fmt"  result: fib({n}) = {intResult}"
+  echo fmt"  duration: {duration:.6f} seconds"
+  echo "  mode: bytecode-vm"
 
   if duration > 0.0:
     let calls = fibCallCount(n)
     let callsPerSecond = calls.float / duration
     let roundedCallsPerSecond = int64(callsPerSecond + 0.5)
-    echo fmt"Fib calls: {calls}"
-    echo fmt"Performance: {roundedCallsPerSecond} fib calls/second"
+    echo fmt"  fib calls: {calls}"
+    echo fmt"  calls/sec: {roundedCallsPerSecond}"
+  echo ""
+
+proc main() =
+  let n = parseFibInput()
+  runBenchmark(fibSource(n, typed = false), "untyped recursive fib", n)
+  runBenchmark(fibSource(n, typed = true), "typed recursive fib", n)
 
 main()

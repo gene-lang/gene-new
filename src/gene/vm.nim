@@ -5483,6 +5483,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         caller.scope.slots[caller.restoreSlot] = caller.restoreValue
         stack = move caller.stack
         ip = caller.ip
+        if caller.recycleScope or caller.validateImpls or
+            caller.returnType.kind != vkNil or caller.returnLabel.len != 0:
+          recycleScope = caller.recycleScope
+          validateImplRequirements = caller.validateImpls
+          returnType = caller.returnType
+          returnLabel = caller.returnLabel
       else:
         stack = move caller.stack
         loadFrameRegs(caller)

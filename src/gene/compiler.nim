@@ -720,15 +720,20 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
         if inst.op == opCallParentLocal1 and inst.intArg == proto.selfParentSlot and
             inst.name == proto.name:
           inst.op = opRecur1
-      if proto.canUseTypedIntRecur1:
+      if proto.canUseTypedIntRecur1 or proto.simpleCall:
         let paramSlot = proto.positionalSlots[0]
         var i = 0
         while i + 2 < proto.chunk.instructions.len:
           let load = proto.chunk.instructions[i]
           let sub = proto.chunk.instructions[i + 1]
           let recur = proto.chunk.instructions[i + 2]
-          if load.op == opLoadLocalFast and load.intArg == paramSlot and
-              sub.op == opIntSubConst and recur.op == opRecur1 and recur.flag:
+          let loadParam = (load.op == opLoadLocalFast or load.op == opLoadLocal) and
+            load.intArg == paramSlot
+          let subConst = sub.op == opIntSubConst or
+            (sub.op == opNativeFastConst and
+             NativeFastKind(sub.intArg) == nfkSub)
+          if loadParam and subConst and recur.op == opRecur1 and
+              (recur.flag or proto.simpleCall):
             let constIsSmallInt =
               sub.depth >= 0 and sub.depth < proto.chunk.constants.len and
               proto.chunk.constants[sub.depth].isSmallInt

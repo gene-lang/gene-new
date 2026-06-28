@@ -201,7 +201,7 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     var sawRecur = false
     for inst in proto.chunk.instructions:
-      if inst.op == opRecur1:
+      if inst.op == opRecur1LocalIntSubConst:
         sawRecur = true
     check sawRecur
 
