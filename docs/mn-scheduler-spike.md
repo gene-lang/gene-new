@@ -8,10 +8,13 @@ shutdown cancels pending asks and parked handlers; OS-thread worker pool
 deferred).
 
 Follow-up implementation note: scheduler run/wait/timeout queues have moved from
-raw `threadvar` storage into per-`Application` scheduler state with a lock, and
-task state plus channel/actor interiors now have object-local locks. This removes
-one runtime data-race class, but it is still not an M:N worker pool: scope
-isolation, shared/atomic RC publication, and actual worker threads remain open.
+raw `threadvar` storage into per-`Application` scheduler state with a lock, task
+state plus channel/actor interiors now have object-local locks, and Send
+boundaries now mark value graphs as shared so threaded builds can switch
+manual-RC objects to atomic retain/release after publication. This removes two
+runtime data-race classes, but it is still not an M:N worker pool: scope
+isolation, ORC `OBJECT_TAG` atomicity (`atomicArc` or equivalent), and actual
+worker threads remain open.
 
 ## Goal
 
@@ -90,7 +93,8 @@ Notes:
 ## Staged plan (if/when M:N is prioritized)
 
 - **A. `vm-shared-rc`.** Per-object `shared` flag; `rcRetain`/`rcRelease` branch to
-  atomic on shared. Publishing pass at Send boundaries. (Cost bounded above.)
+  atomic on shared. Publishing pass at Send boundaries. **Manual-RC portion
+  landed; generic ORC object refs still need atomicArc or equivalent.**
 - **B. Scope isolation semantics.** Decide and enforce: parallel/sent work is
   share-nothing. Likely: a task that may run on another worker captures a
   frozen/owned scope snapshot, not a live shared parent. This is the real design

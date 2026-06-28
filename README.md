@@ -229,9 +229,11 @@ self-referential `cell`) are reclaimed by a conservative trial-deletion pass, an
 Env-bound closures use weak local captures that are strengthened when the Env
 escapes. Symbols are interned to immediate ids. Build with
 `-d:geneRcStats` to expose `liveManaged` and `Runtime/gc-stats` for
-retain/release auditing. (RC is
-non-atomic for the single-threaded MVP; see `TODO(vm-shared-rc)` in
-`src/gene/types.nim` for the planned per-object atomic-on-publish upgrade.)
+retain/release auditing. Values crossing `Send` boundaries are marked as
+published; in threaded builds, manual-RC heap objects switch to atomic
+retain/release after that marker while thread-local objects stay on the
+non-atomic path. Generic ORC objects still need the later atomicArc/worker-pool
+stage before true M:N execution.
 
 ## License
 

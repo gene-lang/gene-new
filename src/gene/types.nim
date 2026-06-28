@@ -25,12 +25,12 @@
 ## use the same weak-scope storage and are strengthened when the Env escapes.
 ## See `tests/test_rc.nim`.
 ##
-## TODO(vm-shared-rc): RC is non-atomic and assumes single-threaded mutation, which
-## matches the current MVP. When the M:N scheduler lands, give each managed object a
-## per-object `shared` flag and switch to atomic inc/dec only for published values
-## (see `(freeze)`), keeping thread-local objects on the cheap path.
+## Values crossing a `Send` boundary are marked shared; in threaded builds manual
+## RC objects then use atomic inc/dec while thread-local objects stay on the cheap
+## non-atomic path. Generic ORC objects also carry the marker, but a full M:N
+## worker pool still needs atomicArc (or equivalent) for those OBJECT_TAG refs.
 
-import std/[locks, strutils, tables, unicode]
+import std/[locks, sets, strutils, sysatomics, tables, unicode]
 
 # Manual reference counting (below) relies on ARC/ORC move semantics and runs
 # =copy/=sink/=dup/=destroy over raw alloc0 objects holding GC-managed fields.
@@ -178,24 +178,29 @@ type
   # a refCount header used by retain/release.
   GeneString = object
     refCount: int
+    shared: int
     s: string
 
   GeneInt64 = object
     refCount: int
+    shared: int
     i: int64
 
   GeneList = object
     refCount: int
+    shared: int
     immutable: bool
     items: seq[Value]
 
   GeneMap = object
     refCount: int
+    shared: int
     immutable: bool
     entries: PropTable
 
   GeneNode = object
     refCount: int
+    shared: int
     immutable: bool
     head: Value
     props: PropTable
@@ -281,6 +286,7 @@ type
 
   GeneFunction = object
     refCount: int
+    shared: int
     name: string
     params: seq[string]
     code: FunctionCode
@@ -291,6 +297,7 @@ type
 
   GeneNativeFn = object
     refCount: int
+    shared: int
     name: string
     impl: NativeProc
     callImpl: NativeCallProc
@@ -327,6 +334,7 @@ type
 
   GeneObjectData* = ref object of RootObj
     objKind*: ObjKind
+    shared*: int
 
   NamespaceData = ref object of GeneObjectData
     name: string
@@ -1133,22 +1141,148 @@ proc tryCollectObjectCycle(seed: GeneObjectData) =
 # Reference counting bodies
 # ---------------------------------------------------------------------------
 
+template threadedRc: bool =
+  compileOption("threads")
+
+template isSharedFlag(flag: var int): bool =
+  when threadedRc:
+    atomicLoadN(addr flag, ATOMIC_ACQUIRE) != 0
+  else:
+    flag != 0
+
+template markSharedFlag(flag: var int) =
+  when threadedRc:
+    if atomicLoadN(addr flag, ATOMIC_ACQUIRE) == 0:
+      atomicStoreN(addr flag, 1, ATOMIC_RELEASE)
+  else:
+    flag = 1
+
+template retainManual(p: untyped) =
+  when threadedRc:
+    if isSharedFlag(p.shared):
+      discard atomicFetchAdd(addr p.refCount, 1, ATOMIC_RELAXED)
+    else:
+      inc p.refCount
+  else:
+    inc p.refCount
+
+template releaseManual(p: untyped, body: untyped) =
+  when threadedRc:
+    if isSharedFlag(p.shared):
+      if atomicFetchSub(addr p.refCount, 1, ATOMIC_ACQ_REL) == 1:
+        body
+    else:
+      dec p.refCount
+      if p.refCount == 0:
+        body
+  else:
+    dec p.refCount
+    if p.refCount == 0:
+      body
+
+template markManualShared(p: untyped) =
+  markSharedFlag(p.shared)
+
+proc markObjectShared(data: GeneObjectData) {.inline.} =
+  if data != nil:
+    markSharedFlag(data.shared)
+
+proc markSharedBits(bits: uint64, seen: var HashSet[uint64])
+
+proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
+  if data == nil:
+    return
+  let key = objectPayload(data)
+  if seen.contains(key):
+    return
+  seen.incl key
+  markObjectShared(data)
+  forObjectEdges(data, edgeBits):
+    markSharedBits(edgeBits, seen)
+
+proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
+  let tag = bits shr TAG_SHIFT
+  if tag < MANAGED_MIN:
+    return
+  if seen.contains(bits):
+    return
+  seen.incl bits
+  case tag
+  of STRING_TAG:
+    markManualShared(cast[ptr GeneString](bits and PAYLOAD_MASK))
+  of INT64_TAG:
+    markManualShared(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
+  of LIST_TAG:
+    let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
+    markManualShared(p)
+    for item in p.items:
+      markSharedBits(item.bits, seen)
+  of MAP_TAG:
+    let p = cast[ptr GeneMap](bits and PAYLOAD_MASK)
+    markManualShared(p)
+    for _, item in p.entries:
+      markSharedBits(item.bits, seen)
+  of NODE_TAG:
+    let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
+    markManualShared(p)
+    markSharedBits(p.head.bits, seen)
+    for _, item in p.props:
+      markSharedBits(item.bits, seen)
+    for item in p.body:
+      markSharedBits(item.bits, seen)
+    for _, item in p.meta:
+      markSharedBits(item.bits, seen)
+  of FUNCTION_TAG:
+    let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
+    markManualShared(p)
+    for item in p.errorTypes:
+      markSharedBits(item.bits, seen)
+  of NATIVE_FN_TAG:
+    markManualShared(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
+    markObjectSharedGraph(
+      cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK)), seen)
+  else:
+    discard
+
+proc markSharedValue*(value: Value) =
+  ## Mark a value graph as published across a Send boundary. Manual refcounted
+  ## objects switch to atomic RC after this marker in threaded builds; generic
+  ## ORC object refs still need the later atomicArc/worker-pool stage before true
+  ## M:N execution.
+  var seen = initHashSet[uint64]()
+  markSharedBits(value.bits, seen)
+
 proc rcRetain(bits: uint64) =
   case bits shr TAG_SHIFT
-  of STRING_TAG: inc cast[ptr GeneString](bits and PAYLOAD_MASK).refCount
-  of INT64_TAG:  inc cast[ptr GeneInt64](bits and PAYLOAD_MASK).refCount
-  of LIST_TAG:   inc cast[ptr GeneList](bits and PAYLOAD_MASK).refCount
-  of MAP_TAG:    inc cast[ptr GeneMap](bits and PAYLOAD_MASK).refCount
-  of NODE_TAG:   inc cast[ptr GeneNode](bits and PAYLOAD_MASK).refCount
-  of FUNCTION_TAG:  inc cast[ptr GeneFunction](bits and PAYLOAD_MASK).refCount
-  of NATIVE_FN_TAG: inc cast[ptr GeneNativeFn](bits and PAYLOAD_MASK).refCount
+  of STRING_TAG: retainManual(cast[ptr GeneString](bits and PAYLOAD_MASK))
+  of INT64_TAG:  retainManual(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
+  of LIST_TAG:   retainManual(cast[ptr GeneList](bits and PAYLOAD_MASK))
+  of MAP_TAG:    retainManual(cast[ptr GeneMap](bits and PAYLOAD_MASK))
+  of NODE_TAG:   retainManual(cast[ptr GeneNode](bits and PAYLOAD_MASK))
+  of FUNCTION_TAG:  retainManual(cast[ptr GeneFunction](bits and PAYLOAD_MASK))
+  of NATIVE_FN_TAG: retainManual(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG:
     let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
     case data.objKind
     of okEnv:
-      inc EnvData(data).cycleRefs
+      let d = EnvData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr d.cycleRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc d.cycleRefs
+      else:
+        inc d.cycleRefs
     of okCell, okAtomicCell:
-      inc CellData(data).cycleRefs
+      let d = CellData(data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr d.cycleRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc d.cycleRefs
+      else:
+        inc d.cycleRefs
     else:
       discard
     GC_ref(data)
@@ -1161,46 +1295,66 @@ proc rcRelease(bits: uint64) =
   case bits shr TAG_SHIFT
   of STRING_TAG:
     let p = cast[ptr GeneString](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of INT64_TAG:
     let p = cast[ptr GeneInt64](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of LIST_TAG:
     let p = cast[ptr GeneList](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of MAP_TAG:
     let p = cast[ptr GeneMap](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of NATIVE_FN_TAG:
     let p = cast[ptr GeneNativeFn](payload)
-    dec p.refCount
-    if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+    releaseManual(p):
+      reset(p[]); dealloc(p); trackFree()
   of CYCLE_OBJECT_TAG:
     let data = cast[GeneObjectData](cast[pointer](payload))
     var shouldTryCycle = false
     case data.objKind
     of okEnv:
       let d = EnvData(data)
-      if d.cycleRefs > 0:
-        dec d.cycleRefs
-      shouldTryCycle = d.cycleRefs > 0
+      let newRefs =
+        when threadedRc:
+          if isSharedFlag(data.shared):
+            atomicFetchSub(addr d.cycleRefs, 1, ATOMIC_ACQ_REL) - 1
+          else:
+            if d.cycleRefs > 0:
+              dec d.cycleRefs
+            d.cycleRefs
+        else:
+          if d.cycleRefs > 0:
+            dec d.cycleRefs
+          d.cycleRefs
+      shouldTryCycle = newRefs > 0
     of okCell, okAtomicCell:
       let d = CellData(data)
-      if d.cycleRefs > 0:
-        dec d.cycleRefs
-      shouldTryCycle = d.cycleRefs > 0
+      let newRefs =
+        when threadedRc:
+          if isSharedFlag(data.shared):
+            atomicFetchSub(addr d.cycleRefs, 1, ATOMIC_ACQ_REL) - 1
+          else:
+            if d.cycleRefs > 0:
+              dec d.cycleRefs
+            d.cycleRefs
+        else:
+          if d.cycleRefs > 0:
+            dec d.cycleRefs
+          d.cycleRefs
+      shouldTryCycle = newRefs > 0
     else:
       discard
     GC_unref(data)

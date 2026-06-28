@@ -990,6 +990,7 @@ proc checkedChannelSendItem(channel, item: Value, where: string,
   result = checkedChannelItem(channel, item, where, fallbackScope)
   if not isSendableValue(result, fallbackScope):
     raiseTypeError(where, "Send", result, fallbackScope)
+  markSharedValue(result)
 
 proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -1276,6 +1277,7 @@ proc checkedActorMessage(actor, message: Value, where: string,
     else: adaptBoundary(where, messageType, message, scope)
   if not isSendableValue(result, scope):
     raiseTypeError(where, "Send", result, scope)
+  markSharedValue(result)
 
 proc requireReplyTo(name: string, value: Value) =
   if value.kind != vkReplyTo:
@@ -1292,6 +1294,7 @@ proc checkedReplyValue(reply, value: Value, where: string,
     else: adaptBoundary(where, resultType, value, resultScope)
   if not isSendableValue(result, fallbackScope):
     raiseTypeError(where, "Send", result, fallbackScope)
+  markSharedValue(result)
 
 proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
