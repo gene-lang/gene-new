@@ -414,6 +414,9 @@ suite "types — function boundaries":
         check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int) " &
                                 " \"-42\")"),
                   scope).print() == "-42"
+        check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int32) " &
+                                " \"-42\")"),
+                  scope).print() == "-42"
       if symAddr(handle, "atof") != nil:
         let parsed = run(compileSource(
           "((ffi/bind lib \"atof\" [C/CStr] C/Double) \"12.5\")"),
@@ -448,6 +451,13 @@ suite "types — function boundaries":
       if symAddr(handle, "abs") != nil:
         check run(compileSource("((ffi/bind lib \"abs\" [C/Int] C/Int) -9)"),
                   scope).print() == "9"
+        check run(compileSource(
+          "((ffi/bind lib \"abs\" [C/Int32] C/Int32) -9)"),
+          scope).print() == "9"
+        expect GeneError:
+          discard run(compileSource(
+            "((ffi/bind lib \"abs\" [C/Int32] C/Int32) 2147483648)"),
+            scope)
       if symAddr(handle, "labs") != nil:
         check run(compileSource("((ffi/bind lib \"labs\" [C/Long] C/Long) -9)"),
                   scope).print() == "9"
