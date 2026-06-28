@@ -134,6 +134,7 @@ type
     hasNamedParamTypes*: bool
     returnType*: Value
     hasReturnType*: bool
+    returnKnownBareInt*: bool
     isGenerator*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp

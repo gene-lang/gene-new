@@ -1,7 +1,7 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, math, monotimes, os, sets, strutils, tables,
-            times, unicode]
+import std/[algorithm, dynlib, locks, math, monotimes, os, sets, strutils,
+            tables, times, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
 type
@@ -126,6 +126,7 @@ type
     deadline: MonoTime
 
   SchedulerState = ref object of RuntimeContext
+    lock: Lock
     runQueue: seq[Fiber]
     waiters: seq[Fiber]
     askTimeouts: seq[AskTimeout]
@@ -164,6 +165,7 @@ proc isSendableValue(value: Value, scope: Scope,
 proc isSendableValue(value: Value, scope: Scope): bool
 proc completedTaskFromError(e: ref GeneError): Value
 proc completedTaskFromPanic(e: ref GenePanic): Value
+proc schedulerForScope(scope: Scope): SchedulerState
 
 type
   SuspendError = object of CatchableError
@@ -186,17 +188,24 @@ var activeScheduler {.threadvar.}: SchedulerState
 
 proc currentScheduler(): SchedulerState
 
+template withScopedScheduler(scope: Scope, body: untyped): untyped =
+  let schedulerScope = scope
+  let savedScheduler = activeScheduler
+  if schedulerScope != nil and schedulerScope.application != nil:
+    let scopedScheduler = schedulerForScope(schedulerScope)
+    if activeScheduler == scopedScheduler:
+      body
+    else:
+      activeScheduler = scopedScheduler
+      try:
+        body
+      finally:
+        activeScheduler = savedScheduler
+  else:
+    body
+
 template currentFiberActive: untyped =
   currentScheduler().fiberActive
-
-template schedRunQueue: untyped =
-  currentScheduler().runQueue
-
-template schedWaiters: untyped =
-  currentScheduler().waiters
-
-template schedAskTimeouts: untyped =
-  currentScheduler().askTimeouts
 
 # Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
 # moving it from the wait list to the run queue. Defined with the scheduler below.
@@ -1020,13 +1029,14 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
   TRUE
 
 proc nativeChannelTrySend*(channel, item: Value, scope: Scope = nil): bool =
-  requireChannel("native channel try-send", channel)
-  if channel.channelClosed or channel.channelFull:
-    return false
-  channel.pushChannel(checkedChannelSendItem(channel, item,
-                                             "native channel item", scope))
-  wakeChannelWaiters(channel, wakeSenders = false)
-  true
+  withScopedScheduler(scope):
+    requireChannel("native channel try-send", channel)
+    if channel.channelClosed or channel.channelFull:
+      return false
+    channel.pushChannel(checkedChannelSendItem(channel, item,
+                                               "native channel item", scope))
+    wakeChannelWaiters(channel, wakeSenders = false)
+    true
 
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
@@ -1063,12 +1073,13 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
   item
 
 proc nativeChannelTryRecv*(channel: Value, scope: Scope = nil): Value =
-  requireChannel("native channel try-recv", channel)
-  if channel.channelLen == 0:
-    return VOID
-  result = checkedChannelItem(channel, channel.popChannel(),
-                              "native channel item", scope)
-  wakeChannelWaiters(channel, wakeSenders = true)
+  withScopedScheduler(scope):
+    requireChannel("native channel try-recv", channel)
+    if channel.channelLen == 0:
+      return VOID
+    result = checkedChannelItem(channel, channel.popChannel(),
+                                "native channel item", scope)
+    wakeChannelWaiters(channel, wakeSenders = true)
 
 proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/close", args)
@@ -1372,15 +1383,16 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   TRUE
 
 proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
-  requireActor("native actor try-send", actor)
-  if actor.actorClosed or actor.actorFull:
-    return false
-  actor.pushActorMessage(checkedActorMessage(actor, message,
-                                             "native actor message", scope))
-  scheduleActor(actor, scope)
-  if not currentFiberActive:
-    driveActor(actor)
-  true
+  withScopedScheduler(scope):
+    requireActor("native actor try-send", actor)
+    if actor.actorClosed or actor.actorFull:
+      return false
+    actor.pushActorMessage(checkedActorMessage(actor, message,
+                                               "native actor message", scope))
+    scheduleActor(actor, scope)
+    if not currentFiberActive:
+      driveActor(actor)
+    true
 
 proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -2954,13 +2966,17 @@ var gApplication: Application
 proc normalizedDir(path: string): string =
   normalizedPath(absolutePath(if path.len > 0: path else: getCurrentDir()))
 
+proc newSchedulerState(): SchedulerState =
+  new(result)
+  initLock(result.lock)
+
 proc newApplication*(entryDir = ""): Application =
   ## Create the runtime owner for one Gene program. MVP packages are represented
   ## by the root directory used for absolute/bare module resolution.
   let root = normalizedDir(entryDir)
   result = Application(moduleCache: initTable[string, Value](),
                        moduleLoading: initHashSet[string](),
-                       scheduler: SchedulerState(),
+                       scheduler: newSchedulerState(),
                        currentModuleDir: root,
                        packageRoot: root)
 
@@ -2971,7 +2987,7 @@ proc currentApplication(): Application =
 
 proc schedulerState(app: Application): SchedulerState =
   if app.scheduler == nil:
-    app.scheduler = SchedulerState()
+    app.scheduler = newSchedulerState()
   app.scheduler
 
 proc currentScheduler(): SchedulerState =
@@ -2979,18 +2995,18 @@ proc currentScheduler(): SchedulerState =
     return activeScheduler
   currentApplication().schedulerState()
 
+proc schedulerForScope(scope: Scope): SchedulerState =
+  if scope != nil and scope.application != nil:
+    return Application(scope.application).schedulerState()
+  currentApplication().schedulerState()
+
 template withScheduler(scope: Scope, body: untyped): untyped =
-  let schedulerScope = scope
   let savedScheduler = activeScheduler
-  let schedulerApp =
-    if schedulerScope != nil and schedulerScope.application != nil:
-      Application(schedulerScope.application)
-    else:
-      currentApplication()
-  if activeScheduler == nil and gApplication != nil and schedulerApp == gApplication:
+  let scopedScheduler = schedulerForScope(scope)
+  if activeScheduler == scopedScheduler:
     body
   else:
-    activeScheduler = schedulerApp.schedulerState()
+    activeScheduler = scopedScheduler
     try:
       body
     finally:
@@ -3519,6 +3535,12 @@ proc canFastBindUnaryInt(proto: FunctionProto): bool {.inline.} =
     proto.paramTypes[0].isBareIntType and proto.hasReturnType and
     proto.returnType.isBareIntType and not proto.isGenerator and
     proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
+
+proc checkedFrameReturnType(proto: FunctionProto, returnType: Value): Value {.inline.} =
+  if proto.returnKnownBareInt:
+    NIL
+  else:
+    returnType
 
 proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
                            arg: Value): Scope {.inline.} =
@@ -4281,6 +4303,23 @@ const schedulerInstructionBudget = 2048
 
 proc enqueueRunnable(f: Fiber)
 
+proc clearWaitReason(f: Fiber) =
+  f.waitChannel = NIL
+  f.waitActor = NIL
+  f.waitTask = NIL
+  f.waitTimer = false
+
+template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
+  acquire(s.lock)
+  try:
+    body
+  finally:
+    release(s.lock)
+
+proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
+  clearWaitReason(f)
+  s.runQueue.add f
+
 proc inCancelCleanup(f: Fiber): bool =
   if f.frameKind == fkEnsureCancelBody:
     return true
@@ -4289,14 +4328,16 @@ proc inCancelCleanup(f: Fiber): bool =
       return true
 
 proc wakeAllActorSenders(actor: Value) =
-  var i = 0
-  while i < schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.waitActor.kind == vkActorRef and same(f.waitActor, actor):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-    else:
-      inc i
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.waiters.len:
+      let f = s.waiters[i]
+      if f.waitActor.kind == vkActorRef and same(f.waitActor, actor):
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+      else:
+        inc i
 
 proc closeActorAndCancelMailbox(actor: Value) =
   actor.closeActor()
@@ -4311,23 +4352,28 @@ proc cancelOwnedActor(actor: Value) =
   ## pending tasks alive, and parked handlers could resume after owner exit.
   closeActorAndCancelMailbox(actor)
 
-  var i = 0
-  while i < schedRunQueue.len:
-    let f = schedRunQueue[i]
-    if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
-      discard cancelReplyTask(f.actorAskReply)
-      schedRunQueue.delete(i)
-    else:
-      inc i
+  let s = currentScheduler()
+  var repliesToCancel: seq[Value]
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.runQueue.len:
+      let f = s.runQueue[i]
+      if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
+        repliesToCancel.add f.actorAskReply
+        s.runQueue.delete(i)
+      else:
+        inc i
 
-  i = 0
-  while i < schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
-      discard cancelReplyTask(f.actorAskReply)
-      schedWaiters.delete(i)
-    else:
-      inc i
+    i = 0
+    while i < s.waiters.len:
+      let f = s.waiters[i]
+      if f.actorOwner.kind == vkActorRef and same(f.actorOwner, actor):
+        repliesToCancel.add f.actorAskReply
+        s.waiters.delete(i)
+      else:
+        inc i
+  for reply in repliesToCancel:
+    discard cancelReplyTask(reply)
 
 proc spawnFiber(chunk: Chunk, scope: Scope): Value
 
@@ -5120,8 +5166,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not proto.isGenerator:
                 let bound = bindCallScope(callee, proto, [], NamedArgs())
+                let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
-                if bound.returnType.kind != vkNil:
+                if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
                 chunk = proto.chunk
@@ -5130,7 +5177,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
-                returnType = bound.returnType
+                returnType = frameReturnType
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
                 curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
@@ -5256,10 +5303,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var boundReturnType: Value
                 var usedUnaryIntFast = false
                 if argCount == 1 and proto.canFastBindUnaryInt and
-                    stack[argsStart].kind == vkInt:
+                    (inst[].flag or stack[argsStart].kind == vkInt):
                   boundScope = bindUnaryIntCallScope(callee.fnScope, proto,
                                                      stack[argsStart])
-                  boundReturnType = proto.returnType
+                  boundReturnType = proto.checkedFrameReturnType(proto.returnType)
                   usedUnaryIntFast = true
                 else:
                   let bound =
@@ -5271,6 +5318,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
                 stack.setLen(argsStart)
+                boundReturnType = proto.checkedFrameReturnType(boundReturnType)
                 var lbl = ""
                 if boundReturnType.kind != vkNil and not usedUnaryIntFast:
                   lbl = "return from '" & callee.fnName & "'"
@@ -5322,7 +5370,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let proto = chunk.owner
           let argsStart = stack.len - 1
           var arg = stack[argsStart]
-          if proto.hasParamTypes and proto.paramTypes.len > 0 and
+          if not inst[].flag and proto.hasParamTypes and proto.paramTypes.len > 0 and
               proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
             raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
           let callScope = acquireSimpleCallScope(scope.parent, proto.localNames,
@@ -5339,7 +5387,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           ip = 0
           validateImplRequirements = false
           returnType =
-            if proto.hasReturnType: proto.returnType
+            if proto.returnKnownBareInt: NIL
+            elif proto.hasReturnType: proto.returnType
             else: NIL
           returnLabel = ""
           curChecksErrors = false
@@ -5449,9 +5498,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   else:
                     bindCallScope(callee, proto,
                                   stack.toOpenArray(argsStart, stack.high), named)
+                let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 stack.setLen(calleeIndex)
                 var lbl = ""
-                if bound.returnType.kind != vkNil:
+                if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
                 chunk = proto.chunk
@@ -5460,7 +5510,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
-                returnType = bound.returnType
+                returnType = frameReturnType
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
                 curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
@@ -5575,9 +5625,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not fnProto.isGenerator:
                 let bound = bindCallScope(callee, fnProto, args, named)
+                let frameReturnType = fnProto.checkedFrameReturnType(bound.returnType)
                 stack.setLen(calleeIndex)
                 var lbl = ""
-                if bound.returnType.kind != vkNil:
+                if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushFrame()
                 chunk = fnProto.chunk
@@ -5586,7 +5637,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack = acquireRunStack()
                 ip = 0
                 validateImplRequirements = true
-                returnType = bound.returnType
+                returnType = frameReturnType
                 returnLabel = lbl
                 curChecksErrors = fnProto.checksErrors
                 curErrorTypes = if fnProto.checksErrors: callee.fnErrorTypes else: @[]
@@ -6263,60 +6314,85 @@ proc runPooled(chunk: Chunk, scope: Scope,
 # work.
 # ---------------------------------------------------------------------------
 
-proc clearWaitReason(f: Fiber) =
-  f.waitChannel = NIL
-  f.waitActor = NIL
-  f.waitTask = NIL
-  f.waitTimer = false
-
 proc enqueueRunnable(f: Fiber) =
-  clearWaitReason(f)
-  schedRunQueue.add f
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    s.enqueueRunnableUnlocked(f)
+
+proc parkFiber(f: Fiber) =
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    s.waiters.add f
+
+proc hasRunnableFiber(): bool =
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    result = s.runQueue.len > 0
+
+proc popRunnableFiber(): Fiber =
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    if s.runQueue.len == 0:
+      return nil
+    result = s.runQueue[0]
+    s.runQueue.delete(0)
 
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
-  schedAskTimeouts.add AskTimeout(task: task, reply: reply, scope: scope,
-                                  deadline: timerDeadline(timeoutMs))
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    s.askTimeouts.add AskTimeout(task: task, reply: reply, scope: scope,
+                                 deadline: timerDeadline(timeoutMs))
 
 proc failExpiredAskTimeouts(now: MonoTime): bool =
-  var i = 0
-  while i < schedAskTimeouts.len:
-    let item = schedAskTimeouts[i]
-    if item.task.kind != vkTask or item.task.taskDone:
-      schedAskTimeouts.delete(i)
-    elif item.deadline <= now:
+  let s = currentScheduler()
+  var expired: seq[AskTimeout]
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.askTimeouts.len:
+      let item = s.askTimeouts[i]
+      if item.task.kind != vkTask or item.task.taskDone:
+        s.askTimeouts.delete(i)
+      elif item.deadline <= now:
+        expired.add item
+        s.askTimeouts.delete(i)
+      else:
+        inc i
+  for item in expired:
+    if item.task.kind == vkTask and not item.task.taskDone:
       const message = "actor/ask timed out"
       failTask(item.task, message, actorErrorValue(item.scope, message),
                hasValue = true)
       wakeTaskWaiters(item.task)
-      schedAskTimeouts.delete(i)
-      result = true
-    else:
-      inc i
+    result = true
 
 proc wakeExpiredTimers(now = getMonoTime()): bool =
-  var i = 0
-  while i < schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.waitTimer and f.waitDeadline <= now:
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-      result = true
-    else:
-      inc i
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.waiters.len:
+      let f = s.waiters[i]
+      if f.waitTimer and f.waitDeadline <= now:
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+        result = true
+      else:
+        inc i
   if failExpiredAskTimeouts(now):
     result = true
 
 proc nextTimerDeadline(): tuple[has: bool, deadline: MonoTime] =
-  for f in schedWaiters:
-    if f.waitTimer:
-      if not result.has or f.waitDeadline < result.deadline:
-        result.has = true
-        result.deadline = f.waitDeadline
-  for item in schedAskTimeouts:
-    if item.task.kind == vkTask and not item.task.taskDone:
-      if not result.has or item.deadline < result.deadline:
-        result.has = true
-        result.deadline = item.deadline
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    for f in s.waiters:
+      if f.waitTimer:
+        if not result.has or f.waitDeadline < result.deadline:
+          result.has = true
+          result.deadline = f.waitDeadline
+    for item in s.askTimeouts:
+      if item.task.kind == vkTask and not item.task.taskDone:
+        if not result.has or item.deadline < result.deadline:
+          result.has = true
+          result.deadline = item.deadline
 
 proc sleepUntil(deadline: MonoTime) =
   let remaining = deadline - getMonoTime()
@@ -6327,37 +6403,43 @@ proc sleepUntil(deadline: MonoTime) =
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
   ## Move one fiber parked on `channel` — a receiver, or a sender when
   ## `wakeSenders` — from the wait list onto the run queue (FIFO over waiters).
-  for i in 0 ..< schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-      return
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    for i in 0 ..< s.waiters.len:
+      let f = s.waiters[i]
+      if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+        return
 
 proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
   ## Channel close changes the state observed by every parked counterpart:
   ## receivers on an empty channel and senders on a full one must all resume and
   ## re-run their operation so they can raise ChannelClosed.
-  var i = 0
-  while i < schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-    else:
-      inc i
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.waiters.len:
+      let f = s.waiters[i]
+      if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+      else:
+        inc i
 
 proc wakeTaskWaiters(task: Value) =
   ## Move every fiber parked in `await` on `task` onto the run queue. A completed
   ## task wakes all of its awaiters (unlike a channel, which wakes one counterpart).
-  var i = 0
-  while i < schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.waitTask.taskSharesState(task):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-    else:
-      inc i
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.waiters.len:
+      let f = s.waiters[i]
+      if f.waitTask.taskSharesState(task):
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+      else:
+        inc i
 
 proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   ## Build a fiber that runs the actor's handler on one message. Returns nil if the
@@ -6398,7 +6480,7 @@ proc scheduleActor(actor: Value, scope: Scope) =
       discard failMissingReply(item.reply, scope)
     scheduleActor(actor, scope)
   else:
-    schedRunQueue.add f
+    enqueueRunnable(f)
 
 proc runFiber(f: Fiber) =
   ## Run or resume `f` until it completes or parks. A spawn/await fiber settles its
@@ -6440,7 +6522,7 @@ proc runFiber(f: Fiber) =
           discard failMissingReply(f.actorAskReply, f.actorScope)
         scheduleActor(actor, f.actorScope)
       of rskSuspend:
-        schedWaiters.add f          # handler parked mid-message; actor stays busy
+        parkFiber(f)                # handler parked mid-message; actor stays busy
       of rskPause:
         enqueueRunnable(f)          # handler stays busy but yields to peers
       of rskCancel:
@@ -6456,7 +6538,7 @@ proc runFiber(f: Fiber) =
         completeTask(f.task, stop.value)
         wakeTaskWaiters(f.task)
       of rskSuspend:
-        schedWaiters.add f
+        parkFiber(f)
       of rskPause:
         enqueueRunnable(f)
       of rskCancel:
@@ -6533,17 +6615,17 @@ proc spawnFiber(chunk: Chunk, scope: Scope): Value =
 proc schedulerRunOne(): bool =
   ## Run one runnable fiber to its next park/completion. If only timer waiters
   ## remain, sleep until the next timer expires and run the awakened fiber.
-  if wakeExpiredTimers() and schedRunQueue.len == 0:
+  if wakeExpiredTimers() and not hasRunnableFiber():
     return true
-  while schedRunQueue.len == 0:
+  var f = popRunnableFiber()
+  while f == nil:
     let next = nextTimerDeadline()
     if not next.has:
       return false
     sleepUntil(next.deadline)
-    if wakeExpiredTimers() and schedRunQueue.len == 0:
+    if wakeExpiredTimers() and not hasRunnableFiber():
       return true
-  let f = schedRunQueue[0]
-  schedRunQueue.delete(0)
+    f = popRunnableFiber()
   if f.task.kind == vkTask and f.task.taskDone:
     wakeTaskWaiters(f.task)
     return true
@@ -6554,19 +6636,19 @@ proc schedulerRunOneUntil(deadline: MonoTime): bool =
   ## Run one fiber, waiting for timers only up to `deadline`. Used by root-level
   ## sleep so it can advance already-scheduled work without oversleeping its own
   ## timer.
-  if wakeExpiredTimers() and schedRunQueue.len == 0:
+  if wakeExpiredTimers() and not hasRunnableFiber():
     return true
-  while schedRunQueue.len == 0:
+  var f = popRunnableFiber()
+  while f == nil:
     let next = nextTimerDeadline()
     if not next.has:
       return false
     if next.deadline > deadline:
       return false
     sleepUntil(next.deadline)
-    if wakeExpiredTimers() and schedRunQueue.len == 0:
+    if wakeExpiredTimers() and not hasRunnableFiber():
       return true
-  let f = schedRunQueue[0]
-  schedRunQueue.delete(0)
+    f = popRunnableFiber()
   if f.task.kind == vkTask and f.task.taskDone:
     wakeTaskWaiters(f.task)
     return true
@@ -6580,22 +6662,24 @@ proc cancelScheduledTask(task: Value): bool =
   ## stays there — runFiber checks taskCancelRequested dynamically on entry.
   ## Fibers merely awaiting this task are left parked; wakeTaskWaiters runs
   ## after the task finally settles.
-  var i = 0
-  while i < schedRunQueue.len:
-    if schedRunQueue[i].task.taskSharesState(task):
-      result = true   # already runnable; runFiber will inject cancel on next turn
-      inc i
-    else:
-      inc i
-  i = 0
-  while i < schedWaiters.len:
-    let f = schedWaiters[i]
-    if f.task.taskSharesState(task):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-      result = true
-    else:
-      inc i
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    var i = 0
+    while i < s.runQueue.len:
+      if s.runQueue[i].task.taskSharesState(task):
+        result = true # already runnable; runFiber will inject cancel next turn
+        inc i
+      else:
+        inc i
+    i = 0
+    while i < s.waiters.len:
+      let f = s.waiters[i]
+      if f.task.taskSharesState(task):
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+        result = true
+      else:
+        inc i
 
 proc pumpUntilDone(task: Value) =
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its
@@ -6609,12 +6693,14 @@ proc pumpUntilDone(task: Value) =
 proc wakeActorSenders(actor: Value) =
   ## Wake one fiber parked on a previously-full mailbox of `actor` (FIFO), now that
   ## a slot has freed up; it re-executes its send on resume.
-  for i in 0 ..< schedWaiters.len:
-    let f = schedWaiters[i]
-    if same(f.waitActor, actor):
-      schedWaiters.delete(i)
-      enqueueRunnable(f)
-      return
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    for i in 0 ..< s.waiters.len:
+      let f = s.waiters[i]
+      if same(f.waitActor, actor):
+        s.waiters.delete(i)
+        s.enqueueRunnableUnlocked(f)
+        return
 
 proc driveActor(actor: Value) =
   ## Pump the scheduler until `actor` is idle (its mailbox is drained and no handler
@@ -6761,7 +6847,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
       of ncoNone:
         NIL
 
-    if proto.hasReturnType:
+    if proto.hasReturnType and not proto.returnKnownBareInt:
       return (true, adaptBoundary("return from '" & callee.fnName & "'",
                                   proto.returnType, resultValue, callee.fnScope))
     return (true, resultValue)
@@ -8293,11 +8379,12 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         if proto.poolCallScope:
           releaseCallScope(callScope)
     let (callScope, returnType) = bindCallScope(callee, proto, args, named)
+    let frameReturnType = proto.checkedFrameReturnType(returnType)
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
-      if returnType.kind != vkNil:
+      if frameReturnType.kind != vkNil:
         resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                    returnType, resultValue, callScope)
+                                    frameReturnType, resultValue, callScope)
       return resultValue
     try:
       var resultValue: Value
@@ -8310,9 +8397,9 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           raise
         raise newException(GeneError,
           "function '" & callee.fnName & "' raised an undeclared error")
-      if returnType.kind != vkNil:
+      if frameReturnType.kind != vkNil:
         resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                    returnType, resultValue, callScope)
+                                    frameReturnType, resultValue, callScope)
       resultValue
     finally:
       if proto.poolCallScope:

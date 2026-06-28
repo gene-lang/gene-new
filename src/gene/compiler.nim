@@ -174,6 +174,11 @@ proc isSelfEvaluatingFastConst(v: Value): bool =
   else:
     false
 
+proc exprKnownBareInt(c: Compiler, v: Value): bool
+
+proc formsKnownBareInt(c: Compiler, forms: openArray[Value], start = 0): bool =
+  forms.len > start and c.exprKnownBareInt(forms[forms.high])
+
 proc exprKnownBareInt(c: Compiler, v: Value): bool =
   case v.kind
   of vkInt:
@@ -181,14 +186,39 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
   of vkSymbol:
     c.localType(v.symVal).isBareIntType
   of vkNode:
-    if v.props.len == 0 and v.head.kind == vkSymbol and v.body.len == 2 and
-        nativeFastLoadKind(v.head.symVal) in {nfkAdd, nfkSub, nfkMul} and
-        c.localSlot(v.head.symVal) < 0 and
-        c.parentSlot(v.head.symVal).slot < 0:
-      c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
-    elif v.props.len == 0 and v.head.kind == vkSymbol:
-      let sig = c.lexicalFunctionSig(v.head.symVal)
-      sig.found and sig.sig.arity == v.body.len and sig.sig.returnType.isBareIntType
+    if v.props.len == 0 and v.head.kind == vkSymbol:
+      case v.head.symVal
+      of "+", "-", "*":
+        v.body.len == 2 and c.localSlot(v.head.symVal) < 0 and
+          c.parentSlot(v.head.symVal).slot < 0 and
+          c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
+      of "if":
+        if v.body.len >= 2 and v.body[1].kind == vkNode and
+            v.body[1].head.kind == vkSymbol and v.body[1].head.symVal == "then":
+          var known = c.formsKnownBareInt(v.body[1].body)
+          var hasDefault = false
+          for i in 2 ..< v.body.len:
+            let clause = v.body[i]
+            if clause.kind != vkNode or clause.head.kind != vkSymbol:
+              continue
+            case clause.head.symVal
+            of "elif":
+              known = known and clause.body.len > 1 and
+                c.formsKnownBareInt(clause.body, 1)
+            of "else":
+              known = known and c.formsKnownBareInt(clause.body)
+              hasDefault = true
+              break
+            else:
+              discard
+          known and hasDefault
+        else:
+          v.body.len >= 3 and c.exprKnownBareInt(v.body[1]) and
+            c.exprKnownBareInt(v.body[2])
+      else:
+        let sig = c.lexicalFunctionSig(v.head.symVal)
+        sig.found and sig.sig.arity == v.body.len and
+          sig.sig.returnType.isBareIntType
     else:
       false
   else:
@@ -1683,6 +1713,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let aotFrameKind =
     if aotExpr.kind == vkNil: afkNone
     else: afkTypedNative
+  let returnKnownBareInt =
+    returnType.isBareIntType and not fnCompiler.sawYield and
+      fnCompiler.formsKnownBareInt(body, start)
   let taskFrameKind =
     if fnCompiler.sawYield: tfkGenerator
     elif bodyContainsAwait(body, start): tfkVm
@@ -1707,6 +1740,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          hasNamedParamTypes: hasNamedParamTypes,
                          returnType: returnType,
                          hasReturnType: returnType.kind != vkNil,
+                         returnKnownBareInt: returnKnownBareInt,
                          isGenerator: fnCompiler.sawYield,
                          selfParentSlot: selfParentSlot,
                          nativeOp: nativeOp,
@@ -2471,9 +2505,11 @@ proc compileCall(c: var Compiler, node: Value) =
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 1:
     let direct = c.lexicalCallSlot(node.head.symVal)
     if direct.slot >= 0:
+      let argKnownBareInt = c.exprKnownBareInt(node.body[0])
       compileExpr(c, node.body[0])
       c.chunk.callSites[c.emit(direct.op, direct.slot, name = node.head.symVal,
-                               depth = direct.depth)] = node
+                               depth = direct.depth,
+                               flag = argKnownBareInt)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
       compileExpr(c, node.body[0])
