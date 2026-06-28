@@ -5479,8 +5479,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     else:
       releaseRunStack(stack)
       var caller = frames.pop()
-      stack = move caller.stack
-      loadFrameRegs(caller)
+      if caller.restoreSlot >= 0 and caller.kind == fkNormal and caller.extra == nil:
+        caller.scope.slots[caller.restoreSlot] = caller.restoreValue
+        stack = move caller.stack
+        ip = caller.ip
+      else:
+        stack = move caller.stack
+        loadFrameRegs(caller)
       stack.add retValue
 
   template frameReturn(rawValue: Value) =
@@ -9098,6 +9103,11 @@ proc ffiCStrArg(name: string, value: Value): cstring =
   ensureNoInteriorNul(name, text)
   text.cstring
 
+proc ffiCStrResult(name: string, value: cstring): Value =
+  if value == nil:
+    raise newException(GeneError, name & " returned null C/CStr")
+  newStr($value)
+
 proc isFfiPtrLabel(label: string): bool =
   label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
     label.startsWith("(C/ConstPtr ") or
@@ -9170,6 +9180,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type VoidSizeProc = proc(): csize_t {.cdecl.}
       let fn = cast[VoidSizeProc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
+    of "C/CStr":
+      type VoidCStrProc = proc(): cstring {.cdecl.}
+      let fn = cast[VoidCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn())
     else:
       if isFfiPtrLabel(returnLabel):
         type VoidPtrProc = proc(): pointer {.cdecl.}
@@ -9191,6 +9206,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type IntSizeProc = proc(x: cint): csize_t {.cdecl.}
       let fn = cast[IntSizeProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/CStr":
+      type IntCStrProc = proc(x: cint): cstring {.cdecl.}
+      let fn = cast[IntCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
     else:
       discard
   if paramLabels.len == 1 and isFfiPtrLabel(paramLabels[0]):
@@ -9209,6 +9229,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type PtrSizeProc = proc(p: pointer): csize_t {.cdecl.}
       let fn = cast[PtrSizeProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/CStr":
+      type PtrCStrProc = proc(p: pointer): cstring {.cdecl.}
+      let fn = cast[PtrCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
     else:
       discard
   if paramLabels.len == 1 and paramLabels[0] == "C/CStr":
@@ -9223,6 +9248,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type CStrIntProc = proc(s: cstring): cint {.cdecl.}
       let fn = cast[CStrIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(ctext)))
+    of "C/CStr":
+      type CStrCStrProc = proc(s: cstring): cstring {.cdecl.}
+      let fn = cast[CStrCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(ctext))
     else:
       if isFfiPtrLabel(returnLabel):
         type CStrPtrProc = proc(s: cstring): pointer {.cdecl.}
@@ -9243,6 +9273,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type CStrCStrSizeProc = proc(a, b: cstring): csize_t {.cdecl.}
       let fn = cast[CStrCStrSizeProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/CStr":
+      type CStrCStrCStrProc = proc(a, b: cstring): cstring {.cdecl.}
+      let fn = cast[CStrCStrCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     else:
       if isFfiPtrLabel(returnLabel):
         type CStrCStrPtrProc = proc(a, b: cstring): pointer {.cdecl.}
@@ -9263,6 +9298,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type CStrIntSizeProc = proc(s: cstring, x: cint): csize_t {.cdecl.}
       let fn = cast[CStrIntSizeProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/CStr":
+      type CStrIntCStrProc = proc(s: cstring, x: cint): cstring {.cdecl.}
+      let fn = cast[CStrIntCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     else:
       if isFfiPtrLabel(returnLabel):
         type CStrIntPtrProc = proc(s: cstring, x: cint): pointer {.cdecl.}
@@ -9285,6 +9325,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type PtrIntSizeSizeProc = proc(p: pointer, x: cint, n: csize_t): csize_t {.cdecl.}
       let fn = cast[PtrIntSizeSizeProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/CStr":
+      type PtrIntSizeCStrProc = proc(p: pointer, x: cint, n: csize_t): cstring {.cdecl.}
+      let fn = cast[PtrIntSizeCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1, arg2))
     else:
       if isFfiPtrLabel(returnLabel):
         type PtrIntSizePtrProc = proc(p: pointer, x: cint, n: csize_t): pointer {.cdecl.}
@@ -9303,6 +9348,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type PtrPtrSizeIntProc = proc(a, b: pointer, n: csize_t): cint {.cdecl.}
       let fn = cast[PtrPtrSizeIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/CStr":
+      type PtrPtrSizeCStrProc = proc(a, b: pointer, n: csize_t): cstring {.cdecl.}
+      let fn = cast[PtrPtrSizeCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1, arg2))
     else:
       discard
   raise newException(GeneError,

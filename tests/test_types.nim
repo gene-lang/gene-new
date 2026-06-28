@@ -408,6 +408,12 @@ suite "types — function boundaries":
       if symAddr(handle, "abs") != nil:
         check run(compileSource("((ffi/bind lib \"abs\" [C/Int] C/Int) -9)"),
                   scope).print() == "9"
+      if symAddr(handle, "strerror") != nil:
+        let message = run(compileSource(
+          "((ffi/bind lib \"strerror\" [C/Int] C/CStr) 0)"),
+          scope)
+        check message.kind == vkString
+        check message.strVal.len > 0
       if symAddr(handle, "getpid") != nil:
         let pid = run(compileSource("((ffi/bind lib \"getpid\" [] C/Int))"),
                       scope)
