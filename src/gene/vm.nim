@@ -4294,11 +4294,11 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
   appendTraceFrames(e, [stackFrameValue(calleeName, kind)])
 
 # Cooperative scheduler state (one runtime-owned scheduler, one active worker for
-# now; design §13.1 M:N worker execution is future work). `schedRunQueue` holds
-# runnable fibers; `schedWaiters` holds fibers parked on a channel, actor
-# mailbox, task await, or timer. `currentFiberActive` gates suspension: only a
-# scheduled fiber parks — root-level channel use keeps its original synchronous
-# behavior.
+# now; design §13.1 M:N worker execution is future work). The scheduler's
+# lock-backed run queue holds runnable fibers; its wait list holds fibers parked
+# on a channel, actor mailbox, task await, or timer. `currentFiberActive` gates
+# suspension: only a scheduled fiber parks — root-level channel use keeps its
+# original synchronous behavior.
 const schedulerInstructionBudget = 2048
 
 proc enqueueRunnable(f: Fiber)
@@ -6461,11 +6461,11 @@ proc scheduleActor(actor: Value, scope: Scope) =
   ## If the actor is idle (no live handler fiber) and has a queued message, start
   ## processing it: pop the message, wake a parked sender (a slot just freed), mark
   ## the actor busy, and enqueue its handler fiber on the run queue.
-  if actor.actorProcessing or actor.actorClosed or actor.actorQueueLen == 0:
+  let started = actor.tryStartActorMessage()
+  if not started.started:
     return
-  let item = actor.popActorMessage()
+  let item = started.item
   wakeActorSenders(actor)
-  actor.setActorProcessing(true)
   let f = makeActorFiber(actor, item, scope)
   if f == nil:
     # Non-fiber handler (no current surface produces this): process inline.

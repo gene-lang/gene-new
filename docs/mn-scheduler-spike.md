@@ -1,11 +1,17 @@
 # M:N Scheduler — Thread-Safety Spike & Staged Plan
 
-Status: **decision doc** (spike result, no shipped threads). Date: 2026-06-22.
+Status: **decision doc** (spike result, no shipped worker pool). Date: 2026-06-22.
 Branch context: `scheduler` (cooperative single-worker scheduler, channel/task/
 actor suspension, explicit `Task/cancel`, and error/cancel scope-exit child-task
 cancellation with cleanup plus normal-exit child waiting done; actor scope
 shutdown cancels pending asks and parked handlers; OS-thread worker pool
 deferred).
+
+Follow-up implementation note: scheduler run/wait/timeout queues have moved from
+raw `threadvar` storage into per-`Application` scheduler state with a lock, and
+task state plus channel/actor interiors now have object-local locks. This removes
+one runtime data-race class, but it is still not an M:N worker pool: scope
+isolation, shared/atomic RC publication, and actual worker threads remain open.
 
 ## Goal
 
@@ -69,10 +75,12 @@ Notes:
    Cross-thread sharing needs `--mm:atomicArc` or equivalent, plus locks on their
    mutable interiors (channel buffers, actor mailboxes/state).
 
-3. **Scheduler structures are `threadvar`.** `schedRunQueue`, `schedWaiters`,
-   `currentFiberActive`, `runStackPool` are per-thread. M:N needs a shared (locked
-   or lock-free work-stealing) run queue and shared wait lists; channel/actor wait
-   queues become cross-thread.
+3. **Scheduler structures need worker orchestration.** The runnable/wait/timeout
+   queues are now per-`Application` and lock-backed, and task/channel/actor
+   interiors have local locks. M:N still needs worker orchestration around that
+   shared state: worker lifecycle, parking/wakeup, load balancing or stealing,
+   timer ownership, and publication rules. `runStackPool`, `callScopePool`, and
+   active scheduler context remain per-thread caches/context.
 
 4. **Publishing / `Send` boundary.** Need a pass that marks a value (and its
    reachable graph) `shared` when it crosses a worker boundary (channel send,
@@ -89,6 +97,8 @@ Notes:
   work and gates everything.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
+  The queue/object-locking portion has started; atomic/shared RC publication is
+  still required before actual worker threads can safely run arbitrary tasks.
 - **D. Worker pool.** N OS threads each running the scheduler loop over a shared/
   work-stealing queue; per-thread run-stack pools; pinned global init.
 - **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.

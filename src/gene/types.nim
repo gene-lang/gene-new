@@ -381,6 +381,7 @@ type
     generatorIp: int
 
   TaskState = ref object
+    lock: Lock
     done: bool
     cancelRequested: bool
     cancelled: bool
@@ -400,6 +401,7 @@ type
     boundaryScope: Scope
 
   ChannelState = ref object
+    lock: Lock
     items: seq[Value]
     capacity: int
     closed: bool
@@ -417,6 +419,7 @@ type
     closed: bool
 
   ActorData = ref object of GeneObjectData
+    lock: Lock
     lifecycle: ActorLifecycle
     capacity: int
     queue: seq[ActorMessage]
@@ -1611,6 +1614,71 @@ proc streamData(v: Value): StreamData =
     raise newException(FieldDefect, "value is not a Stream")
   StreamData(objData(v))
 
+template withTaskStateLock(s: TaskState, body: untyped): untyped =
+  acquire(s.lock)
+  try:
+    body
+  finally:
+    release(s.lock)
+
+template withChannelStateLock(s: ChannelState, body: untyped): untyped =
+  acquire(s.lock)
+  try:
+    body
+  finally:
+    release(s.lock)
+
+template withActorLock(d: ActorData, body: untyped): untyped =
+  acquire(d.lock)
+  try:
+    body
+  finally:
+    release(d.lock)
+
+proc newTaskState(done = false, cancelRequested = false, cancelled = false,
+                  awaited = false, taskResult = NIL, errorMsg = "",
+                  errorValue = NIL, hasErrorValue = false,
+                  panicMsg = "", panicValue = NIL,
+                  hasPanicValue = false): TaskState =
+  new(result)
+  initLock(result.lock)
+  result.done = done
+  result.cancelRequested = cancelRequested
+  result.cancelled = cancelled
+  result.awaited = awaited
+  result.result = taskResult
+  result.errorMsg = errorMsg
+  result.errorValue = errorValue
+  result.hasErrorValue = hasErrorValue
+  result.panicMsg = panicMsg
+  result.panicValue = panicValue
+  result.hasPanicValue = hasPanicValue
+
+proc newChannelState(capacity: int, items: seq[Value] = @[],
+                     closed = false): ChannelState =
+  new(result)
+  initLock(result.lock)
+  result.items = items
+  result.capacity = capacity
+  result.closed = closed
+
+proc newActorData(capacity: int, state, restartInit, handler,
+                  messageType: Value,
+                  failureStrategy: ActorFailureStrategy,
+                  failureEvents, failureDeadLetters: Value,
+                  lifecycle = ActorLifecycle()): ActorData =
+  result = ActorData(objKind: okActorRef,
+                     lifecycle: lifecycle,
+                     capacity: capacity,
+                     state: state,
+                     restartInit: restartInit,
+                     handler: handler,
+                     messageType: messageType,
+                     failureStrategy: failureStrategy,
+                     failureEvents: failureEvents,
+                     failureDeadLetters: failureDeadLetters)
+  initLock(result.lock)
+
 proc skipStreamVoids(data: StreamData) =
   while not data.closed and data.index < data.items.len and
       data.items[data.index].kind == vkVoid:
@@ -1721,55 +1789,83 @@ proc taskState(v: Value): TaskState =
   taskData(v).state
 
 proc taskDone*(v: Value): bool =
-  taskState(v).done
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.done
 
 proc taskCancelled*(v: Value): bool =
-  taskState(v).cancelled
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.cancelled
 
 proc taskCancelRequested*(v: Value): bool =
-  taskState(v).cancelRequested
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.cancelRequested
 
 proc taskAwaited*(v: Value): bool =
-  taskState(v).awaited
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.awaited
 
 proc cancelTask*(v: Value) =
   let data = taskState(v)
-  if not data.done:
-    data.cancelRequested = true
+  withTaskStateLock(data):
+    if not data.done:
+      data.cancelRequested = true
 
 proc finishTaskCancel*(v: Value) =
   let data = taskState(v)
-  if not data.done:
-    data.done = true
-    data.cancelRequested = false
-    data.cancelled = true
+  withTaskStateLock(data):
+    if not data.done:
+      data.done = true
+      data.cancelRequested = false
+      data.cancelled = true
 
 proc taskResult*(v: Value): Value =
-  taskState(v).result
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.result
 
 proc taskHasError*(v: Value): bool =
-  taskState(v).errorMsg.len > 0 or taskState(v).hasErrorValue
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.errorMsg.len > 0 or data.hasErrorValue
 
-proc taskErrorMsg*(v: Value): lent string =
-  taskState(v).errorMsg
+proc taskErrorMsg*(v: Value): string =
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.errorMsg
 
 proc taskErrorValue*(v: Value): Value =
-  taskState(v).errorValue
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.errorValue
 
 proc taskHasErrorValue*(v: Value): bool =
-  taskState(v).hasErrorValue
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.hasErrorValue
 
 proc taskHasPanic*(v: Value): bool =
-  taskState(v).panicMsg.len > 0 or taskState(v).hasPanicValue
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.panicMsg.len > 0 or data.hasPanicValue
 
-proc taskPanicMsg*(v: Value): lent string =
-  taskState(v).panicMsg
+proc taskPanicMsg*(v: Value): string =
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.panicMsg
 
 proc taskPanicValue*(v: Value): Value =
-  taskState(v).panicValue
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.panicValue
 
 proc taskHasPanicValue*(v: Value): bool =
-  taskState(v).hasPanicValue
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.hasPanicValue
 
 proc taskResultType*(v: Value): Value =
   taskData(v).resultType
@@ -1785,15 +1881,16 @@ proc taskSharesState*(a, b: Value): bool =
 
 proc clearTaskPayload*(v: Value) =
   let data = taskState(v)
-  data.awaited = true
-  data.cancelRequested = false
-  data.result = NIL
-  data.errorMsg = ""
-  data.errorValue = NIL
-  data.hasErrorValue = false
-  data.panicMsg = ""
-  data.panicValue = NIL
-  data.hasPanicValue = false
+  withTaskStateLock(data):
+    data.awaited = true
+    data.cancelRequested = false
+    data.result = NIL
+    data.errorMsg = ""
+    data.errorValue = NIL
+    data.hasErrorValue = false
+    data.panicMsg = ""
+    data.panicValue = NIL
+    data.hasPanicValue = false
 
 proc channelData(v: Value): ChannelData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okChannel:
@@ -1801,17 +1898,24 @@ proc channelData(v: Value): ChannelData =
   ChannelData(objData(v))
 
 proc channelCapacity*(v: Value): int =
-  channelData(v).state.capacity
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result = state.capacity
 
 proc channelLen*(v: Value): int =
-  channelData(v).state.items.len
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result = state.items.len
 
 proc channelClosed*(v: Value): bool =
-  channelData(v).state.closed
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result = state.closed
 
 proc channelFull*(v: Value): bool =
-  let data = channelData(v)
-  data.state.items.len >= data.state.capacity
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result = state.items.len >= state.capacity
 
 proc channelItemType*(v: Value): Value =
   channelData(v).itemType
@@ -1820,18 +1924,23 @@ proc channelItemScope*(v: Value): Scope =
   channelData(v).itemScope
 
 proc closeChannel*(v: Value) =
-  channelData(v).state.closed = true
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    state.closed = true
 
 proc pushChannel*(v, item: Value) =
-  let data = channelData(v)
-  data.state.items.add escapeWeakFunctions(item)
+  let stored = escapeWeakFunctions(item)
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    state.items.add stored
 
 proc popChannel*(v: Value): Value =
-  let data = channelData(v)
-  if data.state.items.len == 0:
-    raise newException(FieldDefect, "channel is empty")
-  result = data.state.items[0]
-  data.state.items.delete(0)
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    if state.items.len == 0:
+      raise newException(FieldDefect, "channel is empty")
+    result = state.items[0]
+    state.items.delete(0)
 
 proc actorData(v: Value): ActorData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorRef:
@@ -1839,73 +1948,122 @@ proc actorData(v: Value): ActorData =
   ActorData(objData(v))
 
 proc actorState*(v: Value): Value =
-  actorData(v).state
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.state
 
 proc setActorState*(v, state: Value) =
-  actorData(v).state = escapeWeakFunctions(state)
+  let stored = escapeWeakFunctions(state)
+  let data = actorData(v)
+  withActorLock(data):
+    data.state = stored
 
 proc actorHandler*(v: Value): Value =
-  actorData(v).handler
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.handler
 
 proc setActorHandler*(v, handler: Value) =
-  actorData(v).handler = escapeWeakFunctions(handler)
+  let stored = escapeWeakFunctions(handler)
+  let data = actorData(v)
+  withActorLock(data):
+    data.handler = stored
 
 proc actorRestartInit*(v: Value): Value =
-  actorData(v).restartInit
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.restartInit
 
 proc actorMessageType*(v: Value): Value =
-  actorData(v).messageType
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.messageType
 
 proc actorFailureStrategy*(v: Value): ActorFailureStrategy =
-  actorData(v).failureStrategy
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.failureStrategy
 
 proc actorFailureEvents*(v: Value): Value =
-  actorData(v).failureEvents
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.failureEvents
 
 proc actorFailureDeadLetters*(v: Value): Value =
-  actorData(v).failureDeadLetters
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.failureDeadLetters
 
 proc setActorMessageType*(v, messageType: Value) =
-  actorData(v).messageType = messageType
+  let data = actorData(v)
+  withActorLock(data):
+    data.messageType = messageType
 
 proc actorClosed*(v: Value): bool =
-  actorData(v).lifecycle.closed
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.lifecycle.closed
 
 proc actorProcessing*(v: Value): bool =
-  actorData(v).processing
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.processing
 
 proc setActorProcessing*(v: Value, processing: bool) =
-  actorData(v).processing = processing
+  let data = actorData(v)
+  withActorLock(data):
+    data.processing = processing
 
 proc actorQueueLen*(v: Value): int =
-  actorData(v).queue.len
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.queue.len
 
 proc actorFull*(v: Value): bool =
   let data = actorData(v)
-  data.queue.len >= data.capacity
+  withActorLock(data):
+    result = data.queue.len >= data.capacity
 
 proc closeActor*(v: Value) =
-  actorData(v).lifecycle.closed = true
+  let data = actorData(v)
+  withActorLock(data):
+    data.lifecycle.closed = true
 
 proc drainActorMessages*(v: Value): seq[ActorMessage] =
   let data = actorData(v)
-  result = data.queue
-  data.queue.setLen(0)
+  withActorLock(data):
+    result = data.queue
+    data.queue.setLen(0)
 
 proc pushActorMessage*(v, message: Value) =
-  actorData(v).queue.add ActorMessage(message: escapeWeakFunctions(message),
-                                      reply: NIL)
+  let stored = escapeWeakFunctions(message)
+  let data = actorData(v)
+  withActorLock(data):
+    data.queue.add ActorMessage(message: stored, reply: NIL)
 
 proc pushActorMessage*(v, message, reply: Value) =
-  actorData(v).queue.add ActorMessage(message: escapeWeakFunctions(message),
-                                      reply: reply)
+  let stored = escapeWeakFunctions(message)
+  let data = actorData(v)
+  withActorLock(data):
+    data.queue.add ActorMessage(message: stored, reply: reply)
 
 proc popActorMessage*(v: Value): ActorMessage =
   let data = actorData(v)
-  if data.queue.len == 0:
-    raise newException(FieldDefect, "actor mailbox is empty")
-  result = data.queue[0]
-  data.queue.delete(0)
+  withActorLock(data):
+    if data.queue.len == 0:
+      raise newException(FieldDefect, "actor mailbox is empty")
+    result = data.queue[0]
+    data.queue.delete(0)
+
+proc tryStartActorMessage*(v: Value): tuple[started: bool, item: ActorMessage] =
+  let data = actorData(v)
+  withActorLock(data):
+    if data.processing or data.lifecycle.closed or data.queue.len == 0:
+      return (false, ActorMessage())
+    result.item = data.queue[0]
+    data.queue.delete(0)
+    data.processing = true
+    result.started = true
 
 proc actorContextActor*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorContext:
@@ -2645,54 +2803,109 @@ proc escapeWeakFunctions*(v: Value): Value =
   of vkTask:
     let data = taskData(v)
     let state = data.state
-    let escapedResult = escapeWeakFunctions(state.result)
-    let escapedError = escapeWeakFunctions(state.errorValue)
-    let escapedPanic = escapeWeakFunctions(state.panicValue)
-    if escapedResult.bits == state.result.bits and
-        escapedError.bits == state.errorValue.bits and
-        escapedPanic.bits == state.panicValue.bits:
+    var done: bool
+    var cancelRequested: bool
+    var cancelled: bool
+    var awaited: bool
+    var sourceResult: Value
+    var errorMsg: string
+    var sourceError: Value
+    var hasErrorValue: bool
+    var panicMsg: string
+    var sourcePanic: Value
+    var hasPanicValue: bool
+    withTaskStateLock(state):
+      done = state.done
+      cancelRequested = state.cancelRequested
+      cancelled = state.cancelled
+      awaited = state.awaited
+      sourceResult = state.result
+      errorMsg = state.errorMsg
+      sourceError = state.errorValue
+      hasErrorValue = state.hasErrorValue
+      panicMsg = state.panicMsg
+      sourcePanic = state.panicValue
+      hasPanicValue = state.hasPanicValue
+    let escapedResult = escapeWeakFunctions(sourceResult)
+    let escapedError = escapeWeakFunctions(sourceError)
+    let escapedPanic = escapeWeakFunctions(sourcePanic)
+    if escapedResult.bits == sourceResult.bits and
+        escapedError.bits == sourceError.bits and
+        escapedPanic.bits == sourcePanic.bits:
       return v
     boxObject(TaskData(objKind: okTask,
-                       state: TaskState(done: state.done,
-                         cancelRequested: state.cancelRequested,
-                         cancelled: state.cancelled,
-                         awaited: state.awaited,
-                         result: escapedResult,
-                         errorMsg: state.errorMsg,
-                         errorValue: escapedError,
-                         hasErrorValue: state.hasErrorValue,
-                         panicMsg: state.panicMsg,
-                         panicValue: escapedPanic,
-                         hasPanicValue: state.hasPanicValue),
+                       state: newTaskState(done = done,
+                         cancelRequested = cancelRequested,
+                         cancelled = cancelled,
+                         awaited = awaited,
+                         taskResult = escapedResult,
+                         errorMsg = errorMsg,
+                         errorValue = escapedError,
+                         hasErrorValue = hasErrorValue,
+                         panicMsg = panicMsg,
+                         panicValue = escapedPanic,
+                         hasPanicValue = hasPanicValue),
                        resultType: data.resultType,
                        errorType: data.errorType,
                        boundaryScope: data.boundaryScope))
   of vkChannel:
     let data = channelData(v)
+    var sourceItems: seq[Value]
+    var capacity: int
+    var closed: bool
+    withChannelStateLock(data.state):
+      sourceItems = data.state.items
+      capacity = data.state.capacity
+      closed = data.state.closed
     var changed = false
-    var escapedItems = newSeq[Value](data.state.items.len)
-    for i, item in data.state.items:
+    var escapedItems = newSeq[Value](sourceItems.len)
+    for i, item in sourceItems:
       escapedItems[i] = escapeWeakFunctions(item)
       if escapedItems[i].bits != item.bits:
         changed = true
     if not changed:
       return v
-    let escapedState = ChannelState(items: escapedItems,
-                                    capacity: data.state.capacity,
-                                    closed: data.state.closed)
+    let escapedState = newChannelState(capacity, escapedItems, closed)
     boxObject(ChannelData(objKind: okChannel, state: escapedState,
                           itemType: data.itemType,
                           itemScope: data.itemScope))
   of vkActorRef:
     let data = actorData(v)
-    let escapedState = escapeWeakFunctions(data.state)
-    let escapedRestartInit = escapeWeakFunctions(data.restartInit)
-    let escapedHandler = escapeWeakFunctions(data.handler)
-    var escapedQueue = newSeq[ActorMessage](data.queue.len)
-    var changed = escapedState.bits != data.state.bits or
-      escapedRestartInit.bits != data.restartInit.bits or
-      escapedHandler.bits != data.handler.bits
-    for i, item in data.queue:
+    var lifecycle: ActorLifecycle
+    var capacity: int
+    var processing: bool
+    var sourceState: Value
+    var sourceRestartInit: Value
+    var sourceHandler: Value
+    var sourceMessageType: Value
+    var failureStrategy: ActorFailureStrategy
+    var sourceFailureEvents: Value
+    var sourceFailureDeadLetters: Value
+    var sourceQueue: seq[ActorMessage]
+    withActorLock(data):
+      lifecycle = data.lifecycle
+      capacity = data.capacity
+      processing = data.processing
+      sourceState = data.state
+      sourceRestartInit = data.restartInit
+      sourceHandler = data.handler
+      sourceMessageType = data.messageType
+      failureStrategy = data.failureStrategy
+      sourceFailureEvents = data.failureEvents
+      sourceFailureDeadLetters = data.failureDeadLetters
+      sourceQueue = data.queue
+    let escapedState = escapeWeakFunctions(sourceState)
+    let escapedRestartInit = escapeWeakFunctions(sourceRestartInit)
+    let escapedHandler = escapeWeakFunctions(sourceHandler)
+    let escapedFailureEvents = escapeWeakFunctions(sourceFailureEvents)
+    let escapedFailureDeadLetters = escapeWeakFunctions(sourceFailureDeadLetters)
+    var escapedQueue = newSeq[ActorMessage](sourceQueue.len)
+    var changed = escapedState.bits != sourceState.bits or
+      escapedRestartInit.bits != sourceRestartInit.bits or
+      escapedHandler.bits != sourceHandler.bits or
+      escapedFailureEvents.bits != sourceFailureEvents.bits or
+      escapedFailureDeadLetters.bits != sourceFailureDeadLetters.bits
+    for i, item in sourceQueue:
       let escapedMessage = escapeWeakFunctions(item.message)
       let escapedReply = escapeWeakFunctions(item.reply)
       escapedQueue[i] = ActorMessage(message: escapedMessage,
@@ -2702,16 +2915,18 @@ proc escapeWeakFunctions*(v: Value): Value =
         changed = true
     if not changed:
       return v
-    boxObject(ActorData(objKind: okActorRef,
-                        lifecycle: data.lifecycle,
-                        capacity: data.capacity,
-                        queue: escapedQueue,
-                        processing: data.processing,
-                        state: escapedState,
-                        restartInit: escapedRestartInit,
-                        handler: escapedHandler,
-                        messageType: data.messageType,
-                        failureStrategy: data.failureStrategy))
+    let escapedData = newActorData(capacity,
+      state = escapedState,
+      restartInit = escapedRestartInit,
+      handler = escapedHandler,
+      messageType = sourceMessageType,
+      failureStrategy = failureStrategy,
+      failureEvents = escapedFailureEvents,
+      failureDeadLetters = escapedFailureDeadLetters,
+      lifecycle = lifecycle)
+    escapedData.queue = escapedQueue
+    escapedData.processing = processing
+    boxObject(escapedData)
   of vkActorContext:
     let actor = v.actorContextActor
     let escapedActor = escapeWeakFunctions(actor)
@@ -2798,57 +3013,63 @@ proc escapeWeakFunctions*(v: Value): Value =
 
 proc newCompletedTask*(value: Value): Value =
   boxObject(TaskData(objKind: okTask,
-                     state: TaskState(done: true,
-                       result: escapeWeakFunctions(value))))
+                     state: newTaskState(done = true,
+                       taskResult = escapeWeakFunctions(value))))
 
 proc newPendingTask*(): Value =
   ## A task whose computation has not finished yet. The scheduler fills in the
   ## outcome with completeTask/failTask/panicTask once its fiber settles.
-  boxObject(TaskData(objKind: okTask, state: TaskState(done: false)))
+  boxObject(TaskData(objKind: okTask, state: newTaskState(done = false)))
 
 proc completeTask*(v, value: Value) =
+  let stored = escapeWeakFunctions(value)
   let data = taskState(v)
-  if data.done:
-    return
-  data.done = true
-  data.cancelRequested = false
-  data.result = escapeWeakFunctions(value)
+  withTaskStateLock(data):
+    if data.done:
+      return
+    data.done = true
+    data.cancelRequested = false
+    data.result = stored
 
 proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+  let stored = escapeWeakFunctions(value)
   let data = taskState(v)
-  if data.done:
-    return
-  data.done = true
-  data.cancelRequested = false
-  data.errorMsg = message
-  data.errorValue = escapeWeakFunctions(value)
-  data.hasErrorValue = hasValue
+  withTaskStateLock(data):
+    if data.done:
+      return
+    data.done = true
+    data.cancelRequested = false
+    data.errorMsg = message
+    data.errorValue = stored
+    data.hasErrorValue = hasValue
 
 proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+  let stored = escapeWeakFunctions(value)
   let data = taskState(v)
-  if data.done:
-    return
-  data.done = true
-  data.cancelRequested = false
-  data.panicMsg = message
-  data.panicValue = escapeWeakFunctions(value)
-  data.hasPanicValue = hasValue
+  withTaskStateLock(data):
+    if data.done:
+      return
+    data.done = true
+    data.cancelRequested = false
+    data.panicMsg = message
+    data.panicValue = stored
+    data.hasPanicValue = hasValue
 
 proc newFailedTask*(message: string, value: Value = NIL,
                     hasValue = false): Value =
   boxObject(TaskData(objKind: okTask,
-                     state: TaskState(done: true,
-                       errorMsg: message,
-                       errorValue: escapeWeakFunctions(value),
-                       hasErrorValue: hasValue)))
+                     state: newTaskState(done = true,
+                       errorMsg = message,
+                       errorValue = escapeWeakFunctions(value),
+                       hasErrorValue = hasValue)))
 
 proc newPanickedTask*(message: string, value: Value = NIL,
                       hasValue = false): Value =
   boxObject(TaskData(objKind: okTask,
-                     state: TaskState(done: true,
-                       panicMsg: message,
-                       panicValue: escapeWeakFunctions(value),
-                       hasPanicValue: hasValue)))
+                     state: newTaskState(done = true,
+                       panicMsg = message,
+                       panicValue = escapeWeakFunctions(value),
+                       hasPanicValue = hasValue)))
 
 proc newCheckedTask*(source, resultType, errorType: Value,
                      boundaryScope: Scope): Value =
@@ -2859,7 +3080,7 @@ proc newCheckedTask*(source, resultType, errorType: Value,
 
 proc newChannel*(capacity = 16): Value =
   boxObject(ChannelData(objKind: okChannel,
-                        state: ChannelState(capacity: capacity)))
+                        state: newChannelState(capacity)))
 
 proc newCheckedChannel*(source, itemType: Value, itemScope: Scope): Value =
   let data = channelData(source)
@@ -2881,16 +3102,14 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
       functionForScopeStorage(handler, handler.fnScope)
     else:
       handler
-  boxObject(ActorData(objKind: okActorRef,
-                      lifecycle: ActorLifecycle(),
-                      capacity: capacity,
-                      state: escapeWeakFunctions(state),
-                      restartInit: storedRestartInit,
-                      handler: storedHandler,
-                      messageType: messageType,
-                      failureStrategy: failureStrategy,
-                      failureEvents: failureEvents,
-                      failureDeadLetters: failureDeadLetters))
+  boxObject(newActorData(capacity,
+                         state = escapeWeakFunctions(state),
+                         restartInit = storedRestartInit,
+                         handler = storedHandler,
+                         messageType = messageType,
+                         failureStrategy = failureStrategy,
+                         failureEvents = failureEvents,
+                         failureDeadLetters = failureDeadLetters))
 
 proc newActorContext*(actor: Value): Value =
   boxObject(ActorContextData(objKind: okActorContext, actor: actor))
