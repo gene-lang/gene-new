@@ -9137,6 +9137,9 @@ proc ffiCLongArg(name: string, value: Value): clong =
       raise newException(GeneError, name & " is out of C/Long range")
   clong(raw)
 
+proc ffiCInt64Arg(name: string, value: Value): int64 =
+  requireInt64(name, value)
+
 proc ffiCSizeArg(name: string, value: Value): csize_t =
   let raw = requireInt64(name, value)
   if raw < 0:
@@ -9247,6 +9250,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type VoidLongProc = proc(): clong {.cdecl.}
       let fn = cast[VoidLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
+    of "C/Int64":
+      type VoidInt64Proc = proc(): int64 {.cdecl.}
+      let fn = cast[VoidInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn())
     of "C/Size":
       type VoidSizeProc = proc(): csize_t {.cdecl.}
       let fn = cast[VoidSizeProc](callee.ffiCallableAddress)
@@ -9394,6 +9401,53 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type LongPtrProc = proc(x: clong): pointer {.cdecl.}
         let fn = cast[LongPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/Int64":
+    let arg0 = ffiCInt64Arg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type Int64IntProc = proc(x: int64): cint {.cdecl.}
+      let fn = cast[Int64IntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type Int64UIntProc = proc(x: int64): cuint {.cdecl.}
+      let fn = cast[Int64UIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type Int64LongProc = proc(x: int64): clong {.cdecl.}
+      let fn = cast[Int64LongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int64":
+      type Int64Int64Proc = proc(x: int64): int64 {.cdecl.}
+      let fn = cast[Int64Int64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0))
+    of "C/Size":
+      type Int64SizeProc = proc(x: int64): csize_t {.cdecl.}
+      let fn = cast[Int64SizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type Int64FloatProc = proc(x: int64): cfloat {.cdecl.}
+      let fn = cast[Int64FloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type Int64DoubleProc = proc(x: int64): cdouble {.cdecl.}
+      let fn = cast[Int64DoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/CStr":
+      type Int64CStrProc = proc(x: int64): cstring {.cdecl.}
+      let fn = cast[Int64CStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type Int64VoidProc = proc(x: int64) {.cdecl.}
+      let fn = cast[Int64VoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type Int64PtrProc = proc(x: int64): pointer {.cdecl.}
+        let fn = cast[Int64PtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Size":
     let arg0 = ffiCSizeArg("FFI argument 0 for '" & callee.ffiCallableName & "'",

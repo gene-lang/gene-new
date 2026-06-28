@@ -451,6 +451,15 @@ suite "types — function boundaries":
       if symAddr(handle, "labs") != nil:
         check run(compileSource("((ffi/bind lib \"labs\" [C/Long] C/Long) -9)"),
                   scope).print() == "9"
+      if symAddr(handle, "llabs") != nil:
+        check run(compileSource(
+          "((ffi/bind lib \"llabs\" [C/Int64] C/Int64) -9)"),
+          scope).print() == "9"
+        expect GeneError:
+          discard run(compileSource(
+            "((ffi/bind lib \"llabs\" [C/Int64] C/Int64) " &
+            " 9223372036854775808)"),
+            scope)
       if symAddr(handle, "strerror") != nil:
         let message = run(compileSource(
           "((ffi/bind lib \"strerror\" [C/Int] C/CStr) 0)"),
