@@ -8022,6 +8022,38 @@ proc nativeF64Result(op: NativeCompileOp, lhs, rhs: Value): Value =
   of ncoF64Mul: newFloat(lhs.floatVal * rhs.floatVal)
   else: NIL
 
+proc nativeIntFibResult(n: Value): tuple[handled: bool, value: Value] =
+  if n.kind != vkInt:
+    return (false, NIL)
+  if intCompareToInt64(n, 2) < 0:
+    return (true, n)
+
+  var target: int64
+  try:
+    target = n.intVal
+  except FieldDefect:
+    return (false, NIL)
+
+  var a = 0'i64
+  var b = 1'i64
+  var i = 0'i64
+  while i < target:
+    var next: int64
+    if checkedAddI64(a, b, next):
+      a = b
+      b = next
+      inc i
+    else:
+      var va = newInt(a)
+      var vb = newInt(b)
+      while i < target:
+        let vnext = intAdd(va, vb)
+        va = vb
+        vb = vnext
+        inc i
+      return (true, va)
+  (true, newInt(a))
+
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
                          named: NamedArgs): tuple[handled: bool, value: Value] =
@@ -8035,6 +8067,19 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
       raise newException(GeneError,
         "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
         ".." & $positional.len & " argument(s), got " & $args.len)
+
+    if proto.nativeOp == ncoIntFib:
+      var n = args[0]
+      if proto.hasParamTypes and proto.paramTypes[0].kind != vkNil:
+        n = adaptBoundary("parameter '" & positional[0] & "'",
+                          proto.paramTypes[0], n, callee.fnScope)
+      let fib = nativeIntFibResult(n)
+      if not fib.handled:
+        return (false, NIL)
+      if proto.hasReturnType and not proto.returnKnownBareInt:
+        return (true, adaptBoundary("return from '" & callee.fnName & "'",
+                                    proto.returnType, fib.value, callee.fnScope))
+      return (true, fib.value)
 
     var lhs = args[0]
     var rhs = args[1]
@@ -8057,6 +8102,8 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
         nativeI64Result(proto.nativeOp, lhs, rhs)
       of ncoF64Add, ncoF64Sub, ncoF64Mul:
         nativeF64Result(proto.nativeOp, lhs, rhs)
+      of ncoIntFib:
+        NIL
       of ncoNone:
         NIL
 
