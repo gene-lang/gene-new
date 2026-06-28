@@ -13,6 +13,12 @@ proc ffiTestI16Abs(x: int16): int16 {.cdecl.} =
 proc ffiTestU16Inc(x: uint16): uint16 {.cdecl.} =
   x + 1'u16
 
+proc ffiTestShortAbs(x: cshort): cshort {.cdecl.} =
+  if x < cshort(0): -x else: x
+
+proc ffiTestUShortInc(x: cushort): cushort {.cdecl.} =
+  x + cushort(1)
+
 proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
   if x < 0'i8: -x else: x
 
@@ -665,6 +671,14 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestU16Inc", "ffiTestU16Inc",
                                   cast[pointer](ffiTestU16Inc), lib,
                                   @[newSym("C/UInt16")], newSym("C/UInt16")))
+      scope.define("short-abs",
+                   newFfiCallable("ffiTestShortAbs", "ffiTestShortAbs",
+                                  cast[pointer](ffiTestShortAbs), lib,
+                                  @[newSym("C/Short")], newSym("C/Short")))
+      scope.define("ushort-inc",
+                   newFfiCallable("ffiTestUShortInc", "ffiTestUShortInc",
+                                  cast[pointer](ffiTestUShortInc), lib,
+                                  @[newSym("C/UShort")], newSym("C/UShort")))
       scope.define("i8-abs",
                    newFfiCallable("ffiTestI8Abs", "ffiTestI8Abs",
                                   cast[pointer](ffiTestI8Abs), lib,
@@ -681,6 +695,14 @@ suite "types — function boundaries":
         discard run(compileSource("(u16-inc -1)"), scope)
       expect GeneError:
         discard run(compileSource("(u16-inc 65536)"), scope)
+      check run(compileSource("(short-abs -9)"), scope).print() == "9"
+      expect GeneError:
+        discard run(compileSource("(short-abs 32768)"), scope)
+      check run(compileSource("(ushort-inc 41)"), scope).print() == "42"
+      expect GeneError:
+        discard run(compileSource("(ushort-inc -1)"), scope)
+      expect GeneError:
+        discard run(compileSource("(ushort-inc 65536)"), scope)
       check run(compileSource("(i8-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i8-abs 128)"), scope)

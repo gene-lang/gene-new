@@ -9136,6 +9136,12 @@ proc ffiCInt16Arg(name: string, value: Value): int16 =
     raise newException(GeneError, name & " is out of C/Int16 range")
   int16(raw)
 
+proc ffiCShortArg(name: string, value: Value): cshort =
+  let raw = requireInt64(name, value)
+  if raw < int64(low(cshort)) or raw > int64(high(cshort)):
+    raise newException(GeneError, name & " is out of C/Short range")
+  cshort(raw)
+
 proc ffiCInt8Arg(name: string, value: Value): int8 =
   let raw = requireInt64(name, value)
   if raw < int64(low(int8)) or raw > int64(high(int8)):
@@ -9159,6 +9165,12 @@ proc ffiCUInt16Arg(name: string, value: Value): uint16 =
   if raw < 0 or raw > int64(high(uint16)):
     raise newException(GeneError, name & " is out of C/UInt16 range")
   uint16(raw)
+
+proc ffiCUShortArg(name: string, value: Value): cushort =
+  let raw = requireInt64(name, value)
+  if raw < 0 or raw > int64(high(cushort)):
+    raise newException(GeneError, name & " is out of C/UShort range")
+  cushort(raw)
 
 proc ffiCUInt8Arg(name: string, value: Value): uint8 =
   let raw = requireInt64(name, value)
@@ -9286,6 +9298,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type VoidInt16Proc = proc(): int16 {.cdecl.}
       let fn = cast[VoidInt16Proc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
+    of "C/Short":
+      type VoidShortProc = proc(): cshort {.cdecl.}
+      let fn = cast[VoidShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
     of "C/Int8":
       type VoidInt8Proc = proc(): int8 {.cdecl.}
       let fn = cast[VoidInt8Proc](callee.ffiCallableAddress)
@@ -9301,6 +9317,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     of "C/UInt16":
       type VoidUInt16Proc = proc(): uint16 {.cdecl.}
       let fn = cast[VoidUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
+    of "C/UShort":
+      type VoidUShortProc = proc(): cushort {.cdecl.}
+      let fn = cast[VoidUShortProc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
     of "C/UInt8":
       type VoidUInt8Proc = proc(): uint8 {.cdecl.}
@@ -9537,6 +9557,77 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         type UInt16PtrProc = proc(x: uint16): pointer {.cdecl.}
         let fn = cast[UInt16PtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/UShort":
+    let arg0 = ffiCUShortArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type UShortIntProc = proc(x: cushort): cint {.cdecl.}
+      let fn = cast[UShortIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int16":
+      type UShortInt16Proc = proc(x: cushort): int16 {.cdecl.}
+      let fn = cast[UShortInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Short":
+      type UShortShortProc = proc(x: cushort): cshort {.cdecl.}
+      let fn = cast[UShortShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int32":
+      type UShortInt32Proc = proc(x: cushort): int32 {.cdecl.}
+      let fn = cast[UShortInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type UShortUIntProc = proc(x: cushort): cuint {.cdecl.}
+      let fn = cast[UShortUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt16":
+      type UShortUInt16Proc = proc(x: cushort): uint16 {.cdecl.}
+      let fn = cast[UShortUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UShort":
+      type UShortUShortProc = proc(x: cushort): cushort {.cdecl.}
+      let fn = cast[UShortUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt32":
+      type UShortUInt32Proc = proc(x: cushort): uint32 {.cdecl.}
+      let fn = cast[UShortUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type UShortLongProc = proc(x: cushort): clong {.cdecl.}
+      let fn = cast[UShortLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int64":
+      type UShortInt64Proc = proc(x: cushort): int64 {.cdecl.}
+      let fn = cast[UShortInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0))
+    of "C/Size":
+      type UShortSizeProc = proc(x: cushort): csize_t {.cdecl.}
+      let fn = cast[UShortSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type UShortFloatProc = proc(x: cushort): cfloat {.cdecl.}
+      let fn = cast[UShortFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type UShortDoubleProc = proc(x: cushort): cdouble {.cdecl.}
+      let fn = cast[UShortDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/CStr":
+      type UShortCStrProc = proc(x: cushort): cstring {.cdecl.}
+      let fn = cast[UShortCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type UShortVoidProc = proc(x: cushort) {.cdecl.}
+      let fn = cast[UShortVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type UShortPtrProc = proc(x: cushort): pointer {.cdecl.}
+        let fn = cast[UShortPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/UInt8":
     let arg0 = ffiCUInt8Arg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", args[0])
@@ -9666,6 +9757,77 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type Int16PtrProc = proc(x: int16): pointer {.cdecl.}
         let fn = cast[Int16PtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/Short":
+    let arg0 = ffiCShortArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type ShortIntProc = proc(x: cshort): cint {.cdecl.}
+      let fn = cast[ShortIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int16":
+      type ShortInt16Proc = proc(x: cshort): int16 {.cdecl.}
+      let fn = cast[ShortInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Short":
+      type ShortShortProc = proc(x: cshort): cshort {.cdecl.}
+      let fn = cast[ShortShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int32":
+      type ShortInt32Proc = proc(x: cshort): int32 {.cdecl.}
+      let fn = cast[ShortInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type ShortUIntProc = proc(x: cshort): cuint {.cdecl.}
+      let fn = cast[ShortUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt16":
+      type ShortUInt16Proc = proc(x: cshort): uint16 {.cdecl.}
+      let fn = cast[ShortUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UShort":
+      type ShortUShortProc = proc(x: cshort): cushort {.cdecl.}
+      let fn = cast[ShortUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt32":
+      type ShortUInt32Proc = proc(x: cshort): uint32 {.cdecl.}
+      let fn = cast[ShortUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type ShortLongProc = proc(x: cshort): clong {.cdecl.}
+      let fn = cast[ShortLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int64":
+      type ShortInt64Proc = proc(x: cshort): int64 {.cdecl.}
+      let fn = cast[ShortInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0))
+    of "C/Size":
+      type ShortSizeProc = proc(x: cshort): csize_t {.cdecl.}
+      let fn = cast[ShortSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type ShortFloatProc = proc(x: cshort): cfloat {.cdecl.}
+      let fn = cast[ShortFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type ShortDoubleProc = proc(x: cshort): cdouble {.cdecl.}
+      let fn = cast[ShortDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/CStr":
+      type ShortCStrProc = proc(x: cshort): cstring {.cdecl.}
+      let fn = cast[ShortCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type ShortVoidProc = proc(x: cshort) {.cdecl.}
+      let fn = cast[ShortVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type ShortPtrProc = proc(x: cshort): pointer {.cdecl.}
+        let fn = cast[ShortPtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Int8":
     let arg0 = ffiCInt8Arg("FFI argument 0 for '" &
