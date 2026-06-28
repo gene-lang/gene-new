@@ -26,7 +26,7 @@ suite "compiler — GIR emission":
     check chunk.instructions.len == 3
     check chunk.instructions[0].op == opPushConst
     check chunk.constants[chunk.instructions[0].intArg].intVal == 1
-    check chunk.instructions[1].op == opIntFastConst
+    check chunk.instructions[1].op == opIntAddConst
     check chunk.instructions[1].name == "+"
     check chunk.constants[chunk.instructions[1].depth].intVal == 2
     check chunk.instructions[2].op == opReturn
@@ -413,7 +413,7 @@ suite "gir — disassembly":
     check dump.contains("constants:")
     check dump.contains("[0] 1")
     check dump.contains("[1] 2")
-    check dump.contains("1: opIntFastConst name=+ const=1")
+    check dump.contains("1: opIntAddConst name=+ const=1")
     check dump.contains("2: opReturn")
 
   test "prints nested function chunks":
@@ -425,7 +425,9 @@ suite "gir — disassembly":
 
   test "prints typed integer fast ops":
     let dump = compileSource("(fn add [x : Int y : Int] : Int (+ x y))").disassemble()
-    check dump.contains("2: opIntFast2 name=+")
+    check dump.contains("0: opLoadLocalFast slot=0 name=x")
+    check dump.contains("1: opLoadLocalFast slot=1 name=y")
+    check dump.contains("2: opIntAdd2 name=+")
 
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()

@@ -4851,6 +4851,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             stack.add scope.slots[slot]
           else:
             stack.add scope.loadSlot(slot, inst[].name)
+        of opLoadLocalFast:
+          stack.add scope.slots[inst[].intArg]
         of opLoadOuterLocal:
           let slot = inst[].intArg
           let outer =
@@ -5671,6 +5673,245 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(calleeIndex)
           stack.add value
+        of opIntAdd2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int add")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.isSmallInt and b.isSmallInt:
+            var value: Value
+            if smallIntAdd(a, b, value):
+              stack[top - 2] = value
+              setLenUninit(stack, top - 1)
+              continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = intAdd(a, b)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkAdd, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntSub2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int sub")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.isSmallInt and b.isSmallInt:
+            var value: Value
+            if smallIntSub(a, b, value):
+              stack[top - 2] = value
+              setLenUninit(stack, top - 1)
+              continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = intSub(a, b)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkSub, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntMul2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int mul")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = intMul(a, b)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkMul, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntLt2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int lt")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 2] = newBool(a.smallIntVal < b.smallIntVal)
+            setLenUninit(stack, top - 1)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = newBool(intCompare(a, b) < 0)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkLt, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntGt2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int gt")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 2] = newBool(a.smallIntVal > b.smallIntVal)
+            setLenUninit(stack, top - 1)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = newBool(intCompare(a, b) > 0)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkGt, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntLe2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int le")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 2] = newBool(a.smallIntVal <= b.smallIntVal)
+            setLenUninit(stack, top - 1)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = newBool(intCompare(a, b) <= 0)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkLe, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntGe2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int ge")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
+            setLenUninit(stack, top - 1)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 2] = newBool(intCompare(a, b) >= 0)
+            stack.setLen(top - 1)
+            continue
+          stack.setLen(top - 2)
+          let callee = scope.loadNativeFast(nfkGe, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntAddConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int add const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.isSmallInt and b.isSmallInt:
+            var value: Value
+            if smallIntAdd(a, b, value):
+              stack[top - 1] = value
+              continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = intAdd(a, b)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkAdd, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntSubConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int sub const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.isSmallInt and b.isSmallInt:
+            var value: Value
+            if smallIntSub(a, b, value):
+              stack[top - 1] = value
+              continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = intSub(a, b)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkSub, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntMulConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int mul const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = intMul(a, b)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkMul, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntLtConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int lt const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 1] = newBool(a.smallIntVal < b.smallIntVal)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = newBool(intCompare(a, b) < 0)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkLt, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntGtConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int gt const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 1] = newBool(a.smallIntVal > b.smallIntVal)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = newBool(intCompare(a, b) > 0)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkGt, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntLeConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int le const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 1] = newBool(a.smallIntVal <= b.smallIntVal)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = newBool(intCompare(a, b) <= 0)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkLe, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
+        of opIntGeConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int ge const")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          if a.isSmallInt and b.isSmallInt:
+            stack[top - 1] = newBool(a.smallIntVal >= b.smallIntVal)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            stack[top - 1] = newBool(intCompare(a, b) >= 0)
+            continue
+          stack.setLen(top - 1)
+          let callee = scope.loadNativeFast(nfkGe, inst[].name)
+          var args = [a, b]
+          stack.add applyCall(callee, args, NamedArgs(), scope)
         of opIntFast2:
           if stack.len < 2:
             raise newException(GeneError, "VM stack underflow in int fast call")

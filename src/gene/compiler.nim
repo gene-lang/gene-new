@@ -17,6 +17,7 @@ type
     gensym: int
     useLocalSlots: bool
     localSlots: Table[string, int]
+    fastLocalLoads: Table[string, int]
     localTypes: Table[string, Value]
     localFunctionSigs: Table[string, KnownFunctionSig]
     localNames: seq[string]
@@ -80,6 +81,7 @@ proc emitPlainCall(c: var Compiler, argCount: int): int =
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
   c.localSlots = initTable[string, int]()
+  c.fastLocalLoads = initTable[string, int]()
   c.localTypes = initTable[string, Value]()
   c.localFunctionSigs = initTable[string, KnownFunctionSig]()
   c.localNames = @[]
@@ -243,7 +245,10 @@ proc lexicalCallSlot(c: Compiler, name: string): tuple[op: OpCode, depth: int, s
 proc emitLoadBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
   if slot >= 0:
-    discard c.emit(opLoadLocal, slot, name = name)
+    if c.fastLocalLoads.hasKey(name) and c.fastLocalLoads[name] == slot:
+      discard c.emit(opLoadLocalFast, slot, name = name)
+    else:
+      discard c.emit(opLoadLocal, slot, name = name)
   else:
     let outer = c.parentSlot(name)
     if outer.slot >= 0:
@@ -254,6 +259,28 @@ proc emitLoadBinding(c: var Compiler, name: string) =
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
       else:
         discard c.emit(opLoadName, name = name)
+
+proc intFast2Op(kind: NativeFastKind): OpCode =
+  case kind
+  of nfkAdd: opIntAdd2
+  of nfkSub: opIntSub2
+  of nfkMul: opIntMul2
+  of nfkLt: opIntLt2
+  of nfkGt: opIntGt2
+  of nfkLe: opIntLe2
+  of nfkGe: opIntGe2
+  else: opIntFast2
+
+proc intFastConstOp(kind: NativeFastKind): OpCode =
+  case kind
+  of nfkAdd: opIntAddConst
+  of nfkSub: opIntSubConst
+  of nfkMul: opIntMulConst
+  of nfkLt: opIntLtConst
+  of nfkGt: opIntGtConst
+  of nfkLe: opIntLeConst
+  of nfkGe: opIntGeConst
+  else: opIntFastConst
 
 proc emitDefineBinding(c: var Compiler, name: string) =
   if c.useLocalSlots:
@@ -1651,9 +1678,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       fnCompiler.parentFunctionSigs[0][name] = sig.sig
   var positionalSlots: seq[int]
   for i, name in specs.positional:
-    positionalSlots.add fnCompiler.reserveLocal(name)
+    let slot = fnCompiler.reserveLocal(name)
+    positionalSlots.add slot
     if i < specs.positionalTypes.len:
       fnCompiler.recordLocalType(name, specs.positionalTypes[i])
+      if specs.positionalTypes[i].isBareIntType:
+        fnCompiler.fastLocalLoads[name] = slot
   var namedSlots: seq[int]
   for p in specs.named:
     namedSlots.add fnCompiler.reserveLocal(p.local)
@@ -2490,7 +2520,7 @@ proc compileCall(c: var Compiler, node: Value) =
       if node.body[1].isSelfEvaluatingFastConst:
         let constIndex = c.chunk.addConst(node.body[1])
         if c.exprKnownBareInt(node.body[0]) and node.body[1].kind == vkInt:
-          discard c.emit(opIntFastConst, ord(fastKind), name = node.head.symVal,
+          discard c.emit(intFastConstOp(fastKind), ord(fastKind), name = node.head.symVal,
                          depth = constIndex)
         else:
           discard c.emit(opNativeFastConst, ord(fastKind), name = node.head.symVal,
@@ -2498,7 +2528,7 @@ proc compileCall(c: var Compiler, node: Value) =
       else:
         compileExpr(c, node.body[1])
         if c.exprKnownBareInt(node.body[0]) and c.exprKnownBareInt(node.body[1]):
-          discard c.emit(opIntFast2, ord(fastKind), name = node.head.symVal)
+          discard c.emit(intFast2Op(fastKind), ord(fastKind), name = node.head.symVal)
         else:
           discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
       return

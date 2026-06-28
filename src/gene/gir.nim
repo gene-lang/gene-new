@@ -13,6 +13,7 @@ type
     opLoadName
     opLoadNativeFast
     opLoadLocal
+    opLoadLocalFast
     opLoadOuterLocal
     opDefineName
     opDefineLocal
@@ -47,6 +48,20 @@ type
     opCall2
     opCall
     opCallSplice
+    opIntAdd2
+    opIntSub2
+    opIntMul2
+    opIntLt2
+    opIntGt2
+    opIntLe2
+    opIntGe2
+    opIntAddConst
+    opIntSubConst
+    opIntMulConst
+    opIntLtConst
+    opIntGtConst
+    opIntLeConst
+    opIntGeConst
     opIntFast2
     opIntFastConst
     opNativeFast2
@@ -429,7 +444,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " const=" & $inst.intArg
   of opLoadName, opLoadNativeFast, opDefineName, opSetName:
     result.add " name=" & inst.name
-  of opLoadLocal, opDefineLocal, opSetLocal:
+  of opLoadLocal, opLoadLocalFast, opDefineLocal, opSetLocal:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
@@ -506,9 +521,11 @@ proc formatInstruction(inst: Instruction): string =
     result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
-  of opIntFast2:
+  of opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2, opIntLe2,
+     opIntGe2, opIntFast2:
     result.add " name=" & inst.name
-  of opIntFastConst:
+  of opIntAddConst, opIntSubConst, opIntMulConst, opIntLtConst,
+     opIntGtConst, opIntLeConst, opIntGeConst, opIntFastConst:
     result.add " name=" & inst.name & " const=" & $inst.depth
   of opNativeFast2:
     result.add " name=" & inst.name
