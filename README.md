@@ -224,9 +224,10 @@ See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks drive
 reference counting automatically, so acyclic values free at count 0 — no global
 table, no per-read lock. The common `scope → closure → scope` cycle is broken with
-weak captured-scope edges, and reference cycles among mutable Cell/Env heap
-objects (e.g. a self-referential `cell`) are reclaimed by a conservative
-trial-deletion pass. Symbols are interned to immediate ids. Build with
+weak captured-scope edges. Direct mutable Cell/Env reference cycles (e.g. a
+self-referential `cell`) are reclaimed by a conservative trial-deletion pass, and
+Env-bound closures use weak local captures that are strengthened when the Env
+escapes. Symbols are interned to immediate ids. Build with
 `-d:geneRcStats` to expose `liveManaged` and `Runtime/gc-stats` for
 retain/release auditing. (RC is
 non-atomic for the single-threaded MVP; see `TODO(vm-shared-rc)` in

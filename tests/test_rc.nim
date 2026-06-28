@@ -148,6 +148,20 @@ when defined(geneRcStats):
       check functions.bufferItem(0).call().intVal == 42
       functions = NIL
 
+    test "returned Env values strengthen contained functions":
+      var env = NIL
+      block:
+        var scope = newGlobalScope()
+        env = run(compileSource(
+          "(var x 41) (env ^bindings {^f (fn [] (+ x 1))})"), scope)
+        scope = nil
+      GC_fullCollect()
+      block:
+        var scope = newGlobalScope()
+        scope.define("e", env)
+        check run(compileSource("(eval (quote (f)) ^in e)"), scope).intVal == 42
+      env = NIL
+
     test "returned lazy streams keep mapper scopes alive":
       var stream = NIL
       block:
@@ -231,9 +245,10 @@ when defined(geneRcStats):
       actor = NIL
 
   # --------------------------------------------------------------------------
-  # Cycles among mutable Cell/Env objects reached through a Value are collected
-  # by a conservative trial-deletion pass. `liveManaged` only counts manually-RC'd
-  # objects, so these cases measure occupied heap growth instead.
+  # Cycles involving Cell/Env objects reached through a Value are reclaimed either
+  # by conservative trial deletion (direct value edges) or weak Env-bound closure
+  # captures. `liveManaged` only counts manually-RC'd objects, so these cases
+  # measure occupied heap growth instead.
   proc heapGrowth(src: string, iters: int): int =
     GC_fullCollect()
     let before = getOccupiedMem()
@@ -258,6 +273,16 @@ when defined(geneRcStats):
     test "a two-cell cycle is reclaimed":
       check heapGrowth(
         "(var a (cell 0)) (var b (cell 0)) (Cell/set a b) (Cell/set b a)",
+        N) < 100_000
+
+    test "an Env binding closure cycle is reclaimed":
+      check heapGrowth(
+        "(var e nil) (set e (env ^bindings {^f (fn [] e)}))",
+        N) < 100_000
+
+    test "an Env/extend binding closure cycle is reclaimed":
+      check heapGrowth(
+        "(var e (env)) (set e (e ~ Env/extend {^f (fn [] e)}))",
         N) < 100_000
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

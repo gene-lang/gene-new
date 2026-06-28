@@ -18,10 +18,12 @@
 ## global table, no per-read lock. (Adopted from the older Gene runtime.)
 ##
 ## Cycles: the `scope -> closure -> scope` case is broken with weak captured-scope
-## edges (see `Scope`/`GeneFunction`). Mutable Cell/Env object cycles reached
-## through a `Value` (e.g. a self-referential `cell`) are reclaimed by a
+## edges (see `Scope`/`GeneFunction`). Direct mutable Cell/Env object cycles
+## reached through a `Value` (e.g. a self-referential `cell`) are reclaimed by a
 ## conservative trial-deletion pass, because ORC cannot directly trace through
-## NaN-boxed payload bits. See `tests/test_rc.nim`.
+## NaN-boxed payload bits. Env-bound functions created in the Env's owner scope
+## use the same weak-scope storage and are strengthened when the Env escapes.
+## See `tests/test_rc.nim`.
 ##
 ## TODO(vm-shared-rc): RC is non-atomic and assumes single-threaded mutation, which
 ## matches the current MVP. When the M:N scheduler lands, give each managed object a
@@ -1486,6 +1488,14 @@ proc ffiCallableParamTypes*(v: Value): lent seq[Value] =
 proc ffiCallableReturnType*(v: Value): Value =
   ffiCallableData(v).returnType
 
+proc newEnv*(bindings: sink Table[string, Value],
+             parent: Value = NIL,
+             imports: sink seq[Value] = @[],
+             module: Value = NIL,
+             capabilities: Value = NIL,
+             policy: Value = NIL,
+             bindingScope: Scope = nil): Value
+
 proc escapeWeakFunctions*(v: Value): Value
 
 proc nsName*(v: Value): lent string =
@@ -2462,6 +2472,87 @@ proc functionForScopeStorage*(v: Value, owner: Scope): Value =
     return cloneFunctionCapture(v, owner, weak = true)
   v
 
+proc weakenScopeFunctions(v: Value, owner: Scope): Value =
+  if owner == nil or not v.isManaged:
+    return v
+  case v.kind
+  of vkFunction:
+    functionForScopeStorage(v, owner)
+  of vkList:
+    for i, item in v.listItems:
+      let weakened = weakenScopeFunctions(item, owner)
+      if weakened.bits != item.bits:
+        var items = newSeq[Value](v.listItems.len)
+        for j in 0 ..< i:
+          items[j] = v.listItems[j]
+        items[i] = weakened
+        for j in i + 1 ..< v.listItems.len:
+          items[j] = weakenScopeFunctions(v.listItems[j], owner)
+        return newList(items, v.listImmutable)
+    v
+  of vkMap:
+    var changed = false
+    for _, val in v.mapEntries:
+      let weakened = weakenScopeFunctions(val, owner)
+      if weakened.bits != val.bits:
+        changed = true
+        break
+    if not changed:
+      return v
+    var entries = initOrderedTable[string, Value]()
+    for key, val in v.mapEntries:
+      entries[key] = weakenScopeFunctions(val, owner)
+    newMap(entries, v.mapImmutable)
+  of vkNode:
+    let weakenedHead = weakenScopeFunctions(v.head, owner)
+    var changed = weakenedHead.bits != v.head.bits
+    if not changed:
+      for _, val in v.props:
+        let weakened = weakenScopeFunctions(val, owner)
+        if weakened.bits != val.bits:
+          changed = true
+          break
+    if not changed:
+      for item in v.body:
+        let weakened = weakenScopeFunctions(item, owner)
+        if weakened.bits != item.bits:
+          changed = true
+          break
+    if not changed:
+      for _, val in v.meta:
+        let weakened = weakenScopeFunctions(val, owner)
+        if weakened.bits != val.bits:
+          changed = true
+          break
+    if not changed:
+      return v
+    var props = initOrderedTable[string, Value]()
+    for key, val in v.props:
+      props[key] = weakenScopeFunctions(val, owner)
+    var body: seq[Value]
+    for item in v.body:
+      body.add weakenScopeFunctions(item, owner)
+    var meta = initOrderedTable[string, Value]()
+    for key, val in v.meta:
+      meta[key] = weakenScopeFunctions(val, owner)
+    newNode(weakenedHead, props = props, body = body, meta = meta,
+            immutable = v.nodeImmutable)
+  of vkBuffer:
+    let data = bufferData(v)
+    var changed = false
+    var items = newSeq[Value](data.items.len)
+    for i, item in data.items:
+      let weakened = weakenScopeFunctions(item, owner)
+      items[i] = weakened
+      if weakened.bits != item.bits:
+        changed = true
+    if not changed:
+      return v
+    boxObject(BufferData(objKind: okBuffer, elemType: data.elemType,
+                         elemScope: data.elemScope, items: items))
+  else:
+    v
+
 proc escapeWeakFunctions*(v: Value): Value =
   ## Values that leave their defining run/eval boundary must keep weakly-stored
   ## lexical scopes alive. Rebuild only the containers that actually contain a
@@ -2644,6 +2735,33 @@ proc escapeWeakFunctions*(v: Value): Value =
       data.result = escapedResult
       data.task = escapedTask
     v
+  of vkEnv:
+    let data = EnvData(objData(v))
+    let escapedParent = escapeWeakFunctions(data.parent)
+    var changed = escapedParent.bits != data.parent.bits
+    var bindings = initTable[string, Value]()
+    for key, val in data.bindings:
+      let escaped = escapeWeakFunctions(val)
+      bindings[key] = escaped
+      if escaped.bits != val.bits:
+        changed = true
+    var imports = newSeq[Value](data.imports.len)
+    for i, item in data.imports:
+      let escaped = escapeWeakFunctions(item)
+      imports[i] = escaped
+      if escaped.bits != item.bits:
+        changed = true
+    let escapedModule = escapeWeakFunctions(data.module)
+    let escapedCapabilities = escapeWeakFunctions(data.capabilities)
+    let escapedPolicy = escapeWeakFunctions(data.policy)
+    if escapedModule.bits != data.module.bits or
+        escapedCapabilities.bits != data.capabilities.bits or
+        escapedPolicy.bits != data.policy.bits:
+      changed = true
+    if not changed:
+      return v
+    newEnv(bindings, escapedParent, imports, escapedModule,
+           escapedCapabilities, escapedPolicy)
   of vkCPtr:
     v
   of vkCSlice:
@@ -2910,8 +3028,12 @@ proc newEnv*(bindings: sink Table[string, Value],
              imports: sink seq[Value] = @[],
              module: Value = NIL,
              capabilities: Value = NIL,
-             policy: Value = NIL): Value =
-  boxObject(EnvData(objKind: okEnv, parent: parent, bindings: bindings,
+             policy: Value = NIL,
+             bindingScope: Scope = nil): Value =
+  var storedBindings = initTable[string, Value]()
+  for key, value in bindings:
+    storedBindings[key] = weakenScopeFunctions(value, bindingScope)
+  boxObject(EnvData(objKind: okEnv, parent: parent, bindings: storedBindings,
                     imports: imports, module: module,
                     capabilities: capabilities, policy: policy))
 

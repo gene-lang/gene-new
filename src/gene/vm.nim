@@ -1809,11 +1809,12 @@ proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
   else:
     EvalBudget(remaining: maxSteps, parent: parent)
 
-proc biEnvExtend(args: openArray[Value]): Value {.nimcall.} =
+proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Env/extend expects 2 arguments, got " & $args.len)
   requireEnv("Env/extend", args[0])
-  newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0])
+  newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0],
+         bindingScope = call.dispatchScope)
 
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
@@ -2778,7 +2779,8 @@ proc buildBuiltins(app: Application): Scope =
     newNativeFn("Module/declarations", biModuleDeclarations))
   result.define("Module", newNamespace("Module", moduleScope))
   let envScope = newScope(result)
-  envScope.define("extend", newNativeFn("Env/extend", biEnvExtend))
+  envScope.define("extend", newNativeCallFn("Env/extend", biEnvExtend,
+                                            acceptsNamed = false))
   result.define("Env", newNamespace("Env", envScope))
   result.define("read-one", newNativeCallFn("read-one", biReadOne,
                                             acceptsNamed = false))
@@ -4891,7 +4893,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           for item in importsValue.listItems:
             imports.add normalizeEnvImport(app, item)
           stack.add newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
-                           imports, module, capabilities, policy)
+                           imports, module, capabilities, policy,
+                           bindingScope = scope)
         of opEval:
           let env = stack.pop()
           let node = stack.pop()
