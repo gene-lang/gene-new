@@ -1402,7 +1402,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "") =
 proc emitExperimentalC*(chunk: Chunk): string =
   var lines = @[
     "/* Gene experimental typed-native C backend.",
-    " * Emits fixed-representation functions and generated FFI adapter skeletons.",
+    " * Emits fixed-representation functions and generated FFI adapter wrappers.",
     " */",
     "#include <stdbool.h>",
     "#include <stddef.h>",

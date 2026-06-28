@@ -293,6 +293,8 @@ suite "spec — typed native compilation prototype from design":
     check chunk.ffiFns[0].abi == "C"
     check "ffi-fns:" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
+    check "generated FFI adapter wrappers" in c
+    check "adapter skeletons" notin c
     check "extern size_t strlen(const char * s);" in c
     check "GeneStatus gene_ffi_strlen" in c
     check "arg 0 s: C/CStr -> const char *" in c
