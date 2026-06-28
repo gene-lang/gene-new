@@ -237,6 +237,7 @@ type
     slotDefinedOverflow*: seq[bool]
     slotNames*: seq[string]
     slotMirror*: bool
+    simpleCallScope*: bool
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
     requiredImplTypes*: seq[Value]
@@ -1927,6 +1928,30 @@ proc intIsZero*(v: Value): bool {.inline.} =
 proc isInt64Backed(v: Value): bool {.inline.} =
   let tag = v.bits shr TAG_SHIFT
   tag == INT_TAG or tag == INT64_TAG
+
+proc isSmallInt*(v: Value): bool {.inline.} =
+  (v.bits shr TAG_SHIFT) == INT_TAG
+
+proc smallIntVal*(v: Value): int64 {.inline.} =
+  decodeSmallInt(v.bits)
+
+proc smallIntAdd*(a, b: Value, outValue: var Value): bool {.inline.} =
+  if not (a.isSmallInt and b.isSmallInt):
+    return false
+  let s = a.smallIntVal + b.smallIntVal
+  if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
+    return false
+  outValue = mkImm(INT_TAG, encodeSmallInt(s))
+  true
+
+proc smallIntSub*(a, b: Value, outValue: var Value): bool {.inline.} =
+  if not (a.isSmallInt and b.isSmallInt):
+    return false
+  let s = a.smallIntVal - b.smallIntVal
+  if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
+    return false
+  outValue = mkImm(INT_TAG, encodeSmallInt(s))
+  true
 
 proc intCompare*(a, b: Value): int {.inline.} =
   if a.kind != vkInt or b.kind != vkInt:

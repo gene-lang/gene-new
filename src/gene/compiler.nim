@@ -13,6 +13,7 @@ type
     gensym: int
     useLocalSlots: bool
     localSlots: Table[string, int]
+    localTypes: Table[string, Value]
     localNames: seq[string]
     parentSlots: seq[Table[string, int]]
     macros: Table[string, MacroDef]
@@ -73,6 +74,7 @@ proc emitPlainCall(c: var Compiler, argCount: int): int =
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
   c.localSlots = initTable[string, int]()
+  c.localTypes = initTable[string, Value]()
   c.localNames = @[]
 
 proc reserveLocal(c: var Compiler, name: string): int =
@@ -88,6 +90,18 @@ proc localSlot(c: Compiler, name: string): int =
   if c.useLocalSlots and c.localSlots.hasKey(name):
     return c.localSlots[name]
   -1
+
+proc isBareIntType(expr: Value): bool =
+  expr.kind == vkSymbol and expr.symVal == "Int"
+
+proc recordLocalType(c: var Compiler, name: string, typeExpr: Value) =
+  if c.useLocalSlots and c.localSlots.hasKey(name) and typeExpr.kind != vkNil:
+    c.localTypes[name] = typeExpr
+
+proc localType(c: Compiler, name: string): Value =
+  if c.useLocalSlots and c.localTypes.hasKey(name):
+    return c.localTypes[name]
+  NIL
 
 proc parentSlot(c: Compiler, name: string): tuple[depth: int, slot: int] =
   for i, slots in c.parentSlots:
@@ -118,6 +132,23 @@ proc isSelfEvaluatingFastConst(v: Value): bool =
   case v.kind
   of vkNil, vkBool, vkInt, vkFloat, vkString, vkChar:
     true
+  else:
+    false
+
+proc exprKnownBareInt(c: Compiler, v: Value): bool =
+  case v.kind
+  of vkInt:
+    true
+  of vkSymbol:
+    c.localType(v.symVal).isBareIntType
+  of vkNode:
+    if v.props.len == 0 and v.head.kind == vkSymbol and v.body.len == 2 and
+        nativeFastLoadKind(v.head.symVal) in {nfkAdd, nfkSub, nfkMul} and
+        c.localSlot(v.head.symVal) < 0 and
+        c.parentSlot(v.head.symVal).slot < 0:
+      c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
+    else:
+      false
   else:
     false
 
@@ -174,6 +205,8 @@ proc emitDeclareType(c: var Compiler, name: string, typeExpr: Value) =
 
 proc emitConst(c: var Compiler, value: Value) =
   discard c.emit(opPushConst, c.chunk.addConst(value))
+
+proc compileFn(c: var Compiler, node: Value, inferredName = "")
 
 proc emitJump(c: var Compiler, op: OpCode): int =
   c.emit(op, -1)
@@ -447,6 +480,15 @@ proc chunkCanPoolCallScope(chunk: Chunk): bool =
       discard
   true
 
+proc chunkNeedsCallScopeSlotNames(chunk: Chunk): bool =
+  for inst in chunk.instructions:
+    case inst.op
+    of opDeclareType:
+      return true
+    else:
+      discard
+  false
+
 proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
@@ -455,6 +497,48 @@ proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
     if inst.op == opSetLocal and inst.intArg == slot:
       return true
   false
+
+proc chunkMaySetOuterSlot(chunk: Chunk, depth, slot: int): bool =
+  if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
+      chunk.matches.len > 0 or chunk.tries.len > 0:
+    return true
+  for inst in chunk.instructions:
+    if inst.op == opSetOuterLocal and inst.depth == depth and
+        inst.intArg == slot:
+      return true
+  false
+
+proc canUseTypedIntRecur1(proto: FunctionProto): bool =
+  ## A typed unary Int function can use the same recursive call machinery as a
+  ## simple call when the parameter slot never needs a runtime type binding.
+  proto.typeParams.len == 0 and not proto.checksErrors and
+    proto.params.len == 1 and proto.requiredPositional == 1 and
+    proto.positionalSlots.len == 1 and proto.positionalSlots[0] >= 0 and
+    proto.positionalSlotMaySet.len == 1 and not proto.positionalSlotMaySet[0] and
+    proto.restParam.len == 0 and proto.namedParams.len == 0 and
+    proto.hasParamTypes and proto.paramTypes.len == 1 and
+    proto.paramTypes[0].isBareIntType and proto.hasReturnType and
+    proto.returnType.isBareIntType and not proto.isGenerator and
+    proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
+
+proc canUseRecur1(proto: FunctionProto): bool =
+  proto.selfParentSlot >= 0 and proto.params.len == 1 and
+    proto.requiredPositional == 1 and proto.positionalSlots.len == 1 and
+    proto.positionalSlots[0] >= 0 and proto.poolCallScope and
+    not proto.callScopeNeedsSlotNames and
+    not proto.callScopeNeedsSlotReset and
+    (proto.simpleCall or proto.canUseTypedIntRecur1)
+
+proc rewriteSelfRecursiveCalls(parent: Chunk) =
+  for proto in parent.functions:
+    if proto.canUseRecur1 and
+        not parent.chunkMaySetSlot(proto.selfParentSlot) and
+        not proto.chunk.chunkMaySetOuterSlot(1, proto.selfParentSlot):
+      for inst in proto.chunk.instructions.mitems:
+        if inst.op == opCallParentLocal1 and inst.intArg == proto.selfParentSlot and
+            inst.name == proto.name:
+          inst.op = opRecur1
+    proto.chunk.rewriteSelfRecursiveCalls()
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
   if form.kind == vkSymbol:
@@ -1488,11 +1572,14 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()
   var positionalSlots: seq[int]
-  for name in specs.positional:
+  for i, name in specs.positional:
     positionalSlots.add fnCompiler.reserveLocal(name)
+    if i < specs.positionalTypes.len:
+      fnCompiler.recordLocalType(name, specs.positionalTypes[i])
   var namedSlots: seq[int]
   for p in specs.named:
     namedSlots.add fnCompiler.reserveLocal(p.local)
+    fnCompiler.recordLocalType(p.local, p.typeExpr)
   var restSlot = -1
   if specs.rest.len > 0:
     restSlot = fnCompiler.reserveLocal(specs.rest)
@@ -1520,6 +1607,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if p.typeExpr.kind != vkNil:
       hasNamedParamTypes = true
       break
+  let selfParentSlot =
+    if name.len > 0: c.localSlot(name)
+    else: -1
   let simpleCall = typeParams.len == 0 and not checksErrors and
                    specs.rest.len == 0 and specs.named.len == 0 and
                    not hasParamTypes and not hasNamedParamTypes and
@@ -1534,6 +1624,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         break
   let poolCallScope = needsCallScope and not defaultsCanCapture and
                       chunkCanPoolCallScope(fnCompiler.chunk)
+  let callScopeNeedsSlotNames = fnCompiler.chunk.chunkNeedsCallScopeSlotNames()
+  let callScopeNeedsSlotReset =
+    fnCompiler.localNames.len != specs.positional.len or specs.positional.len > 64
   let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
                                              typeParams, checksErrors,
                                              fnCompiler.sawYield)
@@ -1546,32 +1639,37 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if fnCompiler.sawYield: tfkGenerator
     elif bodyContainsAwait(body, start): tfkVm
     else: tfkNone
-  FunctionProto(name: name, typeParams: typeParams, params: specs.positional,
-                localNames: fnCompiler.localNames,
-                positionalSlots: positionalSlots,
-                positionalSlotMaySet: positionalSlotMaySet,
-                namedSlots: namedSlots,
-                restSlot: restSlot,
-                requiredPositional: specs.requiredPositionalCount,
-                simpleCall: simpleCall,
-                needsCallScope: needsCallScope,
-                poolCallScope: poolCallScope,
-                paramTypes: specs.positionalTypes,
-                hasParamTypes: hasParamTypes,
-                paramDefaults: specs.positionalDefaults,
-                restParam: specs.rest, namedParams: specs.named,
-                hasNamedParamTypes: hasNamedParamTypes,
-                returnType: returnType,
-                hasReturnType: returnType.kind != vkNil,
-                isGenerator: fnCompiler.sawYield,
-                nativeOp: nativeOp,
-                aotExpr: aotExpr,
-                aotFrameKind: aotFrameKind,
-                aotFrameCanSuspend: false,
-                taskFrameKind: taskFrameKind,
-                checksErrors: checksErrors,
-                errorTypeCount: errorTypeCount,
-                chunk: fnCompiler.chunk)
+  result = FunctionProto(name: name, typeParams: typeParams,
+                         params: specs.positional,
+                         localNames: fnCompiler.localNames,
+                         positionalSlots: positionalSlots,
+                         positionalSlotMaySet: positionalSlotMaySet,
+                         namedSlots: namedSlots,
+                         restSlot: restSlot,
+                         requiredPositional: specs.requiredPositionalCount,
+                         simpleCall: simpleCall,
+                         needsCallScope: needsCallScope,
+                         poolCallScope: poolCallScope,
+                         callScopeNeedsSlotNames: callScopeNeedsSlotNames,
+                         callScopeNeedsSlotReset: callScopeNeedsSlotReset,
+                         paramTypes: specs.positionalTypes,
+                         hasParamTypes: hasParamTypes,
+                         paramDefaults: specs.positionalDefaults,
+                         restParam: specs.rest, namedParams: specs.named,
+                         hasNamedParamTypes: hasNamedParamTypes,
+                         returnType: returnType,
+                         hasReturnType: returnType.kind != vkNil,
+                         isGenerator: fnCompiler.sawYield,
+                         selfParentSlot: selfParentSlot,
+                         nativeOp: nativeOp,
+                         aotExpr: aotExpr,
+                         aotFrameKind: aotFrameKind,
+                         aotFrameCanSuspend: false,
+                         taskFrameKind: taskFrameKind,
+                         checksErrors: checksErrors,
+                         errorTypeCount: errorTypeCount,
+                         chunk: fnCompiler.chunk)
+  result.chunk.owner = result
 
 proc compileIf(c: var Compiler, node: Value) =
   let body = node.body
@@ -1640,7 +1738,11 @@ proc compileVar(c: var Compiler, node: Value) =
       body[valueIndex].kind == vkNode and body[valueIndex].head.isSymbol("fn"):
     discard c.reserveLocal(body[0].symVal)
   if body.len > valueIndex:
-    compileExpr(c, body[valueIndex])
+    if body[0].kind == vkSymbol and body[valueIndex].kind == vkNode and
+        body[valueIndex].head.isSymbol("fn"):
+      compileFn(c, body[valueIndex], inferredName = body[0].symVal)
+    else:
+      compileExpr(c, body[valueIndex])
   else:
     c.emitConst NIL
   if typed:
@@ -1651,6 +1753,7 @@ proc compileVar(c: var Compiler, node: Value) =
   if body[0].kind == vkSymbol:
     c.emitDefineBinding(body[0].symVal)
     if typed:
+      c.recordLocalType(body[0].symVal, body[2])
       c.emitDeclareType(body[0].symVal, body[2])
     if body[0].symVal == "self":
       c.selfAvailable = true
@@ -1666,20 +1769,24 @@ proc compileSet(c: var Compiler, node: Value) =
   compileExpr(c, body[1])
   c.emitSetBinding(body[0].symVal)
 
-proc compileFn(c: var Compiler, node: Value) =
+proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   let body = node.body
   var idx = 0
   var name = ""
+  var definesName = false
   var typeParams: seq[string]
   if body.len > 0 and (body[0].kind == vkSymbol or body[0].kind == vkNode):
     let nameSpec = functionNameAndTypeParams(body[0])
     name = nameSpec.name
     typeParams = nameSpec.typeParams
+    definesName = name.len > 0
     idx = 1
+  elif inferredName.len > 0:
+    name = inferredName
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
-  if name.len > 0 and c.useLocalSlots:
+  if definesName and c.useLocalSlots:
     discard c.reserveLocal(name)
   let errorRow = compileErrorRow(c, node)
   let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
@@ -1687,7 +1794,7 @@ proc compileFn(c: var Compiler, node: Value) =
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
-  if name.len > 0:
+  if definesName:
     c.emitDefineBinding(name)
 
 proc importSelections(sel: Value): seq[ImportSelection] =
@@ -2299,11 +2406,18 @@ proc compileCall(c: var Compiler, node: Value) =
       compileExpr(c, node.body[0])
       if node.body[1].isSelfEvaluatingFastConst:
         let constIndex = c.chunk.addConst(node.body[1])
-        discard c.emit(opNativeFastConst, ord(fastKind), name = node.head.symVal,
-                       depth = constIndex)
+        if c.exprKnownBareInt(node.body[0]) and node.body[1].kind == vkInt:
+          discard c.emit(opIntFastConst, ord(fastKind), name = node.head.symVal,
+                         depth = constIndex)
+        else:
+          discard c.emit(opNativeFastConst, ord(fastKind), name = node.head.symVal,
+                         depth = constIndex)
       else:
         compileExpr(c, node.body[1])
-        discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
+        if c.exprKnownBareInt(node.body[0]) and c.exprKnownBareInt(node.body[1]):
+          discard c.emit(opIntFast2, ord(fastKind), name = node.head.symVal)
+        else:
+          discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
       return
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 1:
     let direct = c.lexicalCallSlot(node.head.symVal)
@@ -2891,6 +3005,7 @@ proc compileForms*(forms: openArray[Value],
   if useLocalSlots:
     c.chunk.localNames = c.localNames
     c.chunk.mirrorSlots = true
+  c.chunk.rewriteSelfRecursiveCalls()
   c.chunk
 
 proc compileForm*(form: Value): Chunk =

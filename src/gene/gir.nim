@@ -43,9 +43,12 @@ type
     opCallLocal1
     opCallParentLocal1
     opCallOuterLocal1
+    opRecur1
     opCall2
     opCall
     opCallSplice
+    opIntFast2
+    opIntFastConst
     opNativeFast2
     opNativeFastConst
     opMatch           # pop target, run the first matching branch in a child scope
@@ -121,6 +124,8 @@ type
     simpleCall*: bool
     needsCallScope*: bool
     poolCallScope*: bool
+    callScopeNeedsSlotNames*: bool
+    callScopeNeedsSlotReset*: bool
     paramTypes*: seq[Value]
     hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]
@@ -130,6 +135,7 @@ type
     returnType*: Value
     hasReturnType*: bool
     isGenerator*: bool
+    selfParentSlot*: int
     nativeOp*: NativeCompileOp
     aotExpr*: Value
     aotFrameKind*: AotFrameKind
@@ -264,6 +270,7 @@ type
   Chunk* = ref object
     constants*: seq[Value]
     instructions*: seq[Instruction]
+    owner* {.cursor.}: FunctionProto
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
@@ -486,6 +493,8 @@ proc formatInstruction(inst: Instruction): string =
   of opCallOuterLocal1:
     result.add " depth=" & $inst.depth & " slot=" & $inst.intArg &
       " name=" & inst.name & " argc=1"
+  of opRecur1:
+    result.add " argc=1"
   of opCall2:
     result.add " argc=2"
   of opCall:
@@ -496,6 +505,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
+  of opIntFast2:
+    result.add " name=" & inst.name
+  of opIntFastConst:
+    result.add " name=" & inst.name & " const=" & $inst.depth
   of opNativeFast2:
     result.add " name=" & inst.name
   of opNativeFastConst:

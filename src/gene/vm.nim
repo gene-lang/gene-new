@@ -581,14 +581,20 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
 proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
   case kind
   of nfkAdd:
-    if a.kind == vkInt and b.kind == vkInt:
+    var small: Value
+    if smallIntAdd(a, b, small):
+      (true, small)
+    elif a.kind == vkInt and b.kind == vkInt:
       (true, intAdd(a, b))
     elif a.isNumber and b.isNumber:
       (true, newFloat(a.toFloat + b.toFloat))
     else:
       (false, NIL)
   of nfkSub:
-    if a.kind == vkInt and b.kind == vkInt:
+    var small: Value
+    if smallIntSub(a, b, small):
+      (true, small)
+    elif a.kind == vkInt and b.kind == vkInt:
       (true, intSub(a, b))
     elif a.isNumber and b.isNumber:
       (true, newFloat(a.toFloat - b.toFloat))
@@ -602,28 +608,36 @@ proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool,
     else:
       (false, NIL)
   of nfkLt:
-    if a.kind == vkInt and b.kind == vkInt:
+    if a.isSmallInt and b.isSmallInt:
+      (true, newBool(a.smallIntVal < b.smallIntVal))
+    elif a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) < 0))
     elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat < b.toFloat))
     else:
       (false, NIL)
   of nfkGt:
-    if a.kind == vkInt and b.kind == vkInt:
+    if a.isSmallInt and b.isSmallInt:
+      (true, newBool(a.smallIntVal > b.smallIntVal))
+    elif a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) > 0))
     elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat > b.toFloat))
     else:
       (false, NIL)
   of nfkLe:
-    if a.kind == vkInt and b.kind == vkInt:
+    if a.isSmallInt and b.isSmallInt:
+      (true, newBool(a.smallIntVal <= b.smallIntVal))
+    elif a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) <= 0))
     elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat <= b.toFloat))
     else:
       (false, NIL)
   of nfkGe:
-    if a.kind == vkInt and b.kind == vkInt:
+    if a.isSmallInt and b.isSmallInt:
+      (true, newBool(a.smallIntVal >= b.smallIntVal))
+    elif a.kind == vkInt and b.kind == vkInt:
       (true, newBool(intCompare(a, b) >= 0))
     elif a.isNumber and b.isNumber:
       (true, newBool(a.toFloat >= b.toFloat))
@@ -3220,7 +3234,8 @@ const MaxCallScopePool = 64
 var callScopePool {.threadvar.}: array[MaxCallScopePool, Scope]
 var callScopePoolLen {.threadvar.}: int
 
-proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
+proc resetCallScopeSlots(scope: Scope, names: seq[string],
+                         keepSlotNames = true) =
   if scope.slots.len != names.len:
     scope.slots.setLen(names.len)
   for i in 0 ..< scope.slots.len:
@@ -3235,7 +3250,10 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string]) =
       scope.slotDefinedOverflow.setLen(0)
   if scope.slotTypes.len != 0:
     scope.slotTypes.setLen(0)
-  scope.slotNames = names
+  if keepSlotNames:
+    scope.slotNames = names
+  elif scope.slotNames.len != 0:
+    scope.slotNames.setLen(0)
   scope.slotMirror = false
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
@@ -3243,6 +3261,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
     if parent != nil: parent.application
     else: nil
   scope.parent = parent
+  scope.simpleCallScope = false
   scope.vars.clear()
   scope.varTypes.clear()
   scope.impls.setLen(0)
@@ -3268,7 +3287,9 @@ proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
     result = move callScopePool[index]
   result.resetCallScope(parent, names)
 
-proc acquireSimpleCallScope(parent: Scope, names: seq[string]): Scope =
+proc acquireSimpleCallScope(parent: Scope, names: seq[string],
+                            keepSlotNames = true,
+                            resetSlots = true): Scope =
   # Only simpleCall functions (no opDefineName/opSetName, no opTaskScope,
   # no opSupervisor, no opSpawn, no opMakeFn that escapes the scope) reach
   # this path. That exclusion guarantees vars/varTypes/impls/ownsTasks/
@@ -3284,10 +3305,25 @@ proc acquireSimpleCallScope(parent: Scope, names: seq[string]): Scope =
     if parent != nil: parent.application
     else: nil
   result.parent = parent
+  result.simpleCallScope = true
   result.evalBudget =
     if parent != nil: parent.evalBudget
     else: nil
-  result.resetCallScopeSlots(names)
+  if resetSlots:
+    result.resetCallScopeSlots(names, keepSlotNames)
+  else:
+    if result.slots.len != names.len:
+      result.slots.setLen(names.len)
+    result.slotDefinedBits = 0
+    if result.slotDefinedOverflow.len != 0:
+      result.slotDefinedOverflow.setLen(0)
+    if result.slotTypes.len != 0:
+      result.slotTypes.setLen(0)
+    if keepSlotNames:
+      result.slotNames = names
+    elif result.slotNames.len != 0:
+      result.slotNames.setLen(0)
+    result.slotMirror = false
 
 proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
                          args: openArray[Value]) {.inline.} =
@@ -3328,6 +3364,22 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
 
 proc releaseCallScope(scope: Scope) =
   if scope == nil:
+    return
+  if scope.simpleCallScope:
+    scope.parent = nil
+    scope.application = nil
+    scope.evalBudget = nil
+    if callScopePoolLen < MaxCallScopePool:
+      callScopePool[callScopePoolLen] = scope
+      inc callScopePoolLen
+    else:
+      for i in 0 ..< scope.slots.len:
+        scope.slots[i] = NIL
+      scope.slotDefinedBits = 0
+      if scope.slotDefinedOverflow.len != 0:
+        for i in 0 ..< scope.slotDefinedOverflow.len:
+          scope.slotDefinedOverflow[i] = false
+      scope.simpleCallScope = false
     return
   for i in 0 ..< scope.slots.len:
     scope.slots[i] = NIL
@@ -4979,7 +5031,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let callScope =
                   if proto.needsCallScope:
                     if proto.poolCallScope:
-                      acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                      acquireSimpleCallScope(callee.fnScope, proto.localNames,
+                        proto.callScopeNeedsSlotNames,
+                        proto.callScopeNeedsSlotReset)
                     else:
                       let fresh = newScope(callee.fnScope)
                       fresh.prepareSlots(proto.localNames)
@@ -5105,7 +5159,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
-                        acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                        acquireSimpleCallScope(callee.fnScope, proto.localNames,
+                          proto.callScopeNeedsSlotNames,
+                          proto.callScopeNeedsSlotReset)
                       else:
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(proto.localNames)
@@ -5197,6 +5253,38 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(argsStart)
           stack.add value
+        of opRecur1:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in recur call")
+          let proto = chunk.owner
+          let argsStart = stack.len - 1
+          var arg = stack[argsStart]
+          if proto.hasParamTypes and proto.paramTypes.len > 0 and
+              proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
+            raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
+          let callScope = acquireSimpleCallScope(scope.parent, proto.localNames,
+            keepSlotNames = false, resetSlots = false)
+          let slot = proto.positionalSlots[0]
+          callScope.slots[slot] = arg
+          callScope.slotDefinedBits = 1'u64 shl slot
+          stack.setLen(argsStart)
+          pushCallFrame()
+          chunk = proto.chunk
+          scope = callScope
+          recycleScope = true
+          stack = acquireRunStack()
+          ip = 0
+          validateImplRequirements = false
+          returnType =
+            if proto.hasReturnType: proto.returnType
+            else: NIL
+          returnLabel = ""
+          curChecksErrors = false
+          curErrorTypes = @[]
+          curFnName = proto.name
+          curFrameKind = fkNormal
+          evalBudget = callScope.evalBudget
+          continue
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
@@ -5255,7 +5343,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
-                        acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                        acquireSimpleCallScope(callee.fnScope, proto.localNames,
+                          proto.callScopeNeedsSlotNames,
+                          proto.callScopeNeedsSlotReset)
                       else:
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(proto.localNames)
@@ -5392,7 +5482,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   if fnProto.needsCallScope:
                     let created =
                       if fnProto.poolCallScope:
-                        acquireSimpleCallScope(callee.fnScope, fnProto.localNames)
+                        acquireSimpleCallScope(callee.fnScope, fnProto.localNames,
+                          fnProto.callScopeNeedsSlotNames,
+                          fnProto.callScopeNeedsSlotReset)
                       else:
                         let fresh = newScope(callee.fnScope)
                         fresh.prepareSlots(fnProto.localNames)
@@ -5465,14 +5557,153 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             return RunStop(kind: rskSuspend, value: NIL)
           stack.setLen(calleeIndex)
           stack.add value
+        of opIntFast2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int fast call")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          let kind = NativeFastKind(inst[].intArg)
+          if a.isSmallInt and b.isSmallInt:
+            case kind
+            of nfkAdd:
+              var value: Value
+              if smallIntAdd(a, b, value):
+                stack[top - 2] = value
+                setLenUninit(stack, top - 1)
+                continue
+            of nfkSub:
+              var value: Value
+              if smallIntSub(a, b, value):
+                stack[top - 2] = value
+                setLenUninit(stack, top - 1)
+                continue
+            of nfkLt:
+              stack[top - 2] = newBool(a.smallIntVal < b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            of nfkGt:
+              stack[top - 2] = newBool(a.smallIntVal > b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            of nfkLe:
+              stack[top - 2] = newBool(a.smallIntVal <= b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            of nfkGe:
+              stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            else:
+              discard
+          case kind
+          of nfkAdd:
+            stack[top - 2] = intAdd(a, b)
+          of nfkSub:
+            stack[top - 2] = intSub(a, b)
+          of nfkMul:
+            stack[top - 2] = intMul(a, b)
+          of nfkLt:
+            stack[top - 2] = newBool(intCompare(a, b) < 0)
+          of nfkGt:
+            stack[top - 2] = newBool(intCompare(a, b) > 0)
+          of nfkLe:
+            stack[top - 2] = newBool(intCompare(a, b) <= 0)
+          of nfkGe:
+            stack[top - 2] = newBool(intCompare(a, b) >= 0)
+          else:
+            raise newException(GeneError, "internal: unsupported int fast op")
+          stack.setLen(top - 1)
+        of opIntFastConst:
+          if stack.len < 1:
+            raise newException(GeneError, "VM stack underflow in int fast const call")
+          let top = stack.len
+          let a = stack[top - 1]
+          let b = chunk.constants[inst[].depth]
+          let kind = NativeFastKind(inst[].intArg)
+          if a.isSmallInt and b.isSmallInt:
+            case kind
+            of nfkAdd:
+              var value: Value
+              if smallIntAdd(a, b, value):
+                stack[top - 1] = value
+                continue
+            of nfkSub:
+              var value: Value
+              if smallIntSub(a, b, value):
+                stack[top - 1] = value
+                continue
+            of nfkLt:
+              stack[top - 1] = newBool(a.smallIntVal < b.smallIntVal)
+              continue
+            of nfkGt:
+              stack[top - 1] = newBool(a.smallIntVal > b.smallIntVal)
+              continue
+            of nfkLe:
+              stack[top - 1] = newBool(a.smallIntVal <= b.smallIntVal)
+              continue
+            of nfkGe:
+              stack[top - 1] = newBool(a.smallIntVal >= b.smallIntVal)
+              continue
+            else:
+              discard
+          case kind
+          of nfkAdd:
+            stack[top - 1] = intAdd(a, b)
+          of nfkSub:
+            stack[top - 1] = intSub(a, b)
+          of nfkMul:
+            stack[top - 1] = intMul(a, b)
+          of nfkLt:
+            stack[top - 1] = newBool(intCompare(a, b) < 0)
+          of nfkGt:
+            stack[top - 1] = newBool(intCompare(a, b) > 0)
+          of nfkLe:
+            stack[top - 1] = newBool(intCompare(a, b) <= 0)
+          of nfkGe:
+            stack[top - 1] = newBool(intCompare(a, b) >= 0)
+          else:
+            raise newException(GeneError, "internal: unsupported int fast const op")
         of opNativeFast2:
           if stack.len < 2:
             raise newException(GeneError, "VM stack underflow in native fast call")
           let top = stack.len
           let b = stack[top - 1]
           let a = stack[top - 2]
-          stack.setLen(top - 2)
           let kind = NativeFastKind(inst[].intArg)
+          if a.isSmallInt and b.isSmallInt:
+            case kind
+            of nfkAdd:
+              var value: Value
+              if smallIntAdd(a, b, value):
+                stack[top - 2] = value
+                setLenUninit(stack, top - 1)
+                continue
+            of nfkSub:
+              var value: Value
+              if smallIntSub(a, b, value):
+                stack[top - 2] = value
+                setLenUninit(stack, top - 1)
+                continue
+            of nfkLt:
+              stack[top - 2] = newBool(a.smallIntVal < b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            of nfkGt:
+              stack[top - 2] = newBool(a.smallIntVal > b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            of nfkLe:
+              stack[top - 2] = newBool(a.smallIntVal <= b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            of nfkGe:
+              stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
+              setLenUninit(stack, top - 1)
+              continue
+            else:
+              discard
+          stack.setLen(top - 2)
           let fastNative = tryFastNativeKind2(kind, a, b)
           if fastNative.handled:
             stack.add fastNative.value
@@ -5485,9 +5716,35 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow in native fast const call")
           let top = stack.len
           let a = stack[top - 1]
-          stack.setLen(top - 1)
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
+          if a.isSmallInt and b.isSmallInt:
+            case kind
+            of nfkAdd:
+              var value: Value
+              if smallIntAdd(a, b, value):
+                stack[top - 1] = value
+                continue
+            of nfkSub:
+              var value: Value
+              if smallIntSub(a, b, value):
+                stack[top - 1] = value
+                continue
+            of nfkLt:
+              stack[top - 1] = newBool(a.smallIntVal < b.smallIntVal)
+              continue
+            of nfkGt:
+              stack[top - 1] = newBool(a.smallIntVal > b.smallIntVal)
+              continue
+            of nfkLe:
+              stack[top - 1] = newBool(a.smallIntVal <= b.smallIntVal)
+              continue
+            of nfkGe:
+              stack[top - 1] = newBool(a.smallIntVal >= b.smallIntVal)
+              continue
+            else:
+              discard
+          stack.setLen(top - 1)
           if a.kind == vkInt and b.kind == vkInt:
             case kind
             of nfkAdd:
@@ -7940,7 +8197,9 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
         if proto.needsCallScope:
           let created =
             if proto.poolCallScope:
-              acquireSimpleCallScope(callee.fnScope, proto.localNames)
+              acquireSimpleCallScope(callee.fnScope, proto.localNames,
+                proto.callScopeNeedsSlotNames,
+                proto.callScopeNeedsSlotReset)
             else:
               let fresh = newScope(callee.fnScope)
               fresh.prepareSlots(proto.localNames)

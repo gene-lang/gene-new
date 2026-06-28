@@ -26,7 +26,7 @@ suite "compiler — GIR emission":
     check chunk.instructions.len == 3
     check chunk.instructions[0].op == opPushConst
     check chunk.constants[chunk.instructions[0].intArg].intVal == 1
-    check chunk.instructions[1].op == opNativeFastConst
+    check chunk.instructions[1].op == opIntFastConst
     check chunk.instructions[1].name == "+"
     check chunk.constants[chunk.instructions[1].depth].intVal == 2
     check chunk.instructions[2].op == opReturn
@@ -167,9 +167,20 @@ suite "compiler — GIR emission":
     check sawDefineY
     check sawSetY
 
-  test "emits outer slots for recursive var-bound closures":
+  test "rewrites stable recursive var-bound closures to recur":
     let chunk = compileSource("(var fib (fn [n] (if (< n 2) n (fib (- n 1)))))")
     check chunk.localNames == @["fib"]
+    let proto = chunk.functions[0]
+    var sawRecur = false
+    for inst in proto.chunk.instructions:
+      if inst.op == opRecur1:
+        sawRecur = true
+    check sawRecur
+
+  test "keeps mutable recursive var-bound calls indirect":
+    let chunk = compileSource(
+      "(var fib (fn [n] (if (< n 2) n (fib (- n 1))))) " &
+      "(set fib (fn [n] n))")
     let proto = chunk.functions[0]
     var sawOuterFib = false
     for inst in proto.chunk.instructions:
@@ -402,7 +413,7 @@ suite "gir — disassembly":
     check dump.contains("constants:")
     check dump.contains("[0] 1")
     check dump.contains("[1] 2")
-    check dump.contains("1: opNativeFastConst name=+ const=1")
+    check dump.contains("1: opIntFastConst name=+ const=1")
     check dump.contains("2: opReturn")
 
   test "prints nested function chunks":
@@ -411,6 +422,10 @@ suite "gir — disassembly":
     check dump.contains("[0] inc params=[x]")
     check dump.contains("0: opMakeFn fn=0")
     check dump.contains("1: opNativeFastConst name=+ const=0")
+
+  test "prints typed integer fast ops":
+    let dump = compileSource("(fn add [x : Int y : Int] : Int (+ x y))").disassemble()
+    check dump.contains("2: opIntFast2 name=+")
 
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
