@@ -7,19 +7,32 @@ template ck(src, expected: string) =
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
 
-proc loadableFfiLibrary(): string =
-  var candidates: seq[string] = @[]
+proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
-    candidates = @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
+    @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
   elif defined(linux):
-    candidates = @["libc.so.6", "libm.so.6"]
+    @["libc.so.6", "libm.so.6"]
   elif defined(windows):
-    candidates = @["kernel32.dll"]
-  for candidate in candidates:
+    @["kernel32.dll", "msvcrt.dll"]
+  else:
+    @[]
+
+proc loadableFfiLibrary(): string =
+  for candidate in ffiLibraryCandidates():
     let handle = loadLib(candidate)
     if handle != nil:
       unloadLib(handle)
       return candidate
+  ""
+
+proc loadableFfiLibraryWithSymbol(symbol: string): string =
+  for candidate in ffiLibraryCandidates():
+    let handle = loadLib(candidate)
+    if handle != nil:
+      let found = symAddr(handle, symbol) != nil
+      unloadLib(handle)
+      if found:
+        return candidate
   ""
 
 suite "types — declaration and construction":
@@ -407,6 +420,27 @@ suite "types — function boundaries":
           scope)
         check parsed.kind == vkFloat
         check abs(parsed.floatVal - 12.5) < 0.000001
+      let floatLibName = loadableFfiLibraryWithSymbol("sqrtf")
+      if floatLibName.len > 0:
+        scope.define("float-lib-name", newStr(floatLibName))
+        let floatLib =
+          if floatLibName == libName:
+            lib
+          else:
+            run(compileSource("(ffi/open native float-lib-name)"), scope)
+        scope.define("float-lib", floatLib)
+        let root = run(compileSource(
+          "((ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 9.0)"),
+          scope)
+        check root.kind == vkFloat
+        check abs(root.floatVal - 3.0) < 0.0001
+        expect GeneError:
+          discard run(compileSource(
+            "((ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 1.0e50)"),
+            scope)
+        if floatLibName != libName:
+          check run(compileSource("(Ffi/Library/close float-lib)"),
+                    scope).print() == "nil"
       if symAddr(handle, "strcmp") != nil:
         check run(compileSource("((ffi/bind lib \"strcmp\" " &
                                 "  [C/CStr C/CStr] C/Int) \"abc\" \"abc\")"),
