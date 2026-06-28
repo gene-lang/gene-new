@@ -4,7 +4,7 @@ set -euo pipefail
 # Usage:
 #   benchmarks/scripts/bench_fib_typed [n]
 #
-# Defaults to fib(24). Pass a larger n, e.g. 30, for steadier samples.
+# Defaults to fib(28). Pass 24 for the shorter historical sample.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"

@@ -19,7 +19,7 @@ proc fibCallCount(n: int): int64 =
   2'i64 * fibNumber(n + 1) - 1'i64
 
 proc main() =
-  var n = 24
+  var n = 28
   let args = commandLineParams()
   if args.len > 0:
     try:
@@ -30,7 +30,7 @@ proc main() =
     quit("Error: n must be non-negative", 1)
 
   let source = fmt"""
-(var fib (fn [n]
+(var fib (fn [n : Int] : Int
   (if (< n 2)
     n
     (+ (fib (- n 1)) (fib (- n 2))))))

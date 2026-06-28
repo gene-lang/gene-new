@@ -5613,6 +5613,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               continue
             else:
               discard
+          if a.kind != vkInt or b.kind != vkInt:
+            stack.setLen(top - 2)
+            let callee = scope.loadNativeFast(kind, inst[].name)
+            var args = [a, b]
+            stack.add applyCall(callee, args, NamedArgs(), scope)
+            continue
           case kind
           of nfkAdd:
             stack[top - 2] = intAdd(a, b)
@@ -5664,6 +5670,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               continue
             else:
               discard
+          if a.kind != vkInt or b.kind != vkInt:
+            stack.setLen(top - 1)
+            let callee = scope.loadNativeFast(kind, inst[].name)
+            var args = [a, b]
+            stack.add applyCall(callee, args, NamedArgs(), scope)
+            continue
           case kind
           of nfkAdd:
             stack[top - 1] = intAdd(a, b)

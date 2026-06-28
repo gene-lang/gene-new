@@ -3,7 +3,7 @@
 Run the recursive Fibonacci benchmark with:
 
 ```bash
-benchmarks/scripts/bench_fib       # defaults to fib(24)
+benchmarks/scripts/bench_fib       # defaults to fib(28)
 benchmarks/scripts/bench_fib 28
 benchmarks/scripts/bench_fib_typed 30
 ```
@@ -28,13 +28,14 @@ The benchmarked Gene program is:
   (if (< n 2)
     n
     (+ (fib (- n 1)) (fib (- n 2))))))
-(fib 24)
+(fib 28)
 ```
 
-`fib(24)` performs 150049 naive recursive `fib` calls and returns `46368`.
+`fib(28)` performs 1028457 naive recursive `fib` calls and returns `317811`.
 
-`bench_fib_typed` uses the same recursive program shape but annotates the
-function as `Int -> Int`, so it measures typed call-boundary overhead.
+The default benchmark annotates the recursive function as `Int -> Int`, so
+typed call-boundary and recursive dispatch fast paths are visible in perf runs.
+Pass `24` for the shorter historical 150049-call sample.
 
 ## Call Burst
 

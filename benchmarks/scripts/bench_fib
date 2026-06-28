@@ -4,6 +4,8 @@ set -euo pipefail
 # Usage:
 #   benchmarks/scripts/bench_fib [n]
 #
+# Defaults to fib(28). Pass 24 for the shorter historical sample.
+#
 # Environment:
 #   GENE_BENCH_MODE=vm     (default: vm)
 #   NIM=/path/to/nim       (default: nim, or ~/.nimble/bin/nim)

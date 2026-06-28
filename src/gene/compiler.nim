@@ -4,6 +4,10 @@ import std/[strutils, tables]
 import ./[equality, gir, reader, types]
 
 type
+  KnownFunctionSig = object
+    arity: int
+    returnType: Value
+
   Compiler = object
     chunk: Chunk
     selfAvailable: bool
@@ -14,8 +18,10 @@ type
     useLocalSlots: bool
     localSlots: Table[string, int]
     localTypes: Table[string, Value]
+    localFunctionSigs: Table[string, KnownFunctionSig]
     localNames: seq[string]
     parentSlots: seq[Table[string, int]]
+    parentFunctionSigs: seq[Table[string, KnownFunctionSig]]
     macros: Table[string, MacroDef]
     hasMacros: bool
     macroExpansionDepth: int
@@ -75,6 +81,7 @@ proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
   c.localSlots = initTable[string, int]()
   c.localTypes = initTable[string, Value]()
+  c.localFunctionSigs = initTable[string, KnownFunctionSig]()
   c.localNames = @[]
 
 proc reserveLocal(c: var Compiler, name: string): int =
@@ -114,6 +121,38 @@ proc parentFrames(c: Compiler): seq[Table[string, int]] =
     result.add c.localSlots
   result.add c.parentSlots
 
+proc parentFunctionSigFrames(c: Compiler): seq[Table[string, KnownFunctionSig]] =
+  if c.useLocalSlots:
+    result.add c.localFunctionSigs
+  result.add c.parentFunctionSigs
+
+proc lexicalFunctionSig(c: Compiler, name: string):
+    tuple[found: bool, sig: KnownFunctionSig] =
+  let slot = c.localSlot(name)
+  if slot >= 0:
+    if c.localFunctionSigs.hasKey(name):
+      return (true, c.localFunctionSigs[name])
+    return
+  let outer = c.parentSlot(name)
+  if outer.slot >= 0:
+    let index = outer.depth - 1
+    if index >= 0 and index < c.parentFunctionSigs.len and
+        c.parentFunctionSigs[index].hasKey(name):
+      return (true, c.parentFunctionSigs[index][name])
+
+proc functionSigFromParts(positionalCount: int, typeParams: openArray[string],
+                          returnType: Value):
+    tuple[known: bool, sig: KnownFunctionSig] =
+  if typeParams.len == 0 and returnType.kind != vkNil:
+    return (true, KnownFunctionSig(arity: positionalCount,
+                                   returnType: returnType))
+
+proc recordLocalFunctionSig(c: var Compiler, name: string, proto: FunctionProto) =
+  if c.useLocalSlots and c.localSlots.hasKey(name) and
+      proto.typeParams.len == 0 and proto.hasReturnType:
+    c.localFunctionSigs[name] = KnownFunctionSig(arity: proto.params.len,
+                                                 returnType: proto.returnType)
+
 proc nativeFastLoadKind(name: string): NativeFastKind =
   case name
   of "+": nfkAdd
@@ -147,6 +186,9 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
         c.localSlot(v.head.symVal) < 0 and
         c.parentSlot(v.head.symVal).slot < 0:
       c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
+    elif v.props.len == 0 and v.head.kind == vkSymbol:
+      let sig = c.lexicalFunctionSig(v.head.symVal)
+      sig.found and sig.sig.arity == v.body.len and sig.sig.returnType.isBareIntType
     else:
       false
   else:
@@ -1571,6 +1613,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   var fnCompiler = c.childCompiler()
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()
+  fnCompiler.parentFunctionSigs = c.parentFunctionSigFrames()
+  if name.len > 0 and c.localSlot(name) >= 0 and
+      fnCompiler.parentFunctionSigs.len > 0:
+    let sig = functionSigFromParts(specs.positional.len, typeParams, returnType)
+    if sig.known:
+      fnCompiler.parentFunctionSigs[0][name] = sig.sig
   var positionalSlots: seq[int]
   for i, name in specs.positional:
     positionalSlots.add fnCompiler.reserveLocal(name)
@@ -1793,6 +1841,7 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
                                  typeParams = typeParams,
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
+  c.recordLocalFunctionSig(name, proto)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
     c.emitDefineBinding(name)

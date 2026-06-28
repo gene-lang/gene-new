@@ -1,7 +1,8 @@
 ## Recursive Fibonacci benchmark for typed Gene functions on the bytecode VM.
 ##
-## This mirrors fibonacci_vm.nim but annotates the recursive function as
-## Int -> Int so VM type-boundary fast paths are visible in perf runs.
+## This mirrors the default Fibonacci VM benchmark and keeps the recursive
+## function annotated as Int -> Int so type-boundary fast paths are visible in
+## perf runs.
 
 import gene/[compiler, printer, types, vm]
 import std/[os, strformat, strutils, times]
@@ -20,7 +21,7 @@ proc fibCallCount(n: int): int64 =
   2'i64 * fibNumber(n + 1) - 1'i64
 
 proc main() =
-  var n = 24
+  var n = 28
   let args = commandLineParams()
   if args.len > 0:
     try:
