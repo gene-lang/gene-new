@@ -13,6 +13,12 @@ proc ffiTestI16Abs(x: int16): int16 {.cdecl.} =
 proc ffiTestU16Inc(x: uint16): uint16 {.cdecl.} =
   x + 1'u16
 
+proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
+  if x < 0'i8: -x else: x
+
+proc ffiTestU8Inc(x: uint8): uint8 {.cdecl.} =
+  x + 1'u8
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -659,6 +665,14 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestU16Inc", "ffiTestU16Inc",
                                   cast[pointer](ffiTestU16Inc), lib,
                                   @[newSym("C/UInt16")], newSym("C/UInt16")))
+      scope.define("i8-abs",
+                   newFfiCallable("ffiTestI8Abs", "ffiTestI8Abs",
+                                  cast[pointer](ffiTestI8Abs), lib,
+                                  @[newSym("C/Int8")], newSym("C/Int8")))
+      scope.define("u8-inc",
+                   newFfiCallable("ffiTestU8Inc", "ffiTestU8Inc",
+                                  cast[pointer](ffiTestU8Inc), lib,
+                                  @[newSym("C/UInt8")], newSym("C/UInt8")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -667,6 +681,14 @@ suite "types — function boundaries":
         discard run(compileSource("(u16-inc -1)"), scope)
       expect GeneError:
         discard run(compileSource("(u16-inc 65536)"), scope)
+      check run(compileSource("(i8-abs -9)"), scope).print() == "9"
+      expect GeneError:
+        discard run(compileSource("(i8-abs 128)"), scope)
+      check run(compileSource("(u8-inc 41)"), scope).print() == "42"
+      expect GeneError:
+        discard run(compileSource("(u8-inc -1)"), scope)
+      expect GeneError:
+        discard run(compileSource("(u8-inc 256)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
