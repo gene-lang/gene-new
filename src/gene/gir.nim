@@ -109,7 +109,6 @@ type
     ncoIntAdd
     ncoIntSub
     ncoIntMul
-    ncoIntFib
     ncoI64Add
     ncoI64Sub
     ncoI64Mul
@@ -412,7 +411,6 @@ proc formatNativeOp(op: NativeCompileOp): string =
   of ncoIntAdd: "int-add"
   of ncoIntSub: "int-sub"
   of ncoIntMul: "int-mul"
-  of ncoIntFib: "int-fib"
   of ncoI64Add: "i64-add"
   of ncoI64Sub: "i64-sub"
   of ncoI64Mul: "i64-mul"

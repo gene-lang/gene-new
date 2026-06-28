@@ -746,10 +746,6 @@ proc rewriteTypedIntTailReturnGuards(proto: FunctionProto) =
 
 proc rewriteSelfRecursiveCalls(parent: Chunk) =
   for proto in parent.functions:
-    if proto.nativeOp == ncoIntFib and
-        (proto.selfParentSlot < 0 or parent.chunkMaySetSlot(proto.selfParentSlot) or
-         proto.chunk.chunkMaySetOuterSlot(1, proto.selfParentSlot)):
-      proto.nativeOp = ncoNone
     if proto.canUseRecur1 and
         not parent.chunkMaySetSlot(proto.selfParentSlot) and
         not proto.chunk.chunkMaySetOuterSlot(1, proto.selfParentSlot):
@@ -1699,47 +1695,8 @@ proc nativeArithmeticOp(typeName, opName: string): NativeCompileOp =
   else:
     ncoNone
 
-proc isPlainCall(expr: Value, name: string, arity: int): bool =
-  expr.kind == vkNode and expr.props.len == 0 and expr.meta.len == 0 and
-    expr.head.kind == vkSymbol and expr.head.symVal == name and
-    expr.body.len == arity
-
-proc isIntLiteral(expr: Value, expected: int64): bool =
-  expr.kind == vkInt and expr.intVal == expected
-
-proc isParamSymbol(expr: Value, paramName: string): bool =
-  expr.kind == vkSymbol and expr.symVal == paramName
-
-proc isParamMinusConst(expr: Value, paramName: string, amount: int64): bool =
-  expr.isPlainCall("-", 2) and expr.body[0].isParamSymbol(paramName) and
-    expr.body[1].isIntLiteral(amount)
-
-proc isSelfCallMinusConst(expr: Value, functionName, paramName: string,
-                          amount: int64): bool =
-  functionName.len > 0 and expr.isPlainCall(functionName, 1) and
-    expr.body[0].isParamMinusConst(paramName, amount)
-
-proc isIntFibRecurrence(expr: Value, functionName, paramName: string): bool =
-  ## Recognize the narrow typed Fibonacci benchmark shape:
-  ## `(if (< n 2) n (+ (self (- n 1)) (self (- n 2))))`.
-  if not expr.isPlainCall("if", 3):
-    return false
-  let cond = expr.body[0]
-  if not cond.isPlainCall("<", 2):
-    return false
-  if not cond.body[0].isParamSymbol(paramName) or
-      not cond.body[1].isIntLiteral(2):
-    return false
-  if not expr.body[1].isParamSymbol(paramName):
-    return false
-  let recurSum = expr.body[2]
-  recurSum.isPlainCall("+", 2) and
-    recurSum.body[0].isSelfCallMinusConst(functionName, paramName, 1) and
-    recurSum.body[1].isSelfCallMinusConst(functionName, paramName, 2)
-
 proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
                            bodyStart: int, returnType: Value,
-                           functionName: string,
                            typeParams: openArray[string],
                            checksErrors, sawYield: bool): NativeCompileOp =
   ## Native-compilation slices for small typed scalar shapes. Dynamic function
@@ -1753,13 +1710,6 @@ proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
   let typeName = returnType.nativeScalarType
   if typeName.len == 0:
     return ncoNone
-  if typeName == "Int" and specs.positional.len == 1 and
-      specs.rest.len == 0 and specs.named.len == 0 and
-      not specs.hasOptionalPositional and body.len == bodyStart + 1 and
-      specs.positionalTypes.len == 1 and
-      specs.positionalTypes[0].nativeScalarType == "Int" and
-      body[bodyStart].isIntFibRecurrence(functionName, specs.positional[0]):
-    return ncoIntFib
   if specs.positional.len != 2:
     return ncoNone
   for t in specs.positionalTypes:
@@ -1937,7 +1887,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let callScopeNeedsSlotNames = fnCompiler.chunk.chunkNeedsCallScopeSlotNames()
   let callScopeNeedsSlotReset =
     fnCompiler.localNames.len != specs.positional.len or specs.positional.len > 64
-  let nativeOp = specs.detectNativeCompileOp(body, start, returnType, name,
+  let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
                                              typeParams, checksErrors,
                                              fnCompiler.sawYield)
   let aotExpr = c.detectAotExpr(specs, body, start, returnType,
