@@ -136,7 +136,8 @@ participates in equality or hashing.
 > candidates; when runtime captures are `Send`, the VM queues that task with an
 > isolated snapshot of the captured parent scope. This removes live-parent scope
 > dependence for eligible tasks. In `--mm:atomicArc --threads:on` builds, setting
-> `GENE_WORKERS=N` lets root `await`/task-scope pumping hand those
+> `GENE_WORKERS=N` lets root scheduler pumping for `await`, structured-scope
+> cleanup, channel waits, actor mailbox waits/driving, and `sleep` hand those
 > snapshot-isolated worker candidates to N OS worker threads while unsafe
 > shared-scope tasks stay on the cooperative root lane.
 > Root-level `await` still drives the run queue until the task settles.

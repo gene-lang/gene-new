@@ -16,11 +16,12 @@ publish their captured scope/value graph as well, including task/channel/actor
 interior payloads that are protected by their object locks. Worker-candidate
 spawn bodies now run against sparse captured-scope snapshots once their runtime
 captures satisfy `Send`. In `--mm:atomicArc --threads:on` builds,
-`GENE_WORKERS=N` starts an opt-in worker lane: root `await`/task-scope pumping
-leaves snapshot-isolated worker candidates for OS worker threads while unsafe
-shared-scope work remains on the cooperative root lane. Worker candidates are
-leaf-like: bytecode/runtime eligibility rejects bodies and reachable captured
-functions that contain nested `spawn`. A threaded `atomicArc` smoke gate now
+`GENE_WORKERS=N` starts an opt-in worker lane: root scheduler pumping for
+`await`, structured-scope cleanup, channel waits, actor mailbox waits/driving,
+and `sleep` leaves snapshot-isolated worker candidates for OS worker threads
+while unsafe shared-scope work remains on the cooperative root lane. Worker
+candidates are leaf-like: bytecode/runtime eligibility rejects bodies and
+reachable captured functions that contain nested `spawn`. A threaded `atomicArc` smoke gate now
 covers value operations, VM behavior, worker-candidate execution, and RC leak
 accounting, including typed task/channel and actor ask paths. This removes more
 runtime data-race classes and keeps ORC-object atomicity regressions visible, but

@@ -138,8 +138,13 @@ type
     when compileOption("threads") and defined(gcAtomicArc):
       workers: seq[Thread[SchedulerState]]
       workersStarted: bool
+      workerLeaseCount: int
       workerStop: bool
       activeWorkerCount: int
+
+  SchedulerWorkerLease = object
+    scheduler: SchedulerState
+    active: bool
 
   Application* = ref object of RuntimeContext
     builtins: Scope
@@ -235,7 +240,12 @@ proc cancelScheduledTask(task: Value): bool
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(skipWorkerSafe = false): bool
-proc schedulerRunOneUntil(deadline: MonoTime): bool
+proc schedulerRunOneUntil(deadline: MonoTime, skipWorkerSafe = false): bool
+proc beginSchedulerWorkerLease(): SchedulerWorkerLease
+proc endSchedulerWorkerLease(lease: SchedulerWorkerLease)
+proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool
+proc schedulerRunOneRootUntil(deadline: MonoTime,
+                              lease: SchedulerWorkerLease): bool
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
@@ -1020,6 +1030,11 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len != 2:
     raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
   requireChannel("Channel/send", args[0])
+  var workerLease: SchedulerWorkerLease
+  var workerLeaseOpen = false
+  defer:
+    if workerLeaseOpen:
+      endSchedulerWorkerLease(workerLease)
   while args[0].channelFull and not args[0].channelClosed:
     if currentFiberActive:
       # Inside a scheduled fiber: park the whole task until space frees up.
@@ -1031,7 +1046,10 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       se.sendValue = args[1]
       raise se
     # At the root: cooperatively run a fiber (a receiver may drain), then retry.
-    if not schedulerRunOne():
+    if not workerLeaseOpen:
+      workerLease = beginSchedulerWorkerLease()
+      workerLeaseOpen = true
+    if not schedulerRunOneRoot(workerLease):
       raise newException(GeneError, "Channel/send would suspend on a full channel")
   if args[0].channelClosed:
     raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
@@ -1066,6 +1084,11 @@ proc nativeChannelTrySend*(channel, item: Value, scope: Scope = nil): bool =
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
+  var workerLease: SchedulerWorkerLease
+  var workerLeaseOpen = false
+  defer:
+    if workerLeaseOpen:
+      endSchedulerWorkerLease(workerLease)
   while args[0].channelLen == 0:
     if args[0].channelClosed:
       raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
@@ -1078,7 +1101,10 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       se.isSend = false
       raise se
     # At the root: cooperatively run a fiber (a sender may push), then retry.
-    if not schedulerRunOne():
+    if not workerLeaseOpen:
+      workerLease = beginSchedulerWorkerLease()
+      workerLeaseOpen = true
+    if not schedulerRunOneRoot(workerLease):
       raise newException(GeneError, "Channel/recv would suspend on an empty channel")
   let scope = if call == nil: nil else: call[].dispatchScope
   let item = checkedChannelItem(args[0], args[0].popChannel(),
@@ -1374,6 +1400,11 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   requireActor("actor/send", args[0])
   let scope = actorDispatchScope(call)
   let actor = args[0]
+  var workerLease: SchedulerWorkerLease
+  var workerLeaseOpen = false
+  defer:
+    if workerLeaseOpen:
+      endSchedulerWorkerLease(workerLease)
   while actor.actorFull and not actor.actorClosed:
     if currentFiberActive:
       # Inside a scheduled fiber: park this task until the mailbox drains.
@@ -1384,7 +1415,10 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       se.isSend = true
       raise se
     # At the root: cooperatively run the actor's handler fiber to free a slot.
-    if not schedulerRunOne():
+    if not workerLeaseOpen:
+      workerLease = beginSchedulerWorkerLease()
+      workerLeaseOpen = true
+    if not schedulerRunOneRoot(workerLease):
       raise newException(GeneError, "actor/send would suspend on a full mailbox")
   if actor.actorClosed:
     raiseActorClosed(scope)
@@ -1429,6 +1463,11 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let actor = args[0]
   let timeoutMs = actorAskTimeoutArg(call)
   try:
+    var workerLease: SchedulerWorkerLease
+    var workerLeaseOpen = false
+    defer:
+      if workerLeaseOpen:
+        endSchedulerWorkerLease(workerLease)
     while actor.actorFull and not actor.actorClosed:
       if currentFiberActive:
         var se: ref SuspendError
@@ -1437,7 +1476,10 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
         se.actor = actor
         se.isSend = true
         raise se
-      if not schedulerRunOne():
+      if not workerLeaseOpen:
+        workerLease = beginSchedulerWorkerLease()
+        workerLeaseOpen = true
+      if not schedulerRunOneRoot(workerLease):
         raise newException(GeneError, "actor/ask would suspend on a full mailbox")
     if actor.actorClosed:
       raiseActorClosed(scope)
@@ -2561,8 +2603,16 @@ proc biSleep(args: openArray[Value]): Value {.nimcall.} =
     se.timer = true
     se.deadline = deadline
     raise se
+  var workerLease: SchedulerWorkerLease
+  var workerLeaseOpen = false
+  defer:
+    if workerLeaseOpen:
+      endSchedulerWorkerLease(workerLease)
   while getMonoTime() < deadline:
-    if not schedulerRunOneUntil(deadline):
+    if not workerLeaseOpen:
+      workerLease = beginSchedulerWorkerLease()
+      workerLeaseOpen = true
+    if not schedulerRunOneRootUntil(deadline, workerLease):
       let remaining = deadline - getMonoTime()
       if remaining <= initDuration():
         break
@@ -4881,11 +4931,11 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 
 # Cooperative scheduler state. The default lane is root-thread cooperative; in
 # atomicArc threaded builds, `GENE_WORKERS=N` can add an opt-in OS-thread lane
-# for snapshot-isolated worker candidates. The scheduler's lock-backed run queue
-# holds runnable fibers; its wait list holds fibers parked on a channel, actor
-# mailbox, task await, or timer. `currentFiberActive` gates suspension: only a
-# scheduled fiber parks — root-level channel use keeps its original synchronous
-# behavior.
+# for snapshot-isolated worker candidates while root blocking waits keep the
+# unsafe lane cooperative. The scheduler's lock-backed run queue holds runnable
+# fibers; its wait list holds fibers parked on a channel, actor mailbox, task
+# await, or timer. `currentFiberActive` gates suspension: only a scheduled fiber
+# parks — root-level channel use keeps its original synchronous behavior.
 const schedulerInstructionBudget = 2048
 
 proc enqueueRunnable(f: Fiber)
@@ -7541,24 +7591,28 @@ when compileOption("threads") and defined(gcAtomicArc):
           markSchedulerWorkerActive(s, false)
 
   proc startSchedulerWorkers(s: SchedulerState): bool =
-    let workerCount = configuredSchedulerWorkers()
-    if workerCount <= 0:
-      return false
     withSchedulerLock(s):
       if s.workersStarted:
+        inc s.workerLeaseCount
         return true
+      let workerCount = configuredSchedulerWorkers()
+      if workerCount <= 0:
+        return false
       s.workerStop = false
       s.activeWorkerCount = 0
       s.workers.setLen(workerCount)
       s.workersStarted = true
-    for i in 0 ..< workerCount:
-      createThread(s.workers[i], schedulerWorkerLoop, s)
-    true
+      s.workerLeaseCount = 1
+      for i in 0 ..< workerCount:
+        createThread(s.workers[i], schedulerWorkerLoop, s)
+      true
 
   proc stopSchedulerWorkers(s: SchedulerState) =
     var shouldJoin = false
     withSchedulerLock(s):
-      if s.workersStarted:
+      if s.workerLeaseCount > 0:
+        dec s.workerLeaseCount
+      if s.workersStarted and s.workerLeaseCount == 0:
         s.workerStop = true
         shouldJoin = true
     if shouldJoin:
@@ -7567,8 +7621,43 @@ when compileOption("threads") and defined(gcAtomicArc):
       withSchedulerLock(s):
         s.workers.setLen(0)
         s.workersStarted = false
+        s.workerLeaseCount = 0
         s.workerStop = false
         s.activeWorkerCount = 0
+
+proc beginSchedulerWorkerLease(): SchedulerWorkerLease =
+  when compileOption("threads") and defined(gcAtomicArc):
+    result.scheduler = currentScheduler()
+    result.active = startSchedulerWorkers(result.scheduler)
+
+proc endSchedulerWorkerLease(lease: SchedulerWorkerLease) =
+  when compileOption("threads") and defined(gcAtomicArc):
+    if lease.active:
+      stopSchedulerWorkers(lease.scheduler)
+
+proc schedulerWorkerLeaseHasProgress(lease: SchedulerWorkerLease): bool =
+  when compileOption("threads") and defined(gcAtomicArc):
+    lease.active and lease.scheduler != nil and
+      lease.scheduler.schedulerHasWorkerProgress()
+  else:
+    false
+
+proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
+  if schedulerRunOne(skipWorkerSafe = lease.active):
+    return true
+  if schedulerWorkerLeaseHasProgress(lease):
+    os.sleep(1)
+    return true
+  false
+
+proc schedulerRunOneRootUntil(deadline: MonoTime,
+                              lease: SchedulerWorkerLease): bool =
+  if schedulerRunOneUntil(deadline, skipWorkerSafe = lease.active):
+    return true
+  if schedulerWorkerLeaseHasProgress(lease):
+    os.sleep(1)
+    return true
+  false
 
 proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   ## Create a child task + fiber and enqueue it for scheduler execution. This keeps
@@ -7600,13 +7689,13 @@ proc schedulerRunOne(skipWorkerSafe = false): bool =
   runFiber(f)
   true
 
-proc schedulerRunOneUntil(deadline: MonoTime): bool =
+proc schedulerRunOneUntil(deadline: MonoTime, skipWorkerSafe = false): bool =
   ## Run one fiber, waiting for timers only up to `deadline`. Used by root-level
   ## sleep so it can advance already-scheduled work without oversleeping its own
   ## timer.
   if wakeExpiredTimers() and not hasRunnableFiber():
     return true
-  var f = popRunnableFiber()
+  var f = popRunnableFiber(skipWorkerSafe = skipWorkerSafe)
   while f == nil:
     let next = nextTimerDeadline()
     if not next.has:
@@ -7616,7 +7705,7 @@ proc schedulerRunOneUntil(deadline: MonoTime): bool =
     sleepUntil(next.deadline)
     if wakeExpiredTimers() and not hasRunnableFiber():
       return true
-    f = popRunnableFiber()
+    f = popRunnableFiber(skipWorkerSafe = skipWorkerSafe)
   if f.task.kind == vkTask and f.task.taskDone:
     wakeTaskWaiters(f.task)
     return true
@@ -7653,20 +7742,11 @@ proc pumpUntilDone(task: Value) =
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its
   ## next park/completion; a parked fiber resumes only when a channel op wakes it.
   ## If the queue drains with the task unfinished, it can never finish.
-  when compileOption("threads") and defined(gcAtomicArc):
-    let scheduler = currentScheduler()
-    let workersStarted = startSchedulerWorkers(scheduler)
-    defer:
-      if workersStarted:
-        stopSchedulerWorkers(scheduler)
-  else:
-    const workersStarted = false
+  let workerLease = beginSchedulerWorkerLease()
+  defer:
+    endSchedulerWorkerLease(workerLease)
   while not task.taskDone:
-    if not schedulerRunOne(skipWorkerSafe = workersStarted):
-      when compileOption("threads") and defined(gcAtomicArc):
-        if workersStarted and scheduler.schedulerHasWorkerProgress():
-          os.sleep(1)
-          continue
+    if not schedulerRunOneRoot(workerLease):
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
 
@@ -7686,9 +7766,17 @@ proc driveActor(actor: Value) =
   ## Pump the scheduler until `actor` is idle (its mailbox is drained and no handler
   ## fiber is live) or closed. Used by root-level send/ask so they stay synchronous:
   ## the message is fully processed before the call returns.
+  var workerLease: SchedulerWorkerLease
+  var workerLeaseOpen = false
+  defer:
+    if workerLeaseOpen:
+      endSchedulerWorkerLease(workerLease)
   while not actor.actorClosed and
       (actor.actorProcessing or actor.actorQueueLen > 0):
-    if not schedulerRunOne():
+    if not workerLeaseOpen:
+      workerLease = beginSchedulerWorkerLease()
+      workerLeaseOpen = true
+    if not schedulerRunOneRoot(workerLease):
       break
 
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
