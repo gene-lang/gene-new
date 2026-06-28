@@ -95,8 +95,9 @@ participates in equality or hashing.
   typed-module AOT manifests, non-suspending native frame descriptors for
   selected AOT functions, mixed typed-native/bytecode recoverable-error frame
   traces, task-frame lowering manifests for resumable functions, and
-  generated `ffi/fn` adapter wrappers for supported C ABI declarations plus
-  `ffi/struct`, `ffi/union`, callback, and dynamic-signature metadata manifests,
+  generated `ffi/fn` adapter wrappers for supported C ABI declarations,
+  including pointer-plus-length `C/Slice`/`Buffer` data views, plus `ffi/struct`,
+  `ffi/union`, callback, and dynamic-signature metadata manifests,
   generated C ABI type-size/alignment conformance metadata and C struct layout
   assertions, and runtime `ffi/bind` dynamic calls for MVP C scalar,
   C-string, opaque pointer, and small multi-argument pointer/size signatures,

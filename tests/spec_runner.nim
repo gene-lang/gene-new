@@ -306,14 +306,16 @@ suite "spec — typed native compilation prototype from design":
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 
-  test "ffi/fn C wrappers marshal scalar, pointer, and buffer ABI shapes":
+  test "ffi/fn C wrappers marshal scalar, pointer, slice, and buffer ABI shapes":
     let source =
       "(ffi/fn c_abs ^symbol \"abs\" [x : C/Int] : C/Int) " &
       "(ffi/fn c_memchr ^symbol \"memchr\" " &
       "  [p : (C/ConstPtr C/Char) ch : C/Int n : C/Size] " &
       "  : (C/NullablePtr C/Char)) " &
+      "(ffi/fn consume_slice ^symbol \"consume_slice\" " &
+      "  [s : (C/Slice C/UInt8)] : C/Void) " &
       "(ffi/fn consume_buffer ^symbol \"consume_buffer\" " &
-      "  [b : (Buffer C/UInt8) n : C/Size] : C/Void)"
+      "  [b : (Buffer C/UInt8)] : C/Void)"
     let c = compileSource(source).emitExperimentalC()
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
     check "int native_result = abs(x);" in c
@@ -322,11 +324,15 @@ suite "spec — typed native compilation prototype from design":
       "\"(C/ConstPtr C/Char)\", &p);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
       "\"(C/NullablePtr C/Char)\", NULL, result);" in c
+    check "extern void consume_slice(const void * s, size_t s_len);" in c
+    check "status = gene_ffi_arg_buffer(ctx, call, 0, \"s\", " &
+      "\"(C/Slice C/UInt8)\", &s_view);" in c
+    check "consume_slice(s_view.data, s_view.len);" in c
+    check "extern void consume_buffer(const void * b, size_t b_len);" in c
     check "GeneFfiBufferView b_view;" in c
     check "status = gene_ffi_arg_buffer(ctx, call, 0, \"b\", " &
       "\"(Buffer C/UInt8)\", &b_view);" in c
-    check "const void *b = b_view.data;" in c
-    check "consume_buffer(b, n);" in c
+    check "consume_buffer(b_view.data, b_view.len);" in c
     check "return gene_ffi_result_void(ctx, result);" in c
 
   test "ffi/struct declarations expose C layout metadata manifests":

@@ -1006,6 +1006,13 @@ proc ffiMarshalKind(label: string, isResult = false): FfiMarshalKind =
     else:
       fmkUnsupported
 
+proc ffiParamCDecls(label, paramName: string): seq[string] =
+  let name = cIdent(paramName, "arg")
+  if ffiMarshalKind(label) == fmkBuffer:
+    return @["const void * " & name,
+             "size_t " & cIdent(name & "_len", "arg_len")]
+  @[ffiCType(label, name) & " " & name]
+
 proc ffiHelperSuffix(label: string): string =
   case label
   of "C/Int8": "int8"
@@ -1091,7 +1098,8 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
     let name = cIdent(p.name, "arg" & $i)
-    declParams.add ffiCType(label, name) & " " & name
+    for cDecl in ffiParamCDecls(label, name):
+      declParams.add cDecl
   let paramList = if declParams.len == 0: "void" else: declParams.join(", ")
   lines.add "extern " & retType & " " & cSymbol & "(" & paramList & ");"
   lines.add "GeneStatus " & ffiWrapperName(fn, prefix & "ffi_" & $index) &
@@ -1100,8 +1108,11 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   lines.add "  /* abi: " & (if fn.abi.len > 0: fn.abi else: "C") & " */"
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
+    let shape =
+      if ffiMarshalKind(label) == fmkBuffer: "const void *, size_t"
+      else: ffiCType(label, p.name)
     lines.add "  /* arg " & $i & " " & p.name & ": " & label &
-      " -> " & ffiCType(label, p.name) & " */"
+      " -> " & shape & " */"
   if retLabel != "C/Void":
     lines.add "  /* result: " & retLabel & " -> GeneValue */"
   if fn.release.len > 0:
@@ -1155,8 +1166,8 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
         cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
         name & "_view);"
       lines.add "  if (status != GENE_OK) return status;"
-      lines.add "  const void *" & name & " = " & name & "_view.data;"
-      callArgs.add name
+      callArgs.add name & "_view.data"
+      callArgs.add name & "_view.len"
     else:
       discard
   let args = callArgs.join(", ")
