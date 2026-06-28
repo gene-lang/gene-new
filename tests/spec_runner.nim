@@ -315,7 +315,9 @@ suite "spec — typed native compilation prototype from design":
       "(ffi/fn consume_slice ^symbol \"consume_slice\" " &
       "  [s : (C/Slice C/UInt8)] : C/Void) " &
       "(ffi/fn consume_buffer ^symbol \"consume_buffer\" " &
-      "  [b : (Buffer C/UInt8)] : C/Void)"
+      "  [b : (Buffer C/UInt8)] : C/Void) " &
+      "(ffi/fn make_owned ^symbol \"make_owned\" ^release \"destroy_owned\" " &
+      "  [] : (C/OwnedPtr C/Char))"
     let c = compileSource(source).emitExperimentalC()
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
     check "int native_result = abs(x);" in c
@@ -334,6 +336,8 @@ suite "spec — typed native compilation prototype from design":
       "\"(Buffer C/UInt8)\", &b_view);" in c
     check "consume_buffer(b_view.data, b_view.len);" in c
     check "return gene_ffi_result_void(ctx, result);" in c
+    check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
+      "\"(C/OwnedPtr C/Char)\", \"destroy_owned\", result);" in c
 
   test "ffi/struct declarations expose C layout metadata manifests":
     let chunk = compileSource("(ffi/struct Timespec " &

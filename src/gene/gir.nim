@@ -1058,6 +1058,8 @@ proc ffiWrapperSupported(fn: FfiFnProto, retLabel: string): bool =
   for p in fn.params:
     if ffiMarshalKind(ffiTypeLabel(p.typeExpr)) == fmkUnsupported:
       return false
+  if retLabel.startsWith("(C/OwnedPtr ") and fn.release.len == 0:
+    return false
   ffiMarshalKind(retLabel, isResult = true) != fmkUnsupported
 
 proc ffiWrapperName(fn: FfiFnProto, fallback: string): string =

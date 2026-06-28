@@ -463,6 +463,7 @@ type
     owned: bool
     closed: bool
     release: CPtrReleaseProc
+    foreignRelease: pointer
 
   CSliceData = ref object of GeneObjectData
     address: pointer
@@ -498,6 +499,8 @@ type
     library: Value
     paramTypes: seq[Value]
     returnType: Value
+    releaseName: string
+    releaseAddress: pointer
 
   TypeData = ref object of GeneObjectData
     name: string
@@ -1700,6 +1703,12 @@ proc ffiCallableParamTypes*(v: Value): lent seq[Value] =
 proc ffiCallableReturnType*(v: Value): Value =
   ffiCallableData(v).returnType
 
+proc ffiCallableReleaseName*(v: Value): lent string =
+  ffiCallableData(v).releaseName
+
+proc ffiCallableReleaseAddress*(v: Value): pointer =
+  ffiCallableData(v).releaseAddress
+
 proc newEnv*(bindings: sink Table[string, Value],
              parent: Value = NIL,
              imports: sink seq[Value] = @[],
@@ -2374,6 +2383,9 @@ proc closeCPtr*(v: Value) =
     return
   if data.release != nil and data.address != nil:
     data.release(data.address)
+  elif data.foreignRelease != nil and data.address != nil:
+    type ForeignReleaseProc = proc(address: pointer) {.cdecl.}
+    cast[ForeignReleaseProc](data.foreignRelease)(data.address)
   data.address = nil
   data.closed = true
 
@@ -3230,7 +3242,9 @@ proc escapeWeakFunctions*(v: Value): Value =
                               address: data.address,
                               library: escapedLibrary,
                               paramTypes: data.paramTypes,
-                              returnType: data.returnType))
+                              returnType: data.returnType,
+                              releaseName: data.releaseName,
+                              releaseAddress: data.releaseAddress))
   of vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary:
     v
   else:
@@ -3370,6 +3384,13 @@ proc newCOwnedPtr*(address: pointer, release: CPtrReleaseProc,
                      targetType: targetType, mutable: mutable,
                      owned: true, release: release))
 
+proc newCForeignOwnedPtr*(address: pointer, releaseAddress: pointer,
+                          targetType: Value = NIL,
+                          mutable = true): Value =
+  boxObject(CPtrData(objKind: okCPtr, address: address,
+                     targetType: targetType, mutable: mutable,
+                     owned: true, foreignRelease: releaseAddress))
+
 proc newCSlice*(address: pointer, length: int, targetType: Value = NIL,
                 mutable = true): Value =
   if length < 0:
@@ -3413,7 +3434,8 @@ proc newFfiLibrary*(handle: pointer, path: string,
                            path: path, close: close))
 
 proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
-                     paramTypes: seq[Value], returnType: Value): Value =
+                     paramTypes: seq[Value], returnType: Value,
+                     releaseName = "", releaseAddress: pointer = nil): Value =
   if address == nil:
     raise newException(GeneError, "FFI callable address must not be nil")
   boxObject(FfiCallableData(objKind: okFfiCallable,
@@ -3422,7 +3444,9 @@ proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
                             address: address,
                             library: library,
                             paramTypes: paramTypes,
-                            returnType: returnType))
+                            returnType: returnType,
+                            releaseName: releaseName,
+                            releaseAddress: releaseAddress))
 
 proc classifyNativeFastKind(name: string): NativeFastKind =
   case name

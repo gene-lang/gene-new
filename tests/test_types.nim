@@ -471,6 +471,24 @@ suite "types — function boundaries":
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"abc\" 120)"),
                   scope).print() == "(c-const-ptr null)"
+      if symAddr(handle, "strdup") != nil and symAddr(handle, "free") != nil:
+        expect GeneError:
+          discard run(compileSource("(ffi/bind lib \"strdup\" [C/CStr] " &
+                                    "  (quote (C/OwnedPtr C/Char)))"),
+                      scope)
+        let ownedDup = run(compileSource(
+          "((ffi/bind lib \"strdup\" [C/CStr] " &
+          "   (quote (C/OwnedPtr C/Char)) \"free\") \"owned\")"),
+          scope)
+        check ownedDup.kind == vkCPtr
+        check ownedDup.cPtrOwned
+        check not ownedDup.cPtrClosed
+        check ownedDup.cPtrTargetType.print() == "C/Char"
+        scope.define("owned-dup", ownedDup)
+        check run(compileSource("[(C/closed? owned-dup) " &
+                                " (C/close owned-dup) " &
+                                " (C/closed? owned-dup)]"),
+                  scope).print() == "[false nil true]"
       check run(compileSource("(Ffi/Library/closed? lib)"),
                 scope).print() == "false"
       check run(compileSource("(Ffi/Library/path lib)"), scope).strVal == libName

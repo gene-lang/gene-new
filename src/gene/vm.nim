@@ -2646,9 +2646,9 @@ proc biFfiOpen(args: openArray[Value]): Value {.nimcall.} =
   newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary)
 
 proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 4:
+  if args.len notin 4..5:
     raise newException(GeneError,
-      "ffi/bind expects 4 arguments, got " & $args.len)
+      "ffi/bind expects 4..5 arguments, got " & $args.len)
   requireFfiLibrary("ffi/bind", args[0])
   if args[0].ffiLibraryClosed:
     raise newException(GeneError, "ffi/bind library is closed")
@@ -2662,8 +2662,24 @@ proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
                         symbol.cstring)
   if address == nil:
     raise newException(GeneError, "ffi/bind symbol not found: " & symbol)
+  let returnLabel = typeExprLabel(args[3])
+  var releaseName = ""
+  var releaseAddress: pointer
+  if args.len == 5:
+    requireStr("ffi/bind release symbol", args[4])
+    releaseName = args[4].strVal
+    if releaseName.len == 0:
+      raise newException(GeneError, "ffi/bind release symbol must not be empty")
+    releaseAddress = symAddr(cast[LibHandle](args[0].ffiLibraryHandle),
+                             releaseName.cstring)
+    if releaseAddress == nil:
+      raise newException(GeneError,
+        "ffi/bind release symbol not found: " & releaseName)
+  if returnLabel.startsWith("(C/OwnedPtr ") and releaseAddress == nil:
+    raise newException(GeneError,
+      "ffi/bind OwnedPtr result requires a release symbol")
   newFfiCallable(symbol, symbol, address, args[0], args[2].listItems,
-                 args[3])
+                 args[3], releaseName, releaseAddress)
 
 proc biFfiLibraryClose(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Ffi/Library/close", args)
@@ -9084,7 +9100,9 @@ proc ffiCStrArg(name: string, value: Value): cstring =
 
 proc isFfiPtrLabel(label: string): bool =
   label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
-    label.startsWith("(C/ConstPtr ") or label.startsWith("(C/NullableConstPtr ")
+    label.startsWith("(C/ConstPtr ") or
+    label.startsWith("(C/NullableConstPtr ") or
+    label.startsWith("(C/OwnedPtr ")
 
 proc isFfiNullablePtrLabel(label: string): bool =
   label.startsWith("(C/NullablePtr ") or
@@ -9097,10 +9115,16 @@ proc ffiPointerTarget(label: string): Value =
       return newSym(label[(space + 1) ..< label.high])
   NIL
 
-proc ffiPointerResult(label: string, address: pointer): Value =
+proc ffiPointerResult(label: string, address: pointer,
+                      releaseAddress: pointer = nil): Value =
   if address == nil and not isFfiNullablePtrLabel(label):
     raise newException(GeneError, "FFI returned null for non-null pointer result")
-  if label.startsWith("(C/ConstPtr ") or
+  if label.startsWith("(C/OwnedPtr "):
+    if releaseAddress == nil:
+      raise newException(GeneError,
+        "FFI OwnedPtr result requires a release function")
+    newCForeignOwnedPtr(address, releaseAddress, ffiPointerTarget(label))
+  elif label.startsWith("(C/ConstPtr ") or
       label.startsWith("(C/NullableConstPtr "):
     newCConstPtr(address, ffiPointerTarget(label))
   else:
@@ -9131,6 +9155,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
   for param in params:
     paramLabels.add typeExprLabel(param)
   let returnLabel = typeExprLabel(callee.ffiCallableReturnType)
+  let releaseAddress = callee.ffiCallableReleaseAddress
   if paramLabels.len == 0:
     case returnLabel
     of "C/Int":
@@ -9149,7 +9174,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type VoidPtrProc = proc(): pointer {.cdecl.}
         let fn = cast[VoidPtrProc](callee.ffiCallableAddress)
-        return ffiPointerResult(returnLabel, fn())
+        return ffiPointerResult(returnLabel, fn(), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Int":
     let arg0 = ffiCIntArg("FFI argument 0 for '" & callee.ffiCallableName & "'",
                           args[0])
@@ -9202,7 +9227,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type CStrPtrProc = proc(s: cstring): pointer {.cdecl.}
         let fn = cast[CStrPtrProc](callee.ffiCallableAddress)
-        return ffiPointerResult(returnLabel, fn(ctext))
+        return ffiPointerResult(returnLabel, fn(ctext), releaseAddress)
   if paramLabels.len == 2 and paramLabels[0] == "C/CStr" and
       paramLabels[1] == "C/CStr":
     let arg0 = ffiCStrArg("FFI argument 0 for '" &
@@ -9222,7 +9247,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type CStrCStrPtrProc = proc(a, b: cstring): pointer {.cdecl.}
         let fn = cast[CStrCStrPtrProc](callee.ffiCallableAddress)
-        return ffiPointerResult(returnLabel, fn(arg0, arg1))
+        return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
   if paramLabels.len == 2 and paramLabels[0] == "C/CStr" and
       paramLabels[1] == "C/Int":
     let arg0 = ffiCStrArg("FFI argument 0 for '" &
@@ -9242,7 +9267,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type CStrIntPtrProc = proc(s: cstring, x: cint): pointer {.cdecl.}
         let fn = cast[CStrIntPtrProc](callee.ffiCallableAddress)
-        return ffiPointerResult(returnLabel, fn(arg0, arg1))
+        return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
   if paramLabels.len == 3 and isFfiPtrLabel(paramLabels[0]) and
       paramLabels[1] == "C/Int" and paramLabels[2] == "C/Size":
     let arg0 = ffiPointerArg("FFI argument 0 for '" &
@@ -9264,7 +9289,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type PtrIntSizePtrProc = proc(p: pointer, x: cint, n: csize_t): pointer {.cdecl.}
         let fn = cast[PtrIntSizePtrProc](callee.ffiCallableAddress)
-        return ffiPointerResult(returnLabel, fn(arg0, arg1, arg2))
+        return ffiPointerResult(returnLabel, fn(arg0, arg1, arg2), releaseAddress)
   if paramLabels.len == 3 and isFfiPtrLabel(paramLabels[0]) and
       isFfiPtrLabel(paramLabels[1]) and paramLabels[2] == "C/Size":
     let arg0 = ffiPointerArg("FFI argument 0 for '" &
