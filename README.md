@@ -119,29 +119,32 @@ participates in equality or hashing.
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
 
-> **Concurrency is an early cooperative prototype — not yet stable.** Tasks now run
-> on a single-worker cooperative scheduler: `spawn` queues a task body, scheduled
-> fibers yield at VM safepoints, blocking channel ops, actor mailbox send/ask,
-> `await`, and `sleep` park only the current task, and timers wake parked tasks on
-> monotonic deadlines. `Channel/send`/`Channel/recv`, timers, and actor mailbox
-> backpressure suspend and resume the whole task by capturing its heap frame
-> stack. `actor/ask ^timeout-ms N` fails the pending request with `ActorError`
-> if no reply arrives before the timer. `supervisor ^events ch` emits
-> `ActorFailure` events for actor handler failures, with optional
-> `^dead-letter ch` fallback when the primary event sink is unavailable.
+> **Concurrency is still experimental.** By default, tasks run on a cooperative
+> scheduler: `spawn` queues a task body, scheduled fibers yield at VM safepoints,
+> blocking channel ops, actor mailbox send/ask, `await`, and `sleep` park only
+> the current task, and timers wake parked tasks on monotonic deadlines.
+> `Channel/send`/`Channel/recv`, timers, and actor mailbox backpressure suspend
+> and resume the whole task by capturing its heap frame stack. `actor/ask
+> ^timeout-ms N` fails the pending request with `ActorError` if no reply arrives
+> before the timer. `supervisor ^events ch` emits `ActorFailure` events for actor
+> handler failures, with optional `^dead-letter ch` fallback when the primary
+> event sink is unavailable.
 > Spawned fibers publish their captured scope/value graph so threaded builds use
-> atomic RC for captured manual-RC values. Spawn bytecode also marks bodies that
-> do not mutate outer bindings as worker candidates; when runtime captures are
-> `Send`, the VM queues that task with an isolated snapshot of the captured
-> parent scope. This removes live-parent scope dependence for eligible tasks, but
-> it is still executed by the single cooperative scheduler.
+> atomic RC for captured manual-RC values. Spawn bytecode also marks leaf-like
+> bodies that do not mutate outer bindings or contain nested `spawn` as worker
+> candidates; when runtime captures are `Send`, the VM queues that task with an
+> isolated snapshot of the captured parent scope. This removes live-parent scope
+> dependence for eligible tasks. In `--mm:atomicArc --threads:on` builds, setting
+> `GENE_WORKERS=N` lets root `await`/task-scope pumping hand those
+> snapshot-isolated worker candidates to N OS worker threads while unsafe
+> shared-scope tasks stay on the cooperative root lane.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
 > `Task/detach` explicitly removes a task from structured scope ownership. What
-> is *not* built yet: the design's M:N worker pool, async-I/O, guaranteed
-> failure-event delivery/backpressure, and stable production concurrency
-> semantics.
+> is *not* built yet: production M:N lifecycle/load-balancing, async-I/O,
+> guaranteed failure-event delivery/backpressure, and stable production
+> concurrency semantics.
 
 ## Quick start
 
@@ -242,11 +245,12 @@ retain/release after that marker while thread-local objects stay on the
 non-atomic path. Spawned fibers also publish their captured scope/value graph so
 captured manual-RC values are safe to retain/release from threaded builds.
 Spawned fibers additionally record a worker-candidate bit only when the compiler
-sees no outer-scope mutation and runtime captures satisfy `Send`; those eligible
-tasks receive sparse captured-scope snapshots so they no longer read through the
-live parent scope. Unsafe shared-scope tasks remain cooperative. Threaded
-`atomicArc` smoke checks cover values, VM behavior, and RC leak accounting, but
-worker orchestration still needs to land before true M:N execution.
+sees no outer-scope mutation or nested `spawn`, and runtime captures satisfy
+`Send`; those eligible tasks receive sparse captured-scope snapshots so they no
+longer read through the live parent scope. Unsafe shared-scope tasks remain
+cooperative. Threaded `atomicArc` smoke checks cover values, VM behavior,
+worker-candidate execution, and RC leak accounting, but worker orchestration
+remains experimental and limited to snapshot-isolated leaf candidates.
 
 ## License
 

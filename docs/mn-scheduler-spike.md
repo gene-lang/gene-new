@@ -1,11 +1,11 @@
 # M:N Scheduler — Thread-Safety Spike & Staged Plan
 
-Status: **decision doc** (spike result, no shipped worker pool). Date: 2026-06-28.
+Status: **decision doc** (spike result plus staged implementation notes). Date: 2026-06-28.
 Branch context: `scheduler` (cooperative single-worker scheduler, channel/task/
 actor suspension, explicit `Task/cancel`, and error/cancel scope-exit child-task
 cancellation with cleanup plus normal-exit child waiting done; actor scope
-shutdown cancels pending asks and parked handlers; OS-thread worker pool
-deferred).
+shutdown cancels pending asks and parked handlers; opt-in worker-candidate OS
+worker lane started).
 
 Follow-up implementation note: scheduler run/wait/timeout queues have moved from
 raw `threadvar` storage into per-`Application` scheduler state with a lock, task
@@ -15,11 +15,17 @@ manual-RC objects to atomic retain/release after publication. Spawned fibers now
 publish their captured scope/value graph as well, including task/channel/actor
 interior payloads that are protected by their object locks. Worker-candidate
 spawn bodies now run against sparse captured-scope snapshots once their runtime
-captures satisfy `Send`. A threaded `atomicArc` smoke gate now covers value
-operations, VM behavior, and RC leak accounting, including typed task/channel
-and actor ask paths. This removes more runtime data-race classes and keeps
-ORC-object atomicity regressions visible, but it is still not an M:N worker
-pool: actual worker threads and worker lifecycle/orchestration remain open.
+captures satisfy `Send`. In `--mm:atomicArc --threads:on` builds,
+`GENE_WORKERS=N` starts an opt-in worker lane: root `await`/task-scope pumping
+leaves snapshot-isolated worker candidates for OS worker threads while unsafe
+shared-scope work remains on the cooperative root lane. Worker candidates are
+leaf-like: bytecode/runtime eligibility rejects bodies and reachable captured
+functions that contain nested `spawn`. A threaded `atomicArc` smoke gate now
+covers value operations, VM behavior, worker-candidate execution, and RC leak
+accounting, including typed task/channel and actor ask paths. This removes more
+runtime data-race classes and keeps ORC-object atomicity regressions visible, but
+it is still not production M:N: worker lifecycle/load balancing, work stealing,
+async I/O, and production semantics remain open.
 
 ## Goal
 
@@ -34,12 +40,12 @@ a runtime worker pool"), and what it costs.
   tasks can still share a mutable parent scope chain; worker-candidate tasks now
   avoid that by using captured-scope snapshots.
 - **M:N fits the share-nothing actor/channel model and snapshot-isolated
-  worker-candidate spawns; it does NOT fit arbitrary `spawn` closures that share
-  a parent scope.**
-- **Recommendation: defer the OS-thread worker pool.** Keep the single-worker
-  cooperative scheduler (correct and useful today). If/when M:N is prioritized,
-  do it as the staged epic below, starting from snapshot-isolated worker
-  candidates and `vm-shared-rc`.
+  leaf-like worker-candidate spawns; it does NOT fit arbitrary `spawn` closures
+  that share a parent scope or create nested unsafely shared tasks.**
+- **Recommendation: keep worker execution opt-in while hardening semantics.** The
+  default cooperative scheduler remains correct and useful today. The first OS
+  worker lane now exists for snapshot-isolated candidates in atomicArc builds;
+  the remaining M:N work is lifecycle, load balancing, and async integration.
 
 ## Measurement: atomic-RC hot-path cost
 
@@ -86,21 +92,22 @@ Notes:
    coverage, but the worker pool must run under that threaded memory-manager
    configuration.
 
-3. **Scheduler structures need worker orchestration.** The runnable/wait/timeout
-   queues are now per-`Application` and lock-backed, and task/channel/actor
-   interiors have local locks. M:N still needs worker orchestration around that
-   shared state: worker lifecycle, parking/wakeup, load balancing or stealing,
-   timer ownership, and publication rules. `runStackPool`, `callScopePool`, and
-   active scheduler context remain per-thread caches/context.
+3. **Scheduler structures need production orchestration.** The runnable/wait/
+   timeout queues are now per-`Application` and lock-backed, and task/channel/
+   actor interiors have local locks. The opt-in worker lane consumes only
+   snapshot-isolated candidates, while M:N still needs production lifecycle,
+   parking/wakeup, load balancing or stealing, timer ownership, and publication
+   rules. `runStackPool`, `callScopePool`, and active scheduler context remain
+   per-thread caches/context.
 
 4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
    spawned fibers now mark reachable value graphs `shared` for threaded manual
-   RC. Spawn bytecode marks bodies that do not mutate outer bindings as worker
-   candidates, and enqueue records that bit only when runtime captures are
-   `Send`. Eligible tasks get sparse captured-scope snapshots, including
-   transitive captures of captured functions. The remaining design work is how a
-   future worker pool consumes those eligible tasks while unsafe shared-scope
-   tasks remain cooperative.
+   RC. Spawn bytecode marks leaf-like bodies that do not mutate outer bindings or
+   contain nested `spawn` as worker candidates, and enqueue records that bit only
+   when runtime captures are `Send` and reachable captured functions are also
+   leaf-like. Eligible tasks get sparse captured-scope snapshots, including
+   transitive captures of captured functions. The opt-in worker lane consumes
+   those eligible tasks while unsafe shared-scope tasks remain cooperative.
 
 ## Staged plan (if/when M:N is prioritized)
 
@@ -110,30 +117,31 @@ Notes:
   under atomicArc or equivalent for generic ORC object refs.**
 - **B. Scope isolation semantics.** Parallel/sent work is share-nothing.
   Worker-candidate tasks already receive sparse captured-scope snapshots instead
-  of a live shared parent (`no outer mutation` plus `Send` captures). The
-  remaining work is to make the worker pool consume only those eligible fibers.
+  of a live shared parent (`no outer mutation`, no nested `spawn`, plus `Send`
+  captures). The opt-in worker lane consumes only those eligible fibers.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
   The queue/object-locking portion has started, Send-boundary and spawned-fiber
   manual-RC publication have landed, and `nimble threadcheck`/`nimble verify`
-  exercise atomicArc smoke coverage. Actual worker threads still need to consume
-  only snapshot-isolated worker-candidate tasks.
-- **D. Worker pool.** N OS threads each running the scheduler loop over a shared/
-  work-stealing queue; per-thread run-stack pools; pinned global init.
+  exercise atomicArc smoke coverage, including the opt-in worker-candidate lane.
+- **D. Worker pool.** N opt-in OS threads can consume snapshot-isolated
+  worker-candidate fibers from the shared scheduler queue. Production lifecycle,
+  parking/backoff, wakeup coordination, work stealing, per-thread tuning, and
+  pinned global init remain open.
 - **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.
 
 ## Recommendation
 
-**Defer the OS-thread worker pool.** It is gated on consuming only
-snapshot-isolated worker-candidate tasks and on worker lifecycle/orchestration,
-not on the (cheap) refcount tax. The single-worker
-cooperative scheduler is correct and already delivers suspendable tasks, channels,
-await, actor handlers, `actor/ask`, explicit task cancellation, and child-task
-cancellation when a scope exits by error/cancellation. Task cancellation resumes
-parked fibers through the normal `GeneCancel` unwind path, so `ensure` cleanup
-runs before the task is finally observed as cancelled. Normal scope exit waits
-for live child tasks. Owned actor shutdown cancels queued asks and parked handler
-fibers so closed actors cannot resume after their owner exits. When M:N is taken
-up, start with A→B above and treat actors/channels as the unit of parallelism; do
-not parallelize legacy `spawn`-over-shared-scope. Only snapshot-isolated
-worker-candidate fibers should move off-thread.
+**Keep the OS-thread worker lane opt-in.** It is now gated on consuming only
+snapshot-isolated leaf worker-candidate tasks and on `atomicArc` threaded builds;
+the remaining work is production lifecycle/orchestration, not the cheap refcount
+tax. The default cooperative scheduler is correct and already delivers
+suspendable tasks, channels, await, actor handlers, `actor/ask`, explicit task
+cancellation, and child-task cancellation when a scope exits by
+error/cancellation. Task cancellation resumes parked fibers through the normal
+`GeneCancel` unwind path, so `ensure` cleanup runs before the task is finally
+observed as cancelled. Normal scope exit waits for live child tasks. Owned actor
+shutdown cancels queued asks and parked handler fibers so closed actors cannot
+resume after their owner exits. Treat actors/channels and snapshot-isolated leaf
+spawns as the units of parallelism; do not parallelize legacy
+`spawn`-over-shared-scope.

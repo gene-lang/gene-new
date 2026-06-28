@@ -105,7 +105,7 @@ type
     ownedScope: Scope
     namespaceName: string
     started: bool          # false until first scheduled (resume restores the rest)
-    workerSafe: bool       # snapshot-isolated; eligible for a future worker pool
+    workerSafe: bool       # snapshot-isolated; eligible for opt-in worker lane
     task: Value            # the Task this fiber settles, for spawn/await fibers
     actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
     actorReturnType: Value # handler return type to adapt the ActorStep against
@@ -126,12 +126,20 @@ type
     scope: Scope
     deadline: MonoTime
 
+  CaptureSafetyMode = enum
+    csmSend
+    csmWorker
+
   SchedulerState = ref object of RuntimeContext
     lock: Lock
     runQueue: seq[Fiber]
     waiters: seq[Fiber]
     askTimeouts: seq[AskTimeout]
-    fiberActive: bool
+    when compileOption("threads") and defined(gcAtomicArc):
+      workers: seq[Thread[SchedulerState]]
+      workersStarted: bool
+      workerStop: bool
+      activeWorkerCount: int
 
   Application* = ref object of RuntimeContext
     builtins: Scope
@@ -163,7 +171,8 @@ proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc builtinBinding(scope: Scope, name: string): Value
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value
 proc isSendableValue(value: Value, scope: Scope,
-                     seen: var HashSet[uint64]): bool
+                     seen: var HashSet[uint64],
+                     mode = csmSend): bool
 proc isSendableValue(value: Value, scope: Scope): bool
 proc completedTaskFromError(e: ref GeneError): Value
 proc completedTaskFromPanic(e: ref GenePanic): Value
@@ -184,9 +193,11 @@ type
 
 # `currentFiberActive` gates suspension: only a fiber the scheduler is running
 # parks on blocking channel/actor operations. Root-level channel use keeps its
-# original synchronous behavior. The active scheduler pointer is thread-local
-# execution context; the queues it selects are owned by Application.
+# original synchronous behavior. The active scheduler pointer and fiber-active
+# flag are thread-local execution context; the queues they select are owned by
+# Application.
 var activeScheduler {.threadvar.}: SchedulerState
+var activeFiberRunning {.threadvar.}: bool
 
 proc currentScheduler(): SchedulerState
 
@@ -207,7 +218,7 @@ template withScopedScheduler(scope: Scope, body: untyped): untyped =
     body
 
 template currentFiberActive: untyped =
-  currentScheduler().fiberActive
+  activeFiberRunning
 
 # Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
 # moving it from the wait list to the run queue. Defined with the scheduler below.
@@ -223,7 +234,7 @@ proc cancelScheduledTask(task: Value): bool
 
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
-proc schedulerRunOne(): bool
+proc schedulerRunOne(skipWorkerSafe = false): bool
 proc schedulerRunOneUntil(deadline: MonoTime): bool
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
@@ -3757,28 +3768,31 @@ proc capturedScope(scope: Scope, captureDepth: int): Scope =
     result = result.parent
 
 proc capturedSlotSendable(fnScope, visibleScope: Scope, captureDepth, slot: int,
-                          name: string, seen: var HashSet[uint64]): bool =
+                          name: string, seen: var HashSet[uint64],
+                          mode: CaptureSafetyMode): bool =
   let scope = capturedScope(fnScope, captureDepth)
   if scope == nil or slot < 0 or slot >= scope.slots.len:
     return false
   if not scope.slotDefined(slot):
     return false
-  isSendableValue(scope.slots[slot], visibleScope, seen)
+  isSendableValue(scope.slots[slot], visibleScope, seen, mode)
 
 proc namedCaptureSendable(fnScope, visibleScope: Scope, name: string,
                           seen: var HashSet[uint64],
-                          ignoredNames: HashSet[string]): bool =
+                          ignoredNames: HashSet[string],
+                          mode: CaptureSafetyMode): bool =
   if ignoredNames.contains(name):
     return true
   var captured: Value
   if not fnScope.lookupOptional(name, captured):
     return false
-  isSendableValue(captured, visibleScope, seen)
+  isSendableValue(captured, visibleScope, seen, mode)
 
 proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
                            localDepth: int,
                            seen: var HashSet[uint64],
-                           ignoredNames: HashSet[string]): bool
+                           ignoredNames: HashSet[string],
+                           mode: CaptureSafetyMode): bool
 
 proc functionCallLocalNames(proto: FunctionProto): HashSet[string] =
   result = initHashSet[string]()
@@ -3790,7 +3804,8 @@ proc functionCallLocalNames(proto: FunctionProto): HashSet[string] =
     result.incl param.local
 
 proc functionCapturesSendable(value: Value, visibleScope: Scope,
-                              seen: var HashSet[uint64]): bool =
+                              seen: var HashSet[uint64],
+                              mode: CaptureSafetyMode): bool =
   let fnScope = value.fnScope
   if fnScope == nil:
     return true
@@ -3799,25 +3814,26 @@ proc functionCapturesSendable(value: Value, visibleScope: Scope,
     return false
   let proto = FunctionProto(code)
   if not chunkCapturesSendable(proto.chunk, fnScope, visibleScope, 0, seen,
-                               initHashSet[string]()):
+                               initHashSet[string](), mode):
     return false
   let callLocals = functionCallLocalNames(proto)
   for defaultValue in proto.paramDefaults:
     if defaultValue.optional and defaultValue.defaultChunk != nil:
       if not chunkCapturesSendable(defaultValue.defaultChunk, fnScope,
-                                   visibleScope, 0, seen, callLocals):
+                                   visibleScope, 0, seen, callLocals, mode):
         return false
   for param in proto.namedParams:
     if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
       if not chunkCapturesSendable(param.defaultValue.defaultChunk, fnScope,
-                                   visibleScope, 0, seen, callLocals):
+                                   visibleScope, 0, seen, callLocals, mode):
         return false
   true
 
 proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
                            localDepth: int,
                            seen: var HashSet[uint64],
-                           ignoredNames: HashSet[string]): bool =
+                           ignoredNames: HashSet[string],
+                           mode: CaptureSafetyMode): bool =
   if chunk == nil:
     return true
   for inst in chunk.instructions:
@@ -3826,14 +3842,17 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
       if inst.depth > localDepth:
         let captureDepth = inst.depth - localDepth
         if not capturedSlotSendable(fnScope, visibleScope, captureDepth,
-                                    inst.intArg, inst.name, seen):
+                                    inst.intArg, inst.name, seen, mode):
           return false
     of opSetOuterLocal:
       if inst.depth > localDepth:
         return false
     of opLoadName, opLoadNativeFast, opCallName0, opCallName1:
       if not namedCaptureSendable(fnScope, visibleScope, inst.name, seen,
-                                  ignoredNames):
+                                  ignoredNames, mode):
+        return false
+    of opSpawn:
+      if mode == csmWorker:
         return false
     of opSetName:
       return false
@@ -3842,35 +3861,36 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
 
   for body in chunk.subchunks:
     if not chunkCapturesSendable(body, fnScope, visibleScope,
-                                 localDepth + 1, seen, ignoredNames):
+                                 localDepth + 1, seen, ignoredNames, mode):
       return false
   for loop in chunk.forLoops:
     if not chunkCapturesSendable(loop.body, fnScope, visibleScope,
-                                 localDepth + 1, seen, ignoredNames):
+                                 localDepth + 1, seen, ignoredNames, mode):
       return false
   for match in chunk.matches:
     for clause in match.clauses:
       if not chunkCapturesSendable(clause.body, fnScope, visibleScope,
-                                   localDepth + 1, seen, ignoredNames):
+                                   localDepth + 1, seen, ignoredNames, mode):
         return false
     if not chunkCapturesSendable(match.elseBody, fnScope, visibleScope,
-                                 localDepth + 1, seen, ignoredNames):
+                                 localDepth + 1, seen, ignoredNames, mode):
       return false
   for attempt in chunk.tries:
     if not chunkCapturesSendable(attempt.body, fnScope, visibleScope,
-                                 localDepth, seen, ignoredNames):
+                                 localDepth, seen, ignoredNames, mode):
       return false
     for clause in attempt.catches:
       if not chunkCapturesSendable(clause.body, fnScope, visibleScope,
-                                   localDepth + 1, seen, ignoredNames):
+                                   localDepth + 1, seen, ignoredNames, mode):
         return false
     if not chunkCapturesSendable(attempt.ensureBody, fnScope, visibleScope,
-                                 localDepth, seen, ignoredNames):
+                                 localDepth, seen, ignoredNames, mode):
       return false
   true
 
 proc isSendableValue(value: Value, scope: Scope,
-                     seen: var HashSet[uint64]): bool =
+                     seen: var HashSet[uint64],
+                     mode = csmSend): bool =
   if value.kind in {vkList, vkMap, vkNode, vkFunction}:
     if seen.contains(value.bits):
       return true
@@ -3881,7 +3901,7 @@ proc isSendableValue(value: Value, scope: Scope,
      vkType, vkProtocol, vkProtocolMessage:
     true
   of vkFunction:
-    functionCapturesSendable(value, scope, seen)
+    functionCapturesSendable(value, scope, seen, mode)
   of vkNode:
     var sendProtocol: Value
     if value.head.kind == vkType and scope != nil and
@@ -3891,30 +3911,30 @@ proc isSendableValue(value: Value, scope: Scope,
       return true
     if not value.nodeImmutable:
       return false
-    if not isSendableValue(value.head, scope, seen):
+    if not isSendableValue(value.head, scope, seen, mode):
       return false
     for _, item in value.props:
-      if not isSendableValue(item, scope, seen):
+      if not isSendableValue(item, scope, seen, mode):
         return false
     for item in value.body:
-      if not isSendableValue(item, scope, seen):
+      if not isSendableValue(item, scope, seen, mode):
         return false
     for _, item in value.meta:
-      if not isSendableValue(item, scope, seen):
+      if not isSendableValue(item, scope, seen, mode):
         return false
     true
   of vkList:
     if not value.listImmutable:
       return false
     for item in value.listItems:
-      if not isSendableValue(item, scope, seen):
+      if not isSendableValue(item, scope, seen, mode):
         return false
     true
   of vkMap:
     if not value.mapImmutable:
       return false
     for _, item in value.mapEntries:
-      if not isSendableValue(item, scope, seen):
+      if not isSendableValue(item, scope, seen, mode):
         return false
     true
   of vkNamespace, vkModule, vkEnv, vkCell, vkStream, vkActorContext,
@@ -3928,7 +3948,8 @@ proc isSendableValue(value: Value, scope: Scope): bool =
 
 proc spawnCanMoveToWorker(scope: Scope, body: Chunk): bool =
   var seen = initHashSet[uint64]()
-  chunkCapturesSendable(body, scope, scope, 0, seen, initHashSet[string]())
+  chunkCapturesSendable(body, scope, scope, 0, seen, initHashSet[string](),
+                        csmWorker)
 
 type
   CapturedSlot = object
@@ -4858,12 +4879,13 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
       "native"
   appendTraceFrames(e, [stackFrameValue(calleeName, kind)])
 
-# Cooperative scheduler state (one runtime-owned scheduler, one active worker for
-# now; design §13.1 M:N worker execution is future work). The scheduler's
-# lock-backed run queue holds runnable fibers; its wait list holds fibers parked
-# on a channel, actor mailbox, task await, or timer. `currentFiberActive` gates
-# suspension: only a scheduled fiber parks — root-level channel use keeps its
-# original synchronous behavior.
+# Cooperative scheduler state. The default lane is root-thread cooperative; in
+# atomicArc threaded builds, `GENE_WORKERS=N` can add an opt-in OS-thread lane
+# for snapshot-isolated worker candidates. The scheduler's lock-backed run queue
+# holds runnable fibers; its wait list holds fibers parked on a channel, actor
+# mailbox, task await, or timer. `currentFiberActive` gates suspension: only a
+# scheduled fiber parks — root-level channel use keeps its original synchronous
+# behavior.
 const schedulerInstructionBudget = 2048
 
 proc enqueueRunnable(f: Fiber)
@@ -6887,8 +6909,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # Spawn a child task as a scheduler fiber. The body is queued instead of
           # running inline, so CPU-only child work still cooperates through VM
           # safepoints. Worker-safe tasks receive a sparse captured-scope
-          # snapshot, but this is still a single-worker scheduler; M:N workers
-          # are future work.
+          # snapshot; atomicArc threaded builds may hand those leaf-like tasks
+          # to the opt-in worker lane.
           let body = chunk.subchunks[inst[].intArg]
           let workerSafe = inst[].flag and scope.spawnCanMoveToWorker(body)
           publishSpawnCapture(scope, body)
@@ -7164,8 +7186,8 @@ proc runPooled(chunk: Chunk, scope: Scope,
 # ---------------------------------------------------------------------------
 # Cooperative task scheduler (design §13.1). Fibers are suspendable Gene tasks;
 # they park on channel ops, task awaits, actor mailbox backpressure, and timers.
-# This is a single-worker cooperative prototype — the M:N worker pool is future
-# work.
+# The production M:N lifecycle is still open; today the root lane is cooperative
+# and atomicArc threaded builds can opt into workers for snapshot-isolated fibers.
 # ---------------------------------------------------------------------------
 
 proc enqueueRunnable(f: Fiber) =
@@ -7183,13 +7205,22 @@ proc hasRunnableFiber(): bool =
   withSchedulerLock(s):
     result = s.runQueue.len > 0
 
-proc popRunnableFiber(): Fiber =
+proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false): Fiber =
   let s = currentScheduler()
   withSchedulerLock(s):
-    if s.runQueue.len == 0:
-      return nil
-    result = s.runQueue[0]
-    s.runQueue.delete(0)
+    var i = 0
+    while i < s.runQueue.len:
+      let f = s.runQueue[i]
+      let workerCandidate = f.workerSafe and f.actorOwner.kind != vkActorRef
+      if workerOnly and not workerCandidate:
+        inc i
+        continue
+      if skipWorkerSafe and workerCandidate:
+        inc i
+        continue
+      result = f
+      s.runQueue.delete(i)
+      return
 
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
   let s = currentScheduler()
@@ -7456,6 +7487,89 @@ proc runFiber(f: Fiber) =
       f.task.finishTaskCancel()
       wakeTaskWaiters(f.task)
 
+when compileOption("threads") and defined(gcAtomicArc):
+  const MaxSchedulerWorkers = 32
+
+  proc configuredSchedulerWorkers(): int =
+    let raw = getEnv("GENE_WORKERS")
+    if raw.len == 0:
+      return 0
+    try:
+      result = parseInt(raw)
+    except ValueError:
+      return 0
+    if result < 0:
+      result = 0
+    elif result > MaxSchedulerWorkers:
+      result = MaxSchedulerWorkers
+
+  proc schedulerWorkerStopRequested(s: SchedulerState): bool =
+    withSchedulerLock(s):
+      s.workerStop
+
+  proc markSchedulerWorkerActive(s: SchedulerState, active: bool) =
+    withSchedulerLock(s):
+      if active:
+        inc s.activeWorkerCount
+      elif s.activeWorkerCount > 0:
+        dec s.activeWorkerCount
+
+  proc schedulerHasWorkerProgress(s: SchedulerState): bool =
+    withSchedulerLock(s):
+      if s.activeWorkerCount > 0:
+        return true
+      for f in s.runQueue:
+        if f.workerSafe and f.actorOwner.kind != vkActorRef:
+          return true
+
+  proc schedulerWorkerLoop(s: SchedulerState) {.thread.} =
+    {.cast(gcsafe).}:
+      activeScheduler = s
+      while not schedulerWorkerStopRequested(s):
+        discard wakeExpiredTimers()
+        let f = popRunnableFiber(workerOnly = true)
+        if f == nil:
+          os.sleep(1)
+          continue
+        if f.task.kind == vkTask and f.task.taskDone:
+          wakeTaskWaiters(f.task)
+          continue
+        markSchedulerWorkerActive(s, true)
+        try:
+          runFiber(f)
+        finally:
+          markSchedulerWorkerActive(s, false)
+
+  proc startSchedulerWorkers(s: SchedulerState): bool =
+    let workerCount = configuredSchedulerWorkers()
+    if workerCount <= 0:
+      return false
+    withSchedulerLock(s):
+      if s.workersStarted:
+        return true
+      s.workerStop = false
+      s.activeWorkerCount = 0
+      s.workers.setLen(workerCount)
+      s.workersStarted = true
+    for i in 0 ..< workerCount:
+      createThread(s.workers[i], schedulerWorkerLoop, s)
+    true
+
+  proc stopSchedulerWorkers(s: SchedulerState) =
+    var shouldJoin = false
+    withSchedulerLock(s):
+      if s.workersStarted:
+        s.workerStop = true
+        shouldJoin = true
+    if shouldJoin:
+      for i in 0 ..< s.workers.len:
+        joinThread(s.workers[i])
+      withSchedulerLock(s):
+        s.workers.setLen(0)
+        s.workersStarted = false
+        s.workerStop = false
+        s.activeWorkerCount = 0
+
 proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   ## Create a child task + fiber and enqueue it for scheduler execution. This keeps
   ## spawn asynchronous even when the body is CPU-only; await/drain/root blocking
@@ -7466,12 +7580,12 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   enqueueRunnable(f)
   task
 
-proc schedulerRunOne(): bool =
+proc schedulerRunOne(skipWorkerSafe = false): bool =
   ## Run one runnable fiber to its next park/completion. If only timer waiters
   ## remain, sleep until the next timer expires and run the awakened fiber.
   if wakeExpiredTimers() and not hasRunnableFiber():
     return true
-  var f = popRunnableFiber()
+  var f = popRunnableFiber(skipWorkerSafe = skipWorkerSafe)
   while f == nil:
     let next = nextTimerDeadline()
     if not next.has:
@@ -7479,7 +7593,7 @@ proc schedulerRunOne(): bool =
     sleepUntil(next.deadline)
     if wakeExpiredTimers() and not hasRunnableFiber():
       return true
-    f = popRunnableFiber()
+    f = popRunnableFiber(skipWorkerSafe = skipWorkerSafe)
   if f.task.kind == vkTask and f.task.taskDone:
     wakeTaskWaiters(f.task)
     return true
@@ -7539,8 +7653,20 @@ proc pumpUntilDone(task: Value) =
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its
   ## next park/completion; a parked fiber resumes only when a channel op wakes it.
   ## If the queue drains with the task unfinished, it can never finish.
+  when compileOption("threads") and defined(gcAtomicArc):
+    let scheduler = currentScheduler()
+    let workersStarted = startSchedulerWorkers(scheduler)
+    defer:
+      if workersStarted:
+        stopSchedulerWorkers(scheduler)
+  else:
+    const workersStarted = false
   while not task.taskDone:
-    if not schedulerRunOne():
+    if not schedulerRunOne(skipWorkerSafe = workersStarted):
+      when compileOption("threads") and defined(gcAtomicArc):
+        if workersStarted and scheduler.schedulerHasWorkerProgress():
+          os.sleep(1)
+          continue
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
 

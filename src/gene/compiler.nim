@@ -631,6 +631,46 @@ proc chunkMutatesOuterScope(chunk: Chunk, localDepth = 0): bool =
       return true
   false
 
+proc chunkContainsSpawn(chunk: Chunk): bool =
+  if chunk == nil:
+    return false
+  for inst in chunk.instructions:
+    if inst.op == opSpawn:
+      return true
+  for body in chunk.subchunks:
+    if chunkContainsSpawn(body):
+      return true
+  for loop in chunk.forLoops:
+    if chunkContainsSpawn(loop.body):
+      return true
+  for match in chunk.matches:
+    for clause in match.clauses:
+      if chunkContainsSpawn(clause.body):
+        return true
+    if chunkContainsSpawn(match.elseBody):
+      return true
+  for attempt in chunk.tries:
+    if chunkContainsSpawn(attempt.body):
+      return true
+    for clause in attempt.catches:
+      if chunkContainsSpawn(clause.body):
+        return true
+    if chunkContainsSpawn(attempt.ensureBody):
+      return true
+  for proto in chunk.functions:
+    if chunkContainsSpawn(proto.chunk):
+      return true
+    for defaultValue in proto.paramDefaults:
+      if defaultValue.optional and defaultValue.defaultChunk != nil and
+          chunkContainsSpawn(defaultValue.defaultChunk):
+        return true
+    for param in proto.namedParams:
+      if param.defaultValue.optional and
+          param.defaultValue.defaultChunk != nil and
+          chunkContainsSpawn(param.defaultValue.defaultChunk):
+        return true
+  false
+
 proc chunkMaySetOuterSlot(chunk: Chunk, depth, slot: int): bool =
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
@@ -2841,7 +2881,8 @@ proc compileSpawn(c: var Compiler, node: Value) =
     raise newException(GeneError, "spawn expects one expression")
   let body = c.compileSubBody(node.body, scoped = true)
   discard c.emit(opSpawn, c.chunk.addSubchunk(body),
-                 flag = not body.chunkMutatesOuterScope())
+                 flag = not body.chunkMutatesOuterScope() and
+                   not body.chunkContainsSpawn())
 
 proc compileAwait(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:

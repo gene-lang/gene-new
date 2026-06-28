@@ -8,6 +8,34 @@ template ck(src, expected: string) =
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
 
+proc collectSpawnFlags(chunk: Chunk, flags: var seq[bool]) =
+  if chunk == nil:
+    return
+  for inst in chunk.instructions:
+    if inst.op == opSpawn:
+      flags.add inst.flag
+  for body in chunk.subchunks:
+    collectSpawnFlags(body, flags)
+  for loop in chunk.forLoops:
+    collectSpawnFlags(loop.body, flags)
+  for match in chunk.matches:
+    for clause in match.clauses:
+      collectSpawnFlags(clause.body, flags)
+    collectSpawnFlags(match.elseBody, flags)
+  for attempt in chunk.tries:
+    collectSpawnFlags(attempt.body, flags)
+    for clause in attempt.catches:
+      collectSpawnFlags(clause.body, flags)
+    collectSpawnFlags(attempt.ensureBody, flags)
+  for proto in chunk.functions:
+    collectSpawnFlags(proto.chunk, flags)
+    for defaultValue in proto.paramDefaults:
+      if defaultValue.optional and defaultValue.defaultChunk != nil:
+        collectSpawnFlags(defaultValue.defaultChunk, flags)
+    for param in proto.namedParams:
+      if param.defaultValue.optional and param.defaultValue.defaultChunk != nil:
+        collectSpawnFlags(param.defaultValue.defaultChunk, flags)
+
 proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if call == nil:
     raise newException(GeneError, "native envelope missing")
@@ -198,6 +226,14 @@ suite "compiler — GIR emission":
       "(scope (var x 1) (spawn (set x 2)))").disassemble()
     check mutating.contains("opSpawn body=0")
     check not mutating.contains("worker-candidate=true")
+
+    var nestedFlags: seq[bool]
+    collectSpawnFlags(
+      compileSource("(scope (spawn (scope (var t (spawn 1)) (await t))))"),
+      nestedFlags)
+    check nestedFlags.len == 2
+    check nestedFlags[0] == false
+    check nestedFlags[1] == true
 
   test "emits slots for match branch bindings and outer updates":
     let chunk = compileSource(
