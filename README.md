@@ -200,6 +200,7 @@ nimble test     # unit tests (tests/test_all.nim)
 nimble spec     # executable language-surface specs (tracks docs/design.md)
 nimble perf     # release-mode core benchmarks (smoke check, no thresholds yet)
 nimble leakcheck # refcount/scope leak assertions (-d:geneRcStats)
+nimble threadcheck # threaded atomicArc smoke checks
 nimble verify   # tests + specs + benchmarks + leakcheck
 ```
 
@@ -232,8 +233,9 @@ escapes. Symbols are interned to immediate ids. Build with
 retain/release auditing. Values crossing `Send` boundaries are marked as
 published; in threaded builds, manual-RC heap objects switch to atomic
 retain/release after that marker while thread-local objects stay on the
-non-atomic path. Generic ORC objects still need the later atomicArc/worker-pool
-stage before true M:N execution.
+non-atomic path. Threaded `atomicArc` smoke checks cover values, VM behavior, and
+RC leak accounting, but scope isolation and worker orchestration still need to
+land before true M:N execution.
 
 ## License
 

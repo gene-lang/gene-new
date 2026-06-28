@@ -214,7 +214,8 @@ type
 
   TypeBinding* = object
     expr*: Value
-    scope*: Scope
+    scope*: Scope           # strong only for future escaped bindings
+    weakScope*: pointer     # ordinary scope-owned binding back-reference
 
   ## Opaque compiled function body used by runtime function values.
   FunctionCode* = ref object of RootObj

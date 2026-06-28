@@ -397,15 +397,25 @@ proc markSlotDefined(scope: Scope, index: int) {.inline.} =
 proc hasTypeBinding(binding: TypeBinding): bool {.inline.} =
   binding.expr.kind != vkNil
 
+proc typeBindingScope(binding: TypeBinding): Scope {.inline.} =
+  if binding.scope != nil:
+    binding.scope
+  elif binding.weakScope != nil:
+    cast[Scope](binding.weakScope)
+  else:
+    nil
+
 proc assignmentValue(scope: Scope, name: string, v: Value,
                      binding: TypeBinding): Value =
   if binding.hasTypeBinding:
-    adaptBoundary("set '" & name & "'", binding.expr, v, binding.scope)
+    let bindingScope = binding.typeBindingScope
+    adaptBoundary("set '" & name & "'", binding.expr, v,
+                  if bindingScope == nil: scope else: bindingScope)
   else:
     v
 
 proc declareType(scope: Scope, name: string, typeExpr: Value) =
-  let binding = TypeBinding(expr: typeExpr, scope: scope)
+  let binding = TypeBinding(expr: typeExpr, weakScope: cast[pointer](scope))
   let index = scope.slotIndex(name)
   if index >= 0:
     if scope.slotTypes.len < scope.slots.len:
@@ -417,7 +427,8 @@ proc declareType(scope: Scope, name: string, typeExpr: Value) =
 proc declareSlotType(scope: Scope, index: int, typeExpr: Value) {.inline.} =
   if scope.slotTypes.len < scope.slots.len:
     scope.slotTypes.setLen(scope.slots.len)
-  scope.slotTypes[index] = TypeBinding(expr: typeExpr, scope: scope)
+  scope.slotTypes[index] = TypeBinding(expr: typeExpr,
+                                       weakScope: cast[pointer](scope))
 
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool) =
@@ -4681,20 +4692,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if f.recycleScope:
       releaseCallScope(f.scope)
 
-  template frameReturn(rawValue: Value) =
-    ## Return `rawValue` from the current frame: adapt it to the frame's declared
-    ## return type, then pop to the caller and push the result — or, if this is
-    ## the outermost frame, return to runLoop's caller. A `try` body completing
-    ## normally instead runs its ensure block and resumes the enclosing frame.
-    var retValue = escapeWeakFunctions(rawValue)
-    if returnType.kind != vkNil:
-      if not (returnType.isBareIntType and retValue.kind == vkInt):
-        let label =
-          if returnLabel.len == 0 and curFnName.len > 0:
-            "return from '" & curFnName & "'"
-          else:
-            returnLabel
-        retValue = adaptBoundary(label, returnType, retValue, scope)
+  template finishFrameReturn(retValue: Value) =
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     releaseCurrentCallScope()
@@ -4818,6 +4816,61 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       loadFrameRegs(caller)
       stack.add retValue
 
+  template frameReturn(rawValue: Value) =
+    ## Return `rawValue` from the current frame: adapt it to the frame's declared
+    ## return type, then pop to the caller and push the result — or, if this is
+    ## the outermost frame, return to runLoop's caller. A `try` body completing
+    ## normally instead runs its ensure block and resumes the enclosing frame.
+    var retValue = escapeWeakFunctions(rawValue)
+    if returnType.kind != vkNil:
+      if not (returnType.isBareIntType and retValue.kind == vkInt):
+        let label =
+          if returnLabel.len == 0 and curFnName.len > 0:
+            "return from '" & curFnName & "'"
+          else:
+            returnLabel
+        retValue = adaptBoundary(label, returnType, retValue, scope)
+    finishFrameReturn(retValue)
+
+  template frameReturnBareInt(rawValue: Value) =
+    ## Fast return for frames whose compiler-proven result is an Int. This keeps
+    ## normal scope/impl cleanup but skips escaping and boundary checks that are
+    ## impossible for the proven scalar result.
+    let retValue = rawValue
+    if retValue.kind == vkInt and returnType.kind == vkNil:
+      finishFrameReturn(retValue)
+    else:
+      frameReturn(retValue)
+
+  template enterRecur1Frame(arg: Value, argKnownBareInt: bool) =
+    let proto = chunk.owner
+    if not argKnownBareInt and proto.hasParamTypes and proto.paramTypes.len > 0 and
+        proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
+      raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
+    let callScope = acquireSimpleCallScope(scope.parent, proto.localNames,
+      keepSlotNames = false, resetSlots = false)
+    let slot = proto.positionalSlots[0]
+    callScope.slots[slot] = arg
+    callScope.slotDefinedBits = 1'u64 shl slot
+    pushCallFrame()
+    chunk = proto.chunk
+    scope = callScope
+    recycleScope = true
+    stack = acquireRunStack()
+    ip = 0
+    validateImplRequirements = false
+    returnType =
+      if proto.returnKnownBareInt: NIL
+      elif proto.hasReturnType: proto.returnType
+      else: NIL
+    returnLabel = ""
+    curChecksErrors = false
+    curErrorTypes = @[]
+    curFnName = proto.name
+    curFrameKind = fkNormal
+    evalBudget = callScope.evalBudget
+    continue
+
   while true:
     try:
       if cancelAtSafepoint:
@@ -4842,6 +4895,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         let op = inst[].op
         inc ip
         case op
+        of opNoop:
+          discard
         of opPushConst:
           stack.add chunk.constants[inst[].intArg]
         of opLoadName:
@@ -5372,36 +5427,31 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opRecur1:
           if stack.len < 1:
             raise newException(GeneError, "VM stack underflow in recur call")
-          let proto = chunk.owner
           let argsStart = stack.len - 1
           var arg = stack[argsStart]
-          if not inst[].flag and proto.hasParamTypes and proto.paramTypes.len > 0 and
-              proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
-            raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
-          let callScope = acquireSimpleCallScope(scope.parent, proto.localNames,
-            keepSlotNames = false, resetSlots = false)
-          let slot = proto.positionalSlots[0]
-          callScope.slots[slot] = arg
-          callScope.slotDefinedBits = 1'u64 shl slot
           stack.setLen(argsStart)
-          pushCallFrame()
-          chunk = proto.chunk
-          scope = callScope
-          recycleScope = true
-          stack = acquireRunStack()
-          ip = 0
-          validateImplRequirements = false
-          returnType =
-            if proto.returnKnownBareInt: NIL
-            elif proto.hasReturnType: proto.returnType
-            else: NIL
-          returnLabel = ""
-          curChecksErrors = false
-          curErrorTypes = @[]
-          curFnName = proto.name
-          curFrameKind = fkNormal
-          evalBudget = callScope.evalBudget
-          continue
+          enterRecur1Frame(arg, inst[].flag)
+        of opRecur1LocalIntSubConst:
+          let slot = inst[].intArg
+          if slot < 0 or slot >= scope.slots.len:
+            raise newException(GeneError,
+              "VM local slot out of range for recur: " & inst[].name)
+          let a = scope.slots[slot]
+          let b = chunk.constants[inst[].depth]
+          var arg: Value
+          var argKnownBareInt = true
+          if a.isSmallInt and b.isSmallInt:
+            if not smallIntSub(a, b, arg):
+              arg = intSub(a, b)
+          elif a.kind == vkInt and b.kind == vkInt:
+            arg = intSub(a, b)
+          else:
+            let callee = scope.loadNativeFast(nfkSub, "-")
+            var args = [a, b]
+            arg = applyCall(callee, args, NamedArgs(), scope)
+            argKnownBareInt = false
+          ip += 2
+          enterRecur1Frame(arg, argKnownBareInt)
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
@@ -6337,6 +6387,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           ip = inst[].intArg
         of opReturn:
           frameReturn(if stack.len > 0: stack.pop() else: NIL)
+        of opReturnBareInt:
+          frameReturnBareInt(if stack.len > 0: stack.pop() else: NIL)
         of opCheckType:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in type check")

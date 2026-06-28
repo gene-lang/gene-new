@@ -637,6 +637,23 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
         if inst.op == opCallParentLocal1 and inst.intArg == proto.selfParentSlot and
             inst.name == proto.name:
           inst.op = opRecur1
+      if proto.canUseTypedIntRecur1:
+        let paramSlot = proto.positionalSlots[0]
+        var i = 0
+        while i + 2 < proto.chunk.instructions.len:
+          let load = proto.chunk.instructions[i]
+          let sub = proto.chunk.instructions[i + 1]
+          let recur = proto.chunk.instructions[i + 2]
+          if load.op == opLoadLocalFast and load.intArg == paramSlot and
+              sub.op == opIntSubConst and recur.op == opRecur1 and recur.flag:
+            proto.chunk.instructions[i] = Instruction(
+              op: opRecur1LocalIntSubConst, intArg: paramSlot,
+              depth: sub.depth, name: load.name, flag: true)
+            proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
+            proto.chunk.instructions[i + 2] = Instruction(op: opNoop)
+            inc i, 3
+          else:
+            inc i
     proto.chunk.rewriteSelfRecursiveCalls()
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
@@ -1699,7 +1716,10 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       fnCompiler.selfAvailable = true
       break
   compileBodyFrom(fnCompiler, body, start)
-  discard fnCompiler.emit(opReturn)
+  let returnKnownBareInt =
+    returnType.isBareIntType and not fnCompiler.sawYield and
+      fnCompiler.formsKnownBareInt(body, start)
+  discard fnCompiler.emit(if returnKnownBareInt: opReturnBareInt else: opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
   var positionalSlotMaySet: seq[bool]
   for slot in positionalSlots:
@@ -1743,9 +1763,6 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let aotFrameKind =
     if aotExpr.kind == vkNil: afkNone
     else: afkTypedNative
-  let returnKnownBareInt =
-    returnType.isBareIntType and not fnCompiler.sawYield and
-      fnCompiler.formsKnownBareInt(body, start)
   let taskFrameKind =
     if fnCompiler.sawYield: tfkGenerator
     elif bodyContainsAwait(body, start): tfkVm

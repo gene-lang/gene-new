@@ -24,6 +24,11 @@ task perf, "Run release-mode core benchmarks":
 task leakcheck, "Run refcount/scope leak tracking tests":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
 
+task threadcheck, "Run threaded atomicArc smoke checks":
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_vm.nim"
+  exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
+
 task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"

@@ -11,10 +11,12 @@ Follow-up implementation note: scheduler run/wait/timeout queues have moved from
 raw `threadvar` storage into per-`Application` scheduler state with a lock, task
 state plus channel/actor interiors now have object-local locks, and Send
 boundaries now mark value graphs as shared so threaded builds can switch
-manual-RC objects to atomic retain/release after publication. This removes two
-runtime data-race classes, but it is still not an M:N worker pool: scope
-isolation, ORC `OBJECT_TAG` atomicity (`atomicArc` or equivalent), and actual
-worker threads remain open.
+manual-RC objects to atomic retain/release after publication. A threaded
+`atomicArc` smoke gate now covers value operations, VM behavior, and RC leak
+accounting, including typed task/channel and actor ask paths. This removes two
+runtime data-race classes and keeps ORC-object atomicity regressions visible,
+but it is still not an M:N worker pool: scope isolation and actual worker
+threads remain open.
 
 ## Goal
 
@@ -101,8 +103,10 @@ Notes:
   work and gates everything.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
-  The queue/object-locking portion has started; atomic/shared RC publication is
-  still required before actual worker threads can safely run arbitrary tasks.
+  The queue/object-locking portion has started, Send-boundary manual-RC
+  publication has landed, and `nimble threadcheck` exercises atomicArc smoke
+  coverage. Actual worker threads still need scope isolation semantics before
+  arbitrary tasks can safely run in parallel.
 - **D. Worker pool.** N OS threads each running the scheduler loop over a shared/
   work-stealing queue; per-thread run-stack pools; pinned global init.
 - **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.

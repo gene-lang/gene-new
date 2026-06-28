@@ -9,6 +9,7 @@ import ./[printer, types]
 
 type
   OpCode* = enum
+    opNoop
     opPushConst
     opLoadName
     opLoadNativeFast
@@ -45,6 +46,7 @@ type
     opCallParentLocal1
     opCallOuterLocal1
     opRecur1
+    opRecur1LocalIntSubConst
     opCall2
     opCall
     opCallSplice
@@ -84,6 +86,7 @@ type
     opJumpIfFalse
     opJump
     opReturn
+    opReturnBareInt
     opCheckType
     opDeclareType
 
@@ -511,6 +514,9 @@ proc formatInstruction(inst: Instruction): string =
       " name=" & inst.name & " argc=1"
   of opRecur1:
     result.add " argc=1"
+  of opRecur1LocalIntSubConst:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name &
+      " const=" & $inst.depth & " argc=1"
   of opCall2:
     result.add " argc=2"
   of opCall:
@@ -549,8 +555,8 @@ proc formatInstruction(inst: Instruction): string =
     discard
   of opJumpIfFalse, opJump:
     result.add " target=" & $inst.intArg
-  of opPop, opMakeIterator, opIteratorHasNext, opIteratorNext, opAwait, opYield,
-     opReturn:
+  of opNoop, opPop, opMakeIterator, opIteratorHasNext, opIteratorNext, opAwait,
+     opYield, opReturn, opReturnBareInt:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
