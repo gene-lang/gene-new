@@ -26,7 +26,9 @@ covers value operations, VM behavior, worker-candidate execution, and RC leak
 accounting, including typed task/channel and actor ask paths. This removes more
 runtime data-race classes and keeps ORC-object atomicity regressions visible, but
 it is still not production M:N: worker lifecycle/load balancing, work stealing,
-async I/O, and production semantics remain open.
+async I/O, and production semantics remain open. Idle worker threads now park on
+a condition-variable wakeup instead of polling when no worker-candidate fiber is
+queued.
 
 ## Goal
 
@@ -96,8 +98,9 @@ Notes:
 3. **Scheduler structures need production orchestration.** The runnable/wait/
    timeout queues are now per-`Application` and lock-backed, and task/channel/
    actor interiors have local locks. The opt-in worker lane consumes only
-   snapshot-isolated candidates, while M:N still needs production lifecycle,
-   parking/wakeup, load balancing or stealing, timer ownership, and publication
+   snapshot-isolated candidates, and idle workers now use condition-variable
+   wakeups rather than fixed polling. M:N still needs production lifecycle, load
+   balancing or stealing, timer ownership, async I/O integration, and publication
    rules. `runStackPool`, `callScopePool`, and active scheduler context remain
    per-thread caches/context.
 
@@ -126,9 +129,10 @@ Notes:
   manual-RC publication have landed, and `nimble threadcheck`/`nimble verify`
   exercise atomicArc smoke coverage, including the opt-in worker-candidate lane.
 - **D. Worker pool.** N opt-in OS threads can consume snapshot-isolated
-  worker-candidate fibers from the shared scheduler queue. Production lifecycle,
-  parking/backoff, wakeup coordination, work stealing, per-thread tuning, and
-  pinned global init remain open.
+  worker-candidate fibers from the shared scheduler queue. Idle worker parking
+  now uses scheduler condition-variable wakeups. Production lifecycle,
+  load balancing or stealing, timer ownership, per-thread tuning, and pinned
+  global init remain open.
 - **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.
 
 ## Recommendation

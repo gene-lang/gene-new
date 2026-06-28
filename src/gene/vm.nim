@@ -140,6 +140,7 @@ type
       workersStarted: bool
       workerLeaseCount: int
       workerStop: bool
+      workerCond: Cond
       activeWorkerCount: int
 
   SchedulerWorkerLease = object
@@ -3046,6 +3047,8 @@ proc normalizedDir(path: string): string =
 proc newSchedulerState(): SchedulerState =
   new(result)
   initLock(result.lock)
+  when compileOption("threads") and defined(gcAtomicArc):
+    initCond(result.workerCond)
 
 proc newApplication*(entryDir = ""): Application =
   ## Create the runtime owner for one Gene program. MVP packages are represented
@@ -4946,6 +4949,9 @@ proc clearWaitReason(f: Fiber) =
   f.waitTask = NIL
   f.waitTimer = false
 
+proc workerCandidate(f: Fiber): bool {.inline.} =
+  f.workerSafe and f.actorOwner.kind != vkActorRef
+
 template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
   acquire(s.lock)
   try:
@@ -4956,6 +4962,9 @@ template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
 proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
   clearWaitReason(f)
   s.runQueue.add f
+  when compileOption("threads") and defined(gcAtomicArc):
+    if f.workerCandidate:
+      signal(s.workerCond)
 
 proc inCancelCleanup(f: Fiber): bool =
   if f.frameKind == fkEnsureCancelBody:
@@ -7261,11 +7270,11 @@ proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false): Fiber =
     var i = 0
     while i < s.runQueue.len:
       let f = s.runQueue[i]
-      let workerCandidate = f.workerSafe and f.actorOwner.kind != vkActorRef
-      if workerOnly and not workerCandidate:
+      let isWorkerCandidate = f.workerCandidate
+      if workerOnly and not isWorkerCandidate:
         inc i
         continue
-      if skipWorkerSafe and workerCandidate:
+      if skipWorkerSafe and isWorkerCandidate:
         inc i
         continue
       result = f
@@ -7569,8 +7578,18 @@ when compileOption("threads") and defined(gcAtomicArc):
       if s.activeWorkerCount > 0:
         return true
       for f in s.runQueue:
-        if f.workerSafe and f.actorOwner.kind != vkActorRef:
+        if f.workerCandidate:
           return true
+
+  proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =
+    for f in s.runQueue:
+      if f.workerCandidate:
+        return true
+
+  proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
+    withSchedulerLock(s):
+      while not s.workerStop and not s.schedulerHasWorkerCandidateUnlocked():
+        wait(s.workerCond, s.lock)
 
   proc schedulerWorkerLoop(s: SchedulerState) {.thread.} =
     {.cast(gcsafe).}:
@@ -7579,7 +7598,7 @@ when compileOption("threads") and defined(gcAtomicArc):
         discard wakeExpiredTimers()
         let f = popRunnableFiber(workerOnly = true)
         if f == nil:
-          os.sleep(1)
+          waitForSchedulerWorkerCandidate(s)
           continue
         if f.task.kind == vkTask and f.task.taskDone:
           wakeTaskWaiters(f.task)
@@ -7614,6 +7633,7 @@ when compileOption("threads") and defined(gcAtomicArc):
         dec s.workerLeaseCount
       if s.workersStarted and s.workerLeaseCount == 0:
         s.workerStop = true
+        broadcast(s.workerCond)
         shouldJoin = true
     if shouldJoin:
       for i in 0 ..< s.workers.len:

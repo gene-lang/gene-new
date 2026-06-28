@@ -251,7 +251,8 @@ sees no outer-scope mutation or nested `spawn`, and runtime captures satisfy
 `Send`; those eligible tasks receive sparse captured-scope snapshots so they no
 longer read through the live parent scope. Unsafe shared-scope tasks remain
 cooperative. Threaded `atomicArc` smoke checks cover values, VM behavior,
-worker-candidate execution, and RC leak accounting, but worker orchestration
+worker-candidate execution, and RC leak accounting. Worker threads now park on a
+condition-variable wakeup when no eligible work is queued, but worker orchestration
 remains experimental and limited to snapshot-isolated leaf candidates.
 
 ## License
