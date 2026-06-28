@@ -2272,6 +2272,11 @@ proc compileListValue(c: var Compiler, value: Value) =
 
 proc compileCall(c: var Compiler, node: Value) =
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
+    let local = c.localSlot(node.head.symVal)
+    if local >= 0:
+      c.chunk.callSites[c.emit(opCallLocal0, local,
+                               name = node.head.symVal)] = node
+      return
     if not c.hasLexicalBinding(node.head.symVal):
       c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
       return

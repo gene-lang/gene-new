@@ -4917,6 +4917,93 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           stack.add NIL
+        of opCallLocal0:
+          let slot = inst[].intArg
+          var callee =
+            if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
+              scope.slots[slot]
+            else:
+              scope.loadSlot(slot, inst[].name)
+          if callee.kind == vkFunction:
+            let code = callee.fnCode
+            if code != nil and code of FunctionProto:
+              let proto = FunctionProto(code)
+              if proto.nativeOp != ncoNone:
+                let native = applyNativeCompiled(callee, proto, [], NamedArgs())
+                if native.handled:
+                  stack.add native.value
+                  continue
+              if proto.simpleCall:
+                if proto.params.len != 0:
+                  raise newException(GeneError,
+                    "function '" & callee.fnName & "' expects " &
+                    $proto.requiredPositional & ".." & $proto.params.len &
+                    " argument(s), got 0")
+                let callScope =
+                  if proto.needsCallScope:
+                    if proto.poolCallScope:
+                      acquireSimpleCallScope(callee.fnScope, proto.localNames)
+                    else:
+                      let fresh = newScope(callee.fnScope)
+                      fresh.prepareSlots(proto.localNames)
+                      fresh
+                  else:
+                    callee.fnScope
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = callScope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = proto.needsCallScope
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = callScope.evalBudget
+                continue
+              elif not proto.isGenerator:
+                let bound = bindCallScope(callee, proto, [], NamedArgs())
+                var lbl = ""
+                if bound.returnType.kind != vkNil:
+                  lbl = "return from '" & callee.fnName & "'"
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = bound.scope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = true
+                returnType = bound.returnType
+                returnLabel = lbl
+                curChecksErrors = proto.checksErrors
+                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = bound.scope.evalBudget
+                continue
+          let site =
+            if callee.kind == vkFunction or
+                (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
+              NIL
+            else:
+              chunk.callSites.getOrDefault(ip - 1, NIL)
+          var value: Value
+          try:
+            value = applyCall(callee, [], NamedArgs(), scope, site)
+          except SuspendError as se:
+            if not se.timer:
+              raise
+            if fiber == nil:
+              raise newException(GeneError, "internal: suspended outside a fiber")
+            stack.add NIL
+            captureContinuation(ip)
+            fiber.waitTimer = true
+            fiber.waitDeadline = se.deadline
+            return RunStop(kind: rskSuspend, value: NIL)
+          stack.add value
         of opCallName0, opCallName1, opCallLocal1, opCallParentLocal1,
             opCallOuterLocal1:
           let argCount =

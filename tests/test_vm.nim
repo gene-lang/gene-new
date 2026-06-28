@@ -412,6 +412,10 @@ suite "gir — disassembly":
     check dump.contains("0: opMakeFn fn=0")
     check dump.contains("1: opNativeFastConst name=+ const=0")
 
+  test "prints direct local zero-arg calls":
+    let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
+    check dump.contains("opCallLocal0 slot=0 name=call_once argc=0")
+
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
     ck "42", "42"
