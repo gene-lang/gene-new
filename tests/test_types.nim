@@ -10,6 +10,9 @@ template runStr(src: string): Value =
 proc ffiTestI16Abs(x: int16): int16 {.cdecl.} =
   if x < 0'i16: -x else: x
 
+proc ffiTestU16Inc(x: uint16): uint16 {.cdecl.} =
+  x + 1'u16
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -643,7 +646,7 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(strlen \"closed\")"), scope)
 
-  test "direct FFI callable supports exact small signed scalar ABI":
+  test "direct FFI callable supports exact small scalar ABI":
     let handle = loadLib()
     if handle != nil:
       let scope = newGlobalScope()
@@ -652,9 +655,18 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestI16Abs", "ffiTestI16Abs",
                                   cast[pointer](ffiTestI16Abs), lib,
                                   @[newSym("C/Int16")], newSym("C/Int16")))
+      scope.define("u16-inc",
+                   newFfiCallable("ffiTestU16Inc", "ffiTestU16Inc",
+                                  cast[pointer](ffiTestU16Inc), lib,
+                                  @[newSym("C/UInt16")], newSym("C/UInt16")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
+      check run(compileSource("(u16-inc 41)"), scope).print() == "42"
+      expect GeneError:
+        discard run(compileSource("(u16-inc -1)"), scope)
+      expect GeneError:
+        discard run(compileSource("(u16-inc 65536)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
