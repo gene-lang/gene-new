@@ -720,9 +720,12 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
           let recur = proto.chunk.instructions[i + 2]
           if load.op == opLoadLocalFast and load.intArg == paramSlot and
               sub.op == opIntSubConst and recur.op == opRecur1 and recur.flag:
+            let constIsSmallInt =
+              sub.depth >= 0 and sub.depth < proto.chunk.constants.len and
+              proto.chunk.constants[sub.depth].isSmallInt
             proto.chunk.instructions[i] = Instruction(
               op: opRecur1LocalIntSubConst, intArg: paramSlot,
-              depth: sub.depth, name: load.name, flag: true)
+              depth: sub.depth, name: load.name, flag: constIsSmallInt)
             proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
             proto.chunk.instructions[i + 2] = Instruction(op: opNoop)
             inc i, 3
@@ -2610,12 +2613,14 @@ proc compileCall(c: var Compiler, node: Value) =
       compileExpr(c, node.body[0])
       if node.body[1].isSelfEvaluatingFastConst:
         let constIndex = c.chunk.addConst(node.body[1])
+        # Fast-const opcodes use flag to mean the RHS constant is a small Int.
+        let constIsSmallInt = node.body[1].isSmallInt
         if c.exprKnownBareInt(node.body[0]) and node.body[1].kind == vkInt:
           discard c.emit(intFastConstOp(fastKind), ord(fastKind), name = node.head.symVal,
-                         depth = constIndex)
+                         depth = constIndex, flag = constIsSmallInt)
         else:
           discard c.emit(opNativeFastConst, ord(fastKind), name = node.head.symVal,
-                         depth = constIndex)
+                         depth = constIndex, flag = constIsSmallInt)
       else:
         compileExpr(c, node.body[1])
         if c.exprKnownBareInt(node.body[0]) and c.exprKnownBareInt(node.body[1]):

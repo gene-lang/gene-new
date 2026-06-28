@@ -5448,6 +5448,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       loadFrameRegs(caller)
       stack.add retValue
 
+  template finishFastNormalReturn(retValue: Value) =
+    releaseCurrentCallScope()
+    if frames.len == 0:
+      stackArg = move stack
+      ipArg = ip
+      return RunStop(kind: rskReturn, value: retValue)
+    else:
+      releaseRunStack(stack)
+      var caller = frames.pop()
+      stack = move caller.stack
+      loadFrameRegs(caller)
+      stack.add retValue
+
   template frameReturn(rawValue: Value) =
     ## Return `rawValue` from the current frame: adapt it to the frame's declared
     ## return type, then pop to the caller and push the result — or, if this is
@@ -5469,7 +5482,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## normal scope/impl cleanup but skips escaping and boundary checks that are
     ## impossible for the proven scalar result.
     let retValue = rawValue
-    if retValue.kind == vkInt and returnType.kind == vkNil:
+    if retValue.kind == vkInt and returnType.kind == vkNil and
+        curFrameKind == fkNormal and not validateImplRequirements:
+      finishFastNormalReturn(retValue)
+    elif retValue.kind == vkInt and returnType.kind == vkNil:
       finishFrameReturn(retValue)
     else:
       frameReturn(retValue)
@@ -5484,7 +5500,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     let slot = proto.positionalSlots[0]
     callScope.slots[slot] = arg
     callScope.slotDefinedBits = 1'u64 shl slot
-    pushCallFrame()
+    if curFrameKind == fkNormal:
+      pushFrameFastNormal()
+    else:
+      pushCallFrame()
     chunk = proto.chunk
     scope = callScope
     recycleScope = true
@@ -6072,8 +6091,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let b = chunk.constants[inst[].depth]
           var arg: Value
           var argKnownBareInt = true
-          if a.isSmallInt and b.isSmallInt:
-            if not smallIntSub(a, b, arg):
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
+            if not smallIntSubKnown(a, b, arg):
               arg = intSub(a, b)
           elif a.kind == vkInt and b.kind == vkInt:
             arg = intSub(a, b)
@@ -6366,7 +6385,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             var value: Value
-            if smallIntAdd(a, b, value):
+            if smallIntAddKnown(a, b, value):
               stack[top - 2] = value
               setLenUninit(stack, top - 1)
               continue
@@ -6386,7 +6405,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             var value: Value
-            if smallIntSub(a, b, value):
+            if smallIntSubKnown(a, b, value):
               stack[top - 2] = value
               setLenUninit(stack, top - 1)
               continue
@@ -6490,9 +6509,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let top = stack.len
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             var value: Value
-            if smallIntAdd(a, b, value):
+            if smallIntAddKnown(a, b, value):
               stack[top - 1] = value
               continue
           if a.kind == vkInt and b.kind == vkInt:
@@ -6508,9 +6527,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let top = stack.len
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             var value: Value
-            if smallIntSub(a, b, value):
+            if smallIntSubKnown(a, b, value):
               stack[top - 1] = value
               continue
           if a.kind == vkInt and b.kind == vkInt:
@@ -6539,7 +6558,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let top = stack.len
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             stack[top - 1] = newBool(a.smallIntVal < b.smallIntVal)
             continue
           if a.kind == vkInt and b.kind == vkInt:
@@ -6555,7 +6574,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let top = stack.len
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             stack[top - 1] = newBool(a.smallIntVal > b.smallIntVal)
             continue
           if a.kind == vkInt and b.kind == vkInt:
@@ -6571,7 +6590,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let top = stack.len
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             stack[top - 1] = newBool(a.smallIntVal <= b.smallIntVal)
             continue
           if a.kind == vkInt and b.kind == vkInt:
@@ -6587,7 +6606,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let top = stack.len
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             stack[top - 1] = newBool(a.smallIntVal >= b.smallIntVal)
             continue
           if a.kind == vkInt and b.kind == vkInt:
@@ -6608,13 +6627,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             case kind
             of nfkAdd:
               var value: Value
-              if smallIntAdd(a, b, value):
+              if smallIntAddKnown(a, b, value):
                 stack[top - 2] = value
                 setLenUninit(stack, top - 1)
                 continue
             of nfkSub:
               var value: Value
-              if smallIntSub(a, b, value):
+              if smallIntSubKnown(a, b, value):
                 stack[top - 2] = value
                 setLenUninit(stack, top - 1)
                 continue
@@ -6667,16 +6686,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             case kind
             of nfkAdd:
               var value: Value
-              if smallIntAdd(a, b, value):
+              if smallIntAddKnown(a, b, value):
                 stack[top - 1] = value
                 continue
             of nfkSub:
               var value: Value
-              if smallIntSub(a, b, value):
+              if smallIntSubKnown(a, b, value):
                 stack[top - 1] = value
                 continue
             of nfkLt:
@@ -6727,13 +6746,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             case kind
             of nfkAdd:
               var value: Value
-              if smallIntAdd(a, b, value):
+              if smallIntAddKnown(a, b, value):
                 stack[top - 2] = value
                 setLenUninit(stack, top - 1)
                 continue
             of nfkSub:
               var value: Value
-              if smallIntSub(a, b, value):
+              if smallIntSubKnown(a, b, value):
                 stack[top - 2] = value
                 setLenUninit(stack, top - 1)
                 continue
@@ -6770,16 +6789,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
-          if a.isSmallInt and b.isSmallInt:
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
             case kind
             of nfkAdd:
               var value: Value
-              if smallIntAdd(a, b, value):
+              if smallIntAddKnown(a, b, value):
                 stack[top - 1] = value
                 continue
             of nfkSub:
               var value: Value
-              if smallIntSub(a, b, value):
+              if smallIntSubKnown(a, b, value):
                 stack[top - 1] = value
                 continue
             of nfkLt:

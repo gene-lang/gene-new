@@ -2634,23 +2634,29 @@ proc isSmallInt*(v: Value): bool {.inline.} =
 proc smallIntVal*(v: Value): int64 {.inline.} =
   decodeSmallInt(v.bits)
 
-proc smallIntAdd*(a, b: Value, outValue: var Value): bool {.inline.} =
-  if not (a.isSmallInt and b.isSmallInt):
-    return false
+proc smallIntAddKnown*(a, b: Value, outValue: var Value): bool {.inline.} =
   let s = a.smallIntVal + b.smallIntVal
   if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
     return false
   outValue = mkImm(INT_TAG, encodeSmallInt(s))
   true
 
-proc smallIntSub*(a, b: Value, outValue: var Value): bool {.inline.} =
-  if not (a.isSmallInt and b.isSmallInt):
-    return false
+proc smallIntSubKnown*(a, b: Value, outValue: var Value): bool {.inline.} =
   let s = a.smallIntVal - b.smallIntVal
   if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
     return false
   outValue = mkImm(INT_TAG, encodeSmallInt(s))
   true
+
+proc smallIntAdd*(a, b: Value, outValue: var Value): bool {.inline.} =
+  if not (a.isSmallInt and b.isSmallInt):
+    return false
+  smallIntAddKnown(a, b, outValue)
+
+proc smallIntSub*(a, b: Value, outValue: var Value): bool {.inline.} =
+  if not (a.isSmallInt and b.isSmallInt):
+    return false
+  smallIntSubKnown(a, b, outValue)
 
 proc intCompare*(a, b: Value): int {.inline.} =
   if a.kind != vkInt or b.kind != vkInt:
