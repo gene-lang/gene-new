@@ -231,19 +231,9 @@ when defined(geneRcStats):
       actor = NIL
 
   # --------------------------------------------------------------------------
-  # KNOWN GAP: cycles among mutable ORC-backed objects (cells, envs, ...) reached
-  # through a Value are NOT collected. `liveManaged` only counts manually-RC'd
-  # objects, so it cannot see these leaks — we measure heap growth instead.
-  #
-  # design.md §11.1/§13 requires these to be collectable. The fix is to make
-  # OBJECT_TAG objects fully ORC-managed (drop manual GC_ref/GC_unref +
-  # immediate-free) so a `=trace` hook on Value can route them through ORC's
-  # cycle collector; a scoped =trace alone crashes because ORC's deferred
-  # collector traces objects the manual path has already freed at refcount 0.
-  #
-  # These tests assert the gap STILL EXISTS so it stays visible. When the rework
-  # lands they will start failing — that is the signal to flip them to "no leak"
-  # (growth near zero), the same way the scope->closure->scope cases were flipped.
+  # Cycles among mutable Cell/Env objects reached through a Value are collected
+  # by a conservative trial-deletion pass. `liveManaged` only counts manually-RC'd
+  # objects, so these cases measure occupied heap growth instead.
   proc heapGrowth(src: string, iters: int): int =
     GC_fullCollect()
     let before = getOccupiedMem()
@@ -256,18 +246,18 @@ when defined(geneRcStats):
     GC_fullCollect()
     result = getOccupiedMem() - before
 
-  suite "rc — KNOWN GAP: mutable-object cycles (geneRcStats)":
+  suite "rc — mutable-object cycles (geneRcStats)":
     const N = 30000
 
     test "control: acyclic cell mutation does not grow the heap":
       check heapGrowth("(var c (cell 0)) (Cell/set c 5)", N) < 100_000
 
-    test "KNOWN GAP: a self-referential cell leaks (should be ~0 once fixed)":
-      check heapGrowth("(var c (cell 0)) (Cell/set c c)", N) > N * 20
+    test "a self-referential cell is reclaimed":
+      check heapGrowth("(var c (cell 0)) (Cell/set c c)", N) < 100_000
 
-    test "KNOWN GAP: a two-cell cycle leaks (should be ~0 once fixed)":
+    test "a two-cell cycle is reclaimed":
       check heapGrowth(
         "(var a (cell 0)) (var b (cell 0)) (Cell/set a b) (Cell/set b a)",
-        N) > N * 40
+        N) < 100_000
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

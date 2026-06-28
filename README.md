@@ -215,18 +215,18 @@ See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 - The all-zero bit pattern is `nil`, so a zero-initialized `Value` is `nil`.
 - Reserved NaN tags encode `void` / `bool` / small-int / `char` / `+0.0` /
   symbol immediates (allocation-free), or a heap pointer for compound values
-  (large ints, strings, lists, maps, nodes, functions). One tag (`0xFFFF`) is a
-  generic object whose concrete kind (namespace, type, …) lives in the object
-  header, so new heap kinds don't each need a NaN-box tag.
+  (large ints, strings, lists, maps, nodes, functions). Generic objects use
+  `0xFFFF`, with an internal cycle-tracked object tag for Cell/Env values; the
+  concrete kind (namespace, type, …) lives in the object header, so new heap
+  kinds don't each need a NaN-box tag.
 
 `sizeof(Value) == sizeof(uint64)`. Compound values are manually heap-allocated
 with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks drive
 reference counting automatically, so acyclic values free at count 0 — no global
 table, no per-read lock. The common `scope → closure → scope` cycle is broken with
-weak captured-scope edges, but reference cycles among *mutable* heap objects (e.g.
-a self-referential `cell`) are not yet collected — closing that gap to meet the
-tracing-GC requirement in `docs/design.md` §11.1/§13 is tracked work. Symbols are
-interned to immediate ids. Build with
+weak captured-scope edges, and reference cycles among mutable Cell/Env heap
+objects (e.g. a self-referential `cell`) are reclaimed by a conservative
+trial-deletion pass. Symbols are interned to immediate ids. Build with
 `-d:geneRcStats` to expose `liveManaged` and `Runtime/gc-stats` for
 retain/release auditing. (RC is
 non-atomic for the single-threaded MVP; see `TODO(vm-shared-rc)` in

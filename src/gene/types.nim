@@ -6,9 +6,10 @@
 ##   * top 16 bits < 0xFFF1             -> an IEEE float64 stored directly
 ##   * top 16 bits in 0xFFF1..0xFFF6    -> a void/bool/small-int/char/+0.0/symbol
 ##                                         immediate (no allocation)
-##   * top 16 bits >= 0xFFF8            -> a *managed* heap pointer (string, list,
-##                                         map, node, function, native function,
-##                                         large int, or opaque object) carried in
+##   * top 16 bits >= 0xFFF7            -> a *managed* heap pointer (cycle-tracked
+##                                         object, string, list, map, node,
+##                                         function, native function, large int,
+##                                         or opaque object) carried in
 ##                                         the low 48 bits
 ##
 ## Managed objects are manually heap-allocated and reference counted. Each starts
@@ -17,10 +18,10 @@
 ## global table, no per-read lock. (Adopted from the older Gene runtime.)
 ##
 ## Cycles: the `scope -> closure -> scope` case is broken with weak captured-scope
-## edges (see `Scope`/`GeneFunction`). Cycles among mutable ORC-backed objects
-## reached through a `Value` (e.g. a self-referential `cell`) are NOT yet collected
-## — ORC cannot trace through the NaN-boxed pointer. design.md §11.1/§13 requires
-## tracing collection of these; see `tests/test_rc.nim`. (Adopted from older Gene.)
+## edges (see `Scope`/`GeneFunction`). Mutable Cell/Env object cycles reached
+## through a `Value` (e.g. a self-referential `cell`) are reclaimed by a
+## conservative trial-deletion pass, because ORC cannot directly trace through
+## NaN-boxed payload bits. See `tests/test_rc.nim`.
 ##
 ## TODO(vm-shared-rc): RC is non-atomic and assumes single-threaded mutation, which
 ## matches the current MVP. When the M:N scheduler lands, give each managed object a
@@ -113,7 +114,8 @@ const
 
   # Managed tags (heap pointer in payload, refcounted). All >= MANAGED_MIN so the
   # lifecycle hooks can test "needs refcount" with a single shift+compare.
-  MANAGED_MIN   = 0xFFF8'u64
+  MANAGED_MIN   = 0xFFF7'u64
+  CYCLE_OBJECT_TAG = 0xFFF7'u64
   STRING_TAG    = 0xFFF8'u64
   LIST_TAG      = 0xFFF9'u64
   MAP_TAG       = 0xFFFA'u64
@@ -340,6 +342,7 @@ type
     value: BigIntValue
 
   EnvData = ref object of GeneObjectData
+    cycleRefs: int            # Value-held refs, for trial-deletion collection
     parent: Value         # parent Env value, or NIL
     bindings: Table[string, Value]
     imports: seq[Value]
@@ -348,6 +351,7 @@ type
     policy: Value
 
   CellData = ref object of GeneObjectData
+    cycleRefs: int            # Value-held refs, for trial-deletion collection
     value: Value
 
   StreamPullResult* = object
@@ -530,6 +534,10 @@ initLock(internLock)
 
 template tagOf(v: Value): uint64 = v.bits shr TAG_SHIFT
 
+proc isObjectTagged(v: Value): bool {.inline.} =
+  let tag = v.bits shr TAG_SHIFT
+  tag == OBJECT_TAG or tag == CYCLE_OBJECT_TAG
+
 proc isManaged(v: Value): bool {.inline.} =
   (v.bits shr TAG_SHIFT) >= MANAGED_MIN
 
@@ -547,8 +555,18 @@ proc objData(v: Value): GeneObjectData {.inline.} =
   cast[GeneObjectData](cast[pointer](v.bits and PAYLOAD_MASK))
 
 proc boxObject(data: GeneObjectData): Value =
+  var tag = OBJECT_TAG
+  case data.objKind
+  of okEnv:
+    EnvData(data).cycleRefs = 1
+    tag = CYCLE_OBJECT_TAG
+  of okCell, okAtomicCell:
+    CellData(data).cycleRefs = 1
+    tag = CYCLE_OBJECT_TAG
+  else:
+    discard
   GC_ref(data)                                   # the box holds one reference
-  Value(bits: (OBJECT_TAG shl TAG_SHIFT) or
+  Value(bits: (tag shl TAG_SHIFT) or
               (cast[uint64](cast[pointer](data)) and PAYLOAD_MASK))
 
 when defined(geneRcStats):
@@ -837,6 +855,276 @@ proc bigToString(x: BigIntValue): string =
     result.add part
 
 # ---------------------------------------------------------------------------
+# Conservative OBJECT_TAG cycle collection
+# ---------------------------------------------------------------------------
+
+var objectCycleCollecting = false
+
+proc objectPayload(data: GeneObjectData): uint64 {.inline.} =
+  cast[uint64](cast[pointer](data)) and PAYLOAD_MASK
+
+proc tracksObjectCycles(data: GeneObjectData): bool {.inline.} =
+  data.objKind in {okCell, okAtomicCell, okEnv}
+
+proc objectCycleRefs(data: GeneObjectData): int {.inline.} =
+  case data.objKind
+  of okEnv:
+    EnvData(data).cycleRefs
+  of okCell, okAtomicCell:
+    CellData(data).cycleRefs
+  else:
+    0
+
+template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) =
+  template emit(valueExpr: Value) =
+    block:
+      let edgeBits {.inject.} = valueExpr.bits
+      body
+
+  case data.objKind
+  of okNamespace:
+    discard
+  of okModule:
+    let d = ModuleData(data)
+    emit(d.root)
+    for _, val in d.meta:
+      emit(val)
+  of okBigInt:
+    discard
+  of okEnv:
+    let d = EnvData(data)
+    emit(d.parent)
+    for _, val in d.bindings:
+      emit(val)
+    for val in d.imports:
+      emit(val)
+    emit(d.module)
+    emit(d.capabilities)
+    emit(d.policy)
+  of okCell, okAtomicCell:
+    emit(CellData(data).value)
+  of okStream:
+    let d = StreamData(data)
+    for val in d.items:
+      emit(val)
+    emit(d.source)
+    emit(d.callable)
+    emit(d.buffer)
+    emit(d.itemType)
+    emit(d.errType)
+    for val in d.generatorStack:
+      emit(val)
+  of okTask:
+    let d = TaskData(data)
+    emit(d.resultType)
+    emit(d.errorType)
+  of okChannel:
+    emit(ChannelData(data).itemType)
+  of okActorRef:
+    let d = ActorData(data)
+    for item in d.queue:
+      emit(item.message)
+      emit(item.reply)
+    emit(d.state)
+    emit(d.restartInit)
+    emit(d.handler)
+    emit(d.messageType)
+    emit(d.failureEvents)
+    emit(d.failureDeadLetters)
+  of okActorContext:
+    emit(ActorContextData(data).actor)
+  of okActorStep:
+    emit(ActorStepData(data).state)
+  of okReplyTo:
+    let d = ReplyToData(data)
+    emit(d.result)
+    emit(d.resultType)
+    emit(d.task)
+  of okCPtr:
+    emit(CPtrData(data).targetType)
+  of okCSlice:
+    emit(CSliceData(data).targetType)
+  of okBuffer:
+    let d = BufferData(data)
+    emit(d.elemType)
+    for val in d.items:
+      emit(val)
+  of okDeviceBuffer:
+    emit(DeviceBufferData(data).elemType)
+  of okCapability, okFfiLoad, okFfiLibrary:
+    discard
+  of okFfiCallable:
+    let d = FfiCallableData(data)
+    emit(d.library)
+    for val in d.paramTypes:
+      emit(val)
+    emit(d.returnType)
+  of okType:
+    let d = TypeData(data)
+    emit(d.parent)
+    for field in d.fields:
+      emit(field.typeExpr)
+    for field in d.bodyFields:
+      emit(field.typeExpr)
+    for val in d.requiredProtocols:
+      emit(val)
+    for val in d.derivedProtocols:
+      emit(val)
+    for val in d.deriveRequests:
+      emit(val)
+  of okProtocol:
+    let d = ProtocolData(data)
+    for _, val in d.messages:
+      emit(val)
+    emit(d.deriveFn)
+  of okProtocolMessage:
+    discard
+
+proc collectObjectGraph(data: GeneObjectData,
+                        counts: var Table[uint64, int],
+                        nodes: var seq[GeneObjectData]) =
+  if data == nil:
+    return
+  let payload = objectPayload(data)
+  if counts.hasKey(payload):
+    return
+  if not tracksObjectCycles(data):
+    return
+  counts[payload] = objectCycleRefs(data)
+  nodes.add(data)
+  forObjectEdges(data, edgeBits):
+    if (edgeBits shr TAG_SHIFT) == CYCLE_OBJECT_TAG:
+      let child = cast[GeneObjectData](cast[pointer](edgeBits and PAYLOAD_MASK))
+      if tracksObjectCycles(child):
+        collectObjectGraph(child, counts, nodes)
+
+proc clearValueSlot(slot: var Value) {.inline.} =
+  slot = Value(bits: 0)
+
+proc clearObjectEdges(data: GeneObjectData) =
+  case data.objKind
+  of okNamespace:
+    NamespaceData(data).scope = nil
+  of okModule:
+    let d = ModuleData(data)
+    clearValueSlot(d.root)
+    d.meta = initOrderedTable[string, Value]()
+  of okBigInt:
+    discard
+  of okEnv:
+    let d = EnvData(data)
+    clearValueSlot(d.parent)
+    d.bindings = initTable[string, Value]()
+    d.imports.setLen(0)
+    clearValueSlot(d.module)
+    clearValueSlot(d.capabilities)
+    clearValueSlot(d.policy)
+  of okCell, okAtomicCell:
+    clearValueSlot(CellData(data).value)
+  of okStream:
+    let d = StreamData(data)
+    d.items.setLen(0)
+    clearValueSlot(d.source)
+    clearValueSlot(d.callable)
+    clearValueSlot(d.buffer)
+    clearValueSlot(d.itemType)
+    clearValueSlot(d.errType)
+    d.itemScope = nil
+    d.generatorScope = nil
+    d.generatorStack.setLen(0)
+  of okTask:
+    let d = TaskData(data)
+    d.state = nil
+    clearValueSlot(d.resultType)
+    clearValueSlot(d.errorType)
+    d.boundaryScope = nil
+  of okChannel:
+    let d = ChannelData(data)
+    d.state = nil
+    clearValueSlot(d.itemType)
+    d.itemScope = nil
+  of okActorRef:
+    let d = ActorData(data)
+    d.lifecycle = nil
+    d.queue.setLen(0)
+    clearValueSlot(d.state)
+    clearValueSlot(d.restartInit)
+    clearValueSlot(d.handler)
+    clearValueSlot(d.messageType)
+    clearValueSlot(d.failureEvents)
+    clearValueSlot(d.failureDeadLetters)
+  of okActorContext:
+    clearValueSlot(ActorContextData(data).actor)
+  of okActorStep:
+    clearValueSlot(ActorStepData(data).state)
+  of okReplyTo:
+    let d = ReplyToData(data)
+    clearValueSlot(d.result)
+    clearValueSlot(d.resultType)
+    d.resultScope = nil
+    clearValueSlot(d.task)
+  of okCPtr:
+    clearValueSlot(CPtrData(data).targetType)
+  of okCSlice:
+    clearValueSlot(CSliceData(data).targetType)
+  of okBuffer:
+    let d = BufferData(data)
+    clearValueSlot(d.elemType)
+    d.elemScope = nil
+    d.items.setLen(0)
+  of okDeviceBuffer:
+    clearValueSlot(DeviceBufferData(data).elemType)
+  of okCapability, okFfiLoad, okFfiLibrary:
+    discard
+  of okFfiCallable:
+    let d = FfiCallableData(data)
+    clearValueSlot(d.library)
+    d.paramTypes.setLen(0)
+    clearValueSlot(d.returnType)
+  of okType:
+    let d = TypeData(data)
+    clearValueSlot(d.parent)
+    d.fields.setLen(0)
+    d.bodyFields.setLen(0)
+    d.scope = nil
+    d.weakScope = nil
+    d.requiredProtocols.setLen(0)
+    d.derivedProtocols.setLen(0)
+    d.deriveRequests.setLen(0)
+  of okProtocol:
+    let d = ProtocolData(data)
+    d.messages = initOrderedTable[string, Value]()
+    clearValueSlot(d.deriveFn)
+  of okProtocolMessage:
+    ProtocolMessageData(data).protocolBits = 0
+
+proc tryCollectObjectCycle(seed: GeneObjectData) =
+  if seed == nil or objectCycleCollecting or not tracksObjectCycles(seed):
+    return
+
+  objectCycleCollecting = true
+  try:
+    var counts = initTable[uint64, int]()
+    var nodes: seq[GeneObjectData] = @[]
+    collectObjectGraph(seed, counts, nodes)
+
+    for data in nodes:
+      forObjectEdges(data, edgeBits):
+        if (edgeBits shr TAG_SHIFT) == CYCLE_OBJECT_TAG:
+          let payload = edgeBits and PAYLOAD_MASK
+          if counts.hasKey(payload):
+            counts[payload] = counts.getOrDefault(payload) - 1
+
+    for _, count in counts:
+      if count != 0:
+        return
+
+    for data in nodes:
+      clearObjectEdges(data)
+  finally:
+    objectCycleCollecting = false
+
+# ---------------------------------------------------------------------------
 # Reference counting bodies
 # ---------------------------------------------------------------------------
 
@@ -849,6 +1137,16 @@ proc rcRetain(bits: uint64) =
   of NODE_TAG:   inc cast[ptr GeneNode](bits and PAYLOAD_MASK).refCount
   of FUNCTION_TAG:  inc cast[ptr GeneFunction](bits and PAYLOAD_MASK).refCount
   of NATIVE_FN_TAG: inc cast[ptr GeneNativeFn](bits and PAYLOAD_MASK).refCount
+  of CYCLE_OBJECT_TAG:
+    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    case data.objKind
+    of okEnv:
+      inc EnvData(data).cycleRefs
+    of okCell, okAtomicCell:
+      inc CellData(data).cycleRefs
+    else:
+      discard
+    GC_ref(data)
   of OBJECT_TAG: GC_ref(cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK)))
   else: discard
 
@@ -884,13 +1182,26 @@ proc rcRelease(bits: uint64) =
     let p = cast[ptr GeneNativeFn](payload)
     dec p.refCount
     if p.refCount == 0: reset(p[]); dealloc(p); trackFree()
+  of CYCLE_OBJECT_TAG:
+    let data = cast[GeneObjectData](cast[pointer](payload))
+    var shouldTryCycle = false
+    case data.objKind
+    of okEnv:
+      let d = EnvData(data)
+      if d.cycleRefs > 0:
+        dec d.cycleRefs
+      shouldTryCycle = d.cycleRefs > 0
+    of okCell, okAtomicCell:
+      let d = CellData(data)
+      if d.cycleRefs > 0:
+        dec d.cycleRefs
+      shouldTryCycle = d.cycleRefs > 0
+    else:
+      discard
+    GC_unref(data)
+    if shouldTryCycle:
+      tryCollectObjectCycle(data)
   of OBJECT_TAG:
-    # TODO(orc-cycles): this manual GC_unref frees ORC objects immediately at
-    # refcount 0, which is incompatible with ORC's deferred cycle collector.
-    # As a result, cycles among mutable OBJECT_TAG objects reached through a
-    # Value (e.g. a self-referential cell) leak (design.md §11.1/§13; tracked by
-    # the "KNOWN GAP" suite in tests/test_rc.nim). Fix: make OBJECT_TAG objects
-    # fully ORC-managed (no manual free here) and add a `=trace` hook on Value.
     GC_unref(cast[GeneObjectData](cast[pointer](payload)))
   else: discard
 
@@ -931,7 +1242,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
   of NODE_TAG: vkNode
   of FUNCTION_TAG: vkFunction
   of NATIVE_FN_TAG: vkNativeFn
-  of OBJECT_TAG:
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
     case objData(v).objKind
     of okNamespace: vkNamespace
     of okModule: vkModule
@@ -1236,52 +1547,52 @@ proc setModuleMeta*(v: Value, meta: sink PropTable) =
   ModuleData(objData(v)).meta = meta
 
 proc envParent*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).parent
 
 proc envBindings*(v: Value): lent Table[string, Value] =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).bindings
 
 proc envImports*(v: Value): lent seq[Value] =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).imports
 
 proc envModule*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).module
 
 proc envCapabilities*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).capabilities
 
 proc envPolicy*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okEnv:
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).policy
 
 proc cellValue*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCell:
+  if not v.isObjectTagged or objData(v).objKind != okCell:
     raise newException(FieldDefect, "value is not a Cell")
   CellData(objData(v)).value
 
 proc setCellValue*(v, newValue: Value) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okCell:
+  if not v.isObjectTagged or objData(v).objKind != okCell:
     raise newException(FieldDefect, "value is not a Cell")
   CellData(objData(v)).value = newValue
 
 proc atomicCellValue*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okAtomicCell:
+  if not v.isObjectTagged or objData(v).objKind != okAtomicCell:
     raise newException(FieldDefect, "value is not an AtomicCell")
   CellData(objData(v)).value
 
 proc setAtomicCellValue*(v, newValue: Value) =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okAtomicCell:
+  if not v.isObjectTagged or objData(v).objKind != okAtomicCell:
     raise newException(FieldDefect, "value is not an AtomicCell")
   CellData(objData(v)).value = newValue
 
