@@ -5,8 +5,135 @@ import std/[algorithm, dynlib, math, monotimes, os, sets, strutils, tables,
 import ./[compiler, equality, gir, printer, reader, types]
 
 type
+  RunStopKind = enum
+    rskReturn
+    rskYield
+    rskSuspend            # fiber parked on a channel; its continuation is captured
+    rskPause              # fiber yielded cooperatively at a scheduler safepoint
+    rskCancel             # fiber unwound through cancellation cleanup
+
+  RunStop = object
+    kind: RunStopKind
+    value: Value
+
+  FrameKind = enum
+    fkNormal
+    fkTryBody
+    fkCatchBody
+    fkEnsureValueBody
+    fkEnsureErrorBody
+    fkEnsurePanicBody
+    fkEnsureCancelBody
+    fkForBody
+    fkTaskScopeBody
+    fkSupervisorBody
+    fkNamespaceBody
+
+  FrameExtra = ref object
+    ensureValue: Value
+    ensureBody: Chunk
+    ensureScope: Scope
+    pendingError: ref GeneError
+    pendingPanic: ref GenePanic
+    pendingCancel: ref GeneCancel
+    forItems: seq[Value]
+    forIndex: int
+    forPattern: Value
+    forBody: Chunk
+    ownedScope: Scope
+    namespaceName: string
+
+  ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
+  ## function calls push one of these instead of recursing through Nim, so a call
+  ## chain lives on the heap — the foundation for suspendable/resumable tasks
+  ## (design §13/§17). Each frame owns its operand stack and instruction pointer.
+  Frame = object
+    chunk: Chunk
+    scope: Scope
+    recycleScope: bool
+    stack: seq[Value]
+    ip: int
+    validateImpls: bool
+    returnType: Value       # instantiated return-type to adapt on return, or NIL
+    returnLabel: string     # "return from '<fn>'" label for the adaptation error
+    checksErrors: bool      # this frame is an ^errors function (translate on throw)
+    errorTypes: seq[Value]  # declared error rows, when checksErrors
+    fnName: string          # function name, for the undeclared-error message
+    kind: FrameKind         # current-frame completion behavior
+    extra: FrameExtra       # rare state for try/ensure/for/task/ns frames
+
+  TryHandler = object
+    ## An active `try` region on the VM's handler stack. The try body runs as a
+    ## Frame (so deep recursion through try-wrapped code stays on the heap); this
+    ## record lets the dispatch loop's exception handler find the catch clauses
+    ## and ensure block when an error unwinds back to `framesLen`.
+    tp: TryProto
+    scope: Scope            # enclosing scope, for catch matching and ensure
+    framesLen: int          # frames.len at try entry; the handler fires when an
+                            # unwinding error pops back to this depth
+
+  Fiber = ref object
+    ## A suspendable Gene task: the full runLoop continuation captured on the heap.
+    ## A fresh fiber carries just chunk/scope (started = false); once it suspends,
+    ## every register, the operand stack, and the frame/handler stacks are saved
+    ## here so the scheduler can resume it later. `task` is the (Task T E) value it
+    ## settles; `waitChannel`/`waitIsSend` record what it is parked on.
+    chunk: Chunk
+    scope: Scope
+    recycleScope: bool
+    stack: seq[Value]
+    ip: int
+    frames: seq[Frame]
+    handlers: seq[TryHandler]
+    validateImpls: bool
+    returnType: Value
+    returnLabel: string
+    checksErrors: bool
+    errorTypes: seq[Value]
+    fnName: string
+    frameKind: FrameKind
+    ensureValue: Value
+    ensureBody: Chunk
+    ensureScope: Scope
+    pendingError: ref GeneError
+    pendingPanic: ref GenePanic
+    pendingCancel: ref GeneCancel
+    forItems: seq[Value]
+    forIndex: int
+    forPattern: Value
+    forBody: Chunk
+    ownedScope: Scope
+    namespaceName: string
+    started: bool          # false until first scheduled (resume restores the rest)
+    task: Value            # the Task this fiber settles, for spawn/await fibers
+    actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
+    actorReturnType: Value # handler return type to adapt the ActorStep against
+    actorScope: Scope      # dispatch scope for the actor (state checks / supervision)
+    actorAskReply: Value   # ReplyTo for actor/ask messages, or NIL for sends
+    actorMessage: Value    # current actor mailbox message, for failure events
+    waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
+    waitIsSend: bool       # parked on send (vs recv)
+    waitSendValue: Value   # value to deliver when a parked send resumes
+    waitActor: Value       # actor the fiber is parked on, when send hit a full mailbox
+    waitTask: Value        # task the fiber is parked on, when suspended in `await`
+    waitTimer: bool        # fiber is parked until `waitDeadline`
+    waitDeadline: MonoTime
+
+  AskTimeout = object
+    task: Value
+    reply: Value
+    scope: Scope
+    deadline: MonoTime
+
+  SchedulerState = ref object of RuntimeContext
+    runQueue: seq[Fiber]
+    waiters: seq[Fiber]
+    askTimeouts: seq[AskTimeout]
+    fiberActive: bool
+
   Application* = ref object of RuntimeContext
     builtins: Scope
+    scheduler: SchedulerState
     nativeAdd: Value
     nativeSub: Value
     nativeMul: Value
@@ -53,8 +180,23 @@ type
 
 # `currentFiberActive` gates suspension: only a fiber the scheduler is running
 # parks on blocking channel/actor operations. Root-level channel use keeps its
-# original synchronous behavior.
-var currentFiberActive {.threadvar.}: bool
+# original synchronous behavior. The active scheduler pointer is thread-local
+# execution context; the queues it selects are owned by Application.
+var activeScheduler {.threadvar.}: SchedulerState
+
+proc currentScheduler(): SchedulerState
+
+template currentFiberActive: untyped =
+  currentScheduler().fiberActive
+
+template schedRunQueue: untyped =
+  currentScheduler().runQueue
+
+template schedWaiters: untyped =
+  currentScheduler().waiters
+
+template schedAskTimeouts: untyped =
+  currentScheduler().askTimeouts
 
 # Wake a fiber parked on `channel` (a receiver, or a sender when `wakeSenders`),
 # moving it from the wait list to the run queue. Defined with the scheduler below.
@@ -2818,6 +2960,7 @@ proc newApplication*(entryDir = ""): Application =
   let root = normalizedDir(entryDir)
   result = Application(moduleCache: initTable[string, Value](),
                        moduleLoading: initHashSet[string](),
+                       scheduler: SchedulerState(),
                        currentModuleDir: root,
                        packageRoot: root)
 
@@ -2825,6 +2968,33 @@ proc currentApplication(): Application =
   if gApplication == nil:
     gApplication = newApplication(getCurrentDir())
   gApplication
+
+proc schedulerState(app: Application): SchedulerState =
+  if app.scheduler == nil:
+    app.scheduler = SchedulerState()
+  app.scheduler
+
+proc currentScheduler(): SchedulerState =
+  if activeScheduler != nil:
+    return activeScheduler
+  currentApplication().schedulerState()
+
+template withScheduler(scope: Scope, body: untyped): untyped =
+  let schedulerScope = scope
+  let savedScheduler = activeScheduler
+  let schedulerApp =
+    if schedulerScope != nil and schedulerScope.application != nil:
+      Application(schedulerScope.application)
+    else:
+      currentApplication()
+  if activeScheduler == nil and gApplication != nil and schedulerApp == gApplication:
+    body
+  else:
+    activeScheduler = schedulerApp.schedulerState()
+    try:
+      body
+    finally:
+      activeScheduler = savedScheduler
 
 proc application*(scope: Scope): Application =
   if scope != nil and scope.application != nil:
@@ -4059,127 +4229,6 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value
 
-type
-  RunStopKind = enum
-    rskReturn
-    rskYield
-    rskSuspend            # fiber parked on a channel; its continuation is captured
-    rskPause              # fiber yielded cooperatively at a scheduler safepoint
-    rskCancel             # fiber unwound through cancellation cleanup
-
-  RunStop = object
-    kind: RunStopKind
-    value: Value
-
-  FrameKind = enum
-    fkNormal
-    fkTryBody
-    fkCatchBody
-    fkEnsureValueBody
-    fkEnsureErrorBody
-    fkEnsurePanicBody
-    fkEnsureCancelBody
-    fkForBody
-    fkTaskScopeBody
-    fkSupervisorBody
-    fkNamespaceBody
-
-  FrameExtra = ref object
-    ensureValue: Value
-    ensureBody: Chunk
-    ensureScope: Scope
-    pendingError: ref GeneError
-    pendingPanic: ref GenePanic
-    pendingCancel: ref GeneCancel
-    forItems: seq[Value]
-    forIndex: int
-    forPattern: Value
-    forBody: Chunk
-    ownedScope: Scope
-    namespaceName: string
-
-  ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
-  ## function calls push one of these instead of recursing through Nim, so a call
-  ## chain lives on the heap — the foundation for suspendable/resumable tasks
-  ## (design §13/§17). Each frame owns its operand stack and instruction pointer.
-  Frame = object
-    chunk: Chunk
-    scope: Scope
-    recycleScope: bool
-    stack: seq[Value]
-    ip: int
-    validateImpls: bool
-    returnType: Value       # instantiated return-type to adapt on return, or NIL
-    returnLabel: string     # "return from '<fn>'" label for the adaptation error
-    checksErrors: bool      # this frame is an ^errors function (translate on throw)
-    errorTypes: seq[Value]  # declared error rows, when checksErrors
-    fnName: string          # function name, for the undeclared-error message
-    kind: FrameKind         # current-frame completion behavior
-    extra: FrameExtra       # rare state for try/ensure/for/task/ns frames
-
-  TryHandler = object
-    ## An active `try` region on the VM's handler stack. The try body runs as a
-    ## Frame (so deep recursion through try-wrapped code stays on the heap); this
-    ## record lets the dispatch loop's exception handler find the catch clauses
-    ## and ensure block when an error unwinds back to `framesLen`.
-    tp: TryProto
-    scope: Scope            # enclosing scope, for catch matching and ensure
-    framesLen: int          # frames.len at try entry; the handler fires when an
-                            # unwinding error pops back to this depth
-
-  Fiber = ref object
-    ## A suspendable Gene task: the full runLoop continuation captured on the heap.
-    ## A fresh fiber carries just chunk/scope (started = false); once it suspends,
-    ## every register, the operand stack, and the frame/handler stacks are saved
-    ## here so the scheduler can resume it later. `task` is the (Task T E) value it
-    ## settles; `waitChannel`/`waitIsSend` record what it is parked on.
-    chunk: Chunk
-    scope: Scope
-    recycleScope: bool
-    stack: seq[Value]
-    ip: int
-    frames: seq[Frame]
-    handlers: seq[TryHandler]
-    validateImpls: bool
-    returnType: Value
-    returnLabel: string
-    checksErrors: bool
-    errorTypes: seq[Value]
-    fnName: string
-    frameKind: FrameKind
-    ensureValue: Value
-    ensureBody: Chunk
-    ensureScope: Scope
-    pendingError: ref GeneError
-    pendingPanic: ref GenePanic
-    pendingCancel: ref GeneCancel
-    forItems: seq[Value]
-    forIndex: int
-    forPattern: Value
-    forBody: Chunk
-    ownedScope: Scope
-    namespaceName: string
-    started: bool          # false until first scheduled (resume restores the rest)
-    task: Value            # the Task this fiber settles, for spawn/await fibers
-    actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
-    actorReturnType: Value # handler return type to adapt the ActorStep against
-    actorScope: Scope      # dispatch scope for the actor (state checks / supervision)
-    actorAskReply: Value   # ReplyTo for actor/ask messages, or NIL for sends
-    actorMessage: Value    # current actor mailbox message, for failure events
-    waitChannel: Value     # channel the fiber is parked on, when suspended on a channel
-    waitIsSend: bool       # parked on send (vs recv)
-    waitSendValue: Value   # value to deliver when a parked send resumes
-    waitActor: Value       # actor the fiber is parked on, when send hit a full mailbox
-    waitTask: Value        # task the fiber is parked on, when suspended in `await`
-    waitTimer: bool        # fiber is parked until `waitDeadline`
-    waitDeadline: MonoTime
-
-  AskTimeout = object
-    task: Value
-    reply: Value
-    scope: Scope
-    deadline: MonoTime
-
 proc stackFrameValue(name, kind: string): Value =
   var props = initOrderedTable[string, Value]()
   props["name"] = newStr(name)
@@ -4222,16 +4271,13 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
       "native"
   appendTraceFrames(e, [stackFrameValue(calleeName, kind)])
 
-# Cooperative scheduler state (one runtime worker; design §13.1 M:N is future
-# work). `schedRunQueue` holds runnable fibers; `schedWaiters` holds fibers parked
-# on a channel, actor mailbox, task await, or timer. `currentFiberActive` gates
-# suspension: only a scheduled fiber parks — root-level channel use keeps its
-# original synchronous behavior.
+# Cooperative scheduler state (one runtime-owned scheduler, one active worker for
+# now; design §13.1 M:N worker execution is future work). `schedRunQueue` holds
+# runnable fibers; `schedWaiters` holds fibers parked on a channel, actor
+# mailbox, task await, or timer. `currentFiberActive` gates suspension: only a
+# scheduled fiber parks — root-level channel use keeps its original synchronous
+# behavior.
 const schedulerInstructionBudget = 2048
-
-var schedRunQueue {.threadvar.}: seq[Fiber]
-var schedWaiters {.threadvar.}: seq[Fiber]
-var schedAskTimeouts {.threadvar.}: seq[AskTimeout]
 
 proc enqueueRunnable(f: Fiber)
 
@@ -6174,39 +6220,41 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       return RunStop(kind: rskSuspend, value: NIL)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
-  scope.prepareChunkScope(chunk)
-  var stack: seq[Value]
-  var ip = 0
-  let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
-                        validateArg = validateImplRequirements)
-  if stopped.kind == rskYield:
-    raise newException(GeneError, "yield is only valid in a generator")
-  if stopped.kind == rskPause:
-    raise newException(GeneError, "internal: scheduler pause outside a fiber")
-  if stopped.kind == rskCancel:
-    raise newException(GeneCancel, "task was cancelled")
-  stopped.value
+  withScheduler(scope):
+    scope.prepareChunkScope(chunk)
+    var stack: seq[Value]
+    var ip = 0
+    let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
+                          validateArg = validateImplRequirements)
+    if stopped.kind == rskYield:
+      raise newException(GeneError, "yield is only valid in a generator")
+    if stopped.kind == rskPause:
+      raise newException(GeneError, "internal: scheduler pause outside a fiber")
+    if stopped.kind == rskCancel:
+      raise newException(GeneCancel, "task was cancelled")
+    stopped.value
 
 proc runPooled(chunk: Chunk, scope: Scope,
                validateImplRequirements = true): Value =
-  if chunk.localNames.len == 0:
-    return run(chunk, scope, validateImplRequirements)
-  scope.prepareChunkScope(chunk)
-  var stack = acquireRunStack()
-  var ip = 0
-  var stopped: RunStop
-  try:
-    stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
-                      validateArg = validateImplRequirements)
-  finally:
-    releaseRunStack(stack)
-  if stopped.kind == rskYield:
-    raise newException(GeneError, "yield is only valid in a generator")
-  if stopped.kind == rskPause:
-    raise newException(GeneError, "internal: scheduler pause outside a fiber")
-  if stopped.kind == rskCancel:
-    raise newException(GeneCancel, "task was cancelled")
-  stopped.value
+  withScheduler(scope):
+    if chunk.localNames.len == 0:
+      return run(chunk, scope, validateImplRequirements)
+    scope.prepareChunkScope(chunk)
+    var stack = acquireRunStack()
+    var ip = 0
+    var stopped: RunStop
+    try:
+      stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
+                        validateArg = validateImplRequirements)
+    finally:
+      releaseRunStack(stack)
+    if stopped.kind == rskYield:
+      raise newException(GeneError, "yield is only valid in a generator")
+    if stopped.kind == rskPause:
+      raise newException(GeneError, "internal: scheduler pause outside a fiber")
+    if stopped.kind == rskCancel:
+      raise newException(GeneCancel, "task was cancelled")
+    stopped.value
 
 # ---------------------------------------------------------------------------
 # Cooperative task scheduler (design §13.1). Fibers are suspendable Gene tasks;

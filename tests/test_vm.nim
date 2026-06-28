@@ -1472,6 +1472,29 @@ suite "vm — cooperative scheduler":
        "  [(out ~ Cell/get) (await t) (out ~ Cell/get)])",
        "[0 1 1]"
 
+  test "applications keep scheduler queues isolated":
+    let app1 = newApplication()
+    let scope1 = newGlobalScope(app1)
+    let ch = run(compileSource("(channel ^capacity 1)"), scope1)
+    scope1.define("ch", ch)
+    let pending = run(compileSource("(spawn (ch ~ Channel/send 1))"), scope1)
+    check pending.kind == vkTask
+    check not pending.taskDone
+    check ch.channelLen == 0
+
+    let app2 = newApplication()
+    let scope2 = newGlobalScope(app2)
+    expect GeneError:
+      discard run(compileSource(
+        "(var ch (channel ^capacity 1)) (ch ~ Channel/recv)"), scope2)
+
+    check ch.channelLen == 0
+    check not pending.taskDone
+    scope1.define("pending", pending)
+    check run(compileSource("(await pending)"), scope1).kind == vkNil
+    check pending.taskDone
+    check ch.channelLen == 1
+
   test "CPU-bound fibers yield at scheduler safepoints":
     ck "(scope (var out (cell 0)) " &
        "  (var slow (spawn (do " &
