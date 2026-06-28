@@ -489,13 +489,24 @@ suite "types — function boundaries":
       if symAddr(handle, "sleep") != nil:
         check run(compileSource("((ffi/bind lib \"sleep\" [C/UInt] C/UInt) 0)"),
                   scope).print() == "0"
+        check run(compileSource(
+          "((ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) 0)"),
+          scope).print() == "0"
         expect GeneError:
           discard run(compileSource(
             "((ffi/bind lib \"sleep\" [C/UInt] C/UInt) -1)"),
             scope)
         expect GeneError:
           discard run(compileSource(
+            "((ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) -1)"),
+            scope)
+        expect GeneError:
+          discard run(compileSource(
             "((ffi/bind lib \"sleep\" [C/UInt] C/UInt) 4294967296)"),
+            scope)
+        expect GeneError:
+          discard run(compileSource(
+            "((ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) 4294967296)"),
             scope)
       if symAddr(handle, "getenv") != nil:
         check run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &

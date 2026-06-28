@@ -9136,6 +9136,12 @@ proc ffiCUIntArg(name: string, value: Value): cuint =
     raise newException(GeneError, name & " is out of C/UInt range")
   cuint(raw)
 
+proc ffiCUInt32Arg(name: string, value: Value): uint32 =
+  let raw = requireInt64(name, value)
+  if raw < 0 or raw > int64(high(uint32)):
+    raise newException(GeneError, name & " is out of C/UInt32 range")
+  uint32(raw)
+
 proc ffiCLongArg(name: string, value: Value): clong =
   let raw = requireInt64(name, value)
   when sizeof(clong) < sizeof(int64):
@@ -9256,6 +9262,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type VoidUIntProc = proc(): cuint {.cdecl.}
       let fn = cast[VoidUIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
+    of "C/UInt32":
+      type VoidUInt32Proc = proc(): uint32 {.cdecl.}
+      let fn = cast[VoidUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
     of "C/Long":
       type VoidLongProc = proc(): clong {.cdecl.}
       let fn = cast[VoidLongProc](callee.ffiCallableAddress)
@@ -9368,6 +9378,61 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type UIntPtrProc = proc(x: cuint): pointer {.cdecl.}
         let fn = cast[UIntPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/UInt32":
+    let arg0 = ffiCUInt32Arg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type UInt32IntProc = proc(x: uint32): cint {.cdecl.}
+      let fn = cast[UInt32IntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int32":
+      type UInt32Int32Proc = proc(x: uint32): int32 {.cdecl.}
+      let fn = cast[UInt32Int32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type UInt32UIntProc = proc(x: uint32): cuint {.cdecl.}
+      let fn = cast[UInt32UIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt32":
+      type UInt32UInt32Proc = proc(x: uint32): uint32 {.cdecl.}
+      let fn = cast[UInt32UInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type UInt32LongProc = proc(x: uint32): clong {.cdecl.}
+      let fn = cast[UInt32LongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int64":
+      type UInt32Int64Proc = proc(x: uint32): int64 {.cdecl.}
+      let fn = cast[UInt32Int64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0))
+    of "C/Size":
+      type UInt32SizeProc = proc(x: uint32): csize_t {.cdecl.}
+      let fn = cast[UInt32SizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type UInt32FloatProc = proc(x: uint32): cfloat {.cdecl.}
+      let fn = cast[UInt32FloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type UInt32DoubleProc = proc(x: uint32): cdouble {.cdecl.}
+      let fn = cast[UInt32DoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/CStr":
+      type UInt32CStrProc = proc(x: uint32): cstring {.cdecl.}
+      let fn = cast[UInt32CStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type UInt32VoidProc = proc(x: uint32) {.cdecl.}
+      let fn = cast[UInt32VoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type UInt32PtrProc = proc(x: uint32): pointer {.cdecl.}
+        let fn = cast[UInt32PtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Int32":
     let arg0 = ffiCInt32Arg("FFI argument 0 for '" &
@@ -9612,6 +9677,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     of "C/UInt":
       type CStrUIntProc = proc(s: cstring): cuint {.cdecl.}
       let fn = cast[CStrUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/UInt32":
+      type CStrUInt32Proc = proc(s: cstring): uint32 {.cdecl.}
+      let fn = cast[CStrUInt32Proc](callee.ffiCallableAddress)
       return newInt(int64(fn(ctext)))
     of "C/Float":
       type CStrFloatProc = proc(s: cstring): cfloat {.cdecl.}
