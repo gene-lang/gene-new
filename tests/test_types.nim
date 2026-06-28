@@ -401,6 +401,12 @@ suite "types — function boundaries":
         check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int) " &
                                 " \"-42\")"),
                   scope).print() == "-42"
+      if symAddr(handle, "atof") != nil:
+        let parsed = run(compileSource(
+          "((ffi/bind lib \"atof\" [C/CStr] C/Double) \"12.5\")"),
+          scope)
+        check parsed.kind == vkFloat
+        check abs(parsed.floatVal - 12.5) < 0.000001
       if symAddr(handle, "strcmp") != nil:
         check run(compileSource("((ffi/bind lib \"strcmp\" " &
                                 "  [C/CStr C/CStr] C/Int) \"abc\" \"abc\")"),
