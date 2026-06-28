@@ -408,6 +408,9 @@ suite "types — function boundaries":
       if symAddr(handle, "abs") != nil:
         check run(compileSource("((ffi/bind lib \"abs\" [C/Int] C/Int) -9)"),
                   scope).print() == "9"
+      if symAddr(handle, "labs") != nil:
+        check run(compileSource("((ffi/bind lib \"labs\" [C/Long] C/Long) -9)"),
+                  scope).print() == "9"
       if symAddr(handle, "strerror") != nil:
         let message = run(compileSource(
           "((ffi/bind lib \"strerror\" [C/Int] C/CStr) 0)"),
@@ -477,6 +480,24 @@ suite "types — function boundaries":
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"abc\" 120)"),
                   scope).print() == "(c-const-ptr null)"
+      if symAddr(handle, "malloc") != nil and symAddr(handle, "free") != nil:
+        let allocated = run(compileSource(
+          "((ffi/bind lib \"malloc\" [C/Size] " &
+          "   (quote (C/OwnedPtr C/Char)) \"free\") 8)"),
+          scope)
+        check allocated.kind == vkCPtr
+        check allocated.cPtrOwned
+        check not allocated.cPtrClosed
+        scope.define("allocated", allocated)
+        check run(compileSource("[(C/closed? allocated) " &
+                                " (C/close allocated) " &
+                                " (C/closed? allocated)]"),
+                  scope).print() == "[false nil true]"
+        expect GeneError:
+          discard run(compileSource(
+            "((ffi/bind lib \"malloc\" [C/Size] " &
+            "   (quote (C/OwnedPtr C/Char)) \"free\") -1)"),
+            scope)
       if symAddr(handle, "strdup") != nil and symAddr(handle, "free") != nil:
         expect GeneError:
           discard run(compileSource("(ffi/bind lib \"strdup\" [C/CStr] " &

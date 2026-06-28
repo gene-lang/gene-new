@@ -309,6 +309,7 @@ suite "spec — typed native compilation prototype from design":
   test "ffi/fn C wrappers marshal scalar, pointer, slice, and buffer ABI shapes":
     let source =
       "(ffi/fn c_abs ^symbol \"abs\" [x : C/Int] : C/Int) " &
+      "(ffi/fn c_strerror ^symbol \"strerror\" [x : C/Int] : C/CStr) " &
       "(ffi/fn c_memchr ^symbol \"memchr\" " &
       "  [p : (C/ConstPtr C/Char) ch : C/Int n : C/Size] " &
       "  : (C/NullablePtr C/Char)) " &
@@ -322,6 +323,9 @@ suite "spec — typed native compilation prototype from design":
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
     check "int native_result = abs(x);" in c
     check "return gene_ffi_result_int(ctx, native_result, result);" in c
+    check "extern const char * strerror(int x);" in c
+    check "const char * native_result = strerror(x);" in c
+    check "return gene_ffi_result_cstr(ctx, native_result, result);" in c
     check "status = gene_ffi_arg_const_ptr(ctx, call, 0, \"p\", " &
       "\"(C/ConstPtr C/Char)\", &p);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
