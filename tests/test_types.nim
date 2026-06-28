@@ -7,6 +7,9 @@ template ck(src, expected: string) =
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
 
+proc ffiTestI16Abs(x: int16): int16 {.cdecl.} =
+  if x < 0'i16: -x else: x
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -639,6 +642,19 @@ suite "types — function boundaries":
                 scope).print() == "true"
       expect GeneError:
         discard run(compileSource("(strlen \"closed\")"), scope)
+
+  test "direct FFI callable supports exact small signed scalar ABI":
+    let handle = loadLib()
+    if handle != nil:
+      let scope = newGlobalScope()
+      let lib = newFfiLibrary(handle, "<self>", nil)
+      scope.define("i16-abs",
+                   newFfiCallable("ffiTestI16Abs", "ffiTestI16Abs",
+                                  cast[pointer](ffiTestI16Abs), lib,
+                                  @[newSym("C/Int16")], newSym("C/Int16")))
+      check run(compileSource("(i16-abs -9)"), scope).print() == "9"
+      expect GeneError:
+        discard run(compileSource("(i16-abs 32768)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""

@@ -9130,6 +9130,12 @@ proc ffiCInt32Arg(name: string, value: Value): int32 =
     raise newException(GeneError, name & " is out of C/Int32 range")
   int32(raw)
 
+proc ffiCInt16Arg(name: string, value: Value): int16 =
+  let raw = requireInt64(name, value)
+  if raw < int64(low(int16)) or raw > int64(high(int16)):
+    raise newException(GeneError, name & " is out of C/Int16 range")
+  int16(raw)
+
 proc ffiCUIntArg(name: string, value: Value): cuint =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(cuint)):
@@ -9257,6 +9263,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     of "C/Int32":
       type VoidInt32Proc = proc(): int32 {.cdecl.}
       let fn = cast[VoidInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
+    of "C/Int16":
+      type VoidInt16Proc = proc(): int16 {.cdecl.}
+      let fn = cast[VoidInt16Proc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
     of "C/UInt":
       type VoidUIntProc = proc(): cuint {.cdecl.}
@@ -9433,6 +9443,65 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type UInt32PtrProc = proc(x: uint32): pointer {.cdecl.}
         let fn = cast[UInt32PtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/Int16":
+    let arg0 = ffiCInt16Arg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type Int16IntProc = proc(x: int16): cint {.cdecl.}
+      let fn = cast[Int16IntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int16":
+      type Int16Int16Proc = proc(x: int16): int16 {.cdecl.}
+      let fn = cast[Int16Int16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int32":
+      type Int16Int32Proc = proc(x: int16): int32 {.cdecl.}
+      let fn = cast[Int16Int32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type Int16UIntProc = proc(x: int16): cuint {.cdecl.}
+      let fn = cast[Int16UIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt32":
+      type Int16UInt32Proc = proc(x: int16): uint32 {.cdecl.}
+      let fn = cast[Int16UInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type Int16LongProc = proc(x: int16): clong {.cdecl.}
+      let fn = cast[Int16LongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int64":
+      type Int16Int64Proc = proc(x: int16): int64 {.cdecl.}
+      let fn = cast[Int16Int64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0))
+    of "C/Size":
+      type Int16SizeProc = proc(x: int16): csize_t {.cdecl.}
+      let fn = cast[Int16SizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type Int16FloatProc = proc(x: int16): cfloat {.cdecl.}
+      let fn = cast[Int16FloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type Int16DoubleProc = proc(x: int16): cdouble {.cdecl.}
+      let fn = cast[Int16DoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/CStr":
+      type Int16CStrProc = proc(x: int16): cstring {.cdecl.}
+      let fn = cast[Int16CStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type Int16VoidProc = proc(x: int16) {.cdecl.}
+      let fn = cast[Int16VoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type Int16PtrProc = proc(x: int16): pointer {.cdecl.}
+        let fn = cast[Int16PtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Int32":
     let arg0 = ffiCInt32Arg("FFI argument 0 for '" &
