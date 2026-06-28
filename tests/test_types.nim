@@ -498,6 +498,24 @@ suite "types — function boundaries":
             "((ffi/bind lib \"malloc\" [C/Size] " &
             "   (quote (C/OwnedPtr C/Char)) \"free\") -1)"),
             scope)
+      if symAddr(handle, "calloc") != nil and symAddr(handle, "free") != nil:
+        let zeroed = run(compileSource(
+          "((ffi/bind lib \"calloc\" [C/Size C/Size] " &
+          "   (quote (C/OwnedPtr C/Char)) \"free\") 2 4)"),
+          scope)
+        check zeroed.kind == vkCPtr
+        check zeroed.cPtrOwned
+        check not zeroed.cPtrClosed
+        scope.define("zeroed", zeroed)
+        check run(compileSource("[(C/closed? zeroed) " &
+                                " (C/close zeroed) " &
+                                " (C/closed? zeroed)]"),
+                  scope).print() == "[false nil true]"
+        expect GeneError:
+          discard run(compileSource(
+            "((ffi/bind lib \"calloc\" [C/Size C/Size] " &
+            "   (quote (C/OwnedPtr C/Char)) \"free\") -1 4)"),
+            scope)
       if symAddr(handle, "strdup") != nil and symAddr(handle, "free") != nil:
         expect GeneError:
           discard run(compileSource("(ffi/bind lib \"strdup\" [C/CStr] " &

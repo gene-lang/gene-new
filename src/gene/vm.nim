@@ -9373,6 +9373,35 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         type CStrIntPtrProc = proc(s: cstring, x: cint): pointer {.cdecl.}
         let fn = cast[CStrIntPtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
+  if paramLabels.len == 2 and paramLabels[0] == "C/Size" and
+      paramLabels[1] == "C/Size":
+    let arg0 = ffiCSizeArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    let arg1 = ffiCSizeArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", args[1])
+    case returnLabel
+    of "C/Int":
+      type SizeSizeIntProc = proc(a, b: csize_t): cint {.cdecl.}
+      let fn = cast[SizeSizeIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Long":
+      type SizeSizeLongProc = proc(a, b: csize_t): clong {.cdecl.}
+      let fn = cast[SizeSizeLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Size":
+      type SizeSizeSizeProc = proc(a, b: csize_t): csize_t {.cdecl.}
+      let fn = cast[SizeSizeSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/CStr":
+      type SizeSizeCStrProc = proc(a, b: csize_t): cstring {.cdecl.}
+      let fn = cast[SizeSizeCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type SizeSizePtrProc = proc(a, b: csize_t): pointer {.cdecl.}
+        let fn = cast[SizeSizePtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
   if paramLabels.len == 3 and isFfiPtrLabel(paramLabels[0]) and
       paramLabels[1] == "C/Int" and paramLabels[2] == "C/Size":
     let arg0 = ffiPointerArg("FFI argument 0 for '" &
