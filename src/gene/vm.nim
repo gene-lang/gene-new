@@ -105,6 +105,7 @@ type
     ownedScope: Scope
     namespaceName: string
     started: bool          # false until first scheduled (resume restores the rest)
+    workerSafe: bool       # capture graph can move to a worker once M:N lands
     task: Value            # the Task this fiber settles, for spawn/await fibers
     actorOwner: Value      # actor this fiber is processing a message for (xor `task`)
     actorReturnType: Value # handler return type to adapt the ActorStep against
@@ -3869,7 +3870,8 @@ proc isSendableValue(value: Value, scope: Scope,
     seen.incl value.bits
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
-     vkNativeFn, vkActorRef, vkReplyTo, vkType, vkProtocol, vkProtocolMessage:
+     vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
+     vkType, vkProtocol, vkProtocolMessage:
     true
   of vkFunction:
     functionCapturesSendable(value, scope, seen)
@@ -3908,14 +3910,18 @@ proc isSendableValue(value: Value, scope: Scope,
       if not isSendableValue(item, scope, seen):
         return false
     true
-  of vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell, vkStream, vkTask,
-     vkChannel, vkActorContext, vkActorStep, vkCPtr, vkCSlice, vkBuffer,
+  of vkNamespace, vkModule, vkEnv, vkCell, vkStream, vkActorContext,
+     vkActorStep, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
   var seen = initHashSet[uint64]()
   isSendableValue(value, scope, seen)
+
+proc spawnCanMoveToWorker(scope: Scope, body: Chunk): bool =
+  var seen = initHashSet[uint64]()
+  chunkCapturesSendable(body, scope, scope, 0, seen, initHashSet[string]())
 
 proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
                        seenValues: var HashSet[uint64],
@@ -4676,7 +4682,7 @@ proc cancelOwnedActor(actor: Value) =
   for reply in repliesToCancel:
     discard cancelReplyTask(reply)
 
-proc spawnFiber(chunk: Chunk, scope: Scope): Value
+proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value
 
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
                             e: ref GeneError): ref GeneError =
@@ -6624,9 +6630,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # running inline, so CPU-only child work still cooperates through VM
           # safepoints. (Still a single-worker scheduler; M:N workers are future
           # work.)
-          publishSpawnCapture(scope, chunk.subchunks[inst[].intArg])
+          let body = chunk.subchunks[inst[].intArg]
+          let workerSafe = inst[].flag and scope.spawnCanMoveToWorker(body)
+          publishSpawnCapture(scope, body)
           let taskScope = newScope(scope)
-          let task = spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
+          let task = spawnFiber(body, taskScope, workerSafe)
           scope.registerOwnedTask(task)
           stack.add task
         of opAwait:
@@ -7186,13 +7194,13 @@ proc runFiber(f: Fiber) =
       f.task.finishTaskCancel()
       wakeTaskWaiters(f.task)
 
-proc spawnFiber(chunk: Chunk, scope: Scope): Value =
+proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   ## Create a child task + fiber and enqueue it for scheduler execution. This keeps
   ## spawn asynchronous even when the body is CPU-only; await/drain/root blocking
   ## operations drive the run queue until the task completes or parks.
   let task = newPendingTask()
   let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
-                started: false)
+                started: false, workerSafe: workerSafe)
   enqueueRunnable(f)
   task
 

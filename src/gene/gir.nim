@@ -545,8 +545,12 @@ proc formatInstruction(inst: Instruction): string =
     result.add " for=" & $inst.intArg
   of opTry:
     result.add " try=" & $inst.intArg
-  of opTaskScope, opSpawn:
+  of opTaskScope:
     result.add " body=" & $inst.intArg
+  of opSpawn:
+    result.add " body=" & $inst.intArg
+    if inst.flag:
+      result.add " worker-candidate=true"
   of opSupervisor:
     result.add " body=" & $inst.intArg & " strategy=" & inst.name
     if inst.names.len > 0:

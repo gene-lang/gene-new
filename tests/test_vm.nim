@@ -189,6 +189,16 @@ suite "compiler — GIR emission":
         sawOuterFib = true
     check sawOuterFib
 
+  test "marks worker-candidate spawns without outer mutation":
+    let readOnly = compileSource(
+      "(scope (var x 1) (spawn (+ x 1)))").disassemble()
+    check readOnly.contains("opSpawn body=0 worker-candidate=true")
+
+    let mutating = compileSource(
+      "(scope (var x 1) (spawn (set x 2)))").disassemble()
+    check mutating.contains("opSpawn body=0")
+    check not mutating.contains("worker-candidate=true")
+
   test "emits slots for match branch bindings and outer updates":
     let chunk = compileSource(
       "(var total 0) (match [1 2] (when [a b] (set total (+ a b))))")
@@ -1352,6 +1362,22 @@ suite "vm — channels":
        "(ch ~ Channel/send f) " &
        "(var g (ch ~ Channel/recv)) " &
        "(g 7)",
+       "7"
+    ck "(var ch (channel ^capacity 1)) " &
+       "(var t (spawn 7)) " &
+       "(ch ~ Channel/send t) " &
+       "(await (ch ~ Channel/recv))",
+       "7"
+    ck "(var ch (channel ^capacity 1)) " &
+       "(var inner (channel ^capacity 1)) " &
+       "(inner ~ Channel/send 7) " &
+       "(ch ~ Channel/send inner) " &
+       "((ch ~ Channel/recv) ~ Channel/recv)",
+       "7"
+    ck "(var ch (channel ^capacity 1)) " &
+       "(var a (atomic-cell 7)) " &
+       "(ch ~ Channel/send a) " &
+       "((ch ~ Channel/recv) ~ AtomicCell/load)",
        "7"
     ck "(var ch (channel)) " &
        "(try (ch ~ Channel/send [1]) catch (TypeError ^expected e) e)",

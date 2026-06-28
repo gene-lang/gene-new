@@ -93,9 +93,11 @@ Notes:
 
 4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
    spawned fibers now mark reachable value graphs `shared` for threaded manual
-   RC. The remaining design work is semantic: deciding and enforcing which spawn
-   captures are allowed to move to another worker. Closures are Sendable only if
-   all captures are Sendable — which loops back to (1).
+   RC. Spawn bytecode marks bodies that do not mutate outer bindings as worker
+   candidates, and enqueue records that bit only when runtime captures are
+   `Send`. The remaining design work is semantic: deciding how a future worker
+   pool consumes those eligible tasks while unsafe shared-scope tasks remain
+   cooperative.
 
 ## Staged plan (if/when M:N is prioritized)
 
@@ -105,8 +107,9 @@ Notes:
   under atomicArc or equivalent for generic ORC object refs.**
 - **B. Scope isolation semantics.** Decide and enforce: parallel/sent work is
   share-nothing. Likely: a task that may run on another worker captures a
-  frozen/owned scope snapshot, not a live shared parent. This is the real design
-  work and gates everything.
+  frozen/owned scope snapshot, not a live shared parent. The VM now records
+  which spawned fibers are worker candidates (`no outer mutation` plus
+  `Send` captures), but this is still metadata until the worker pool consumes it.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
   The queue/object-locking portion has started, Send-boundary and spawned-fiber

@@ -597,6 +597,40 @@ proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
       return true
   false
 
+proc chunkMutatesOuterScope(chunk: Chunk, localDepth = 0): bool =
+  if chunk == nil:
+    return false
+  for inst in chunk.instructions:
+    case inst.op
+    of opSetOuterLocal:
+      if inst.depth > localDepth:
+        return true
+    of opSetName:
+      return true
+    else:
+      discard
+  for body in chunk.subchunks:
+    if chunkMutatesOuterScope(body, localDepth + 1):
+      return true
+  for loop in chunk.forLoops:
+    if chunkMutatesOuterScope(loop.body, localDepth + 1):
+      return true
+  for match in chunk.matches:
+    for clause in match.clauses:
+      if chunkMutatesOuterScope(clause.body, localDepth + 1):
+        return true
+    if chunkMutatesOuterScope(match.elseBody, localDepth + 1):
+      return true
+  for attempt in chunk.tries:
+    if chunkMutatesOuterScope(attempt.body, localDepth):
+      return true
+    for clause in attempt.catches:
+      if chunkMutatesOuterScope(clause.body, localDepth + 1):
+        return true
+    if chunkMutatesOuterScope(attempt.ensureBody, localDepth):
+      return true
+  false
+
 proc chunkMaySetOuterSlot(chunk: Chunk, depth, slot: int): bool =
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
@@ -2806,7 +2840,8 @@ proc compileSpawn(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:
     raise newException(GeneError, "spawn expects one expression")
   let body = c.compileSubBody(node.body, scoped = true)
-  discard c.emit(opSpawn, c.chunk.addSubchunk(body))
+  discard c.emit(opSpawn, c.chunk.addSubchunk(body),
+                 flag = not body.chunkMutatesOuterScope())
 
 proc compileAwait(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:

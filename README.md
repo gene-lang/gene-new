@@ -130,7 +130,10 @@ participates in equality or hashing.
 > `ActorFailure` events for actor handler failures, with optional
 > `^dead-letter ch` fallback when the primary event sink is unavailable.
 > Spawned fibers publish their captured scope/value graph so threaded builds use
-> atomic RC for captured manual-RC values.
+> atomic RC for captured manual-RC values. Spawn bytecode also marks bodies that
+> do not mutate outer bindings as worker candidates, and the VM keeps that mark
+> only when runtime captures are `Send`; it is classification metadata for the
+> future worker pool, not parallel execution yet.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
@@ -237,9 +240,11 @@ published; in threaded builds, manual-RC heap objects switch to atomic
 retain/release after that marker while thread-local objects stay on the
 non-atomic path. Spawned fibers also publish their captured scope/value graph so
 captured manual-RC values are safe to retain/release from threaded builds.
-Threaded `atomicArc` smoke checks cover values, VM behavior, and RC leak
-accounting, but scope isolation and worker orchestration still need to land
-before true M:N execution.
+Spawned fibers additionally record a worker-candidate bit only when the compiler
+sees no outer-scope mutation and runtime captures satisfy `Send`; unsafe
+shared-scope tasks remain cooperative. Threaded `atomicArc` smoke checks cover
+values, VM behavior, and RC leak accounting, but scope isolation and worker
+orchestration still need to land before true M:N execution.
 
 ## License
 
