@@ -48,6 +48,7 @@ type
     opRecur1
     opRecur1LocalIntSubConst
     opRecur1LocalIntSubConstSameScope
+    opReturnLocalIfIntLtConst
     opCall2
     opCall
     opCallSplice
@@ -521,6 +522,9 @@ proc formatInstruction(inst: Instruction): string =
   of opRecur1LocalIntSubConstSameScope:
     result.add " slot=" & $inst.intArg & " name=" & inst.name &
       " const=" & $inst.depth & " argc=1"
+  of opReturnLocalIfIntLtConst:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name &
+      " const=" & $inst.depth
   of opCall2:
     result.add " argc=2"
   of opCall:

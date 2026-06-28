@@ -5358,8 +5358,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       else:
         releaseRunStack(stack)
         var caller = frames.pop()
-        stack = move caller.stack
-        loadFrameRegs(caller)
+        if caller.restoreSlot >= 0 and caller.kind == fkNormal and caller.extra == nil:
+          caller.scope.slots[caller.restoreSlot] = caller.restoreValue
+          stack = move caller.stack
+          ip = caller.ip
+          if caller.recycleScope or caller.validateImpls or
+              caller.returnType.kind != vkNil or caller.returnLabel.len != 0:
+            recycleScope = caller.recycleScope
+            validateImplRequirements = caller.validateImpls
+            returnType = caller.returnType
+            returnLabel = caller.returnLabel
+        else:
+          stack = move caller.stack
+          loadFrameRegs(caller)
         stack.add retValue
     elif curFrameKind == fkEnsureErrorBody:
       raise curPendingError
@@ -6175,6 +6186,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             enterRecur1SameScopeFrame(arg, argKnownBareInt)
           else:
             enterRecur1Frame(arg, argKnownBareInt)
+        of opReturnLocalIfIntLtConst:
+          let slot = inst[].intArg
+          if slot < 0 or slot >= scope.slots.len:
+            raise newException(GeneError,
+              "VM local slot out of range for int return guard: " & inst[].name)
+          let a = scope.slots[slot]
+          let b = chunk.constants[inst[].depth]
+          var matched = false
+          if a.isSmallInt and (inst[].flag or b.isSmallInt):
+            matched = a.smallIntVal < b.smallIntVal
+          elif a.kind == vkInt and b.kind == vkInt:
+            matched = intCompare(a, b) < 0
+          else:
+            let callee = scope.loadNativeFast(nfkLt, "<")
+            var args = [a, b]
+            matched = applyCall(callee, args, NamedArgs(), scope).isTruthy
+          if matched:
+            frameReturnBareInt(a)
+            continue
+          ip += 4
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op

@@ -694,14 +694,14 @@ proc canUseTypedIntRecur1(proto: FunctionProto): bool =
     proto.returnType.isBareIntType and not proto.isGenerator and
     proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
 
-proc canUseSameScopeTypedIntRecur1(proto: FunctionProto): bool =
+proc canUseSameScopeRecur1(proto: FunctionProto): bool =
   ## Same-scope recursion mutates only the single parameter slot and restores it
   ## when the callee returns. Keep this to the minimal no-local/no-subframe shape.
-  proto.canUseTypedIntRecur1 and proto.localNames.len == 1 and
+  (proto.simpleCall or proto.canUseTypedIntRecur1) and proto.localNames.len == 1 and
     proto.positionalSlots[0] == 0 and proto.localNames[0] == proto.params[0] and
     proto.taskFrameKind == tfkNone and proto.chunk.subchunks.len == 0 and
     proto.chunk.forLoops.len == 0 and proto.chunk.matches.len == 0 and
-    proto.chunk.tries.len == 0
+    proto.chunk.tries.len == 0 and proto.chunk.functions.len == 0
 
 proc canUseRecur1(proto: FunctionProto): bool =
   proto.selfParentSlot >= 0 and proto.params.len == 1 and
@@ -710,6 +710,39 @@ proc canUseRecur1(proto: FunctionProto): bool =
     not proto.callScopeNeedsSlotNames and
     not proto.callScopeNeedsSlotReset and
     (proto.simpleCall or proto.canUseTypedIntRecur1)
+
+proc rewriteTypedIntTailReturnGuards(proto: FunctionProto) =
+  ## Collapse the typed tail shape produced for `(if (< x const) x ...)`.
+  ## The replacement returns directly on the true branch and skips the four
+  ## now-dead condition/then/jump instructions on the false branch.
+  if not proto.returnKnownBareInt:
+    return
+  var i = 0
+  while i + 4 < proto.chunk.instructions.len:
+    let load = proto.chunk.instructions[i]
+    let cmp = proto.chunk.instructions[i + 1]
+    let jumpFalse = proto.chunk.instructions[i + 2]
+    let trueLoad = proto.chunk.instructions[i + 3]
+    let jumpEnd = proto.chunk.instructions[i + 4]
+    let loadLocal = load.op == opLoadLocalFast or load.op == opLoadLocal
+    let trueLoadLocal = trueLoad.op == opLoadLocalFast or
+      trueLoad.op == opLoadLocal
+    if loadLocal and cmp.op == opIntLtConst and
+        jumpFalse.op == opJumpIfFalse and jumpFalse.intArg == i + 5 and
+        trueLoadLocal and trueLoad.intArg == load.intArg and
+        jumpEnd.op == opJump and jumpEnd.intArg >= 0 and
+        jumpEnd.intArg < proto.chunk.instructions.len and
+        proto.chunk.instructions[jumpEnd.intArg].op == opReturnBareInt:
+      proto.chunk.instructions[i] = Instruction(
+        op: opReturnLocalIfIntLtConst, intArg: load.intArg,
+        depth: cmp.depth, name: load.name, flag: cmp.flag)
+      proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
+      proto.chunk.instructions[i + 2] = Instruction(op: opNoop)
+      proto.chunk.instructions[i + 3] = Instruction(op: opNoop)
+      proto.chunk.instructions[i + 4] = Instruction(op: opNoop)
+      inc i, 5
+    else:
+      inc i
 
 proc rewriteSelfRecursiveCalls(parent: Chunk) =
   for proto in parent.functions:
@@ -738,7 +771,7 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
               sub.depth >= 0 and sub.depth < proto.chunk.constants.len and
               proto.chunk.constants[sub.depth].isSmallInt
             let fusedOp =
-              if proto.canUseSameScopeTypedIntRecur1:
+              if proto.canUseSameScopeRecur1:
                 opRecur1LocalIntSubConstSameScope
               else:
                 opRecur1LocalIntSubConst
@@ -750,6 +783,7 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
             inc i, 3
           else:
             inc i
+      proto.rewriteTypedIntTailReturnGuards()
     proto.chunk.rewriteSelfRecursiveCalls()
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
