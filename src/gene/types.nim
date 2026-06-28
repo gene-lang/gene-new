@@ -25,10 +25,11 @@
 ## use the same weak-scope storage and are strengthened when the Env escapes.
 ## See `tests/test_rc.nim`.
 ##
-## Values crossing a `Send` boundary are marked shared; in threaded builds manual
-## RC objects then use atomic inc/dec while thread-local objects stay on the cheap
-## non-atomic path. Generic ORC objects also carry the marker, but a full M:N
-## worker pool still needs atomicArc (or equivalent) for those OBJECT_TAG refs.
+## Values crossing a `Send` boundary, plus captured values published to spawned
+## fibers, are marked shared; in threaded builds manual RC objects then use atomic
+## inc/dec while thread-local objects stay on the cheap non-atomic path. Generic
+## ORC objects also carry the marker, but a full M:N worker pool still needs
+## atomicArc (or equivalent) for those OBJECT_TAG refs and isolated spawn scopes.
 
 import std/[locks, sets, strutils, sysatomics, tables, unicode]
 
@@ -1198,8 +1199,61 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     return
   seen.incl key
   markObjectShared(data)
-  forObjectEdges(data, edgeBits):
-    markSharedBits(edgeBits, seen)
+  case data.objKind
+  of okTask:
+    let d = TaskData(data)
+    markSharedBits(d.resultType.bits, seen)
+    markSharedBits(d.errorType.bits, seen)
+    var result, errorValue, panicValue: Value
+    acquire(d.state.lock)
+    try:
+      result = d.state.result
+      errorValue = d.state.errorValue
+      panicValue = d.state.panicValue
+    finally:
+      release(d.state.lock)
+    markSharedBits(result.bits, seen)
+    markSharedBits(errorValue.bits, seen)
+    markSharedBits(panicValue.bits, seen)
+  of okChannel:
+    let d = ChannelData(data)
+    markSharedBits(d.itemType.bits, seen)
+    var items: seq[Value]
+    acquire(d.state.lock)
+    try:
+      items = d.state.items
+    finally:
+      release(d.state.lock)
+    for item in items:
+      markSharedBits(item.bits, seen)
+  of okActorRef:
+    let d = ActorData(data)
+    var state, restartInit, handler, messageType, failureEvents,
+      failureDeadLetters: Value
+    var queue: seq[ActorMessage]
+    acquire(d.lock)
+    try:
+      state = d.state
+      restartInit = d.restartInit
+      handler = d.handler
+      messageType = d.messageType
+      failureEvents = d.failureEvents
+      failureDeadLetters = d.failureDeadLetters
+      queue = d.queue
+    finally:
+      release(d.lock)
+    markSharedBits(state.bits, seen)
+    markSharedBits(restartInit.bits, seen)
+    markSharedBits(handler.bits, seen)
+    markSharedBits(messageType.bits, seen)
+    markSharedBits(failureEvents.bits, seen)
+    markSharedBits(failureDeadLetters.bits, seen)
+    for item in queue:
+      markSharedBits(item.message.bits, seen)
+      markSharedBits(item.reply.bits, seen)
+  else:
+    forObjectEdges(data, edgeBits):
+      markSharedBits(edgeBits, seen)
 
 proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
   let tag = bits shr TAG_SHIFT
@@ -2062,6 +2116,11 @@ proc channelLen*(v: Value): int =
   withChannelStateLock(state):
     result = state.items.len
 
+proc channelItemsSnapshot*(v: Value): seq[Value] =
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result = state.items
+
 proc channelClosed*(v: Value): bool =
   let state = channelData(v).state
   withChannelStateLock(state):
@@ -2189,6 +2248,11 @@ proc drainActorMessages*(v: Value): seq[ActorMessage] =
   withActorLock(data):
     result = data.queue
     data.queue.setLen(0)
+
+proc actorMessagesSnapshot*(v: Value): seq[ActorMessage] =
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.queue
 
 proc pushActorMessage*(v, message: Value) =
   let stored = escapeWeakFunctions(message)

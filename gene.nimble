@@ -34,3 +34,6 @@ task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
   exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_vm.nim"
+  exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_rc.nim"

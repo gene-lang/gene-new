@@ -134,6 +134,7 @@ type
 
   Application* = ref object of RuntimeContext
     builtins: Scope
+    spawnBuiltinsPublished: bool
     scheduler: SchedulerState
     nativeAdd: Value
     nativeSub: Value
@@ -3916,6 +3917,292 @@ proc isSendableValue(value: Value, scope: Scope): bool =
   var seen = initHashSet[uint64]()
   isSendableValue(value, scope, seen)
 
+proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer])
+proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer])
+
+proc publishSpawnFunctionProto(proto: FunctionProto,
+                               seenScopes: var HashSet[pointer],
+                               seenValues: var HashSet[uint64],
+                               seenChunks: var HashSet[pointer])
+
+proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer]) =
+  if chunk == nil:
+    return
+  let key = cast[pointer](chunk)
+  if seenChunks.contains(key):
+    return
+  seenChunks.incl key
+  for value in chunk.constants:
+    publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  for _, site in chunk.callSites:
+    publishSpawnValue(site, seenScopes, seenValues, seenChunks)
+  for fn in chunk.functions:
+    publishSpawnFunctionProto(fn, seenScopes, seenValues, seenChunks)
+  for body in chunk.subchunks:
+    publishSpawnChunk(body, seenScopes, seenValues, seenChunks)
+  for loop in chunk.forLoops:
+    publishSpawnValue(loop.pattern, seenScopes, seenValues, seenChunks)
+    publishSpawnChunk(loop.body, seenScopes, seenValues, seenChunks)
+  for match in chunk.matches:
+    for clause in match.clauses:
+      publishSpawnValue(clause.pattern, seenScopes, seenValues, seenChunks)
+      publishSpawnChunk(clause.body, seenScopes, seenValues, seenChunks)
+    publishSpawnChunk(match.elseBody, seenScopes, seenValues, seenChunks)
+  for attempt in chunk.tries:
+    publishSpawnChunk(attempt.body, seenScopes, seenValues, seenChunks)
+    for clause in attempt.catches:
+      publishSpawnValue(clause.pattern, seenScopes, seenValues, seenChunks)
+      publishSpawnChunk(clause.body, seenScopes, seenValues, seenChunks)
+    publishSpawnChunk(attempt.ensureBody, seenScopes, seenValues, seenChunks)
+  for proto in chunk.typeProtos:
+    for field in proto.fields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(field.typeFieldScope(nil), seenScopes, seenValues, seenChunks)
+    for field in proto.bodyFields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(field.typeBodyFieldScope(nil), seenScopes, seenValues, seenChunks)
+    for value in proto.deriveRequests:
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  for proto in chunk.protocolProtos:
+    publishSpawnFunctionProto(proto.deriveFn, seenScopes, seenValues, seenChunks)
+  for proto in chunk.implProtos:
+    for message in proto.messages:
+      publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
+  for ffi in chunk.ffiFns:
+    for param in ffi.params:
+      publishSpawnValue(param.typeExpr, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(ffi.returnType, seenScopes, seenValues, seenChunks)
+  for ffi in chunk.ffiStructs:
+    for field in ffi.fields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+  for ffi in chunk.ffiUnions:
+    for field in ffi.fields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+  for sig in chunk.ffiSignatures:
+    for param in sig.params:
+      publishSpawnValue(param.typeExpr, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(sig.returnType, seenScopes, seenValues, seenChunks)
+  for call in chunk.directProtocolCalls:
+    publishSpawnValue(call.protocolExpr, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(call.receiverExpr, seenScopes, seenValues, seenChunks)
+
+proc publishSpawnFunctionProto(proto: FunctionProto,
+                               seenScopes: var HashSet[pointer],
+                               seenValues: var HashSet[uint64],
+                               seenChunks: var HashSet[pointer]) =
+  if proto == nil:
+    return
+  for value in proto.paramTypes:
+    publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  for param in proto.namedParams:
+    publishSpawnValue(param.typeExpr, seenScopes, seenValues, seenChunks)
+    if param.defaultValue.optional:
+      publishSpawnChunk(param.defaultValue.defaultChunk, seenScopes,
+                        seenValues, seenChunks)
+  for defaultValue in proto.paramDefaults:
+    if defaultValue.optional:
+      publishSpawnChunk(defaultValue.defaultChunk, seenScopes, seenValues,
+                        seenChunks)
+  publishSpawnValue(proto.returnType, seenScopes, seenValues, seenChunks)
+  publishSpawnValue(proto.aotExpr, seenScopes, seenValues, seenChunks)
+  publishSpawnChunk(proto.chunk, seenScopes, seenValues, seenChunks)
+
+proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer]) =
+  if seenValues.contains(value.bits):
+    return
+  seenValues.incl value.bits
+  markSharedValue(value)
+  case value.kind
+  of vkList:
+    for item in value.listItems:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkMap:
+    for _, item in value.mapEntries:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkNode:
+    publishSpawnValue(value.head, seenScopes, seenValues, seenChunks)
+    for _, item in value.props:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    for item in value.body:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    for _, item in value.meta:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkFunction:
+    publishSpawnScope(value.fnScope, seenScopes, seenValues, seenChunks)
+    for errType in value.fnErrorTypes:
+      publishSpawnValue(errType, seenScopes, seenValues, seenChunks)
+    let code = value.fnCode
+    if code != nil and code of FunctionProto:
+      publishSpawnFunctionProto(FunctionProto(code), seenScopes, seenValues,
+                                seenChunks)
+  of vkNamespace:
+    publishSpawnScope(value.nsScope, seenScopes, seenValues, seenChunks)
+  of vkModule:
+    publishSpawnValue(value.moduleRootNamespace, seenScopes, seenValues,
+                      seenChunks)
+    for _, item in value.moduleMeta:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkEnv:
+    publishSpawnValue(value.envParent, seenScopes, seenValues, seenChunks)
+    for _, item in value.envBindings:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    for item in value.envImports:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.envModule, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.envCapabilities, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.envPolicy, seenScopes, seenValues, seenChunks)
+  of vkStream:
+    publishSpawnValue(value.streamSource, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.streamCallable, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.streamItemType, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.streamErrType, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.streamItemScope, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.streamGeneratorScope, seenScopes, seenValues,
+                      seenChunks)
+    for item in value.streamGeneratorStack:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkTask:
+    publishSpawnValue(value.taskResultType, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.taskErrorType, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.taskBoundaryScope, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(value.taskResult, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.taskErrorValue, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.taskPanicValue, seenScopes, seenValues, seenChunks)
+  of vkChannel:
+    publishSpawnValue(value.channelItemType, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.channelItemScope, seenScopes, seenValues, seenChunks)
+    for item in value.channelItemsSnapshot:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkActorRef:
+    publishSpawnValue(value.actorState, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.actorRestartInit, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.actorHandler, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.actorMessageType, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.actorFailureEvents, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(value.actorFailureDeadLetters, seenScopes, seenValues,
+                      seenChunks)
+    for item in value.actorMessagesSnapshot:
+      publishSpawnValue(item.message, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(item.reply, seenScopes, seenValues, seenChunks)
+  of vkActorContext:
+    publishSpawnValue(value.actorContextActor, seenScopes, seenValues, seenChunks)
+  of vkActorStep:
+    publishSpawnValue(value.actorStepState, seenScopes, seenValues, seenChunks)
+  of vkReplyTo:
+    publishSpawnValue(value.replyToResult, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.replyToResultType, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnScope(value.replyToResultScope, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(value.replyToTask, seenScopes, seenValues, seenChunks)
+  of vkCPtr:
+    publishSpawnValue(value.cPtrTargetType, seenScopes, seenValues, seenChunks)
+  of vkCSlice:
+    publishSpawnValue(value.cSliceTargetType, seenScopes, seenValues, seenChunks)
+  of vkBuffer:
+    publishSpawnValue(value.bufferElemType, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.bufferElemScope, seenScopes, seenValues, seenChunks)
+    for item in value.bufferItems:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkDeviceBuffer:
+    publishSpawnValue(value.deviceBufferElemType, seenScopes, seenValues,
+                      seenChunks)
+  of vkFfiCallable:
+    publishSpawnValue(value.ffiCallableLibrary, seenScopes, seenValues,
+                      seenChunks)
+    for paramType in value.ffiCallableParamTypes:
+      publishSpawnValue(paramType, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.ffiCallableReturnType, seenScopes, seenValues,
+                      seenChunks)
+  of vkType:
+    publishSpawnValue(value.typeParent, seenScopes, seenValues, seenChunks)
+    publishSpawnScope(value.typeScope, seenScopes, seenValues, seenChunks)
+    for field in value.typeFields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(field.typeFieldScope(value.typeScope), seenScopes,
+                        seenValues, seenChunks)
+    for field in value.typeBodyFields:
+      publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(field.typeBodyFieldScope(value.typeScope), seenScopes,
+                        seenValues, seenChunks)
+    for item in value.typeRequiredProtocols:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    for item in value.typeDerivedProtocols:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    for item in value.typeDeriveRequests:
+      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+  of vkProtocol:
+    for _, message in value.protocolMessages:
+      publishSpawnValue(message, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(value.protocolDeriveFn, seenScopes, seenValues, seenChunks)
+  of vkProtocolMessage:
+    publishSpawnValue(value.protocolMessageProtocol, seenScopes, seenValues,
+                      seenChunks)
+  else:
+    discard
+
+proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
+                       seenValues: var HashSet[uint64],
+                       seenChunks: var HashSet[pointer]) =
+  var current = scope
+  while current != nil:
+    let key = cast[pointer](current)
+    if seenScopes.contains(key):
+      return
+    seenScopes.incl key
+    if current.application != nil:
+      let app = Application(current.application)
+      if app.builtins == current:
+        if app.spawnBuiltinsPublished:
+          return
+        app.spawnBuiltinsPublished = true
+    for i in 0 ..< current.slots.len:
+      if current.slotDefined(i):
+        publishSpawnValue(current.slots[i], seenScopes, seenValues, seenChunks)
+    for _, value in current.vars:
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+    for binding in current.slotTypes:
+      publishSpawnValue(binding.expr, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(binding.typeBindingScope, seenScopes, seenValues,
+                        seenChunks)
+    for _, binding in current.varTypes:
+      publishSpawnValue(binding.expr, seenScopes, seenValues, seenChunks)
+      publishSpawnScope(binding.typeBindingScope, seenScopes, seenValues,
+                        seenChunks)
+    for impl in current.impls:
+      publishSpawnValue(impl.protocol, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(impl.receiver, seenScopes, seenValues, seenChunks)
+      for _, message in impl.messages:
+        publishSpawnValue(message, seenScopes, seenValues, seenChunks)
+    for value in current.requiredImplTypes:
+      publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+    publishSpawnValue(current.supervisorEvents, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(current.supervisorDeadLetters, seenScopes, seenValues,
+                      seenChunks)
+    for task in current.ownedTasks:
+      publishSpawnValue(task, seenScopes, seenValues, seenChunks)
+    for actor in current.ownedActors:
+      publishSpawnValue(actor, seenScopes, seenValues, seenChunks)
+    current = current.parent
+
+proc publishSpawnCapture(scope: Scope, chunk: Chunk) =
+  var seenScopes = initHashSet[pointer]()
+  var seenValues = initHashSet[uint64]()
+  var seenChunks = initHashSet[pointer]()
+  publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
+  publishSpawnChunk(chunk, seenScopes, seenValues, seenChunks)
+
 proc validateRequiredImpls(scope: Scope) =
   for typ in scope.requiredImplTypes:
     for protocol in typ.typeRequiredProtocols:
@@ -6337,6 +6624,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # running inline, so CPU-only child work still cooperates through VM
           # safepoints. (Still a single-worker scheduler; M:N workers are future
           # work.)
+          publishSpawnCapture(scope, chunk.subchunks[inst[].intArg])
           let taskScope = newScope(scope)
           let task = spawnFiber(chunk.subchunks[inst[].intArg], taskScope)
           scope.registerOwnedTask(task)

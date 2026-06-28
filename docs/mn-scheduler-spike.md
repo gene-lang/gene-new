@@ -11,12 +11,14 @@ Follow-up implementation note: scheduler run/wait/timeout queues have moved from
 raw `threadvar` storage into per-`Application` scheduler state with a lock, task
 state plus channel/actor interiors now have object-local locks, and Send
 boundaries now mark value graphs as shared so threaded builds can switch
-manual-RC objects to atomic retain/release after publication. A threaded
+manual-RC objects to atomic retain/release after publication. Spawned fibers now
+publish their captured scope/value graph as well, including task/channel/actor
+interior payloads that are protected by their object locks. A threaded
 `atomicArc` smoke gate now covers value operations, VM behavior, and RC leak
-accounting, including typed task/channel and actor ask paths. This removes two
+accounting, including typed task/channel and actor ask paths. This removes more
 runtime data-race classes and keeps ORC-object atomicity regressions visible,
-but it is still not an M:N worker pool: scope isolation and actual worker
-threads remain open.
+but it is still not an M:N worker pool: live parent-scope sharing, scope
+isolation semantics, and actual worker threads remain open.
 
 ## Goal
 
@@ -77,8 +79,10 @@ Notes:
 
 2. **ORC `OBJECT_TAG` objects.** Cells, channels, actors, mailboxes, Envs, types,
    etc. are ORC-managed via `GC_ref`/`GC_unref`, non-atomic under `--mm:orc`.
-   Cross-thread sharing needs `--mm:atomicArc` or equivalent, plus locks on their
-   mutable interiors (channel buffers, actor mailboxes/state).
+   Cross-thread sharing needs `--mm:atomicArc` or equivalent. The main mutable
+   interiors used by the scheduler path now have locks and threaded smoke
+   coverage, but the worker pool must run under that threaded memory-manager
+   configuration.
 
 3. **Scheduler structures need worker orchestration.** The runnable/wait/timeout
    queues are now per-`Application` and lock-backed, and task/channel/actor
@@ -87,26 +91,28 @@ Notes:
    timer ownership, and publication rules. `runStackPool`, `callScopePool`, and
    active scheduler context remain per-thread caches/context.
 
-4. **Publishing / `Send` boundary.** Need a pass that marks a value (and its
-   reachable graph) `shared` when it crosses a worker boundary (channel send,
-   spawn to another worker, `freeze`), gated by the `Send` protocol. Closures are
-   Sendable only if all captures are Sendable — which loops back to (1).
+4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
+   spawned fibers now mark reachable value graphs `shared` for threaded manual
+   RC. The remaining design work is semantic: deciding and enforcing which spawn
+   captures are allowed to move to another worker. Closures are Sendable only if
+   all captures are Sendable — which loops back to (1).
 
 ## Staged plan (if/when M:N is prioritized)
 
 - **A. `vm-shared-rc`.** Per-object `shared` flag; `rcRetain`/`rcRelease` branch to
-  atomic on shared. Publishing pass at Send boundaries. **Manual-RC portion
-  landed; generic ORC object refs still need atomicArc or equivalent.**
+  atomic on shared. Publishing pass at Send boundaries and spawned-fiber capture
+  boundaries. **Manual-RC publication has landed; true worker execution must run
+  under atomicArc or equivalent for generic ORC object refs.**
 - **B. Scope isolation semantics.** Decide and enforce: parallel/sent work is
   share-nothing. Likely: a task that may run on another worker captures a
   frozen/owned scope snapshot, not a live shared parent. This is the real design
   work and gates everything.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
-  The queue/object-locking portion has started, Send-boundary manual-RC
-  publication has landed, and `nimble threadcheck` exercises atomicArc smoke
-  coverage. Actual worker threads still need scope isolation semantics before
-  arbitrary tasks can safely run in parallel.
+  The queue/object-locking portion has started, Send-boundary and spawned-fiber
+  manual-RC publication have landed, and `nimble threadcheck`/`nimble verify`
+  exercise atomicArc smoke coverage. Actual worker threads still need scope
+  isolation semantics before arbitrary tasks can safely run in parallel.
 - **D. Worker pool.** N OS threads each running the scheduler loop over a shared/
   work-stealing queue; per-thread run-stack pools; pinned global init.
 - **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.

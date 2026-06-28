@@ -129,6 +129,8 @@ participates in equality or hashing.
 > if no reply arrives before the timer. `supervisor ^events ch` emits
 > `ActorFailure` events for actor handler failures, with optional
 > `^dead-letter ch` fallback when the primary event sink is unavailable.
+> Spawned fibers publish their captured scope/value graph so threaded builds use
+> atomic RC for captured manual-RC values.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
@@ -201,7 +203,7 @@ nimble spec     # executable language-surface specs (tracks docs/design.md)
 nimble perf     # release-mode core benchmarks (smoke check, no thresholds yet)
 nimble leakcheck # refcount/scope leak assertions (-d:geneRcStats)
 nimble threadcheck # threaded atomicArc smoke checks
-nimble verify   # tests + specs + benchmarks + leakcheck
+nimble verify   # tests + specs + benchmarks + leakcheck + threadcheck
 ```
 
 Performance is a first-class concern for this codebase — value layout, the
@@ -233,9 +235,11 @@ escapes. Symbols are interned to immediate ids. Build with
 retain/release auditing. Values crossing `Send` boundaries are marked as
 published; in threaded builds, manual-RC heap objects switch to atomic
 retain/release after that marker while thread-local objects stay on the
-non-atomic path. Threaded `atomicArc` smoke checks cover values, VM behavior, and
-RC leak accounting, but scope isolation and worker orchestration still need to
-land before true M:N execution.
+non-atomic path. Spawned fibers also publish their captured scope/value graph so
+captured manual-RC values are safe to retain/release from threaded builds.
+Threaded `atomicArc` smoke checks cover values, VM behavior, and RC leak
+accounting, but scope isolation and worker orchestration still need to land
+before true M:N execution.
 
 ## License
 
