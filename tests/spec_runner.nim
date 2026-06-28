@@ -304,6 +304,29 @@ suite "spec — typed native compilation prototype from design":
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 
+  test "ffi/fn C wrappers marshal scalar, pointer, and buffer ABI shapes":
+    let source =
+      "(ffi/fn c_abs ^symbol \"abs\" [x : C/Int] : C/Int) " &
+      "(ffi/fn c_memchr ^symbol \"memchr\" " &
+      "  [p : (C/ConstPtr C/Char) ch : C/Int n : C/Size] " &
+      "  : (C/NullablePtr C/Char)) " &
+      "(ffi/fn consume_buffer ^symbol \"consume_buffer\" " &
+      "  [b : (Buffer C/UInt8) n : C/Size] : C/Void)"
+    let c = compileSource(source).emitExperimentalC()
+    check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
+    check "int native_result = abs(x);" in c
+    check "return gene_ffi_result_int(ctx, native_result, result);" in c
+    check "status = gene_ffi_arg_const_ptr(ctx, call, 0, \"p\", " &
+      "\"(C/ConstPtr C/Char)\", &p);" in c
+    check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
+      "\"(C/NullablePtr C/Char)\", NULL, result);" in c
+    check "GeneFfiBufferView b_view;" in c
+    check "status = gene_ffi_arg_buffer(ctx, call, 0, \"b\", " &
+      "\"(Buffer C/UInt8)\", &b_view);" in c
+    check "const void *b = b_view.data;" in c
+    check "consume_buffer(b, n);" in c
+    check "return gene_ffi_result_void(ctx, result);" in c
+
   test "ffi/struct declarations expose C layout metadata manifests":
     let chunk = compileSource("(ffi/struct Timespec " &
                               "  ^size 16 ^align 8 " &
