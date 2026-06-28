@@ -282,7 +282,7 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(to_name ^protocol ToName x)")
 
-  test "ffi/fn declarations expose generated C wrapper skeletons":
+  test "ffi/fn declarations expose generated C wrappers":
     let chunk = compileSource("(ffi/fn strlen " &
                               "  ^library libc ^symbol \"strlen\" ^abi C " &
                               "  [s : C/CStr] : C/Size)")
@@ -297,6 +297,10 @@ suite "spec — typed native compilation prototype from design":
     check "GeneStatus gene_ffi_strlen" in c
     check "arg 0 s: C/CStr -> const char *" in c
     check "result: C/Size -> GeneValue" in c
+    check "GeneStatus status = gene_ffi_check_arity(ctx, call, 1);" in c
+    check "status = gene_ffi_arg_cstr(ctx, call, 0, \"s\", &s);" in c
+    check "size_t native_result = strlen(s);" in c
+    check "return gene_ffi_result_size(ctx, native_result, result);" in c
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 

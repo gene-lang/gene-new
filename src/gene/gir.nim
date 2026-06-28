@@ -863,6 +863,15 @@ type FfiSignatureCRow = object
   escaping: bool
   runtimeConstructible: bool
 
+type FfiMarshalKind = enum
+  fmkUnsupported
+  fmkVoid
+  fmkScalar
+  fmkCStr
+  fmkPtr
+  fmkConstPtr
+  fmkBuffer
+
 proc emitAotCExpr(expr: Value, params: openArray[string],
                   available: Table[string, AotCFunction]): string =
   case expr.kind
@@ -945,6 +954,73 @@ proc ffiCType(label: string, paramName = ""): string =
     else:
       "void *"
 
+proc ffiMarshalKind(label: string, isResult = false): FfiMarshalKind =
+  case label
+  of "C/Void":
+    if isResult: fmkVoid else: fmkUnsupported
+  of "C/Int8", "C/UInt8", "C/Int16", "C/UInt16", "C/Int32", "C/UInt32",
+     "C/Int64", "C/UInt64", "C/Char", "C/UChar", "C/Short", "C/UShort",
+     "C/Int", "C/UInt", "C/Long", "C/ULong", "C/Size", "C/PtrDiff",
+     "C/Float", "C/Double", "C/Bool":
+    fmkScalar
+  of "C/CStr":
+    fmkCStr
+  else:
+    if label.startsWith("(C/ConstPtr ") or
+        label.startsWith("(C/NullableConstPtr "):
+      fmkConstPtr
+    elif label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
+        label.startsWith("(C/OwnedPtr "):
+      fmkPtr
+    elif not isResult and
+        (label.startsWith("(C/Slice ") or label.startsWith("(Buffer ")):
+      fmkBuffer
+    else:
+      fmkUnsupported
+
+proc ffiHelperSuffix(label: string): string =
+  case label
+  of "C/Int8": "int8"
+  of "C/UInt8": "uint8"
+  of "C/Int16": "int16"
+  of "C/UInt16": "uint16"
+  of "C/Int32": "int32"
+  of "C/UInt32": "uint32"
+  of "C/Int64": "int64"
+  of "C/UInt64": "uint64"
+  of "C/Char": "char"
+  of "C/UChar": "uchar"
+  of "C/Short": "short"
+  of "C/UShort": "ushort"
+  of "C/Int": "int"
+  of "C/UInt": "uint"
+  of "C/Long": "long"
+  of "C/ULong": "ulong"
+  of "C/Size": "size"
+  of "C/PtrDiff": "ptrdiff"
+  of "C/Float": "float"
+  of "C/Double": "double"
+  of "C/Bool": "bool"
+  of "C/CStr": "cstr"
+  else:
+    case ffiMarshalKind(label)
+    of fmkPtr: "ptr"
+    of fmkConstPtr: "const_ptr"
+    of fmkBuffer: "buffer"
+    else: "unsupported"
+
+proc ffiResultHelperSuffix(label: string): string =
+  case ffiMarshalKind(label, isResult = true)
+  of fmkVoid: "void"
+  of fmkPtr, fmkConstPtr: "ptr"
+  else: ffiHelperSuffix(label)
+
+proc ffiWrapperSupported(fn: FfiFnProto, retLabel: string): bool =
+  for p in fn.params:
+    if ffiMarshalKind(ffiTypeLabel(p.typeExpr)) == fmkUnsupported:
+      return false
+  ffiMarshalKind(retLabel, isResult = true) != fmkUnsupported
+
 proc ffiWrapperName(fn: FfiFnProto, fallback: string): string =
   "gene_ffi_" & cIdent(if fn.name.len > 0: fn.name else: fn.symbol, fallback)
 
@@ -982,6 +1058,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   let retLabel =
     if fn.returnType.kind == vkNil: "C/Void" else: ffiTypeLabel(fn.returnType)
   let retType = ffiCType(retLabel)
+  let supported = ffiWrapperSupported(fn, retLabel)
   var declParams: seq[string]
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
@@ -991,9 +1068,6 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   lines.add "extern " & retType & " " & cSymbol & "(" & paramList & ");"
   lines.add "GeneStatus " & ffiWrapperName(fn, prefix & "ffi_" & $index) &
     "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
-  lines.add "  (void)ctx;"
-  lines.add "  (void)call;"
-  lines.add "  (void)result;"
   lines.add "  /* library: " & (if fn.library.len > 0: fn.library else: "<linker>") & " */"
   lines.add "  /* abi: " & (if fn.abi.len > 0: fn.abi else: "C") & " */"
   for i, p in fn.params:
@@ -1004,7 +1078,78 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
     lines.add "  /* result: " & retLabel & " -> GeneValue */"
   if fn.release.len > 0:
     lines.add "  /* owned release: " & fn.release & " */"
-  lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
+  if not supported:
+    lines.add "  (void)ctx;"
+    lines.add "  (void)call;"
+    lines.add "  (void)result;"
+    lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
+    lines.add "}"
+    lines.add ""
+    return
+  lines.add "  GeneStatus status = gene_ffi_check_arity(ctx, call, " &
+    $fn.params.len & ");"
+  lines.add "  if (status != GENE_OK) return status;"
+  var callArgs: seq[string]
+  for i, p in fn.params:
+    let label = ffiTypeLabel(p.typeExpr)
+    let name = cIdent(p.name, "arg" & $i)
+    case ffiMarshalKind(label)
+    of fmkScalar:
+      lines.add "  " & ffiCType(label, name) & " " & name & ";"
+      lines.add "  status = gene_ffi_arg_" & ffiHelperSuffix(label) &
+        "(ctx, call, " & $i & ", " & cStringLiteral(p.name) & ", &" &
+        name & ");"
+      lines.add "  if (status != GENE_OK) return status;"
+      callArgs.add name
+    of fmkCStr:
+      lines.add "  const char *" & name & ";"
+      lines.add "  status = gene_ffi_arg_cstr(ctx, call, " & $i & ", " &
+        cStringLiteral(p.name) & ", &" & name & ");"
+      lines.add "  if (status != GENE_OK) return status;"
+      callArgs.add name
+    of fmkPtr:
+      lines.add "  void *" & name & ";"
+      lines.add "  status = gene_ffi_arg_ptr(ctx, call, " & $i & ", " &
+        cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
+        name & ");"
+      lines.add "  if (status != GENE_OK) return status;"
+      callArgs.add name
+    of fmkConstPtr:
+      lines.add "  const void *" & name & ";"
+      lines.add "  status = gene_ffi_arg_const_ptr(ctx, call, " & $i & ", " &
+        cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
+        name & ");"
+      lines.add "  if (status != GENE_OK) return status;"
+      callArgs.add name
+    of fmkBuffer:
+      lines.add "  GeneFfiBufferView " & name & "_view;"
+      lines.add "  status = gene_ffi_arg_buffer(ctx, call, " & $i & ", " &
+        cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
+        name & "_view);"
+      lines.add "  if (status != GENE_OK) return status;"
+      lines.add "  const void *" & name & " = " & name & "_view.data;"
+      callArgs.add name
+    else:
+      discard
+  let args = callArgs.join(", ")
+  case ffiMarshalKind(retLabel, isResult = true)
+  of fmkVoid:
+    lines.add "  " & cSymbol & "(" & args & ");"
+    lines.add "  return gene_ffi_result_void(ctx, result);"
+  of fmkScalar, fmkCStr:
+    lines.add "  " & retType & " native_result = " & cSymbol & "(" &
+      args & ");"
+    lines.add "  return gene_ffi_result_" & ffiResultHelperSuffix(retLabel) &
+      "(ctx, native_result, result);"
+  of fmkPtr, fmkConstPtr:
+    lines.add "  " & retType & " native_result = " & cSymbol & "(" &
+      args & ");"
+    lines.add "  return gene_ffi_result_ptr(ctx, (void *)native_result, " &
+      cStringLiteral(retLabel) & ", " &
+      (if fn.release.len > 0: cStringLiteral(fn.release) else: "NULL") &
+      ", result);"
+  else:
+    lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
   lines.add "}"
   lines.add ""
 
@@ -1331,12 +1476,75 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  size_t size;",
     "  size_t align;",
     "} GeneFfiAbiTypeInfo;",
+    "typedef struct GeneFfiBufferView {",
+    "  const void *data;",
+    "  size_t len;",
+    "} GeneFfiBufferView;",
     "#define GENE_NATIVE_FRAME_TYPED (1u << 0)",
     "#define GENE_NATIVE_FRAME_CAN_SUSPEND (1u << 1)",
     "#define GENE_ALIGNOF(T) offsetof(struct { char c; T x; }, x)",
+    "#ifndef GENE_OK",
+    "#define GENE_OK 0",
+    "#endif",
+    "#ifndef GENE_ERROR",
+    "#define GENE_ERROR 1",
+    "#endif",
+    "#ifndef GENE_PANIC",
+    "#define GENE_PANIC 2",
+    "#endif",
     "#ifndef GENE_FFI_WRAPPER_UNIMPLEMENTED",
     "#define GENE_FFI_WRAPPER_UNIMPLEMENTED (-1)",
     "#endif",
+    "extern GeneStatus gene_ffi_check_arity(GeneContext *ctx, const GeneCall *call, size_t expected);",
+    "extern GeneStatus gene_ffi_arg_int8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int8_t *out);",
+    "extern GeneStatus gene_ffi_arg_uint8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint8_t *out);",
+    "extern GeneStatus gene_ffi_arg_int16(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int16_t *out);",
+    "extern GeneStatus gene_ffi_arg_uint16(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint16_t *out);",
+    "extern GeneStatus gene_ffi_arg_int32(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int32_t *out);",
+    "extern GeneStatus gene_ffi_arg_uint32(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint32_t *out);",
+    "extern GeneStatus gene_ffi_arg_int64(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int64_t *out);",
+    "extern GeneStatus gene_ffi_arg_uint64(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint64_t *out);",
+    "extern GeneStatus gene_ffi_arg_char(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, char *out);",
+    "extern GeneStatus gene_ffi_arg_uchar(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, unsigned char *out);",
+    "extern GeneStatus gene_ffi_arg_short(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, short *out);",
+    "extern GeneStatus gene_ffi_arg_ushort(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, unsigned short *out);",
+    "extern GeneStatus gene_ffi_arg_int(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int *out);",
+    "extern GeneStatus gene_ffi_arg_uint(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, unsigned int *out);",
+    "extern GeneStatus gene_ffi_arg_long(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, long *out);",
+    "extern GeneStatus gene_ffi_arg_ulong(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, unsigned long *out);",
+    "extern GeneStatus gene_ffi_arg_size(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, size_t *out);",
+    "extern GeneStatus gene_ffi_arg_ptrdiff(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, ptrdiff_t *out);",
+    "extern GeneStatus gene_ffi_arg_float(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, float *out);",
+    "extern GeneStatus gene_ffi_arg_double(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, double *out);",
+    "extern GeneStatus gene_ffi_arg_bool(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, bool *out);",
+    "extern GeneStatus gene_ffi_arg_cstr(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char **out);",
+    "extern GeneStatus gene_ffi_arg_ptr(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, void **out);",
+    "extern GeneStatus gene_ffi_arg_const_ptr(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, const void **out);",
+    "extern GeneStatus gene_ffi_arg_buffer(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, GeneFfiBufferView *out);",
+    "extern GeneStatus gene_ffi_result_void(GeneContext *ctx, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_int8(GeneContext *ctx, int8_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_uint8(GeneContext *ctx, uint8_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_int16(GeneContext *ctx, int16_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_uint16(GeneContext *ctx, uint16_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_int32(GeneContext *ctx, int32_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_uint32(GeneContext *ctx, uint32_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_int64(GeneContext *ctx, int64_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_uint64(GeneContext *ctx, uint64_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_char(GeneContext *ctx, char value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_uchar(GeneContext *ctx, unsigned char value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_short(GeneContext *ctx, short value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_ushort(GeneContext *ctx, unsigned short value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_int(GeneContext *ctx, int value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_uint(GeneContext *ctx, unsigned int value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_long(GeneContext *ctx, long value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_ulong(GeneContext *ctx, unsigned long value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_size(GeneContext *ctx, size_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_ptrdiff(GeneContext *ctx, ptrdiff_t value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_float(GeneContext *ctx, float value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_double(GeneContext *ctx, double value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_bool(GeneContext *ctx, bool value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_cstr(GeneContext *ctx, const char *value, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_ptr(GeneContext *ctx, void *value, const char *type_name, const char *release_name, GeneValue *result);",
     "_Static_assert(sizeof(int8_t) == 1, \"C/Int8 must be 1 byte\");",
     "_Static_assert(sizeof(uint8_t) == 1, \"C/UInt8 must be 1 byte\");",
     "_Static_assert(sizeof(int16_t) == 2, \"C/Int16 must be 2 bytes\");",
