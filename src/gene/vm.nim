@@ -3362,10 +3362,30 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
   if proto.positionalSlotMaySet.len == 0 or proto.positionalSlotMaySet[0]:
     result.declareSlotType(slot, proto.paramTypes[0])
 
+proc clearDefinedCallSlots(scope: Scope) {.inline.} =
+  var bits = scope.slotDefinedBits
+  var i = 0
+  while bits != 0 and i < scope.slots.len:
+    if (bits and 1'u64) != 0:
+      scope.slots[i] = NIL
+    bits = bits shr 1
+    inc i
+  scope.slotDefinedBits = 0
+  if scope.slotDefinedOverflow.len != 0:
+    for i in 0 ..< scope.slotDefinedOverflow.len:
+      if scope.slotDefinedOverflow[i]:
+        let slot = i + 64
+        if slot < scope.slots.len:
+          scope.slots[slot] = NIL
+        scope.slotDefinedOverflow[i] = false
+
 proc releaseCallScope(scope: Scope) =
   if scope == nil:
     return
   if scope.simpleCallScope:
+    scope.clearDefinedCallSlots()
+    if scope.slotTypes.len != 0:
+      scope.slotTypes.setLen(0)
     scope.parent = nil
     scope.application = nil
     scope.evalBudget = nil
@@ -3373,12 +3393,6 @@ proc releaseCallScope(scope: Scope) =
       callScopePool[callScopePoolLen] = scope
       inc callScopePoolLen
     else:
-      for i in 0 ..< scope.slots.len:
-        scope.slots[i] = NIL
-      scope.slotDefinedBits = 0
-      if scope.slotDefinedOverflow.len != 0:
-        for i in 0 ..< scope.slotDefinedOverflow.len:
-          scope.slotDefinedOverflow[i] = false
       scope.simpleCallScope = false
     return
   for i in 0 ..< scope.slots.len:

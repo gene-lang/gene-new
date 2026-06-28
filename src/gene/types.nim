@@ -1642,6 +1642,7 @@ proc sendReplyTo*(v, result: Value) =
   data.sent = true
   if data.task.kind == vkTask:
     completeTask(data.task, data.result)
+    data.task = NIL
 
 proc cPtrData(v: Value): CPtrData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okCPtr:
