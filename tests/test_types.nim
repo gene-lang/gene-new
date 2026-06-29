@@ -80,6 +80,12 @@ proc ffiTestPtrCopy(dst, src: pointer, len: csize_t): pointer {.cdecl.} =
   copyMem(dst, src, len)
   dst
 
+proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
+  if len == 0:
+    nil
+  else:
+    p
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -864,6 +870,14 @@ suite "types — function boundaries":
                                     newSym("C/Size")],
                                   newNode(newSym("C/Ptr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("ptr-if-len",
+                   newFfiCallable("ffiTestPtrIfLen", "ffiTestPtrIfLen",
+                                  cast[pointer](ffiTestPtrIfLen), lib,
+                                  @[newNode(newSym("C/Ptr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newNode(newSym("C/NullablePtr"),
+                                          body = @[newSym("C/Char")])))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -1015,6 +1029,10 @@ suite "types — function boundaries":
       check copied.kind == vkCPtr
       check copied.cPtrAddress == cast[pointer](addr copyDst[0])
       check copyDst == [uint8(68), uint8(69), uint8(70)]
+      check run(compileSource("(ptr-if-len copy-dst 3)"), scope).print() ==
+        "(c-ptr)"
+      check run(compileSource("(ptr-if-len copy-dst 0)"), scope).print() ==
+        "(c-ptr null)"
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
