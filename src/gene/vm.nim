@@ -11109,6 +11109,15 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type DoubleDoubleProc = proc(x: cdouble): cdouble {.cdecl.}
       let fn = cast[DoubleDoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type DoubleBoolProc = proc(x: cdouble): bool {.cdecl.}
+      let fn = cast[DoubleBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
+    of "C/CStr":
+      type DoubleCStrProc = proc(x: cdouble): cstring {.cdecl.}
+      let fn = cast[DoubleCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
     of "C/Void":
       type DoubleVoidProc = proc(x: cdouble) {.cdecl.}
       let fn = cast[DoubleVoidProc](callee.ffiCallableAddress)
@@ -11160,6 +11169,15 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type FloatDoubleProc = proc(x: cfloat): cdouble {.cdecl.}
       let fn = cast[FloatDoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type FloatBoolProc = proc(x: cfloat): bool {.cdecl.}
+      let fn = cast[FloatBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
+    of "C/CStr":
+      type FloatCStrProc = proc(x: cfloat): cstring {.cdecl.}
+      let fn = cast[FloatCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
     of "C/Void":
       type FloatVoidProc = proc(x: cfloat) {.cdecl.}
       let fn = cast[FloatVoidProc](callee.ffiCallableAddress)

@@ -174,6 +174,12 @@ proc ffiTestDoubleU64(x: cdouble): uint64 {.cdecl.} =
 proc ffiTestDoubleDiff(x: cdouble): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(x) - 6)
 
+proc ffiTestDoublePositive(x: cdouble): bool {.cdecl.} =
+  x > 0.0
+
+proc ffiTestDoubleKind(x: cdouble): cstring {.cdecl.} =
+  if x > 0.0: "positive-double" else: "nonpositive-double"
+
 proc ffiTestFloatULong(x: cfloat): culong {.cdecl.} =
   culong(int(x) + 2)
 
@@ -185,6 +191,12 @@ proc ffiTestFloatU64(x: cfloat): uint64 {.cdecl.} =
 
 proc ffiTestFloatDiff(x: cfloat): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(x) - 6)
+
+proc ffiTestFloatPositive(x: cfloat): bool {.cdecl.} =
+  x > 0.0
+
+proc ffiTestFloatKind(x: cfloat): cstring {.cdecl.} =
+  if x > 0.0: "positive-float" else: "nonpositive-float"
 
 proc ffiTestIntULong(x: cint): culong {.cdecl.} =
   culong(x + 2)
@@ -1600,6 +1612,16 @@ suite "types — function boundaries":
                                   "ffiTestDoubleDiff",
                                   cast[pointer](ffiTestDoubleDiff), lib,
                                   @[newSym("C/Double")], newSym("C/PtrDiff")))
+      scope.define("double-positive?",
+                   newFfiCallable("ffiTestDoublePositive",
+                                  "ffiTestDoublePositive",
+                                  cast[pointer](ffiTestDoublePositive), lib,
+                                  @[newSym("C/Double")], newSym("C/Bool")))
+      scope.define("double-kind",
+                   newFfiCallable("ffiTestDoubleKind",
+                                  "ffiTestDoubleKind",
+                                  cast[pointer](ffiTestDoubleKind), lib,
+                                  @[newSym("C/Double")], newSym("C/CStr")))
       scope.define("float-ulong",
                    newFfiCallable("ffiTestFloatULong",
                                   "ffiTestFloatULong",
@@ -1620,6 +1642,16 @@ suite "types — function boundaries":
                                   "ffiTestFloatDiff",
                                   cast[pointer](ffiTestFloatDiff), lib,
                                   @[newSym("C/Float")], newSym("C/PtrDiff")))
+      scope.define("float-positive?",
+                   newFfiCallable("ffiTestFloatPositive",
+                                  "ffiTestFloatPositive",
+                                  cast[pointer](ffiTestFloatPositive), lib,
+                                  @[newSym("C/Float")], newSym("C/Bool")))
+      scope.define("float-kind",
+                   newFfiCallable("ffiTestFloatKind",
+                                  "ffiTestFloatKind",
+                                  cast[pointer](ffiTestFloatKind), lib,
+                                  @[newSym("C/Float")], newSym("C/CStr")))
       scope.define("size-add-uint",
                    newFfiCallable("ffiTestSizeAddUInt",
                                   "ffiTestSizeAddUInt",
@@ -2635,10 +2667,24 @@ suite "types — function boundaries":
       check run(compileSource("(double-i64 4.5)"), scope).print() == "7"
       check run(compileSource("(double-u64 4.5)"), scope).print() == "8"
       check run(compileSource("(double-diff 4.5)"), scope).print() == "-2"
+      check run(compileSource("(double-positive? 4.5)"),
+                scope).print() == "true"
+      check run(compileSource("(double-positive? -1.5)"),
+                scope).print() == "false"
+      let doubleKind = run(compileSource("(double-kind 4.5)"), scope)
+      check doubleKind.kind == vkString
+      check doubleKind.strVal == "positive-double"
       check run(compileSource("(float-ulong 4.5)"), scope).print() == "6"
       check run(compileSource("(float-i64 4.5)"), scope).print() == "7"
       check run(compileSource("(float-u64 4.5)"), scope).print() == "8"
       check run(compileSource("(float-diff 4.5)"), scope).print() == "-2"
+      check run(compileSource("(float-positive? 4.5)"),
+                scope).print() == "true"
+      check run(compileSource("(float-positive? -1.5)"),
+                scope).print() == "false"
+      let floatKind = run(compileSource("(float-kind 4.5)"), scope)
+      check floatKind.kind == vkString
+      check floatKind.strVal == "positive-float"
       check run(compileSource("(size-add-uint 20 22)"), scope).print() == "43"
       check run(compileSource("(size-diff-long 20 22)"), scope).print() == "-2"
       check run(compileSource("(size-add-ulong 20 22)"), scope).print() == "44"
