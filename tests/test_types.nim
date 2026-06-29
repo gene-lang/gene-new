@@ -177,6 +177,15 @@ proc ffiTestI32U64(x: int32): uint64 {.cdecl.} =
 proc ffiTestI32Diff(x: int32): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6'i32)
 
+proc ffiTestI16ULong(x: int16): culong {.cdecl.} =
+  culong(x + 2'i16)
+
+proc ffiTestI16U64(x: int16): uint64 {.cdecl.} =
+  uint64(x + 4'i16)
+
+proc ffiTestI16Diff(x: int16): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(x - 6'i16)
+
 proc ffiTestIntAdd(a, b: cint): cint {.cdecl.} =
   a + b
 
@@ -1310,6 +1319,21 @@ suite "types — function boundaries":
                                   "ffiTestI32Diff",
                                   cast[pointer](ffiTestI32Diff), lib,
                                   @[newSym("C/Int32")], newSym("C/PtrDiff")))
+      scope.define("i16-ulong",
+                   newFfiCallable("ffiTestI16ULong",
+                                  "ffiTestI16ULong",
+                                  cast[pointer](ffiTestI16ULong), lib,
+                                  @[newSym("C/Int16")], newSym("C/ULong")))
+      scope.define("i16-u64",
+                   newFfiCallable("ffiTestI16U64",
+                                  "ffiTestI16U64",
+                                  cast[pointer](ffiTestI16U64), lib,
+                                  @[newSym("C/Int16")], newSym("C/UInt64")))
+      scope.define("i16-diff",
+                   newFfiCallable("ffiTestI16Diff",
+                                  "ffiTestI16Diff",
+                                  cast[pointer](ffiTestI16Diff), lib,
+                                  @[newSym("C/Int16")], newSym("C/PtrDiff")))
       scope.define("double-ulong",
                    newFfiCallable("ffiTestDoubleULong",
                                   "ffiTestDoubleULong",
@@ -2269,6 +2293,9 @@ suite "types — function boundaries":
       check run(compileSource("(i32-ulong 4)"), scope).print() == "6"
       check run(compileSource("(i32-u64 4)"), scope).print() == "8"
       check run(compileSource("(i32-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(i16-ulong 4)"), scope).print() == "6"
+      check run(compileSource("(i16-u64 4)"), scope).print() == "8"
+      check run(compileSource("(i16-diff 4)"), scope).print() == "-2"
       check run(compileSource("(double-ulong 4.5)"), scope).print() == "6"
       check run(compileSource("(double-i64 4.5)"), scope).print() == "7"
       check run(compileSource("(double-u64 4.5)"), scope).print() == "8"

@@ -10270,14 +10270,26 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type Int16LongProc = proc(x: int16): clong {.cdecl.}
       let fn = cast[Int16LongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/ULong":
+      type Int16ULongProc = proc(x: int16): culong {.cdecl.}
+      let fn = cast[Int16ULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0)))
     of "C/Int64":
       type Int16Int64Proc = proc(x: int16): int64 {.cdecl.}
       let fn = cast[Int16Int64Proc](callee.ffiCallableAddress)
       return newInt(fn(arg0))
+    of "C/UInt64":
+      type Int16UInt64Proc = proc(x: int16): uint64 {.cdecl.}
+      let fn = cast[Int16UInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0))
     of "C/Size":
       type Int16SizeProc = proc(x: int16): csize_t {.cdecl.}
       let fn = cast[Int16SizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
+    of "C/PtrDiff":
+      type Int16PtrDiffProc = proc(x: int16): GeneCPtrDiff {.cdecl.}
+      let fn = cast[Int16PtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
     of "C/Float":
       type Int16FloatProc = proc(x: int16): cfloat {.cdecl.}
       let fn = cast[Int16FloatProc](callee.ffiCallableAddress)
