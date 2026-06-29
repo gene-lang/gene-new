@@ -46,6 +46,9 @@ proc ffiTestPtrDiffAbs(x: int): int {.cdecl.} =
 proc ffiTestSizeInc(x: csize_t): csize_t {.cdecl.} =
   x + csize_t(1)
 
+proc ffiTestIntAdd(a, b: cint): cint {.cdecl.} =
+  a + b
+
 proc ffiTestSliceLen(data: pointer, len: csize_t): csize_t {.cdecl.} =
   len
 
@@ -746,6 +749,11 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestSizeInc", "ffiTestSizeInc",
                                   cast[pointer](ffiTestSizeInc), lib,
                                   @[newSym("C/Size")], newSym("C/Size")))
+      scope.define("int-add",
+                   newFfiCallable("ffiTestIntAdd", "ffiTestIntAdd",
+                                  cast[pointer](ffiTestIntAdd), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/Int")))
       scope.define("slice-len",
                    newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
                                   cast[pointer](ffiTestSliceLen), lib,
@@ -882,6 +890,9 @@ suite "types — function boundaries":
       when sizeof(csize_t) < 8:
         expect GeneError:
           discard run(compileSource("(size-inc 4294967296)"), scope)
+      check run(compileSource("(int-add 20 22)"), scope).print() == "42"
+      expect GeneError:
+        discard run(compileSource("(int-add 1 2147483648)"), scope)
       check run(compileSource("(slice-len byte-slice)"), scope).print() == "3"
       check run(compileSource("(slice-first-byte byte-slice)"),
                 scope).print() == "65"

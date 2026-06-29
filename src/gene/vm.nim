@@ -10864,6 +10864,39 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         type CStrIntPtrProc = proc(s: cstring, x: cint): pointer {.cdecl.}
         let fn = cast[CStrIntPtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
+  if paramLabels.len == 2 and paramLabels[0] == "C/Int" and
+      paramLabels[1] == "C/Int":
+    let arg0 = ffiCIntArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    let arg1 = ffiCIntArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", args[1])
+    case returnLabel
+    of "C/Int":
+      type IntIntIntProc = proc(a, b: cint): cint {.cdecl.}
+      let fn = cast[IntIntIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Long":
+      type IntIntLongProc = proc(a, b: cint): clong {.cdecl.}
+      let fn = cast[IntIntLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Size":
+      type IntIntSizeProc = proc(a, b: cint): csize_t {.cdecl.}
+      let fn = cast[IntIntSizeProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Bool":
+      type IntIntBoolProc = proc(a, b: cint): bool {.cdecl.}
+      let fn = cast[IntIntBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0, arg1))
+    of "C/Void":
+      type IntIntVoidProc = proc(a, b: cint) {.cdecl.}
+      let fn = cast[IntIntVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type IntIntPtrProc = proc(a, b: cint): pointer {.cdecl.}
+        let fn = cast[IntIntPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
   if paramLabels.len == 2 and paramLabels[0] == "C/Size" and
       paramLabels[1] == "C/Size":
     let arg0 = ffiCSizeArg("FFI argument 0 for '" &
