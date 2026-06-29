@@ -88,6 +88,14 @@ proc main() =
     let v = run(oneArgChunk, oneArgScope)
     checksum = checksum + v.intVal
 
+  let typedUnaryScope = newGlobalScope()
+  typedUnaryScope.define("typed-inc",
+    run(compileSource("(fn [x : Int] : Int (+ x 1))"), typedUnaryScope))
+  let typedUnaryChunk = compileSource("(typed-inc 9)")
+  bench("vm.typed_unary_int_call.compiled_chunk", 500_000, i):
+    let v = run(typedUnaryChunk, typedUnaryScope)
+    checksum = checksum + v.intVal
+
   let namedScope = newGlobalScope()
   namedScope.define("pick", run(compileSource("(fn [x ^scale] (+ x scale))"), namedScope))
   let namedChunk = compileSource("(pick ^scale 4 6)")

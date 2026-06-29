@@ -3647,16 +3647,22 @@ proc checkedFrameReturnType(proto: FunctionProto, returnType: Value): Value {.in
 
 proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
                            arg: Value): Scope {.inline.} =
+  let paramMaySet =
+    proto.positionalSlotMaySet.len == 0 or proto.positionalSlotMaySet[0]
   result =
     if proto.poolCallScope:
-      acquireCallScope(parent, proto.localNames)
+      if paramMaySet:
+        acquireCallScope(parent, proto.localNames)
+      else:
+        acquireSimpleCallScope(parent, proto.localNames,
+          proto.callScopeNeedsSlotNames, proto.callScopeNeedsSlotReset)
     else:
       let fresh = newScope(parent)
       fresh.prepareSlots(proto.localNames)
       fresh
   let slot = proto.positionalSlots[0]
   result.defineFreshCallSlot(slot, arg)
-  if proto.positionalSlotMaySet.len == 0 or proto.positionalSlotMaySet[0]:
+  if paramMaySet:
     result.declareSlotType(slot, proto.paramTypes[0])
 
 proc clearDefinedCallSlots(scope: Scope) {.inline.} =
