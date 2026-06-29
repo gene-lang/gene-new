@@ -11561,6 +11561,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type IntDoubleBoolProc = proc(a: cint, b: cdouble): bool {.cdecl.}
       let fn = cast[IntDoubleBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type IntDoubleCStrProc = proc(a: cint, b: cdouble): cstring {.cdecl.}
+      let fn = cast[IntDoubleCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type IntDoubleVoidProc = proc(a: cint, b: cdouble) {.cdecl.}
       let fn = cast[IntDoubleVoidProc](callee.ffiCallableAddress)
@@ -11622,6 +11627,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type IntFloatBoolProc = proc(a: cint, b: cfloat): bool {.cdecl.}
       let fn = cast[IntFloatBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type IntFloatCStrProc = proc(a: cint, b: cfloat): cstring {.cdecl.}
+      let fn = cast[IntFloatCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type IntFloatVoidProc = proc(a: cint, b: cfloat) {.cdecl.}
       let fn = cast[IntFloatVoidProc](callee.ffiCallableAddress)
@@ -11683,6 +11693,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type DoubleDoubleBoolProc = proc(a, b: cdouble): bool {.cdecl.}
       let fn = cast[DoubleDoubleBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type DoubleDoubleCStrProc = proc(a, b: cdouble): cstring {.cdecl.}
+      let fn = cast[DoubleDoubleCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type DoubleDoubleVoidProc = proc(a, b: cdouble) {.cdecl.}
       let fn = cast[DoubleDoubleVoidProc](callee.ffiCallableAddress)
@@ -11744,6 +11759,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type DoubleIntBoolProc = proc(a: cdouble, b: cint): bool {.cdecl.}
       let fn = cast[DoubleIntBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type DoubleIntCStrProc = proc(a: cdouble, b: cint): cstring {.cdecl.}
+      let fn = cast[DoubleIntCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type DoubleIntVoidProc = proc(a: cdouble, b: cint) {.cdecl.}
       let fn = cast[DoubleIntVoidProc](callee.ffiCallableAddress)
@@ -11805,6 +11825,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type FloatFloatBoolProc = proc(a, b: cfloat): bool {.cdecl.}
       let fn = cast[FloatFloatBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type FloatFloatCStrProc = proc(a, b: cfloat): cstring {.cdecl.}
+      let fn = cast[FloatFloatCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type FloatFloatVoidProc = proc(a, b: cfloat) {.cdecl.}
       let fn = cast[FloatFloatVoidProc](callee.ffiCallableAddress)
@@ -11866,6 +11891,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type FloatIntBoolProc = proc(a: cfloat, b: cint): bool {.cdecl.}
       let fn = cast[FloatIntBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type FloatIntCStrProc = proc(a: cfloat, b: cint): cstring {.cdecl.}
+      let fn = cast[FloatIntCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type FloatIntVoidProc = proc(a: cfloat, b: cint) {.cdecl.}
       let fn = cast[FloatIntVoidProc](callee.ffiCallableAddress)

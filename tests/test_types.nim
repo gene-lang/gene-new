@@ -377,6 +377,9 @@ proc ffiTestDoubleDoubleU64(a, b: cdouble): uint64 {.cdecl.} =
 proc ffiTestDoubleDoubleDiff(a, b: cdouble): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(a - b))
 
+proc ffiTestDoubleDoubleKind(a, b: cdouble): cstring {.cdecl.} =
+  if a + b >= 0: "nonnegative-double-pair" else: "negative-double-pair"
+
 proc ffiTestDoubleScale(a: cdouble, factor: cint): cdouble {.cdecl.} =
   a * cdouble(factor)
 
@@ -394,6 +397,9 @@ proc ffiTestDoubleIntU64(a: cdouble, b: cint): uint64 {.cdecl.} =
 
 proc ffiTestDoubleIntDiff(a: cdouble, b: cint): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(a) - b)
+
+proc ffiTestDoubleIntKind(a: cdouble, b: cint): cstring {.cdecl.} =
+  if a + cdouble(b) >= 0: "nonnegative-double-int" else: "negative-double-int"
 
 proc ffiTestIntOffset(a: cint, b: cdouble): cdouble {.cdecl.} =
   cdouble(a) + b
@@ -413,6 +419,9 @@ proc ffiTestIntDoubleU64(a: cint, b: cdouble): uint64 {.cdecl.} =
 proc ffiTestIntDoubleDiff(a: cint, b: cdouble): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(a - int(b))
 
+proc ffiTestIntDoubleKind(a: cint, b: cdouble): cstring {.cdecl.} =
+  if cdouble(a) + b >= 0: "nonnegative-int-double" else: "negative-int-double"
+
 proc ffiTestFloatAdd(a, b: cfloat): cfloat {.cdecl.} =
   a + b
 
@@ -430,6 +439,9 @@ proc ffiTestFloatFloatU64(a, b: cfloat): uint64 {.cdecl.} =
 
 proc ffiTestFloatFloatDiff(a, b: cfloat): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(a - b))
+
+proc ffiTestFloatFloatKind(a, b: cfloat): cstring {.cdecl.} =
+  if a + b >= 0: "nonnegative-float-pair" else: "negative-float-pair"
 
 proc ffiTestFloatScale(a: cfloat, factor: cint): cfloat {.cdecl.} =
   a * cfloat(factor)
@@ -449,6 +461,9 @@ proc ffiTestFloatIntU64(a: cfloat, b: cint): uint64 {.cdecl.} =
 proc ffiTestFloatIntDiff(a: cfloat, b: cint): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(a) - b)
 
+proc ffiTestFloatIntKind(a: cfloat, b: cint): cstring {.cdecl.} =
+  if a + cfloat(b) >= 0: "nonnegative-float-int" else: "negative-float-int"
+
 proc ffiTestIntFloatOffset(a: cint, b: cfloat): cfloat {.cdecl.} =
   cfloat(a) + b
 
@@ -466,6 +481,9 @@ proc ffiTestIntFloatU64(a: cint, b: cfloat): uint64 {.cdecl.} =
 
 proc ffiTestIntFloatDiff(a: cint, b: cfloat): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(a - int(b))
+
+proc ffiTestIntFloatKind(a: cint, b: cfloat): cstring {.cdecl.} =
+  if cfloat(a) + b >= 0: "nonnegative-int-float" else: "negative-int-float"
 
 proc ffiTestSliceLen(data: pointer, len: csize_t): csize_t {.cdecl.} =
   len
@@ -1939,6 +1957,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestDoubleDoubleDiff), lib,
                                   @[newSym("C/Double"), newSym("C/Double")],
                                   newSym("C/PtrDiff")))
+      scope.define("double-double-kind",
+                   newFfiCallable("ffiTestDoubleDoubleKind",
+                                  "ffiTestDoubleDoubleKind",
+                                  cast[pointer](ffiTestDoubleDoubleKind), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/CStr")))
       scope.define("double-scale",
                    newFfiCallable("ffiTestDoubleScale", "ffiTestDoubleScale",
                                   cast[pointer](ffiTestDoubleScale), lib,
@@ -1974,6 +1998,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestDoubleIntDiff), lib,
                                   @[newSym("C/Double"), newSym("C/Int")],
                                   newSym("C/PtrDiff")))
+      scope.define("double-int-kind",
+                   newFfiCallable("ffiTestDoubleIntKind",
+                                  "ffiTestDoubleIntKind",
+                                  cast[pointer](ffiTestDoubleIntKind), lib,
+                                  @[newSym("C/Double"), newSym("C/Int")],
+                                  newSym("C/CStr")))
       scope.define("int-offset",
                    newFfiCallable("ffiTestIntOffset", "ffiTestIntOffset",
                                   cast[pointer](ffiTestIntOffset), lib,
@@ -2009,6 +2039,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestIntDoubleDiff), lib,
                                   @[newSym("C/Int"), newSym("C/Double")],
                                   newSym("C/PtrDiff")))
+      scope.define("int-double-kind",
+                   newFfiCallable("ffiTestIntDoubleKind",
+                                  "ffiTestIntDoubleKind",
+                                  cast[pointer](ffiTestIntDoubleKind), lib,
+                                  @[newSym("C/Int"), newSym("C/Double")],
+                                  newSym("C/CStr")))
       scope.define("float-add",
                    newFfiCallable("ffiTestFloatAdd", "ffiTestFloatAdd",
                                   cast[pointer](ffiTestFloatAdd), lib,
@@ -2044,6 +2080,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestFloatFloatDiff), lib,
                                   @[newSym("C/Float"), newSym("C/Float")],
                                   newSym("C/PtrDiff")))
+      scope.define("float-float-kind",
+                   newFfiCallable("ffiTestFloatFloatKind",
+                                  "ffiTestFloatFloatKind",
+                                  cast[pointer](ffiTestFloatFloatKind), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/CStr")))
       scope.define("float-scale",
                    newFfiCallable("ffiTestFloatScale", "ffiTestFloatScale",
                                   cast[pointer](ffiTestFloatScale), lib,
@@ -2079,6 +2121,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestFloatIntDiff), lib,
                                   @[newSym("C/Float"), newSym("C/Int")],
                                   newSym("C/PtrDiff")))
+      scope.define("float-int-kind",
+                   newFfiCallable("ffiTestFloatIntKind",
+                                  "ffiTestFloatIntKind",
+                                  cast[pointer](ffiTestFloatIntKind), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/CStr")))
       scope.define("int-float-offset",
                    newFfiCallable("ffiTestIntFloatOffset",
                                   "ffiTestIntFloatOffset",
@@ -2115,6 +2163,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestIntFloatDiff), lib,
                                   @[newSym("C/Int"), newSym("C/Float")],
                                   newSym("C/PtrDiff")))
+      scope.define("int-float-kind",
+                   newFfiCallable("ffiTestIntFloatKind",
+                                  "ffiTestIntFloatKind",
+                                  cast[pointer](ffiTestIntFloatKind), lib,
+                                  @[newSym("C/Int"), newSym("C/Float")],
+                                  newSym("C/CStr")))
       scope.define("slice-len",
                    newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
                                   cast[pointer](ffiTestSliceLen), lib,
@@ -2925,6 +2979,10 @@ suite "types — function boundaries":
                 scope).print() == "7"
       check run(compileSource("(double-double-diff 1.25 3.5)"),
                 scope).print() == "-2"
+      let doubleDoubleKind =
+        run(compileSource("(double-double-kind 1.25 2.5)"), scope)
+      check doubleDoubleKind.kind == vkString
+      check doubleDoubleKind.strVal == "nonnegative-double-pair"
       expect GeneError:
         discard run(compileSource("(double-add 1 2.5)"), scope)
       check run(compileSource("(double-scale 1.5 3)"), scope).print() == "4.5"
@@ -2938,6 +2996,9 @@ suite "types — function boundaries":
                 scope).print() == "8"
       check run(compileSource("(double-int-diff 1.5 3)"),
                 scope).print() == "-2"
+      let doubleIntKind = run(compileSource("(double-int-kind 1.5 3)"), scope)
+      check doubleIntKind.kind == vkString
+      check doubleIntKind.strVal == "nonnegative-double-int"
       expect GeneError:
         discard run(compileSource("(double-scale 1.5 3.0)"), scope)
       check run(compileSource("(int-offset 4 0.5)"), scope).print() == "4.5"
@@ -2951,6 +3012,10 @@ suite "types — function boundaries":
                 scope).print() == "10"
       check run(compileSource("(int-double-diff 4 6.5)"),
                 scope).print() == "-2"
+      let intDoubleKind =
+        run(compileSource("(int-double-kind 4 2.5)"), scope)
+      check intDoubleKind.kind == vkString
+      check intDoubleKind.strVal == "nonnegative-int-double"
       expect GeneError:
         discard run(compileSource("(int-offset 4.0 0.5)"), scope)
       check run(compileSource("(float-add 1.25 2.5)"), scope).print() == "3.75"
@@ -2964,6 +3029,10 @@ suite "types — function boundaries":
                 scope).print() == "7"
       check run(compileSource("(float-float-diff 1.25 3.5)"),
                 scope).print() == "-2"
+      let floatFloatKind =
+        run(compileSource("(float-float-kind 1.25 2.5)"), scope)
+      check floatFloatKind.kind == vkString
+      check floatFloatKind.strVal == "nonnegative-float-pair"
       expect GeneError:
         discard run(compileSource("(float-add 1 2.5)"), scope)
       check run(compileSource("(float-scale 1.5 3)"), scope).print() == "4.5"
@@ -2977,6 +3046,9 @@ suite "types — function boundaries":
                 scope).print() == "8"
       check run(compileSource("(float-int-diff 1.5 3)"),
                 scope).print() == "-2"
+      let floatIntKind = run(compileSource("(float-int-kind 1.5 3)"), scope)
+      check floatIntKind.kind == vkString
+      check floatIntKind.strVal == "nonnegative-float-int"
       expect GeneError:
         discard run(compileSource("(float-scale 1.5 3.0)"), scope)
       check run(compileSource("(int-float-offset 4 0.5)"), scope).print() == "4.5"
@@ -2990,6 +3062,9 @@ suite "types — function boundaries":
                 scope).print() == "10"
       check run(compileSource("(int-float-diff 4 6.5)"),
                 scope).print() == "-2"
+      let intFloatKind = run(compileSource("(int-float-kind 4 2.5)"), scope)
+      check intFloatKind.kind == vkString
+      check intFloatKind.strVal == "nonnegative-int-float"
       expect GeneError:
         discard run(compileSource("(int-float-offset 4.0 0.5)"), scope)
       check run(compileSource("(slice-len byte-slice)"), scope).print() == "3"
