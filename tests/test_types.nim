@@ -51,6 +51,33 @@ proc ffiTestPtrDiffAbs(x: int): int {.cdecl.} =
 proc ffiTestSizeInc(x: csize_t): csize_t {.cdecl.} =
   x + csize_t(1)
 
+proc ffiTestSizeAddUInt(a, b: csize_t): cuint {.cdecl.} =
+  cuint(a + b + csize_t(1))
+
+proc ffiTestSizeDiffLong(a, b: csize_t): clong {.cdecl.} =
+  clong(a) - clong(b)
+
+proc ffiTestSizeAddULong(a, b: csize_t): culong {.cdecl.} =
+  culong(a + b + csize_t(2))
+
+proc ffiTestSizeAddI64(a, b: csize_t): int64 {.cdecl.} =
+  int64(a + b + csize_t(3))
+
+proc ffiTestSizeAddU64(a, b: csize_t): uint64 {.cdecl.} =
+  uint64(a + b + csize_t(4))
+
+proc ffiTestSizeDiffPtrDiff(a, b: csize_t): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(clong(a) - clong(b))
+
+proc ffiTestSizeAddFloat(a, b: csize_t): cfloat {.cdecl.} =
+  cfloat(a + b) + 0.25
+
+proc ffiTestSizeAddDouble(a, b: csize_t): cdouble {.cdecl.} =
+  cdouble(a + b) + 0.5
+
+proc ffiTestSizeEqual(a, b: csize_t): bool {.cdecl.} =
+  a == b
+
 proc ffiTestIntAdd(a, b: cint): cint {.cdecl.} =
   a + b
 
@@ -969,6 +996,60 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestSizeInc", "ffiTestSizeInc",
                                   cast[pointer](ffiTestSizeInc), lib,
                                   @[newSym("C/Size")], newSym("C/Size")))
+      scope.define("size-add-uint",
+                   newFfiCallable("ffiTestSizeAddUInt",
+                                  "ffiTestSizeAddUInt",
+                                  cast[pointer](ffiTestSizeAddUInt), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/UInt")))
+      scope.define("size-diff-long",
+                   newFfiCallable("ffiTestSizeDiffLong",
+                                  "ffiTestSizeDiffLong",
+                                  cast[pointer](ffiTestSizeDiffLong), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/Long")))
+      scope.define("size-add-ulong",
+                   newFfiCallable("ffiTestSizeAddULong",
+                                  "ffiTestSizeAddULong",
+                                  cast[pointer](ffiTestSizeAddULong), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/ULong")))
+      scope.define("size-add-i64",
+                   newFfiCallable("ffiTestSizeAddI64",
+                                  "ffiTestSizeAddI64",
+                                  cast[pointer](ffiTestSizeAddI64), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/Int64")))
+      scope.define("size-add-u64",
+                   newFfiCallable("ffiTestSizeAddU64",
+                                  "ffiTestSizeAddU64",
+                                  cast[pointer](ffiTestSizeAddU64), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/UInt64")))
+      scope.define("size-diff-ptrdiff",
+                   newFfiCallable("ffiTestSizeDiffPtrDiff",
+                                  "ffiTestSizeDiffPtrDiff",
+                                  cast[pointer](ffiTestSizeDiffPtrDiff), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/PtrDiff")))
+      scope.define("size-add-float",
+                   newFfiCallable("ffiTestSizeAddFloat",
+                                  "ffiTestSizeAddFloat",
+                                  cast[pointer](ffiTestSizeAddFloat), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/Float")))
+      scope.define("size-add-double",
+                   newFfiCallable("ffiTestSizeAddDouble",
+                                  "ffiTestSizeAddDouble",
+                                  cast[pointer](ffiTestSizeAddDouble), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/Double")))
+      scope.define("size-equal?",
+                   newFfiCallable("ffiTestSizeEqual",
+                                  "ffiTestSizeEqual",
+                                  cast[pointer](ffiTestSizeEqual), lib,
+                                  @[newSym("C/Size"), newSym("C/Size")],
+                                  newSym("C/Bool")))
       scope.define("int-add",
                    newFfiCallable("ffiTestIntAdd", "ffiTestIntAdd",
                                   cast[pointer](ffiTestIntAdd), lib,
@@ -1629,6 +1710,19 @@ suite "types — function boundaries":
         discard run(compileSource("(ptrdiff-abs 9223372036854775808)"),
                     scope)
       check run(compileSource("(size-inc 41)"), scope).print() == "42"
+      check run(compileSource("(size-add-uint 20 22)"), scope).print() == "43"
+      check run(compileSource("(size-diff-long 20 22)"), scope).print() == "-2"
+      check run(compileSource("(size-add-ulong 20 22)"), scope).print() == "44"
+      check run(compileSource("(size-add-i64 20 22)"), scope).print() == "45"
+      check run(compileSource("(size-add-u64 20 22)"), scope).print() == "46"
+      check run(compileSource("(size-diff-ptrdiff 20 22)"),
+                scope).print() == "-2"
+      check run(compileSource("(size-add-float 20 22)"),
+                scope).print() == "42.25"
+      check run(compileSource("(size-add-double 20 22)"),
+                scope).print() == "42.5"
+      check run(compileSource("(size-equal? 20 20)"), scope).print() == "true"
+      check run(compileSource("(size-equal? 20 22)"), scope).print() == "false"
       when sizeof(csize_t) == 8:
         check run(compileSource("(size-inc 9223372036854775808)"),
                   scope).print() == "9223372036854775809"
