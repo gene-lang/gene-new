@@ -81,8 +81,32 @@ proc ffiTestU8NonZero(x: uint8): bool {.cdecl.} =
 proc ffiTestCharNext(x: cchar): cchar {.cdecl.} =
   cchar(ord(x) + 1)
 
+proc ffiTestCharI32(x: cchar): int32 {.cdecl.} =
+  int32(ord(x) + 5)
+
+proc ffiTestCharI16(x: cchar): int16 {.cdecl.} =
+  int16(ord(x) + 6)
+
+proc ffiTestCharShort(x: cchar): cshort {.cdecl.} =
+  cshort(ord(x) + 7)
+
+proc ffiTestCharI8(x: cchar): int8 {.cdecl.} =
+  int8(ord(x) - 60)
+
 proc ffiTestCharULong(x: cchar): culong {.cdecl.} =
   culong(ord(x) + 2)
+
+proc ffiTestCharU32(x: cchar): uint32 {.cdecl.} =
+  uint32(ord(x) + 8)
+
+proc ffiTestCharU16(x: cchar): uint16 {.cdecl.} =
+  uint16(ord(x) + 9)
+
+proc ffiTestCharUShort(x: cchar): cushort {.cdecl.} =
+  cushort(ord(x) + 10)
+
+proc ffiTestCharU8(x: cchar): uint8 {.cdecl.} =
+  uint8(ord(x) + 11)
 
 proc ffiTestCharI64(x: cchar): int64 {.cdecl.} =
   int64(ord(x) + 3)
@@ -96,8 +120,32 @@ proc ffiTestCharDiff(x: cchar): TestCPtrDiff {.cdecl.} =
 proc ffiTestUCharInc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
+proc ffiTestUCharI32(x: uint8): int32 {.cdecl.} =
+  int32(x) + 5'i32
+
+proc ffiTestUCharI16(x: uint8): int16 {.cdecl.} =
+  int16(x) + 6'i16
+
+proc ffiTestUCharShort(x: uint8): cshort {.cdecl.} =
+  cshort(x) + cshort(7)
+
+proc ffiTestUCharI8(x: uint8): int8 {.cdecl.} =
+  int8(x) - 60'i8
+
 proc ffiTestUCharULong(x: uint8): culong {.cdecl.} =
   culong(x + 2'u8)
+
+proc ffiTestUCharU32(x: uint8): uint32 {.cdecl.} =
+  uint32(x) + 8'u32
+
+proc ffiTestUCharU16(x: uint8): uint16 {.cdecl.} =
+  uint16(x) + 9'u16
+
+proc ffiTestUCharUShort(x: uint8): cushort {.cdecl.} =
+  cushort(x) + cushort(10)
+
+proc ffiTestUCharU8(x: uint8): uint8 {.cdecl.} =
+  x + 11'u8
 
 proc ffiTestUCharI64(x: uint8): int64 {.cdecl.} =
   int64(x + 3'u8)
@@ -1587,11 +1635,51 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestCharNext", "ffiTestCharNext",
                                   cast[pointer](ffiTestCharNext), lib,
                                   @[newSym("C/Char")], newSym("C/Char")))
+      scope.define("char-i32",
+                   newFfiCallable("ffiTestCharI32",
+                                  "ffiTestCharI32",
+                                  cast[pointer](ffiTestCharI32), lib,
+                                  @[newSym("C/Char")], newSym("C/Int32")))
+      scope.define("char-i16",
+                   newFfiCallable("ffiTestCharI16",
+                                  "ffiTestCharI16",
+                                  cast[pointer](ffiTestCharI16), lib,
+                                  @[newSym("C/Char")], newSym("C/Int16")))
+      scope.define("char-short",
+                   newFfiCallable("ffiTestCharShort",
+                                  "ffiTestCharShort",
+                                  cast[pointer](ffiTestCharShort), lib,
+                                  @[newSym("C/Char")], newSym("C/Short")))
+      scope.define("char-i8",
+                   newFfiCallable("ffiTestCharI8",
+                                  "ffiTestCharI8",
+                                  cast[pointer](ffiTestCharI8), lib,
+                                  @[newSym("C/Char")], newSym("C/Int8")))
       scope.define("char-ulong",
                    newFfiCallable("ffiTestCharULong",
                                   "ffiTestCharULong",
                                   cast[pointer](ffiTestCharULong), lib,
                                   @[newSym("C/Char")], newSym("C/ULong")))
+      scope.define("char-u32",
+                   newFfiCallable("ffiTestCharU32",
+                                  "ffiTestCharU32",
+                                  cast[pointer](ffiTestCharU32), lib,
+                                  @[newSym("C/Char")], newSym("C/UInt32")))
+      scope.define("char-u16",
+                   newFfiCallable("ffiTestCharU16",
+                                  "ffiTestCharU16",
+                                  cast[pointer](ffiTestCharU16), lib,
+                                  @[newSym("C/Char")], newSym("C/UInt16")))
+      scope.define("char-ushort",
+                   newFfiCallable("ffiTestCharUShort",
+                                  "ffiTestCharUShort",
+                                  cast[pointer](ffiTestCharUShort), lib,
+                                  @[newSym("C/Char")], newSym("C/UShort")))
+      scope.define("char-u8",
+                   newFfiCallable("ffiTestCharU8",
+                                  "ffiTestCharU8",
+                                  cast[pointer](ffiTestCharU8), lib,
+                                  @[newSym("C/Char")], newSym("C/UInt8")))
       scope.define("char-i64",
                    newFfiCallable("ffiTestCharI64",
                                   "ffiTestCharI64",
@@ -1611,11 +1699,51 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestUCharInc", "ffiTestUCharInc",
                                   cast[pointer](ffiTestUCharInc), lib,
                                   @[newSym("C/UChar")], newSym("C/UChar")))
+      scope.define("uchar-i32",
+                   newFfiCallable("ffiTestUCharI32",
+                                  "ffiTestUCharI32",
+                                  cast[pointer](ffiTestUCharI32), lib,
+                                  @[newSym("C/UChar")], newSym("C/Int32")))
+      scope.define("uchar-i16",
+                   newFfiCallable("ffiTestUCharI16",
+                                  "ffiTestUCharI16",
+                                  cast[pointer](ffiTestUCharI16), lib,
+                                  @[newSym("C/UChar")], newSym("C/Int16")))
+      scope.define("uchar-short",
+                   newFfiCallable("ffiTestUCharShort",
+                                  "ffiTestUCharShort",
+                                  cast[pointer](ffiTestUCharShort), lib,
+                                  @[newSym("C/UChar")], newSym("C/Short")))
+      scope.define("uchar-i8",
+                   newFfiCallable("ffiTestUCharI8",
+                                  "ffiTestUCharI8",
+                                  cast[pointer](ffiTestUCharI8), lib,
+                                  @[newSym("C/UChar")], newSym("C/Int8")))
       scope.define("uchar-ulong",
                    newFfiCallable("ffiTestUCharULong",
                                   "ffiTestUCharULong",
                                   cast[pointer](ffiTestUCharULong), lib,
                                   @[newSym("C/UChar")], newSym("C/ULong")))
+      scope.define("uchar-u32",
+                   newFfiCallable("ffiTestUCharU32",
+                                  "ffiTestUCharU32",
+                                  cast[pointer](ffiTestUCharU32), lib,
+                                  @[newSym("C/UChar")], newSym("C/UInt32")))
+      scope.define("uchar-u16",
+                   newFfiCallable("ffiTestUCharU16",
+                                  "ffiTestUCharU16",
+                                  cast[pointer](ffiTestUCharU16), lib,
+                                  @[newSym("C/UChar")], newSym("C/UInt16")))
+      scope.define("uchar-ushort",
+                   newFfiCallable("ffiTestUCharUShort",
+                                  "ffiTestUCharUShort",
+                                  cast[pointer](ffiTestUCharUShort), lib,
+                                  @[newSym("C/UChar")], newSym("C/UShort")))
+      scope.define("uchar-u8",
+                   newFfiCallable("ffiTestUCharU8",
+                                  "ffiTestUCharU8",
+                                  cast[pointer](ffiTestUCharU8), lib,
+                                  @[newSym("C/UChar")], newSym("C/UInt8")))
       scope.define("uchar-i64",
                    newFfiCallable("ffiTestUCharI64",
                                   "ffiTestUCharI64",
@@ -3212,7 +3340,15 @@ suite "types — function boundaries":
       check run(compileSource("(char-next 'A')"), scope).print() == "'B'"
       expect GeneError:
         discard run(compileSource("(char-next 128)"), scope)
+      check run(compileSource("(char-i32 'A')"), scope).print() == "70"
+      check run(compileSource("(char-i16 'A')"), scope).print() == "71"
+      check run(compileSource("(char-short 'A')"), scope).print() == "72"
+      check run(compileSource("(char-i8 'A')"), scope).print() == "5"
       check run(compileSource("(char-ulong 'A')"), scope).print() == "67"
+      check run(compileSource("(char-u32 'A')"), scope).print() == "73"
+      check run(compileSource("(char-u16 'A')"), scope).print() == "74"
+      check run(compileSource("(char-ushort 'A')"), scope).print() == "75"
+      check run(compileSource("(char-u8 'A')"), scope).print() == "76"
       check run(compileSource("(char-i64 'A')"), scope).print() == "68"
       check run(compileSource("(char-u64 'A')"), scope).print() == "69"
       check run(compileSource("(char-diff 'A')"), scope).print() == "-1"
@@ -3222,7 +3358,15 @@ suite "types — function boundaries":
         discard run(compileSource("(uchar-inc -1)"), scope)
       expect GeneError:
         discard run(compileSource("(uchar-inc 256)"), scope)
+      check run(compileSource("(uchar-i32 'A')"), scope).print() == "70"
+      check run(compileSource("(uchar-i16 'A')"), scope).print() == "71"
+      check run(compileSource("(uchar-short 'A')"), scope).print() == "72"
+      check run(compileSource("(uchar-i8 'A')"), scope).print() == "5"
       check run(compileSource("(uchar-ulong 'A')"), scope).print() == "67"
+      check run(compileSource("(uchar-u32 'A')"), scope).print() == "73"
+      check run(compileSource("(uchar-u16 'A')"), scope).print() == "74"
+      check run(compileSource("(uchar-ushort 'A')"), scope).print() == "75"
+      check run(compileSource("(uchar-u8 'A')"), scope).print() == "76"
       check run(compileSource("(uchar-i64 'A')"), scope).print() == "68"
       check run(compileSource("(uchar-u64 'A')"), scope).print() == "69"
       check run(compileSource("(uchar-diff 'A')"), scope).print() == "-1"
