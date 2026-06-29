@@ -81,6 +81,24 @@ proc ffiTestSliceFirstByte(data: pointer, len: csize_t): cint {.cdecl.} =
   else:
     cint(cast[ptr uint8](data)[])
 
+proc ffiTestSliceLenULong(data: pointer, len: csize_t): culong {.cdecl.} =
+  if data == nil: culong(0) else: culong(len) + culong(3)
+
+proc ffiTestSliceLenI64(data: pointer, len: csize_t): int64 {.cdecl.} =
+  if data == nil: -1'i64 else: int64(len) + 2'i64
+
+proc ffiTestSliceLenU64(data: pointer, len: csize_t): uint64 {.cdecl.} =
+  if data == nil: 0'u64 else: uint64(len) + 1'u64
+
+proc ffiTestSliceLenDiff(data: pointer, len: csize_t): TestCPtrDiff {.cdecl.} =
+  if data == nil: TestCPtrDiff(-1) else: TestCPtrDiff(len)
+
+proc ffiTestSliceLenFloat(data: pointer, len: csize_t): cfloat {.cdecl.} =
+  if data == nil: -1.0 else: cfloat(len) + 0.25
+
+proc ffiTestSliceLenDouble(data: pointer, len: csize_t): cdouble {.cdecl.} =
+  if data == nil: -1.0 else: cdouble(len) + 0.5
+
 proc ffiTestCStrBoundedLen(s: cstring, len: csize_t): csize_t {.cdecl.} =
   var i = 0
   while csize_t(i) < len and s[i] != '\0':
@@ -922,6 +940,48 @@ suite "types — function boundaries":
                                   @[newNode(newSym("C/Slice"),
                                             body = @[newSym("C/UInt8")])],
                                   newSym("C/Int")))
+      scope.define("slice-len-ulong",
+                   newFfiCallable("ffiTestSliceLenULong",
+                                  "ffiTestSliceLenULong",
+                                  cast[pointer](ffiTestSliceLenULong), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/ULong")))
+      scope.define("slice-len-i64",
+                   newFfiCallable("ffiTestSliceLenI64",
+                                  "ffiTestSliceLenI64",
+                                  cast[pointer](ffiTestSliceLenI64), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Int64")))
+      scope.define("slice-len-u64",
+                   newFfiCallable("ffiTestSliceLenU64",
+                                  "ffiTestSliceLenU64",
+                                  cast[pointer](ffiTestSliceLenU64), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/UInt64")))
+      scope.define("slice-len-diff",
+                   newFfiCallable("ffiTestSliceLenDiff",
+                                  "ffiTestSliceLenDiff",
+                                  cast[pointer](ffiTestSliceLenDiff), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/PtrDiff")))
+      scope.define("slice-len-float",
+                   newFfiCallable("ffiTestSliceLenFloat",
+                                  "ffiTestSliceLenFloat",
+                                  cast[pointer](ffiTestSliceLenFloat), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Float")))
+      scope.define("slice-len-double",
+                   newFfiCallable("ffiTestSliceLenDouble",
+                                  "ffiTestSliceLenDouble",
+                                  cast[pointer](ffiTestSliceLenDouble), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Double")))
       scope.define("buffer-len",
                    newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
                                   cast[pointer](ffiTestSliceLen), lib,
@@ -935,6 +995,48 @@ suite "types — function boundaries":
                                   @[newNode(newSym("Buffer"),
                                             body = @[newSym("C/UInt8")])],
                                   newSym("C/Int")))
+      scope.define("buffer-len-ulong",
+                   newFfiCallable("ffiTestSliceLenULong",
+                                  "ffiTestSliceLenULong",
+                                  cast[pointer](ffiTestSliceLenULong), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/ULong")))
+      scope.define("buffer-len-i64",
+                   newFfiCallable("ffiTestSliceLenI64",
+                                  "ffiTestSliceLenI64",
+                                  cast[pointer](ffiTestSliceLenI64), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Int64")))
+      scope.define("buffer-len-u64",
+                   newFfiCallable("ffiTestSliceLenU64",
+                                  "ffiTestSliceLenU64",
+                                  cast[pointer](ffiTestSliceLenU64), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/UInt64")))
+      scope.define("buffer-len-diff",
+                   newFfiCallable("ffiTestSliceLenDiff",
+                                  "ffiTestSliceLenDiff",
+                                  cast[pointer](ffiTestSliceLenDiff), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/PtrDiff")))
+      scope.define("buffer-len-float",
+                   newFfiCallable("ffiTestSliceLenFloat",
+                                  "ffiTestSliceLenFloat",
+                                  cast[pointer](ffiTestSliceLenFloat), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Float")))
+      scope.define("buffer-len-double",
+                   newFfiCallable("ffiTestSliceLenDouble",
+                                  "ffiTestSliceLenDouble",
+                                  cast[pointer](ffiTestSliceLenDouble), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Double")))
       scope.define("char-buffer-first-byte",
                    newFfiCallable("ffiTestSliceFirstByte",
                                   "ffiTestSliceFirstByte",
@@ -1325,6 +1427,18 @@ suite "types — function boundaries":
       check run(compileSource("(slice-len byte-slice)"), scope).print() == "3"
       check run(compileSource("(slice-first-byte byte-slice)"),
                 scope).print() == "65"
+      check run(compileSource("(slice-len-ulong byte-slice)"),
+                scope).print() == "6"
+      check run(compileSource("(slice-len-i64 byte-slice)"),
+                scope).print() == "5"
+      check run(compileSource("(slice-len-u64 byte-slice)"),
+                scope).print() == "4"
+      check run(compileSource("(slice-len-diff byte-slice)"),
+                scope).print() == "3"
+      check run(compileSource("(slice-len-float byte-slice)"),
+                scope).print() == "3.25"
+      check run(compileSource("(slice-len-double byte-slice)"),
+                scope).print() == "3.5"
       check run(compileSource("(slice-len empty-byte-slice)"),
                 scope).print() == "0"
       check run(compileSource("(slice-first-byte empty-byte-slice)"),
@@ -1337,6 +1451,18 @@ suite "types — function boundaries":
                 scope).print() == "3"
       check run(compileSource("(buffer-first-byte byte-buffer)"),
                 scope).print() == "65"
+      check run(compileSource("(buffer-len-ulong byte-buffer)"),
+                scope).print() == "6"
+      check run(compileSource("(buffer-len-i64 byte-buffer)"),
+                scope).print() == "5"
+      check run(compileSource("(buffer-len-u64 byte-buffer)"),
+                scope).print() == "4"
+      check run(compileSource("(buffer-len-diff byte-buffer)"),
+                scope).print() == "3"
+      check run(compileSource("(buffer-len-float byte-buffer)"),
+                scope).print() == "3.25"
+      check run(compileSource("(buffer-len-double byte-buffer)"),
+                scope).print() == "3.5"
       check run(compileSource("(char-buffer-first-byte char-buffer)"),
                 scope).print() == "65"
       check run(compileSource("(uchar-buffer-first-byte uchar-buffer)"),

@@ -10599,10 +10599,34 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type SliceLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
       let fn = cast[SliceLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/ULong":
+      type SliceULongProc = proc(p: pointer, n: csize_t): culong {.cdecl.}
+      let fn = cast[SliceULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0.address, arg0.length)))
+    of "C/Int64":
+      type SliceInt64Proc = proc(p: pointer, n: csize_t): int64 {.cdecl.}
+      let fn = cast[SliceInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0.address, arg0.length))
+    of "C/UInt64":
+      type SliceUInt64Proc = proc(p: pointer, n: csize_t): uint64 {.cdecl.}
+      let fn = cast[SliceUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0.address, arg0.length))
     of "C/Size":
       type SliceSizeProc = proc(p: pointer, n: csize_t): csize_t {.cdecl.}
       let fn = cast[SliceSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0.address, arg0.length)))
+    of "C/PtrDiff":
+      type SlicePtrDiffProc = proc(p: pointer, n: csize_t): GeneCPtrDiff {.cdecl.}
+      let fn = cast[SlicePtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Float":
+      type SliceFloatProc = proc(p: pointer, n: csize_t): cfloat {.cdecl.}
+      let fn = cast[SliceFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0.address, arg0.length)))
+    of "C/Double":
+      type SliceDoubleProc = proc(p: pointer, n: csize_t): cdouble {.cdecl.}
+      let fn = cast[SliceDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0.address, arg0.length)))
     of "C/Bool":
       type SliceBoolProc = proc(p: pointer, n: csize_t): bool {.cdecl.}
       let fn = cast[SliceBoolProc](callee.ffiCallableAddress)
@@ -10639,10 +10663,34 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type BufferLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
       let fn = cast[BufferLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/ULong":
+      type BufferULongProc = proc(p: pointer, n: csize_t): culong {.cdecl.}
+      let fn = cast[BufferULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0.data, arg0.length)))
+    of "C/Int64":
+      type BufferInt64Proc = proc(p: pointer, n: csize_t): int64 {.cdecl.}
+      let fn = cast[BufferInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0.data, arg0.length))
+    of "C/UInt64":
+      type BufferUInt64Proc = proc(p: pointer, n: csize_t): uint64 {.cdecl.}
+      let fn = cast[BufferUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0.data, arg0.length))
     of "C/Size":
       type BufferSizeProc = proc(p: pointer, n: csize_t): csize_t {.cdecl.}
       let fn = cast[BufferSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0.data, arg0.length)))
+    of "C/PtrDiff":
+      type BufferPtrDiffProc = proc(p: pointer, n: csize_t): GeneCPtrDiff {.cdecl.}
+      let fn = cast[BufferPtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Float":
+      type BufferFloatProc = proc(p: pointer, n: csize_t): cfloat {.cdecl.}
+      let fn = cast[BufferFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0.data, arg0.length)))
+    of "C/Double":
+      type BufferDoubleProc = proc(p: pointer, n: csize_t): cdouble {.cdecl.}
+      let fn = cast[BufferDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0.data, arg0.length)))
     of "C/Bool":
       type BufferBoolProc = proc(p: pointer, n: csize_t): bool {.cdecl.}
       let fn = cast[BufferBoolProc](callee.ffiCallableAddress)
