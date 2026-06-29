@@ -11328,14 +11328,34 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type DoubleIntIntProc = proc(a: cdouble, b: cint): cint {.cdecl.}
       let fn = cast[DoubleIntIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt":
+      type DoubleIntUIntProc = proc(a: cdouble, b: cint): cuint {.cdecl.}
+      let fn = cast[DoubleIntUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
     of "C/Long":
       type DoubleIntLongProc = proc(a: cdouble, b: cint): clong {.cdecl.}
       let fn = cast[DoubleIntLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/ULong":
+      type DoubleIntULongProc = proc(a: cdouble, b: cint): culong {.cdecl.}
+      let fn = cast[DoubleIntULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Int64":
+      type DoubleIntInt64Proc = proc(a: cdouble, b: cint): int64 {.cdecl.}
+      let fn = cast[DoubleIntInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0, arg1))
+    of "C/UInt64":
+      type DoubleIntUInt64Proc = proc(a: cdouble, b: cint): uint64 {.cdecl.}
+      let fn = cast[DoubleIntUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0, arg1))
     of "C/Size":
       type DoubleIntSizeProc = proc(a: cdouble, b: cint): csize_t {.cdecl.}
       let fn = cast[DoubleIntSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/PtrDiff":
+      type DoubleIntPtrDiffProc = proc(a: cdouble, b: cint): GeneCPtrDiff {.cdecl.}
+      let fn = cast[DoubleIntPtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
     of "C/Float":
       type DoubleIntFloatProc = proc(a: cdouble, b: cint): cfloat {.cdecl.}
       let fn = cast[DoubleIntFloatProc](callee.ffiCallableAddress)
