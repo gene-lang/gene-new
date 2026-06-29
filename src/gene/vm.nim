@@ -9279,6 +9279,9 @@ proc isFfiPtrLabel(label: string): bool =
     label.startsWith("(C/NullableConstPtr ") or
     label.startsWith("(C/OwnedPtr ")
 
+proc isFfiSliceLabel(label: string): bool =
+  label.startsWith("(C/Slice ")
+
 proc isFfiNullablePtrLabel(label: string): bool =
   label.startsWith("(C/NullablePtr ") or
     label.startsWith("(C/NullableConstPtr ")
@@ -9312,6 +9315,13 @@ proc ffiPointerArg(name, label: string, typeExpr, value: Value): pointer =
   if checked.kind != vkCPtr:
     raiseTypeError(name, label, value, nil)
   checked.cPtrAddress
+
+proc ffiSliceArg(name, label: string, typeExpr, value: Value):
+    tuple[address: pointer, length: csize_t] =
+  let checked = adaptBoundary(name, typeExpr, value, nil)
+  if checked.kind != vkCSlice:
+    raiseTypeError(name, label, value, nil)
+  (checked.cSliceAddress, csize_t(checked.cSliceLen))
 
 proc applyFfiCallable(callee: Value, args: openArray[Value],
                       named: NamedArgs): Value =
@@ -10506,6 +10516,46 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         type SizePtrProc = proc(x: csize_t): pointer {.cdecl.}
         let fn = cast[SizePtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and isFfiSliceLabel(paramLabels[0]):
+    let arg0 = ffiSliceArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
+    case returnLabel
+    of "C/Int":
+      type SliceIntProc = proc(p: pointer, n: csize_t): cint {.cdecl.}
+      let fn = cast[SliceIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/UInt":
+      type SliceUIntProc = proc(p: pointer, n: csize_t): cuint {.cdecl.}
+      let fn = cast[SliceUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Long":
+      type SliceLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
+      let fn = cast[SliceLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Size":
+      type SliceSizeProc = proc(p: pointer, n: csize_t): csize_t {.cdecl.}
+      let fn = cast[SliceSizeProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0.address, arg0.length)))
+    of "C/Bool":
+      type SliceBoolProc = proc(p: pointer, n: csize_t): bool {.cdecl.}
+      let fn = cast[SliceBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0.address, arg0.length))
+    of "C/CStr":
+      type SliceCStrProc = proc(p: pointer, n: csize_t): cstring {.cdecl.}
+      let fn = cast[SliceCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0.address, arg0.length))
+    of "C/Void":
+      type SliceVoidProc = proc(p: pointer, n: csize_t) {.cdecl.}
+      let fn = cast[SliceVoidProc](callee.ffiCallableAddress)
+      fn(arg0.address, arg0.length)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type SlicePtrProc = proc(p: pointer, n: csize_t): pointer {.cdecl.}
+        let fn = cast[SlicePtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0.address, arg0.length),
+                                releaseAddress)
   if paramLabels.len == 1 and isFfiPtrLabel(paramLabels[0]):
     let arg0 = ffiPointerArg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])

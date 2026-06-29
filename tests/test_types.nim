@@ -46,6 +46,15 @@ proc ffiTestPtrDiffAbs(x: int): int {.cdecl.} =
 proc ffiTestSizeInc(x: csize_t): csize_t {.cdecl.} =
   x + csize_t(1)
 
+proc ffiTestSliceLen(data: pointer, len: csize_t): csize_t {.cdecl.} =
+  len
+
+proc ffiTestSliceFirstByte(data: pointer, len: csize_t): cint {.cdecl.} =
+  if data == nil or len == 0:
+    -1
+  else:
+    cint(cast[ptr uint8](data)[])
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -737,6 +746,30 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestSizeInc", "ffiTestSizeInc",
                                   cast[pointer](ffiTestSizeInc), lib,
                                   @[newSym("C/Size")], newSym("C/Size")))
+      scope.define("slice-len",
+                   newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
+                                  cast[pointer](ffiTestSliceLen), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Size")))
+      scope.define("slice-first-byte",
+                   newFfiCallable("ffiTestSliceFirstByte",
+                                  "ffiTestSliceFirstByte",
+                                  cast[pointer](ffiTestSliceFirstByte), lib,
+                                  @[newNode(newSym("C/Slice"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Int")))
+      var bytes = [uint8(65), uint8(66), uint8(67)]
+      scope.define("byte-slice",
+                   newCSlice(cast[pointer](addr bytes[0]), bytes.len,
+                             newSym("C/UInt8")))
+      scope.define("empty-byte-slice",
+                   newCSlice(nil, 0, newSym("C/UInt8")))
+      scope.define("wrong-byte-slice",
+                   newCSlice(cast[pointer](addr bytes[0]), bytes.len,
+                             newSym("C/Int32")))
+      scope.define("bad-byte-slice",
+                   newCSlice(nil, bytes.len, newSym("C/UInt8")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -800,6 +833,17 @@ suite "types — function boundaries":
       when sizeof(csize_t) < 8:
         expect GeneError:
           discard run(compileSource("(size-inc 4294967296)"), scope)
+      check run(compileSource("(slice-len byte-slice)"), scope).print() == "3"
+      check run(compileSource("(slice-first-byte byte-slice)"),
+                scope).print() == "65"
+      check run(compileSource("(slice-len empty-byte-slice)"),
+                scope).print() == "0"
+      check run(compileSource("(slice-first-byte empty-byte-slice)"),
+                scope).print() == "-1"
+      expect GeneError:
+        discard run(compileSource("(slice-len wrong-byte-slice)"), scope)
+      expect GeneError:
+        discard run(compileSource("(slice-len bad-byte-slice)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
