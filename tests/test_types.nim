@@ -441,6 +441,24 @@ proc ffiTestCStrPtrIfLen(s: cstring, len: csize_t): pointer {.cdecl.} =
   else:
     cast[pointer](s)
 
+proc ffiTestCStrLong(s: cstring): clong {.cdecl.} =
+  clong(($s).len) - clong(5)
+
+proc ffiTestCStrULong(s: cstring): culong {.cdecl.} =
+  culong(($s).len + 2)
+
+proc ffiTestCStrI64(s: cstring): int64 {.cdecl.} =
+  int64(($s).len + 3)
+
+proc ffiTestCStrU64(s: cstring): uint64 {.cdecl.} =
+  uint64(($s).len + 4)
+
+proc ffiTestCStrDiff(s: cstring): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(clong(($s).len) - clong(5))
+
+proc ffiTestCStrNonEmpty(s: cstring): bool {.cdecl.} =
+  ($s).len != 0
+
 proc ffiTestCStrIntUInt(s: cstring, x: cint): cuint {.cdecl.} =
   cuint(($s).len + int(x) + 1)
 
@@ -2052,6 +2070,36 @@ suite "types — function boundaries":
                                   @[newSym("C/CStr"), newSym("C/Size")],
                                   newNode(newSym("C/NullableConstPtr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("cstr-long",
+                   newFfiCallable("ffiTestCStrLong",
+                                  "ffiTestCStrLong",
+                                  cast[pointer](ffiTestCStrLong), lib,
+                                  @[newSym("C/CStr")], newSym("C/Long")))
+      scope.define("cstr-ulong",
+                   newFfiCallable("ffiTestCStrULong",
+                                  "ffiTestCStrULong",
+                                  cast[pointer](ffiTestCStrULong), lib,
+                                  @[newSym("C/CStr")], newSym("C/ULong")))
+      scope.define("cstr-i64",
+                   newFfiCallable("ffiTestCStrI64",
+                                  "ffiTestCStrI64",
+                                  cast[pointer](ffiTestCStrI64), lib,
+                                  @[newSym("C/CStr")], newSym("C/Int64")))
+      scope.define("cstr-u64",
+                   newFfiCallable("ffiTestCStrU64",
+                                  "ffiTestCStrU64",
+                                  cast[pointer](ffiTestCStrU64), lib,
+                                  @[newSym("C/CStr")], newSym("C/UInt64")))
+      scope.define("cstr-diff",
+                   newFfiCallable("ffiTestCStrDiff",
+                                  "ffiTestCStrDiff",
+                                  cast[pointer](ffiTestCStrDiff), lib,
+                                  @[newSym("C/CStr")], newSym("C/PtrDiff")))
+      scope.define("cstr-non-empty?",
+                   newFfiCallable("ffiTestCStrNonEmpty",
+                                  "ffiTestCStrNonEmpty",
+                                  cast[pointer](ffiTestCStrNonEmpty), lib,
+                                  @[newSym("C/CStr")], newSym("C/Bool")))
       scope.define("cstr-int-uint",
                    newFfiCallable("ffiTestCStrIntUInt",
                                   "ffiTestCStrIntUInt",
@@ -2727,6 +2775,15 @@ suite "types — function boundaries":
         "(c-const-ptr)"
       check run(compileSource("(cstr-ptr-if-len \"abc\" 0)"), scope).print() ==
         "(c-const-ptr null)"
+      check run(compileSource("(cstr-long \"abc\")"), scope).print() == "-2"
+      check run(compileSource("(cstr-ulong \"abc\")"), scope).print() == "5"
+      check run(compileSource("(cstr-i64 \"abc\")"), scope).print() == "6"
+      check run(compileSource("(cstr-u64 \"abc\")"), scope).print() == "7"
+      check run(compileSource("(cstr-diff \"abc\")"), scope).print() == "-2"
+      check run(compileSource("(cstr-non-empty? \"abc\")"),
+                scope).print() == "true"
+      check run(compileSource("(cstr-non-empty? \"\")"),
+                scope).print() == "false"
       check run(compileSource("(cstr-int-uint \"abc\" 2)"),
                 scope).print() == "6"
       check run(compileSource("(cstr-int-long \"abc\" 5)"),
