@@ -556,6 +556,18 @@ proc ffiTestPtrIdentity(p: pointer): pointer {.cdecl.} =
 proc ffiTestPtrIsNil(p: pointer): bool {.cdecl.} =
   p == nil
 
+proc ffiTestPtrProbeULong(p: pointer): culong {.cdecl.} =
+  if p == nil: 0.culong else: 4.culong
+
+proc ffiTestPtrProbeI64(p: pointer): int64 {.cdecl.} =
+  if p == nil: -1'i64 else: 5'i64
+
+proc ffiTestPtrProbeU64(p: pointer): uint64 {.cdecl.} =
+  if p == nil: 0'u64 else: 6'u64
+
+proc ffiTestPtrProbeDiff(p: pointer): TestCPtrDiff {.cdecl.} =
+  if p == nil: TestCPtrDiff(-2) else: TestCPtrDiff(7)
+
 proc ffiTestPtrSame(a, b: pointer): cint {.cdecl.} =
   if a == b: 1 else: 0
 
@@ -2347,6 +2359,34 @@ suite "types — function boundaries":
                                   @[newNode(newSym("C/NullablePtr"),
                                             body = @[newSym("C/Char")])],
                                   newSym("C/Bool")))
+      scope.define("ptr-probe-ulong",
+                   newFfiCallable("ffiTestPtrProbeULong",
+                                  "ffiTestPtrProbeULong",
+                                  cast[pointer](ffiTestPtrProbeULong), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/ULong")))
+      scope.define("ptr-probe-i64",
+                   newFfiCallable("ffiTestPtrProbeI64",
+                                  "ffiTestPtrProbeI64",
+                                  cast[pointer](ffiTestPtrProbeI64), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int64")))
+      scope.define("ptr-probe-u64",
+                   newFfiCallable("ffiTestPtrProbeU64",
+                                  "ffiTestPtrProbeU64",
+                                  cast[pointer](ffiTestPtrProbeU64), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt64")))
+      scope.define("ptr-probe-diff",
+                   newFfiCallable("ffiTestPtrProbeDiff",
+                                  "ffiTestPtrProbeDiff",
+                                  cast[pointer](ffiTestPtrProbeDiff), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/PtrDiff")))
       scope.define("ptr-same",
                    newFfiCallable("ffiTestPtrSame",
                                   "ffiTestPtrSame",
@@ -2878,6 +2918,18 @@ suite "types — function boundaries":
       check identity.cPtrTargetType.print() == "C/Char"
       check run(compileSource("(ptr-nil? nil)"), scope).print() == "true"
       check run(compileSource("(ptr-nil? copy-dst)"), scope).print() == "false"
+      check run(compileSource("(ptr-probe-ulong copy-dst)"),
+                scope).print() == "4"
+      check run(compileSource("(ptr-probe-ulong nil)"), scope).print() == "0"
+      check run(compileSource("(ptr-probe-i64 copy-dst)"),
+                scope).print() == "5"
+      check run(compileSource("(ptr-probe-i64 nil)"), scope).print() == "-1"
+      check run(compileSource("(ptr-probe-u64 copy-dst)"),
+                scope).print() == "6"
+      check run(compileSource("(ptr-probe-u64 nil)"), scope).print() == "0"
+      check run(compileSource("(ptr-probe-diff copy-dst)"),
+                scope).print() == "7"
+      check run(compileSource("(ptr-probe-diff nil)"), scope).print() == "-2"
       check run(compileSource("(ptr-same copy-dst copy-dst)"), scope).print() ==
         "1"
       check run(compileSource("(ptr-same copy-dst copy-src)"), scope).print() ==
