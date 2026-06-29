@@ -13142,9 +13142,49 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type PtrPtrSizeIntProc = proc(a, b: pointer, n: csize_t): cint {.cdecl.}
       let fn = cast[PtrPtrSizeIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Int32":
+      type PtrPtrSizeInt32Proc = proc(a, b: pointer, n: csize_t): int32 {.cdecl.}
+      let fn = cast[PtrPtrSizeInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Int16":
+      type PtrPtrSizeInt16Proc = proc(a, b: pointer, n: csize_t): int16 {.cdecl.}
+      let fn = cast[PtrPtrSizeInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Short":
+      type PtrPtrSizeShortProc = proc(a, b: pointer, n: csize_t): cshort {.cdecl.}
+      let fn = cast[PtrPtrSizeShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Int8":
+      type PtrPtrSizeInt8Proc = proc(a, b: pointer, n: csize_t): int8 {.cdecl.}
+      let fn = cast[PtrPtrSizeInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Char":
+      type PtrPtrSizeCharProc = proc(a, b: pointer, n: csize_t): cchar {.cdecl.}
+      let fn = cast[PtrPtrSizeCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0, arg1, arg2))
     of "C/UInt":
       type PtrPtrSizeUIntProc = proc(a, b: pointer, n: csize_t): cuint {.cdecl.}
       let fn = cast[PtrPtrSizeUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/UInt32":
+      type PtrPtrSizeUInt32Proc = proc(a, b: pointer, n: csize_t): uint32 {.cdecl.}
+      let fn = cast[PtrPtrSizeUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/UInt16":
+      type PtrPtrSizeUInt16Proc = proc(a, b: pointer, n: csize_t): uint16 {.cdecl.}
+      let fn = cast[PtrPtrSizeUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/UShort":
+      type PtrPtrSizeUShortProc = proc(a, b: pointer, n: csize_t): cushort {.cdecl.}
+      let fn = cast[PtrPtrSizeUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/UInt8":
+      type PtrPtrSizeUInt8Proc = proc(a, b: pointer, n: csize_t): uint8 {.cdecl.}
+      let fn = cast[PtrPtrSizeUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/UChar":
+      type PtrPtrSizeUCharProc = proc(a, b: pointer, n: csize_t): uint8 {.cdecl.}
+      let fn = cast[PtrPtrSizeUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1, arg2)))
     of "C/Long":
       type PtrPtrSizeLongProc = proc(a, b: pointer, n: csize_t): clong {.cdecl.}
