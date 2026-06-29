@@ -27,6 +27,15 @@ proc ffiTestUShortInc(x: cushort): cushort {.cdecl.} =
 proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
   if x < 0'i8: -x else: x
 
+proc ffiTestI8ULong(x: int8): culong {.cdecl.} =
+  culong(x + 10'i8)
+
+proc ffiTestI8U64(x: int8): uint64 {.cdecl.} =
+  uint64(x + 12'i8)
+
+proc ffiTestI8Diff(x: int8): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(clong(x) - clong(6))
+
 proc ffiTestU8Inc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
@@ -1179,6 +1188,21 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestI8Abs", "ffiTestI8Abs",
                                   cast[pointer](ffiTestI8Abs), lib,
                                   @[newSym("C/Int8")], newSym("C/Int8")))
+      scope.define("i8-ulong",
+                   newFfiCallable("ffiTestI8ULong",
+                                  "ffiTestI8ULong",
+                                  cast[pointer](ffiTestI8ULong), lib,
+                                  @[newSym("C/Int8")], newSym("C/ULong")))
+      scope.define("i8-u64",
+                   newFfiCallable("ffiTestI8U64",
+                                  "ffiTestI8U64",
+                                  cast[pointer](ffiTestI8U64), lib,
+                                  @[newSym("C/Int8")], newSym("C/UInt64")))
+      scope.define("i8-diff",
+                   newFfiCallable("ffiTestI8Diff",
+                                  "ffiTestI8Diff",
+                                  cast[pointer](ffiTestI8Diff), lib,
+                                  @[newSym("C/Int8")], newSym("C/PtrDiff")))
       scope.define("u8-inc",
                    newFfiCallable("ffiTestU8Inc", "ffiTestU8Inc",
                                   cast[pointer](ffiTestU8Inc), lib,
@@ -2280,6 +2304,9 @@ suite "types — function boundaries":
       check run(compileSource("(i8-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i8-abs 128)"), scope)
+      check run(compileSource("(i8-ulong -4)"), scope).print() == "6"
+      check run(compileSource("(i8-u64 -4)"), scope).print() == "8"
+      check run(compileSource("(i8-diff 4)"), scope).print() == "-2"
       check run(compileSource("(u8-inc 41)"), scope).print() == "42"
       expect GeneError:
         discard run(compileSource("(u8-inc -1)"), scope)
