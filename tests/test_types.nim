@@ -25,6 +25,12 @@ proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
 proc ffiTestU8Inc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
+proc ffiTestCharNext(x: cchar): cchar {.cdecl.} =
+  cchar(ord(x) + 1)
+
+proc ffiTestUCharInc(x: uint8): uint8 {.cdecl.} =
+  x + 1'u8
+
 proc ffiTestBoolNot(x: bool): bool {.cdecl.} =
   not x
 
@@ -690,6 +696,14 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestU8Inc", "ffiTestU8Inc",
                                   cast[pointer](ffiTestU8Inc), lib,
                                   @[newSym("C/UInt8")], newSym("C/UInt8")))
+      scope.define("char-next",
+                   newFfiCallable("ffiTestCharNext", "ffiTestCharNext",
+                                  cast[pointer](ffiTestCharNext), lib,
+                                  @[newSym("C/Char")], newSym("C/Char")))
+      scope.define("uchar-inc",
+                   newFfiCallable("ffiTestUCharInc", "ffiTestUCharInc",
+                                  cast[pointer](ffiTestUCharInc), lib,
+                                  @[newSym("C/UChar")], newSym("C/UChar")))
       scope.define("bool-not",
                    newFfiCallable("ffiTestBoolNot", "ffiTestBoolNot",
                                   cast[pointer](ffiTestBoolNot), lib,
@@ -718,6 +732,15 @@ suite "types — function boundaries":
         discard run(compileSource("(u8-inc -1)"), scope)
       expect GeneError:
         discard run(compileSource("(u8-inc 256)"), scope)
+      check run(compileSource("(char-next 'A')"), scope).print() == "'B'"
+      expect GeneError:
+        discard run(compileSource("(char-next 128)"), scope)
+      check run(compileSource("(uchar-inc 41)"), scope).print() == "42"
+      check run(compileSource("(uchar-inc 'A')"), scope).print() == "66"
+      expect GeneError:
+        discard run(compileSource("(uchar-inc -1)"), scope)
+      expect GeneError:
+        discard run(compileSource("(uchar-inc 256)"), scope)
       check run(compileSource("(bool-not true)"), scope).print() == "false"
       check run(compileSource("(bool-not false)"), scope).print() == "true"
       expect GeneError:

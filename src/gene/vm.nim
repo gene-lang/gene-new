@@ -9148,6 +9148,17 @@ proc ffiCInt8Arg(name: string, value: Value): int8 =
     raise newException(GeneError, name & " is out of C/Int8 range")
   int8(raw)
 
+proc ffiCCharArg(name: string, value: Value): cchar =
+  if value.kind == vkChar:
+    let raw = int64(int32(value.charVal))
+    if raw > 127:
+      raise newException(GeneError, name & " is out of C/Char range")
+    return cchar(raw)
+  let raw = requireInt64(name, value)
+  if raw < -128 or raw > 127:
+    raise newException(GeneError, name & " is out of C/Char range")
+  cchar(uint8(raw and 0xff))
+
 proc ffiCUIntArg(name: string, value: Value): cuint =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(cuint)):
@@ -9176,6 +9187,17 @@ proc ffiCUInt8Arg(name: string, value: Value): uint8 =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(uint8)):
     raise newException(GeneError, name & " is out of C/UInt8 range")
+  uint8(raw)
+
+proc ffiCUCharArg(name: string, value: Value): uint8 =
+  if value.kind == vkChar:
+    let raw = int64(int32(value.charVal))
+    if raw > int64(high(uint8)):
+      raise newException(GeneError, name & " is out of C/UChar range")
+    return uint8(raw)
+  let raw = requireInt64(name, value)
+  if raw < 0 or raw > int64(high(uint8)):
+    raise newException(GeneError, name & " is out of C/UChar range")
   uint8(raw)
 
 proc ffiCLongArg(name: string, value: Value): clong =
@@ -9225,6 +9247,9 @@ proc ffiCStrResult(name: string, value: cstring): Value =
   if value == nil:
     raise newException(GeneError, name & " returned null C/CStr")
   newStr($value)
+
+proc ffiCCharResult(value: cchar): Value =
+  newChar(Rune(ord(value)))
 
 proc isFfiPtrLabel(label: string): bool =
   label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
@@ -9311,6 +9336,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type VoidInt8Proc = proc(): int8 {.cdecl.}
       let fn = cast[VoidInt8Proc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
+    of "C/Char":
+      type VoidCharProc = proc(): cchar {.cdecl.}
+      let fn = cast[VoidCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn())
     of "C/UInt":
       type VoidUIntProc = proc(): cuint {.cdecl.}
       let fn = cast[VoidUIntProc](callee.ffiCallableAddress)
@@ -9330,6 +9359,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     of "C/UInt8":
       type VoidUInt8Proc = proc(): uint8 {.cdecl.}
       let fn = cast[VoidUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn()))
+    of "C/UChar":
+      type VoidUCharProc = proc(): uint8 {.cdecl.}
+      let fn = cast[VoidUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
     of "C/Long":
       type VoidLongProc = proc(): clong {.cdecl.}
@@ -9411,6 +9444,116 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       if isFfiPtrLabel(returnLabel):
         type BoolPtrProc = proc(x: bool): pointer {.cdecl.}
         let fn = cast[BoolPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/Char":
+    let arg0 = ffiCCharArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type CharIntProc = proc(x: cchar): cint {.cdecl.}
+      let fn = cast[CharIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type CharUIntProc = proc(x: cchar): cuint {.cdecl.}
+      let fn = cast[CharUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type CharLongProc = proc(x: cchar): clong {.cdecl.}
+      let fn = cast[CharLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Size":
+      type CharSizeProc = proc(x: cchar): csize_t {.cdecl.}
+      let fn = cast[CharSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type CharFloatProc = proc(x: cchar): cfloat {.cdecl.}
+      let fn = cast[CharFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type CharDoubleProc = proc(x: cchar): cdouble {.cdecl.}
+      let fn = cast[CharDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Char":
+      type CharCharProc = proc(x: cchar): cchar {.cdecl.}
+      let fn = cast[CharCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0))
+    of "C/UChar":
+      type CharUCharProc = proc(x: cchar): uint8 {.cdecl.}
+      let fn = cast[CharUCharProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Bool":
+      type CharBoolProc = proc(x: cchar): bool {.cdecl.}
+      let fn = cast[CharBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
+    of "C/CStr":
+      type CharCStrProc = proc(x: cchar): cstring {.cdecl.}
+      let fn = cast[CharCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type CharVoidProc = proc(x: cchar) {.cdecl.}
+      let fn = cast[CharVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type CharPtrProc = proc(x: cchar): pointer {.cdecl.}
+        let fn = cast[CharPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
+  if paramLabels.len == 1 and paramLabels[0] == "C/UChar":
+    let arg0 = ffiCUCharArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    case returnLabel
+    of "C/Int":
+      type UCharIntProc = proc(x: uint8): cint {.cdecl.}
+      let fn = cast[UCharIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt":
+      type UCharUIntProc = proc(x: uint8): cuint {.cdecl.}
+      let fn = cast[UCharUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Long":
+      type UCharLongProc = proc(x: uint8): clong {.cdecl.}
+      let fn = cast[UCharLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Size":
+      type UCharSizeProc = proc(x: uint8): csize_t {.cdecl.}
+      let fn = cast[UCharSizeProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Float":
+      type UCharFloatProc = proc(x: uint8): cfloat {.cdecl.}
+      let fn = cast[UCharFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Double":
+      type UCharDoubleProc = proc(x: uint8): cdouble {.cdecl.}
+      let fn = cast[UCharDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0)))
+    of "C/Char":
+      type UCharCharProc = proc(x: uint8): cchar {.cdecl.}
+      let fn = cast[UCharCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0))
+    of "C/UChar":
+      type UCharUCharProc = proc(x: uint8): uint8 {.cdecl.}
+      let fn = cast[UCharUCharProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Bool":
+      type UCharBoolProc = proc(x: uint8): bool {.cdecl.}
+      let fn = cast[UCharBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
+    of "C/CStr":
+      type UCharCStrProc = proc(x: uint8): cstring {.cdecl.}
+      let fn = cast[UCharCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0))
+    of "C/Void":
+      type UCharVoidProc = proc(x: uint8) {.cdecl.}
+      let fn = cast[UCharVoidProc](callee.ffiCallableAddress)
+      fn(arg0)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type UCharPtrProc = proc(x: uint8): pointer {.cdecl.}
+        let fn = cast[UCharPtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Int":
     let arg0 = ffiCIntArg("FFI argument 0 for '" & callee.ffiCallableName & "'",
