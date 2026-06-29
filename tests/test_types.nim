@@ -1,6 +1,11 @@
 import gene/[compiler, types, vm, printer]
 import std/[dynlib, unittest]
 
+when sizeof(pointer) == sizeof(clong):
+  type TestCPtrDiff = clong
+else:
+  type TestCPtrDiff = clonglong
+
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
 
@@ -100,6 +105,15 @@ proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
 
 proc ffiTestPtrLen(p: pointer, len: csize_t): csize_t {.cdecl.} =
   if p == nil: 0 else: len
+
+proc ffiTestPtrLenU64(p: pointer, len: csize_t): uint64 {.cdecl.} =
+  if p == nil: 0'u64 else: uint64(len) + 1'u64
+
+proc ffiTestPtrLenDiff(p: pointer, len: csize_t): TestCPtrDiff {.cdecl.} =
+  if p == nil: TestCPtrDiff(-1) else: TestCPtrDiff(len)
+
+proc ffiTestPtrLenDouble(p: pointer, len: csize_t): cdouble {.cdecl.} =
+  if p == nil: -1.0 else: cdouble(len) + 0.5
 
 proc ffiTestPtrHasLen(p: pointer, len: csize_t): bool {.cdecl.} =
   p != nil and len > 0
@@ -928,6 +942,28 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")]),
                                     newSym("C/Size")],
                                   newSym("C/Size")))
+      scope.define("ptr-len-u64",
+                   newFfiCallable("ffiTestPtrLenU64", "ffiTestPtrLenU64",
+                                  cast[pointer](ffiTestPtrLenU64), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UInt64")))
+      scope.define("ptr-len-diff",
+                   newFfiCallable("ffiTestPtrLenDiff", "ffiTestPtrLenDiff",
+                                  cast[pointer](ffiTestPtrLenDiff), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/PtrDiff")))
+      scope.define("ptr-len-double",
+                   newFfiCallable("ffiTestPtrLenDouble",
+                                  "ffiTestPtrLenDouble",
+                                  cast[pointer](ffiTestPtrLenDouble), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Double")))
       scope.define("ptr-has-len?",
                    newFfiCallable("ffiTestPtrHasLen",
                                   "ffiTestPtrHasLen",
@@ -1137,6 +1173,13 @@ suite "types — function boundaries":
         "(c-ptr null)"
       check run(compileSource("(ptr-len copy-dst 3)"), scope).print() == "3"
       check run(compileSource("(ptr-len nil 3)"), scope).print() == "0"
+      check run(compileSource("(ptr-len-u64 copy-dst 3)"), scope).print() ==
+        "4"
+      check run(compileSource("(ptr-len-diff nil 3)"), scope).print() == "-1"
+      check run(compileSource("(ptr-len-diff copy-dst 3)"), scope).print() ==
+        "3"
+      check run(compileSource("(ptr-len-double copy-dst 3)"), scope).print() ==
+        "3.5"
       check run(compileSource("(ptr-has-len? copy-dst 3)"), scope).print() ==
         "true"
       check run(compileSource("(ptr-has-len? copy-dst 0)"), scope).print() ==
