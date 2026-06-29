@@ -34,6 +34,15 @@ proc ffiTestUCharInc(x: uint8): uint8 {.cdecl.} =
 proc ffiTestBoolNot(x: bool): bool {.cdecl.} =
   not x
 
+proc ffiTestU64Inc(x: uint64): uint64 {.cdecl.} =
+  x + 1'u64
+
+proc ffiTestULongInc(x: culong): culong {.cdecl.} =
+  x + culong(1)
+
+proc ffiTestPtrDiffAbs(x: int): int {.cdecl.} =
+  if x < 0: -x else: x
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -708,6 +717,19 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestBoolNot", "ffiTestBoolNot",
                                   cast[pointer](ffiTestBoolNot), lib,
                                   @[newSym("C/Bool")], newSym("C/Bool")))
+      scope.define("u64-inc",
+                   newFfiCallable("ffiTestU64Inc", "ffiTestU64Inc",
+                                  cast[pointer](ffiTestU64Inc), lib,
+                                  @[newSym("C/UInt64")], newSym("C/UInt64")))
+      scope.define("ulong-inc",
+                   newFfiCallable("ffiTestULongInc", "ffiTestULongInc",
+                                  cast[pointer](ffiTestULongInc), lib,
+                                  @[newSym("C/ULong")], newSym("C/ULong")))
+      scope.define("ptrdiff-abs",
+                   newFfiCallable("ffiTestPtrDiffAbs", "ffiTestPtrDiffAbs",
+                                  cast[pointer](ffiTestPtrDiffAbs), lib,
+                                  @[newSym("C/PtrDiff")],
+                                  newSym("C/PtrDiff")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -745,6 +767,23 @@ suite "types — function boundaries":
       check run(compileSource("(bool-not false)"), scope).print() == "true"
       expect GeneError:
         discard run(compileSource("(bool-not 1)"), scope)
+      check run(compileSource("(u64-inc 41)"), scope).print() == "42"
+      check run(compileSource("(u64-inc 9223372036854775808)"),
+                scope).print() == "9223372036854775809"
+      expect GeneError:
+        discard run(compileSource("(u64-inc -1)"), scope)
+      expect GeneError:
+        discard run(compileSource("(u64-inc 18446744073709551616)"), scope)
+      check run(compileSource("(ulong-inc 41)"), scope).print() == "42"
+      when sizeof(culong) == 8:
+        check run(compileSource("(ulong-inc 9223372036854775808)"),
+                  scope).print() == "9223372036854775809"
+      expect GeneError:
+        discard run(compileSource("(ulong-inc -1)"), scope)
+      check run(compileSource("(ptrdiff-abs -9)"), scope).print() == "9"
+      expect GeneError:
+        discard run(compileSource("(ptrdiff-abs 9223372036854775808)"),
+                    scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
