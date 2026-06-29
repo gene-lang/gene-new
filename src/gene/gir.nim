@@ -865,6 +865,16 @@ type TaskFrameCRow = object
   kind: string
   canSuspend: bool
 
+type FfiFnCRow = object
+  name: string
+  library: string
+  symbol: string
+  abi: string
+  wrapperName: string
+  release: string
+  arity: int
+  resultType: string
+
 type FfiStructCRow = object
   name: string
   layout: string
@@ -1081,6 +1091,9 @@ proc directProtocolManifestName(prefix: string): string =
 proc taskFrameManifestName(prefix: string): string =
   "gene_" & cIdent(prefix & "task_frames", "task_frames")
 
+proc ffiFnManifestName(prefix: string): string =
+  "gene_" & cIdent(prefix & "ffi_fns", "ffi_fns")
+
 proc ffiStructManifestName(prefix: string): string =
   "gene_" & cIdent(prefix & "ffi_structs", "ffi_structs")
 
@@ -1204,8 +1217,34 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
 
 proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
                  available: var Table[string, AotCFunction]) =
+  var ffiFnRows: seq[FfiFnCRow]
   for i, fn in chunk.ffiFns:
+    let retLabel =
+      if fn.returnType.kind == vkNil: "C/Void" else: ffiTypeLabel(fn.returnType)
+    ffiFnRows.add FfiFnCRow(
+      name: fn.name,
+      library: fn.library,
+      symbol: if fn.symbol.len > 0: fn.symbol else: fn.name,
+      abi: if fn.abi.len > 0: fn.abi else: "C",
+      wrapperName: ffiWrapperName(fn, prefix & "ffi_" & $i),
+      release: fn.release,
+      arity: fn.params.len,
+      resultType: retLabel)
     addFfiWrapper(lines, fn, i, prefix)
+  if ffiFnRows.len > 0:
+    let manifestName = ffiFnManifestName(prefix)
+    lines.add "static const GeneFfiFnInfo " & manifestName & "[] = {"
+    for row in ffiFnRows:
+      lines.add "  {" & cStringLiteral(row.name) & ", " &
+        cStringLiteral(row.library) & ", " & cStringLiteral(row.symbol) &
+        ", " & cStringLiteral(row.abi) & ", " &
+        cStringLiteral(row.wrapperName) & ", " &
+        cStringLiteral(row.release) & ", " & $row.arity & ", " &
+        cStringLiteral(row.resultType) & "},"
+    lines.add "};"
+    lines.add "static const size_t " & manifestName & "_count = " &
+      $ffiFnRows.len & ";"
+    lines.add ""
   var structRows: seq[FfiStructCRow]
   var structFieldRows: seq[FfiStructFieldCRow]
   for structProto in chunk.ffiStructs:
@@ -1485,6 +1524,16 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  const char *kind;",
     "  bool can_suspend;",
     "} GeneTaskFrameInfo;",
+    "typedef struct GeneFfiFnInfo {",
+    "  const char *name;",
+    "  const char *library;",
+    "  const char *symbol;",
+    "  const char *abi;",
+    "  const char *wrapper_name;",
+    "  const char *release;",
+    "  size_t arity;",
+    "  const char *result_type;",
+    "} GeneFfiFnInfo;",
     "typedef struct GeneFfiStructInfo {",
     "  const char *name;",
     "  const char *layout;",

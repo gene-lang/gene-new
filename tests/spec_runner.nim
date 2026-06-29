@@ -295,6 +295,11 @@ suite "spec — typed native compilation prototype from design":
     let c = chunk.emitExperimentalC()
     check "generated FFI adapter wrappers" in c
     check "adapter skeletons" notin c
+    check "typedef struct GeneFfiFnInfo" in c
+    check "static const GeneFfiFnInfo gene_ffi_fns[] = {" in c
+    check "{\"strlen\", \"libc\", \"strlen\", \"C\", \"gene_ffi_strlen\", " &
+      "\"\", 1, \"C/Size\"}," in c
+    check "static const size_t gene_ffi_fns_count = 1;" in c
     check "extern size_t strlen(const char * s);" in c
     check "GeneStatus gene_ffi_strlen" in c
     check "arg 0 s: C/CStr -> const char *" in c
@@ -320,6 +325,10 @@ suite "spec — typed native compilation prototype from design":
       "(ffi/fn make_owned ^symbol \"make_owned\" ^release \"destroy_owned\" " &
       "  [] : (C/OwnedPtr C/Char))"
     let c = compileSource(source).emitExperimentalC()
+    check "static const size_t gene_ffi_fns_count = 6;" in c
+    check "{\"make_owned\", \"\", \"make_owned\", \"C\", " &
+      "\"gene_ffi_make_owned\", \"destroy_owned\", 0, " &
+      "\"(C/OwnedPtr C/Char)\"}," in c
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
     check "int native_result = abs(x);" in c
     check "return gene_ffi_result_int(ctx, native_result, result);" in c
