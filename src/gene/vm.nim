@@ -9517,9 +9517,49 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type BoolIntProc = proc(x: bool): cint {.cdecl.}
       let fn = cast[BoolIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/Int32":
+      type BoolInt32Proc = proc(x: bool): int32 {.cdecl.}
+      let fn = cast[BoolInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int16":
+      type BoolInt16Proc = proc(x: bool): int16 {.cdecl.}
+      let fn = cast[BoolInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Short":
+      type BoolShortProc = proc(x: bool): cshort {.cdecl.}
+      let fn = cast[BoolShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Int8":
+      type BoolInt8Proc = proc(x: bool): int8 {.cdecl.}
+      let fn = cast[BoolInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/Char":
+      type BoolCharProc = proc(x: bool): cchar {.cdecl.}
+      let fn = cast[BoolCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0))
     of "C/UInt":
       type BoolUIntProc = proc(x: bool): cuint {.cdecl.}
       let fn = cast[BoolUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt32":
+      type BoolUInt32Proc = proc(x: bool): uint32 {.cdecl.}
+      let fn = cast[BoolUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt16":
+      type BoolUInt16Proc = proc(x: bool): uint16 {.cdecl.}
+      let fn = cast[BoolUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UShort":
+      type BoolUShortProc = proc(x: bool): cushort {.cdecl.}
+      let fn = cast[BoolUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UInt8":
+      type BoolUInt8Proc = proc(x: bool): uint8 {.cdecl.}
+      let fn = cast[BoolUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UChar":
+      type BoolUCharProc = proc(x: bool): uint8 {.cdecl.}
+      let fn = cast[BoolUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/Long":
       type BoolLongProc = proc(x: bool): clong {.cdecl.}

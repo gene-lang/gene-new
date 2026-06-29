@@ -114,6 +114,36 @@ proc ffiTestBoolNot(x: bool): bool {.cdecl.} =
 proc ffiTestBoolULong(x: bool): culong {.cdecl.} =
   if x: culong(7) else: culong(2)
 
+proc ffiTestBoolI32(x: bool): int32 {.cdecl.} =
+  if x: 8'i32 else: -3'i32
+
+proc ffiTestBoolI16(x: bool): int16 {.cdecl.} =
+  if x: 9'i16 else: -4'i16
+
+proc ffiTestBoolShort(x: bool): cshort {.cdecl.} =
+  if x: cshort(10) else: cshort(-5)
+
+proc ffiTestBoolI8(x: bool): int8 {.cdecl.} =
+  if x: 11'i8 else: -6'i8
+
+proc ffiTestBoolChar(x: bool): cchar {.cdecl.} =
+  if x: cchar(ord('T')) else: cchar(ord('F'))
+
+proc ffiTestBoolU32(x: bool): uint32 {.cdecl.} =
+  if x: 12'u32 else: 4'u32
+
+proc ffiTestBoolU16(x: bool): uint16 {.cdecl.} =
+  if x: 13'u16 else: 5'u16
+
+proc ffiTestBoolUShort(x: bool): cushort {.cdecl.} =
+  if x: cushort(14) else: cushort(6)
+
+proc ffiTestBoolU8(x: bool): uint8 {.cdecl.} =
+  if x: 15'u8 else: 7'u8
+
+proc ffiTestBoolUChar(x: bool): uint8 {.cdecl.} =
+  if x: uint8(ord('Y')) else: uint8(ord('N'))
+
 proc ffiTestBoolI64(x: bool): int64 {.cdecl.} =
   if x: int64(8) else: int64(-3)
 
@@ -1610,6 +1640,56 @@ suite "types — function boundaries":
                                   "ffiTestBoolULong",
                                   cast[pointer](ffiTestBoolULong), lib,
                                   @[newSym("C/Bool")], newSym("C/ULong")))
+      scope.define("bool-i32",
+                   newFfiCallable("ffiTestBoolI32",
+                                  "ffiTestBoolI32",
+                                  cast[pointer](ffiTestBoolI32), lib,
+                                  @[newSym("C/Bool")], newSym("C/Int32")))
+      scope.define("bool-i16",
+                   newFfiCallable("ffiTestBoolI16",
+                                  "ffiTestBoolI16",
+                                  cast[pointer](ffiTestBoolI16), lib,
+                                  @[newSym("C/Bool")], newSym("C/Int16")))
+      scope.define("bool-short",
+                   newFfiCallable("ffiTestBoolShort",
+                                  "ffiTestBoolShort",
+                                  cast[pointer](ffiTestBoolShort), lib,
+                                  @[newSym("C/Bool")], newSym("C/Short")))
+      scope.define("bool-i8",
+                   newFfiCallable("ffiTestBoolI8",
+                                  "ffiTestBoolI8",
+                                  cast[pointer](ffiTestBoolI8), lib,
+                                  @[newSym("C/Bool")], newSym("C/Int8")))
+      scope.define("bool-char",
+                   newFfiCallable("ffiTestBoolChar",
+                                  "ffiTestBoolChar",
+                                  cast[pointer](ffiTestBoolChar), lib,
+                                  @[newSym("C/Bool")], newSym("C/Char")))
+      scope.define("bool-u32",
+                   newFfiCallable("ffiTestBoolU32",
+                                  "ffiTestBoolU32",
+                                  cast[pointer](ffiTestBoolU32), lib,
+                                  @[newSym("C/Bool")], newSym("C/UInt32")))
+      scope.define("bool-u16",
+                   newFfiCallable("ffiTestBoolU16",
+                                  "ffiTestBoolU16",
+                                  cast[pointer](ffiTestBoolU16), lib,
+                                  @[newSym("C/Bool")], newSym("C/UInt16")))
+      scope.define("bool-ushort",
+                   newFfiCallable("ffiTestBoolUShort",
+                                  "ffiTestBoolUShort",
+                                  cast[pointer](ffiTestBoolUShort), lib,
+                                  @[newSym("C/Bool")], newSym("C/UShort")))
+      scope.define("bool-u8",
+                   newFfiCallable("ffiTestBoolU8",
+                                  "ffiTestBoolU8",
+                                  cast[pointer](ffiTestBoolU8), lib,
+                                  @[newSym("C/Bool")], newSym("C/UInt8")))
+      scope.define("bool-uchar",
+                   newFfiCallable("ffiTestBoolUChar",
+                                  "ffiTestBoolUChar",
+                                  cast[pointer](ffiTestBoolUChar), lib,
+                                  @[newSym("C/Bool")], newSym("C/UChar")))
       scope.define("bool-i64",
                    newFfiCallable("ffiTestBoolI64",
                                   "ffiTestBoolI64",
@@ -3152,6 +3232,26 @@ suite "types — function boundaries":
         discard run(compileSource("(bool-not 1)"), scope)
       check run(compileSource("(bool-ulong true)"), scope).print() == "7"
       check run(compileSource("(bool-ulong false)"), scope).print() == "2"
+      check run(compileSource("(bool-i32 true)"), scope).print() == "8"
+      check run(compileSource("(bool-i32 false)"), scope).print() == "-3"
+      check run(compileSource("(bool-i16 true)"), scope).print() == "9"
+      check run(compileSource("(bool-i16 false)"), scope).print() == "-4"
+      check run(compileSource("(bool-short true)"), scope).print() == "10"
+      check run(compileSource("(bool-short false)"), scope).print() == "-5"
+      check run(compileSource("(bool-i8 true)"), scope).print() == "11"
+      check run(compileSource("(bool-i8 false)"), scope).print() == "-6"
+      check run(compileSource("(bool-char true)"), scope).print() == "'T'"
+      check run(compileSource("(bool-char false)"), scope).print() == "'F'"
+      check run(compileSource("(bool-u32 true)"), scope).print() == "12"
+      check run(compileSource("(bool-u32 false)"), scope).print() == "4"
+      check run(compileSource("(bool-u16 true)"), scope).print() == "13"
+      check run(compileSource("(bool-u16 false)"), scope).print() == "5"
+      check run(compileSource("(bool-ushort true)"), scope).print() == "14"
+      check run(compileSource("(bool-ushort false)"), scope).print() == "6"
+      check run(compileSource("(bool-u8 true)"), scope).print() == "15"
+      check run(compileSource("(bool-u8 false)"), scope).print() == "7"
+      check run(compileSource("(bool-uchar true)"), scope).print() == "89"
+      check run(compileSource("(bool-uchar false)"), scope).print() == "78"
       check run(compileSource("(bool-i64 true)"), scope).print() == "8"
       check run(compileSource("(bool-i64 false)"), scope).print() == "-3"
       check run(compileSource("(bool-u64 true)"), scope).print() == "9"
