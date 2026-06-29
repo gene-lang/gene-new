@@ -1218,8 +1218,38 @@ proc ffiTestPtrProbeDiff(p: pointer): TestCPtrDiff {.cdecl.} =
 proc ffiTestPtrSame(a, b: pointer): cint {.cdecl.} =
   if a == b: 1 else: 0
 
+proc ffiTestPtrSameI32(a, b: pointer): int32 {.cdecl.} =
+  if a == b: 8'i32 else: -8'i32
+
+proc ffiTestPtrSameI16(a, b: pointer): int16 {.cdecl.} =
+  if a == b: 9'i16 else: -9'i16
+
+proc ffiTestPtrSameShort(a, b: pointer): cshort {.cdecl.} =
+  if a == b: cshort(10) else: cshort(-10)
+
+proc ffiTestPtrSameI8(a, b: pointer): int8 {.cdecl.} =
+  if a == b: 11'i8 else: -11'i8
+
+proc ffiTestPtrSameChar(a, b: pointer): cchar {.cdecl.} =
+  if a == b: cchar(ord('S')) else: cchar(ord('D'))
+
 proc ffiTestPtrSameU64(a, b: pointer): uint64 {.cdecl.} =
   if a == b: 1'u64 else: 0'u64
+
+proc ffiTestPtrSameU32(a, b: pointer): uint32 {.cdecl.} =
+  if a == b: 12'u32 else: 0'u32
+
+proc ffiTestPtrSameU16(a, b: pointer): uint16 {.cdecl.} =
+  if a == b: 13'u16 else: 0'u16
+
+proc ffiTestPtrSameUShort(a, b: pointer): cushort {.cdecl.} =
+  if a == b: cushort(14) else: cushort(0)
+
+proc ffiTestPtrSameU8(a, b: pointer): uint8 {.cdecl.} =
+  if a == b: 15'u8 else: 0'u8
+
+proc ffiTestPtrSameUChar(a, b: pointer): uint8 {.cdecl.} =
+  if a == b: 16'u8 else: 0'u8
 
 proc ffiTestPtrSameDiff(a, b: pointer): TestCPtrDiff {.cdecl.} =
   if a == b: TestCPtrDiff(1) else: TestCPtrDiff(-1)
@@ -4281,6 +4311,51 @@ suite "types — function boundaries":
                                     newNode(newSym("C/ConstPtr"),
                                             body = @[newSym("C/Char")])],
                                   newSym("C/Int")))
+      scope.define("ptr-same-i32",
+                   newFfiCallable("ffiTestPtrSameI32",
+                                  "ffiTestPtrSameI32",
+                                  cast[pointer](ffiTestPtrSameI32), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int32")))
+      scope.define("ptr-same-i16",
+                   newFfiCallable("ffiTestPtrSameI16",
+                                  "ffiTestPtrSameI16",
+                                  cast[pointer](ffiTestPtrSameI16), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int16")))
+      scope.define("ptr-same-short",
+                   newFfiCallable("ffiTestPtrSameShort",
+                                  "ffiTestPtrSameShort",
+                                  cast[pointer](ffiTestPtrSameShort), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Short")))
+      scope.define("ptr-same-i8",
+                   newFfiCallable("ffiTestPtrSameI8",
+                                  "ffiTestPtrSameI8",
+                                  cast[pointer](ffiTestPtrSameI8), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int8")))
+      scope.define("ptr-same-char",
+                   newFfiCallable("ffiTestPtrSameChar",
+                                  "ffiTestPtrSameChar",
+                                  cast[pointer](ffiTestPtrSameChar), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Char")))
       scope.define("ptr-same-u64",
                    newFfiCallable("ffiTestPtrSameU64",
                                   "ffiTestPtrSameU64",
@@ -4290,6 +4365,51 @@ suite "types — function boundaries":
                                     newNode(newSym("C/ConstPtr"),
                                             body = @[newSym("C/Char")])],
                                   newSym("C/UInt64")))
+      scope.define("ptr-same-u32",
+                   newFfiCallable("ffiTestPtrSameU32",
+                                  "ffiTestPtrSameU32",
+                                  cast[pointer](ffiTestPtrSameU32), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt32")))
+      scope.define("ptr-same-u16",
+                   newFfiCallable("ffiTestPtrSameU16",
+                                  "ffiTestPtrSameU16",
+                                  cast[pointer](ffiTestPtrSameU16), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt16")))
+      scope.define("ptr-same-ushort",
+                   newFfiCallable("ffiTestPtrSameUShort",
+                                  "ffiTestPtrSameUShort",
+                                  cast[pointer](ffiTestPtrSameUShort), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UShort")))
+      scope.define("ptr-same-u8",
+                   newFfiCallable("ffiTestPtrSameU8",
+                                  "ffiTestPtrSameU8",
+                                  cast[pointer](ffiTestPtrSameU8), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt8")))
+      scope.define("ptr-same-uchar",
+                   newFfiCallable("ffiTestPtrSameUChar",
+                                  "ffiTestPtrSameUChar",
+                                  cast[pointer](ffiTestPtrSameUChar), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UChar")))
       scope.define("ptr-same-diff",
                    newFfiCallable("ffiTestPtrSameDiff",
                                   "ffiTestPtrSameDiff",
@@ -5187,8 +5307,34 @@ suite "types — function boundaries":
         "1"
       check run(compileSource("(ptr-same copy-dst copy-src)"), scope).print() ==
         "0"
+      check run(compileSource("(ptr-same-i32 copy-dst copy-dst)"),
+                scope).print() == "8"
+      check run(compileSource("(ptr-same-i32 copy-dst copy-src)"),
+                scope).print() == "-8"
+      check run(compileSource("(ptr-same-i16 copy-dst copy-dst)"),
+                scope).print() == "9"
+      check run(compileSource("(ptr-same-short copy-dst copy-dst)"),
+                scope).print() == "10"
+      check run(compileSource("(ptr-same-i8 copy-dst copy-dst)"),
+                scope).print() == "11"
+      check run(compileSource("(ptr-same-char copy-dst copy-dst)"),
+                scope).print() == "'S'"
+      check run(compileSource("(ptr-same-char copy-dst copy-src)"),
+                scope).print() == "'D'"
       check run(compileSource("(ptr-same-u64 copy-dst copy-dst)"),
                 scope).print() == "1"
+      check run(compileSource("(ptr-same-u32 copy-dst copy-dst)"),
+                scope).print() == "12"
+      check run(compileSource("(ptr-same-u16 copy-dst copy-dst)"),
+                scope).print() == "13"
+      check run(compileSource("(ptr-same-ushort copy-dst copy-dst)"),
+                scope).print() == "14"
+      check run(compileSource("(ptr-same-u8 copy-dst copy-dst)"),
+                scope).print() == "15"
+      check run(compileSource("(ptr-same-uchar copy-dst copy-dst)"),
+                scope).print() == "16"
+      check run(compileSource("(ptr-same-uchar copy-dst copy-src)"),
+                scope).print() == "0"
       check run(compileSource("(ptr-same-diff copy-dst copy-src)"),
                 scope).print() == "-1"
       check run(compileSource("(ptr-same-double copy-dst copy-dst)"),
