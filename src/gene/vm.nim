@@ -7950,6 +7950,9 @@ proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
     return StreamPullResult(has: false, item: NIL)
   let proto = FunctionProto(code)
   var ip = stream.streamGeneratorIp
+  let workerLease = beginSchedulerWorkerLease()
+  defer:
+    endSchedulerWorkerLease(workerLease)
   let stopped = runLoop(proto.chunk, stream.streamGeneratorScope,
                         stream.streamGeneratorStack, ip,
                         stopOnYield = true,

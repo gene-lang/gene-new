@@ -52,6 +52,19 @@ suite "threaded scheduler workers":
       check task.kind == vkTask
       check task.taskDone
 
+  test "generator pulls lease workers for worker-candidate tasks":
+    withGeneWorkers:
+      let task = run(compileSource(
+        "(fn gen [] " &
+        "  (var t (spawn 42)) " &
+        "  (var i 0) " &
+        "  (while (< i 200000) (set i (+ i 1))) " &
+        "  (yield t)) " &
+        "(var s (gen)) " &
+        "(s ~ Stream/next)"), newGlobalScope())
+      check task.kind == vkTask
+      check task.taskDone
+
   test "worker pool wakes sleeping worker-candidate tasks while root runs":
     withGeneWorkers:
       let task = run(compileSource(
