@@ -755,8 +755,38 @@ proc ffiTestDoubleAdd(a, b: cdouble): cdouble {.cdecl.} =
 proc ffiTestDoubleDoubleUInt(a, b: cdouble): cuint {.cdecl.} =
   cuint(int(a + b) + 1)
 
+proc ffiTestDoubleDoubleI32(a, b: cdouble): int32 {.cdecl.} =
+  int32(int(a + b) + 5)
+
+proc ffiTestDoubleDoubleI16(a, b: cdouble): int16 {.cdecl.} =
+  int16(int(a + b) + 6)
+
+proc ffiTestDoubleDoubleShort(a, b: cdouble): cshort {.cdecl.} =
+  cshort(int(a + b) + 7)
+
+proc ffiTestDoubleDoubleI8(a, b: cdouble): int8 {.cdecl.} =
+  int8(int(a + b) + 8)
+
+proc ffiTestDoubleDoubleChar(a, b: cdouble): cchar {.cdecl.} =
+  cchar(ord('A') + int(a + b))
+
 proc ffiTestDoubleDoubleULong(a, b: cdouble): culong {.cdecl.} =
   culong(int(a + b) + 2)
+
+proc ffiTestDoubleDoubleU32(a, b: cdouble): uint32 {.cdecl.} =
+  uint32(int(a + b) + 9)
+
+proc ffiTestDoubleDoubleU16(a, b: cdouble): uint16 {.cdecl.} =
+  uint16(int(a + b) + 10)
+
+proc ffiTestDoubleDoubleUShort(a, b: cdouble): cushort {.cdecl.} =
+  cushort(int(a + b) + 11)
+
+proc ffiTestDoubleDoubleU8(a, b: cdouble): uint8 {.cdecl.} =
+  uint8(int(a + b) + 12)
+
+proc ffiTestDoubleDoubleUChar(a, b: cdouble): uint8 {.cdecl.} =
+  uint8(int(a + b) + 13)
 
 proc ffiTestDoubleDoubleI64(a, b: cdouble): int64 {.cdecl.} =
   int64(int(a + b) + 3)
@@ -3323,12 +3353,72 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestDoubleDoubleUInt), lib,
                                   @[newSym("C/Double"), newSym("C/Double")],
                                   newSym("C/UInt")))
+      scope.define("double-double-i32",
+                   newFfiCallable("ffiTestDoubleDoubleI32",
+                                  "ffiTestDoubleDoubleI32",
+                                  cast[pointer](ffiTestDoubleDoubleI32), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/Int32")))
+      scope.define("double-double-i16",
+                   newFfiCallable("ffiTestDoubleDoubleI16",
+                                  "ffiTestDoubleDoubleI16",
+                                  cast[pointer](ffiTestDoubleDoubleI16), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/Int16")))
+      scope.define("double-double-short",
+                   newFfiCallable("ffiTestDoubleDoubleShort",
+                                  "ffiTestDoubleDoubleShort",
+                                  cast[pointer](ffiTestDoubleDoubleShort), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/Short")))
+      scope.define("double-double-i8",
+                   newFfiCallable("ffiTestDoubleDoubleI8",
+                                  "ffiTestDoubleDoubleI8",
+                                  cast[pointer](ffiTestDoubleDoubleI8), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/Int8")))
+      scope.define("double-double-char",
+                   newFfiCallable("ffiTestDoubleDoubleChar",
+                                  "ffiTestDoubleDoubleChar",
+                                  cast[pointer](ffiTestDoubleDoubleChar), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/Char")))
       scope.define("double-double-ulong",
                    newFfiCallable("ffiTestDoubleDoubleULong",
                                   "ffiTestDoubleDoubleULong",
                                   cast[pointer](ffiTestDoubleDoubleULong), lib,
                                   @[newSym("C/Double"), newSym("C/Double")],
                                   newSym("C/ULong")))
+      scope.define("double-double-u32",
+                   newFfiCallable("ffiTestDoubleDoubleU32",
+                                  "ffiTestDoubleDoubleU32",
+                                  cast[pointer](ffiTestDoubleDoubleU32), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/UInt32")))
+      scope.define("double-double-u16",
+                   newFfiCallable("ffiTestDoubleDoubleU16",
+                                  "ffiTestDoubleDoubleU16",
+                                  cast[pointer](ffiTestDoubleDoubleU16), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/UInt16")))
+      scope.define("double-double-ushort",
+                   newFfiCallable("ffiTestDoubleDoubleUShort",
+                                  "ffiTestDoubleDoubleUShort",
+                                  cast[pointer](ffiTestDoubleDoubleUShort), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/UShort")))
+      scope.define("double-double-u8",
+                   newFfiCallable("ffiTestDoubleDoubleU8",
+                                  "ffiTestDoubleDoubleU8",
+                                  cast[pointer](ffiTestDoubleDoubleU8), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/UInt8")))
+      scope.define("double-double-uchar",
+                   newFfiCallable("ffiTestDoubleDoubleUChar",
+                                  "ffiTestDoubleDoubleUChar",
+                                  cast[pointer](ffiTestDoubleDoubleUChar), lib,
+                                  @[newSym("C/Double"), newSym("C/Double")],
+                                  newSym("C/UChar")))
       scope.define("double-double-i64",
                    newFfiCallable("ffiTestDoubleDoubleI64",
                                   "ffiTestDoubleDoubleI64",
@@ -5405,8 +5495,28 @@ suite "types — function boundaries":
       check run(compileSource("(double-add 1.25 2.5)"), scope).print() == "3.75"
       check run(compileSource("(double-double-uint 1.25 2.5)"),
                 scope).print() == "4"
+      check run(compileSource("(double-double-i32 1.25 2.5)"),
+                scope).print() == "8"
+      check run(compileSource("(double-double-i16 1.25 2.5)"),
+                scope).print() == "9"
+      check run(compileSource("(double-double-short 1.25 2.5)"),
+                scope).print() == "10"
+      check run(compileSource("(double-double-i8 1.25 2.5)"),
+                scope).print() == "11"
+      check run(compileSource("(double-double-char 1.25 2.5)"),
+                scope).print() == "'D'"
       check run(compileSource("(double-double-ulong 1.25 2.5)"),
                 scope).print() == "5"
+      check run(compileSource("(double-double-u32 1.25 2.5)"),
+                scope).print() == "12"
+      check run(compileSource("(double-double-u16 1.25 2.5)"),
+                scope).print() == "13"
+      check run(compileSource("(double-double-ushort 1.25 2.5)"),
+                scope).print() == "14"
+      check run(compileSource("(double-double-u8 1.25 2.5)"),
+                scope).print() == "15"
+      check run(compileSource("(double-double-uchar 1.25 2.5)"),
+                scope).print() == "16"
       check run(compileSource("(double-double-i64 1.25 2.5)"),
                 scope).print() == "6"
       check run(compileSource("(double-double-u64 1.25 2.5)"),
