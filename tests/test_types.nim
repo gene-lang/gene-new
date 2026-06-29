@@ -145,6 +145,22 @@ proc ffiTestPtrPtrLenDouble(a, b: pointer, len: csize_t): cdouble {.cdecl.} =
 proc ffiTestPtrPtrHasLen(a, b: pointer, len: csize_t): bool {.cdecl.} =
   a != nil and b != nil and len > 0
 
+proc ffiTestPtrIntLen(p: pointer, x: cint, len: csize_t): csize_t {.cdecl.} =
+  if p == nil or x < 0: 0 else: csize_t(x) + len
+
+proc ffiTestPtrIntLenU64(p: pointer, x: cint, len: csize_t): uint64 {.cdecl.} =
+  if p == nil or x < 0: 0'u64 else: uint64(x) + uint64(len) + 1'u64
+
+proc ffiTestPtrIntLenDiff(p: pointer, x: cint, len: csize_t): TestCPtrDiff {.cdecl.} =
+  if p == nil: TestCPtrDiff(-1)
+  else: TestCPtrDiff(x) - TestCPtrDiff(len)
+
+proc ffiTestPtrIntLenDouble(p: pointer, x: cint, len: csize_t): cdouble {.cdecl.} =
+  if p == nil: -1.0 else: cdouble(x) + cdouble(len) + 0.5
+
+proc ffiTestPtrIntHasLen(p: pointer, x: cint, len: csize_t): bool {.cdecl.} =
+  p != nil and x > 0 and len > 0
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -987,6 +1003,51 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")]),
                                     newSym("C/Size")],
                                   newSym("C/Bool")))
+      scope.define("ptr-int-len",
+                   newFfiCallable("ffiTestPtrIntLen",
+                                  "ffiTestPtrIntLen",
+                                  cast[pointer](ffiTestPtrIntLen), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Int"),
+                                    newSym("C/Size")],
+                                  newSym("C/Size")))
+      scope.define("ptr-int-len-u64",
+                   newFfiCallable("ffiTestPtrIntLenU64",
+                                  "ffiTestPtrIntLenU64",
+                                  cast[pointer](ffiTestPtrIntLenU64), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Int"),
+                                    newSym("C/Size")],
+                                  newSym("C/UInt64")))
+      scope.define("ptr-int-len-diff",
+                   newFfiCallable("ffiTestPtrIntLenDiff",
+                                  "ffiTestPtrIntLenDiff",
+                                  cast[pointer](ffiTestPtrIntLenDiff), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Int"),
+                                    newSym("C/Size")],
+                                  newSym("C/PtrDiff")))
+      scope.define("ptr-int-len-double",
+                   newFfiCallable("ffiTestPtrIntLenDouble",
+                                  "ffiTestPtrIntLenDouble",
+                                  cast[pointer](ffiTestPtrIntLenDouble), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Int"),
+                                    newSym("C/Size")],
+                                  newSym("C/Double")))
+      scope.define("ptr-int-has-len?",
+                   newFfiCallable("ffiTestPtrIntHasLen",
+                                  "ffiTestPtrIntHasLen",
+                                  cast[pointer](ffiTestPtrIntHasLen), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Int"),
+                                    newSym("C/Size")],
+                                  newSym("C/Bool")))
       scope.define("ptr-identity",
                    newFfiCallable("ffiTestPtrIdentity",
                                   "ffiTestPtrIdentity",
@@ -1251,6 +1312,19 @@ suite "types — function boundaries":
         "false"
       check run(compileSource("(ptr-has-len? nil 3)"), scope).print() ==
         "false"
+      check run(compileSource("(ptr-int-len copy-dst 2 3)"), scope).print() ==
+        "5"
+      check run(compileSource("(ptr-int-len nil 2 3)"), scope).print() == "0"
+      check run(compileSource("(ptr-int-len-u64 copy-dst 2 3)"),
+                scope).print() == "6"
+      check run(compileSource("(ptr-int-len-diff copy-dst 2 3)"),
+                scope).print() == "-1"
+      check run(compileSource("(ptr-int-len-double copy-dst 2 3)"),
+                scope).print() == "5.5"
+      check run(compileSource("(ptr-int-has-len? copy-dst 2 3)"),
+                scope).print() == "true"
+      check run(compileSource("(ptr-int-has-len? copy-dst 0 3)"),
+                scope).print() == "false"
       let identity = run(compileSource("(ptr-identity copy-dst)"), scope)
       check identity.kind == vkCPtr
       check identity.cPtrAddress == cast[pointer](addr copyDst[0])
