@@ -356,6 +356,9 @@ proc ffiTestIntAddFloat(a, b: cint): cfloat {.cdecl.} =
 proc ffiTestIntAddDouble(a, b: cint): cdouble {.cdecl.} =
   cdouble(a + b) + 0.5
 
+proc ffiTestIntPairKind(a, b: cint): cstring {.cdecl.} =
+  if a + b >= 0: "nonnegative-int-pair" else: "negative-int-pair"
+
 proc ffiTestDoubleAdd(a, b: cdouble): cdouble {.cdecl.} =
   a + b
 
@@ -1895,6 +1898,12 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestIntAddDouble), lib,
                                   @[newSym("C/Int"), newSym("C/Int")],
                                   newSym("C/Double")))
+      scope.define("int-pair-kind",
+                   newFfiCallable("ffiTestIntPairKind",
+                                  "ffiTestIntPairKind",
+                                  cast[pointer](ffiTestIntPairKind), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/CStr")))
       scope.define("double-add",
                    newFfiCallable("ffiTestDoubleAdd", "ffiTestDoubleAdd",
                                   cast[pointer](ffiTestDoubleAdd), lib,
@@ -2896,6 +2905,13 @@ suite "types — function boundaries":
                 scope).print() == "42.25"
       check run(compileSource("(int-add-double 20 22)"),
                 scope).print() == "42.5"
+      let intPairKind = run(compileSource("(int-pair-kind 2 -1)"), scope)
+      check intPairKind.kind == vkString
+      check intPairKind.strVal == "nonnegative-int-pair"
+      let negativeIntPairKind =
+        run(compileSource("(int-pair-kind -3 1)"), scope)
+      check negativeIntPairKind.kind == vkString
+      check negativeIntPairKind.strVal == "negative-int-pair"
       expect GeneError:
         discard run(compileSource("(int-add 1 2147483648)"), scope)
       check run(compileSource("(double-add 1.25 2.5)"), scope).print() == "3.75"

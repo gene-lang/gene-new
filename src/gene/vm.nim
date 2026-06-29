@@ -11495,6 +11495,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type IntIntBoolProc = proc(a, b: cint): bool {.cdecl.}
       let fn = cast[IntIntBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type IntIntCStrProc = proc(a, b: cint): cstring {.cdecl.}
+      let fn = cast[IntIntCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type IntIntVoidProc = proc(a, b: cint) {.cdecl.}
       let fn = cast[IntIntVoidProc](callee.ffiCallableAddress)
