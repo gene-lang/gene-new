@@ -101,6 +101,12 @@ proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
 proc ffiTestPtrIdentity(p: pointer): pointer {.cdecl.} =
   p
 
+proc ffiTestPtrSame(a, b: pointer): cint {.cdecl.} =
+  if a == b: 1 else: 0
+
+proc ffiTestPtrPick(a, b: pointer): pointer {.cdecl.} =
+  if a != nil: a else: b
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -914,6 +920,25 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")])],
                                   newNode(newSym("C/Ptr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("ptr-same",
+                   newFfiCallable("ffiTestPtrSame",
+                                  "ffiTestPtrSame",
+                                  cast[pointer](ffiTestPtrSame), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int")))
+      scope.define("ptr-pick",
+                   newFfiCallable("ffiTestPtrPick",
+                                  "ffiTestPtrPick",
+                                  cast[pointer](ffiTestPtrPick), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/Ptr"),
+                                            body = @[newSym("C/Char")])],
+                                  newNode(newSym("C/Ptr"),
+                                          body = @[newSym("C/Char")])))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -1083,6 +1108,14 @@ suite "types — function boundaries":
       check identity.kind == vkCPtr
       check identity.cPtrAddress == cast[pointer](addr copyDst[0])
       check identity.cPtrTargetType.print() == "C/Char"
+      check run(compileSource("(ptr-same copy-dst copy-dst)"), scope).print() ==
+        "1"
+      check run(compileSource("(ptr-same copy-dst copy-src)"), scope).print() ==
+        "0"
+      let picked = run(compileSource("(ptr-pick nil copy-dst)"), scope)
+      check picked.kind == vkCPtr
+      check picked.cPtrAddress == cast[pointer](addr copyDst[0])
+      check picked.cPtrTargetType.print() == "C/Char"
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
