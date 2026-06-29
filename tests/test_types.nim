@@ -102,6 +102,18 @@ proc ffiTestFloatU64(x: cfloat): uint64 {.cdecl.} =
 proc ffiTestFloatDiff(x: cfloat): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(int(x) - 6)
 
+proc ffiTestIntULong(x: cint): culong {.cdecl.} =
+  culong(x + 2)
+
+proc ffiTestIntI64(x: cint): int64 {.cdecl.} =
+  int64(x + 3)
+
+proc ffiTestIntU64(x: cint): uint64 {.cdecl.} =
+  uint64(x + 4)
+
+proc ffiTestIntUnaryDiff(x: cint): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(x - 6)
+
 proc ffiTestIntAdd(a, b: cint): cint {.cdecl.} =
   a + b
 
@@ -1110,6 +1122,26 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestSizeInc", "ffiTestSizeInc",
                                   cast[pointer](ffiTestSizeInc), lib,
                                   @[newSym("C/Size")], newSym("C/Size")))
+      scope.define("int-ulong",
+                   newFfiCallable("ffiTestIntULong",
+                                  "ffiTestIntULong",
+                                  cast[pointer](ffiTestIntULong), lib,
+                                  @[newSym("C/Int")], newSym("C/ULong")))
+      scope.define("int-i64",
+                   newFfiCallable("ffiTestIntI64",
+                                  "ffiTestIntI64",
+                                  cast[pointer](ffiTestIntI64), lib,
+                                  @[newSym("C/Int")], newSym("C/Int64")))
+      scope.define("int-u64",
+                   newFfiCallable("ffiTestIntU64",
+                                  "ffiTestIntU64",
+                                  cast[pointer](ffiTestIntU64), lib,
+                                  @[newSym("C/Int")], newSym("C/UInt64")))
+      scope.define("int-unary-diff",
+                   newFfiCallable("ffiTestIntUnaryDiff",
+                                  "ffiTestIntUnaryDiff",
+                                  cast[pointer](ffiTestIntUnaryDiff), lib,
+                                  @[newSym("C/Int")], newSym("C/PtrDiff")))
       scope.define("double-ulong",
                    newFfiCallable("ffiTestDoubleULong",
                                   "ffiTestDoubleULong",
@@ -2044,6 +2076,10 @@ suite "types — function boundaries":
         discard run(compileSource("(ptrdiff-abs 9223372036854775808)"),
                     scope)
       check run(compileSource("(size-inc 41)"), scope).print() == "42"
+      check run(compileSource("(int-ulong 4)"), scope).print() == "6"
+      check run(compileSource("(int-i64 4)"), scope).print() == "7"
+      check run(compileSource("(int-u64 4)"), scope).print() == "8"
+      check run(compileSource("(int-unary-diff 4)"), scope).print() == "-2"
       check run(compileSource("(double-ulong 4.5)"), scope).print() == "6"
       check run(compileSource("(double-i64 4.5)"), scope).print() == "7"
       check run(compileSource("(double-u64 4.5)"), scope).print() == "8"
