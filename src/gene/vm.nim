@@ -12720,6 +12720,26 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type DoubleIntUIntProc = proc(a: cdouble, b: cint): cuint {.cdecl.}
       let fn = cast[DoubleIntUIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/Int32":
+      type DoubleIntInt32Proc = proc(a: cdouble, b: cint): int32 {.cdecl.}
+      let fn = cast[DoubleIntInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Int16":
+      type DoubleIntInt16Proc = proc(a: cdouble, b: cint): int16 {.cdecl.}
+      let fn = cast[DoubleIntInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Short":
+      type DoubleIntShortProc = proc(a: cdouble, b: cint): cshort {.cdecl.}
+      let fn = cast[DoubleIntShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Int8":
+      type DoubleIntInt8Proc = proc(a: cdouble, b: cint): int8 {.cdecl.}
+      let fn = cast[DoubleIntInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Char":
+      type DoubleIntCharProc = proc(a: cdouble, b: cint): cchar {.cdecl.}
+      let fn = cast[DoubleIntCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0, arg1))
     of "C/Long":
       type DoubleIntLongProc = proc(a: cdouble, b: cint): clong {.cdecl.}
       let fn = cast[DoubleIntLongProc](callee.ffiCallableAddress)
@@ -12728,6 +12748,26 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type DoubleIntULongProc = proc(a: cdouble, b: cint): culong {.cdecl.}
       let fn = cast[DoubleIntULongProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/UInt32":
+      type DoubleIntUInt32Proc = proc(a: cdouble, b: cint): uint32 {.cdecl.}
+      let fn = cast[DoubleIntUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt16":
+      type DoubleIntUInt16Proc = proc(a: cdouble, b: cint): uint16 {.cdecl.}
+      let fn = cast[DoubleIntUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/UShort":
+      type DoubleIntUShortProc = proc(a: cdouble, b: cint): cushort {.cdecl.}
+      let fn = cast[DoubleIntUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt8":
+      type DoubleIntUInt8Proc = proc(a: cdouble, b: cint): uint8 {.cdecl.}
+      let fn = cast[DoubleIntUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/UChar":
+      type DoubleIntUCharProc = proc(a: cdouble, b: cint): uint8 {.cdecl.}
+      let fn = cast[DoubleIntUCharProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
     of "C/Int64":
       type DoubleIntInt64Proc = proc(a: cdouble, b: cint): int64 {.cdecl.}
       let fn = cast[DoubleIntInt64Proc](callee.ffiCallableAddress)
