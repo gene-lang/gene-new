@@ -93,6 +93,18 @@ proc ffiTestCStrPtrIfLen(s: cstring, len: csize_t): pointer {.cdecl.} =
   else:
     cast[pointer](s)
 
+proc ffiTestCStrPairU64(a, b: cstring): uint64 {.cdecl.} =
+  uint64(($a).len + ($b).len)
+
+proc ffiTestCStrPairDiff(a, b: cstring): TestCPtrDiff {.cdecl.} =
+  if $a == $b: TestCPtrDiff(0) else: TestCPtrDiff(-1)
+
+proc ffiTestCStrPairDouble(a, b: cstring): cdouble {.cdecl.} =
+  cdouble(($a).len + ($b).len) + 0.5
+
+proc ffiTestCStrPairEqual(a, b: cstring): bool {.cdecl.} =
+  $a == $b
+
 proc ffiTestPtrCopy(dst, src: pointer, len: csize_t): pointer {.cdecl.} =
   copyMem(dst, src, len)
   dst
@@ -957,6 +969,30 @@ suite "types — function boundaries":
                                   @[newSym("C/CStr"), newSym("C/Size")],
                                   newNode(newSym("C/NullableConstPtr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("cstr-pair-u64",
+                   newFfiCallable("ffiTestCStrPairU64",
+                                  "ffiTestCStrPairU64",
+                                  cast[pointer](ffiTestCStrPairU64), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/UInt64")))
+      scope.define("cstr-pair-diff",
+                   newFfiCallable("ffiTestCStrPairDiff",
+                                  "ffiTestCStrPairDiff",
+                                  cast[pointer](ffiTestCStrPairDiff), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/PtrDiff")))
+      scope.define("cstr-pair-double",
+                   newFfiCallable("ffiTestCStrPairDouble",
+                                  "ffiTestCStrPairDouble",
+                                  cast[pointer](ffiTestCStrPairDouble), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Double")))
+      scope.define("cstr-pair-equal?",
+                   newFfiCallable("ffiTestCStrPairEqual",
+                                  "ffiTestCStrPairEqual",
+                                  cast[pointer](ffiTestCStrPairEqual), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Bool")))
       scope.define("ptr-copy",
                    newFfiCallable("ffiTestPtrCopy", "ffiTestPtrCopy",
                                   cast[pointer](ffiTestPtrCopy), lib,
@@ -1325,6 +1361,18 @@ suite "types — function boundaries":
         "(c-const-ptr)"
       check run(compileSource("(cstr-ptr-if-len \"abc\" 0)"), scope).print() ==
         "(c-const-ptr null)"
+      check run(compileSource("(cstr-pair-u64 \"ab\" \"cde\")"),
+                scope).print() == "5"
+      check run(compileSource("(cstr-pair-diff \"abc\" \"abc\")"),
+                scope).print() == "0"
+      check run(compileSource("(cstr-pair-diff \"abc\" \"abd\")"),
+                scope).print() == "-1"
+      check run(compileSource("(cstr-pair-double \"ab\" \"c\")"),
+                scope).print() == "3.5"
+      check run(compileSource("(cstr-pair-equal? \"abc\" \"abc\")"),
+                scope).print() == "true"
+      check run(compileSource("(cstr-pair-equal? \"abc\" \"abd\")"),
+                scope).print() == "false"
       let copied = run(compileSource("(ptr-copy copy-dst copy-src 3)"), scope)
       check copied.kind == vkCPtr
       check copied.cPtrAddress == cast[pointer](addr copyDst[0])
