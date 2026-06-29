@@ -11084,14 +11084,42 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type IntIntIntProc = proc(a, b: cint): cint {.cdecl.}
       let fn = cast[IntIntIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt":
+      type IntIntUIntProc = proc(a, b: cint): cuint {.cdecl.}
+      let fn = cast[IntIntUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
     of "C/Long":
       type IntIntLongProc = proc(a, b: cint): clong {.cdecl.}
       let fn = cast[IntIntLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/ULong":
+      type IntIntULongProc = proc(a, b: cint): culong {.cdecl.}
+      let fn = cast[IntIntULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Int64":
+      type IntIntInt64Proc = proc(a, b: cint): int64 {.cdecl.}
+      let fn = cast[IntIntInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0, arg1))
+    of "C/UInt64":
+      type IntIntUInt64Proc = proc(a, b: cint): uint64 {.cdecl.}
+      let fn = cast[IntIntUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0, arg1))
     of "C/Size":
       type IntIntSizeProc = proc(a, b: cint): csize_t {.cdecl.}
       let fn = cast[IntIntSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/PtrDiff":
+      type IntIntPtrDiffProc = proc(a, b: cint): GeneCPtrDiff {.cdecl.}
+      let fn = cast[IntIntPtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Float":
+      type IntIntFloatProc = proc(a, b: cint): cfloat {.cdecl.}
+      let fn = cast[IntIntFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Double":
+      type IntIntDoubleProc = proc(a, b: cint): cdouble {.cdecl.}
+      let fn = cast[IntIntDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
     of "C/Bool":
       type IntIntBoolProc = proc(a, b: cint): bool {.cdecl.}
       let fn = cast[IntIntBoolProc](callee.ffiCallableAddress)
