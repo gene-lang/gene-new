@@ -10377,14 +10377,26 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type ShortLongProc = proc(x: cshort): clong {.cdecl.}
       let fn = cast[ShortLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/ULong":
+      type ShortULongProc = proc(x: cshort): culong {.cdecl.}
+      let fn = cast[ShortULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0)))
     of "C/Int64":
       type ShortInt64Proc = proc(x: cshort): int64 {.cdecl.}
       let fn = cast[ShortInt64Proc](callee.ffiCallableAddress)
       return newInt(fn(arg0))
+    of "C/UInt64":
+      type ShortUInt64Proc = proc(x: cshort): uint64 {.cdecl.}
+      let fn = cast[ShortUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0))
     of "C/Size":
       type ShortSizeProc = proc(x: cshort): csize_t {.cdecl.}
       let fn = cast[ShortSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
+    of "C/PtrDiff":
+      type ShortPtrDiffProc = proc(x: cshort): GeneCPtrDiff {.cdecl.}
+      let fn = cast[ShortPtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
     of "C/Float":
       type ShortFloatProc = proc(x: cshort): cfloat {.cdecl.}
       let fn = cast[ShortFloatProc](callee.ffiCallableAddress)

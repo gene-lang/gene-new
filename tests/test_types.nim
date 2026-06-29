@@ -21,6 +21,15 @@ proc ffiTestU16Inc(x: uint16): uint16 {.cdecl.} =
 proc ffiTestShortAbs(x: cshort): cshort {.cdecl.} =
   if x < cshort(0): -x else: x
 
+proc ffiTestShortULong(x: cshort): culong {.cdecl.} =
+  culong(x + cshort(10))
+
+proc ffiTestShortU64(x: cshort): uint64 {.cdecl.} =
+  uint64(x + cshort(12))
+
+proc ffiTestShortDiff(x: cshort): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(clong(x) - clong(6))
+
 proc ffiTestUShortInc(x: cushort): cushort {.cdecl.} =
   x + cushort(1)
 
@@ -1180,6 +1189,21 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestShortAbs", "ffiTestShortAbs",
                                   cast[pointer](ffiTestShortAbs), lib,
                                   @[newSym("C/Short")], newSym("C/Short")))
+      scope.define("short-ulong",
+                   newFfiCallable("ffiTestShortULong",
+                                  "ffiTestShortULong",
+                                  cast[pointer](ffiTestShortULong), lib,
+                                  @[newSym("C/Short")], newSym("C/ULong")))
+      scope.define("short-u64",
+                   newFfiCallable("ffiTestShortU64",
+                                  "ffiTestShortU64",
+                                  cast[pointer](ffiTestShortU64), lib,
+                                  @[newSym("C/Short")], newSym("C/UInt64")))
+      scope.define("short-diff",
+                   newFfiCallable("ffiTestShortDiff",
+                                  "ffiTestShortDiff",
+                                  cast[pointer](ffiTestShortDiff), lib,
+                                  @[newSym("C/Short")], newSym("C/PtrDiff")))
       scope.define("ushort-inc",
                    newFfiCallable("ffiTestUShortInc", "ffiTestUShortInc",
                                   cast[pointer](ffiTestUShortInc), lib,
@@ -2296,6 +2320,9 @@ suite "types — function boundaries":
       check run(compileSource("(short-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(short-abs 32768)"), scope)
+      check run(compileSource("(short-ulong -4)"), scope).print() == "6"
+      check run(compileSource("(short-u64 -4)"), scope).print() == "8"
+      check run(compileSource("(short-diff 4)"), scope).print() == "-2"
       check run(compileSource("(ushort-inc 41)"), scope).print() == "42"
       expect GeneError:
         discard run(compileSource("(ushort-inc -1)"), scope)
