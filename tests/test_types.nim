@@ -127,6 +127,15 @@ proc ffiTestPtrIsNil(p: pointer): bool {.cdecl.} =
 proc ffiTestPtrSame(a, b: pointer): cint {.cdecl.} =
   if a == b: 1 else: 0
 
+proc ffiTestPtrSameU64(a, b: pointer): uint64 {.cdecl.} =
+  if a == b: 1'u64 else: 0'u64
+
+proc ffiTestPtrSameDiff(a, b: pointer): TestCPtrDiff {.cdecl.} =
+  if a == b: TestCPtrDiff(1) else: TestCPtrDiff(-1)
+
+proc ffiTestPtrSameDouble(a, b: pointer): cdouble {.cdecl.} =
+  if a == b: 1.5 else: -1.5
+
 proc ffiTestPtrPick(a, b: pointer): pointer {.cdecl.} =
   if a != nil: a else: b
 
@@ -1072,6 +1081,33 @@ suite "types — function boundaries":
                                     newNode(newSym("C/ConstPtr"),
                                             body = @[newSym("C/Char")])],
                                   newSym("C/Int")))
+      scope.define("ptr-same-u64",
+                   newFfiCallable("ffiTestPtrSameU64",
+                                  "ffiTestPtrSameU64",
+                                  cast[pointer](ffiTestPtrSameU64), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt64")))
+      scope.define("ptr-same-diff",
+                   newFfiCallable("ffiTestPtrSameDiff",
+                                  "ffiTestPtrSameDiff",
+                                  cast[pointer](ffiTestPtrSameDiff), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/PtrDiff")))
+      scope.define("ptr-same-double",
+                   newFfiCallable("ffiTestPtrSameDouble",
+                                  "ffiTestPtrSameDouble",
+                                  cast[pointer](ffiTestPtrSameDouble), lib,
+                                  @[newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Double")))
       scope.define("ptr-pick",
                    newFfiCallable("ffiTestPtrPick",
                                   "ffiTestPtrPick",
@@ -1335,6 +1371,12 @@ suite "types — function boundaries":
         "1"
       check run(compileSource("(ptr-same copy-dst copy-src)"), scope).print() ==
         "0"
+      check run(compileSource("(ptr-same-u64 copy-dst copy-dst)"),
+                scope).print() == "1"
+      check run(compileSource("(ptr-same-diff copy-dst copy-src)"),
+                scope).print() == "-1"
+      check run(compileSource("(ptr-same-double copy-dst copy-dst)"),
+                scope).print() == "1.5"
       let picked = run(compileSource("(ptr-pick nil copy-dst)"), scope)
       check picked.kind == vkCPtr
       check picked.cPtrAddress == cast[pointer](addr copyDst[0])
