@@ -11065,6 +11065,22 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type CStrInt32Proc = proc(s: cstring): int32 {.cdecl.}
       let fn = cast[CStrInt32Proc](callee.ffiCallableAddress)
       return newInt(int64(fn(ctext)))
+    of "C/Int16":
+      type CStrInt16Proc = proc(s: cstring): int16 {.cdecl.}
+      let fn = cast[CStrInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/Short":
+      type CStrShortProc = proc(s: cstring): cshort {.cdecl.}
+      let fn = cast[CStrShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/Int8":
+      type CStrInt8Proc = proc(s: cstring): int8 {.cdecl.}
+      let fn = cast[CStrInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/Char":
+      type CStrCharProc = proc(s: cstring): cchar {.cdecl.}
+      let fn = cast[CStrCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(ctext))
     of "C/UInt":
       type CStrUIntProc = proc(s: cstring): cuint {.cdecl.}
       let fn = cast[CStrUIntProc](callee.ffiCallableAddress)
@@ -11072,6 +11088,22 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     of "C/UInt32":
       type CStrUInt32Proc = proc(s: cstring): uint32 {.cdecl.}
       let fn = cast[CStrUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/UInt16":
+      type CStrUInt16Proc = proc(s: cstring): uint16 {.cdecl.}
+      let fn = cast[CStrUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/UShort":
+      type CStrUShortProc = proc(s: cstring): cushort {.cdecl.}
+      let fn = cast[CStrUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/UInt8":
+      type CStrUInt8Proc = proc(s: cstring): uint8 {.cdecl.}
+      let fn = cast[CStrUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(ctext)))
+    of "C/UChar":
+      type CStrUCharProc = proc(s: cstring): uint8 {.cdecl.}
+      let fn = cast[CStrUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn(ctext)))
     of "C/Long":
       type CStrLongProc = proc(s: cstring): clong {.cdecl.}

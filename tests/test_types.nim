@@ -527,8 +527,32 @@ proc ffiTestCStrPtrIfLen(s: cstring, len: csize_t): pointer {.cdecl.} =
 proc ffiTestCStrLong(s: cstring): clong {.cdecl.} =
   clong(($s).len) - clong(5)
 
+proc ffiTestCStrI16(s: cstring): int16 {.cdecl.} =
+  int16(($s).len + 1)
+
+proc ffiTestCStrShort(s: cstring): cshort {.cdecl.} =
+  cshort(($s).len + 2)
+
+proc ffiTestCStrI8(s: cstring): int8 {.cdecl.} =
+  int8(($s).len - 5)
+
+proc ffiTestCStrFirstChar(s: cstring): cchar {.cdecl.} =
+  if ($s).len == 0: cchar(0) else: cchar(ord(s[0]))
+
 proc ffiTestCStrULong(s: cstring): culong {.cdecl.} =
   culong(($s).len + 2)
+
+proc ffiTestCStrU16(s: cstring): uint16 {.cdecl.} =
+  uint16(($s).len + 3)
+
+proc ffiTestCStrUShort(s: cstring): cushort {.cdecl.} =
+  cushort(($s).len + 4)
+
+proc ffiTestCStrU8(s: cstring): uint8 {.cdecl.} =
+  uint8(($s).len + 5)
+
+proc ffiTestCStrFirstUChar(s: cstring): uint8 {.cdecl.} =
+  if ($s).len == 0: 0'u8 else: uint8(ord(s[0]))
 
 proc ffiTestCStrI64(s: cstring): int64 {.cdecl.} =
   int64(($s).len + 3)
@@ -2318,11 +2342,51 @@ suite "types — function boundaries":
                                   "ffiTestCStrLong",
                                   cast[pointer](ffiTestCStrLong), lib,
                                   @[newSym("C/CStr")], newSym("C/Long")))
+      scope.define("cstr-i16",
+                   newFfiCallable("ffiTestCStrI16",
+                                  "ffiTestCStrI16",
+                                  cast[pointer](ffiTestCStrI16), lib,
+                                  @[newSym("C/CStr")], newSym("C/Int16")))
+      scope.define("cstr-short",
+                   newFfiCallable("ffiTestCStrShort",
+                                  "ffiTestCStrShort",
+                                  cast[pointer](ffiTestCStrShort), lib,
+                                  @[newSym("C/CStr")], newSym("C/Short")))
+      scope.define("cstr-i8",
+                   newFfiCallable("ffiTestCStrI8",
+                                  "ffiTestCStrI8",
+                                  cast[pointer](ffiTestCStrI8), lib,
+                                  @[newSym("C/CStr")], newSym("C/Int8")))
+      scope.define("cstr-first-char",
+                   newFfiCallable("ffiTestCStrFirstChar",
+                                  "ffiTestCStrFirstChar",
+                                  cast[pointer](ffiTestCStrFirstChar), lib,
+                                  @[newSym("C/CStr")], newSym("C/Char")))
       scope.define("cstr-ulong",
                    newFfiCallable("ffiTestCStrULong",
                                   "ffiTestCStrULong",
                                   cast[pointer](ffiTestCStrULong), lib,
                                   @[newSym("C/CStr")], newSym("C/ULong")))
+      scope.define("cstr-u16",
+                   newFfiCallable("ffiTestCStrU16",
+                                  "ffiTestCStrU16",
+                                  cast[pointer](ffiTestCStrU16), lib,
+                                  @[newSym("C/CStr")], newSym("C/UInt16")))
+      scope.define("cstr-ushort",
+                   newFfiCallable("ffiTestCStrUShort",
+                                  "ffiTestCStrUShort",
+                                  cast[pointer](ffiTestCStrUShort), lib,
+                                  @[newSym("C/CStr")], newSym("C/UShort")))
+      scope.define("cstr-u8",
+                   newFfiCallable("ffiTestCStrU8",
+                                  "ffiTestCStrU8",
+                                  cast[pointer](ffiTestCStrU8), lib,
+                                  @[newSym("C/CStr")], newSym("C/UInt8")))
+      scope.define("cstr-first-uchar",
+                   newFfiCallable("ffiTestCStrFirstUChar",
+                                  "ffiTestCStrFirstUChar",
+                                  cast[pointer](ffiTestCStrFirstUChar), lib,
+                                  @[newSym("C/CStr")], newSym("C/UChar")))
       scope.define("cstr-i64",
                    newFfiCallable("ffiTestCStrI64",
                                   "ffiTestCStrI64",
@@ -3131,7 +3195,17 @@ suite "types — function boundaries":
       check run(compileSource("(cstr-ptr-if-len \"abc\" 0)"), scope).print() ==
         "(c-const-ptr null)"
       check run(compileSource("(cstr-long \"abc\")"), scope).print() == "-2"
+      check run(compileSource("(cstr-i16 \"abc\")"), scope).print() == "4"
+      check run(compileSource("(cstr-short \"abc\")"), scope).print() == "5"
+      check run(compileSource("(cstr-i8 \"abc\")"), scope).print() == "-2"
+      check run(compileSource("(cstr-first-char \"abc\")"),
+                scope).print() == "'a'"
       check run(compileSource("(cstr-ulong \"abc\")"), scope).print() == "5"
+      check run(compileSource("(cstr-u16 \"abc\")"), scope).print() == "6"
+      check run(compileSource("(cstr-ushort \"abc\")"), scope).print() == "7"
+      check run(compileSource("(cstr-u8 \"abc\")"), scope).print() == "8"
+      check run(compileSource("(cstr-first-uchar \"abc\")"),
+                scope).print() == "97"
       check run(compileSource("(cstr-i64 \"abc\")"), scope).print() == "6"
       check run(compileSource("(cstr-u64 \"abc\")"), scope).print() == "7"
       check run(compileSource("(cstr-diff \"abc\")"), scope).print() == "-2"
