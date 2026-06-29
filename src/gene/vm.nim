@@ -7351,6 +7351,9 @@ proc runPooled(chunk: Chunk, scope: Scope,
   withScheduler(scope):
     if chunk.localNames.len == 0:
       return run(chunk, scope, validateImplRequirements)
+    let workerLease = beginSchedulerWorkerLease()
+    defer:
+      endSchedulerWorkerLease(workerLease)
     scope.prepareChunkScope(chunk)
     var stack = acquireRunStack()
     var ip = 0
