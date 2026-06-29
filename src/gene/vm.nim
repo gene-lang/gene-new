@@ -4,6 +4,11 @@ import std/[algorithm, dynlib, locks, math, monotimes, os, sets, strutils,
             tables, times, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
+when sizeof(csize_t) == sizeof(clong):
+  type GeneCPtrDiff = clong
+else:
+  type GeneCPtrDiff = clonglong
+
 type
   RunStopKind = enum
     rskReturn
@@ -9254,12 +9259,11 @@ proc ffiCUInt64Arg(name, label: string, value: Value,
 proc ffiCULongArg(name: string, value: Value): culong =
   culong(ffiCUInt64Arg(name, "C/ULong", value, $high(culong)))
 
-proc ffiCPtrDiffArg(name: string, value: Value): int =
+proc ffiCPtrDiffArg(name: string, value: Value): GeneCPtrDiff =
   let raw = requireInt64(name, value)
-  when sizeof(int) < sizeof(int64):
-    if raw < int64(low(int)) or raw > int64(high(int)):
-      raise newException(GeneError, name & " is out of C/PtrDiff range")
-  int(raw)
+  if raw < int64(low(GeneCPtrDiff)) or raw > int64(high(GeneCPtrDiff)):
+    raise newException(GeneError, name & " is out of C/PtrDiff range")
+  GeneCPtrDiff(raw)
 
 proc ffiCSizeArg(name: string, value: Value): csize_t =
   csize_t(ffiCUInt64Arg(name, "C/Size", value, $high(csize_t)))
@@ -9474,7 +9478,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[VoidSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn()))
     of "C/PtrDiff":
-      type VoidPtrDiffProc = proc(): int {.cdecl.}
+      type VoidPtrDiffProc = proc(): GeneCPtrDiff {.cdecl.}
       let fn = cast[VoidPtrDiffProc](callee.ffiCallableAddress)
       return newInt(int64(fn()))
     of "C/Float":
@@ -9689,7 +9693,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[UInt64SizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
     of "C/PtrDiff":
-      type UInt64PtrDiffProc = proc(x: uint64): int {.cdecl.}
+      type UInt64PtrDiffProc = proc(x: uint64): GeneCPtrDiff {.cdecl.}
       let fn = cast[UInt64PtrDiffProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/Float":
@@ -9752,7 +9756,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       let fn = cast[ULongSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
     of "C/PtrDiff":
-      type ULongPtrDiffProc = proc(x: culong): int {.cdecl.}
+      type ULongPtrDiffProc = proc(x: culong): GeneCPtrDiff {.cdecl.}
       let fn = cast[ULongPtrDiffProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/Float":
@@ -9787,62 +9791,62 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       callee.ffiCallableName & "'", args[0])
     case returnLabel
     of "C/Int":
-      type PtrDiffIntProc = proc(x: int): cint {.cdecl.}
+      type PtrDiffIntProc = proc(x: GeneCPtrDiff): cint {.cdecl.}
       let fn = cast[PtrDiffIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/UInt":
-      type PtrDiffUIntProc = proc(x: int): cuint {.cdecl.}
+      type PtrDiffUIntProc = proc(x: GeneCPtrDiff): cuint {.cdecl.}
       let fn = cast[PtrDiffUIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/Long":
-      type PtrDiffLongProc = proc(x: int): clong {.cdecl.}
+      type PtrDiffLongProc = proc(x: GeneCPtrDiff): clong {.cdecl.}
       let fn = cast[PtrDiffLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/ULong":
-      type PtrDiffULongProc = proc(x: int): culong {.cdecl.}
+      type PtrDiffULongProc = proc(x: GeneCPtrDiff): culong {.cdecl.}
       let fn = cast[PtrDiffULongProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
     of "C/Int64":
-      type PtrDiffInt64Proc = proc(x: int): int64 {.cdecl.}
+      type PtrDiffInt64Proc = proc(x: GeneCPtrDiff): int64 {.cdecl.}
       let fn = cast[PtrDiffInt64Proc](callee.ffiCallableAddress)
       return newInt(fn(arg0))
     of "C/UInt64":
-      type PtrDiffUInt64Proc = proc(x: int): uint64 {.cdecl.}
+      type PtrDiffUInt64Proc = proc(x: GeneCPtrDiff): uint64 {.cdecl.}
       let fn = cast[PtrDiffUInt64Proc](callee.ffiCallableAddress)
       return ffiCUInt64Value(fn(arg0))
     of "C/Size":
-      type PtrDiffSizeProc = proc(x: int): csize_t {.cdecl.}
+      type PtrDiffSizeProc = proc(x: GeneCPtrDiff): csize_t {.cdecl.}
       let fn = cast[PtrDiffSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
     of "C/PtrDiff":
-      type PtrDiffPtrDiffProc = proc(x: int): int {.cdecl.}
+      type PtrDiffPtrDiffProc = proc(x: GeneCPtrDiff): GeneCPtrDiff {.cdecl.}
       let fn = cast[PtrDiffPtrDiffProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/Float":
-      type PtrDiffFloatProc = proc(x: int): cfloat {.cdecl.}
+      type PtrDiffFloatProc = proc(x: GeneCPtrDiff): cfloat {.cdecl.}
       let fn = cast[PtrDiffFloatProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
     of "C/Double":
-      type PtrDiffDoubleProc = proc(x: int): cdouble {.cdecl.}
+      type PtrDiffDoubleProc = proc(x: GeneCPtrDiff): cdouble {.cdecl.}
       let fn = cast[PtrDiffDoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
     of "C/Bool":
-      type PtrDiffBoolProc = proc(x: int): bool {.cdecl.}
+      type PtrDiffBoolProc = proc(x: GeneCPtrDiff): bool {.cdecl.}
       let fn = cast[PtrDiffBoolProc](callee.ffiCallableAddress)
       return newBool(fn(arg0))
     of "C/CStr":
-      type PtrDiffCStrProc = proc(x: int): cstring {.cdecl.}
+      type PtrDiffCStrProc = proc(x: GeneCPtrDiff): cstring {.cdecl.}
       let fn = cast[PtrDiffCStrProc](callee.ffiCallableAddress)
       return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
                            fn(arg0))
     of "C/Void":
-      type PtrDiffVoidProc = proc(x: int) {.cdecl.}
+      type PtrDiffVoidProc = proc(x: GeneCPtrDiff) {.cdecl.}
       let fn = cast[PtrDiffVoidProc](callee.ffiCallableAddress)
       fn(arg0)
       return NIL
     else:
       if isFfiPtrLabel(returnLabel):
-        type PtrDiffPtrProc = proc(x: int): pointer {.cdecl.}
+        type PtrDiffPtrProc = proc(x: GeneCPtrDiff): pointer {.cdecl.}
         let fn = cast[PtrDiffPtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Int":
