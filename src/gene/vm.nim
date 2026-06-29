@@ -11377,6 +11377,46 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type PtrPtrSizeIntProc = proc(a, b: pointer, n: csize_t): cint {.cdecl.}
       let fn = cast[PtrPtrSizeIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/UInt":
+      type PtrPtrSizeUIntProc = proc(a, b: pointer, n: csize_t): cuint {.cdecl.}
+      let fn = cast[PtrPtrSizeUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Long":
+      type PtrPtrSizeLongProc = proc(a, b: pointer, n: csize_t): clong {.cdecl.}
+      let fn = cast[PtrPtrSizeLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/ULong":
+      type PtrPtrSizeULongProc = proc(a, b: pointer, n: csize_t): culong {.cdecl.}
+      let fn = cast[PtrPtrSizeULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1, arg2)))
+    of "C/Int64":
+      type PtrPtrSizeInt64Proc = proc(a, b: pointer, n: csize_t): int64 {.cdecl.}
+      let fn = cast[PtrPtrSizeInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0, arg1, arg2))
+    of "C/UInt64":
+      type PtrPtrSizeUInt64Proc = proc(a, b: pointer, n: csize_t): uint64 {.cdecl.}
+      let fn = cast[PtrPtrSizeUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0, arg1, arg2))
+    of "C/Size":
+      type PtrPtrSizeSizeProc = proc(a, b: pointer, n: csize_t): csize_t {.cdecl.}
+      let fn = cast[PtrPtrSizeSizeProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1, arg2)))
+    of "C/PtrDiff":
+      type PtrPtrSizePtrDiffProc = proc(a, b: pointer, n: csize_t): GeneCPtrDiff {.cdecl.}
+      let fn = cast[PtrPtrSizePtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1, arg2)))
+    of "C/Float":
+      type PtrPtrSizeFloatProc = proc(a, b: pointer, n: csize_t): cfloat {.cdecl.}
+      let fn = cast[PtrPtrSizeFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1, arg2)))
+    of "C/Double":
+      type PtrPtrSizeDoubleProc = proc(a, b: pointer, n: csize_t): cdouble {.cdecl.}
+      let fn = cast[PtrPtrSizeDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1, arg2)))
+    of "C/Bool":
+      type PtrPtrSizeBoolProc = proc(a, b: pointer, n: csize_t): bool {.cdecl.}
+      let fn = cast[PtrPtrSizeBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0, arg1, arg2))
     of "C/CStr":
       type PtrPtrSizeCStrProc = proc(a, b: pointer, n: csize_t): cstring {.cdecl.}
       let fn = cast[PtrPtrSizeCStrProc](callee.ffiCallableAddress)

@@ -130,6 +130,21 @@ proc ffiTestPtrSame(a, b: pointer): cint {.cdecl.} =
 proc ffiTestPtrPick(a, b: pointer): pointer {.cdecl.} =
   if a != nil: a else: b
 
+proc ffiTestPtrPtrLen(a, b: pointer, len: csize_t): csize_t {.cdecl.} =
+  if a == nil or b == nil: 0 else: len
+
+proc ffiTestPtrPtrLenU64(a, b: pointer, len: csize_t): uint64 {.cdecl.} =
+  if a == nil or b == nil: 0'u64 else: uint64(len) + 1'u64
+
+proc ffiTestPtrPtrLenDiff(a, b: pointer, len: csize_t): TestCPtrDiff {.cdecl.} =
+  if a == b: TestCPtrDiff(len) else: -TestCPtrDiff(len)
+
+proc ffiTestPtrPtrLenDouble(a, b: pointer, len: csize_t): cdouble {.cdecl.} =
+  if a == b: cdouble(len) + 0.5 else: cdouble(len) + 1.5
+
+proc ffiTestPtrPtrHasLen(a, b: pointer, len: csize_t): bool {.cdecl.} =
+  a != nil and b != nil and len > 0
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -1006,6 +1021,56 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")])],
                                   newNode(newSym("C/Ptr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("ptr-ptr-len",
+                   newFfiCallable("ffiTestPtrPtrLen",
+                                  "ffiTestPtrPtrLen",
+                                  cast[pointer](ffiTestPtrPtrLen), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/NullableConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Size")))
+      scope.define("ptr-ptr-len-u64",
+                   newFfiCallable("ffiTestPtrPtrLenU64",
+                                  "ffiTestPtrPtrLenU64",
+                                  cast[pointer](ffiTestPtrPtrLenU64), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/NullableConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UInt64")))
+      scope.define("ptr-ptr-len-diff",
+                   newFfiCallable("ffiTestPtrPtrLenDiff",
+                                  "ffiTestPtrPtrLenDiff",
+                                  cast[pointer](ffiTestPtrPtrLenDiff), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/NullableConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/PtrDiff")))
+      scope.define("ptr-ptr-len-double",
+                   newFfiCallable("ffiTestPtrPtrLenDouble",
+                                  "ffiTestPtrPtrLenDouble",
+                                  cast[pointer](ffiTestPtrPtrLenDouble), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/NullableConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Double")))
+      scope.define("ptr-ptr-has-len?",
+                   newFfiCallable("ffiTestPtrPtrHasLen",
+                                  "ffiTestPtrPtrHasLen",
+                                  cast[pointer](ffiTestPtrPtrHasLen), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/NullableConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Bool")))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -1200,6 +1265,22 @@ suite "types — function boundaries":
       check picked.kind == vkCPtr
       check picked.cPtrAddress == cast[pointer](addr copyDst[0])
       check picked.cPtrTargetType.print() == "C/Char"
+      check run(compileSource("(ptr-ptr-len copy-dst copy-src 3)"),
+                scope).print() == "3"
+      check run(compileSource("(ptr-ptr-len nil copy-src 3)"), scope).print() ==
+        "0"
+      check run(compileSource("(ptr-ptr-len-u64 copy-dst copy-src 3)"),
+                scope).print() == "4"
+      check run(compileSource("(ptr-ptr-len-diff copy-dst copy-dst 3)"),
+                scope).print() == "3"
+      check run(compileSource("(ptr-ptr-len-diff copy-dst copy-src 3)"),
+                scope).print() == "-3"
+      check run(compileSource("(ptr-ptr-len-double copy-dst copy-dst 3)"),
+                scope).print() == "3.5"
+      check run(compileSource("(ptr-ptr-has-len? copy-dst copy-src 3)"),
+                scope).print() == "true"
+      check run(compileSource("(ptr-ptr-has-len? copy-dst copy-src 0)"),
+                scope).print() == "false"
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
