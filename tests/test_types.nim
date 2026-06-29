@@ -69,6 +69,18 @@ proc ffiTestU8Diff(x: uint8): TestCPtrDiff {.cdecl.} =
 proc ffiTestCharNext(x: cchar): cchar {.cdecl.} =
   cchar(ord(x) + 1)
 
+proc ffiTestCharULong(x: cchar): culong {.cdecl.} =
+  culong(ord(x) + 2)
+
+proc ffiTestCharI64(x: cchar): int64 {.cdecl.} =
+  int64(ord(x) + 3)
+
+proc ffiTestCharU64(x: cchar): uint64 {.cdecl.} =
+  uint64(ord(x) + 4)
+
+proc ffiTestCharDiff(x: cchar): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(clong(ord(x)) - clong(66))
+
 proc ffiTestUCharInc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
@@ -1274,6 +1286,26 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestCharNext", "ffiTestCharNext",
                                   cast[pointer](ffiTestCharNext), lib,
                                   @[newSym("C/Char")], newSym("C/Char")))
+      scope.define("char-ulong",
+                   newFfiCallable("ffiTestCharULong",
+                                  "ffiTestCharULong",
+                                  cast[pointer](ffiTestCharULong), lib,
+                                  @[newSym("C/Char")], newSym("C/ULong")))
+      scope.define("char-i64",
+                   newFfiCallable("ffiTestCharI64",
+                                  "ffiTestCharI64",
+                                  cast[pointer](ffiTestCharI64), lib,
+                                  @[newSym("C/Char")], newSym("C/Int64")))
+      scope.define("char-u64",
+                   newFfiCallable("ffiTestCharU64",
+                                  "ffiTestCharU64",
+                                  cast[pointer](ffiTestCharU64), lib,
+                                  @[newSym("C/Char")], newSym("C/UInt64")))
+      scope.define("char-diff",
+                   newFfiCallable("ffiTestCharDiff",
+                                  "ffiTestCharDiff",
+                                  cast[pointer](ffiTestCharDiff), lib,
+                                  @[newSym("C/Char")], newSym("C/PtrDiff")))
       scope.define("uchar-inc",
                    newFfiCallable("ffiTestUCharInc", "ffiTestUCharInc",
                                   cast[pointer](ffiTestUCharInc), lib,
@@ -2372,6 +2404,10 @@ suite "types — function boundaries":
       check run(compileSource("(char-next 'A')"), scope).print() == "'B'"
       expect GeneError:
         discard run(compileSource("(char-next 128)"), scope)
+      check run(compileSource("(char-ulong 'A')"), scope).print() == "67"
+      check run(compileSource("(char-i64 'A')"), scope).print() == "68"
+      check run(compileSource("(char-u64 'A')"), scope).print() == "69"
+      check run(compileSource("(char-diff 'A')"), scope).print() == "-1"
       check run(compileSource("(uchar-inc 41)"), scope).print() == "42"
       check run(compileSource("(uchar-inc 'A')"), scope).print() == "66"
       expect GeneError:
