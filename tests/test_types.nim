@@ -76,6 +76,10 @@ proc ffiTestSliceFirstByte(data: pointer, len: csize_t): cint {.cdecl.} =
   else:
     cint(cast[ptr uint8](data)[])
 
+proc ffiTestPtrCopy(dst, src: pointer, len: csize_t): pointer {.cdecl.} =
+  copyMem(dst, src, len)
+  dst
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -850,6 +854,16 @@ suite "types — function boundaries":
                                   @[newNode(newSym("Buffer"),
                                             body = @[newSym("C/Int8")])],
                                   newSym("C/Int")))
+      scope.define("ptr-copy",
+                   newFfiCallable("ffiTestPtrCopy", "ffiTestPtrCopy",
+                                  cast[pointer](ffiTestPtrCopy), lib,
+                                  @[newNode(newSym("C/Ptr"),
+                                            body = @[newSym("C/Char")]),
+                                    newNode(newSym("C/ConstPtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newNode(newSym("C/Ptr"),
+                                          body = @[newSym("C/Char")])))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -876,6 +890,14 @@ suite "types — function boundaries":
                    newBuffer(newSym("C/Int32"), @[newInt(65)]))
       scope.define("bad-byte-buffer",
                    newBuffer(newSym("C/UInt8"), @[newInt(300)]))
+      var copySrc = [uint8(68), uint8(69), uint8(70)]
+      var copyDst = [uint8(0), uint8(0), uint8(0)]
+      scope.define("copy-src",
+                   newCConstPtr(cast[pointer](addr copySrc[0]),
+                                newSym("C/Char")))
+      scope.define("copy-dst",
+                   newCPtr(cast[pointer](addr copyDst[0]),
+                           newSym("C/Char")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -989,6 +1011,10 @@ suite "types — function boundaries":
         discard run(compileSource("(buffer-len wrong-byte-buffer)"), scope)
       expect GeneError:
         discard run(compileSource("(buffer-len bad-byte-buffer)"), scope)
+      let copied = run(compileSource("(ptr-copy copy-dst copy-src 3)"), scope)
+      check copied.kind == vkCPtr
+      check copied.cPtrAddress == cast[pointer](addr copyDst[0])
+      check copyDst == [uint8(68), uint8(69), uint8(70)]
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""

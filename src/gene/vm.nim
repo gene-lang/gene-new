@@ -11243,7 +11243,11 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       fn(arg0, arg1, arg2)
       return NIL
     else:
-      discard
+      if isFfiPtrLabel(returnLabel):
+        type PtrPtrSizePtrProc = proc(a, b: pointer, n: csize_t): pointer {.cdecl.}
+        let fn = cast[PtrPtrSizePtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1, arg2),
+                                releaseAddress)
   raise newException(GeneError,
     "unsupported dynamic FFI signature for '" & callee.ffiCallableName &
     "': [" & paramLabels.join(",") & "] -> " & returnLabel)
