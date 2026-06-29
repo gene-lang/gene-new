@@ -9958,7 +9958,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       fn(arg0)
       return NIL
     else:
-      discard
+      if isFfiPtrLabel(returnLabel):
+        type IntPtrProc = proc(x: cint): pointer {.cdecl.}
+        let fn = cast[IntPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/UInt":
     let arg0 = ffiCUIntArg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", args[0])
@@ -11124,7 +11127,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       fn(arg0)
       return NIL
     else:
-      discard
+      if isFfiPtrLabel(returnLabel):
+        type DoublePtrProc = proc(x: cdouble): pointer {.cdecl.}
+        let fn = cast[DoublePtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/Float":
     let arg0 = ffiCFloatArg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", args[0])
@@ -11184,7 +11190,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       fn(arg0)
       return NIL
     else:
-      discard
+      if isFfiPtrLabel(returnLabel):
+        type FloatPtrProc = proc(x: cfloat): pointer {.cdecl.}
+        let fn = cast[FloatPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 2 and paramLabels[0] == "C/CStr" and
       paramLabels[1] == "C/CStr":
     let arg0 = ffiCStrArg("FFI argument 0 for '" &

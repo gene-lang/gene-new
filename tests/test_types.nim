@@ -162,6 +162,8 @@ proc ffiTestSizeAddDouble(a, b: csize_t): cdouble {.cdecl.} =
 proc ffiTestSizeEqual(a, b: csize_t): bool {.cdecl.} =
   a == b
 
+var ffiScalarPtrByte: uint8 = 0x41
+
 proc ffiTestDoubleULong(x: cdouble): culong {.cdecl.} =
   culong(int(x) + 2)
 
@@ -179,6 +181,9 @@ proc ffiTestDoublePositive(x: cdouble): bool {.cdecl.} =
 
 proc ffiTestDoubleKind(x: cdouble): cstring {.cdecl.} =
   if x > 0.0: "positive-double" else: "nonpositive-double"
+
+proc ffiTestDoublePtr(x: cdouble): pointer {.cdecl.} =
+  if x > 0.0: cast[pointer](addr ffiScalarPtrByte) else: nil
 
 proc ffiTestFloatULong(x: cfloat): culong {.cdecl.} =
   culong(int(x) + 2)
@@ -198,6 +203,9 @@ proc ffiTestFloatPositive(x: cfloat): bool {.cdecl.} =
 proc ffiTestFloatKind(x: cfloat): cstring {.cdecl.} =
   if x > 0.0: "positive-float" else: "nonpositive-float"
 
+proc ffiTestFloatPtr(x: cfloat): pointer {.cdecl.} =
+  if x > 0.0: cast[pointer](addr ffiScalarPtrByte) else: nil
+
 proc ffiTestIntULong(x: cint): culong {.cdecl.} =
   culong(x + 2)
 
@@ -209,6 +217,9 @@ proc ffiTestIntU64(x: cint): uint64 {.cdecl.} =
 
 proc ffiTestIntUnaryDiff(x: cint): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6)
+
+proc ffiTestIntPtr(x: cint): pointer {.cdecl.} =
+  if x > 0: cast[pointer](addr ffiScalarPtrByte) else: nil
 
 proc ffiTestLongULong(x: clong): culong {.cdecl.} =
   culong(x + 2)
@@ -1477,6 +1488,13 @@ suite "types — function boundaries":
                                   "ffiTestIntUnaryDiff",
                                   cast[pointer](ffiTestIntUnaryDiff), lib,
                                   @[newSym("C/Int")], newSym("C/PtrDiff")))
+      scope.define("int-ptr",
+                   newFfiCallable("ffiTestIntPtr",
+                                  "ffiTestIntPtr",
+                                  cast[pointer](ffiTestIntPtr), lib,
+                                  @[newSym("C/Int")],
+                                  newNode(newSym("C/NullablePtr"),
+                                          body = @[newSym("C/Char")])))
       scope.define("long-ulong",
                    newFfiCallable("ffiTestLongULong",
                                   "ffiTestLongULong",
@@ -1622,6 +1640,13 @@ suite "types — function boundaries":
                                   "ffiTestDoubleKind",
                                   cast[pointer](ffiTestDoubleKind), lib,
                                   @[newSym("C/Double")], newSym("C/CStr")))
+      scope.define("double-ptr",
+                   newFfiCallable("ffiTestDoublePtr",
+                                  "ffiTestDoublePtr",
+                                  cast[pointer](ffiTestDoublePtr), lib,
+                                  @[newSym("C/Double")],
+                                  newNode(newSym("C/NullablePtr"),
+                                          body = @[newSym("C/Char")])))
       scope.define("float-ulong",
                    newFfiCallable("ffiTestFloatULong",
                                   "ffiTestFloatULong",
@@ -1652,6 +1677,13 @@ suite "types — function boundaries":
                                   "ffiTestFloatKind",
                                   cast[pointer](ffiTestFloatKind), lib,
                                   @[newSym("C/Float")], newSym("C/CStr")))
+      scope.define("float-ptr",
+                   newFfiCallable("ffiTestFloatPtr",
+                                  "ffiTestFloatPtr",
+                                  cast[pointer](ffiTestFloatPtr), lib,
+                                  @[newSym("C/Float")],
+                                  newNode(newSym("C/NullablePtr"),
+                                          body = @[newSym("C/Char")])))
       scope.define("size-add-uint",
                    newFfiCallable("ffiTestSizeAddUInt",
                                   "ffiTestSizeAddUInt",
@@ -2640,6 +2672,9 @@ suite "types — function boundaries":
       check run(compileSource("(int-i64 4)"), scope).print() == "7"
       check run(compileSource("(int-u64 4)"), scope).print() == "8"
       check run(compileSource("(int-unary-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(int-ptr 4)"), scope).print() == "(c-ptr)"
+      check run(compileSource("(int-ptr 0)"), scope).print() ==
+        "(c-ptr null)"
       check run(compileSource("(long-ulong 4)"), scope).print() == "6"
       check run(compileSource("(long-i64 4)"), scope).print() == "7"
       check run(compileSource("(long-u64 4)"), scope).print() == "8"
@@ -2674,6 +2709,10 @@ suite "types — function boundaries":
       let doubleKind = run(compileSource("(double-kind 4.5)"), scope)
       check doubleKind.kind == vkString
       check doubleKind.strVal == "positive-double"
+      check run(compileSource("(double-ptr 4.5)"), scope).print() ==
+        "(c-ptr)"
+      check run(compileSource("(double-ptr -1.5)"), scope).print() ==
+        "(c-ptr null)"
       check run(compileSource("(float-ulong 4.5)"), scope).print() == "6"
       check run(compileSource("(float-i64 4.5)"), scope).print() == "7"
       check run(compileSource("(float-u64 4.5)"), scope).print() == "8"
@@ -2685,6 +2724,10 @@ suite "types — function boundaries":
       let floatKind = run(compileSource("(float-kind 4.5)"), scope)
       check floatKind.kind == vkString
       check floatKind.strVal == "positive-float"
+      check run(compileSource("(float-ptr 4.5)"), scope).print() ==
+        "(c-ptr)"
+      check run(compileSource("(float-ptr -1.5)"), scope).print() ==
+        "(c-ptr null)"
       check run(compileSource("(size-add-uint 20 22)"), scope).print() == "43"
       check run(compileSource("(size-diff-long 20 22)"), scope).print() == "-2"
       check run(compileSource("(size-add-ulong 20 22)"), scope).print() == "44"
