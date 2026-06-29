@@ -1143,8 +1143,38 @@ proc ffiTestPtrIdentity(p: pointer): pointer {.cdecl.} =
 proc ffiTestPtrIsNil(p: pointer): bool {.cdecl.} =
   p == nil
 
+proc ffiTestPtrProbeI32(p: pointer): int32 {.cdecl.} =
+  if p == nil: -1'i32 else: 8'i32
+
+proc ffiTestPtrProbeI16(p: pointer): int16 {.cdecl.} =
+  if p == nil: -1'i16 else: 9'i16
+
+proc ffiTestPtrProbeShort(p: pointer): cshort {.cdecl.} =
+  if p == nil: cshort(-1) else: cshort(10)
+
+proc ffiTestPtrProbeI8(p: pointer): int8 {.cdecl.} =
+  if p == nil: -1'i8 else: 11'i8
+
+proc ffiTestPtrProbeChar(p: pointer): cchar {.cdecl.} =
+  if p == nil: cchar(ord('?')) else: cchar(ord('D'))
+
 proc ffiTestPtrProbeULong(p: pointer): culong {.cdecl.} =
   if p == nil: 0.culong else: 4.culong
+
+proc ffiTestPtrProbeU32(p: pointer): uint32 {.cdecl.} =
+  if p == nil: 0'u32 else: 12'u32
+
+proc ffiTestPtrProbeU16(p: pointer): uint16 {.cdecl.} =
+  if p == nil: 0'u16 else: 13'u16
+
+proc ffiTestPtrProbeUShort(p: pointer): cushort {.cdecl.} =
+  if p == nil: cushort(0) else: cushort(14)
+
+proc ffiTestPtrProbeU8(p: pointer): uint8 {.cdecl.} =
+  if p == nil: 0'u8 else: 15'u8
+
+proc ffiTestPtrProbeUChar(p: pointer): uint8 {.cdecl.} =
+  if p == nil: 0'u8 else: 16'u8
 
 proc ffiTestPtrProbeI64(p: pointer): int64 {.cdecl.} =
   if p == nil: -1'i64 else: 5'i64
@@ -4040,6 +4070,41 @@ suite "types — function boundaries":
                                   @[newNode(newSym("C/NullablePtr"),
                                             body = @[newSym("C/Char")])],
                                   newSym("C/Bool")))
+      scope.define("ptr-probe-i32",
+                   newFfiCallable("ffiTestPtrProbeI32",
+                                  "ffiTestPtrProbeI32",
+                                  cast[pointer](ffiTestPtrProbeI32), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int32")))
+      scope.define("ptr-probe-i16",
+                   newFfiCallable("ffiTestPtrProbeI16",
+                                  "ffiTestPtrProbeI16",
+                                  cast[pointer](ffiTestPtrProbeI16), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int16")))
+      scope.define("ptr-probe-short",
+                   newFfiCallable("ffiTestPtrProbeShort",
+                                  "ffiTestPtrProbeShort",
+                                  cast[pointer](ffiTestPtrProbeShort), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Short")))
+      scope.define("ptr-probe-i8",
+                   newFfiCallable("ffiTestPtrProbeI8",
+                                  "ffiTestPtrProbeI8",
+                                  cast[pointer](ffiTestPtrProbeI8), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int8")))
+      scope.define("ptr-probe-char",
+                   newFfiCallable("ffiTestPtrProbeChar",
+                                  "ffiTestPtrProbeChar",
+                                  cast[pointer](ffiTestPtrProbeChar), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Char")))
       scope.define("ptr-probe-ulong",
                    newFfiCallable("ffiTestPtrProbeULong",
                                   "ffiTestPtrProbeULong",
@@ -4047,6 +4112,41 @@ suite "types — function boundaries":
                                   @[newNode(newSym("C/NullablePtr"),
                                             body = @[newSym("C/Char")])],
                                   newSym("C/ULong")))
+      scope.define("ptr-probe-u32",
+                   newFfiCallable("ffiTestPtrProbeU32",
+                                  "ffiTestPtrProbeU32",
+                                  cast[pointer](ffiTestPtrProbeU32), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt32")))
+      scope.define("ptr-probe-u16",
+                   newFfiCallable("ffiTestPtrProbeU16",
+                                  "ffiTestPtrProbeU16",
+                                  cast[pointer](ffiTestPtrProbeU16), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt16")))
+      scope.define("ptr-probe-ushort",
+                   newFfiCallable("ffiTestPtrProbeUShort",
+                                  "ffiTestPtrProbeUShort",
+                                  cast[pointer](ffiTestPtrProbeUShort), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UShort")))
+      scope.define("ptr-probe-u8",
+                   newFfiCallable("ffiTestPtrProbeU8",
+                                  "ffiTestPtrProbeU8",
+                                  cast[pointer](ffiTestPtrProbeU8), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UInt8")))
+      scope.define("ptr-probe-uchar",
+                   newFfiCallable("ffiTestPtrProbeUChar",
+                                  "ffiTestPtrProbeUChar",
+                                  cast[pointer](ffiTestPtrProbeUChar), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/UChar")))
       scope.define("ptr-probe-i64",
                    newFfiCallable("ffiTestPtrProbeI64",
                                   "ffiTestPtrProbeI64",
@@ -4923,9 +5023,31 @@ suite "types — function boundaries":
       check identity.cPtrTargetType.print() == "C/Char"
       check run(compileSource("(ptr-nil? nil)"), scope).print() == "true"
       check run(compileSource("(ptr-nil? copy-dst)"), scope).print() == "false"
+      check run(compileSource("(ptr-probe-i32 copy-dst)"),
+                scope).print() == "8"
+      check run(compileSource("(ptr-probe-i32 nil)"), scope).print() == "-1"
+      check run(compileSource("(ptr-probe-i16 copy-dst)"),
+                scope).print() == "9"
+      check run(compileSource("(ptr-probe-short copy-dst)"),
+                scope).print() == "10"
+      check run(compileSource("(ptr-probe-i8 copy-dst)"),
+                scope).print() == "11"
+      check run(compileSource("(ptr-probe-char copy-dst)"),
+                scope).print() == "'D'"
       check run(compileSource("(ptr-probe-ulong copy-dst)"),
                 scope).print() == "4"
       check run(compileSource("(ptr-probe-ulong nil)"), scope).print() == "0"
+      check run(compileSource("(ptr-probe-u32 copy-dst)"),
+                scope).print() == "12"
+      check run(compileSource("(ptr-probe-u16 copy-dst)"),
+                scope).print() == "13"
+      check run(compileSource("(ptr-probe-ushort copy-dst)"),
+                scope).print() == "14"
+      check run(compileSource("(ptr-probe-u8 copy-dst)"),
+                scope).print() == "15"
+      check run(compileSource("(ptr-probe-uchar copy-dst)"),
+                scope).print() == "16"
+      check run(compileSource("(ptr-probe-uchar nil)"), scope).print() == "0"
       check run(compileSource("(ptr-probe-i64 copy-dst)"),
                 scope).print() == "5"
       check run(compileSource("(ptr-probe-i64 nil)"), scope).print() == "-1"
