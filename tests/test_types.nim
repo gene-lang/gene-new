@@ -626,6 +626,36 @@ proc ffiTestCStrIntEqualLen(s: cstring, x: cint): bool {.cdecl.} =
 proc ffiTestCStrSizeUInt(s: cstring, n: csize_t): cuint {.cdecl.} =
   cuint(($s).len + int(n) + 1)
 
+proc ffiTestCStrSizeI32(s: cstring, n: csize_t): int32 {.cdecl.} =
+  int32(($s).len + int(n) + 2)
+
+proc ffiTestCStrSizeI16(s: cstring, n: csize_t): int16 {.cdecl.} =
+  int16(($s).len + int(n) + 3)
+
+proc ffiTestCStrSizeShort(s: cstring, n: csize_t): cshort {.cdecl.} =
+  cshort(($s).len + int(n) + 4)
+
+proc ffiTestCStrSizeI8(s: cstring, n: csize_t): int8 {.cdecl.} =
+  int8(($s).len - int(n))
+
+proc ffiTestCStrSizeChar(s: cstring, n: csize_t): cchar {.cdecl.} =
+  cchar(ord(s[0]) + int(n))
+
+proc ffiTestCStrSizeU32(s: cstring, n: csize_t): uint32 {.cdecl.} =
+  uint32(($s).len + int(n) + 5)
+
+proc ffiTestCStrSizeU16(s: cstring, n: csize_t): uint16 {.cdecl.} =
+  uint16(($s).len + int(n) + 6)
+
+proc ffiTestCStrSizeUShort(s: cstring, n: csize_t): cushort {.cdecl.} =
+  cushort(($s).len + int(n) + 7)
+
+proc ffiTestCStrSizeU8(s: cstring, n: csize_t): uint8 {.cdecl.} =
+  uint8(($s).len + int(n) + 8)
+
+proc ffiTestCStrSizeUChar(s: cstring, n: csize_t): uint8 {.cdecl.} =
+  uint8(ord(s[0]) + int(n))
+
 proc ffiTestCStrSizeLong(s: cstring, n: csize_t): clong {.cdecl.} =
   clong(($s).len - int(n))
 
@@ -2557,6 +2587,66 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestCStrSizeUInt), lib,
                                   @[newSym("C/CStr"), newSym("C/Size")],
                                   newSym("C/UInt")))
+      scope.define("cstr-size-i32",
+                   newFfiCallable("ffiTestCStrSizeI32",
+                                  "ffiTestCStrSizeI32",
+                                  cast[pointer](ffiTestCStrSizeI32), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/Int32")))
+      scope.define("cstr-size-i16",
+                   newFfiCallable("ffiTestCStrSizeI16",
+                                  "ffiTestCStrSizeI16",
+                                  cast[pointer](ffiTestCStrSizeI16), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/Int16")))
+      scope.define("cstr-size-short",
+                   newFfiCallable("ffiTestCStrSizeShort",
+                                  "ffiTestCStrSizeShort",
+                                  cast[pointer](ffiTestCStrSizeShort), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/Short")))
+      scope.define("cstr-size-i8",
+                   newFfiCallable("ffiTestCStrSizeI8",
+                                  "ffiTestCStrSizeI8",
+                                  cast[pointer](ffiTestCStrSizeI8), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/Int8")))
+      scope.define("cstr-size-char",
+                   newFfiCallable("ffiTestCStrSizeChar",
+                                  "ffiTestCStrSizeChar",
+                                  cast[pointer](ffiTestCStrSizeChar), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/Char")))
+      scope.define("cstr-size-u32",
+                   newFfiCallable("ffiTestCStrSizeU32",
+                                  "ffiTestCStrSizeU32",
+                                  cast[pointer](ffiTestCStrSizeU32), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/UInt32")))
+      scope.define("cstr-size-u16",
+                   newFfiCallable("ffiTestCStrSizeU16",
+                                  "ffiTestCStrSizeU16",
+                                  cast[pointer](ffiTestCStrSizeU16), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/UInt16")))
+      scope.define("cstr-size-ushort",
+                   newFfiCallable("ffiTestCStrSizeUShort",
+                                  "ffiTestCStrSizeUShort",
+                                  cast[pointer](ffiTestCStrSizeUShort), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/UShort")))
+      scope.define("cstr-size-u8",
+                   newFfiCallable("ffiTestCStrSizeU8",
+                                  "ffiTestCStrSizeU8",
+                                  cast[pointer](ffiTestCStrSizeU8), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/UInt8")))
+      scope.define("cstr-size-uchar",
+                   newFfiCallable("ffiTestCStrSizeUChar",
+                                  "ffiTestCStrSizeUChar",
+                                  cast[pointer](ffiTestCStrSizeUChar), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/UChar")))
       scope.define("cstr-size-long",
                    newFfiCallable("ffiTestCStrSizeLong",
                                   "ffiTestCStrSizeLong",
@@ -3345,6 +3435,26 @@ suite "types — function boundaries":
                 scope).print() == "false"
       check run(compileSource("(cstr-size-uint \"abc\" 2)"),
                 scope).print() == "6"
+      check run(compileSource("(cstr-size-i32 \"abc\" 2)"),
+                scope).print() == "7"
+      check run(compileSource("(cstr-size-i16 \"abc\" 2)"),
+                scope).print() == "8"
+      check run(compileSource("(cstr-size-short \"abc\" 2)"),
+                scope).print() == "9"
+      check run(compileSource("(cstr-size-i8 \"abc\" 2)"),
+                scope).print() == "1"
+      check run(compileSource("(cstr-size-char \"abc\" 2)"),
+                scope).print() == "'c'"
+      check run(compileSource("(cstr-size-u32 \"abc\" 2)"),
+                scope).print() == "10"
+      check run(compileSource("(cstr-size-u16 \"abc\" 2)"),
+                scope).print() == "11"
+      check run(compileSource("(cstr-size-ushort \"abc\" 2)"),
+                scope).print() == "12"
+      check run(compileSource("(cstr-size-u8 \"abc\" 2)"),
+                scope).print() == "13"
+      check run(compileSource("(cstr-size-uchar \"abc\" 2)"),
+                scope).print() == "99"
       check run(compileSource("(cstr-size-long \"abc\" 5)"),
                 scope).print() == "-2"
       check run(compileSource("(cstr-size-ulong \"abc\" 2)"),
