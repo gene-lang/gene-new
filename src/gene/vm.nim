@@ -10482,10 +10482,26 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type LongLongProc = proc(x: clong): clong {.cdecl.}
       let fn = cast[LongLongProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/ULong":
+      type LongULongProc = proc(x: clong): culong {.cdecl.}
+      let fn = cast[LongULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0)))
+    of "C/Int64":
+      type LongInt64Proc = proc(x: clong): int64 {.cdecl.}
+      let fn = cast[LongInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0))
+    of "C/UInt64":
+      type LongUInt64Proc = proc(x: clong): uint64 {.cdecl.}
+      let fn = cast[LongUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0))
     of "C/Size":
       type LongSizeProc = proc(x: clong): csize_t {.cdecl.}
       let fn = cast[LongSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0)))
+    of "C/PtrDiff":
+      type LongPtrDiffProc = proc(x: clong): GeneCPtrDiff {.cdecl.}
+      let fn = cast[LongPtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
     of "C/Float":
       type LongFloatProc = proc(x: clong): cfloat {.cdecl.}
       let fn = cast[LongFloatProc](callee.ffiCallableAddress)
