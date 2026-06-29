@@ -98,6 +98,12 @@ proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
   else:
     p
 
+proc ffiTestPtrLen(p: pointer, len: csize_t): csize_t {.cdecl.} =
+  if p == nil: 0 else: len
+
+proc ffiTestPtrHasLen(p: pointer, len: csize_t): bool {.cdecl.} =
+  p != nil and len > 0
+
 proc ffiTestPtrIdentity(p: pointer): pointer {.cdecl.} =
   p
 
@@ -915,6 +921,21 @@ suite "types — function boundaries":
                                     newSym("C/Size")],
                                   newNode(newSym("C/NullablePtr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("ptr-len",
+                   newFfiCallable("ffiTestPtrLen", "ffiTestPtrLen",
+                                  cast[pointer](ffiTestPtrLen), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Size")))
+      scope.define("ptr-has-len?",
+                   newFfiCallable("ffiTestPtrHasLen",
+                                  "ffiTestPtrHasLen",
+                                  cast[pointer](ffiTestPtrHasLen), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Bool")))
       scope.define("ptr-identity",
                    newFfiCallable("ffiTestPtrIdentity",
                                   "ffiTestPtrIdentity",
@@ -1114,6 +1135,14 @@ suite "types — function boundaries":
         "(c-ptr)"
       check run(compileSource("(ptr-if-len copy-dst 0)"), scope).print() ==
         "(c-ptr null)"
+      check run(compileSource("(ptr-len copy-dst 3)"), scope).print() == "3"
+      check run(compileSource("(ptr-len nil 3)"), scope).print() == "0"
+      check run(compileSource("(ptr-has-len? copy-dst 3)"), scope).print() ==
+        "true"
+      check run(compileSource("(ptr-has-len? copy-dst 0)"), scope).print() ==
+        "false"
+      check run(compileSource("(ptr-has-len? nil 3)"), scope).print() ==
+        "false"
       let identity = run(compileSource("(ptr-identity copy-dst)"), scope)
       check identity.kind == vkCPtr
       check identity.cPtrAddress == cast[pointer](addr copyDst[0])

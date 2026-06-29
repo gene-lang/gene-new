@@ -11231,6 +11231,31 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     let arg1 = ffiCSizeArg("FFI argument 1 for '" &
       callee.ffiCallableName & "'", args[1])
     case returnLabel
+    of "C/Int":
+      type PtrSizeIntProc = proc(p: pointer, n: csize_t): cint {.cdecl.}
+      let fn = cast[PtrSizeIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt":
+      type PtrSizeUIntProc = proc(p: pointer, n: csize_t): cuint {.cdecl.}
+      let fn = cast[PtrSizeUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Long":
+      type PtrSizeLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
+      let fn = cast[PtrSizeLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Size":
+      type PtrSizeSizeProc = proc(p: pointer, n: csize_t): csize_t {.cdecl.}
+      let fn = cast[PtrSizeSizeProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Bool":
+      type PtrSizeBoolProc = proc(p: pointer, n: csize_t): bool {.cdecl.}
+      let fn = cast[PtrSizeBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0, arg1))
+    of "C/CStr":
+      type PtrSizeCStrProc = proc(p: pointer, n: csize_t): cstring {.cdecl.}
+      let fn = cast[PtrSizeCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0, arg1))
     of "C/Void":
       type PtrSizeVoidProc = proc(p: pointer, n: csize_t) {.cdecl.}
       let fn = cast[PtrSizeVoidProc](callee.ffiCallableAddress)
