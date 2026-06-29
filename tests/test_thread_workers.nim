@@ -38,3 +38,13 @@ suite "threaded scheduler workers":
         "t"), newGlobalScope())
       check task.kind == vkTask
       check task.taskDone
+
+  test "worker pool wakes sleeping worker-candidate tasks while root runs":
+    withGeneWorkers:
+      let task = run(compileSource(
+        "(var t (spawn (do (sleep 1) 42))) " &
+        "(var i 0) " &
+        "(while (< i 800000) (set i (+ i 1))) " &
+        "t"), newGlobalScope())
+      check task.kind == vkTask
+      check task.taskDone

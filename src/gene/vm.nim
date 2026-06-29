@@ -4958,6 +4958,7 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 # await, or timer. `currentFiberActive` gates suspension: only a scheduled fiber
 # parks — root-level channel use keeps its original synchronous behavior.
 const schedulerInstructionBudget = 2048
+const schedulerWorkerTimerPollMs = 1
 
 proc enqueueRunnable(f: Fiber)
 
@@ -7712,9 +7713,25 @@ when compileOption("threads") and defined(gcAtomicArc):
         return true
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
+    var pollTimer = false
     withSchedulerLock(s):
-      while not s.workerStop and not s.schedulerHasWorkerCandidateUnlocked():
+      if s.workerStop or s.schedulerHasWorkerCandidateUnlocked():
+        return
+      for f in s.waiters:
+        if f.waitTimer:
+          pollTimer = true
+          break
+      if not pollTimer:
+        for item in s.askTimeouts:
+          if item.task.kind == vkTask and not item.task.taskDone:
+            pollTimer = true
+            break
+      if not pollTimer:
         wait(s.workerCond, s.lock)
+        return
+    if pollTimer:
+      # std/locks has no timed Cond wait; poll only while scheduler timers exist.
+      os.sleep(schedulerWorkerTimerPollMs)
 
   proc schedulerWorkerLoop(s: SchedulerState) {.thread.} =
     {.cast(gcsafe).}:
