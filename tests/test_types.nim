@@ -25,6 +25,9 @@ proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
 proc ffiTestU8Inc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
+proc ffiTestBoolNot(x: bool): bool {.cdecl.} =
+  not x
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -687,6 +690,10 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestU8Inc", "ffiTestU8Inc",
                                   cast[pointer](ffiTestU8Inc), lib,
                                   @[newSym("C/UInt8")], newSym("C/UInt8")))
+      scope.define("bool-not",
+                   newFfiCallable("ffiTestBoolNot", "ffiTestBoolNot",
+                                  cast[pointer](ffiTestBoolNot), lib,
+                                  @[newSym("C/Bool")], newSym("C/Bool")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -711,6 +718,10 @@ suite "types — function boundaries":
         discard run(compileSource("(u8-inc -1)"), scope)
       expect GeneError:
         discard run(compileSource("(u8-inc 256)"), scope)
+      check run(compileSource("(bool-not true)"), scope).print() == "false"
+      check run(compileSource("(bool-not false)"), scope).print() == "true"
+      expect GeneError:
+        discard run(compileSource("(bool-not 1)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
