@@ -10081,6 +10081,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type UInt32DoubleProc = proc(x: uint32): cdouble {.cdecl.}
       let fn = cast[UInt32DoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type UInt32BoolProc = proc(x: uint32): bool {.cdecl.}
+      let fn = cast[UInt32BoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type UInt32CStrProc = proc(x: uint32): cstring {.cdecl.}
       let fn = cast[UInt32CStrProc](callee.ffiCallableAddress)
@@ -10156,6 +10160,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type UInt16DoubleProc = proc(x: uint16): cdouble {.cdecl.}
       let fn = cast[UInt16DoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type UInt16BoolProc = proc(x: uint16): bool {.cdecl.}
+      let fn = cast[UInt16BoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type UInt16CStrProc = proc(x: uint16): cstring {.cdecl.}
       let fn = cast[UInt16CStrProc](callee.ffiCallableAddress)
@@ -10239,6 +10247,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type UShortDoubleProc = proc(x: cushort): cdouble {.cdecl.}
       let fn = cast[UShortDoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type UShortBoolProc = proc(x: cushort): bool {.cdecl.}
+      let fn = cast[UShortBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type UShortCStrProc = proc(x: cushort): cstring {.cdecl.}
       let fn = cast[UShortCStrProc](callee.ffiCallableAddress)
@@ -10322,6 +10334,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type UInt8DoubleProc = proc(x: uint8): cdouble {.cdecl.}
       let fn = cast[UInt8DoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type UInt8BoolProc = proc(x: uint8): bool {.cdecl.}
+      let fn = cast[UInt8BoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type UInt8CStrProc = proc(x: uint8): cstring {.cdecl.}
       let fn = cast[UInt8CStrProc](callee.ffiCallableAddress)
@@ -10393,6 +10409,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type Int16DoubleProc = proc(x: int16): cdouble {.cdecl.}
       let fn = cast[Int16DoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type Int16BoolProc = proc(x: int16): bool {.cdecl.}
+      let fn = cast[Int16BoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type Int16CStrProc = proc(x: int16): cstring {.cdecl.}
       let fn = cast[Int16CStrProc](callee.ffiCallableAddress)
@@ -10476,6 +10496,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type ShortDoubleProc = proc(x: cshort): cdouble {.cdecl.}
       let fn = cast[ShortDoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type ShortBoolProc = proc(x: cshort): bool {.cdecl.}
+      let fn = cast[ShortBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type ShortCStrProc = proc(x: cshort): cstring {.cdecl.}
       let fn = cast[ShortCStrProc](callee.ffiCallableAddress)
@@ -10559,6 +10583,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type Int8DoubleProc = proc(x: int8): cdouble {.cdecl.}
       let fn = cast[Int8DoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type Int8BoolProc = proc(x: int8): bool {.cdecl.}
+      let fn = cast[Int8BoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type Int8CStrProc = proc(x: int8): cstring {.cdecl.}
       let fn = cast[Int8CStrProc](callee.ffiCallableAddress)
@@ -10622,6 +10650,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type Int32DoubleProc = proc(x: int32): cdouble {.cdecl.}
       let fn = cast[Int32DoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type Int32BoolProc = proc(x: int32): bool {.cdecl.}
+      let fn = cast[Int32BoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type Int32CStrProc = proc(x: int32): cstring {.cdecl.}
       let fn = cast[Int32CStrProc](callee.ffiCallableAddress)

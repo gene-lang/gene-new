@@ -30,6 +30,9 @@ proc ffiTestShortU64(x: cshort): uint64 {.cdecl.} =
 proc ffiTestShortDiff(x: cshort): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
 
+proc ffiTestShortPositive(x: cshort): bool {.cdecl.} =
+  x > cshort(0)
+
 proc ffiTestUShortInc(x: cushort): cushort {.cdecl.} =
   x + cushort(1)
 
@@ -41,6 +44,9 @@ proc ffiTestUShortU64(x: cushort): uint64 {.cdecl.} =
 
 proc ffiTestUShortDiff(x: cushort): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
+
+proc ffiTestUShortNonZero(x: cushort): bool {.cdecl.} =
+  x != cushort(0)
 
 proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
   if x < 0'i8: -x else: x
@@ -54,6 +60,9 @@ proc ffiTestI8U64(x: int8): uint64 {.cdecl.} =
 proc ffiTestI8Diff(x: int8): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
 
+proc ffiTestI8Positive(x: int8): bool {.cdecl.} =
+  x > 0'i8
+
 proc ffiTestU8Inc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
@@ -65,6 +74,9 @@ proc ffiTestU8U64(x: uint8): uint64 {.cdecl.} =
 
 proc ffiTestU8Diff(x: uint8): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
+
+proc ffiTestU8NonZero(x: uint8): bool {.cdecl.} =
+  x != 0'u8
 
 proc ffiTestCharNext(x: cchar): cchar {.cdecl.} =
   cchar(ord(x) + 1)
@@ -278,6 +290,9 @@ proc ffiTestU32U64(x: uint32): uint64 {.cdecl.} =
 proc ffiTestU32Diff(x: uint32): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
 
+proc ffiTestU32NonZero(x: uint32): bool {.cdecl.} =
+  x != 0'u32
+
 proc ffiTestI32ULong(x: int32): culong {.cdecl.} =
   culong(x + 2'i32)
 
@@ -286,6 +301,9 @@ proc ffiTestI32U64(x: int32): uint64 {.cdecl.} =
 
 proc ffiTestI32Diff(x: int32): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6'i32)
+
+proc ffiTestI32Positive(x: int32): bool {.cdecl.} =
+  x > 0'i32
 
 proc ffiTestI16ULong(x: int16): culong {.cdecl.} =
   culong(x + 2'i16)
@@ -296,6 +314,9 @@ proc ffiTestI16U64(x: int16): uint64 {.cdecl.} =
 proc ffiTestI16Diff(x: int16): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6'i16)
 
+proc ffiTestI16Positive(x: int16): bool {.cdecl.} =
+  x > 0'i16
+
 proc ffiTestU16ULong(x: uint16): culong {.cdecl.} =
   culong(x + 2'u16)
 
@@ -304,6 +325,9 @@ proc ffiTestU16U64(x: uint16): uint64 {.cdecl.} =
 
 proc ffiTestU16Diff(x: uint16): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
+
+proc ffiTestU16NonZero(x: uint16): bool {.cdecl.} =
+  x != 0'u16
 
 proc ffiTestIntAdd(a, b: cint): cint {.cdecl.} =
   a + b
@@ -1317,6 +1341,11 @@ suite "types — function boundaries":
                                   "ffiTestShortDiff",
                                   cast[pointer](ffiTestShortDiff), lib,
                                   @[newSym("C/Short")], newSym("C/PtrDiff")))
+      scope.define("short-positive?",
+                   newFfiCallable("ffiTestShortPositive",
+                                  "ffiTestShortPositive",
+                                  cast[pointer](ffiTestShortPositive), lib,
+                                  @[newSym("C/Short")], newSym("C/Bool")))
       scope.define("ushort-inc",
                    newFfiCallable("ffiTestUShortInc", "ffiTestUShortInc",
                                   cast[pointer](ffiTestUShortInc), lib,
@@ -1336,6 +1365,11 @@ suite "types — function boundaries":
                                   "ffiTestUShortDiff",
                                   cast[pointer](ffiTestUShortDiff), lib,
                                   @[newSym("C/UShort")], newSym("C/PtrDiff")))
+      scope.define("ushort-non-zero?",
+                   newFfiCallable("ffiTestUShortNonZero",
+                                  "ffiTestUShortNonZero",
+                                  cast[pointer](ffiTestUShortNonZero), lib,
+                                  @[newSym("C/UShort")], newSym("C/Bool")))
       scope.define("i8-abs",
                    newFfiCallable("ffiTestI8Abs", "ffiTestI8Abs",
                                   cast[pointer](ffiTestI8Abs), lib,
@@ -1355,6 +1389,11 @@ suite "types — function boundaries":
                                   "ffiTestI8Diff",
                                   cast[pointer](ffiTestI8Diff), lib,
                                   @[newSym("C/Int8")], newSym("C/PtrDiff")))
+      scope.define("i8-positive?",
+                   newFfiCallable("ffiTestI8Positive",
+                                  "ffiTestI8Positive",
+                                  cast[pointer](ffiTestI8Positive), lib,
+                                  @[newSym("C/Int8")], newSym("C/Bool")))
       scope.define("u8-inc",
                    newFfiCallable("ffiTestU8Inc", "ffiTestU8Inc",
                                   cast[pointer](ffiTestU8Inc), lib,
@@ -1374,6 +1413,11 @@ suite "types — function boundaries":
                                   "ffiTestU8Diff",
                                   cast[pointer](ffiTestU8Diff), lib,
                                   @[newSym("C/UInt8")], newSym("C/PtrDiff")))
+      scope.define("u8-non-zero?",
+                   newFfiCallable("ffiTestU8NonZero",
+                                  "ffiTestU8NonZero",
+                                  cast[pointer](ffiTestU8NonZero), lib,
+                                  @[newSym("C/UInt8")], newSym("C/Bool")))
       scope.define("char-next",
                    newFfiCallable("ffiTestCharNext", "ffiTestCharNext",
                                   cast[pointer](ffiTestCharNext), lib,
@@ -1605,6 +1649,11 @@ suite "types — function boundaries":
                                   "ffiTestU32Diff",
                                   cast[pointer](ffiTestU32Diff), lib,
                                   @[newSym("C/UInt32")], newSym("C/PtrDiff")))
+      scope.define("u32-non-zero?",
+                   newFfiCallable("ffiTestU32NonZero",
+                                  "ffiTestU32NonZero",
+                                  cast[pointer](ffiTestU32NonZero), lib,
+                                  @[newSym("C/UInt32")], newSym("C/Bool")))
       scope.define("i32-ulong",
                    newFfiCallable("ffiTestI32ULong",
                                   "ffiTestI32ULong",
@@ -1620,6 +1669,11 @@ suite "types — function boundaries":
                                   "ffiTestI32Diff",
                                   cast[pointer](ffiTestI32Diff), lib,
                                   @[newSym("C/Int32")], newSym("C/PtrDiff")))
+      scope.define("i32-positive?",
+                   newFfiCallable("ffiTestI32Positive",
+                                  "ffiTestI32Positive",
+                                  cast[pointer](ffiTestI32Positive), lib,
+                                  @[newSym("C/Int32")], newSym("C/Bool")))
       scope.define("i16-ulong",
                    newFfiCallable("ffiTestI16ULong",
                                   "ffiTestI16ULong",
@@ -1635,6 +1689,11 @@ suite "types — function boundaries":
                                   "ffiTestI16Diff",
                                   cast[pointer](ffiTestI16Diff), lib,
                                   @[newSym("C/Int16")], newSym("C/PtrDiff")))
+      scope.define("i16-positive?",
+                   newFfiCallable("ffiTestI16Positive",
+                                  "ffiTestI16Positive",
+                                  cast[pointer](ffiTestI16Positive), lib,
+                                  @[newSym("C/Int16")], newSym("C/Bool")))
       scope.define("u16-ulong",
                    newFfiCallable("ffiTestU16ULong",
                                   "ffiTestU16ULong",
@@ -1650,6 +1709,11 @@ suite "types — function boundaries":
                                   "ffiTestU16Diff",
                                   cast[pointer](ffiTestU16Diff), lib,
                                   @[newSym("C/UInt16")], newSym("C/PtrDiff")))
+      scope.define("u16-non-zero?",
+                   newFfiCallable("ffiTestU16NonZero",
+                                  "ffiTestU16NonZero",
+                                  cast[pointer](ffiTestU16NonZero), lib,
+                                  @[newSym("C/UInt16")], newSym("C/Bool")))
       scope.define("double-ulong",
                    newFfiCallable("ffiTestDoubleULong",
                                   "ffiTestDoubleULong",
@@ -2635,6 +2699,9 @@ suite "types — function boundaries":
       check run(compileSource("(short-ulong -4)"), scope).print() == "6"
       check run(compileSource("(short-u64 -4)"), scope).print() == "8"
       check run(compileSource("(short-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(short-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(short-positive? -1)"), scope).print() ==
+        "false"
       check run(compileSource("(ushort-inc 41)"), scope).print() == "42"
       expect GeneError:
         discard run(compileSource("(ushort-inc -1)"), scope)
@@ -2643,12 +2710,18 @@ suite "types — function boundaries":
       check run(compileSource("(ushort-ulong 4)"), scope).print() == "6"
       check run(compileSource("(ushort-u64 4)"), scope).print() == "8"
       check run(compileSource("(ushort-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(ushort-non-zero? 4)"), scope).print() ==
+        "true"
+      check run(compileSource("(ushort-non-zero? 0)"), scope).print() ==
+        "false"
       check run(compileSource("(i8-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i8-abs 128)"), scope)
       check run(compileSource("(i8-ulong -4)"), scope).print() == "6"
       check run(compileSource("(i8-u64 -4)"), scope).print() == "8"
       check run(compileSource("(i8-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(i8-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(i8-positive? -1)"), scope).print() == "false"
       check run(compileSource("(u8-inc 41)"), scope).print() == "42"
       expect GeneError:
         discard run(compileSource("(u8-inc -1)"), scope)
@@ -2657,6 +2730,8 @@ suite "types — function boundaries":
       check run(compileSource("(u8-ulong 4)"), scope).print() == "6"
       check run(compileSource("(u8-u64 4)"), scope).print() == "8"
       check run(compileSource("(u8-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(u8-non-zero? 4)"), scope).print() == "true"
+      check run(compileSource("(u8-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(char-next 'A')"), scope).print() == "'B'"
       expect GeneError:
         discard run(compileSource("(char-next 128)"), scope)
@@ -2739,15 +2814,25 @@ suite "types — function boundaries":
       check run(compileSource("(u32-ulong 4)"), scope).print() == "6"
       check run(compileSource("(u32-u64 4)"), scope).print() == "8"
       check run(compileSource("(u32-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(u32-non-zero? 4)"), scope).print() == "true"
+      check run(compileSource("(u32-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(i32-ulong 4)"), scope).print() == "6"
       check run(compileSource("(i32-u64 4)"), scope).print() == "8"
       check run(compileSource("(i32-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(i32-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(i32-positive? -1)"), scope).print() ==
+        "false"
       check run(compileSource("(i16-ulong 4)"), scope).print() == "6"
       check run(compileSource("(i16-u64 4)"), scope).print() == "8"
       check run(compileSource("(i16-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(i16-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(i16-positive? -1)"), scope).print() ==
+        "false"
       check run(compileSource("(u16-ulong 4)"), scope).print() == "6"
       check run(compileSource("(u16-u64 4)"), scope).print() == "8"
       check run(compileSource("(u16-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(u16-non-zero? 4)"), scope).print() == "true"
+      check run(compileSource("(u16-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(double-ulong 4.5)"), scope).print() == "6"
       check run(compileSource("(double-i64 4.5)"), scope).print() == "7"
       check run(compileSource("(double-u64 4.5)"), scope).print() == "8"
