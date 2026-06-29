@@ -58,6 +58,9 @@ proc ffiTestDoubleScale(a: cdouble, factor: cint): cdouble {.cdecl.} =
 proc ffiTestIntOffset(a: cint, b: cdouble): cdouble {.cdecl.} =
   cdouble(a) + b
 
+proc ffiTestFloatAdd(a, b: cfloat): cfloat {.cdecl.} =
+  a + b
+
 proc ffiTestSliceLen(data: pointer, len: csize_t): csize_t {.cdecl.} =
   len
 
@@ -778,6 +781,11 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestIntOffset), lib,
                                   @[newSym("C/Int"), newSym("C/Double")],
                                   newSym("C/Double")))
+      scope.define("float-add",
+                   newFfiCallable("ffiTestFloatAdd", "ffiTestFloatAdd",
+                                  cast[pointer](ffiTestFloatAdd), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/Float")))
       scope.define("slice-len",
                    newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
                                   cast[pointer](ffiTestSliceLen), lib,
@@ -926,6 +934,9 @@ suite "types — function boundaries":
       check run(compileSource("(int-offset 4 0.5)"), scope).print() == "4.5"
       expect GeneError:
         discard run(compileSource("(int-offset 4.0 0.5)"), scope)
+      check run(compileSource("(float-add 1.25 2.5)"), scope).print() == "3.75"
+      expect GeneError:
+        discard run(compileSource("(float-add 1 2.5)"), scope)
       check run(compileSource("(slice-len byte-slice)"), scope).print() == "3"
       check run(compileSource("(slice-first-byte byte-slice)"),
                 scope).print() == "65"

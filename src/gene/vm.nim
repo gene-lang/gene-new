@@ -11020,6 +11020,47 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         type DoubleIntPtrProc = proc(a: cdouble, b: cint): pointer {.cdecl.}
         let fn = cast[DoubleIntPtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
+  if paramLabels.len == 2 and paramLabels[0] == "C/Float" and
+      paramLabels[1] == "C/Float":
+    let arg0 = ffiCFloatArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", args[0])
+    let arg1 = ffiCFloatArg("FFI argument 1 for '" &
+      callee.ffiCallableName & "'", args[1])
+    case returnLabel
+    of "C/Int":
+      type FloatFloatIntProc = proc(a, b: cfloat): cint {.cdecl.}
+      let fn = cast[FloatFloatIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Long":
+      type FloatFloatLongProc = proc(a, b: cfloat): clong {.cdecl.}
+      let fn = cast[FloatFloatLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Size":
+      type FloatFloatSizeProc = proc(a, b: cfloat): csize_t {.cdecl.}
+      let fn = cast[FloatFloatSizeProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Float":
+      type FloatFloatFloatProc = proc(a, b: cfloat): cfloat {.cdecl.}
+      let fn = cast[FloatFloatFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Double":
+      type FloatFloatDoubleProc = proc(a, b: cfloat): cdouble {.cdecl.}
+      let fn = cast[FloatFloatDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Bool":
+      type FloatFloatBoolProc = proc(a, b: cfloat): bool {.cdecl.}
+      let fn = cast[FloatFloatBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0, arg1))
+    of "C/Void":
+      type FloatFloatVoidProc = proc(a, b: cfloat) {.cdecl.}
+      let fn = cast[FloatFloatVoidProc](callee.ffiCallableAddress)
+      fn(arg0, arg1)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type FloatFloatPtrProc = proc(a, b: cfloat): pointer {.cdecl.}
+        let fn = cast[FloatFloatPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0, arg1), releaseAddress)
   if paramLabels.len == 2 and paramLabels[0] == "C/Size" and
       paramLabels[1] == "C/Size":
     let arg0 = ffiCSizeArg("FFI argument 0 for '" &
