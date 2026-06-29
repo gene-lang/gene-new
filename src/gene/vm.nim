@@ -6174,7 +6174,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     (inst[].flag or stack[argsStart].kind == vkInt):
                   boundScope = bindUnaryIntCallScope(callee.fnScope, proto,
                                                      stack[argsStart])
-                  boundReturnType = proto.checkedFrameReturnType(proto.returnType)
+                  boundReturnType = proto.returnType
                   usedUnaryIntFast = true
                 else:
                   let bound =
