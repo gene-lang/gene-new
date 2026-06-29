@@ -10696,7 +10696,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       fn(arg0)
       return NIL
     else:
-      discard
+      if isFfiPtrLabel(returnLabel):
+        type PtrPtrProc = proc(p: pointer): pointer {.cdecl.}
+        let fn = cast[PtrPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0), releaseAddress)
   if paramLabels.len == 1 and paramLabels[0] == "C/CStr":
     let ctext = ffiCStrArg("FFI argument 0 for '" &
       callee.ffiCallableName & "'", args[0])

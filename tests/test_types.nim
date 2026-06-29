@@ -98,6 +98,9 @@ proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
   else:
     p
 
+proc ffiTestPtrIdentity(p: pointer): pointer {.cdecl.} =
+  p
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -903,6 +906,14 @@ suite "types — function boundaries":
                                     newSym("C/Size")],
                                   newNode(newSym("C/NullablePtr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("ptr-identity",
+                   newFfiCallable("ffiTestPtrIdentity",
+                                  "ffiTestPtrIdentity",
+                                  cast[pointer](ffiTestPtrIdentity), lib,
+                                  @[newNode(newSym("C/Ptr"),
+                                            body = @[newSym("C/Char")])],
+                                  newNode(newSym("C/Ptr"),
+                                          body = @[newSym("C/Char")])))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -1068,6 +1079,10 @@ suite "types — function boundaries":
         "(c-ptr)"
       check run(compileSource("(ptr-if-len copy-dst 0)"), scope).print() ==
         "(c-ptr null)"
+      let identity = run(compileSource("(ptr-identity copy-dst)"), scope)
+      check identity.kind == vkCPtr
+      check identity.cPtrAddress == cast[pointer](addr copyDst[0])
+      check identity.cPtrTargetType.print() == "C/Char"
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
