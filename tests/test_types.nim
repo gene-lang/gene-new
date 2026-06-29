@@ -101,6 +101,9 @@ proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
 proc ffiTestPtrIdentity(p: pointer): pointer {.cdecl.} =
   p
 
+proc ffiTestPtrIsNil(p: pointer): bool {.cdecl.} =
+  p == nil
+
 proc ffiTestPtrSame(a, b: pointer): cint {.cdecl.} =
   if a == b: 1 else: 0
 
@@ -920,6 +923,13 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")])],
                                   newNode(newSym("C/Ptr"),
                                           body = @[newSym("C/Char")])))
+      scope.define("ptr-nil?",
+                   newFfiCallable("ffiTestPtrIsNil",
+                                  "ffiTestPtrIsNil",
+                                  cast[pointer](ffiTestPtrIsNil), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Bool")))
       scope.define("ptr-same",
                    newFfiCallable("ffiTestPtrSame",
                                   "ffiTestPtrSame",
@@ -1108,6 +1118,8 @@ suite "types — function boundaries":
       check identity.kind == vkCPtr
       check identity.cPtrAddress == cast[pointer](addr copyDst[0])
       check identity.cPtrTargetType.print() == "C/Char"
+      check run(compileSource("(ptr-nil? nil)"), scope).print() == "true"
+      check run(compileSource("(ptr-nil? copy-dst)"), scope).print() == "false"
       check run(compileSource("(ptr-same copy-dst copy-dst)"), scope).print() ==
         "1"
       check run(compileSource("(ptr-same copy-dst copy-src)"), scope).print() ==

@@ -10685,6 +10685,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type PtrDoubleProc = proc(p: pointer): cdouble {.cdecl.}
       let fn = cast[PtrDoubleProc](callee.ffiCallableAddress)
       return newFloat(float64(fn(arg0)))
+    of "C/Bool":
+      type PtrBoolProc = proc(p: pointer): bool {.cdecl.}
+      let fn = cast[PtrBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0))
     of "C/CStr":
       type PtrCStrProc = proc(p: pointer): cstring {.cdecl.}
       let fn = cast[PtrCStrProc](callee.ffiCallableAddress)
