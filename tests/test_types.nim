@@ -162,6 +162,21 @@ proc ffiTestIntDoubleDiff(a: cint, b: cdouble): TestCPtrDiff {.cdecl.} =
 proc ffiTestFloatAdd(a, b: cfloat): cfloat {.cdecl.} =
   a + b
 
+proc ffiTestFloatFloatUInt(a, b: cfloat): cuint {.cdecl.} =
+  cuint(int(a + b) + 1)
+
+proc ffiTestFloatFloatULong(a, b: cfloat): culong {.cdecl.} =
+  culong(int(a + b) + 2)
+
+proc ffiTestFloatFloatI64(a, b: cfloat): int64 {.cdecl.} =
+  int64(int(a + b) + 3)
+
+proc ffiTestFloatFloatU64(a, b: cfloat): uint64 {.cdecl.} =
+  uint64(int(a + b) + 4)
+
+proc ffiTestFloatFloatDiff(a, b: cfloat): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(int(a - b))
+
 proc ffiTestFloatScale(a: cfloat, factor: cint): cfloat {.cdecl.} =
   a * cfloat(factor)
 
@@ -1273,6 +1288,36 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestFloatAdd), lib,
                                   @[newSym("C/Float"), newSym("C/Float")],
                                   newSym("C/Float")))
+      scope.define("float-float-uint",
+                   newFfiCallable("ffiTestFloatFloatUInt",
+                                  "ffiTestFloatFloatUInt",
+                                  cast[pointer](ffiTestFloatFloatUInt), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/UInt")))
+      scope.define("float-float-ulong",
+                   newFfiCallable("ffiTestFloatFloatULong",
+                                  "ffiTestFloatFloatULong",
+                                  cast[pointer](ffiTestFloatFloatULong), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/ULong")))
+      scope.define("float-float-i64",
+                   newFfiCallable("ffiTestFloatFloatI64",
+                                  "ffiTestFloatFloatI64",
+                                  cast[pointer](ffiTestFloatFloatI64), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/Int64")))
+      scope.define("float-float-u64",
+                   newFfiCallable("ffiTestFloatFloatU64",
+                                  "ffiTestFloatFloatU64",
+                                  cast[pointer](ffiTestFloatFloatU64), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/UInt64")))
+      scope.define("float-float-diff",
+                   newFfiCallable("ffiTestFloatFloatDiff",
+                                  "ffiTestFloatFloatDiff",
+                                  cast[pointer](ffiTestFloatFloatDiff), lib,
+                                  @[newSym("C/Float"), newSym("C/Float")],
+                                  newSym("C/PtrDiff")))
       scope.define("float-scale",
                    newFfiCallable("ffiTestFloatScale", "ffiTestFloatScale",
                                   cast[pointer](ffiTestFloatScale), lib,
@@ -1965,6 +2010,16 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(int-offset 4.0 0.5)"), scope)
       check run(compileSource("(float-add 1.25 2.5)"), scope).print() == "3.75"
+      check run(compileSource("(float-float-uint 1.25 2.5)"),
+                scope).print() == "4"
+      check run(compileSource("(float-float-ulong 1.25 2.5)"),
+                scope).print() == "5"
+      check run(compileSource("(float-float-i64 1.25 2.5)"),
+                scope).print() == "6"
+      check run(compileSource("(float-float-u64 1.25 2.5)"),
+                scope).print() == "7"
+      check run(compileSource("(float-float-diff 1.25 3.5)"),
+                scope).print() == "-2"
       expect GeneError:
         discard run(compileSource("(float-add 1 2.5)"), scope)
       check run(compileSource("(float-scale 1.5 3)"), scope).print() == "4.5"
