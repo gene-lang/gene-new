@@ -9282,6 +9282,9 @@ proc isFfiPtrLabel(label: string): bool =
 proc isFfiSliceLabel(label: string): bool =
   label.startsWith("(C/Slice ")
 
+proc isFfiBufferLabel(label: string): bool =
+  label.startsWith("(Buffer ")
+
 proc isFfiNullablePtrLabel(label: string): bool =
   label.startsWith("(C/NullablePtr ") or
     label.startsWith("(C/NullableConstPtr ")
@@ -9322,6 +9325,26 @@ proc ffiSliceArg(name, label: string, typeExpr, value: Value):
   if checked.kind != vkCSlice:
     raiseTypeError(name, label, value, nil)
   (checked.cSliceAddress, csize_t(checked.cSliceLen))
+
+type FfiBufferArg = object
+  bytes: seq[uint8]
+  data: pointer
+  length: csize_t
+
+proc ffiBufferArg(name, label: string, typeExpr, value: Value): FfiBufferArg =
+  let checked = adaptBoundary(name, typeExpr, value, nil)
+  if checked.kind != vkBuffer:
+    raiseTypeError(name, label, value, nil)
+  if ffiPointerTarget(label).print() != "C/UInt8":
+    raise newException(GeneError,
+      name & " only supports dynamic FFI buffers of C/UInt8")
+  let items = checked.bufferItems
+  result.bytes = newSeq[uint8](items.len)
+  for i, item in items:
+    result.bytes[i] = ffiCUInt8Arg(name & " item " & $i, item)
+  result.length = csize_t(result.bytes.len)
+  if result.bytes.len > 0:
+    result.data = cast[pointer](addr result.bytes[0])
 
 proc applyFfiCallable(callee: Value, args: openArray[Value],
                       named: NamedArgs): Value =
@@ -10555,6 +10578,46 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
         type SlicePtrProc = proc(p: pointer, n: csize_t): pointer {.cdecl.}
         let fn = cast[SlicePtrProc](callee.ffiCallableAddress)
         return ffiPointerResult(returnLabel, fn(arg0.address, arg0.length),
+                                releaseAddress)
+  if paramLabels.len == 1 and isFfiBufferLabel(paramLabels[0]):
+    let arg0 = ffiBufferArg("FFI argument 0 for '" &
+      callee.ffiCallableName & "'", paramLabels[0], params[0], args[0])
+    case returnLabel
+    of "C/Int":
+      type BufferIntProc = proc(p: pointer, n: csize_t): cint {.cdecl.}
+      let fn = cast[BufferIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/UInt":
+      type BufferUIntProc = proc(p: pointer, n: csize_t): cuint {.cdecl.}
+      let fn = cast[BufferUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Long":
+      type BufferLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
+      let fn = cast[BufferLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Size":
+      type BufferSizeProc = proc(p: pointer, n: csize_t): csize_t {.cdecl.}
+      let fn = cast[BufferSizeProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0.data, arg0.length)))
+    of "C/Bool":
+      type BufferBoolProc = proc(p: pointer, n: csize_t): bool {.cdecl.}
+      let fn = cast[BufferBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0.data, arg0.length))
+    of "C/CStr":
+      type BufferCStrProc = proc(p: pointer, n: csize_t): cstring {.cdecl.}
+      let fn = cast[BufferCStrProc](callee.ffiCallableAddress)
+      return ffiCStrResult("FFI result for '" & callee.ffiCallableName & "'",
+                           fn(arg0.data, arg0.length))
+    of "C/Void":
+      type BufferVoidProc = proc(p: pointer, n: csize_t) {.cdecl.}
+      let fn = cast[BufferVoidProc](callee.ffiCallableAddress)
+      fn(arg0.data, arg0.length)
+      return NIL
+    else:
+      if isFfiPtrLabel(returnLabel):
+        type BufferPtrProc = proc(p: pointer, n: csize_t): pointer {.cdecl.}
+        let fn = cast[BufferPtrProc](callee.ffiCallableAddress)
+        return ffiPointerResult(returnLabel, fn(arg0.data, arg0.length),
                                 releaseAddress)
   if paramLabels.len == 1 and isFfiPtrLabel(paramLabels[0]):
     let arg0 = ffiPointerArg("FFI argument 0 for '" &

@@ -688,7 +688,7 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(strlen \"closed\")"), scope)
 
-  test "direct FFI callable supports exact small scalar ABI":
+  test "direct FFI callable supports exact scalar and view ABI":
     let handle = loadLib()
     if handle != nil:
       let scope = newGlobalScope()
@@ -759,6 +759,19 @@ suite "types — function boundaries":
                                   @[newNode(newSym("C/Slice"),
                                             body = @[newSym("C/UInt8")])],
                                   newSym("C/Int")))
+      scope.define("buffer-len",
+                   newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
+                                  cast[pointer](ffiTestSliceLen), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Size")))
+      scope.define("buffer-first-byte",
+                   newFfiCallable("ffiTestSliceFirstByte",
+                                  "ffiTestSliceFirstByte",
+                                  cast[pointer](ffiTestSliceFirstByte), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Int")))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -770,6 +783,15 @@ suite "types — function boundaries":
                              newSym("C/Int32")))
       scope.define("bad-byte-slice",
                    newCSlice(nil, bytes.len, newSym("C/UInt8")))
+      scope.define("byte-buffer",
+                   newBuffer(newSym("C/UInt8"),
+                             @[newInt(65), newInt(66), newInt(67)]))
+      scope.define("empty-byte-buffer",
+                   newBuffer(newSym("C/UInt8"), @[]))
+      scope.define("wrong-byte-buffer",
+                   newBuffer(newSym("C/Int32"), @[newInt(65)]))
+      scope.define("bad-byte-buffer",
+                   newBuffer(newSym("C/UInt8"), @[newInt(300)]))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -844,6 +866,18 @@ suite "types — function boundaries":
         discard run(compileSource("(slice-len wrong-byte-slice)"), scope)
       expect GeneError:
         discard run(compileSource("(slice-len bad-byte-slice)"), scope)
+      check run(compileSource("(buffer-len byte-buffer)"),
+                scope).print() == "3"
+      check run(compileSource("(buffer-first-byte byte-buffer)"),
+                scope).print() == "65"
+      check run(compileSource("(buffer-len empty-byte-buffer)"),
+                scope).print() == "0"
+      check run(compileSource("(buffer-first-byte empty-byte-buffer)"),
+                scope).print() == "-1"
+      expect GeneError:
+        discard run(compileSource("(buffer-len wrong-byte-buffer)"), scope)
+      expect GeneError:
+        discard run(compileSource("(buffer-len bad-byte-buffer)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
