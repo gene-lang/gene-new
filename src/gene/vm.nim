@@ -9352,13 +9352,24 @@ proc ffiBufferArg(name, label: string, typeExpr, value: Value): FfiBufferArg =
   let checked = adaptBoundary(name, typeExpr, value, nil)
   if checked.kind != vkBuffer:
     raiseTypeError(name, label, value, nil)
-  if ffiPointerTarget(label).print() != "C/UInt8":
+  let elementLabel = ffiPointerTarget(label).print()
+  if elementLabel notin ["C/UInt8", "C/UChar", "C/Char", "C/Int8"]:
     raise newException(GeneError,
-      name & " only supports dynamic FFI buffers of C/UInt8")
+      name & " only supports dynamic FFI buffers of byte-compatible C types")
   let items = checked.bufferItems
   result.bytes = newSeq[uint8](items.len)
   for i, item in items:
-    result.bytes[i] = ffiCUInt8Arg(name & " item " & $i, item)
+    let itemName = name & " item " & $i
+    result.bytes[i] =
+      case elementLabel
+      of "C/UInt8":
+        ffiCUInt8Arg(itemName, item)
+      of "C/UChar":
+        ffiCUCharArg(itemName, item)
+      of "C/Char":
+        uint8(ffiCCharArg(itemName, item))
+      else:
+        uint8(ffiCInt8Arg(itemName, item))
   result.length = csize_t(result.bytes.len)
   if result.bytes.len > 0:
     result.data = cast[pointer](addr result.bytes[0])

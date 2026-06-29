@@ -772,6 +772,27 @@ suite "types — function boundaries":
                                   @[newNode(newSym("Buffer"),
                                             body = @[newSym("C/UInt8")])],
                                   newSym("C/Int")))
+      scope.define("char-buffer-first-byte",
+                   newFfiCallable("ffiTestSliceFirstByte",
+                                  "ffiTestSliceFirstByte",
+                                  cast[pointer](ffiTestSliceFirstByte), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/Char")])],
+                                  newSym("C/Int")))
+      scope.define("uchar-buffer-first-byte",
+                   newFfiCallable("ffiTestSliceFirstByte",
+                                  "ffiTestSliceFirstByte",
+                                  cast[pointer](ffiTestSliceFirstByte), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UChar")])],
+                                  newSym("C/Int")))
+      scope.define("i8-buffer-first-byte",
+                   newFfiCallable("ffiTestSliceFirstByte",
+                                  "ffiTestSliceFirstByte",
+                                  cast[pointer](ffiTestSliceFirstByte), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/Int8")])],
+                                  newSym("C/Int")))
       var bytes = [uint8(65), uint8(66), uint8(67)]
       scope.define("byte-slice",
                    newCSlice(cast[pointer](addr bytes[0]), bytes.len,
@@ -788,6 +809,12 @@ suite "types — function boundaries":
                              @[newInt(65), newInt(66), newInt(67)]))
       scope.define("empty-byte-buffer",
                    newBuffer(newSym("C/UInt8"), @[]))
+      scope.define("char-buffer",
+                   newBuffer(newSym("C/Char"), @[newInt(65)]))
+      scope.define("uchar-buffer",
+                   newBuffer(newSym("C/UChar"), @[newInt(65)]))
+      scope.define("i8-buffer",
+                   newBuffer(newSym("C/Int8"), @[newInt(-1)]))
       scope.define("wrong-byte-buffer",
                    newBuffer(newSym("C/Int32"), @[newInt(65)]))
       scope.define("bad-byte-buffer",
@@ -870,6 +897,12 @@ suite "types — function boundaries":
                 scope).print() == "3"
       check run(compileSource("(buffer-first-byte byte-buffer)"),
                 scope).print() == "65"
+      check run(compileSource("(char-buffer-first-byte char-buffer)"),
+                scope).print() == "65"
+      check run(compileSource("(uchar-buffer-first-byte uchar-buffer)"),
+                scope).print() == "65"
+      check run(compileSource("(i8-buffer-first-byte i8-buffer)"),
+                scope).print() == "255"
       check run(compileSource("(buffer-len empty-byte-buffer)"),
                 scope).print() == "0"
       check run(compileSource("(buffer-first-byte empty-byte-buffer)"),
