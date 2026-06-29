@@ -135,6 +135,9 @@ proc ffiTestSizeU64(x: csize_t): uint64 {.cdecl.} =
 proc ffiTestSizeUnaryDiff(x: csize_t): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
 
+proc ffiTestSizeNonZero(x: csize_t): bool {.cdecl.} =
+  x != 0
+
 proc ffiTestSizeAddUInt(a, b: csize_t): cuint {.cdecl.} =
   cuint(a + b + csize_t(1))
 
@@ -218,6 +221,9 @@ proc ffiTestIntU64(x: cint): uint64 {.cdecl.} =
 proc ffiTestIntUnaryDiff(x: cint): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6)
 
+proc ffiTestIntPositive(x: cint): bool {.cdecl.} =
+  x > 0
+
 proc ffiTestIntPtr(x: cint): pointer {.cdecl.} =
   if x > 0: cast[pointer](addr ffiScalarPtrByte) else: nil
 
@@ -233,6 +239,9 @@ proc ffiTestLongU64(x: clong): uint64 {.cdecl.} =
 proc ffiTestLongDiff(x: clong): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6)
 
+proc ffiTestLongPositive(x: clong): bool {.cdecl.} =
+  x > 0
+
 proc ffiTestI64ULong(x: int64): culong {.cdecl.} =
   culong(x + 2)
 
@@ -241,6 +250,9 @@ proc ffiTestI64U64(x: int64): uint64 {.cdecl.} =
 
 proc ffiTestI64Diff(x: int64): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(x - 6)
+
+proc ffiTestI64Positive(x: int64): bool {.cdecl.} =
+  x > 0
 
 proc ffiTestUIntULong(x: cuint): culong {.cdecl.} =
   culong(x + 2)
@@ -253,6 +265,9 @@ proc ffiTestUIntU64(x: cuint): uint64 {.cdecl.} =
 
 proc ffiTestUIntDiff(x: cuint): TestCPtrDiff {.cdecl.} =
   TestCPtrDiff(clong(x) - clong(6))
+
+proc ffiTestUIntNonZero(x: cuint): bool {.cdecl.} =
+  x != 0
 
 proc ffiTestU32ULong(x: uint32): culong {.cdecl.} =
   culong(x + 2'u32)
@@ -1468,6 +1483,11 @@ suite "types — function boundaries":
                                   "ffiTestSizeUnaryDiff",
                                   cast[pointer](ffiTestSizeUnaryDiff), lib,
                                   @[newSym("C/Size")], newSym("C/PtrDiff")))
+      scope.define("size-non-zero?",
+                   newFfiCallable("ffiTestSizeNonZero",
+                                  "ffiTestSizeNonZero",
+                                  cast[pointer](ffiTestSizeNonZero), lib,
+                                  @[newSym("C/Size")], newSym("C/Bool")))
       scope.define("int-ulong",
                    newFfiCallable("ffiTestIntULong",
                                   "ffiTestIntULong",
@@ -1488,6 +1508,11 @@ suite "types — function boundaries":
                                   "ffiTestIntUnaryDiff",
                                   cast[pointer](ffiTestIntUnaryDiff), lib,
                                   @[newSym("C/Int")], newSym("C/PtrDiff")))
+      scope.define("int-positive?",
+                   newFfiCallable("ffiTestIntPositive",
+                                  "ffiTestIntPositive",
+                                  cast[pointer](ffiTestIntPositive), lib,
+                                  @[newSym("C/Int")], newSym("C/Bool")))
       scope.define("int-ptr",
                    newFfiCallable("ffiTestIntPtr",
                                   "ffiTestIntPtr",
@@ -1515,6 +1540,11 @@ suite "types — function boundaries":
                                   "ffiTestLongDiff",
                                   cast[pointer](ffiTestLongDiff), lib,
                                   @[newSym("C/Long")], newSym("C/PtrDiff")))
+      scope.define("long-positive?",
+                   newFfiCallable("ffiTestLongPositive",
+                                  "ffiTestLongPositive",
+                                  cast[pointer](ffiTestLongPositive), lib,
+                                  @[newSym("C/Long")], newSym("C/Bool")))
       scope.define("i64-ulong",
                    newFfiCallable("ffiTestI64ULong",
                                   "ffiTestI64ULong",
@@ -1530,6 +1560,11 @@ suite "types — function boundaries":
                                   "ffiTestI64Diff",
                                   cast[pointer](ffiTestI64Diff), lib,
                                   @[newSym("C/Int64")], newSym("C/PtrDiff")))
+      scope.define("i64-positive?",
+                   newFfiCallable("ffiTestI64Positive",
+                                  "ffiTestI64Positive",
+                                  cast[pointer](ffiTestI64Positive), lib,
+                                  @[newSym("C/Int64")], newSym("C/Bool")))
       scope.define("uint-ulong",
                    newFfiCallable("ffiTestUIntULong",
                                   "ffiTestUIntULong",
@@ -1550,6 +1585,11 @@ suite "types — function boundaries":
                                   "ffiTestUIntDiff",
                                   cast[pointer](ffiTestUIntDiff), lib,
                                   @[newSym("C/UInt")], newSym("C/PtrDiff")))
+      scope.define("uint-non-zero?",
+                   newFfiCallable("ffiTestUIntNonZero",
+                                  "ffiTestUIntNonZero",
+                                  cast[pointer](ffiTestUIntNonZero), lib,
+                                  @[newSym("C/UInt")], newSym("C/Bool")))
       scope.define("u32-ulong",
                    newFfiCallable("ffiTestU32ULong",
                                   "ffiTestU32ULong",
@@ -2668,10 +2708,14 @@ suite "types — function boundaries":
       check run(compileSource("(size-i64 4)"), scope).print() == "7"
       check run(compileSource("(size-u64 4)"), scope).print() == "8"
       check run(compileSource("(size-unary-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(size-non-zero? 4)"), scope).print() == "true"
+      check run(compileSource("(size-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(int-ulong 4)"), scope).print() == "6"
       check run(compileSource("(int-i64 4)"), scope).print() == "7"
       check run(compileSource("(int-u64 4)"), scope).print() == "8"
       check run(compileSource("(int-unary-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(int-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(int-positive? -1)"), scope).print() == "false"
       check run(compileSource("(int-ptr 4)"), scope).print() == "(c-ptr)"
       check run(compileSource("(int-ptr 0)"), scope).print() ==
         "(c-ptr null)"
@@ -2679,13 +2723,19 @@ suite "types — function boundaries":
       check run(compileSource("(long-i64 4)"), scope).print() == "7"
       check run(compileSource("(long-u64 4)"), scope).print() == "8"
       check run(compileSource("(long-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(long-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(long-positive? -1)"), scope).print() == "false"
       check run(compileSource("(i64-ulong 4)"), scope).print() == "6"
       check run(compileSource("(i64-u64 4)"), scope).print() == "8"
       check run(compileSource("(i64-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(i64-positive? 4)"), scope).print() == "true"
+      check run(compileSource("(i64-positive? -1)"), scope).print() == "false"
       check run(compileSource("(uint-ulong 4)"), scope).print() == "6"
       check run(compileSource("(uint-i64 4)"), scope).print() == "7"
       check run(compileSource("(uint-u64 4)"), scope).print() == "8"
       check run(compileSource("(uint-diff 4)"), scope).print() == "-2"
+      check run(compileSource("(uint-non-zero? 4)"), scope).print() == "true"
+      check run(compileSource("(uint-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(u32-ulong 4)"), scope).print() == "6"
       check run(compileSource("(u32-u64 4)"), scope).print() == "8"
       check run(compileSource("(u32-diff 4)"), scope).print() == "-2"
