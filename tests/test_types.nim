@@ -84,6 +84,18 @@ proc ffiTestCharDiff(x: cchar): TestCPtrDiff {.cdecl.} =
 proc ffiTestUCharInc(x: uint8): uint8 {.cdecl.} =
   x + 1'u8
 
+proc ffiTestUCharULong(x: uint8): culong {.cdecl.} =
+  culong(x + 2'u8)
+
+proc ffiTestUCharI64(x: uint8): int64 {.cdecl.} =
+  int64(x + 3'u8)
+
+proc ffiTestUCharU64(x: uint8): uint64 {.cdecl.} =
+  uint64(x + 4'u8)
+
+proc ffiTestUCharDiff(x: uint8): TestCPtrDiff {.cdecl.} =
+  TestCPtrDiff(clong(x) - clong(66))
+
 proc ffiTestBoolNot(x: bool): bool {.cdecl.} =
   not x
 
@@ -1310,6 +1322,26 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestUCharInc", "ffiTestUCharInc",
                                   cast[pointer](ffiTestUCharInc), lib,
                                   @[newSym("C/UChar")], newSym("C/UChar")))
+      scope.define("uchar-ulong",
+                   newFfiCallable("ffiTestUCharULong",
+                                  "ffiTestUCharULong",
+                                  cast[pointer](ffiTestUCharULong), lib,
+                                  @[newSym("C/UChar")], newSym("C/ULong")))
+      scope.define("uchar-i64",
+                   newFfiCallable("ffiTestUCharI64",
+                                  "ffiTestUCharI64",
+                                  cast[pointer](ffiTestUCharI64), lib,
+                                  @[newSym("C/UChar")], newSym("C/Int64")))
+      scope.define("uchar-u64",
+                   newFfiCallable("ffiTestUCharU64",
+                                  "ffiTestUCharU64",
+                                  cast[pointer](ffiTestUCharU64), lib,
+                                  @[newSym("C/UChar")], newSym("C/UInt64")))
+      scope.define("uchar-diff",
+                   newFfiCallable("ffiTestUCharDiff",
+                                  "ffiTestUCharDiff",
+                                  cast[pointer](ffiTestUCharDiff), lib,
+                                  @[newSym("C/UChar")], newSym("C/PtrDiff")))
       scope.define("bool-not",
                    newFfiCallable("ffiTestBoolNot", "ffiTestBoolNot",
                                   cast[pointer](ffiTestBoolNot), lib,
@@ -2414,6 +2446,10 @@ suite "types — function boundaries":
         discard run(compileSource("(uchar-inc -1)"), scope)
       expect GeneError:
         discard run(compileSource("(uchar-inc 256)"), scope)
+      check run(compileSource("(uchar-ulong 'A')"), scope).print() == "67"
+      check run(compileSource("(uchar-i64 'A')"), scope).print() == "68"
+      check run(compileSource("(uchar-u64 'A')"), scope).print() == "69"
+      check run(compileSource("(uchar-diff 'A')"), scope).print() == "-1"
       check run(compileSource("(bool-not true)"), scope).print() == "false"
       check run(compileSource("(bool-not false)"), scope).print() == "true"
       expect GeneError:
