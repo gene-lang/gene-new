@@ -43,6 +43,9 @@ proc ffiTestULongInc(x: culong): culong {.cdecl.} =
 proc ffiTestPtrDiffAbs(x: int): int {.cdecl.} =
   if x < 0: -x else: x
 
+proc ffiTestSizeInc(x: csize_t): csize_t {.cdecl.} =
+  x + csize_t(1)
+
 proc ffiLibraryCandidates(): seq[string] =
   when defined(macosx):
     @["/usr/lib/libSystem.B.dylib", "/usr/lib/libSystem.dylib"]
@@ -730,6 +733,10 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestPtrDiffAbs), lib,
                                   @[newSym("C/PtrDiff")],
                                   newSym("C/PtrDiff")))
+      scope.define("size-inc",
+                   newFfiCallable("ffiTestSizeInc", "ffiTestSizeInc",
+                                  cast[pointer](ffiTestSizeInc), lib,
+                                  @[newSym("C/Size")], newSym("C/Size")))
       check run(compileSource("(i16-abs -9)"), scope).print() == "9"
       expect GeneError:
         discard run(compileSource("(i16-abs 32768)"), scope)
@@ -784,6 +791,15 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(ptrdiff-abs 9223372036854775808)"),
                     scope)
+      check run(compileSource("(size-inc 41)"), scope).print() == "42"
+      when sizeof(csize_t) == 8:
+        check run(compileSource("(size-inc 9223372036854775808)"),
+                  scope).print() == "9223372036854775809"
+      expect GeneError:
+        discard run(compileSource("(size-inc -1)"), scope)
+      when sizeof(csize_t) < 8:
+        expect GeneError:
+          discard run(compileSource("(size-inc 4294967296)"), scope)
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
