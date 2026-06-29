@@ -61,6 +61,12 @@ proc ffiTestIntOffset(a: cint, b: cdouble): cdouble {.cdecl.} =
 proc ffiTestFloatAdd(a, b: cfloat): cfloat {.cdecl.} =
   a + b
 
+proc ffiTestFloatScale(a: cfloat, factor: cint): cfloat {.cdecl.} =
+  a * cfloat(factor)
+
+proc ffiTestIntFloatOffset(a: cint, b: cfloat): cfloat {.cdecl.} =
+  cfloat(a) + b
+
 proc ffiTestSliceLen(data: pointer, len: csize_t): csize_t {.cdecl.} =
   len
 
@@ -786,6 +792,17 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestFloatAdd), lib,
                                   @[newSym("C/Float"), newSym("C/Float")],
                                   newSym("C/Float")))
+      scope.define("float-scale",
+                   newFfiCallable("ffiTestFloatScale", "ffiTestFloatScale",
+                                  cast[pointer](ffiTestFloatScale), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/Float")))
+      scope.define("int-float-offset",
+                   newFfiCallable("ffiTestIntFloatOffset",
+                                  "ffiTestIntFloatOffset",
+                                  cast[pointer](ffiTestIntFloatOffset), lib,
+                                  @[newSym("C/Int"), newSym("C/Float")],
+                                  newSym("C/Float")))
       scope.define("slice-len",
                    newFfiCallable("ffiTestSliceLen", "ffiTestSliceLen",
                                   cast[pointer](ffiTestSliceLen), lib,
@@ -937,6 +954,12 @@ suite "types — function boundaries":
       check run(compileSource("(float-add 1.25 2.5)"), scope).print() == "3.75"
       expect GeneError:
         discard run(compileSource("(float-add 1 2.5)"), scope)
+      check run(compileSource("(float-scale 1.5 3)"), scope).print() == "4.5"
+      expect GeneError:
+        discard run(compileSource("(float-scale 1.5 3.0)"), scope)
+      check run(compileSource("(int-float-offset 4 0.5)"), scope).print() == "4.5"
+      expect GeneError:
+        discard run(compileSource("(int-float-offset 4.0 0.5)"), scope)
       check run(compileSource("(slice-len byte-slice)"), scope).print() == "3"
       check run(compileSource("(slice-first-byte byte-slice)"),
                 scope).print() == "65"
