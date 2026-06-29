@@ -680,6 +680,36 @@ proc ffiTestCStrSizeDouble(s: cstring, n: csize_t): cdouble {.cdecl.} =
 proc ffiTestCStrSizeEqualLen(s: cstring, n: csize_t): bool {.cdecl.} =
   ($s).len == int(n)
 
+proc ffiTestCStrPairI32(a, b: cstring): int32 {.cdecl.} =
+  int32(($a).len + ($b).len + 2)
+
+proc ffiTestCStrPairI16(a, b: cstring): int16 {.cdecl.} =
+  int16(($a).len + ($b).len + 3)
+
+proc ffiTestCStrPairShort(a, b: cstring): cshort {.cdecl.} =
+  cshort(($a).len + ($b).len + 4)
+
+proc ffiTestCStrPairI8(a, b: cstring): int8 {.cdecl.} =
+  int8(($a).len - ($b).len)
+
+proc ffiTestCStrPairChar(a, b: cstring): cchar {.cdecl.} =
+  cchar(ord(a[0]) + ($b).len)
+
+proc ffiTestCStrPairU32(a, b: cstring): uint32 {.cdecl.} =
+  uint32(($a).len + ($b).len + 5)
+
+proc ffiTestCStrPairU16(a, b: cstring): uint16 {.cdecl.} =
+  uint16(($a).len + ($b).len + 6)
+
+proc ffiTestCStrPairUShort(a, b: cstring): cushort {.cdecl.} =
+  cushort(($a).len + ($b).len + 7)
+
+proc ffiTestCStrPairU8(a, b: cstring): uint8 {.cdecl.} =
+  uint8(($a).len + ($b).len + 8)
+
+proc ffiTestCStrPairUChar(a, b: cstring): uint8 {.cdecl.} =
+  uint8(ord(a[0]) + ($b).len)
+
 proc ffiTestCStrPairU64(a, b: cstring): uint64 {.cdecl.} =
   uint64(($a).len + ($b).len)
 
@@ -2701,6 +2731,66 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestCStrPairU64), lib,
                                   @[newSym("C/CStr"), newSym("C/CStr")],
                                   newSym("C/UInt64")))
+      scope.define("cstr-pair-i32",
+                   newFfiCallable("ffiTestCStrPairI32",
+                                  "ffiTestCStrPairI32",
+                                  cast[pointer](ffiTestCStrPairI32), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Int32")))
+      scope.define("cstr-pair-i16",
+                   newFfiCallable("ffiTestCStrPairI16",
+                                  "ffiTestCStrPairI16",
+                                  cast[pointer](ffiTestCStrPairI16), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Int16")))
+      scope.define("cstr-pair-short",
+                   newFfiCallable("ffiTestCStrPairShort",
+                                  "ffiTestCStrPairShort",
+                                  cast[pointer](ffiTestCStrPairShort), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Short")))
+      scope.define("cstr-pair-i8",
+                   newFfiCallable("ffiTestCStrPairI8",
+                                  "ffiTestCStrPairI8",
+                                  cast[pointer](ffiTestCStrPairI8), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Int8")))
+      scope.define("cstr-pair-char",
+                   newFfiCallable("ffiTestCStrPairChar",
+                                  "ffiTestCStrPairChar",
+                                  cast[pointer](ffiTestCStrPairChar), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/Char")))
+      scope.define("cstr-pair-u32",
+                   newFfiCallable("ffiTestCStrPairU32",
+                                  "ffiTestCStrPairU32",
+                                  cast[pointer](ffiTestCStrPairU32), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/UInt32")))
+      scope.define("cstr-pair-u16",
+                   newFfiCallable("ffiTestCStrPairU16",
+                                  "ffiTestCStrPairU16",
+                                  cast[pointer](ffiTestCStrPairU16), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/UInt16")))
+      scope.define("cstr-pair-ushort",
+                   newFfiCallable("ffiTestCStrPairUShort",
+                                  "ffiTestCStrPairUShort",
+                                  cast[pointer](ffiTestCStrPairUShort), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/UShort")))
+      scope.define("cstr-pair-u8",
+                   newFfiCallable("ffiTestCStrPairU8",
+                                  "ffiTestCStrPairU8",
+                                  cast[pointer](ffiTestCStrPairU8), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/UInt8")))
+      scope.define("cstr-pair-uchar",
+                   newFfiCallable("ffiTestCStrPairUChar",
+                                  "ffiTestCStrPairUChar",
+                                  cast[pointer](ffiTestCStrPairUChar), lib,
+                                  @[newSym("C/CStr"), newSym("C/CStr")],
+                                  newSym("C/UChar")))
       scope.define("cstr-pair-diff",
                    newFfiCallable("ffiTestCStrPairDiff",
                                   "ffiTestCStrPairDiff",
@@ -3475,6 +3565,26 @@ suite "types — function boundaries":
                 scope).print() == "false"
       check run(compileSource("(cstr-pair-u64 \"ab\" \"cde\")"),
                 scope).print() == "5"
+      check run(compileSource("(cstr-pair-i32 \"ab\" \"cde\")"),
+                scope).print() == "7"
+      check run(compileSource("(cstr-pair-i16 \"ab\" \"cde\")"),
+                scope).print() == "8"
+      check run(compileSource("(cstr-pair-short \"ab\" \"cde\")"),
+                scope).print() == "9"
+      check run(compileSource("(cstr-pair-i8 \"ab\" \"cde\")"),
+                scope).print() == "-1"
+      check run(compileSource("(cstr-pair-char \"ab\" \"cde\")"),
+                scope).print() == "'d'"
+      check run(compileSource("(cstr-pair-u32 \"ab\" \"cde\")"),
+                scope).print() == "10"
+      check run(compileSource("(cstr-pair-u16 \"ab\" \"cde\")"),
+                scope).print() == "11"
+      check run(compileSource("(cstr-pair-ushort \"ab\" \"cde\")"),
+                scope).print() == "12"
+      check run(compileSource("(cstr-pair-u8 \"ab\" \"cde\")"),
+                scope).print() == "13"
+      check run(compileSource("(cstr-pair-uchar \"ab\" \"cde\")"),
+                scope).print() == "100"
       check run(compileSource("(cstr-pair-diff \"abc\" \"abc\")"),
                 scope).print() == "0"
       check run(compileSource("(cstr-pair-diff \"abc\" \"abd\")"),
