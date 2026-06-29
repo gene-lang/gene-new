@@ -99,6 +99,18 @@ proc ffiTestUCharDiff(x: uint8): TestCPtrDiff {.cdecl.} =
 proc ffiTestBoolNot(x: bool): bool {.cdecl.} =
   not x
 
+proc ffiTestBoolULong(x: bool): culong {.cdecl.} =
+  if x: culong(7) else: culong(2)
+
+proc ffiTestBoolI64(x: bool): int64 {.cdecl.} =
+  if x: int64(8) else: int64(-3)
+
+proc ffiTestBoolU64(x: bool): uint64 {.cdecl.} =
+  if x: uint64(9) else: uint64(4)
+
+proc ffiTestBoolDiff(x: bool): TestCPtrDiff {.cdecl.} =
+  if x: TestCPtrDiff(5) else: TestCPtrDiff(-5)
+
 proc ffiTestU64Inc(x: uint64): uint64 {.cdecl.} =
   x + 1'u64
 
@@ -1346,6 +1358,26 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestBoolNot", "ffiTestBoolNot",
                                   cast[pointer](ffiTestBoolNot), lib,
                                   @[newSym("C/Bool")], newSym("C/Bool")))
+      scope.define("bool-ulong",
+                   newFfiCallable("ffiTestBoolULong",
+                                  "ffiTestBoolULong",
+                                  cast[pointer](ffiTestBoolULong), lib,
+                                  @[newSym("C/Bool")], newSym("C/ULong")))
+      scope.define("bool-i64",
+                   newFfiCallable("ffiTestBoolI64",
+                                  "ffiTestBoolI64",
+                                  cast[pointer](ffiTestBoolI64), lib,
+                                  @[newSym("C/Bool")], newSym("C/Int64")))
+      scope.define("bool-u64",
+                   newFfiCallable("ffiTestBoolU64",
+                                  "ffiTestBoolU64",
+                                  cast[pointer](ffiTestBoolU64), lib,
+                                  @[newSym("C/Bool")], newSym("C/UInt64")))
+      scope.define("bool-diff",
+                   newFfiCallable("ffiTestBoolDiff",
+                                  "ffiTestBoolDiff",
+                                  cast[pointer](ffiTestBoolDiff), lib,
+                                  @[newSym("C/Bool")], newSym("C/PtrDiff")))
       scope.define("u64-inc",
                    newFfiCallable("ffiTestU64Inc", "ffiTestU64Inc",
                                   cast[pointer](ffiTestU64Inc), lib,
@@ -2454,6 +2486,14 @@ suite "types — function boundaries":
       check run(compileSource("(bool-not false)"), scope).print() == "true"
       expect GeneError:
         discard run(compileSource("(bool-not 1)"), scope)
+      check run(compileSource("(bool-ulong true)"), scope).print() == "7"
+      check run(compileSource("(bool-ulong false)"), scope).print() == "2"
+      check run(compileSource("(bool-i64 true)"), scope).print() == "8"
+      check run(compileSource("(bool-i64 false)"), scope).print() == "-3"
+      check run(compileSource("(bool-u64 true)"), scope).print() == "9"
+      check run(compileSource("(bool-u64 false)"), scope).print() == "4"
+      check run(compileSource("(bool-diff true)"), scope).print() == "5"
+      check run(compileSource("(bool-diff false)"), scope).print() == "-5"
       check run(compileSource("(u64-inc 41)"), scope).print() == "42"
       check run(compileSource("(u64-inc 9223372036854775808)"),
                 scope).print() == "9223372036854775809"
