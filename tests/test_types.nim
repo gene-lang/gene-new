@@ -695,11 +695,41 @@ proc ffiTestIntAdd(a, b: cint): cint {.cdecl.} =
 proc ffiTestIntAddUInt(a, b: cint): cuint {.cdecl.} =
   cuint(a + b + 1)
 
+proc ffiTestIntAddI32(a, b: cint): int32 {.cdecl.} =
+  int32(a + b + 5)
+
+proc ffiTestIntAddI16(a, b: cint): int16 {.cdecl.} =
+  int16(a + b + 6)
+
+proc ffiTestIntAddShort(a, b: cint): cshort {.cdecl.} =
+  cshort(a + b + 7)
+
+proc ffiTestIntAddI8(a, b: cint): int8 {.cdecl.} =
+  int8(a + b + 8)
+
+proc ffiTestIntAddChar(a, b: cint): cchar {.cdecl.} =
+  cchar(ord('A') + int(a + b))
+
 proc ffiTestIntDiffLong(a, b: cint): clong {.cdecl.} =
   clong(a - b)
 
 proc ffiTestIntAddULong(a, b: cint): culong {.cdecl.} =
   culong(a + b + 2)
+
+proc ffiTestIntAddU32(a, b: cint): uint32 {.cdecl.} =
+  uint32(a + b + 9)
+
+proc ffiTestIntAddU16(a, b: cint): uint16 {.cdecl.} =
+  uint16(a + b + 10)
+
+proc ffiTestIntAddUShort(a, b: cint): cushort {.cdecl.} =
+  cushort(a + b + 11)
+
+proc ffiTestIntAddU8(a, b: cint): uint8 {.cdecl.} =
+  uint8(a + b + 12)
+
+proc ffiTestIntAddUChar(a, b: cint): uint8 {.cdecl.} =
+  uint8(a + b + 13)
 
 proc ffiTestIntAddI64(a, b: cint): int64 {.cdecl.} =
   int64(a + b + 3)
@@ -3114,6 +3144,36 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestIntAddUInt), lib,
                                   @[newSym("C/Int"), newSym("C/Int")],
                                   newSym("C/UInt")))
+      scope.define("int-add-i32",
+                   newFfiCallable("ffiTestIntAddI32",
+                                  "ffiTestIntAddI32",
+                                  cast[pointer](ffiTestIntAddI32), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/Int32")))
+      scope.define("int-add-i16",
+                   newFfiCallable("ffiTestIntAddI16",
+                                  "ffiTestIntAddI16",
+                                  cast[pointer](ffiTestIntAddI16), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/Int16")))
+      scope.define("int-add-short",
+                   newFfiCallable("ffiTestIntAddShort",
+                                  "ffiTestIntAddShort",
+                                  cast[pointer](ffiTestIntAddShort), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/Short")))
+      scope.define("int-add-i8",
+                   newFfiCallable("ffiTestIntAddI8",
+                                  "ffiTestIntAddI8",
+                                  cast[pointer](ffiTestIntAddI8), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/Int8")))
+      scope.define("int-add-char",
+                   newFfiCallable("ffiTestIntAddChar",
+                                  "ffiTestIntAddChar",
+                                  cast[pointer](ffiTestIntAddChar), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/Char")))
       scope.define("int-diff-long",
                    newFfiCallable("ffiTestIntDiffLong",
                                   "ffiTestIntDiffLong",
@@ -3126,6 +3186,36 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestIntAddULong), lib,
                                   @[newSym("C/Int"), newSym("C/Int")],
                                   newSym("C/ULong")))
+      scope.define("int-add-u32",
+                   newFfiCallable("ffiTestIntAddU32",
+                                  "ffiTestIntAddU32",
+                                  cast[pointer](ffiTestIntAddU32), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/UInt32")))
+      scope.define("int-add-u16",
+                   newFfiCallable("ffiTestIntAddU16",
+                                  "ffiTestIntAddU16",
+                                  cast[pointer](ffiTestIntAddU16), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/UInt16")))
+      scope.define("int-add-ushort",
+                   newFfiCallable("ffiTestIntAddUShort",
+                                  "ffiTestIntAddUShort",
+                                  cast[pointer](ffiTestIntAddUShort), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/UShort")))
+      scope.define("int-add-u8",
+                   newFfiCallable("ffiTestIntAddU8",
+                                  "ffiTestIntAddU8",
+                                  cast[pointer](ffiTestIntAddU8), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/UInt8")))
+      scope.define("int-add-uchar",
+                   newFfiCallable("ffiTestIntAddUChar",
+                                  "ffiTestIntAddUChar",
+                                  cast[pointer](ffiTestIntAddUChar), lib,
+                                  @[newSym("C/Int"), newSym("C/Int")],
+                                  newSym("C/UChar")))
       scope.define("int-add-i64",
                    newFfiCallable("ffiTestIntAddI64",
                                   "ffiTestIntAddI64",
@@ -5103,8 +5193,18 @@ suite "types — function boundaries":
           discard run(compileSource("(size-inc 4294967296)"), scope)
       check run(compileSource("(int-add 20 22)"), scope).print() == "42"
       check run(compileSource("(int-add-uint 20 22)"), scope).print() == "43"
+      check run(compileSource("(int-add-i32 20 22)"), scope).print() == "47"
+      check run(compileSource("(int-add-i16 20 22)"), scope).print() == "48"
+      check run(compileSource("(int-add-short 20 22)"), scope).print() == "49"
+      check run(compileSource("(int-add-i8 20 22)"), scope).print() == "50"
+      check run(compileSource("(int-add-char 2 3)"), scope).print() == "'F'"
       check run(compileSource("(int-diff-long 20 22)"), scope).print() == "-2"
       check run(compileSource("(int-add-ulong 20 22)"), scope).print() == "44"
+      check run(compileSource("(int-add-u32 20 22)"), scope).print() == "51"
+      check run(compileSource("(int-add-u16 20 22)"), scope).print() == "52"
+      check run(compileSource("(int-add-ushort 20 22)"), scope).print() == "53"
+      check run(compileSource("(int-add-u8 20 22)"), scope).print() == "54"
+      check run(compileSource("(int-add-uchar 20 22)"), scope).print() == "55"
       check run(compileSource("(int-add-i64 20 22)"), scope).print() == "45"
       check run(compileSource("(int-add-u64 20 22)"), scope).print() == "46"
       check run(compileSource("(int-diff-ptrdiff 20 22)"),
