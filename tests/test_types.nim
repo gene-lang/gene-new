@@ -554,6 +554,24 @@ proc ffiTestUIntNonZero(x: cuint): bool {.cdecl.} =
 proc ffiTestU32ULong(x: uint32): culong {.cdecl.} =
   culong(x + 2'u32)
 
+proc ffiTestU32I16(x: uint32): int16 {.cdecl.} =
+  int16(x) + 6'i16
+
+proc ffiTestU32Short(x: uint32): cshort {.cdecl.} =
+  cshort(x + 7'u32)
+
+proc ffiTestU32I8(x: uint32): int8 {.cdecl.} =
+  int8(x) + 8'i8
+
+proc ffiTestU32U16(x: uint32): uint16 {.cdecl.} =
+  uint16(x) + 10'u16
+
+proc ffiTestU32UShort(x: uint32): cushort {.cdecl.} =
+  cushort(x + 11'u32)
+
+proc ffiTestU32U8(x: uint32): uint8 {.cdecl.} =
+  uint8(x) + 12'u8
+
 proc ffiTestU32U64(x: uint32): uint64 {.cdecl.} =
   uint64(x + 4'u32)
 
@@ -565,6 +583,27 @@ proc ffiTestU32NonZero(x: uint32): bool {.cdecl.} =
 
 proc ffiTestI32ULong(x: int32): culong {.cdecl.} =
   culong(x + 2'i32)
+
+proc ffiTestI32I16(x: int32): int16 {.cdecl.} =
+  int16(x) + 6'i16
+
+proc ffiTestI32Short(x: int32): cshort {.cdecl.} =
+  cshort(x + 7'i32)
+
+proc ffiTestI32I8(x: int32): int8 {.cdecl.} =
+  int8(x) + 8'i8
+
+proc ffiTestI32U32(x: int32): uint32 {.cdecl.} =
+  uint32(x) + 9'u32
+
+proc ffiTestI32U16(x: int32): uint16 {.cdecl.} =
+  uint16(x) + 10'u16
+
+proc ffiTestI32UShort(x: int32): cushort {.cdecl.} =
+  cushort(x + 11'i32)
+
+proc ffiTestI32U8(x: int32): uint8 {.cdecl.} =
+  uint8(x) + 12'u8
 
 proc ffiTestI32U64(x: int32): uint64 {.cdecl.} =
   uint64(x + 4'i32)
@@ -2482,6 +2521,36 @@ suite "types — function boundaries":
                                   "ffiTestU32ULong",
                                   cast[pointer](ffiTestU32ULong), lib,
                                   @[newSym("C/UInt32")], newSym("C/ULong")))
+      scope.define("u32-i16",
+                   newFfiCallable("ffiTestU32I16",
+                                  "ffiTestU32I16",
+                                  cast[pointer](ffiTestU32I16), lib,
+                                  @[newSym("C/UInt32")], newSym("C/Int16")))
+      scope.define("u32-short",
+                   newFfiCallable("ffiTestU32Short",
+                                  "ffiTestU32Short",
+                                  cast[pointer](ffiTestU32Short), lib,
+                                  @[newSym("C/UInt32")], newSym("C/Short")))
+      scope.define("u32-i8",
+                   newFfiCallable("ffiTestU32I8",
+                                  "ffiTestU32I8",
+                                  cast[pointer](ffiTestU32I8), lib,
+                                  @[newSym("C/UInt32")], newSym("C/Int8")))
+      scope.define("u32-u16",
+                   newFfiCallable("ffiTestU32U16",
+                                  "ffiTestU32U16",
+                                  cast[pointer](ffiTestU32U16), lib,
+                                  @[newSym("C/UInt32")], newSym("C/UInt16")))
+      scope.define("u32-ushort",
+                   newFfiCallable("ffiTestU32UShort",
+                                  "ffiTestU32UShort",
+                                  cast[pointer](ffiTestU32UShort), lib,
+                                  @[newSym("C/UInt32")], newSym("C/UShort")))
+      scope.define("u32-u8",
+                   newFfiCallable("ffiTestU32U8",
+                                  "ffiTestU32U8",
+                                  cast[pointer](ffiTestU32U8), lib,
+                                  @[newSym("C/UInt32")], newSym("C/UInt8")))
       scope.define("u32-u64",
                    newFfiCallable("ffiTestU32U64",
                                   "ffiTestU32U64",
@@ -2502,6 +2571,41 @@ suite "types — function boundaries":
                                   "ffiTestI32ULong",
                                   cast[pointer](ffiTestI32ULong), lib,
                                   @[newSym("C/Int32")], newSym("C/ULong")))
+      scope.define("i32-i16",
+                   newFfiCallable("ffiTestI32I16",
+                                  "ffiTestI32I16",
+                                  cast[pointer](ffiTestI32I16), lib,
+                                  @[newSym("C/Int32")], newSym("C/Int16")))
+      scope.define("i32-short",
+                   newFfiCallable("ffiTestI32Short",
+                                  "ffiTestI32Short",
+                                  cast[pointer](ffiTestI32Short), lib,
+                                  @[newSym("C/Int32")], newSym("C/Short")))
+      scope.define("i32-i8",
+                   newFfiCallable("ffiTestI32I8",
+                                  "ffiTestI32I8",
+                                  cast[pointer](ffiTestI32I8), lib,
+                                  @[newSym("C/Int32")], newSym("C/Int8")))
+      scope.define("i32-u32",
+                   newFfiCallable("ffiTestI32U32",
+                                  "ffiTestI32U32",
+                                  cast[pointer](ffiTestI32U32), lib,
+                                  @[newSym("C/Int32")], newSym("C/UInt32")))
+      scope.define("i32-u16",
+                   newFfiCallable("ffiTestI32U16",
+                                  "ffiTestI32U16",
+                                  cast[pointer](ffiTestI32U16), lib,
+                                  @[newSym("C/Int32")], newSym("C/UInt16")))
+      scope.define("i32-ushort",
+                   newFfiCallable("ffiTestI32UShort",
+                                  "ffiTestI32UShort",
+                                  cast[pointer](ffiTestI32UShort), lib,
+                                  @[newSym("C/Int32")], newSym("C/UShort")))
+      scope.define("i32-u8",
+                   newFfiCallable("ffiTestI32U8",
+                                  "ffiTestI32U8",
+                                  cast[pointer](ffiTestI32U8), lib,
+                                  @[newSym("C/Int32")], newSym("C/UInt8")))
       scope.define("i32-u64",
                    newFfiCallable("ffiTestI32U64",
                                   "ffiTestI32U64",
@@ -4017,11 +4121,24 @@ suite "types — function boundaries":
       check run(compileSource("(uint-non-zero? 4)"), scope).print() == "true"
       check run(compileSource("(uint-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(u32-ulong 4)"), scope).print() == "6"
+      check run(compileSource("(u32-i16 4)"), scope).print() == "10"
+      check run(compileSource("(u32-short 4)"), scope).print() == "11"
+      check run(compileSource("(u32-i8 4)"), scope).print() == "12"
+      check run(compileSource("(u32-u16 4)"), scope).print() == "14"
+      check run(compileSource("(u32-ushort 4)"), scope).print() == "15"
+      check run(compileSource("(u32-u8 4)"), scope).print() == "16"
       check run(compileSource("(u32-u64 4)"), scope).print() == "8"
       check run(compileSource("(u32-diff 4)"), scope).print() == "-2"
       check run(compileSource("(u32-non-zero? 4)"), scope).print() == "true"
       check run(compileSource("(u32-non-zero? 0)"), scope).print() == "false"
       check run(compileSource("(i32-ulong 4)"), scope).print() == "6"
+      check run(compileSource("(i32-i16 4)"), scope).print() == "10"
+      check run(compileSource("(i32-short 4)"), scope).print() == "11"
+      check run(compileSource("(i32-i8 4)"), scope).print() == "12"
+      check run(compileSource("(i32-u32 4)"), scope).print() == "13"
+      check run(compileSource("(i32-u16 4)"), scope).print() == "14"
+      check run(compileSource("(i32-ushort 4)"), scope).print() == "15"
+      check run(compileSource("(i32-u8 4)"), scope).print() == "16"
       check run(compileSource("(i32-u64 4)"), scope).print() == "8"
       check run(compileSource("(i32-diff 4)"), scope).print() == "-2"
       check run(compileSource("(i32-positive? 4)"), scope).print() == "true"
