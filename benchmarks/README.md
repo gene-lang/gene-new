@@ -39,5 +39,6 @@ Pass `24` for the shorter historical 150049-call sample.
 
 ## Call Burst
 
-The call burst benchmark compiles three source units once, then measures tight
-bursts of zero-arg, one-arg, and four-arg function calls inside a `while` loop.
+The call burst benchmark compiles each source unit once, then measures tight
+bursts of zero-arg, one-arg, four-arg, typed one-arg `Int -> Int`, and typed
+four-arg `Int` function calls inside a `while` loop.

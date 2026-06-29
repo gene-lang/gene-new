@@ -3639,11 +3639,40 @@ proc canFastBindUnaryInt(proto: FunctionProto): bool {.inline.} =
     proto.returnType.isBareIntType and not proto.isGenerator and
     proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
 
+proc canFastBindPositionalInt(proto: FunctionProto): bool {.inline.} =
+  if proto.typeParams.len != 0 or proto.checksErrors or proto.isGenerator:
+    return false
+  if proto.restParam.len != 0 or proto.namedParams.len != 0:
+    return false
+  if proto.params.len == 0 or proto.requiredPositional != proto.params.len:
+    return false
+  if proto.positionalSlots.len != proto.params.len:
+    return false
+  if not proto.hasParamTypes or proto.paramTypes.len != proto.params.len:
+    return false
+  if not proto.hasReturnType or not proto.returnType.isBareIntType:
+    return false
+  if proto.paramDefaults.len != proto.params.len:
+    return false
+  for i in 0 ..< proto.params.len:
+    if proto.positionalSlots[i] < 0:
+      return false
+    if not proto.paramTypes[i].isBareIntType:
+      return false
+    if proto.paramDefaults[i].optional:
+      return false
+  true
+
 proc checkedFrameReturnType(proto: FunctionProto, returnType: Value): Value {.inline.} =
   if proto.returnKnownBareInt:
     NIL
   else:
     returnType
+
+proc frameNeedsImplValidation(proto: FunctionProto): bool {.inline.} =
+  ## Pooled call scopes exclude opMakeType, the only instruction that appends
+  ## required impl checks to a scope. Keep non-pooled scopes conservative.
+  proto.needsCallScope and not proto.poolCallScope
 
 proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
                            arg: Value): Scope {.inline.} =
@@ -3664,6 +3693,42 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
   result.defineFreshCallSlot(slot, arg)
   if paramMaySet:
     result.declareSlotType(slot, proto.paramTypes[0])
+
+proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
+                                args: openArray[Value]): Scope {.inline.} =
+  var anyParamMaySet = false
+  if proto.positionalSlotMaySet.len != proto.params.len:
+    anyParamMaySet = true
+  else:
+    for maySet in proto.positionalSlotMaySet:
+      if maySet:
+        anyParamMaySet = true
+        break
+  result =
+    if proto.poolCallScope:
+      if anyParamMaySet:
+        acquireCallScope(parent, proto.localNames)
+      else:
+        acquireSimpleCallScope(parent, proto.localNames,
+          proto.callScopeNeedsSlotNames, proto.callScopeNeedsSlotReset)
+    else:
+      let fresh = newScope(parent)
+      fresh.prepareSlots(proto.localNames)
+      fresh
+  if anyParamMaySet:
+    for i in 0 ..< args.len:
+      let value = args[i]
+      if value.kind != vkInt:
+        raiseTypeError("parameter '" & proto.params[i] & "'", "Int", value, result)
+      let slot = proto.positionalSlots[i]
+      result.defineFreshCallSlot(slot, value)
+      result.declareSlotType(slot, proto.paramTypes[i])
+  else:
+    for i in 0 ..< args.len:
+      let value = args[i]
+      if value.kind != vkInt:
+        raiseTypeError("parameter '" & proto.params[i] & "'", "Int", value, result)
+    result.bindSimpleCallSlots(proto, args)
 
 proc clearDefinedCallSlots(scope: Scope) {.inline.} =
   var bits = scope.slotDefinedBits
@@ -5958,7 +6023,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = proto.needsCallScope
+                validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false
@@ -5979,7 +6044,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = frameReturnType
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
@@ -6092,7 +6157,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = proto.needsCallScope
+                validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false
@@ -6131,7 +6196,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = boundReturnType
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
@@ -6296,7 +6361,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = proto.needsCallScope
+                validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
@@ -6313,31 +6378,41 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 if namedCount > 0:
                   named = namedArgsFromStack(inst[].names, stack,
                                              calleeIndex + 1)
-                let bound =
-                  if argCount == 0:
-                    bindCallScope(callee, proto, [], named)
-                  else:
-                    bindCallScope(callee, proto,
-                                  stack.toOpenArray(argsStart, stack.high), named)
-                let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
+                var boundScope: Scope
+                var boundReturnType: Value
+                if namedCount == 0 and proto.canFastBindPositionalInt and
+                    argCount == proto.params.len:
+                  boundScope = bindPositionalIntCallScope(callee.fnScope, proto,
+                    stack.toOpenArray(argsStart, stack.high))
+                  boundReturnType = proto.returnType
+                else:
+                  let bound =
+                    if argCount == 0:
+                      bindCallScope(callee, proto, [], named)
+                    else:
+                      bindCallScope(callee, proto,
+                                    stack.toOpenArray(argsStart, stack.high), named)
+                  boundScope = bound.scope
+                  boundReturnType = bound.returnType
+                let frameReturnType = proto.checkedFrameReturnType(boundReturnType)
                 stack.setLen(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
                 chunk = proto.chunk
-                scope = bound.scope
+                scope = boundScope
                 recycleScope = proto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = frameReturnType
                 returnLabel = lbl
                 curChecksErrors = proto.checksErrors
                 curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
                 curFnName = callee.fnName
                 curFrameKind = fkNormal
-                evalBudget = bound.scope.evalBudget
+                evalBudget = boundScope.evalBudget
                 continue
           if namedCount == 0 and argCount == 2 and callee.kind == vkNativeFn:
             let fastNative = tryFastNative2(callee, stack[argsStart], stack[argsStart + 1])
@@ -6435,7 +6510,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 recycleScope = fnProto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = fnProto.needsCallScope
+                validateImplRequirements = fnProto.frameNeedsImplValidation
                 returnType = NIL
                 returnLabel = ""
                 curChecksErrors = false        # simpleCall never declares ^errors
@@ -6445,26 +6520,36 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 evalBudget = callScope.evalBudget
                 continue
               elif not fnProto.isGenerator:
-                let bound = bindCallScope(callee, fnProto, args, named)
-                let frameReturnType = fnProto.checkedFrameReturnType(bound.returnType)
+                var boundScope: Scope
+                var boundReturnType: Value
+                if namedCount == 0 and fnProto.canFastBindPositionalInt and
+                    args.len == fnProto.params.len:
+                  boundScope = bindPositionalIntCallScope(callee.fnScope, fnProto,
+                                                          args)
+                  boundReturnType = fnProto.returnType
+                else:
+                  let bound = bindCallScope(callee, fnProto, args, named)
+                  boundScope = bound.scope
+                  boundReturnType = bound.returnType
+                let frameReturnType = fnProto.checkedFrameReturnType(boundReturnType)
                 stack.setLen(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushFrame()
                 chunk = fnProto.chunk
-                scope = bound.scope
+                scope = boundScope
                 recycleScope = fnProto.poolCallScope
                 stack = acquireRunStack()
                 ip = 0
-                validateImplRequirements = true
+                validateImplRequirements = fnProto.frameNeedsImplValidation
                 returnType = frameReturnType
                 returnLabel = lbl
                 curChecksErrors = fnProto.checksErrors
                 curErrorTypes = if fnProto.checksErrors: callee.fnErrorTypes else: @[]
                 curFnName = if fnProto.checksErrors: callee.fnName else: ""
                 curFrameKind = fkNormal
-                evalBudget = bound.scope.evalBudget
+                evalBudget = boundScope.evalBudget
                 continue
           let site =
             if callee.kind == vkFunction or
@@ -12682,11 +12767,20 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
           callee.fnScope
       try:
         return runPooled(proto.chunk, callScope,
-                         validateImplRequirements = proto.needsCallScope)
+                         validateImplRequirements = proto.frameNeedsImplValidation)
       finally:
         if proto.poolCallScope:
           releaseCallScope(callScope)
-    let (callScope, returnType) = bindCallScope(callee, proto, args, named)
+    var callScope: Scope
+    var returnType: Value
+    if named.len == 0 and proto.canFastBindPositionalInt and
+        args.len == proto.params.len:
+      callScope = bindPositionalIntCallScope(callee.fnScope, proto, args)
+      returnType = proto.returnType
+    else:
+      let bound = bindCallScope(callee, proto, args, named)
+      callScope = bound.scope
+      returnType = bound.returnType
     let frameReturnType = proto.checkedFrameReturnType(returnType)
     if proto.isGenerator:
       var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
@@ -12697,7 +12791,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     try:
       var resultValue: Value
       try:
-        resultValue = runPooled(proto.chunk, callScope)
+        resultValue = runPooled(proto.chunk, callScope,
+                                validateImplRequirements = proto.frameNeedsImplValidation)
       except GeneError as e:
         if not callee.fnChecksErrors:
           raise

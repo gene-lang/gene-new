@@ -74,9 +74,23 @@ proc main() =
     callsPerRepeat)
 
   runBenchmark(
+    loopProgram("(var call_once (fn [x : Int] : Int x))", "(call_once 1)",
+                repeats, callsPerRepeat),
+    "typed one-arg Int function call",
+    repeats,
+    callsPerRepeat)
+
+  runBenchmark(
     loopProgram("(var call_four (fn [a b c d] nil))",
                 "(call_four 1 2 3 4)", repeats, callsPerRepeat),
     "four-arg function call",
+    repeats,
+    callsPerRepeat)
+
+  runBenchmark(
+    loopProgram("(var call_four (fn [a : Int b : Int c : Int d : Int] : Int a))",
+                "(call_four 1 2 3 4)", repeats, callsPerRepeat),
+    "typed four-arg Int function call",
     repeats,
     callsPerRepeat)
 
