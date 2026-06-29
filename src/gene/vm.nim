@@ -11431,9 +11431,49 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type SliceIntProc = proc(p: pointer, n: csize_t): cint {.cdecl.}
       let fn = cast[SliceIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Int32":
+      type SliceInt32Proc = proc(p: pointer, n: csize_t): int32 {.cdecl.}
+      let fn = cast[SliceInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Int16":
+      type SliceInt16Proc = proc(p: pointer, n: csize_t): int16 {.cdecl.}
+      let fn = cast[SliceInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Short":
+      type SliceShortProc = proc(p: pointer, n: csize_t): cshort {.cdecl.}
+      let fn = cast[SliceShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Int8":
+      type SliceInt8Proc = proc(p: pointer, n: csize_t): int8 {.cdecl.}
+      let fn = cast[SliceInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/Char":
+      type SliceCharProc = proc(p: pointer, n: csize_t): cchar {.cdecl.}
+      let fn = cast[SliceCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0.address, arg0.length))
     of "C/UInt":
       type SliceUIntProc = proc(p: pointer, n: csize_t): cuint {.cdecl.}
       let fn = cast[SliceUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/UInt32":
+      type SliceUInt32Proc = proc(p: pointer, n: csize_t): uint32 {.cdecl.}
+      let fn = cast[SliceUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/UInt16":
+      type SliceUInt16Proc = proc(p: pointer, n: csize_t): uint16 {.cdecl.}
+      let fn = cast[SliceUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/UShort":
+      type SliceUShortProc = proc(p: pointer, n: csize_t): cushort {.cdecl.}
+      let fn = cast[SliceUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/UInt8":
+      type SliceUInt8Proc = proc(p: pointer, n: csize_t): uint8 {.cdecl.}
+      let fn = cast[SliceUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.address, arg0.length)))
+    of "C/UChar":
+      type SliceUCharProc = proc(p: pointer, n: csize_t): uint8 {.cdecl.}
+      let fn = cast[SliceUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0.address, arg0.length)))
     of "C/Long":
       type SliceLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
@@ -11495,9 +11535,49 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type BufferIntProc = proc(p: pointer, n: csize_t): cint {.cdecl.}
       let fn = cast[BufferIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Int32":
+      type BufferInt32Proc = proc(p: pointer, n: csize_t): int32 {.cdecl.}
+      let fn = cast[BufferInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Int16":
+      type BufferInt16Proc = proc(p: pointer, n: csize_t): int16 {.cdecl.}
+      let fn = cast[BufferInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Short":
+      type BufferShortProc = proc(p: pointer, n: csize_t): cshort {.cdecl.}
+      let fn = cast[BufferShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Int8":
+      type BufferInt8Proc = proc(p: pointer, n: csize_t): int8 {.cdecl.}
+      let fn = cast[BufferInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/Char":
+      type BufferCharProc = proc(p: pointer, n: csize_t): cchar {.cdecl.}
+      let fn = cast[BufferCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0.data, arg0.length))
     of "C/UInt":
       type BufferUIntProc = proc(p: pointer, n: csize_t): cuint {.cdecl.}
       let fn = cast[BufferUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/UInt32":
+      type BufferUInt32Proc = proc(p: pointer, n: csize_t): uint32 {.cdecl.}
+      let fn = cast[BufferUInt32Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/UInt16":
+      type BufferUInt16Proc = proc(p: pointer, n: csize_t): uint16 {.cdecl.}
+      let fn = cast[BufferUInt16Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/UShort":
+      type BufferUShortProc = proc(p: pointer, n: csize_t): cushort {.cdecl.}
+      let fn = cast[BufferUShortProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/UInt8":
+      type BufferUInt8Proc = proc(p: pointer, n: csize_t): uint8 {.cdecl.}
+      let fn = cast[BufferUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0.data, arg0.length)))
+    of "C/UChar":
+      type BufferUCharProc = proc(p: pointer, n: csize_t): uint8 {.cdecl.}
+      let fn = cast[BufferUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0.data, arg0.length)))
     of "C/Long":
       type BufferLongProc = proc(p: pointer, n: csize_t): clong {.cdecl.}
