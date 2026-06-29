@@ -76,6 +76,18 @@ proc ffiTestSliceFirstByte(data: pointer, len: csize_t): cint {.cdecl.} =
   else:
     cint(cast[ptr uint8](data)[])
 
+proc ffiTestCStrBoundedLen(s: cstring, len: csize_t): csize_t {.cdecl.} =
+  var i = 0
+  while csize_t(i) < len and s[i] != '\0':
+    inc i
+  csize_t(i)
+
+proc ffiTestCStrPtrIfLen(s: cstring, len: csize_t): pointer {.cdecl.} =
+  if len == 0:
+    nil
+  else:
+    cast[pointer](s)
+
 proc ffiTestPtrCopy(dst, src: pointer, len: csize_t): pointer {.cdecl.} =
   copyMem(dst, src, len)
   dst
@@ -860,6 +872,19 @@ suite "types — function boundaries":
                                   @[newNode(newSym("Buffer"),
                                             body = @[newSym("C/Int8")])],
                                   newSym("C/Int")))
+      scope.define("cstr-bounded-len",
+                   newFfiCallable("ffiTestCStrBoundedLen",
+                                  "ffiTestCStrBoundedLen",
+                                  cast[pointer](ffiTestCStrBoundedLen), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newSym("C/Size")))
+      scope.define("cstr-ptr-if-len",
+                   newFfiCallable("ffiTestCStrPtrIfLen",
+                                  "ffiTestCStrPtrIfLen",
+                                  cast[pointer](ffiTestCStrPtrIfLen), lib,
+                                  @[newSym("C/CStr"), newSym("C/Size")],
+                                  newNode(newSym("C/NullableConstPtr"),
+                                          body = @[newSym("C/Char")])))
       scope.define("ptr-copy",
                    newFfiCallable("ffiTestPtrCopy", "ffiTestPtrCopy",
                                   cast[pointer](ffiTestPtrCopy), lib,
@@ -1025,6 +1050,16 @@ suite "types — function boundaries":
         discard run(compileSource("(buffer-len wrong-byte-buffer)"), scope)
       expect GeneError:
         discard run(compileSource("(buffer-len bad-byte-buffer)"), scope)
+      check run(compileSource("(cstr-bounded-len \"abcdef\" 3)"),
+                scope).print() == "3"
+      check run(compileSource("(cstr-bounded-len \"abcdef\" 10)"),
+                scope).print() == "6"
+      expect GeneError:
+        discard run(compileSource("(cstr-bounded-len \"abc\" -1)"), scope)
+      check run(compileSource("(cstr-ptr-if-len \"abc\" 3)"), scope).print() ==
+        "(c-const-ptr)"
+      check run(compileSource("(cstr-ptr-if-len \"abc\" 0)"), scope).print() ==
+        "(c-const-ptr null)"
       let copied = run(compileSource("(ptr-copy copy-dst copy-src 3)"), scope)
       check copied.kind == vkCPtr
       check copied.cPtrAddress == cast[pointer](addr copyDst[0])
