@@ -1125,8 +1125,38 @@ proc ffiTestPtrIfLen(p: pointer, len: csize_t): pointer {.cdecl.} =
 proc ffiTestPtrLen(p: pointer, len: csize_t): csize_t {.cdecl.} =
   if p == nil: 0 else: len
 
+proc ffiTestPtrLenI32(p: pointer, len: csize_t): int32 {.cdecl.} =
+  if p == nil: -1'i32 else: int32(len) + 5'i32
+
+proc ffiTestPtrLenI16(p: pointer, len: csize_t): int16 {.cdecl.} =
+  if p == nil: -1'i16 else: int16(len) + 6'i16
+
+proc ffiTestPtrLenShort(p: pointer, len: csize_t): cshort {.cdecl.} =
+  if p == nil: cshort(-1) else: cshort(len) + cshort(7)
+
+proc ffiTestPtrLenI8(p: pointer, len: csize_t): int8 {.cdecl.} =
+  if p == nil: -1'i8 else: int8(len) + 8'i8
+
+proc ffiTestPtrLenChar(p: pointer, len: csize_t): cchar {.cdecl.} =
+  if p == nil: cchar(ord('?')) else: cchar(ord('A') + int(len))
+
 proc ffiTestPtrLenU64(p: pointer, len: csize_t): uint64 {.cdecl.} =
   if p == nil: 0'u64 else: uint64(len) + 1'u64
+
+proc ffiTestPtrLenU32(p: pointer, len: csize_t): uint32 {.cdecl.} =
+  if p == nil: 0'u32 else: uint32(len) + 9'u32
+
+proc ffiTestPtrLenU16(p: pointer, len: csize_t): uint16 {.cdecl.} =
+  if p == nil: 0'u16 else: uint16(len) + 10'u16
+
+proc ffiTestPtrLenUShort(p: pointer, len: csize_t): cushort {.cdecl.} =
+  if p == nil: cushort(0) else: cushort(len) + cushort(11)
+
+proc ffiTestPtrLenU8(p: pointer, len: csize_t): uint8 {.cdecl.} =
+  if p == nil: 0'u8 else: uint8(len) + 12'u8
+
+proc ffiTestPtrLenUChar(p: pointer, len: csize_t): uint8 {.cdecl.} =
+  if p == nil: 0'u8 else: uint8(len) + 13'u8
 
 proc ffiTestPtrLenDiff(p: pointer, len: csize_t): TestCPtrDiff {.cdecl.} =
   if p == nil: TestCPtrDiff(-1) else: TestCPtrDiff(len)
@@ -3980,6 +4010,43 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")]),
                                     newSym("C/Size")],
                                   newSym("C/Size")))
+      scope.define("ptr-len-i32",
+                   newFfiCallable("ffiTestPtrLenI32", "ffiTestPtrLenI32",
+                                  cast[pointer](ffiTestPtrLenI32), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Int32")))
+      scope.define("ptr-len-i16",
+                   newFfiCallable("ffiTestPtrLenI16", "ffiTestPtrLenI16",
+                                  cast[pointer](ffiTestPtrLenI16), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Int16")))
+      scope.define("ptr-len-short",
+                   newFfiCallable("ffiTestPtrLenShort",
+                                  "ffiTestPtrLenShort",
+                                  cast[pointer](ffiTestPtrLenShort), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Short")))
+      scope.define("ptr-len-i8",
+                   newFfiCallable("ffiTestPtrLenI8", "ffiTestPtrLenI8",
+                                  cast[pointer](ffiTestPtrLenI8), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Int8")))
+      scope.define("ptr-len-char",
+                   newFfiCallable("ffiTestPtrLenChar",
+                                  "ffiTestPtrLenChar",
+                                  cast[pointer](ffiTestPtrLenChar), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/Char")))
       scope.define("ptr-len-u64",
                    newFfiCallable("ffiTestPtrLenU64", "ffiTestPtrLenU64",
                                   cast[pointer](ffiTestPtrLenU64), lib,
@@ -3987,6 +4054,43 @@ suite "types — function boundaries":
                                             body = @[newSym("C/Char")]),
                                     newSym("C/Size")],
                                   newSym("C/UInt64")))
+      scope.define("ptr-len-u32",
+                   newFfiCallable("ffiTestPtrLenU32", "ffiTestPtrLenU32",
+                                  cast[pointer](ffiTestPtrLenU32), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UInt32")))
+      scope.define("ptr-len-u16",
+                   newFfiCallable("ffiTestPtrLenU16", "ffiTestPtrLenU16",
+                                  cast[pointer](ffiTestPtrLenU16), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UInt16")))
+      scope.define("ptr-len-ushort",
+                   newFfiCallable("ffiTestPtrLenUShort",
+                                  "ffiTestPtrLenUShort",
+                                  cast[pointer](ffiTestPtrLenUShort), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UShort")))
+      scope.define("ptr-len-u8",
+                   newFfiCallable("ffiTestPtrLenU8", "ffiTestPtrLenU8",
+                                  cast[pointer](ffiTestPtrLenU8), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UInt8")))
+      scope.define("ptr-len-uchar",
+                   newFfiCallable("ffiTestPtrLenUChar",
+                                  "ffiTestPtrLenUChar",
+                                  cast[pointer](ffiTestPtrLenUChar), lib,
+                                  @[newNode(newSym("C/NullablePtr"),
+                                            body = @[newSym("C/Char")]),
+                                    newSym("C/Size")],
+                                  newSym("C/UChar")))
       scope.define("ptr-len-diff",
                    newFfiCallable("ffiTestPtrLenDiff", "ffiTestPtrLenDiff",
                                   cast[pointer](ffiTestPtrLenDiff), lib,
@@ -4991,8 +5095,30 @@ suite "types — function boundaries":
         "(c-ptr null)"
       check run(compileSource("(ptr-len copy-dst 3)"), scope).print() == "3"
       check run(compileSource("(ptr-len nil 3)"), scope).print() == "0"
+      check run(compileSource("(ptr-len-i32 copy-dst 3)"),
+                scope).print() == "8"
+      check run(compileSource("(ptr-len-i32 nil 3)"), scope).print() == "-1"
+      check run(compileSource("(ptr-len-i16 copy-dst 3)"),
+                scope).print() == "9"
+      check run(compileSource("(ptr-len-short copy-dst 3)"),
+                scope).print() == "10"
+      check run(compileSource("(ptr-len-i8 copy-dst 3)"),
+                scope).print() == "11"
+      check run(compileSource("(ptr-len-char copy-dst 3)"),
+                scope).print() == "'D'"
       check run(compileSource("(ptr-len-u64 copy-dst 3)"), scope).print() ==
         "4"
+      check run(compileSource("(ptr-len-u32 copy-dst 3)"),
+                scope).print() == "12"
+      check run(compileSource("(ptr-len-u16 copy-dst 3)"),
+                scope).print() == "13"
+      check run(compileSource("(ptr-len-ushort copy-dst 3)"),
+                scope).print() == "14"
+      check run(compileSource("(ptr-len-u8 copy-dst 3)"),
+                scope).print() == "15"
+      check run(compileSource("(ptr-len-uchar copy-dst 3)"),
+                scope).print() == "16"
+      check run(compileSource("(ptr-len-uchar nil 3)"), scope).print() == "0"
       check run(compileSource("(ptr-len-diff nil 3)"), scope).print() == "-1"
       check run(compileSource("(ptr-len-diff copy-dst 3)"), scope).print() ==
         "3"
