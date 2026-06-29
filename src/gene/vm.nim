@@ -10952,10 +10952,46 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type CStrIntIntProc = proc(s: cstring, x: cint): cint {.cdecl.}
       let fn = cast[CStrIntIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt":
+      type CStrIntUIntProc = proc(s: cstring, x: cint): cuint {.cdecl.}
+      let fn = cast[CStrIntUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Long":
+      type CStrIntLongProc = proc(s: cstring, x: cint): clong {.cdecl.}
+      let fn = cast[CStrIntLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/ULong":
+      type CStrIntULongProc = proc(s: cstring, x: cint): culong {.cdecl.}
+      let fn = cast[CStrIntULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Int64":
+      type CStrIntInt64Proc = proc(s: cstring, x: cint): int64 {.cdecl.}
+      let fn = cast[CStrIntInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0, arg1))
+    of "C/UInt64":
+      type CStrIntUInt64Proc = proc(s: cstring, x: cint): uint64 {.cdecl.}
+      let fn = cast[CStrIntUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0, arg1))
     of "C/Size":
       type CStrIntSizeProc = proc(s: cstring, x: cint): csize_t {.cdecl.}
       let fn = cast[CStrIntSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/PtrDiff":
+      type CStrIntPtrDiffProc = proc(s: cstring, x: cint): GeneCPtrDiff {.cdecl.}
+      let fn = cast[CStrIntPtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Float":
+      type CStrIntFloatProc = proc(s: cstring, x: cint): cfloat {.cdecl.}
+      let fn = cast[CStrIntFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Double":
+      type CStrIntDoubleProc = proc(s: cstring, x: cint): cdouble {.cdecl.}
+      let fn = cast[CStrIntDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Bool":
+      type CStrIntBoolProc = proc(s: cstring, x: cint): bool {.cdecl.}
+      let fn = cast[CStrIntBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0, arg1))
     of "C/CStr":
       type CStrIntCStrProc = proc(s: cstring, x: cint): cstring {.cdecl.}
       let fn = cast[CStrIntCStrProc](callee.ffiCallableAddress)
@@ -10982,10 +11018,46 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type CStrSizeIntProc = proc(s: cstring, n: csize_t): cint {.cdecl.}
       let fn = cast[CStrSizeIntProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0, arg1)))
+    of "C/UInt":
+      type CStrSizeUIntProc = proc(s: cstring, n: csize_t): cuint {.cdecl.}
+      let fn = cast[CStrSizeUIntProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Long":
+      type CStrSizeLongProc = proc(s: cstring, n: csize_t): clong {.cdecl.}
+      let fn = cast[CStrSizeLongProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/ULong":
+      type CStrSizeULongProc = proc(s: cstring, n: csize_t): culong {.cdecl.}
+      let fn = cast[CStrSizeULongProc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/Int64":
+      type CStrSizeInt64Proc = proc(s: cstring, n: csize_t): int64 {.cdecl.}
+      let fn = cast[CStrSizeInt64Proc](callee.ffiCallableAddress)
+      return newInt(fn(arg0, arg1))
+    of "C/UInt64":
+      type CStrSizeUInt64Proc = proc(s: cstring, n: csize_t): uint64 {.cdecl.}
+      let fn = cast[CStrSizeUInt64Proc](callee.ffiCallableAddress)
+      return ffiCUInt64Value(fn(arg0, arg1))
     of "C/Size":
       type CStrSizeSizeProc = proc(s: cstring, n: csize_t): csize_t {.cdecl.}
       let fn = cast[CStrSizeSizeProc](callee.ffiCallableAddress)
       return ffiCUInt64Value(uint64(fn(arg0, arg1)))
+    of "C/PtrDiff":
+      type CStrSizePtrDiffProc = proc(s: cstring, n: csize_t): GeneCPtrDiff {.cdecl.}
+      let fn = cast[CStrSizePtrDiffProc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0, arg1)))
+    of "C/Float":
+      type CStrSizeFloatProc = proc(s: cstring, n: csize_t): cfloat {.cdecl.}
+      let fn = cast[CStrSizeFloatProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Double":
+      type CStrSizeDoubleProc = proc(s: cstring, n: csize_t): cdouble {.cdecl.}
+      let fn = cast[CStrSizeDoubleProc](callee.ffiCallableAddress)
+      return newFloat(float64(fn(arg0, arg1)))
+    of "C/Bool":
+      type CStrSizeBoolProc = proc(s: cstring, n: csize_t): bool {.cdecl.}
+      let fn = cast[CStrSizeBoolProc](callee.ffiCallableAddress)
+      return newBool(fn(arg0, arg1))
     of "C/CStr":
       type CStrSizeCStrProc = proc(s: cstring, n: csize_t): cstring {.cdecl.}
       let fn = cast[CStrSizeCStrProc](callee.ffiCallableAddress)
