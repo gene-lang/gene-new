@@ -3632,6 +3632,13 @@ proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
     for i in 0 ..< args.len:
       scope.markSlotDefined(proto.positionalSlots[i])
 
+proc bindSingleSimpleCallSlot(scope: Scope, slot: int, value: Value) {.inline.} =
+  scope.slots[slot] = value
+  if slot < 64:
+    scope.slotDefinedBits = 1'u64 shl slot
+  else:
+    scope.markSlotDefined(slot)
+
 proc canFastBindUnaryInt(proto: FunctionProto): bool {.inline.} =
   proto.typeParams.len == 0 and not proto.checksErrors and
     proto.params.len == 1 and proto.requiredPositional == 1 and
@@ -3693,9 +3700,11 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
       fresh.prepareSlots(proto.localNames)
       fresh
   let slot = proto.positionalSlots[0]
-  result.defineFreshCallSlot(slot, arg)
   if paramMaySet:
+    result.defineFreshCallSlot(slot, arg)
     result.declareSlotType(slot, proto.paramTypes[0])
+  else:
+    result.bindSingleSimpleCallSlot(slot, arg)
 
 proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
                                 args: openArray[Value]): Scope {.inline.} =
@@ -6158,6 +6167,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     created
                   else:
                     callee.fnScope
+                stack.setLen(argsStart)
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = callScope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = proto.frameNeedsImplValidation
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = callScope.evalBudget
+                continue
+              elif argCount == 1 and proto.canFastBindUnaryInt and
+                  proto.returnKnownBareInt and
+                  (inst[].flag or stack[argsStart].kind == vkInt):
+                let callScope = bindUnaryIntCallScope(callee.fnScope, proto,
+                                                      stack[argsStart])
                 stack.setLen(argsStart)
                 pushCallFrame()
                 chunk = proto.chunk
