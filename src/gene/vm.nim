@@ -8051,6 +8051,10 @@ proc schedulerWorkerLeaseHasProgress(lease: SchedulerWorkerLease): bool =
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
   if schedulerRunOne(skipWorkerSafe = lease.active):
     return true
+  # If the cooperative root lane has no exclusive work, let it help drain the
+  # worker-candidate queue instead of idling while OS workers own all candidates.
+  if lease.active and schedulerRunOne(skipWorkerSafe = false):
+    return true
   if schedulerWorkerLeaseHasProgress(lease):
     os.sleep(1)
     return true
@@ -8059,6 +8063,8 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool =
   if schedulerRunOneUntil(deadline, skipWorkerSafe = lease.active):
+    return true
+  if lease.active and schedulerRunOneUntil(deadline, skipWorkerSafe = false):
     return true
   if schedulerWorkerLeaseHasProgress(lease):
     os.sleep(1)

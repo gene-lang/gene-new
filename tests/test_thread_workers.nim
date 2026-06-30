@@ -71,6 +71,21 @@ suite "threaded scheduler workers":
          "  (+ (await a) (await b)))",
          "43"
 
+  test "root await helps drain worker-candidate queue":
+    withGeneWorkerSetting "1":
+      ck "(scope " &
+         "  (fn work [base] " &
+         "    (var i 0) " &
+         "    (var acc base) " &
+         "    (while (< i 50000) " &
+         "      (set acc (+ acc 1)) " &
+         "      (set i (+ i 1))) " &
+         "    acc) " &
+         "  (var a (spawn (work 1))) " &
+         "  (var b (spawn (work 2))) " &
+         "  [(await a) (await b)])",
+         "[50001 50002]"
+
   test "root channel waits run worker-candidate tasks on workers":
     withGeneWorkers:
       ck "(scope (var ch (channel ^capacity 1)) " &
