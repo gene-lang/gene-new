@@ -321,6 +321,9 @@ proc ffiTestSizeShort(x: csize_t): cshort {.cdecl.} =
 proc ffiTestSizeI8(x: csize_t): int8 {.cdecl.} =
   int8(x) + 8'i8
 
+proc ffiTestSizeChar(x: csize_t): cchar {.cdecl.} =
+  cchar(ord('A') + int(x))
+
 proc ffiTestSizeU32(x: csize_t): uint32 {.cdecl.} =
   uint32(x) + 9'u32
 
@@ -332,6 +335,9 @@ proc ffiTestSizeUShort(x: csize_t): cushort {.cdecl.} =
 
 proc ffiTestSizeU8(x: csize_t): uint8 {.cdecl.} =
   uint8(x) + 12'u8
+
+proc ffiTestSizeUChar(x: csize_t): uint8 {.cdecl.} =
+  uint8(x) + 13'u8
 
 proc ffiTestSizeULong(x: csize_t): culong {.cdecl.} =
   culong(x + csize_t(2))
@@ -2721,6 +2727,11 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestSizeI8", "ffiTestSizeI8",
                                   cast[pointer](ffiTestSizeI8), lib,
                                   @[newSym("C/Size")], newSym("C/Int8")))
+      scope.define("size-char",
+                   newFfiCallable("ffiTestSizeChar",
+                                  "ffiTestSizeChar",
+                                  cast[pointer](ffiTestSizeChar), lib,
+                                  @[newSym("C/Size")], newSym("C/Char")))
       scope.define("size-u32",
                    newFfiCallable("ffiTestSizeU32", "ffiTestSizeU32",
                                   cast[pointer](ffiTestSizeU32), lib,
@@ -2738,6 +2749,11 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestSizeU8", "ffiTestSizeU8",
                                   cast[pointer](ffiTestSizeU8), lib,
                                   @[newSym("C/Size")], newSym("C/UInt8")))
+      scope.define("size-uchar",
+                   newFfiCallable("ffiTestSizeUChar",
+                                  "ffiTestSizeUChar",
+                                  cast[pointer](ffiTestSizeUChar), lib,
+                                  @[newSym("C/Size")], newSym("C/UChar")))
       scope.define("size-ulong",
                    newFfiCallable("ffiTestSizeULong",
                                   "ffiTestSizeULong",
@@ -5658,10 +5674,12 @@ suite "types — function boundaries":
       check run(compileSource("(size-i16 4)"), scope).print() == "10"
       check run(compileSource("(size-short 4)"), scope).print() == "11"
       check run(compileSource("(size-i8 4)"), scope).print() == "12"
+      check run(compileSource("(size-char 5)"), scope).print() == "'F'"
       check run(compileSource("(size-u32 4)"), scope).print() == "13"
       check run(compileSource("(size-u16 4)"), scope).print() == "14"
       check run(compileSource("(size-ushort 4)"), scope).print() == "15"
       check run(compileSource("(size-u8 4)"), scope).print() == "16"
+      check run(compileSource("(size-uchar 4)"), scope).print() == "17"
       check run(compileSource("(size-ulong 4)"), scope).print() == "6"
       check run(compileSource("(size-i64 4)"), scope).print() == "7"
       check run(compileSource("(size-u64 4)"), scope).print() == "8"

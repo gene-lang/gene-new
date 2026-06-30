@@ -11352,6 +11352,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
       type SizeInt8Proc = proc(x: csize_t): int8 {.cdecl.}
       let fn = cast[SizeInt8Proc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
+    of "C/Char":
+      type SizeCharProc = proc(x: csize_t): cchar {.cdecl.}
+      let fn = cast[SizeCharProc](callee.ffiCallableAddress)
+      return ffiCCharResult(fn(arg0))
     of "C/UInt":
       type SizeUIntProc = proc(x: csize_t): cuint {.cdecl.}
       let fn = cast[SizeUIntProc](callee.ffiCallableAddress)
@@ -11371,6 +11375,10 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     of "C/UInt8":
       type SizeUInt8Proc = proc(x: csize_t): uint8 {.cdecl.}
       let fn = cast[SizeUInt8Proc](callee.ffiCallableAddress)
+      return newInt(int64(fn(arg0)))
+    of "C/UChar":
+      type SizeUCharProc = proc(x: csize_t): uint8 {.cdecl.}
+      let fn = cast[SizeUCharProc](callee.ffiCallableAddress)
       return newInt(int64(fn(arg0)))
     of "C/Long":
       type SizeLongProc = proc(x: csize_t): clong {.cdecl.}
