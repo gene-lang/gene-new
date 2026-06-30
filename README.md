@@ -151,9 +151,9 @@ participates in equality or hashing.
 > count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. The
 > lease lets OS worker threads consume snapshot-isolated worker candidates while
 > unsafe shared-scope tasks stay on the cooperative root lane; root waits also
-> help drain worker candidates after cooperative-only work is exhausted. Timer
-> waiters and `actor/ask` timeouts wake parked workers so timer progress is not
-> tied only to root scheduler pumping.
+> help drain worker candidates after cooperative-only work is exhausted.
+> Worker-candidate timer waiters and `actor/ask` timeouts wake parked workers
+> so eligible timer progress is not tied only to root scheduler pumping.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.

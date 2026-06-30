@@ -33,11 +33,11 @@ counts, and RC leak accounting, including typed task/channel and actor ask paths
 This removes more runtime data-race classes and keeps ORC-object atomicity
 regressions visible, but it is still not production M:N: work stealing, async
 I/O, pinned lifecycle, and production semantics remain open. Idle worker threads
-park on a condition-variable wakeup when no worker-candidate fiber or scheduler
-timer is queued; timer waiters and `actor/ask` timeouts signal parked workers so
-timeout progress is not tied only to root scheduler pumping. Worker-owned fibers
-are tracked while active so root deadlock detection and cancellation do not miss
-claimed work.
+park on a condition-variable wakeup when no worker-candidate fiber or worker
+timer is queued; worker-candidate timer waiters and `actor/ask` timeouts signal
+parked workers so eligible timeout progress is not tied only to root scheduler
+pumping. Worker-owned fibers are tracked while active so root deadlock detection
+and cancellation do not miss claimed work.
 
 ## Goal
 
@@ -111,10 +111,10 @@ Notes:
    actor interiors have local locks. The bounded worker lane consumes only
    snapshot-isolated candidates, root waits help drain those candidates once
    cooperative-only work is exhausted, idle workers use condition-variable
-   wakeups rather than fixed polling, timer additions wake parked workers, and
-   worker-owned fibers stay visible to root deadlock/cancellation checks while
-   active. M:N still needs production lifecycle, work stealing, richer timer/I/O
-   ownership, async I/O integration, and publication rules. `runStackPool`,
+   wakeups rather than fixed polling, worker-candidate timers wake parked
+   workers, and worker-owned fibers stay visible to root deadlock/cancellation
+   checks while active. M:N still needs production lifecycle, work stealing,
+   richer timer/I/O ownership, async I/O integration, and publication rules. `runStackPool`,
    `callScopePool`, and active scheduler context remain per-thread caches/context.
 
 4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
@@ -149,7 +149,7 @@ Notes:
   and root waits. AtomicArc threaded builds start the lease by default, with
   `GENE_WORKERS=N` for explicit sizing and `GENE_WORKERS=0` for disabling it.
   Idle worker parking now uses scheduler condition-variable wakeups, root waits
-  help with worker candidates, and scheduler timers wake parked workers.
+  help with worker candidates, and worker-candidate timers wake parked workers.
   Production work stealing, richer timer/I/O ownership, per-thread tuning, and
   pinned global init remain open.
 - **E. Load balancing + the deferred pieces.** Work stealing and async-I/O.

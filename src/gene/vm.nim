@@ -7626,7 +7626,7 @@ proc parkFiber(f: Fiber) =
     else:
       s.waiters.add f
       when compileOption("threads") and defined(gcAtomicArc):
-        if f.waitTimer:
+        if f.waitTimer and f.workerCandidate:
           signal(s.workerCond)
 
 proc hasRunnableFiber(): bool =
@@ -7984,7 +7984,7 @@ when compileOption("threads") and defined(gcAtomicArc):
       if s.workerStop or s.schedulerHasWorkerCandidateUnlocked():
         return
       for f in s.waiters:
-        if f.waitTimer:
+        if f.workerCandidate and f.waitTimer:
           pollTimer = true
           break
       if not pollTimer:
@@ -7996,7 +7996,8 @@ when compileOption("threads") and defined(gcAtomicArc):
         wait(s.workerCond, s.lock)
         return
     if pollTimer:
-      # std/locks has no timed Cond wait; poll only while scheduler timers exist.
+      # std/locks has no timed Cond wait; poll only while worker-owned timers
+      # or ask timeouts can make worker-lane progress.
       os.sleep(schedulerWorkerTimerPollMs)
 
   proc schedulerWorkerLoop(ctx: SchedulerWorkerContext) {.thread.} =
