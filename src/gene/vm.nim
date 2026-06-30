@@ -7908,6 +7908,9 @@ when compileOption("threads") and defined(gcAtomicArc):
       for f in s.runQueue:
         if f.workerCandidate:
           return true
+      for f in s.waiters:
+        if f.workerCandidate and f.waitTimer:
+          return true
 
   proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =
     for f in s.runQueue:

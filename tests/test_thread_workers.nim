@@ -74,3 +74,7 @@ suite "threaded scheduler workers":
         "t"), newGlobalScope())
       check task.kind == vkTask
       check task.taskDone
+
+  test "root await treats sleeping worker-candidate tasks as progress":
+    withGeneWorkers:
+      ck "(await (spawn (do (sleep 1) 42)))", "42"
