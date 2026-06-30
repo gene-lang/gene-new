@@ -108,12 +108,15 @@ type
 
   NativeCompileOp* = enum
     ncoNone
+    ncoIntIdentity
     ncoIntAdd
     ncoIntSub
     ncoIntMul
+    ncoI64Identity
     ncoI64Add
     ncoI64Sub
     ncoI64Mul
+    ncoF64Identity
     ncoF64Add
     ncoF64Sub
     ncoF64Mul
@@ -424,12 +427,15 @@ proc formatNames(names: openArray[string]): string =
 proc formatNativeOp(op: NativeCompileOp): string =
   case op
   of ncoNone: "none"
+  of ncoIntIdentity: "int-identity"
   of ncoIntAdd: "int-add"
   of ncoIntSub: "int-sub"
   of ncoIntMul: "int-mul"
+  of ncoI64Identity: "i64-identity"
   of ncoI64Add: "i64-add"
   of ncoI64Sub: "i64-sub"
   of ncoI64Mul: "i64-mul"
+  of ncoF64Identity: "f64-identity"
   of ncoF64Add: "f64-add"
   of ncoF64Sub: "f64-sub"
   of ncoF64Mul: "f64-mul"

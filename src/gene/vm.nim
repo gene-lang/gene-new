@@ -8259,16 +8259,24 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
         ".." & $positional.len & " argument(s), got " & $args.len)
 
     var lhs = args[0]
-    var rhs = args[1]
     if proto.hasParamTypes and proto.paramTypes[0].kind != vkNil:
-      lhs = adaptBoundary("parameter '" & positional[0] & "'",
-                          proto.paramTypes[0], lhs, callee.fnScope)
-    if proto.hasParamTypes and proto.paramTypes[1].kind != vkNil:
-      rhs = adaptBoundary("parameter '" & positional[1] & "'",
-                          proto.paramTypes[1], rhs, callee.fnScope)
+      let typeExpr = proto.paramTypes[0]
+      if not (typeExpr.isBareIntType and lhs.kind == vkInt):
+        lhs = adaptBoundary("parameter '" & positional[0] & "'",
+                            typeExpr, lhs, callee.fnScope)
+    var rhs = NIL
+    if args.len > 1:
+      rhs = args[1]
+      if proto.hasParamTypes and proto.paramTypes[1].kind != vkNil:
+        let typeExpr = proto.paramTypes[1]
+        if not (typeExpr.isBareIntType and rhs.kind == vkInt):
+          rhs = adaptBoundary("parameter '" & positional[1] & "'",
+                              typeExpr, rhs, callee.fnScope)
 
     let resultValue =
       case proto.nativeOp
+      of ncoIntIdentity, ncoI64Identity, ncoF64Identity:
+        lhs
       of ncoIntAdd:
         intAdd(lhs, rhs)
       of ncoIntSub:

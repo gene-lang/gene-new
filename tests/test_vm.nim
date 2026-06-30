@@ -140,6 +140,10 @@ suite "compiler — GIR emission":
     check proto.nativeOp == ncoIntAdd
     check "native=int-add" in chunk.disassemble()
 
+    let identityChunk = compileSource("(fn id [x : Int] : Int x)")
+    check identityChunk.functions[0].nativeOp == ncoIntIdentity
+    check "native=int-identity" in identityChunk.disassemble()
+
     let i64Chunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y))")
     check i64Chunk.functions[0].nativeOp == ncoI64Add
     check "native=i64-add" in i64Chunk.disassemble()

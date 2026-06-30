@@ -1709,6 +1709,13 @@ proc nativeArithmeticOp(typeName, opName: string): NativeCompileOp =
   else:
     ncoNone
 
+proc nativeIdentityOp(typeName: string): NativeCompileOp =
+  case typeName
+  of "Int": ncoIntIdentity
+  of "I64": ncoI64Identity
+  of "F64": ncoF64Identity
+  else: ncoNone
+
 proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
                            bodyStart: int, returnType: Value,
                            typeParams: openArray[string],
@@ -1724,13 +1731,18 @@ proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
   let typeName = returnType.nativeScalarType
   if typeName.len == 0:
     return ncoNone
-  if specs.positional.len != 2:
-    return ncoNone
   for t in specs.positionalTypes:
     if t.nativeScalarType != typeName:
       return ncoNone
 
   let expr = body[bodyStart]
+  if specs.positional.len == 1:
+    if expr.kind == vkSymbol and expr.symVal == specs.positional[0]:
+      return nativeIdentityOp(typeName)
+    return ncoNone
+
+  if specs.positional.len != 2:
+    return ncoNone
   if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
       expr.body.len != 2 or expr.head.kind != vkSymbol:
     return ncoNone
