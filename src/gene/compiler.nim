@@ -725,12 +725,11 @@ proc canUseRecur1(proto: FunctionProto): bool =
     not proto.callScopeNeedsSlotReset and
     (proto.simpleCall or proto.canUseTypedIntRecur1)
 
-proc rewriteTypedIntTailReturnGuards(proto: FunctionProto) =
-  ## Collapse the typed tail shape produced for `(if (< x const) x ...)`.
+proc rewriteTailReturnGuards(proto: FunctionProto) =
+  ## Collapse the tail shape produced for `(if (< x const) x ...)`.
   ## The replacement returns directly on the true branch and skips the four
-  ## now-dead condition/then/jump instructions on the false branch.
-  if not proto.returnKnownBareInt:
-    return
+  ## now-dead condition/then/jump instructions on the false branch. The VM op
+  ## keeps a dynamic fallback, so this is also safe for untyped native-fast `<`.
   var i = 0
   while i + 4 < proto.chunk.instructions.len:
     let load = proto.chunk.instructions[i]
@@ -741,12 +740,14 @@ proc rewriteTypedIntTailReturnGuards(proto: FunctionProto) =
     let loadLocal = load.op == opLoadLocalFast or load.op == opLoadLocal
     let trueLoadLocal = trueLoad.op == opLoadLocalFast or
       trueLoad.op == opLoadLocal
-    if loadLocal and cmp.op == opIntLtConst and
+    let cmpLtConst = cmp.op == opIntLtConst or
+      (cmp.op == opNativeFastConst and NativeFastKind(cmp.intArg) == nfkLt)
+    if loadLocal and cmpLtConst and
         jumpFalse.op == opJumpIfFalse and jumpFalse.intArg == i + 5 and
         trueLoadLocal and trueLoad.intArg == load.intArg and
         jumpEnd.op == opJump and jumpEnd.intArg >= 0 and
         jumpEnd.intArg < proto.chunk.instructions.len and
-        proto.chunk.instructions[jumpEnd.intArg].op == opReturnBareInt:
+        proto.chunk.instructions[jumpEnd.intArg].op in {opReturn, opReturnBareInt}:
       proto.chunk.instructions[i] = Instruction(
         op: opReturnLocalIfIntLtConst, intArg: load.intArg,
         depth: cmp.depth, name: load.name, flag: cmp.flag)
@@ -797,7 +798,7 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
             inc i, 3
           else:
             inc i
-      proto.rewriteTypedIntTailReturnGuards()
+      proto.rewriteTailReturnGuards()
     proto.chunk.rewriteSelfRecursiveCalls()
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
