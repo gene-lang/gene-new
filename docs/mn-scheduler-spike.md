@@ -5,7 +5,7 @@ Status: **decision doc** (spike result plus staged implementation notes). Date:
 Branch context: `scheduler` (cooperative single-worker scheduler, channel/task/
 actor suspension, explicit `Task/cancel`, and error/cancel scope-exit child-task
 cancellation with cleanup plus normal-exit child waiting done; actor scope
-shutdown cancels pending asks and parked handlers; opt-in worker-candidate OS
+shutdown cancels pending asks and parked handlers; bounded worker-candidate OS
 worker lane started).
 
 Follow-up implementation note: scheduler run/wait/timeout queues have moved from
@@ -22,18 +22,22 @@ cleanup, channel waits, actor mailbox waits/driving, and `sleep` now start a
 bounded worker lease by default in `--mm:atomicArc --threads:on` builds.
 `GENE_WORKERS=N` overrides the worker count, and `GENE_WORKERS=0` disables the
 worker lane. That lane lets OS worker threads consume snapshot-isolated worker
-candidates while unsafe shared-scope work remains on the cooperative root lane.
+candidates while unsafe shared-scope work remains on the cooperative root lane;
+root waits also help drain worker candidates once cooperative-only work is
+exhausted.
 Worker candidates are leaf-like: bytecode/runtime eligibility rejects bodies and
 reachable captured functions that contain nested `spawn`. A threaded `atomicArc`
 smoke gate now covers value operations, VM behavior, worker-candidate execution
 during root execution and root waits, cancellation/wait races at higher worker
 counts, and RC leak accounting, including typed task/channel and actor ask paths.
 This removes more runtime data-race classes and keeps ORC-object atomicity
-regressions visible, but it is still not production M:N: load balancing, work
-stealing, async I/O, and production semantics remain open. Idle worker threads
-park on a condition-variable wakeup when no worker-candidate fiber is queued,
-and worker-owned fibers are tracked while active so root deadlock detection and
-cancellation do not miss claimed work.
+regressions visible, but it is still not production M:N: work stealing, async
+I/O, pinned lifecycle, and production semantics remain open. Idle worker threads
+park on a condition-variable wakeup when no worker-candidate fiber or scheduler
+timer is queued; timer waiters and `actor/ask` timeouts signal parked workers so
+timeout progress is not tied only to root scheduler pumping. Worker-owned fibers
+are tracked while active so root deadlock detection and cancellation do not miss
+claimed work.
 
 ## Goal
 
@@ -53,8 +57,9 @@ a runtime worker pool"), and what it costs.
 - **Recommendation: keep worker execution bounded and restricted while hardening
   semantics.** The cooperative root lane remains the safety baseline for
   shared-scope tasks. The first OS worker lane now runs snapshot-isolated
-  candidates by default in atomicArc threaded builds; the remaining M:N work is
-  lifecycle, load balancing, and async integration.
+  candidates by default in atomicArc threaded builds, with root-lane helping
+  during waits; the remaining M:N work is lifecycle, broader load balancing, and
+  async integration.
 
 ## Measurement: atomic-RC hot-path cost
 
@@ -104,12 +109,13 @@ Notes:
 3. **Scheduler structures need production orchestration.** The runnable/wait/
    timeout queues are now per-`Application` and lock-backed, and task/channel/
    actor interiors have local locks. The bounded worker lane consumes only
-   snapshot-isolated candidates, idle workers use condition-variable wakeups
-   rather than fixed polling, and worker-owned fibers stay visible to root
-   deadlock/cancellation checks while active. M:N still needs production
-   lifecycle, load balancing or stealing, timer ownership, async I/O integration,
-   and publication rules. `runStackPool`, `callScopePool`, and active scheduler
-   context remain per-thread caches/context.
+   snapshot-isolated candidates, root waits help drain those candidates once
+   cooperative-only work is exhausted, idle workers use condition-variable
+   wakeups rather than fixed polling, timer additions wake parked workers, and
+   worker-owned fibers stay visible to root deadlock/cancellation checks while
+   active. M:N still needs production lifecycle, work stealing, richer timer/I/O
+   ownership, async I/O integration, and publication rules. `runStackPool`,
+   `callScopePool`, and active scheduler context remain per-thread caches/context.
 
 4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
    spawned fibers now mark reachable value graphs `shared` for threaded manual
@@ -117,7 +123,7 @@ Notes:
    contain nested `spawn` as worker candidates, and enqueue records that bit only
    when runtime captures are `Send` and reachable captured functions are also
    leaf-like. Eligible tasks get sparse captured-scope snapshots, including
-   transitive captures of captured functions. The opt-in worker lane consumes
+   transitive captures of captured functions. The bounded worker lane consumes
    those eligible tasks while unsafe shared-scope tasks remain cooperative.
    Worker-owned fibers are tracked under the scheduler lock, and parking rechecks
    channel/task/actor/timer readiness so a wakeup that races with suspension does
@@ -132,20 +138,21 @@ Notes:
 - **B. Scope isolation semantics.** Parallel/sent work is share-nothing.
   Worker-candidate tasks already receive sparse captured-scope snapshots instead
   of a live shared parent (`no outer mutation`, no nested `spawn`, plus `Send`
-  captures). The opt-in worker lane consumes only those eligible fibers.
+  captures). The bounded worker lane consumes only those eligible fibers.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
   The queue/object-locking portion has started, Send-boundary and spawned-fiber
   manual-RC publication have landed, and `nimble threadcheck`/`nimble verify`
-  exercise atomicArc smoke coverage, including the opt-in worker-candidate lane.
+  exercise atomicArc smoke coverage, including the worker-candidate lane.
 - **D. Worker pool.** A bounded OS-thread lease consumes snapshot-isolated
   worker-candidate fibers from the shared scheduler queue during root execution
   and root waits. AtomicArc threaded builds start the lease by default, with
   `GENE_WORKERS=N` for explicit sizing and `GENE_WORKERS=0` for disabling it.
-  Idle worker parking now uses scheduler condition-variable wakeups. Production
-  load balancing or stealing, timer ownership, per-thread tuning, and pinned
-  global init remain open.
-- **E. Load balancing + the deferred pieces.** Work stealing, timers/async-I/O.
+  Idle worker parking now uses scheduler condition-variable wakeups, root waits
+  help with worker candidates, and scheduler timers wake parked workers.
+  Production work stealing, richer timer/I/O ownership, per-thread tuning, and
+  pinned global init remain open.
+- **E. Load balancing + the deferred pieces.** Work stealing and async-I/O.
 
 ## Recommendation
 

@@ -150,7 +150,10 @@ participates in equality or hashing.
 > lifecycle remains experimental. Set `GENE_WORKERS=N` to choose the worker
 > count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. The
 > lease lets OS worker threads consume snapshot-isolated worker candidates while
-> unsafe shared-scope tasks stay on the cooperative root lane.
+> unsafe shared-scope tasks stay on the cooperative root lane; root waits also
+> help drain worker candidates after cooperative-only work is exhausted. Timer
+> waiters and `actor/ask` timeouts wake parked workers so timer progress is not
+> tied only to root scheduler pumping.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
@@ -262,10 +265,10 @@ sees no outer-scope mutation or nested `spawn`, and runtime captures satisfy
 `Send`; those eligible tasks receive sparse captured-scope snapshots so they no
 longer read through the live parent scope. Unsafe shared-scope tasks remain
 cooperative. Threaded `atomicArc` smoke checks cover values, VM behavior,
-root-execution and root-wait worker-candidate execution, and RC leak accounting.
-Worker threads park on a condition-variable wakeup when no eligible work is
-queued, but worker orchestration remains experimental and limited to
-snapshot-isolated leaf candidates.
+root-execution/root-wait worker-candidate execution, root-lane helping, timer
+wakeups, and RC leak accounting. Worker threads park on a condition-variable
+wakeup when no eligible work or timer exists, but worker orchestration remains
+experimental and limited to snapshot-isolated leaf candidates.
 
 ## License
 
