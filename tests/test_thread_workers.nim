@@ -143,3 +143,23 @@ suite "threaded scheduler workers":
   test "root await treats sleeping worker-candidate tasks as progress":
     withGeneWorkers:
       ck "(await (spawn (do (sleep 1) 42)))", "42"
+
+  test "ask timeouts wake parked workers while root runs":
+    withGeneWorkerSetting "1":
+      let task = run(compileSource(
+        "(type Get ^props {^reply (ReplyTo Int)}) " &
+        "(impl Send Get) " &
+        "(var gate (channel ^capacity 1)) " &
+        "(var a (actor/spawn ^init (fn [] 0) " &
+        "  ^handle (fn [ctx state msg] " &
+        "    (var (Get ^reply reply) msg) " &
+        "    (var value (gate ~ Channel/recv)) " &
+        "    (reply ~ ReplyTo/send value) " &
+        "    (actor/continue state)))) " &
+        "(var pending (a ~ actor/ask ^timeout-ms 5 " &
+        "  (fn [reply] (Get ^reply reply)))) " &
+        "(var i 0) " &
+        "(while (< i 800000) (set i (+ i 1))) " &
+        "pending"), newGlobalScope())
+      check task.kind == vkTask
+      check task.taskDone

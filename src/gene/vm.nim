@@ -7617,6 +7617,9 @@ proc parkFiber(f: Fiber) =
       s.enqueueRunnableUnlocked(f)
     else:
       s.waiters.add f
+      when compileOption("threads") and defined(gcAtomicArc):
+        if f.waitTimer:
+          signal(s.workerCond)
 
 proc hasRunnableFiber(): bool =
   let s = currentScheduler()
@@ -7651,6 +7654,8 @@ proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
   withSchedulerLock(s):
     s.askTimeouts.add AskTimeout(task: task, reply: reply, scope: scope,
                                  deadline: timerDeadline(timeoutMs))
+    when compileOption("threads") and defined(gcAtomicArc):
+      signal(s.workerCond)
 
 proc failExpiredAskTimeouts(now: MonoTime): bool =
   let s = currentScheduler()
