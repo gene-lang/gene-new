@@ -42,6 +42,8 @@ type
     opCallName0
     opCallName1
     opCallLocal0
+    opCallParentLocal0
+    opCallOuterLocal0
     opCallLocal1
     opCallParentLocal1
     opCallOuterLocal1
@@ -521,6 +523,11 @@ proc formatInstruction(inst: Instruction): string =
     result.add " name=" & inst.name & " argc=1"
   of opCallLocal0:
     result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=0"
+  of opCallParentLocal0:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=0"
+  of opCallOuterLocal0:
+    result.add " depth=" & $inst.depth & " slot=" & $inst.intArg &
+      " name=" & inst.name & " argc=0"
   of opCallLocal1:
     result.add " slot=" & $inst.intArg & " name=" & inst.name & " argc=1"
   of opCallParentLocal1:

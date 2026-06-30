@@ -81,6 +81,24 @@ proc main() =
     let v = run(noArgChunk, noArgScope)
     checksum = checksum + v.intVal
 
+  let parentNoArgScope = newGlobalScope()
+  discard run(compileSource(
+    "(var runner (do (var call_once (fn [] 7)) " &
+    "  (fn [] (call_once))))"), parentNoArgScope)
+  let parentNoArgChunk = compileSource("(runner)")
+  bench("vm.parent_no_arg_fn.compiled_chunk", 500_000, i):
+    let v = run(parentNoArgChunk, parentNoArgScope)
+    checksum = checksum + v.intVal
+
+  let outerNoArgScope = newGlobalScope()
+  discard run(compileSource(
+    "(var runner (do (var call_once (fn [] 7)) " &
+    "  ((fn [] (fn [] (call_once))))))"), outerNoArgScope)
+  let outerNoArgChunk = compileSource("(runner)")
+  bench("vm.outer_no_arg_fn.compiled_chunk", 500_000, i):
+    let v = run(outerNoArgChunk, outerNoArgScope)
+    checksum = checksum + v.intVal
+
   let oneArgScope = newGlobalScope()
   oneArgScope.define("inc1", run(compileSource("(fn [x] (+ x 1))"), oneArgScope))
   let oneArgChunk = compileSource("(inc1 9)")

@@ -3988,7 +3988,8 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     return true
   for inst in chunk.instructions:
     case inst.op
-    of opLoadOuterLocal, opCallParentLocal1, opCallOuterLocal1:
+    of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
+        opCallParentLocal1, opCallOuterLocal1:
       if inst.depth > localDepth:
         let captureDepth = inst.depth - localDepth
         if not capturedSlotSendable(fnScope, visibleScope, captureDepth,
@@ -4133,7 +4134,8 @@ proc collectSpawnCaptures(chunk: Chunk, localDepth: int,
     return
   for inst in chunk.instructions:
     case inst.op
-    of opLoadOuterLocal, opCallParentLocal1, opCallOuterLocal1:
+    of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
+        opCallParentLocal1, opCallOuterLocal1:
       if inst.depth > localDepth:
         captures.addCaptureSlot(inst.depth - localDepth, inst.intArg, inst.name)
     of opLoadName, opLoadNativeFast, opCallName0, opCallName1:
@@ -6076,10 +6078,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
           stack.add value
-        of opCallName0, opCallName1, opCallLocal1, opCallParentLocal1,
-            opCallOuterLocal1:
+        of opCallName0, opCallName1, opCallLocal1, opCallParentLocal0,
+            opCallParentLocal1, opCallOuterLocal0, opCallOuterLocal1:
           let argCount =
-            if inst[].op == opCallName0: 0 else: 1
+            if inst[].op in {opCallName0, opCallParentLocal0,
+                             opCallOuterLocal0}: 0
+            else: 1
           if stack.len < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
           let argsStart = stack.len - argCount
@@ -6092,7 +6096,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 scope.slots[slot]
               else:
                 scope.loadSlot(slot, inst[].name)
-            elif inst[].op == opCallParentLocal1:
+            elif inst[].op == opCallParentLocal0 or
+                inst[].op == opCallParentLocal1:
               let slot = inst[].intArg
               let parent = scope.parent
               if parent != nil and slot >= 0 and slot < parent.slots.len and

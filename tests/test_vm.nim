@@ -487,6 +487,12 @@ suite "gir — disassembly":
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
     check dump.contains("opCallLocal0 slot=0 name=call_once argc=0")
+    let parentDump = compileSource(
+      "(var call_once (fn [] nil)) ((fn [] (call_once)))").disassemble()
+    check parentDump.contains("opCallParentLocal0 slot=0 name=call_once argc=0")
+    let outerDump = compileSource(
+      "(var call_once (fn [] nil)) ((fn [] ((fn [] (call_once)))))").disassemble()
+    check outerDump.contains("opCallOuterLocal0 depth=2 slot=0 name=call_once argc=0")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":

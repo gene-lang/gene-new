@@ -243,6 +243,17 @@ proc lexicalCallSlot(c: Compiler, name: string): tuple[op: OpCode, depth: int, s
     return (opCallOuterLocal1, outer.depth, outer.slot)
   (opCall, -1, -1)
 
+proc lexicalCallSlot0(c: Compiler, name: string): tuple[op: OpCode, depth: int, slot: int] =
+  let slot = c.localSlot(name)
+  if slot >= 0:
+    return (opCallLocal0, 0, slot)
+  let outer = c.parentSlot(name)
+  if outer.slot >= 0:
+    if outer.depth == 1:
+      return (opCallParentLocal0, outer.depth, outer.slot)
+    return (opCallOuterLocal0, outer.depth, outer.slot)
+  (opCall, -1, -1)
+
 proc emitLoadBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
   if slot >= 0:
@@ -557,8 +568,9 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
     return true
   for inst in chunk.instructions:
     case inst.op
-    of opLoadOuterLocal, opSetOuterLocal, opDefineName, opDefineLocal,
-       opSetModuleName, opMakeFn,
+    of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
+       opCallParentLocal1, opCallOuterLocal1, opSetOuterLocal, opDefineName,
+       opDefineLocal, opSetModuleName, opMakeFn,
        opMakeNamespace, opMakeType, opMakeProtocol, opMakeImpl, opImport,
        opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
        opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
@@ -2807,10 +2819,11 @@ proc compileListValue(c: var Compiler, value: Value) =
 
 proc compileCall(c: var Compiler, node: Value) =
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
-    let local = c.localSlot(node.head.symVal)
-    if local >= 0:
-      c.chunk.callSites[c.emit(opCallLocal0, local,
-                               name = node.head.symVal)] = node
+    let direct = c.lexicalCallSlot0(node.head.symVal)
+    if direct.slot >= 0:
+      c.chunk.callSites[c.emit(direct.op, direct.slot,
+                               name = node.head.symVal,
+                               depth = direct.depth)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
       c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
