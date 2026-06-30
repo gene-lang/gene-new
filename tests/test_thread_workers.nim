@@ -86,6 +86,27 @@ suite "threaded scheduler workers":
          "  [(await a) (await b)])",
          "[50001 50002]"
 
+  test "worker-candidate task errors wake root awaiters":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (type Boom ^props {^message Str} ^impl [Error]) " &
+         "  (impl Error Boom) " &
+         "  (var t (spawn (fail (Boom ^message \"worker\")))) " &
+         "  (var i 0) " &
+         "  (while (< i 200000) (set i (+ i 1))) " &
+         "  (try (await t) catch (Boom ^message m) m))",
+         "\"worker\""
+
+  test "worker-candidate task panics wake root awaiters":
+    withGeneWorkerSetting "8":
+      expect GenePanic:
+        discard run(compileSource(
+          "(scope " &
+          "  (var t (spawn (panic \"worker\"))) " &
+          "  (var i 0) " &
+          "  (while (< i 200000) (set i (+ i 1))) " &
+          "  (await t))"), newGlobalScope())
+
   test "root channel waits run worker-candidate tasks on workers":
     withGeneWorkers:
       ck "(scope (var ch (channel ^capacity 1)) " &
