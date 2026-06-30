@@ -4,15 +4,39 @@ import std/[os, unittest]
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
 
-template withGeneWorkers(body: untyped) =
+template withGeneWorkerSetting(value: string, body: untyped) =
   let previousWorkers = getEnv("GENE_WORKERS")
-  putEnv("GENE_WORKERS", "2")
+  putEnv("GENE_WORKERS", value)
   try:
     body
   finally:
     putEnv("GENE_WORKERS", previousWorkers)
 
+template withGeneWorkers(body: untyped) =
+  withGeneWorkerSetting("2"):
+    body
+
 suite "threaded scheduler workers":
+  test "threaded build starts default worker pool":
+    withGeneWorkerSetting "":
+      let task = run(compileSource(
+        "(var t (spawn 42)) " &
+        "(var i 0) " &
+        "(while (< i 200000) (set i (+ i 1))) " &
+        "t"), newGlobalScope())
+      check task.kind == vkTask
+      check task.taskDone
+
+  test "GENE_WORKERS=0 disables worker pool":
+    withGeneWorkerSetting "0":
+      let task = run(compileSource(
+        "(var t (spawn 42)) " &
+        "(var i 0) " &
+        "(while (< i 200000) (set i (+ i 1))) " &
+        "t"), newGlobalScope())
+      check task.kind == vkTask
+      check not task.taskDone
+
   test "worker pool runs worker-candidate tasks":
     withGeneWorkers:
       ck "(scope (var x 20) " &

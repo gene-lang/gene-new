@@ -4,6 +4,9 @@ import std/[algorithm, dynlib, locks, math, monotimes, os, sets, strutils,
             tables, times, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
+when compileOption("threads") and defined(gcAtomicArc):
+  import std/cpuinfo
+
 when sizeof(csize_t) == sizeof(clong):
   type GeneCPtrDiff = clong
 else:
@@ -5113,13 +5116,13 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
       "native"
   appendTraceFrames(e, [stackFrameValue(calleeName, kind)])
 
-# Cooperative scheduler state. The default lane is root-thread cooperative; in
-# atomicArc threaded builds, `GENE_WORKERS=N` can add an opt-in OS-thread lane
-# for snapshot-isolated worker candidates while root blocking waits keep the
-# unsafe lane cooperative. The scheduler's lock-backed run queue holds runnable
-# fibers; its wait list holds fibers parked on a channel, actor mailbox, task
-# await, or timer. `currentFiberActive` gates suspension: only a scheduled fiber
-# parks — root-level channel use keeps its original synchronous behavior.
+# Cooperative scheduler state. The root lane remains cooperative; in atomicArc
+# threaded builds a bounded OS-worker lane can run snapshot-isolated worker
+# candidates while root blocking waits keep the unsafe lane cooperative. The
+# scheduler's lock-backed run queue holds runnable fibers; its wait list holds
+# fibers parked on a channel, actor mailbox, task await, or timer.
+# `currentFiberActive` gates suspension: only a scheduled fiber parks —
+# root-level channel use keeps its original synchronous behavior.
 const schedulerInstructionBudget = 2048
 const schedulerWorkerTimerPollMs = 1
 
@@ -7582,7 +7585,7 @@ proc runPooled(chunk: Chunk, scope: Scope,
 # Cooperative task scheduler (design §13.1). Fibers are suspendable Gene tasks;
 # they park on channel ops, task awaits, actor mailbox backpressure, and timers.
 # The production M:N lifecycle is still open; today the root lane is cooperative
-# and atomicArc threaded builds can opt into workers for snapshot-isolated fibers.
+# and atomicArc threaded builds add workers for snapshot-isolated fibers.
 # ---------------------------------------------------------------------------
 
 proc enqueueRunnable(f: Fiber) =
@@ -7888,7 +7891,10 @@ when compileOption("threads") and defined(gcAtomicArc):
   proc configuredSchedulerWorkers(): int =
     let raw = getEnv("GENE_WORKERS")
     if raw.len == 0:
-      return 0
+      result = min(4, max(1, countProcessors() - 1))
+      if result > MaxSchedulerWorkers:
+        result = MaxSchedulerWorkers
+      return
     try:
       result = parseInt(raw)
     except ValueError:
