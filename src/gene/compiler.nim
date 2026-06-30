@@ -2840,6 +2840,17 @@ proc compileSpreadValues(c: var Compiler, values: openArray[Value], start: int,
       splices.add false
     inc i
 
+proc hasValueSpread(values: openArray[Value]): bool =
+  var i = 0
+  while i < values.len:
+    if values[i].isStandaloneSpreadMarker:
+      return true
+    if i + 1 < values.len and values[i + 1].isStandaloneSpreadMarker:
+      return true
+    if values[i].valueSpreadExpr.spread:
+      return true
+    inc i
+
 proc compileListValue(c: var Compiler, value: Value) =
   var splices: seq[bool]
   var hasSplice = false
@@ -2895,6 +2906,18 @@ proc compileCall(c: var Compiler, node: Value) =
     if not c.hasLexicalBinding(node.head.symVal):
       compileExpr(c, node.body[0])
       c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal)] = node
+      return
+  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len > 1 and
+      not node.body.hasValueSpread:
+    let slot = c.localSlot(node.head.symVal)
+    if slot >= 0:
+      var argsKnownBareInt = true
+      for arg in node.body:
+        argsKnownBareInt = argsKnownBareInt and c.exprKnownBareInt(arg)
+        compileExpr(c, arg)
+      c.chunk.callSites[c.emit(opCallLocalN, slot, name = node.head.symVal,
+                               depth = node.body.len,
+                               flag = argsKnownBareInt)] = node
       return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]

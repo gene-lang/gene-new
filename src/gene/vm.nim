@@ -3783,7 +3783,8 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
     result.bindSingleSimpleCallSlot(slot, arg)
 
 proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
-                                args: openArray[Value]): Scope {.inline.} =
+                                args: openArray[Value],
+                                argsKnownBareInt = false): Scope {.inline.} =
   var anyParamMaySet = false
   if proto.positionalSlotMaySet.len != proto.params.len:
     anyParamMaySet = true
@@ -3806,16 +3807,17 @@ proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
   if anyParamMaySet:
     for i in 0 ..< args.len:
       let value = args[i]
-      if value.kind != vkInt:
+      if not argsKnownBareInt and value.kind != vkInt:
         raiseTypeError("parameter '" & proto.params[i] & "'", "Int", value, result)
       let slot = proto.positionalSlots[i]
       result.defineFreshCallSlot(slot, value)
       result.declareSlotType(slot, proto.paramTypes[i])
   else:
-    for i in 0 ..< args.len:
-      let value = args[i]
-      if value.kind != vkInt:
-        raiseTypeError("parameter '" & proto.params[i] & "'", "Int", value, result)
+    if not argsKnownBareInt:
+      for i in 0 ..< args.len:
+        let value = args[i]
+        if value.kind != vkInt:
+          raiseTypeError("parameter '" & proto.params[i] & "'", "Int", value, result)
     result.bindSimpleCallSlots(proto, args)
 
 proc clearDefinedCallSlots(scope: Scope) {.inline.} =
@@ -6163,11 +6165,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
           stack.add value
-        of opCallName0, opCallName1, opCallLocal1, opCallParentLocal0,
+        of opCallName0, opCallName1, opCallLocal1, opCallLocalN, opCallParentLocal0,
             opCallParentLocal1, opCallOuterLocal0, opCallOuterLocal1:
           let argCount =
             if inst[].op in {opCallName0, opCallParentLocal0,
                              opCallOuterLocal0}: 0
+            elif inst[].op == opCallLocalN: inst[].depth
             else: 1
           if stack.len < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
@@ -6175,7 +6178,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var callee =
             if inst[].op == opCallName0 or inst[].op == opCallName1:
               scope.lookup(inst[].name)
-            elif inst[].op == opCallLocal1:
+            elif inst[].op == opCallLocal1 or inst[].op == opCallLocalN:
               let slot = inst[].intArg
               if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
                 scope.slots[slot]
@@ -6280,6 +6283,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curFrameKind = fkNormal
                 evalBudget = callScope.evalBudget
                 continue
+              elif argCount > 1 and proto.canFastBindPositionalInt and
+                  proto.returnKnownBareInt and argCount == proto.params.len and
+                  inst[].flag:
+                let callScope = bindPositionalIntCallScope(callee.fnScope, proto,
+                  stack.toOpenArray(argsStart, stack.high),
+                  argsKnownBareInt = true)
+                stack.setLen(argsStart)
+                pushCallFrame()
+                chunk = proto.chunk
+                scope = callScope
+                recycleScope = proto.poolCallScope
+                stack = acquireRunStack()
+                ip = 0
+                validateImplRequirements = proto.frameNeedsImplValidation
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                evalBudget = callScope.evalBudget
+                continue
               elif not proto.isGenerator:
                 var boundScope: Scope
                 var boundReturnType: Value
@@ -6290,6 +6315,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                      stack[argsStart])
                   boundReturnType = proto.returnType
                   usedUnaryIntFast = true
+                elif proto.canFastBindPositionalInt and
+                    argCount == proto.params.len:
+                  boundScope = bindPositionalIntCallScope(callee.fnScope, proto,
+                    stack.toOpenArray(argsStart, stack.high),
+                    argsKnownBareInt = inst[].flag)
+                  boundReturnType = proto.returnType
                 else:
                   let bound =
                     if argCount == 0:
