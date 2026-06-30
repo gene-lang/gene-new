@@ -2310,6 +2310,26 @@ proc parseFfiStructFields(fields: Value): seq[FfiStructField] =
 proc parseFfiUnionFields(fields: Value): seq[FfiStructField] =
   parseFfiAggregateFields("ffi/union", fields, allowOffsets = false)
 
+proc compileFfiLibrary(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len != 1 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "ffi/library requires a name")
+  for key, _ in node.props:
+    if key notin ["linux", "macos", "windows"]:
+      raise newException(GeneError,
+        "ffi/library has unsupported property ^" & key)
+  let proto = FfiLibraryProto(
+    name: body[0].symVal,
+    linux: propLiteral(node, "linux", "", "ffi/library"),
+    macos: propLiteral(node, "macos", "", "ffi/library"),
+    windows: propLiteral(node, "windows", "", "ffi/library"))
+  if proto.linux.len == 0 and proto.macos.len == 0 and proto.windows.len == 0:
+    raise newException(GeneError,
+      "ffi/library requires at least one target library name")
+  discard c.chunk.addFfiLibrary(proto)
+  c.emitConst(newSym(proto.name))
+  c.emitDefineBinding(proto.name)
+
 proc compileFfiFn(c: var Compiler, node: Value) =
   let body = node.body
   if body.len < 2 or body[0].kind != vkSymbol:
@@ -3231,6 +3251,9 @@ proc compileImpl(c: var Compiler, node: Value) =
 
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
+  if h.isPath(["ffi", "library"]):
+    compileFfiLibrary(c, node)
+    return
   if h.isPath(["ffi", "fn"]):
     compileFfiFn(c, node)
     return

@@ -282,6 +282,31 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(to_name ^protocol ToName x)")
 
+  test "ffi/library declarations expose target metadata manifests":
+    let chunk = compileSource(
+      "(ffi/library libc " &
+      "  ^linux \"libc.so.6\" " &
+      "  ^macos \"libSystem.B.dylib\" " &
+      "  ^windows \"msvcrt.dll\") " &
+      "(ffi/fn strlen ^library libc ^symbol \"strlen\" [s : C/CStr] : C/Size)")
+    check chunk.ffiLibraries.len == 1
+    check chunk.ffiLibraries[0].name == "libc"
+    check chunk.ffiLibraries[0].linux == "libc.so.6"
+    check chunk.ffiLibraries[0].macos == "libSystem.B.dylib"
+    check chunk.ffiLibraries[0].windows == "msvcrt.dll"
+    check "ffi-libraries:" in chunk.disassemble()
+    check "linux=libc.so.6" in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "typedef struct GeneFfiLibraryInfo" in c
+    check "static const GeneFfiLibraryInfo gene_ffi_libraries[] = {" in c
+    check "{\"libc\", \"libc.so.6\", \"libSystem.B.dylib\", \"msvcrt.dll\"}," in c
+    check "static const size_t gene_ffi_libraries_count = 1;" in c
+    check_eval("(ffi/library libc ^linux \"libc.so.6\") libc", "libc")
+    expect GeneError:
+      discard compileSource("(ffi/library libc)")
+    expect GeneError:
+      discard compileSource("(ffi/library libc ^freebsd \"libc.so\")")
+
   test "ffi/fn declarations expose generated C wrappers":
     let chunk = compileSource("(ffi/fn strlen " &
                               "  ^library libc ^symbol \"strlen\" " &

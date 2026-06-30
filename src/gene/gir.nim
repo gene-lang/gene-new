@@ -181,6 +181,12 @@ type
     name*: string
     typeExpr*: Value
 
+  FfiLibraryProto* = ref object
+    name*: string
+    linux*: string
+    macos*: string
+    windows*: string
+
   FfiFnProto* = ref object
     name*: string
     library*: string
@@ -306,6 +312,7 @@ type
     typeProtos*: seq[TypeProto]
     protocolProtos*: seq[ProtocolProto]
     implProtos*: seq[ImplProto]
+    ffiLibraries*: seq[FfiLibraryProto]
     ffiFns*: seq[FfiFnProto]
     ffiStructs*: seq[FfiStructProto]
     ffiUnions*: seq[FfiUnionProto]
@@ -319,7 +326,8 @@ proc newChunk*(): Chunk =
         imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
         typeProtos: @[], protocolProtos: @[], implProtos: @[],
-        ffiFns: @[], ffiStructs: @[], ffiUnions: @[], ffiSignatures: @[],
+        ffiLibraries: @[], ffiFns: @[], ffiStructs: @[], ffiUnions: @[],
+        ffiSignatures: @[],
         monomorphizations: @[], directProtocolCalls: @[],
         callSites: initTable[int, Value]())
 
@@ -362,6 +370,10 @@ proc addSubchunk*(chunk: Chunk, body: Chunk): int =
 proc addImport*(chunk: Chunk, spec: ImportSpec): int =
   result = chunk.imports.len
   chunk.imports.add spec
+
+proc addFfiLibrary*(chunk: Chunk, library: FfiLibraryProto): int =
+  result = chunk.ffiLibraries.len
+  chunk.ffiLibraries.add library
 
 proc addFfiFn*(chunk: Chunk, fn: FfiFnProto): int =
   result = chunk.ffiFns.len
@@ -698,6 +710,19 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         desc.add " " & formatNames(sels)
       lines.add desc
 
+  if chunk.ffiLibraries.len > 0:
+    lines.add indent & "ffi-libraries:"
+    for i, library in chunk.ffiLibraries:
+      var targets: seq[string]
+      if library.linux.len > 0:
+        targets.add "linux=" & library.linux
+      if library.macos.len > 0:
+        targets.add "macos=" & library.macos
+      if library.windows.len > 0:
+        targets.add "windows=" & library.windows
+      lines.add indent & "  [" & $i & "] " & library.name &
+        " " & formatNames(targets)
+
   if chunk.ffiFns.len > 0:
     lines.add indent & "ffi-fns:"
     for i, fn in chunk.ffiFns:
@@ -866,6 +891,12 @@ type TaskFrameCRow = object
   functionName: string
   kind: string
   canSuspend: bool
+
+type FfiLibraryCRow = object
+  name: string
+  linux: string
+  macos: string
+  windows: string
 
 type FfiFnCRow = object
   name: string
@@ -1101,6 +1132,9 @@ proc directProtocolManifestName(prefix: string): string =
 proc taskFrameManifestName(prefix: string): string =
   "gene_" & cIdent(prefix & "task_frames", "task_frames")
 
+proc ffiLibraryManifestName(prefix: string): string =
+  "gene_" & cIdent(prefix & "ffi_libraries", "ffi_libraries")
+
 proc ffiFnManifestName(prefix: string): string =
   "gene_" & cIdent(prefix & "ffi_fns", "ffi_fns")
 
@@ -1229,6 +1263,23 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
 
 proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
                  available: var Table[string, AotCFunction]) =
+  var ffiLibraryRows: seq[FfiLibraryCRow]
+  for library in chunk.ffiLibraries:
+    ffiLibraryRows.add FfiLibraryCRow(name: library.name,
+                                      linux: library.linux,
+                                      macos: library.macos,
+                                      windows: library.windows)
+  if ffiLibraryRows.len > 0:
+    let manifestName = ffiLibraryManifestName(prefix)
+    lines.add "static const GeneFfiLibraryInfo " & manifestName & "[] = {"
+    for row in ffiLibraryRows:
+      lines.add "  {" & cStringLiteral(row.name) & ", " &
+        cStringLiteral(row.linux) & ", " & cStringLiteral(row.macos) &
+        ", " & cStringLiteral(row.windows) & "},"
+    lines.add "};"
+    lines.add "static const size_t " & manifestName & "_count = " &
+      $ffiLibraryRows.len & ";"
+    lines.add ""
   var ffiFnRows: seq[FfiFnCRow]
   for i, fn in chunk.ffiFns:
     let retLabel =
@@ -1538,6 +1589,12 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  const char *kind;",
     "  bool can_suspend;",
     "} GeneTaskFrameInfo;",
+    "typedef struct GeneFfiLibraryInfo {",
+    "  const char *name;",
+    "  const char *linux;",
+    "  const char *macos;",
+    "  const char *windows;",
+    "} GeneFfiLibraryInfo;",
     "typedef struct GeneFfiFnInfo {",
     "  const char *name;",
     "  const char *library;",
