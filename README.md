@@ -94,13 +94,14 @@ participates in equality or hashing.
   monomorphization manifests, direct protocol-call dependency metadata,
   typed-module AOT manifests, non-suspending native frame descriptors for
   selected AOT functions, mixed typed-native/bytecode recoverable-error frame
-  traces, task-frame lowering manifests for resumable functions, and
+  traces, and task-frame lowering manifests for resumable functions,
   generated `ffi/fn` adapter wrappers for supported C ABI declarations,
   including pointer-plus-length `C/Slice`/`Buffer` data views, plus `ffi/struct`,
   `ffi/union`, callback, and dynamic-signature metadata manifests,
   generated C ABI type-size/alignment conformance metadata and C struct layout
   assertions, and runtime `ffi/bind` dynamic calls for MVP C scalar,
-  C-string, opaque pointer, and small multi-argument pointer/size signatures,
+  C-string, opaque pointer, owned-pointer release, and small multi-argument
+  pointer/size signatures,
   `Device/Compute` authority plus opaque `Device/Buffer` metadata handles,
   first-class `Env` values with explicit
   `eval node ^in env`, explicit Env imports/capabilities, `^policy`
@@ -119,6 +120,13 @@ participates in equality or hashing.
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
+
+  The typed-native C backend remains experimental. The FFI MVP surface is more
+  concrete: generated `ffi/fn` wrappers are emitted for supported ABI shapes
+  instead of placeholder skeletons, and dynamic `ffi/bind` covers scalar,
+  C-string, pointer, pointer-plus-length slice/buffer, and owned-pointer release
+  cases. Broader production FFI work such as variadics, arbitrary aggregate ABI
+  calls, header parsing, and C++ ABI binding remains outside this surface.
 
 > **Concurrency is still experimental.** By default, tasks run on a cooperative
 > scheduler: `spawn` queues a task body, scheduled fibers yield at VM safepoints,

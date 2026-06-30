@@ -2452,6 +2452,14 @@ The first FFI milestone includes:
 - target-specific static/dynamic library names;
 - runtime `Ffi/Load` capability for arbitrary dynamic loading.
 
+Current implementation status: the interpreter has the native-call foundation,
+version-checked native module initializer lookup, root handles, generated
+`ffi/fn` C wrappers for supported scalar, `C/CStr`, pointer, `C/Slice`, and
+`Buffer` ABI shapes, target-specific `ffi/library` metadata, runtime
+`ffi/open`/`ffi/bind`, and deterministic `C/OwnedPtr` cleanup through `C/close`
+when a release symbol is supplied. This is still an MVP FFI surface, not a
+complete production FFI layer.
+
 Deferred:
 
 - runtime-created arbitrary signatures;
