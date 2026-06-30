@@ -1926,6 +1926,27 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if fnCompiler.sawYield: tfkGenerator
     elif bodyContainsAwait(body, start): tfkVm
     else: tfkNone
+  var fastBindUnaryInt =
+    typeParams.len == 0 and not checksErrors and specs.positional.len == 1 and
+    specs.requiredPositionalCount == 1 and positionalSlots.len == 1 and
+    positionalSlots[0] >= 0 and specs.rest.len == 0 and specs.named.len == 0 and
+    hasParamTypes and specs.positionalTypes.len == 1 and
+    specs.positionalTypes[0].isBareIntType and returnType.isBareIntType and
+    not fnCompiler.sawYield and specs.positionalDefaults.len == 1 and
+    not specs.positionalDefaults[0].optional
+  var fastBindPositionalInt =
+    typeParams.len == 0 and not checksErrors and not fnCompiler.sawYield and
+    specs.rest.len == 0 and specs.named.len == 0 and specs.positional.len > 0 and
+    specs.requiredPositionalCount == specs.positional.len and
+    positionalSlots.len == specs.positional.len and hasParamTypes and
+    specs.positionalTypes.len == specs.positional.len and returnType.isBareIntType and
+    specs.positionalDefaults.len == specs.positional.len
+  if fastBindPositionalInt:
+    for i in 0 ..< specs.positional.len:
+      if positionalSlots[i] < 0 or not specs.positionalTypes[i].isBareIntType or
+          specs.positionalDefaults[i].optional:
+        fastBindPositionalInt = false
+        break
   result = FunctionProto(name: name, typeParams: typeParams,
                          params: specs.positional,
                          localNames: fnCompiler.localNames,
@@ -1947,6 +1968,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          returnType: returnType,
                          hasReturnType: returnType.kind != vkNil,
                          returnKnownBareInt: returnKnownBareInt,
+                         fastBindUnaryInt: fastBindUnaryInt,
+                         fastBindPositionalInt: fastBindPositionalInt,
                          isGenerator: fnCompiler.sawYield,
                          selfParentSlot: selfParentSlot,
                          nativeOp: nativeOp,

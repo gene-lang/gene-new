@@ -161,6 +161,8 @@ type
     returnType*: Value
     hasReturnType*: bool
     returnKnownBareInt*: bool
+    fastBindUnaryInt*: bool
+    fastBindPositionalInt*: bool
     isGenerator*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp

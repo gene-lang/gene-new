@@ -3716,38 +3716,10 @@ proc bindSingleSimpleCallSlot(scope: Scope, slot: int, value: Value) {.inline.} 
     scope.markSlotDefined(slot)
 
 proc canFastBindUnaryInt(proto: FunctionProto): bool {.inline.} =
-  proto.typeParams.len == 0 and not proto.checksErrors and
-    proto.params.len == 1 and proto.requiredPositional == 1 and
-    proto.positionalSlots.len == 1 and proto.positionalSlots[0] >= 0 and
-    proto.restParam.len == 0 and proto.namedParams.len == 0 and
-    proto.hasParamTypes and proto.paramTypes.len == 1 and
-    proto.paramTypes[0].isBareIntType and proto.hasReturnType and
-    proto.returnType.isBareIntType and not proto.isGenerator and
-    proto.paramDefaults.len == 1 and not proto.paramDefaults[0].optional
+  proto.fastBindUnaryInt
 
 proc canFastBindPositionalInt(proto: FunctionProto): bool {.inline.} =
-  if proto.typeParams.len != 0 or proto.checksErrors or proto.isGenerator:
-    return false
-  if proto.restParam.len != 0 or proto.namedParams.len != 0:
-    return false
-  if proto.params.len == 0 or proto.requiredPositional != proto.params.len:
-    return false
-  if proto.positionalSlots.len != proto.params.len:
-    return false
-  if not proto.hasParamTypes or proto.paramTypes.len != proto.params.len:
-    return false
-  if not proto.hasReturnType or not proto.returnType.isBareIntType:
-    return false
-  if proto.paramDefaults.len != proto.params.len:
-    return false
-  for i in 0 ..< proto.params.len:
-    if proto.positionalSlots[i] < 0:
-      return false
-    if not proto.paramTypes[i].isBareIntType:
-      return false
-    if proto.paramDefaults[i].optional:
-      return false
-  true
+  proto.fastBindPositionalInt
 
 proc checkedFrameReturnType(proto: FunctionProto, returnType: Value): Value {.inline.} =
   if proto.returnKnownBareInt:
@@ -7986,6 +7958,9 @@ when compileOption("threads") and defined(gcAtomicArc):
           return true
       for f in s.waiters:
         if f.workerCandidate and f.waitTimer:
+          return true
+      for item in s.askTimeouts:
+        if item.task.kind == vkTask and not item.task.taskDone:
           return true
 
   proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =

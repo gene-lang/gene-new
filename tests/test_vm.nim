@@ -110,8 +110,20 @@ suite "compiler — GIR emission":
     check proto.params == @["x"]
     check proto.requiredPositional == 1
     check not proto.simpleCall
+    check not proto.fastBindUnaryInt
+    check not proto.fastBindPositionalInt
     check proto.paramTypes[0].print() == "item"
     check proto.returnType.print() == "item"
+
+  test "caches typed Int call fast-bind metadata":
+    let unary = compileSource("(fn [x : Int] : Int x)").functions[0]
+    check unary.fastBindUnaryInt
+    check unary.fastBindPositionalInt
+
+    let positional = compileSource(
+      "(fn [a : Int b : Int c : Int d : Int] : Int a)").functions[0]
+    check not positional.fastBindUnaryInt
+    check positional.fastBindPositionalInt
 
   test "records generic monomorphization requests":
     let chunk = compileSource("(fn (identity item) [x : item] : item x) " &
