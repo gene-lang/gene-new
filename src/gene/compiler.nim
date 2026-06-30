@@ -2326,6 +2326,7 @@ proc compileFfiFn(c: var Compiler, node: Value) =
                          library: propLiteral(node, "library", "", "ffi/fn"),
                          symbol: symbol,
                          abi: propLiteral(node, "abi", "C", "ffi/fn"),
+                         calling: propLiteral(node, "calling", "C", "ffi/fn"),
                          params: parseFfiParams(body[1]),
                          returnType: ret,
                          release: propLiteral(node, "release", "", "ffi/fn"))

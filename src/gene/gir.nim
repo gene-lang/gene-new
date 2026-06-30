@@ -186,6 +186,7 @@ type
     library*: string
     symbol*: string
     abi*: string
+    calling*: string
     params*: seq[FfiParam]
     returnType*: Value
     release*: string
@@ -706,6 +707,7 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
       var desc = indent & "  [" & $i & "] " & fn.name &
         " symbol=" & fn.symbol &
         " abi=" & fn.abi &
+        " calling=" & fn.calling &
         " params=" & formatNames(params)
       if fn.library.len > 0:
         desc.add " library=" & fn.library
@@ -870,6 +872,7 @@ type FfiFnCRow = object
   library: string
   symbol: string
   abi: string
+  calling: string
   wrapperName: string
   release: string
   arity: int
@@ -1129,6 +1132,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
     "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
   lines.add "  /* library: " & (if fn.library.len > 0: fn.library else: "<linker>") & " */"
   lines.add "  /* abi: " & (if fn.abi.len > 0: fn.abi else: "C") & " */"
+  lines.add "  /* calling: " & (if fn.calling.len > 0: fn.calling else: "C") & " */"
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
     let shape =
@@ -1226,6 +1230,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
       library: fn.library,
       symbol: if fn.symbol.len > 0: fn.symbol else: fn.name,
       abi: if fn.abi.len > 0: fn.abi else: "C",
+      calling: if fn.calling.len > 0: fn.calling else: "C",
       wrapperName: ffiWrapperName(fn, prefix & "ffi_" & $i),
       release: fn.release,
       arity: fn.params.len,
@@ -1238,6 +1243,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
       lines.add "  {" & cStringLiteral(row.name) & ", " &
         cStringLiteral(row.library) & ", " & cStringLiteral(row.symbol) &
         ", " & cStringLiteral(row.abi) & ", " &
+        cStringLiteral(row.calling) & ", " &
         cStringLiteral(row.wrapperName) & ", " &
         cStringLiteral(row.release) & ", " & $row.arity & ", " &
         cStringLiteral(row.resultType) & "},"
@@ -1529,6 +1535,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  const char *library;",
     "  const char *symbol;",
     "  const char *abi;",
+    "  const char *calling;",
     "  const char *wrapper_name;",
     "  const char *release;",
     "  size_t arity;",

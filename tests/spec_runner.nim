@@ -284,24 +284,29 @@ suite "spec — typed native compilation prototype from design":
 
   test "ffi/fn declarations expose generated C wrappers":
     let chunk = compileSource("(ffi/fn strlen " &
-                              "  ^library libc ^symbol \"strlen\" ^abi C " &
+                              "  ^library libc ^symbol \"strlen\" " &
+                              "  ^abi C ^calling cdecl " &
                               "  [s : C/CStr] : C/Size)")
     check chunk.ffiFns.len == 1
     check chunk.ffiFns[0].name == "strlen"
     check chunk.ffiFns[0].library == "libc"
     check chunk.ffiFns[0].symbol == "strlen"
     check chunk.ffiFns[0].abi == "C"
+    check chunk.ffiFns[0].calling == "cdecl"
     check "ffi-fns:" in chunk.disassemble()
+    check "calling=cdecl" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "generated FFI adapter wrappers" in c
     check "adapter skeletons" notin c
     check "typedef struct GeneFfiFnInfo" in c
+    check "const char *calling;" in c
     check "static const GeneFfiFnInfo gene_ffi_fns[] = {" in c
-    check "{\"strlen\", \"libc\", \"strlen\", \"C\", \"gene_ffi_strlen\", " &
-      "\"\", 1, \"C/Size\"}," in c
+    check "{\"strlen\", \"libc\", \"strlen\", \"C\", \"cdecl\", " &
+      "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
     check "static const size_t gene_ffi_fns_count = 1;" in c
     check "extern size_t strlen(const char * s);" in c
     check "GeneStatus gene_ffi_strlen" in c
+    check "calling: cdecl" in c
     check "arg 0 s: C/CStr -> const char *" in c
     check "result: C/Size -> GeneValue" in c
     check "GeneStatus status = gene_ffi_check_arity(ctx, call, 1);" in c
@@ -328,7 +333,7 @@ suite "spec — typed native compilation prototype from design":
     let c = compileSource(source).emitExperimentalC()
     check "static const size_t gene_ffi_fns_count = 6;" in c
     check "{\"make_owned\", \"\", \"make_owned\", \"C\", " &
-      "\"gene_ffi_make_owned\", \"destroy_owned\", 0, " &
+      "\"C\", \"gene_ffi_make_owned\", \"destroy_owned\", 0, " &
       "\"(C/OwnedPtr C/Char)\"}," in c
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
     check "int native_result = abs(x);" in c
