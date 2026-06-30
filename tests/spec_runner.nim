@@ -417,6 +417,18 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(ffi/fn empty_release ^symbol \"bad\" " &
                             "^release \"\" [] : (C/OwnedPtr C/Char))")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_ptr_shape ^symbol \"bad\" " &
+                            "[p : (C/Ptr C/Char C/Int)] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_slice_shape ^symbol \"bad\" " &
+                            "[s : (C/Slice C/UInt8 C/UInt16)] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_buffer_shape ^symbol \"bad\" " &
+                            "[b : (Buffer C/UInt8 C/UInt16)] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_result_shape ^symbol \"bad\" " &
+                            "^release \"free\" [] : (C/OwnedPtr C/Char C/Int))")
 
   test "ffi/struct declarations expose C layout metadata manifests":
     let chunk = compileSource("(ffi/struct Timespec " &

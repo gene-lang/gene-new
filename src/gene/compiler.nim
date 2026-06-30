@@ -2237,19 +2237,27 @@ proc isFfiScalarOrCStrLabel(label: string): bool =
     "C/Float", "C/Double", "C/Bool", "C/CStr"
   ]
 
-proc isFfiPointerLabel(label: string): bool =
-  label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
-    label.startsWith("(C/ConstPtr ") or
-    label.startsWith("(C/NullableConstPtr ") or
-    label.startsWith("(C/OwnedPtr ")
+proc ffiCompositeHead(expr: Value): string =
+  if expr.kind == vkNode:
+    ffiTypeLabel(expr.head)
+  else:
+    ""
 
-proc isFfiBufferArgLabel(label: string): bool =
-  label.startsWith("(C/Slice ") or label.startsWith("(Buffer ")
+proc isFfiPointerType(expr: Value): bool =
+  expr.kind == vkNode and expr.body.len == 1 and
+    ffiCompositeHead(expr) in [
+      "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr",
+      "C/OwnedPtr"
+    ]
+
+proc isFfiBufferArgType(expr: Value): bool =
+  expr.kind == vkNode and expr.body.len == 1 and
+    ffiCompositeHead(expr) in ["C/Slice", "Buffer"]
 
 proc validateFfiFnParamType(context, paramName: string, expr: Value) =
   let label = ffiTypeLabel(expr)
-  if isFfiScalarOrCStrLabel(label) or isFfiPointerLabel(label) or
-      isFfiBufferArgLabel(label):
+  if isFfiScalarOrCStrLabel(label) or isFfiPointerType(expr) or
+      isFfiBufferArgType(expr):
     return
   raise newException(GeneError,
     context & " parameter '" & paramName & "' has unsupported C wrapper type " &
@@ -2258,7 +2266,7 @@ proc validateFfiFnParamType(context, paramName: string, expr: Value) =
 proc validateFfiFnReturnType(context: string, expr: Value, release: string) =
   let label = ffiTypeLabel(expr)
   if label == "C/Void" or isFfiScalarOrCStrLabel(label) or
-      isFfiPointerLabel(label):
+      isFfiPointerType(expr):
     if label.startsWith("(C/OwnedPtr ") and release.len == 0:
       raise newException(GeneError,
         context & " return type " & label & " requires ^release")
