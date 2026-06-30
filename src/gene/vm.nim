@@ -7662,7 +7662,7 @@ proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
 
 proc failExpiredAskTimeouts(now: MonoTime): bool =
   let s = currentScheduler()
-  var expired: seq[AskTimeout]
+  var wakeTasks: seq[Value]
   withSchedulerLock(s):
     var i = 0
     while i < s.askTimeouts.len:
@@ -7670,17 +7670,17 @@ proc failExpiredAskTimeouts(now: MonoTime): bool =
       if item.task.kind != vkTask or item.task.taskDone:
         s.askTimeouts.delete(i)
       elif item.deadline <= now:
-        expired.add item
         s.askTimeouts.delete(i)
+        if item.task.kind == vkTask and not item.task.taskDone:
+          const message = "actor/ask timed out"
+          failTask(item.task, message, actorErrorValue(item.scope, message),
+                   hasValue = true)
+          wakeTasks.add item.task
+        result = true
       else:
         inc i
-  for item in expired:
-    if item.task.kind == vkTask and not item.task.taskDone:
-      const message = "actor/ask timed out"
-      failTask(item.task, message, actorErrorValue(item.scope, message),
-               hasValue = true)
-      wakeTaskWaiters(item.task)
-    result = true
+  for task in wakeTasks:
+    wakeTaskWaiters(task)
 
 proc wakeExpiredTimers(now = getMonoTime()): bool =
   let s = currentScheduler()

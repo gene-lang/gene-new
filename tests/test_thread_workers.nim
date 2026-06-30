@@ -163,3 +163,20 @@ suite "threaded scheduler workers":
         "pending"), newGlobalScope())
       check task.kind == vkTask
       check task.taskDone
+
+  test "root await treats pending ask timeouts as worker progress":
+    withGeneWorkerSetting "1":
+      ck "(scope " &
+         "  (type Get ^props {^reply (ReplyTo Int)}) " &
+         "  (impl Send Get) " &
+         "  (var gate (channel ^capacity 1)) " &
+         "  (var a (actor/spawn ^init (fn [] 0) " &
+         "    ^handle (fn [ctx state msg] " &
+         "      (var (Get ^reply reply) msg) " &
+         "      (var value (gate ~ Channel/recv)) " &
+         "      (reply ~ ReplyTo/send value) " &
+         "      (actor/continue state)))) " &
+         "  (var pending (a ~ actor/ask ^timeout-ms 5 " &
+         "    (fn [reply] (Get ^reply reply)))) " &
+         "  (try (await pending) catch (ActorError ^message m) m))",
+         "\"actor/ask timed out\""
