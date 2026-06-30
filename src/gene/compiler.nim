@@ -2465,6 +2465,10 @@ proc compileFfiSignature(c: var Compiler, node: Value,
     returnType: ret,
     escaping: propBool(node, "escaping", false, context),
     runtimeConstructible: kind == fskDynamic)
+  if kind == fskCallback:
+    for param in proto.params:
+      validateFfiFnParamType(context, param.name, param.typeExpr)
+    validateFfiFnReturnType(context, proto.returnType, "")
   discard c.chunk.addFfiSignature(proto)
   c.emitConst(newSym(proto.name))
   c.emitDefineBinding(proto.name)

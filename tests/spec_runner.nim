@@ -534,6 +534,17 @@ suite "spec — typed native compilation prototype from design":
       "\"lhs:(C/Ptr C/Void),rhs:(C/Ptr C/Void)\", \"C/Int\", false, false}," in c
     check "{\"RuntimeCall\", \"dynamic\", \"C\", \"value:Any\", " &
       "\"C/Int\", false, true}," in c
+    expect GeneError:
+      discard compileSource("(ffi/callback BadAny [value : Any] : C/Int)")
+    expect GeneError:
+      discard compileSource("(ffi/callback BadSliceResult " &
+                            "[] : (C/Slice C/UInt8))")
+    expect GeneError:
+      discard compileSource("(ffi/callback BadOwnedResult " &
+                            "[] : (C/OwnedPtr C/Char))")
+    expect GeneError:
+      discard compileSource("(ffi/callback BadPtrShape " &
+                            "[p : (C/Ptr C/Char C/Int)] : C/Void)")
 
 suite "spec — strings from design":
   test "strings expose explicit chars and bytes iteration":
