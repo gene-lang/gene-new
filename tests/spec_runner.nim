@@ -300,11 +300,13 @@ suite "spec — typed native compilation prototype from design":
     check "adapter skeletons" notin c
     check "typedef struct GeneFfiFnInfo" in c
     check "const char *calling;" in c
+    check "#define GENE_FFI_CDECL" in c
+    check "#define GENE_FFI_STDCALL __stdcall" in c
     check "static const GeneFfiFnInfo gene_ffi_fns[] = {" in c
     check "{\"strlen\", \"libc\", \"strlen\", \"C\", \"cdecl\", " &
       "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
     check "static const size_t gene_ffi_fns_count = 1;" in c
-    check "extern size_t strlen(const char * s);" in c
+    check "extern size_t GENE_FFI_CDECL strlen(const char * s);" in c
     check "GeneStatus gene_ffi_strlen" in c
     check "calling: cdecl" in c
     check "arg 0 s: C/CStr -> const char *" in c
@@ -314,6 +316,13 @@ suite "spec — typed native compilation prototype from design":
     check "size_t native_result = strlen(s);" in c
     check "return gene_ffi_result_size(ctx, native_result, result);" in c
     check "return GENE_FFI_WRAPPER_UNIMPLEMENTED;" notin c
+    let stdcallC =
+      compileSource("(ffi/fn WindowProc ^symbol \"WindowProc\" " &
+                    "^calling stdcall [x : C/Int] : C/Int)").emitExperimentalC()
+    check "extern int GENE_FFI_STDCALL WindowProc(int x);" in stdcallC
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_calling ^symbol \"bad\" " &
+                            "^calling vectorcall [] : C/Void)")
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 
@@ -338,18 +347,18 @@ suite "spec — typed native compilation prototype from design":
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c
     check "int native_result = abs(x);" in c
     check "return gene_ffi_result_int(ctx, native_result, result);" in c
-    check "extern const char * strerror(int x);" in c
+    check "extern const char * GENE_FFI_CDECL strerror(int x);" in c
     check "const char * native_result = strerror(x);" in c
     check "return gene_ffi_result_cstr(ctx, native_result, result);" in c
     check "status = gene_ffi_arg_const_ptr(ctx, call, 0, \"p\", " &
       "\"(C/ConstPtr C/Char)\", &p);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
       "\"(C/NullablePtr C/Char)\", NULL, result);" in c
-    check "extern void consume_slice(const void * s, size_t s_len);" in c
+    check "extern void GENE_FFI_CDECL consume_slice(const void * s, size_t s_len);" in c
     check "status = gene_ffi_arg_buffer(ctx, call, 0, \"s\", " &
       "\"(C/Slice C/UInt8)\", &s_view);" in c
     check "consume_slice(s_view.data, s_view.len);" in c
-    check "extern void consume_buffer(const void * b, size_t b_len);" in c
+    check "extern void GENE_FFI_CDECL consume_buffer(const void * b, size_t b_len);" in c
     check "GeneFfiBufferView b_view;" in c
     check "status = gene_ffi_arg_buffer(ctx, call, 0, \"b\", " &
       "\"(Buffer C/UInt8)\", &b_view);" in c

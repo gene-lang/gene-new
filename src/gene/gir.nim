@@ -1082,6 +1082,13 @@ proc ffiWrapperSupported(fn: FfiFnProto, retLabel: string): bool =
 proc ffiWrapperName(fn: FfiFnProto, fallback: string): string =
   "gene_ffi_" & cIdent(if fn.name.len > 0: fn.name else: fn.symbol, fallback)
 
+proc ffiCallingMacro(calling: string): string =
+  case calling.toLowerAscii
+  of "stdcall":
+    "GENE_FFI_STDCALL"
+  else:
+    "GENE_FFI_CDECL"
+
 proc aotModuleManifestName(prefix: string): string =
   "gene_" & cIdent(prefix & "aot_module", "aot_module")
 
@@ -1127,7 +1134,8 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
     for cDecl in ffiParamCDecls(label, name):
       declParams.add cDecl
   let paramList = if declParams.len == 0: "void" else: declParams.join(", ")
-  lines.add "extern " & retType & " " & cSymbol & "(" & paramList & ");"
+  lines.add "extern " & retType & " " & ffiCallingMacro(fn.calling) &
+    " " & cSymbol & "(" & paramList & ");"
   lines.add "GeneStatus " & ffiWrapperName(fn, prefix & "ffi_" & $index) &
     "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
   lines.add "  /* library: " & (if fn.library.len > 0: fn.library else: "<linker>") & " */"
@@ -1588,6 +1596,20 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "#define GENE_NATIVE_FRAME_TYPED (1u << 0)",
     "#define GENE_NATIVE_FRAME_CAN_SUSPEND (1u << 1)",
     "#define GENE_ALIGNOF(T) offsetof(struct { char c; T x; }, x)",
+    "#ifndef GENE_FFI_CDECL",
+    "#if defined(_MSC_VER)",
+    "#define GENE_FFI_CDECL __cdecl",
+    "#else",
+    "#define GENE_FFI_CDECL",
+    "#endif",
+    "#endif",
+    "#ifndef GENE_FFI_STDCALL",
+    "#if defined(_WIN32) && (defined(_MSC_VER) || defined(__GNUC__))",
+    "#define GENE_FFI_STDCALL __stdcall",
+    "#else",
+    "#define GENE_FFI_STDCALL",
+    "#endif",
+    "#endif",
     "#ifndef GENE_OK",
     "#define GENE_OK 0",
     "#endif",

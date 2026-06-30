@@ -2264,6 +2264,14 @@ proc validateFfiFnReturnType(context: string, expr: Value, release: string) =
   raise newException(GeneError,
     context & " return type has unsupported C wrapper type " & label)
 
+proc validateFfiCallingConvention(context, calling: string) =
+  case calling.toLowerAscii
+  of "c", "cdecl", "stdcall":
+    discard
+  else:
+    raise newException(GeneError,
+      context & " ^calling must be C, cdecl, or stdcall")
+
 proc parseFfiAggregateFields(context: string, fields: Value,
                              allowOffsets: bool): seq[FfiStructField] =
   if fields.kind != vkList:
@@ -2333,6 +2341,7 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   for param in proto.params:
     validateFfiFnParamType("ffi/fn", param.name, param.typeExpr)
   validateFfiFnReturnType("ffi/fn", proto.returnType, proto.release)
+  validateFfiCallingConvention("ffi/fn", proto.calling)
   discard c.chunk.addFfiFn(proto)
   c.emitConst(newNativeFn(name, nil))
   c.emitDefineBinding(name)
