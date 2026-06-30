@@ -27,6 +27,7 @@ task leakcheck, "Run refcount/scope leak tracking tests":
 task threadcheck, "Run threaded atomicArc smoke checks":
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_vm.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_native_api_threads.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_thread_workers.nim"
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
 
@@ -37,5 +38,6 @@ task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_vm.nim"
+  exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_native_api_threads.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_thread_workers.nim"
   exec "nim c -r --mm:atomicArc --threads:on -d:geneRcStats --path:src --hints:off tests/test_rc.nim"

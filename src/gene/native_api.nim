@@ -64,6 +64,7 @@ type
     released: bool
 
   GeneThreadAttachment* = ref object
+    ownerThreadId: int
     released: bool
 
   GeneCall* = object
@@ -326,13 +327,14 @@ proc geneNewFfiLoad*(): Value =
 
 proc geneAttachThread*(): GeneThreadAttachment =
   inc geneThreadAttachDepth
-  GeneThreadAttachment()
+  GeneThreadAttachment(ownerThreadId: getThreadId())
 
 proc geneDetachThread*(attachment: GeneThreadAttachment) =
   if attachment == nil or attachment.released:
     return
-  if geneThreadAttachDepth > 0:
-    dec geneThreadAttachDepth
+  if attachment.ownerThreadId != getThreadId() or geneThreadAttachDepth <= 0:
+    return
+  dec geneThreadAttachDepth
   attachment.released = true
 
 proc geneThreadAttached*(): bool =
