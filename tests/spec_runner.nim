@@ -296,16 +296,23 @@ suite "spec — typed native compilation prototype from design":
     check chunk.ffiLibraries[0].windows == "msvcrt.dll"
     check "ffi-libraries:" in chunk.disassemble()
     check "linux=libc.so.6" in chunk.disassemble()
+    check chunk.ffiFns[0].libraryDeclared
+    check "declared-library=true" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneFfiLibraryInfo" in c
     check "static const GeneFfiLibraryInfo gene_ffi_libraries[] = {" in c
     check "{\"libc\", \"libc.so.6\", \"libSystem.B.dylib\", \"msvcrt.dll\"}," in c
     check "static const size_t gene_ffi_libraries_count = 1;" in c
+    check "{\"strlen\", \"libc\", true, \"strlen\", \"C\", \"C\", " &
+      "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
     check_eval("(ffi/library libc ^linux \"libc.so.6\") libc", "libc")
     expect GeneError:
       discard compileSource("(ffi/library libc)")
     expect GeneError:
       discard compileSource("(ffi/library libc ^freebsd \"libc.so\")")
+    expect GeneError:
+      discard compileSource("(ffi/library libc ^linux \"libc.so.6\") " &
+                            "(ffi/library libc ^linux \"libc.so.6\")")
 
   test "ffi/fn declarations expose generated C wrappers":
     let chunk = compileSource("(ffi/fn strlen " &
@@ -315,6 +322,7 @@ suite "spec — typed native compilation prototype from design":
     check chunk.ffiFns.len == 1
     check chunk.ffiFns[0].name == "strlen"
     check chunk.ffiFns[0].library == "libc"
+    check not chunk.ffiFns[0].libraryDeclared
     check chunk.ffiFns[0].symbol == "strlen"
     check chunk.ffiFns[0].abi == "C"
     check chunk.ffiFns[0].calling == "cdecl"
@@ -324,11 +332,12 @@ suite "spec — typed native compilation prototype from design":
     check "generated FFI adapter wrappers" in c
     check "adapter skeletons" notin c
     check "typedef struct GeneFfiFnInfo" in c
+    check "bool library_declared;" in c
     check "const char *calling;" in c
     check "#define GENE_FFI_CDECL" in c
     check "#define GENE_FFI_STDCALL __stdcall" in c
     check "static const GeneFfiFnInfo gene_ffi_fns[] = {" in c
-    check "{\"strlen\", \"libc\", \"strlen\", \"C\", \"cdecl\", " &
+    check "{\"strlen\", \"libc\", false, \"strlen\", \"C\", \"cdecl\", " &
       "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
     check "static const size_t gene_ffi_fns_count = 1;" in c
     check "extern size_t GENE_FFI_CDECL strlen(const char * s);" in c
@@ -348,6 +357,8 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(ffi/fn bad_calling ^symbol \"bad\" " &
                             "^calling vectorcall [] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_library ^library \"\" [] : C/Void)")
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 
@@ -366,7 +377,7 @@ suite "spec — typed native compilation prototype from design":
       "  [] : (C/OwnedPtr C/Char))"
     let c = compileSource(source).emitExperimentalC()
     check "static const size_t gene_ffi_fns_count = 6;" in c
-    check "{\"make_owned\", \"\", \"make_owned\", \"C\", " &
+    check "{\"make_owned\", \"\", false, \"make_owned\", \"C\", " &
       "\"C\", \"gene_ffi_make_owned\", \"destroy_owned\", 0, " &
       "\"(C/OwnedPtr C/Char)\"}," in c
     check "status = gene_ffi_arg_int(ctx, call, 0, \"x\", &x);" in c

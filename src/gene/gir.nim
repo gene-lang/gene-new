@@ -190,6 +190,7 @@ type
   FfiFnProto* = ref object
     name*: string
     library*: string
+    libraryDeclared*: bool
     symbol*: string
     abi*: string
     calling*: string
@@ -736,6 +737,8 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         " params=" & formatNames(params)
       if fn.library.len > 0:
         desc.add " library=" & fn.library
+        if fn.libraryDeclared:
+          desc.add " declared-library=true"
       if fn.returnType.kind != vkNil:
         desc.add " return=" & fn.returnType.print()
       if fn.release.len > 0:
@@ -901,6 +904,7 @@ type FfiLibraryCRow = object
 type FfiFnCRow = object
   name: string
   library: string
+  libraryDeclared: bool
   symbol: string
   abi: string
   calling: string
@@ -1287,6 +1291,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
     ffiFnRows.add FfiFnCRow(
       name: fn.name,
       library: fn.library,
+      libraryDeclared: fn.libraryDeclared,
       symbol: if fn.symbol.len > 0: fn.symbol else: fn.name,
       abi: if fn.abi.len > 0: fn.abi else: "C",
       calling: if fn.calling.len > 0: fn.calling else: "C",
@@ -1300,8 +1305,9 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
     lines.add "static const GeneFfiFnInfo " & manifestName & "[] = {"
     for row in ffiFnRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
-        cStringLiteral(row.library) & ", " & cStringLiteral(row.symbol) &
-        ", " & cStringLiteral(row.abi) & ", " &
+        cStringLiteral(row.library) & ", " &
+        (if row.libraryDeclared: "true" else: "false") & ", " &
+        cStringLiteral(row.symbol) & ", " & cStringLiteral(row.abi) & ", " &
         cStringLiteral(row.calling) & ", " &
         cStringLiteral(row.wrapperName) & ", " &
         cStringLiteral(row.release) & ", " & $row.arity & ", " &
@@ -1598,6 +1604,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "typedef struct GeneFfiFnInfo {",
     "  const char *name;",
     "  const char *library;",
+    "  bool library_declared;",
     "  const char *symbol;",
     "  const char *abi;",
     "  const char *calling;",

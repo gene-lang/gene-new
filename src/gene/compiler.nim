@@ -23,6 +23,7 @@ type
     localNames: seq[string]
     parentSlots: seq[Table[string, int]]
     parentFunctionSigs: seq[Table[string, KnownFunctionSig]]
+    ffiLibraryNames: Table[string, bool]
     macros: Table[string, MacroDef]
     hasMacros: bool
     macroExpansionDepth: int
@@ -328,6 +329,7 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 
 proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable,
+           ffiLibraryNames: c.ffiLibraryNames,
            macros: c.macros, hasMacros: c.hasMacros,
            macroExpansionDepth: c.macroExpansionDepth,
            allowAmbientImports: c.allowAmbientImports)
@@ -2314,18 +2316,22 @@ proc compileFfiLibrary(c: var Compiler, node: Value) =
   let body = node.body
   if body.len != 1 or body[0].kind != vkSymbol:
     raise newException(GeneError, "ffi/library requires a name")
+  let name = body[0].symVal
+  if c.ffiLibraryNames.hasKey(name):
+    raise newException(GeneError, "duplicate ffi/library: " & name)
   for key, _ in node.props:
     if key notin ["linux", "macos", "windows"]:
       raise newException(GeneError,
         "ffi/library has unsupported property ^" & key)
   let proto = FfiLibraryProto(
-    name: body[0].symVal,
+    name: name,
     linux: propLiteral(node, "linux", "", "ffi/library"),
     macos: propLiteral(node, "macos", "", "ffi/library"),
     windows: propLiteral(node, "windows", "", "ffi/library"))
   if proto.linux.len == 0 and proto.macos.len == 0 and proto.windows.len == 0:
     raise newException(GeneError,
       "ffi/library requires at least one target library name")
+  c.ffiLibraryNames[name] = true
   discard c.chunk.addFfiLibrary(proto)
   c.emitConst(newSym(proto.name))
   c.emitDefineBinding(proto.name)
@@ -2350,8 +2356,13 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   if idx < body.len:
     raise newException(GeneError, "ffi/fn has unexpected body forms")
   let symbol = propLiteral(node, "symbol", name, "ffi/fn")
+  let library = propLiteral(node, "library", "", "ffi/fn")
+  if node.props.hasKey("library") and library.len == 0:
+    raise newException(GeneError, "ffi/fn ^library must not be empty")
   let proto = FfiFnProto(name: name,
-                         library: propLiteral(node, "library", "", "ffi/fn"),
+                         library: library,
+                         libraryDeclared: library.len > 0 and
+                           c.ffiLibraryNames.hasKey(library),
                          symbol: symbol,
                          abi: propLiteral(node, "abi", "C", "ffi/fn"),
                          calling: propLiteral(node, "calling", "C", "ffi/fn"),
@@ -3390,7 +3401,8 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
 proc compileForms*(forms: openArray[Value],
                    allowAmbientImports = true,
                    useLocalSlots = true): Chunk =
-  var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports)
+  var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports,
+                   ffiLibraryNames: initTable[string, bool]())
   if useLocalSlots:
     c.enableLocalSlots()
   if forms.len == 0:
