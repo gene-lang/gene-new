@@ -2262,6 +2262,9 @@ proc validateFfiFnReturnType(context: string, expr: Value, release: string) =
     if label.startsWith("(C/OwnedPtr ") and release.len == 0:
       raise newException(GeneError,
         context & " return type " & label & " requires ^release")
+    if release.len > 0 and not label.startsWith("(C/OwnedPtr "):
+      raise newException(GeneError,
+        context & " ^release is only valid for C/OwnedPtr results")
     return
   raise newException(GeneError,
     context & " return type has unsupported C wrapper type " & label)
@@ -2359,6 +2362,9 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   let library = propLiteral(node, "library", "", "ffi/fn")
   if node.props.hasKey("library") and library.len == 0:
     raise newException(GeneError, "ffi/fn ^library must not be empty")
+  let release = propLiteral(node, "release", "", "ffi/fn")
+  if node.props.hasKey("release") and release.len == 0:
+    raise newException(GeneError, "ffi/fn ^release must not be empty")
   let proto = FfiFnProto(name: name,
                          library: library,
                          libraryDeclared: library.len > 0 and
@@ -2368,7 +2374,7 @@ proc compileFfiFn(c: var Compiler, node: Value) =
                          calling: propLiteral(node, "calling", "C", "ffi/fn"),
                          params: parseFfiParams(body[1]),
                          returnType: ret,
-                         release: propLiteral(node, "release", "", "ffi/fn"))
+                         release: release)
   for param in proto.params:
     validateFfiFnParamType("ffi/fn", param.name, param.typeExpr)
   validateFfiFnReturnType("ffi/fn", proto.returnType, proto.release)

@@ -2683,6 +2683,9 @@ proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
   if returnLabel.startsWith("(C/OwnedPtr ") and releaseAddress == nil:
     raise newException(GeneError,
       "ffi/bind OwnedPtr result requires a release symbol")
+  if releaseAddress != nil and not returnLabel.startsWith("(C/OwnedPtr "):
+    raise newException(GeneError,
+      "ffi/bind release symbol is only valid for C/OwnedPtr results")
   newFfiCallable(symbol, symbol, address, args[0], args[2].listItems,
                  args[3], releaseName, releaseAddress)
 

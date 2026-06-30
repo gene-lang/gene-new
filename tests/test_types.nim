@@ -2335,6 +2335,11 @@ suite "types — function boundaries":
             "((ffi/bind lib \"malloc\" [C/Size] " &
             "   (quote (C/OwnedPtr C/Char)) \"free\") -1)"),
             scope)
+        expect GeneError:
+          discard run(compileSource(
+            "(ffi/bind lib \"malloc\" [C/Size] " &
+            "  (quote (C/Ptr C/Char)) \"free\")"),
+            scope)
       if symAddr(handle, "calloc") != nil and symAddr(handle, "free") != nil:
         let zeroed = run(compileSource(
           "((ffi/bind lib \"calloc\" [C/Size C/Size] " &
