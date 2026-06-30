@@ -959,8 +959,38 @@ proc ffiTestFloatScale(a: cfloat, factor: cint): cfloat {.cdecl.} =
 proc ffiTestFloatIntUInt(a: cfloat, b: cint): cuint {.cdecl.} =
   cuint(int(a) + b + 1)
 
+proc ffiTestFloatIntI32(a: cfloat, b: cint): int32 {.cdecl.} =
+  int32(int(a) + b + 5)
+
+proc ffiTestFloatIntI16(a: cfloat, b: cint): int16 {.cdecl.} =
+  int16(int(a) + b + 6)
+
+proc ffiTestFloatIntShort(a: cfloat, b: cint): cshort {.cdecl.} =
+  cshort(int(a) + b + 7)
+
+proc ffiTestFloatIntI8(a: cfloat, b: cint): int8 {.cdecl.} =
+  int8(int(a) + b + 8)
+
+proc ffiTestFloatIntChar(a: cfloat, b: cint): cchar {.cdecl.} =
+  cchar(ord('A') + int(a) + b)
+
 proc ffiTestFloatIntULong(a: cfloat, b: cint): culong {.cdecl.} =
   culong(int(a) + b + 2)
+
+proc ffiTestFloatIntU32(a: cfloat, b: cint): uint32 {.cdecl.} =
+  uint32(int(a) + b + 9)
+
+proc ffiTestFloatIntU16(a: cfloat, b: cint): uint16 {.cdecl.} =
+  uint16(int(a) + b + 10)
+
+proc ffiTestFloatIntUShort(a: cfloat, b: cint): cushort {.cdecl.} =
+  cushort(int(a) + b + 11)
+
+proc ffiTestFloatIntU8(a: cfloat, b: cint): uint8 {.cdecl.} =
+  uint8(int(a) + b + 12)
+
+proc ffiTestFloatIntUChar(a: cfloat, b: cint): uint8 {.cdecl.} =
+  uint8(int(a) + b + 13)
 
 proc ffiTestFloatIntI64(a: cfloat, b: cint): int64 {.cdecl.} =
   int64(int(a) + b + 3)
@@ -3817,12 +3847,72 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestFloatIntUInt), lib,
                                   @[newSym("C/Float"), newSym("C/Int")],
                                   newSym("C/UInt")))
+      scope.define("float-int-i32",
+                   newFfiCallable("ffiTestFloatIntI32",
+                                  "ffiTestFloatIntI32",
+                                  cast[pointer](ffiTestFloatIntI32), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/Int32")))
+      scope.define("float-int-i16",
+                   newFfiCallable("ffiTestFloatIntI16",
+                                  "ffiTestFloatIntI16",
+                                  cast[pointer](ffiTestFloatIntI16), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/Int16")))
+      scope.define("float-int-short",
+                   newFfiCallable("ffiTestFloatIntShort",
+                                  "ffiTestFloatIntShort",
+                                  cast[pointer](ffiTestFloatIntShort), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/Short")))
+      scope.define("float-int-i8",
+                   newFfiCallable("ffiTestFloatIntI8",
+                                  "ffiTestFloatIntI8",
+                                  cast[pointer](ffiTestFloatIntI8), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/Int8")))
+      scope.define("float-int-char",
+                   newFfiCallable("ffiTestFloatIntChar",
+                                  "ffiTestFloatIntChar",
+                                  cast[pointer](ffiTestFloatIntChar), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/Char")))
       scope.define("float-int-ulong",
                    newFfiCallable("ffiTestFloatIntULong",
                                   "ffiTestFloatIntULong",
                                   cast[pointer](ffiTestFloatIntULong), lib,
                                   @[newSym("C/Float"), newSym("C/Int")],
                                   newSym("C/ULong")))
+      scope.define("float-int-u32",
+                   newFfiCallable("ffiTestFloatIntU32",
+                                  "ffiTestFloatIntU32",
+                                  cast[pointer](ffiTestFloatIntU32), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/UInt32")))
+      scope.define("float-int-u16",
+                   newFfiCallable("ffiTestFloatIntU16",
+                                  "ffiTestFloatIntU16",
+                                  cast[pointer](ffiTestFloatIntU16), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/UInt16")))
+      scope.define("float-int-ushort",
+                   newFfiCallable("ffiTestFloatIntUShort",
+                                  "ffiTestFloatIntUShort",
+                                  cast[pointer](ffiTestFloatIntUShort), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/UShort")))
+      scope.define("float-int-u8",
+                   newFfiCallable("ffiTestFloatIntU8",
+                                  "ffiTestFloatIntU8",
+                                  cast[pointer](ffiTestFloatIntU8), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/UInt8")))
+      scope.define("float-int-uchar",
+                   newFfiCallable("ffiTestFloatIntUChar",
+                                  "ffiTestFloatIntUChar",
+                                  cast[pointer](ffiTestFloatIntUChar), lib,
+                                  @[newSym("C/Float"), newSym("C/Int")],
+                                  newSym("C/UChar")))
       scope.define("float-int-i64",
                    newFfiCallable("ffiTestFloatIntI64",
                                   "ffiTestFloatIntI64",
@@ -5822,8 +5912,28 @@ suite "types — function boundaries":
       check run(compileSource("(float-scale 1.5 3)"), scope).print() == "4.5"
       check run(compileSource("(float-int-uint 1.5 3)"),
                 scope).print() == "5"
+      check run(compileSource("(float-int-i32 1.5 3)"),
+                scope).print() == "9"
+      check run(compileSource("(float-int-i16 1.5 3)"),
+                scope).print() == "10"
+      check run(compileSource("(float-int-short 1.5 3)"),
+                scope).print() == "11"
+      check run(compileSource("(float-int-i8 1.5 3)"),
+                scope).print() == "12"
+      check run(compileSource("(float-int-char 1.5 3)"),
+                scope).print() == "'E'"
       check run(compileSource("(float-int-ulong 1.5 3)"),
                 scope).print() == "6"
+      check run(compileSource("(float-int-u32 1.5 3)"),
+                scope).print() == "13"
+      check run(compileSource("(float-int-u16 1.5 3)"),
+                scope).print() == "14"
+      check run(compileSource("(float-int-ushort 1.5 3)"),
+                scope).print() == "15"
+      check run(compileSource("(float-int-u8 1.5 3)"),
+                scope).print() == "16"
+      check run(compileSource("(float-int-uchar 1.5 3)"),
+                scope).print() == "17"
       check run(compileSource("(float-int-i64 1.5 3)"),
                 scope).print() == "7"
       check run(compileSource("(float-int-u64 1.5 3)"),
