@@ -37,6 +37,32 @@ suite "threaded scheduler workers":
       check task.kind == vkTask
       check not task.taskDone
 
+  test "high worker counts do not false-deadlock task await chains":
+    withGeneWorkerSetting "8":
+      ck "(scope (var ch (channel ^capacity 1)) " &
+         "  (var producer (spawn (do (ch ~ Channel/recv) 5))) " &
+         "  (var doubler (spawn (* 2 (await producer)))) " &
+         "  (ch ~ Channel/send 1) " &
+         "  (await doubler))", "10"
+
+  test "high worker counts wake task cancellation awaiters":
+    withGeneWorkerSetting "8":
+      expect GeneCancel:
+        discard run(compileSource(
+          "(scope (var ch (channel ^capacity 1)) " &
+          "  (var t (spawn (ch ~ Channel/recv))) " &
+          "  (var w (spawn (await t))) " &
+          "  (t ~ Task/cancel) " &
+          "  (await w))"), newGlobalScope())
+
+  test "high worker counts wake sleeping task cancellation":
+    withGeneWorkerSetting "8":
+      expect GeneCancel:
+        discard run(compileSource(
+          "(scope (var t (spawn (sleep 1000))) " &
+          "  (t ~ Task/cancel) " &
+          "  (await t))"), newGlobalScope())
+
   test "worker pool runs worker-candidate tasks":
     withGeneWorkers:
       ck "(scope (var x 20) " &

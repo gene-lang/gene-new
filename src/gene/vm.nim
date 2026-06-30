@@ -151,7 +151,7 @@ type
       workerLeaseCount: int
       workerStop: bool
       workerCond: Cond
-      activeWorkerCount: int
+      activeWorkerFibers: seq[Fiber]
 
   SchedulerWorkerLease = object
     scheduler: SchedulerState
@@ -7593,17 +7593,38 @@ proc enqueueRunnable(f: Fiber) =
   withSchedulerLock(s):
     s.enqueueRunnableUnlocked(f)
 
+proc shouldResumeInsteadOfPark(f: Fiber): bool =
+  if f.task.kind == vkTask and f.task.taskCancelRequested and
+      not f.task.taskDone and not f.inCancelCleanup():
+    return true
+  if f.waitTask.kind == vkTask and f.waitTask.taskDone:
+    return true
+  if f.waitChannel.kind == vkChannel:
+    if f.waitChannel.channelClosed:
+      return true
+    if f.waitIsSend:
+      return not f.waitChannel.channelFull
+    return f.waitChannel.channelLen > 0
+  if f.waitActor.kind == vkActorRef:
+    return f.waitActor.actorClosed or not f.waitActor.actorFull
+  if f.waitTimer:
+    return f.waitDeadline <= getMonoTime()
+
 proc parkFiber(f: Fiber) =
   let s = currentScheduler()
   withSchedulerLock(s):
-    s.waiters.add f
+    if f.shouldResumeInsteadOfPark():
+      s.enqueueRunnableUnlocked(f)
+    else:
+      s.waiters.add f
 
 proc hasRunnableFiber(): bool =
   let s = currentScheduler()
   withSchedulerLock(s):
     result = s.runQueue.len > 0
 
-proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false): Fiber =
+proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false,
+                      markWorkerActive = false): Fiber =
   let s = currentScheduler()
   withSchedulerLock(s):
     var i = 0
@@ -7618,6 +7639,11 @@ proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false): Fiber =
         continue
       result = f
       s.runQueue.delete(i)
+      when compileOption("threads") and defined(gcAtomicArc):
+        # Root deadlock detection and cancellation scans both need to see a
+        # claimed fiber before it leaves the scheduler lock.
+        if markWorkerActive:
+          s.activeWorkerFibers.add f
       return
 
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
@@ -7908,16 +7934,16 @@ when compileOption("threads") and defined(gcAtomicArc):
     withSchedulerLock(s):
       s.workerStop
 
-  proc markSchedulerWorkerActive(s: SchedulerState, active: bool) =
+  proc markSchedulerWorkerInactive(s: SchedulerState, f: Fiber) =
     withSchedulerLock(s):
-      if active:
-        inc s.activeWorkerCount
-      elif s.activeWorkerCount > 0:
-        dec s.activeWorkerCount
+      for i in 0 ..< s.activeWorkerFibers.len:
+        if s.activeWorkerFibers[i] == f:
+          s.activeWorkerFibers.delete(i)
+          break
 
   proc schedulerHasWorkerProgress(s: SchedulerState): bool =
     withSchedulerLock(s):
-      if s.activeWorkerCount > 0:
+      if s.activeWorkerFibers.len > 0:
         return true
       for f in s.runQueue:
         if f.workerCandidate:
@@ -7957,18 +7983,17 @@ when compileOption("threads") and defined(gcAtomicArc):
       activeScheduler = s
       while not schedulerWorkerStopRequested(s):
         discard wakeExpiredTimers()
-        let f = popRunnableFiber(workerOnly = true)
+        let f = popRunnableFiber(workerOnly = true, markWorkerActive = true)
         if f == nil:
           waitForSchedulerWorkerCandidate(s)
           continue
-        if f.task.kind == vkTask and f.task.taskDone:
-          wakeTaskWaiters(f.task)
-          continue
-        markSchedulerWorkerActive(s, true)
         try:
-          runFiber(f)
+          if f.task.kind == vkTask and f.task.taskDone:
+            wakeTaskWaiters(f.task)
+          else:
+            runFiber(f)
         finally:
-          markSchedulerWorkerActive(s, false)
+          markSchedulerWorkerInactive(s, f)
 
   proc startSchedulerWorkers(s: SchedulerState): bool =
     withSchedulerLock(s):
@@ -7979,7 +8004,7 @@ when compileOption("threads") and defined(gcAtomicArc):
       if workerCount <= 0:
         return false
       s.workerStop = false
-      s.activeWorkerCount = 0
+      s.activeWorkerFibers.setLen(0)
       s.workers.setLen(workerCount)
       s.workersStarted = true
       s.workerLeaseCount = 1
@@ -8004,7 +8029,7 @@ when compileOption("threads") and defined(gcAtomicArc):
         s.workersStarted = false
         s.workerLeaseCount = 0
         s.workerStop = false
-        s.activeWorkerCount = 0
+        s.activeWorkerFibers.setLen(0)
 
 proc beginSchedulerWorkerLease(): SchedulerWorkerLease =
   when compileOption("threads") and defined(gcAtomicArc):
@@ -8118,6 +8143,10 @@ proc cancelScheduledTask(task: Value): bool =
         result = true
       else:
         inc i
+    when compileOption("threads") and defined(gcAtomicArc):
+      for f in s.activeWorkerFibers:
+        if f.task.taskSharesState(task):
+          result = true
 
 proc pumpUntilDone(task: Value) =
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its
@@ -8128,6 +8157,8 @@ proc pumpUntilDone(task: Value) =
     endSchedulerWorkerLease(workerLease)
   while not task.taskDone:
     if not schedulerRunOneRoot(workerLease):
+      if task.taskDone:
+        break
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
 
