@@ -24,11 +24,17 @@ proc ffiTestShortAbs(x: cshort): cshort {.cdecl.} =
 proc ffiTestShortI8(x: cshort): int8 {.cdecl.} =
   int8(x) + 8'i8
 
+proc ffiTestShortChar(x: cshort): cchar {.cdecl.} =
+  cchar(ord('A') + int(x))
+
 proc ffiTestShortULong(x: cshort): culong {.cdecl.} =
   culong(x + cshort(10))
 
 proc ffiTestShortU8(x: cshort): uint8 {.cdecl.} =
   uint8(x) + 12'u8
+
+proc ffiTestShortUChar(x: cshort): uint8 {.cdecl.} =
+  uint8(x) + 13'u8
 
 proc ffiTestShortU64(x: cshort): uint64 {.cdecl.} =
   uint64(x + cshort(12))
@@ -66,11 +72,17 @@ proc ffiTestI8Abs(x: int8): int8 {.cdecl.} =
 proc ffiTestI8Short(x: int8): cshort {.cdecl.} =
   cshort(x + 7'i8)
 
+proc ffiTestI8Char(x: int8): cchar {.cdecl.} =
+  cchar(ord('A') + int(x))
+
 proc ffiTestI8ULong(x: int8): culong {.cdecl.} =
   culong(x + 10'i8)
 
 proc ffiTestI8UShort(x: int8): cushort {.cdecl.} =
   cushort(x + 11'i8)
+
+proc ffiTestI8UChar(x: int8): uint8 {.cdecl.} =
+  uint8(x) + 13'u8
 
 proc ffiTestI8U64(x: int8): uint64 {.cdecl.} =
   uint64(x + 12'i8)
@@ -294,6 +306,9 @@ proc ffiTestPtrDiffShort(x: TestCPtrDiff): cshort {.cdecl.} =
 proc ffiTestPtrDiffI8(x: TestCPtrDiff): int8 {.cdecl.} =
   int8(x) + 8'i8
 
+proc ffiTestPtrDiffChar(x: TestCPtrDiff): cchar {.cdecl.} =
+  cchar(ord('A') + int(x))
+
 proc ffiTestPtrDiffU32(x: TestCPtrDiff): uint32 {.cdecl.} =
   uint32(x) + 9'u32
 
@@ -305,6 +320,9 @@ proc ffiTestPtrDiffUShort(x: TestCPtrDiff): cushort {.cdecl.} =
 
 proc ffiTestPtrDiffU8(x: TestCPtrDiff): uint8 {.cdecl.} =
   uint8(x) + 12'u8
+
+proc ffiTestPtrDiffUChar(x: TestCPtrDiff): uint8 {.cdecl.} =
+  uint8(x) + 13'u8
 
 proc ffiTestSizeInc(x: csize_t): csize_t {.cdecl.} =
   x + csize_t(1)
@@ -2281,6 +2299,11 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestShortI8", "ffiTestShortI8",
                                   cast[pointer](ffiTestShortI8), lib,
                                   @[newSym("C/Short")], newSym("C/Int8")))
+      scope.define("short-char",
+                   newFfiCallable("ffiTestShortChar",
+                                  "ffiTestShortChar",
+                                  cast[pointer](ffiTestShortChar), lib,
+                                  @[newSym("C/Short")], newSym("C/Char")))
       scope.define("short-ulong",
                    newFfiCallable("ffiTestShortULong",
                                   "ffiTestShortULong",
@@ -2290,6 +2313,11 @@ suite "types — function boundaries":
                    newFfiCallable("ffiTestShortU8", "ffiTestShortU8",
                                   cast[pointer](ffiTestShortU8), lib,
                                   @[newSym("C/Short")], newSym("C/UInt8")))
+      scope.define("short-uchar",
+                   newFfiCallable("ffiTestShortUChar",
+                                  "ffiTestShortUChar",
+                                  cast[pointer](ffiTestShortUChar), lib,
+                                  @[newSym("C/Short")], newSym("C/UChar")))
       scope.define("short-u64",
                    newFfiCallable("ffiTestShortU64",
                                   "ffiTestShortU64",
@@ -2348,6 +2376,11 @@ suite "types — function boundaries":
                                   "ffiTestI8Short",
                                   cast[pointer](ffiTestI8Short), lib,
                                   @[newSym("C/Int8")], newSym("C/Short")))
+      scope.define("i8-char",
+                   newFfiCallable("ffiTestI8Char",
+                                  "ffiTestI8Char",
+                                  cast[pointer](ffiTestI8Char), lib,
+                                  @[newSym("C/Int8")], newSym("C/Char")))
       scope.define("i8-ulong",
                    newFfiCallable("ffiTestI8ULong",
                                   "ffiTestI8ULong",
@@ -2358,6 +2391,11 @@ suite "types — function boundaries":
                                   "ffiTestI8UShort",
                                   cast[pointer](ffiTestI8UShort), lib,
                                   @[newSym("C/Int8")], newSym("C/UShort")))
+      scope.define("i8-uchar",
+                   newFfiCallable("ffiTestI8UChar",
+                                  "ffiTestI8UChar",
+                                  cast[pointer](ffiTestI8UChar), lib,
+                                  @[newSym("C/Int8")], newSym("C/UChar")))
       scope.define("i8-u64",
                    newFfiCallable("ffiTestI8U64",
                                   "ffiTestI8U64",
@@ -2716,6 +2754,11 @@ suite "types — function boundaries":
                                   "ffiTestPtrDiffI8",
                                   cast[pointer](ffiTestPtrDiffI8), lib,
                                   @[newSym("C/PtrDiff")], newSym("C/Int8")))
+      scope.define("ptrdiff-char",
+                   newFfiCallable("ffiTestPtrDiffChar",
+                                  "ffiTestPtrDiffChar",
+                                  cast[pointer](ffiTestPtrDiffChar), lib,
+                                  @[newSym("C/PtrDiff")], newSym("C/Char")))
       scope.define("ptrdiff-u32",
                    newFfiCallable("ffiTestPtrDiffU32",
                                   "ffiTestPtrDiffU32",
@@ -2736,6 +2779,11 @@ suite "types — function boundaries":
                                   "ffiTestPtrDiffU8",
                                   cast[pointer](ffiTestPtrDiffU8), lib,
                                   @[newSym("C/PtrDiff")], newSym("C/UInt8")))
+      scope.define("ptrdiff-uchar",
+                   newFfiCallable("ffiTestPtrDiffUChar",
+                                  "ffiTestPtrDiffUChar",
+                                  cast[pointer](ffiTestPtrDiffUChar), lib,
+                                  @[newSym("C/PtrDiff")], newSym("C/UChar")))
       scope.define("size-inc",
                    newFfiCallable("ffiTestSizeInc", "ffiTestSizeInc",
                                   cast[pointer](ffiTestSizeInc), lib,
@@ -5600,8 +5648,10 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(short-abs 32768)"), scope)
       check run(compileSource("(short-i8 4)"), scope).print() == "12"
+      check run(compileSource("(short-char 5)"), scope).print() == "'F'"
       check run(compileSource("(short-ulong -4)"), scope).print() == "6"
       check run(compileSource("(short-u8 4)"), scope).print() == "16"
+      check run(compileSource("(short-uchar 4)"), scope).print() == "17"
       check run(compileSource("(short-u64 -4)"), scope).print() == "8"
       check run(compileSource("(short-diff 4)"), scope).print() == "-2"
       check run(compileSource("(short-positive? 4)"), scope).print() == "true"
@@ -5625,8 +5675,10 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(i8-abs 128)"), scope)
       check run(compileSource("(i8-short 4)"), scope).print() == "11"
+      check run(compileSource("(i8-char 5)"), scope).print() == "'F'"
       check run(compileSource("(i8-ulong -4)"), scope).print() == "6"
       check run(compileSource("(i8-ushort 4)"), scope).print() == "15"
+      check run(compileSource("(i8-uchar 4)"), scope).print() == "17"
       check run(compileSource("(i8-u64 -4)"), scope).print() == "8"
       check run(compileSource("(i8-diff 4)"), scope).print() == "-2"
       check run(compileSource("(i8-positive? 4)"), scope).print() == "true"
@@ -5742,10 +5794,12 @@ suite "types — function boundaries":
       check run(compileSource("(ptrdiff-i16 4)"), scope).print() == "10"
       check run(compileSource("(ptrdiff-short 4)"), scope).print() == "11"
       check run(compileSource("(ptrdiff-i8 4)"), scope).print() == "12"
+      check run(compileSource("(ptrdiff-char 5)"), scope).print() == "'F'"
       check run(compileSource("(ptrdiff-u32 4)"), scope).print() == "13"
       check run(compileSource("(ptrdiff-u16 4)"), scope).print() == "14"
       check run(compileSource("(ptrdiff-ushort 4)"), scope).print() == "15"
       check run(compileSource("(ptrdiff-u8 4)"), scope).print() == "16"
+      check run(compileSource("(ptrdiff-uchar 4)"), scope).print() == "17"
       expect GeneError:
         discard run(compileSource("(ptrdiff-abs 9223372036854775808)"),
                     scope)
