@@ -545,6 +545,9 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(ffi/callback BadPtrShape " &
                             "[p : (C/Ptr C/Char C/Int)] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/callback Escaping ^escaping true " &
+                            "[p : (C/Ptr C/Void)] : C/Void)")
 
 suite "spec — strings from design":
   test "strings expose explicit chars and bytes iteration":

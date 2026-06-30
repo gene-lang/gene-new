@@ -2466,6 +2466,9 @@ proc compileFfiSignature(c: var Compiler, node: Value,
     escaping: propBool(node, "escaping", false, context),
     runtimeConstructible: kind == fskDynamic)
   if kind == fskCallback:
+    if proto.escaping:
+      raise newException(GeneError,
+        "ffi/callback ^escaping true is not supported yet")
     for param in proto.params:
       validateFfiFnParamType(context, param.name, param.typeExpr)
     validateFfiFnReturnType(context, proto.returnType, "")
