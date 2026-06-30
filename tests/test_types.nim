@@ -2149,6 +2149,14 @@ suite "types — function boundaries":
                               " ((fn [f : Ffi/Callable] (f \"Ada\")) strlen) " &
                               " strlen]"),
                 scope).print() == "[5 3 (ffi-callable strlen)]"
+      expect GeneError:
+        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+                                  "  [(quote (C/Array C/Char 4))] C/Void)"),
+                    scope)
+      expect GeneError:
+        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+                                  "  [C/CStr] (quote (C/Slice C/UInt8)))"),
+                    scope)
       let handle = cast[LibHandle](lib.ffiLibraryHandle)
       if symAddr(handle, "atoi") != nil:
         check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int) " &

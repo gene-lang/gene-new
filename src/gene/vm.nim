@@ -2650,6 +2650,64 @@ proc biFfiOpen(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "ffi/open failed to load library: " & path)
   newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary)
 
+proc isDynamicFfiScalarParamLabel(label: string): bool =
+  label in [
+    "C/Bool", "C/Char", "C/UChar", "C/UInt64", "C/ULong", "C/PtrDiff",
+    "C/Int", "C/UInt", "C/UInt32", "C/UInt16", "C/UShort", "C/UInt8",
+    "C/Int16", "C/Short", "C/Int8", "C/Int32", "C/Long", "C/Int64",
+    "C/Size", "C/Double", "C/Float"
+  ]
+
+proc isDynamicFfiReturnLabel(label: string): bool =
+  label == "C/Void" or label == "C/CStr" or
+    isDynamicFfiScalarParamLabel(label) or
+    label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
+    label.startsWith("(C/ConstPtr ") or
+    label.startsWith("(C/NullableConstPtr ") or
+    label.startsWith("(C/OwnedPtr ")
+
+proc isDynamicFfiPointerParamLabel(label: string): bool =
+  label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
+    label.startsWith("(C/ConstPtr ") or
+    label.startsWith("(C/NullableConstPtr ") or
+    label.startsWith("(C/OwnedPtr ")
+
+proc isDynamicFfiSliceParamLabel(label: string): bool =
+  label.startsWith("(C/Slice ")
+
+proc isDynamicFfiBufferParamLabel(label: string): bool =
+  label.startsWith("(Buffer ")
+
+proc isSupportedDynamicFfiSignature(paramLabels: openArray[string],
+                                    returnLabel: string): bool =
+  if not isDynamicFfiReturnLabel(returnLabel):
+    return false
+  case paramLabels.len
+  of 0:
+    true
+  of 1:
+    let p = paramLabels[0]
+    p == "C/CStr" or isDynamicFfiScalarParamLabel(p) or
+      isDynamicFfiPointerParamLabel(p) or isDynamicFfiSliceParamLabel(p) or
+      isDynamicFfiBufferParamLabel(p)
+  of 2:
+    let a = paramLabels[0]
+    let b = paramLabels[1]
+    (a == "C/CStr" and b in ["C/CStr", "C/Int", "C/Size"]) or
+      (a == "C/Int" and b in ["C/Int", "C/Double", "C/Float"]) or
+      (a == "C/Double" and b in ["C/Double", "C/Int"]) or
+      (a == "C/Float" and b in ["C/Float", "C/Int"]) or
+      (a == "C/Size" and b == "C/Size") or
+      (isDynamicFfiPointerParamLabel(a) and
+        (b == "C/Size" or isDynamicFfiPointerParamLabel(b)))
+  of 3:
+    isDynamicFfiPointerParamLabel(paramLabels[0]) and
+      ((paramLabels[1] == "C/Int" and paramLabels[2] == "C/Size") or
+       (isDynamicFfiPointerParamLabel(paramLabels[1]) and
+        paramLabels[2] == "C/Size"))
+  else:
+    false
+
 proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
   if args.len notin 4..5:
     raise newException(GeneError,
@@ -2663,11 +2721,18 @@ proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
   let symbol = args[1].strVal
   if symbol.len == 0:
     raise newException(GeneError, "ffi/bind symbol must not be empty")
+  var paramLabels: seq[string]
+  for param in args[2].listItems:
+    paramLabels.add typeExprLabel(param)
+  let returnLabel = typeExprLabel(args[3])
+  if not isSupportedDynamicFfiSignature(paramLabels, returnLabel):
+    raise newException(GeneError,
+      "unsupported dynamic FFI signature for '" & symbol & "': [" &
+      paramLabels.join(",") & "] -> " & returnLabel)
   let address = symAddr(cast[LibHandle](args[0].ffiLibraryHandle),
                         symbol.cstring)
   if address == nil:
     raise newException(GeneError, "ffi/bind symbol not found: " & symbol)
-  let returnLabel = typeExprLabel(args[3])
   var releaseName = ""
   var releaseAddress: pointer
   if args.len == 5:
