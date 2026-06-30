@@ -2170,6 +2170,50 @@ proc parseFfiReturn(body: seq[Value], idx: var int, context: string): Value =
     result = body[idx]
     inc idx
 
+proc ffiAggregateTypeHead(expr: Value): string =
+  case expr.kind
+  of vkSymbol:
+    expr.symVal
+  of vkNode:
+    if expr.head.kind == vkSymbol:
+      expr.head.symVal
+    elif expr.head.kind == vkNode and expr.head.head.isSymbol("path"):
+      literalName(expr.head, "FFI aggregate field type")
+    else:
+      ""
+  else:
+    ""
+
+proc ffiAggregateTypeDescription(expr: Value): string =
+  case expr.kind
+  of vkSymbol:
+    expr.symVal
+  of vkNode:
+    let head = ffiAggregateTypeHead(expr)
+    if head.len > 0: head & " expression"
+    else: "compound type expression"
+  else:
+    $expr.kind
+
+proc validateFfiAggregateFieldType(context, fieldName: string, expr: Value) =
+  const scalarFields = [
+    "C/Int8", "C/UInt8", "C/Int16", "C/UInt16", "C/Int32", "C/UInt32",
+    "C/Int64", "C/UInt64", "C/Char", "C/UChar", "C/Short", "C/UShort",
+    "C/Int", "C/UInt", "C/Long", "C/ULong", "C/Size", "C/PtrDiff",
+    "C/Float", "C/Double", "C/Bool", "C/CStr"
+  ]
+  const pointerFields = [
+    "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr", "C/OwnedPtr"
+  ]
+  let head = ffiAggregateTypeHead(expr)
+  if expr.kind == vkSymbol and head in scalarFields:
+    return
+  if expr.kind == vkNode and head in pointerFields and expr.body.len == 1:
+    return
+  raise newException(GeneError,
+    context & " field '" & fieldName & "' type must be a scalar, C/CStr, " &
+    "or pointer-like ABI type, got " & ffiAggregateTypeDescription(expr))
+
 proc parseFfiAggregateFields(context: string, fields: Value,
                              allowOffsets: bool): seq[FfiStructField] =
   if fields.kind != vkList:
@@ -2198,6 +2242,7 @@ proc parseFfiAggregateFields(context: string, fields: Value,
           context & " field offset must be written as ^offset Int")
       hasOffset = true
       offset = int(items[4].intVal)
+    validateFfiAggregateFieldType(context, items[0].symVal, items[1])
     result.add FfiStructField(name: items[0].symVal, typeExpr: items[1],
                               offset: offset, hasOffset: hasOffset)
 

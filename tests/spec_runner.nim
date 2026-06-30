@@ -384,8 +384,19 @@ suite "spec — typed native compilation prototype from design":
     check "static const GeneFfiStructInfo gene_ffi_structs[] = {" in c
     check "{\"Timespec\", \"C\", 16, 8, 2}," in c
     check "{\"Timespec\", \"tv_sec\", \"C/Long\", 0}," in c
+    let ptrChunk = compileSource("(ffi/struct HandleBox " &
+                                 "  ^fields [[handle (C/Ptr C/Void)]])")
+    let ptrC = ptrChunk.emitExperimentalC()
+    check "typedef struct HandleBox {" in ptrC
+    check "void * handle;" in ptrC
     check_eval("(ffi/struct Timespec ^fields [[tv_sec C/Long]]) Timespec",
                "Timespec")
+    expect GeneError:
+      discard compileSource("(ffi/struct BadSlice " &
+                            "  ^fields [[view (C/Slice C/UInt8)]])")
+    expect GeneError:
+      discard compileSource("(ffi/struct BadBuffer " &
+                            "  ^fields [[buf (Buffer C/UInt8)]])")
 
   test "ffi/union declarations expose C layout metadata manifests":
     let chunk = compileSource("(ffi/union IntOrDouble " &
@@ -419,6 +430,9 @@ suite "spec — typed native compilation prototype from design":
                "IntOrDouble")
     expect GeneError:
       discard compileSource("(ffi/union Bad ^fields [[i C/Int ^offset 0]])")
+    expect GeneError:
+      discard compileSource("(ffi/union BadBuffer " &
+                            "  ^fields [[buf (Buffer C/UInt8)]])")
 
   test "callback and dynamic FFI signatures expose metadata manifests":
     let chunk = compileSource(
