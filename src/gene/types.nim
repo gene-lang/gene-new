@@ -366,6 +366,12 @@ type
     cycleRefs: int            # Value-held refs, for trial-deletion collection
     value: Value
 
+  AtomicCellData = ref object of CellData
+    ## Inherits CellData's layout (cycleRefs/value) so the shared cycle-
+    ## tracking code below keeps working unchanged; adds the lock that makes
+    ## load/store/swap/compare-exchange linearizable (design Section 12.3).
+    lock: Lock
+
   StreamPullResult* = object
     has*: bool
     item*: Value
@@ -1817,15 +1823,50 @@ proc setCellValue*(v, newValue: Value) =
     raise newException(FieldDefect, "value is not a Cell")
   CellData(objData(v)).value = newValue
 
-proc atomicCellValue*(v: Value): Value =
+proc asAtomicCellData(v: Value): AtomicCellData =
   if not v.isObjectTagged or objData(v).objKind != okAtomicCell:
     raise newException(FieldDefect, "value is not an AtomicCell")
-  CellData(objData(v)).value
+  AtomicCellData(objData(v))
+
+template withAtomicCellLock(d: AtomicCellData, body: untyped): untyped =
+  acquire(d.lock)
+  try:
+    body
+  finally:
+    release(d.lock)
+
+proc atomicCellValue*(v: Value): Value =
+  let d = v.asAtomicCellData
+  withAtomicCellLock(d):
+    result = d.value
 
 proc setAtomicCellValue*(v, newValue: Value) =
-  if not v.isObjectTagged or objData(v).objKind != okAtomicCell:
-    raise newException(FieldDefect, "value is not an AtomicCell")
-  CellData(objData(v)).value = newValue
+  let d = v.asAtomicCellData
+  withAtomicCellLock(d):
+    d.value = newValue
+
+proc atomicCellSwap*(v, newValue: Value): Value =
+  ## Reads the current value and replaces it as a single locked critical
+  ## section (not a separate load + store), so a concurrent swap/CAS cannot
+  ## interleave between the read and the write.
+  let d = v.asAtomicCellData
+  withAtomicCellLock(d):
+    result = d.value
+    d.value = newValue
+
+proc atomicCellCompareExchange*(v, expected, newValue: Value,
+                                eq: proc (a, b: Value): bool): bool =
+  ## Compares the current value against `expected` using the caller-supplied
+  ## equality (`same?`, from equality.nim — types.nim can't import it without
+  ## a cycle) and swaps in the same locked critical section as the compare,
+  ## avoiding the check-then-set race of separate load/compare/store calls.
+  let d = v.asAtomicCellData
+  withAtomicCellLock(d):
+    if eq(d.value, expected):
+      d.value = newValue
+      result = true
+    else:
+      result = false
 
 proc streamData(v: Value): StreamData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okStream:
@@ -3509,7 +3550,9 @@ proc newCell*(value: Value): Value =
   boxObject(CellData(objKind: okCell, value: value))
 
 proc newAtomicCell*(value: Value): Value =
-  boxObject(CellData(objKind: okAtomicCell, value: value))
+  let d = AtomicCellData(objKind: okAtomicCell, value: value)
+  initLock(d.lock)
+  boxObject(d)
 
 proc newStream*(items: sink seq[Value]): Value =
   boxObject(StreamData(objKind: okStream, items: items, index: 0, closed: false))

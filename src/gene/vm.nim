@@ -946,17 +946,19 @@ proc biAtomicCellSwap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "AtomicCell/swap expects 2 arguments, got " & $args.len)
   requireAtomicCell("AtomicCell/swap", args[0])
-  let old = args[0].atomicCellValue
-  args[0].setAtomicCellValue(args[1])
-  old
+  # Single locked critical section (not load-then-store), so a concurrent
+  # writer can't interleave between reading the old value and writing the new
+  # one (design Section 12.3: AtomicCell operations are linearizable).
+  atomicCellSwap(args[0], args[1])
 
 proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
       "AtomicCell/compare-exchange expects 3 arguments, got " & $args.len)
   requireAtomicCell("AtomicCell/compare-exchange", args[0])
-  if same(args[0].atomicCellValue, args[1]):
-    args[0].setAtomicCellValue(args[2])
+  # Compare and swap happen under one lock acquisition, avoiding the
+  # check-then-set race a separate load+same?+store would have.
+  if atomicCellCompareExchange(args[0], args[1], args[2], same):
     TRUE
   else:
     FALSE
@@ -8740,6 +8742,7 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
   props["actual"] = newStr($value.kind)
+  props["actual-value"] = value
   var head = newSym("TypeError")
   var typeError: Value
   if scope != nil and scope.lookupOptional("TypeError", typeError) and
