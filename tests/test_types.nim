@@ -2149,6 +2149,13 @@ suite "types — function boundaries":
                               " ((fn [f : Ffi/Callable] (f \"Ada\")) strlen) " &
                               " strlen]"),
                 scope).print() == "[5 3 (ffi-callable strlen)]"
+      var dynBytes = [uint8(65), uint8(66), uint8(67)]
+      scope.define("dyn-byte-slice",
+                   newCSlice(cast[pointer](addr dynBytes[0]), dynBytes.len,
+                             newSym("C/UInt8")))
+      scope.define("dyn-byte-buffer",
+                   newBuffer(newSym("C/UInt8"),
+                             @[newInt(65), newInt(66), newInt(67)]))
       expect GeneError:
         discard run(compileSource("(ffi/bind lib \"ignored\" " &
                                   "  [(quote (C/Array C/Char 4))] C/Void)"),
@@ -2171,6 +2178,15 @@ suite "types — function boundaries":
                                   "  \"free\")"),
                     scope)
       let handle = cast[LibHandle](lib.ffiLibraryHandle)
+      if symAddr(handle, "strnlen") != nil:
+        check run(compileSource("((ffi/bind lib \"strnlen\" " &
+                                "  [(quote (C/Slice C/UInt8))] C/Size) " &
+                                " dyn-byte-slice)"),
+                  scope).print() == "3"
+        check run(compileSource("((ffi/bind lib \"strnlen\" " &
+                                "  [(quote (Buffer C/UInt8))] C/Size) " &
+                                " dyn-byte-buffer)"),
+                  scope).print() == "3"
       if symAddr(handle, "atoi") != nil:
         check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int) " &
                                 " \"-42\")"),
