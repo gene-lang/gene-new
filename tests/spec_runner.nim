@@ -358,6 +358,9 @@ suite "spec — typed native compilation prototype from design":
       discard compileSource("(ffi/fn bad_calling ^symbol \"bad\" " &
                             "^calling vectorcall [] : C/Void)")
     expect GeneError:
+      discard compileSource("(ffi/fn bad_abi ^symbol \"bad\" " &
+                            "^abi Rust [] : C/Void)")
+    expect GeneError:
       discard compileSource("(ffi/fn bad_library ^library \"\" [] : C/Void)")
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
@@ -475,6 +478,9 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(ffi/struct BadBuffer " &
                             "  ^fields [[buf (Buffer C/UInt8)]])")
+    expect GeneError:
+      discard compileSource("(ffi/struct BadLayout ^layout packed " &
+                            "  ^fields [[x C/Int]])")
 
   test "ffi/union declarations expose C layout metadata manifests":
     let chunk = compileSource("(ffi/union IntOrDouble " &
@@ -511,6 +517,9 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(ffi/union BadBuffer " &
                             "  ^fields [[buf (Buffer C/UInt8)]])")
+    expect GeneError:
+      discard compileSource("(ffi/union BadLayout ^layout packed " &
+                            "  ^fields [[x C/Int]])")
 
   test "callback and dynamic FFI signatures expose metadata manifests":
     let chunk = compileSource(
@@ -548,6 +557,11 @@ suite "spec — typed native compilation prototype from design":
     expect GeneError:
       discard compileSource("(ffi/callback Escaping ^escaping true " &
                             "[p : (C/Ptr C/Void)] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/callback BadAbi ^abi Rust " &
+                            "[p : (C/Ptr C/Void)] : C/Void)")
+    expect GeneError:
+      discard compileSource("(ffi/signature BadAbi ^abi Rust [value : Any] : C/Int)")
 
 suite "spec — strings from design":
   test "strings expose explicit chars and bytes iteration":

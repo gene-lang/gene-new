@@ -2297,6 +2297,14 @@ proc validateFfiCallingConvention(context, calling: string) =
     raise newException(GeneError,
       context & " ^calling must be C, cdecl, or stdcall")
 
+proc validateFfiAbi(context, abi: string) =
+  if abi.toLowerAscii != "c":
+    raise newException(GeneError, context & " ^abi must be C")
+
+proc validateFfiLayout(context, layout: string) =
+  if layout.toLowerAscii != "c":
+    raise newException(GeneError, context & " ^layout must be C")
+
 proc parseFfiAggregateFields(context: string, fields: Value,
                              allowOffsets: bool): seq[FfiStructField] =
   if fields.kind != vkList:
@@ -2398,6 +2406,7 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   for param in proto.params:
     validateFfiFnParamType("ffi/fn", param.name, param.typeExpr)
   validateFfiFnReturnType("ffi/fn", proto.returnType, proto.release)
+  validateFfiAbi("ffi/fn", proto.abi)
   validateFfiCallingConvention("ffi/fn", proto.calling)
   discard c.chunk.addFfiFn(proto)
   c.emitConst(newNativeFn(name, nil))
@@ -2411,9 +2420,11 @@ proc compileFfiStruct(c: var Compiler, node: Value) =
     raise newException(GeneError, "ffi/struct requires ^fields")
   var hasSize = false
   var hasAlign = false
+  let layout = propLiteral(node, "layout", "C", "ffi/struct")
+  validateFfiLayout("ffi/struct", layout)
   let proto = FfiStructProto(
     name: body[0].symVal,
-    layout: propLiteral(node, "layout", "C", "ffi/struct"),
+    layout: layout,
     size: propInt(node, "size", -1, "ffi/struct", hasSize),
     hasSize: hasSize,
     align: propInt(node, "align", -1, "ffi/struct", hasAlign),
@@ -2431,9 +2442,11 @@ proc compileFfiUnion(c: var Compiler, node: Value) =
     raise newException(GeneError, "ffi/union requires ^fields")
   var hasSize = false
   var hasAlign = false
+  let layout = propLiteral(node, "layout", "C", "ffi/union")
+  validateFfiLayout("ffi/union", layout)
   let proto = FfiUnionProto(
     name: body[0].symVal,
-    layout: propLiteral(node, "layout", "C", "ffi/union"),
+    layout: layout,
     size: propInt(node, "size", -1, "ffi/union", hasSize),
     hasSize: hasSize,
     align: propInt(node, "align", -1, "ffi/union", hasAlign),
@@ -2465,6 +2478,7 @@ proc compileFfiSignature(c: var Compiler, node: Value,
     returnType: ret,
     escaping: propBool(node, "escaping", false, context),
     runtimeConstructible: kind == fskDynamic)
+  validateFfiAbi(context, proto.abi)
   if kind == fskCallback:
     if proto.escaping:
       raise newException(GeneError,
