@@ -2658,53 +2658,61 @@ proc isDynamicFfiScalarParamLabel(label: string): bool =
     "C/Size", "C/Double", "C/Float"
   ]
 
-proc isDynamicFfiReturnLabel(label: string): bool =
+proc dynamicFfiCompositeHead(expr: Value): string =
+  if expr.kind == vkNode and expr.props.len == 0 and expr.meta.len == 0:
+    typeExprLabel(expr.head)
+  else:
+    ""
+
+proc isDynamicFfiPointerParamType(expr: Value): bool =
+  expr.kind == vkNode and expr.props.len == 0 and expr.meta.len == 0 and
+    expr.body.len == 1 and dynamicFfiCompositeHead(expr) in [
+      "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr",
+      "C/OwnedPtr"
+    ]
+
+proc isDynamicFfiSliceParamType(expr: Value): bool =
+  expr.kind == vkNode and expr.props.len == 0 and expr.meta.len == 0 and
+    expr.body.len == 1 and dynamicFfiCompositeHead(expr) == "C/Slice"
+
+proc isDynamicFfiBufferParamType(expr: Value): bool =
+  expr.kind == vkNode and expr.props.len == 0 and expr.meta.len == 0 and
+    expr.body.len == 1 and dynamicFfiCompositeHead(expr) == "Buffer"
+
+proc isDynamicFfiReturnType(expr: Value, label: string): bool =
   label == "C/Void" or label == "C/CStr" or
-    isDynamicFfiScalarParamLabel(label) or
-    label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
-    label.startsWith("(C/ConstPtr ") or
-    label.startsWith("(C/NullableConstPtr ") or
-    label.startsWith("(C/OwnedPtr ")
+    isDynamicFfiScalarParamLabel(label) or isDynamicFfiPointerParamType(expr)
 
-proc isDynamicFfiPointerParamLabel(label: string): bool =
-  label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
-    label.startsWith("(C/ConstPtr ") or
-    label.startsWith("(C/NullableConstPtr ") or
-    label.startsWith("(C/OwnedPtr ")
-
-proc isDynamicFfiSliceParamLabel(label: string): bool =
-  label.startsWith("(C/Slice ")
-
-proc isDynamicFfiBufferParamLabel(label: string): bool =
-  label.startsWith("(Buffer ")
-
-proc isSupportedDynamicFfiSignature(paramLabels: openArray[string],
-                                    returnLabel: string): bool =
-  if not isDynamicFfiReturnLabel(returnLabel):
+proc isSupportedDynamicFfiSignature(params: openArray[Value],
+                                    returnType: Value): bool =
+  let returnLabel = typeExprLabel(returnType)
+  if not isDynamicFfiReturnType(returnType, returnLabel):
     return false
-  case paramLabels.len
+  case params.len
   of 0:
     true
   of 1:
-    let p = paramLabels[0]
+    let p = typeExprLabel(params[0])
     p == "C/CStr" or isDynamicFfiScalarParamLabel(p) or
-      isDynamicFfiPointerParamLabel(p) or isDynamicFfiSliceParamLabel(p) or
-      isDynamicFfiBufferParamLabel(p)
+      isDynamicFfiPointerParamType(params[0]) or
+      isDynamicFfiSliceParamType(params[0]) or
+      isDynamicFfiBufferParamType(params[0])
   of 2:
-    let a = paramLabels[0]
-    let b = paramLabels[1]
+    let a = typeExprLabel(params[0])
+    let b = typeExprLabel(params[1])
     (a == "C/CStr" and b in ["C/CStr", "C/Int", "C/Size"]) or
       (a == "C/Int" and b in ["C/Int", "C/Double", "C/Float"]) or
       (a == "C/Double" and b in ["C/Double", "C/Int"]) or
       (a == "C/Float" and b in ["C/Float", "C/Int"]) or
       (a == "C/Size" and b == "C/Size") or
-      (isDynamicFfiPointerParamLabel(a) and
-        (b == "C/Size" or isDynamicFfiPointerParamLabel(b)))
+      (isDynamicFfiPointerParamType(params[0]) and
+        (b == "C/Size" or isDynamicFfiPointerParamType(params[1])))
   of 3:
-    isDynamicFfiPointerParamLabel(paramLabels[0]) and
-      ((paramLabels[1] == "C/Int" and paramLabels[2] == "C/Size") or
-       (isDynamicFfiPointerParamLabel(paramLabels[1]) and
-        paramLabels[2] == "C/Size"))
+    isDynamicFfiPointerParamType(params[0]) and
+      ((typeExprLabel(params[1]) == "C/Int" and
+        typeExprLabel(params[2]) == "C/Size") or
+       (isDynamicFfiPointerParamType(params[1]) and
+        typeExprLabel(params[2]) == "C/Size"))
   else:
     false
 
@@ -2725,7 +2733,7 @@ proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
   for param in args[2].listItems:
     paramLabels.add typeExprLabel(param)
   let returnLabel = typeExprLabel(args[3])
-  if not isSupportedDynamicFfiSignature(paramLabels, returnLabel):
+  if not isSupportedDynamicFfiSignature(args[2].listItems, args[3]):
     raise newException(GeneError,
       "unsupported dynamic FFI signature for '" & symbol & "': [" &
       paramLabels.join(",") & "] -> " & returnLabel)
@@ -9505,21 +9513,46 @@ proc ffiCStrResult(name: string, value: cstring): Value =
 proc ffiCCharResult(value: cchar): Value =
   newChar(Rune(ord(value)))
 
+proc compositeLabelHasSingleArg(label, head: string): bool =
+  let prefix = "(" & head & " "
+  if not label.startsWith(prefix) or not label.endsWith(")"):
+    return false
+  let argStart = prefix.len
+  let argStop = label.high
+  if argStart >= argStop:
+    return false
+  var depth = 0
+  for i in argStart ..< argStop:
+    case label[i]
+    of '(':
+      inc depth
+    of ')':
+      dec depth
+      if depth < 0:
+        return false
+    of ' ':
+      if depth == 0:
+        return false
+    else:
+      discard
+  depth == 0
+
 proc isFfiPtrLabel(label: string): bool =
-  label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
-    label.startsWith("(C/ConstPtr ") or
-    label.startsWith("(C/NullableConstPtr ") or
-    label.startsWith("(C/OwnedPtr ")
+  label.compositeLabelHasSingleArg("C/Ptr") or
+    label.compositeLabelHasSingleArg("C/NullablePtr") or
+    label.compositeLabelHasSingleArg("C/ConstPtr") or
+    label.compositeLabelHasSingleArg("C/NullableConstPtr") or
+    label.compositeLabelHasSingleArg("C/OwnedPtr")
 
 proc isFfiSliceLabel(label: string): bool =
-  label.startsWith("(C/Slice ")
+  label.compositeLabelHasSingleArg("C/Slice")
 
 proc isFfiBufferLabel(label: string): bool =
-  label.startsWith("(Buffer ")
+  label.compositeLabelHasSingleArg("Buffer")
 
 proc isFfiNullablePtrLabel(label: string): bool =
-  label.startsWith("(C/NullablePtr ") or
-    label.startsWith("(C/NullableConstPtr ")
+  label.compositeLabelHasSingleArg("C/NullablePtr") or
+    label.compositeLabelHasSingleArg("C/NullableConstPtr")
 
 proc ffiPointerTarget(label: string): Value =
   if label.endsWith(")") and label.startsWith("("):
@@ -9532,13 +9565,13 @@ proc ffiPointerResult(label: string, address: pointer,
                       releaseAddress: pointer = nil): Value =
   if address == nil and not isFfiNullablePtrLabel(label):
     raise newException(GeneError, "FFI returned null for non-null pointer result")
-  if label.startsWith("(C/OwnedPtr "):
+  if label.compositeLabelHasSingleArg("C/OwnedPtr"):
     if releaseAddress == nil:
       raise newException(GeneError,
         "FFI OwnedPtr result requires a release function")
     newCForeignOwnedPtr(address, releaseAddress, ffiPointerTarget(label))
-  elif label.startsWith("(C/ConstPtr ") or
-      label.startsWith("(C/NullableConstPtr "):
+  elif label.compositeLabelHasSingleArg("C/ConstPtr") or
+      label.compositeLabelHasSingleArg("C/NullableConstPtr"):
     newCConstPtr(address, ffiPointerTarget(label))
   else:
     newCPtr(address, ffiPointerTarget(label))

@@ -2155,7 +2155,20 @@ suite "types — function boundaries":
                     scope)
       expect GeneError:
         discard run(compileSource("(ffi/bind lib \"ignored\" " &
+                                  "  [(quote (C/Ptr C/Char C/Int))] C/Void)"),
+                    scope)
+      expect GeneError:
+        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+                                  "  [(quote (C/Slice C/UInt8 C/UInt16))] C/Void)"),
+                    scope)
+      expect GeneError:
+        discard run(compileSource("(ffi/bind lib \"ignored\" " &
                                   "  [C/CStr] (quote (C/Slice C/UInt8)))"),
+                    scope)
+      expect GeneError:
+        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+                                  "  [C/Size] (quote (C/OwnedPtr C/Char C/Int)) " &
+                                  "  \"free\")"),
                     scope)
       let handle = cast[LibHandle](lib.ffiLibraryHandle)
       if symAddr(handle, "atoi") != nil:
