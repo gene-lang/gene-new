@@ -470,6 +470,9 @@ proc ffiTestIntShort(x: cint): cshort {.cdecl.} =
 proc ffiTestIntI8(x: cint): int8 {.cdecl.} =
   int8(x + 8)
 
+proc ffiTestIntChar(x: cint): cchar {.cdecl.} =
+  cchar(ord('A') + x)
+
 proc ffiTestIntU32(x: cint): uint32 {.cdecl.} =
   uint32(x + 9)
 
@@ -481,6 +484,9 @@ proc ffiTestIntUShort(x: cint): cushort {.cdecl.} =
 
 proc ffiTestIntU8(x: cint): uint8 {.cdecl.} =
   uint8(x + 12)
+
+proc ffiTestIntUChar(x: cint): uint8 {.cdecl.} =
+  uint8(x + 13)
 
 proc ffiTestIntI64(x: cint): int64 {.cdecl.} =
   int64(x + 3)
@@ -2804,6 +2810,11 @@ suite "types — function boundaries":
                                   "ffiTestIntI8",
                                   cast[pointer](ffiTestIntI8), lib,
                                   @[newSym("C/Int")], newSym("C/Int8")))
+      scope.define("int-char",
+                   newFfiCallable("ffiTestIntChar",
+                                  "ffiTestIntChar",
+                                  cast[pointer](ffiTestIntChar), lib,
+                                  @[newSym("C/Int")], newSym("C/Char")))
       scope.define("int-u32",
                    newFfiCallable("ffiTestIntU32",
                                   "ffiTestIntU32",
@@ -2824,6 +2835,11 @@ suite "types — function boundaries":
                                   "ffiTestIntU8",
                                   cast[pointer](ffiTestIntU8), lib,
                                   @[newSym("C/Int")], newSym("C/UInt8")))
+      scope.define("int-uchar",
+                   newFfiCallable("ffiTestIntUChar",
+                                  "ffiTestIntUChar",
+                                  cast[pointer](ffiTestIntUChar), lib,
+                                  @[newSym("C/Int")], newSym("C/UChar")))
       scope.define("int-i64",
                    newFfiCallable("ffiTestIntI64",
                                   "ffiTestIntI64",
@@ -5691,10 +5707,12 @@ suite "types — function boundaries":
       check run(compileSource("(int-i16 4)"), scope).print() == "10"
       check run(compileSource("(int-short 4)"), scope).print() == "11"
       check run(compileSource("(int-i8 4)"), scope).print() == "12"
+      check run(compileSource("(int-char 5)"), scope).print() == "'F'"
       check run(compileSource("(int-u32 4)"), scope).print() == "13"
       check run(compileSource("(int-u16 4)"), scope).print() == "14"
       check run(compileSource("(int-ushort 4)"), scope).print() == "15"
       check run(compileSource("(int-u8 4)"), scope).print() == "16"
+      check run(compileSource("(int-uchar 4)"), scope).print() == "17"
       check run(compileSource("(int-i64 4)"), scope).print() == "7"
       check run(compileSource("(int-u64 4)"), scope).print() == "8"
       check run(compileSource("(int-unary-diff 4)"), scope).print() == "-2"
