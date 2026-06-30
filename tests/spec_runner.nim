@@ -308,6 +308,7 @@ suite "spec — typed native compilation prototype from design":
     check "status = gene_ffi_arg_cstr(ctx, call, 0, \"s\", &s);" in c
     check "size_t native_result = strlen(s);" in c
     check "return gene_ffi_result_size(ctx, native_result, result);" in c
+    check "return GENE_FFI_WRAPPER_UNIMPLEMENTED;" notin c
     check_eval("(ffi/fn strlen ^symbol \"strlen\" [s : C/CStr] : C/Size) strlen",
                "(native-fn strlen)")
 
@@ -351,6 +352,15 @@ suite "spec — typed native compilation prototype from design":
     check "return gene_ffi_result_void(ctx, result);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
       "\"(C/OwnedPtr C/Char)\", \"destroy_owned\", result);" in c
+    check "return GENE_FFI_WRAPPER_UNIMPLEMENTED;" notin c
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_any ^symbol \"bad\" [x : Any] : C/Int)")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_slice_result ^symbol \"bad\" " &
+                            "[] : (C/Slice C/UInt8))")
+    expect GeneError:
+      discard compileSource("(ffi/fn bad_owned ^symbol \"bad\" " &
+                            "[] : (C/OwnedPtr C/Char))")
 
   test "ffi/struct declarations expose C layout metadata manifests":
     let chunk = compileSource("(ffi/struct Timespec " &

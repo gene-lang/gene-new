@@ -2170,6 +2170,27 @@ proc parseFfiReturn(body: seq[Value], idx: var int, context: string): Value =
     result = body[idx]
     inc idx
 
+proc ffiTypeLabel(expr: Value): string =
+  case expr.kind
+  of vkSymbol:
+    expr.symVal
+  of vkNode:
+    if expr.head.kind == vkSymbol and expr.head.symVal == "path":
+      var segments: seq[string]
+      for item in expr.body:
+        if item.kind == vkSymbol:
+          segments.add item.symVal
+        else:
+          segments.add ffiTypeLabel(item)
+      segments.join("/")
+    else:
+      var parts = @[ffiTypeLabel(expr.head)]
+      for item in expr.body:
+        parts.add ffiTypeLabel(item)
+      "(" & parts.join(" ") & ")"
+  else:
+    $expr.kind
+
 proc ffiAggregateTypeHead(expr: Value): string =
   case expr.kind
   of vkSymbol:
@@ -2185,15 +2206,7 @@ proc ffiAggregateTypeHead(expr: Value): string =
     ""
 
 proc ffiAggregateTypeDescription(expr: Value): string =
-  case expr.kind
-  of vkSymbol:
-    expr.symVal
-  of vkNode:
-    let head = ffiAggregateTypeHead(expr)
-    if head.len > 0: head & " expression"
-    else: "compound type expression"
-  else:
-    $expr.kind
+  ffiTypeLabel(expr)
 
 proc validateFfiAggregateFieldType(context, fieldName: string, expr: Value) =
   const scalarFields = [
@@ -2213,6 +2226,43 @@ proc validateFfiAggregateFieldType(context, fieldName: string, expr: Value) =
   raise newException(GeneError,
     context & " field '" & fieldName & "' type must be a scalar, C/CStr, " &
     "or pointer-like ABI type, got " & ffiAggregateTypeDescription(expr))
+
+proc isFfiScalarOrCStrLabel(label: string): bool =
+  label in [
+    "C/Int8", "C/UInt8", "C/Int16", "C/UInt16", "C/Int32", "C/UInt32",
+    "C/Int64", "C/UInt64", "C/Char", "C/UChar", "C/Short", "C/UShort",
+    "C/Int", "C/UInt", "C/Long", "C/ULong", "C/Size", "C/PtrDiff",
+    "C/Float", "C/Double", "C/Bool", "C/CStr"
+  ]
+
+proc isFfiPointerLabel(label: string): bool =
+  label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
+    label.startsWith("(C/ConstPtr ") or
+    label.startsWith("(C/NullableConstPtr ") or
+    label.startsWith("(C/OwnedPtr ")
+
+proc isFfiBufferArgLabel(label: string): bool =
+  label.startsWith("(C/Slice ") or label.startsWith("(Buffer ")
+
+proc validateFfiFnParamType(context, paramName: string, expr: Value) =
+  let label = ffiTypeLabel(expr)
+  if isFfiScalarOrCStrLabel(label) or isFfiPointerLabel(label) or
+      isFfiBufferArgLabel(label):
+    return
+  raise newException(GeneError,
+    context & " parameter '" & paramName & "' has unsupported C wrapper type " &
+    label)
+
+proc validateFfiFnReturnType(context: string, expr: Value, release: string) =
+  let label = ffiTypeLabel(expr)
+  if label == "C/Void" or isFfiScalarOrCStrLabel(label) or
+      isFfiPointerLabel(label):
+    if label.startsWith("(C/OwnedPtr ") and release.len == 0:
+      raise newException(GeneError,
+        context & " return type " & label & " requires ^release")
+    return
+  raise newException(GeneError,
+    context & " return type has unsupported C wrapper type " & label)
 
 proc parseFfiAggregateFields(context: string, fields: Value,
                              allowOffsets: bool): seq[FfiStructField] =
@@ -2279,6 +2329,9 @@ proc compileFfiFn(c: var Compiler, node: Value) =
                          params: parseFfiParams(body[1]),
                          returnType: ret,
                          release: propLiteral(node, "release", "", "ffi/fn"))
+  for param in proto.params:
+    validateFfiFnParamType("ffi/fn", param.name, param.typeExpr)
+  validateFfiFnReturnType("ffi/fn", proto.returnType, proto.release)
   discard c.chunk.addFfiFn(proto)
   c.emitConst(newNativeFn(name, nil))
   c.emitDefineBinding(name)
