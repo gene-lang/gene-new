@@ -725,6 +725,13 @@ proc canUseRecur1(proto: FunctionProto): bool =
     not proto.callScopeNeedsSlotReset and
     (proto.simpleCall or proto.canUseTypedIntRecur1)
 
+proc smallIntConstValue(chunk: Chunk, constIndex: int): tuple[ok: bool, value: int] =
+  if constIndex >= 0 and constIndex < chunk.constants.len:
+    let v = chunk.constants[constIndex]
+    if v.isSmallInt:
+      return (true, int(v.smallIntVal))
+  (false, 0)
+
 proc rewriteTailReturnGuards(proto: FunctionProto) =
   ## Collapse the tail shape produced for `(if (< x const) x ...)`.
   ## The replacement returns directly on the true branch and skips the four
@@ -748,9 +755,12 @@ proc rewriteTailReturnGuards(proto: FunctionProto) =
         jumpEnd.op == opJump and jumpEnd.intArg >= 0 and
         jumpEnd.intArg < proto.chunk.instructions.len and
         proto.chunk.instructions[jumpEnd.intArg].op in {opReturn, opReturnBareInt}:
+      let imm = proto.chunk.smallIntConstValue(cmp.depth)
       proto.chunk.instructions[i] = Instruction(
-        op: opReturnLocalIfIntLtConst, intArg: load.intArg,
-        depth: cmp.depth, name: load.name, flag: cmp.flag)
+        op: (if imm.ok: opReturnLocalIfIntLtImm else: opReturnLocalIfIntLtConst),
+        intArg: load.intArg,
+        depth: (if imm.ok: imm.value else: cmp.depth),
+        name: load.name, flag: cmp.flag)
       proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
       proto.chunk.instructions[i + 2] = Instruction(op: opNoop)
       proto.chunk.instructions[i + 3] = Instruction(op: opNoop)
@@ -782,17 +792,20 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
              NativeFastKind(sub.intArg) == nfkSub)
           if loadParam and subConst and recur.op == opRecur1 and
               (recur.flag or proto.simpleCall):
-            let constIsSmallInt =
-              sub.depth >= 0 and sub.depth < proto.chunk.constants.len and
-              proto.chunk.constants[sub.depth].isSmallInt
+            let imm = proto.chunk.smallIntConstValue(sub.depth)
             let fusedOp =
-              if proto.canUseSameScopeRecur1:
+              if imm.ok and proto.canUseSameScopeRecur1:
+                opRecur1LocalIntSubImmSameScope
+              elif imm.ok:
+                opRecur1LocalIntSubImm
+              elif proto.canUseSameScopeRecur1:
                 opRecur1LocalIntSubConstSameScope
               else:
                 opRecur1LocalIntSubConst
             proto.chunk.instructions[i] = Instruction(
               op: fusedOp, intArg: paramSlot,
-              depth: sub.depth, name: load.name, flag: constIsSmallInt)
+              depth: (if imm.ok: imm.value else: sub.depth),
+              name: load.name, flag: imm.ok)
             proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
             proto.chunk.instructions[i + 2] = Instruction(op: opNoop)
             inc i, 3

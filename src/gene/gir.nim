@@ -50,8 +50,11 @@ type
     opCallLocalN
     opRecur1
     opRecur1LocalIntSubConst
+    opRecur1LocalIntSubImm
     opRecur1LocalIntSubConstSameScope
+    opRecur1LocalIntSubImmSameScope
     opReturnLocalIfIntLtConst
+    opReturnLocalIfIntLtImm
     opCall2
     opCall
     opCallSplice
@@ -553,12 +556,21 @@ proc formatInstruction(inst: Instruction): string =
   of opRecur1LocalIntSubConst:
     result.add " slot=" & $inst.intArg & " name=" & inst.name &
       " const=" & $inst.depth & " argc=1"
+  of opRecur1LocalIntSubImm:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name &
+      " imm=" & $inst.depth & " argc=1"
   of opRecur1LocalIntSubConstSameScope:
     result.add " slot=" & $inst.intArg & " name=" & inst.name &
       " const=" & $inst.depth & " argc=1"
+  of opRecur1LocalIntSubImmSameScope:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name &
+      " imm=" & $inst.depth & " argc=1"
   of opReturnLocalIfIntLtConst:
     result.add " slot=" & $inst.intArg & " name=" & inst.name &
       " const=" & $inst.depth
+  of opReturnLocalIfIntLtImm:
+    result.add " slot=" & $inst.intArg & " name=" & inst.name &
+      " imm=" & $inst.depth
   of opCall2:
     result.add " argc=2"
   of opCall:

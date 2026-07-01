@@ -6562,46 +6562,64 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var arg = stack[argsStart]
           stack.setLen(argsStart)
           enterRecur1Frame(arg, inst[].flag)
-        of opRecur1LocalIntSubConst, opRecur1LocalIntSubConstSameScope:
+        of opRecur1LocalIntSubConst, opRecur1LocalIntSubImm,
+            opRecur1LocalIntSubConstSameScope, opRecur1LocalIntSubImmSameScope:
           let slot = inst[].intArg
           if slot < 0 or slot >= scope.slots.len:
             raise newException(GeneError,
               "VM local slot out of range for recur: " & inst[].name)
           let a = scope.slots[slot]
-          let b = chunk.constants[inst[].depth]
           var arg: Value
           var argKnownBareInt = true
-          if a.isSmallInt and (inst[].flag or b.isSmallInt):
-            if not smallIntSubKnown(a, b, arg):
-              arg = intSub(a, b)
-          elif a.kind == vkInt and b.kind == vkInt:
-            arg = intSub(a, b)
+          if inst[].op in {opRecur1LocalIntSubImm,
+                           opRecur1LocalIntSubImmSameScope} and a.isSmallInt:
+            arg = newInt(a.smallIntVal - int64(inst[].depth))
           else:
-            let callee = scope.loadNativeFast(nfkSub, "-")
-            var args = [a, b]
-            arg = applyCall(callee, args, NamedArgs(), scope)
-            argKnownBareInt = false
+            let b =
+              if inst[].op in {opRecur1LocalIntSubImm,
+                               opRecur1LocalIntSubImmSameScope}:
+                newInt(inst[].depth)
+              else:
+                chunk.constants[inst[].depth]
+            if a.isSmallInt and (inst[].flag or b.isSmallInt):
+              if not smallIntSubKnown(a, b, arg):
+                arg = intSub(a, b)
+            elif a.kind == vkInt and b.kind == vkInt:
+              arg = intSub(a, b)
+            else:
+              let callee = scope.loadNativeFast(nfkSub, "-")
+              var args = [a, b]
+              arg = applyCall(callee, args, NamedArgs(), scope)
+              argKnownBareInt = false
           ip += 2
-          if inst[].op == opRecur1LocalIntSubConstSameScope:
+          if inst[].op in {opRecur1LocalIntSubConstSameScope,
+                           opRecur1LocalIntSubImmSameScope}:
             enterRecur1SameScopeFrame(arg, argKnownBareInt)
           else:
             enterRecur1Frame(arg, argKnownBareInt)
-        of opReturnLocalIfIntLtConst:
+        of opReturnLocalIfIntLtConst, opReturnLocalIfIntLtImm:
           let slot = inst[].intArg
           if slot < 0 or slot >= scope.slots.len:
             raise newException(GeneError,
               "VM local slot out of range for int return guard: " & inst[].name)
           let a = scope.slots[slot]
-          let b = chunk.constants[inst[].depth]
           var matched = false
-          if a.isSmallInt and (inst[].flag or b.isSmallInt):
-            matched = a.smallIntVal < b.smallIntVal
-          elif a.kind == vkInt and b.kind == vkInt:
-            matched = intCompare(a, b) < 0
+          if inst[].op == opReturnLocalIfIntLtImm and a.isSmallInt:
+            matched = a.smallIntVal < int64(inst[].depth)
           else:
-            let callee = scope.loadNativeFast(nfkLt, "<")
-            var args = [a, b]
-            matched = applyCall(callee, args, NamedArgs(), scope).isTruthy
+            let b =
+              if inst[].op == opReturnLocalIfIntLtImm:
+                newInt(inst[].depth)
+              else:
+                chunk.constants[inst[].depth]
+            if a.isSmallInt and (inst[].flag or b.isSmallInt):
+              matched = a.smallIntVal < b.smallIntVal
+            elif a.kind == vkInt and b.kind == vkInt:
+              matched = intCompare(a, b) < 0
+            else:
+              let callee = scope.loadNativeFast(nfkLt, "<")
+              var args = [a, b]
+              matched = applyCall(callee, args, NamedArgs(), scope).isTruthy
           if matched:
             frameReturnBareInt(a)
             continue

@@ -234,8 +234,9 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     var sawRecur = false
     for inst in proto.chunk.instructions:
-      if inst.op in {opRecur1LocalIntSubConst,
-                     opRecur1LocalIntSubConstSameScope}:
+      if inst.op in {opRecur1LocalIntSubConst, opRecur1LocalIntSubImm,
+                     opRecur1LocalIntSubConstSameScope,
+                     opRecur1LocalIntSubImmSameScope}:
         sawRecur = true
     check sawRecur
 
@@ -526,8 +527,8 @@ suite "gir — disassembly":
     let dump = compileSource(
       "(var fib (fn [n : Int] : Int " &
       "  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))").disassemble()
-    check dump.contains("opRecur1LocalIntSubConstSameScope slot=0 name=n const=1")
-    check dump.contains("opRecur1LocalIntSubConstSameScope slot=0 name=n const=2")
+    check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=1")
+    check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=2")
     check dump.contains("opReturnBareInt")
 
   test "prints direct local zero-arg calls":
