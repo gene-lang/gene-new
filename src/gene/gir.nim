@@ -59,6 +59,7 @@ type
     opCall
     opCallSplice
     opIntAdd2
+    opReturnIntAdd2
     opIntSub2
     opIntMul2
     opIntLt2
@@ -581,8 +582,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
-  of opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2, opIntLe2,
-     opIntGe2, opIntFast2:
+  of opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
+     opIntLe2, opIntGe2, opIntFast2:
     result.add " name=" & inst.name
   of opIntAddConst, opIntSubConst, opIntMulConst, opIntLtConst,
      opIntGtConst, opIntLeConst, opIntGeConst, opIntFastConst:

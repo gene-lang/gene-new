@@ -769,6 +769,30 @@ proc rewriteTailReturnGuards(proto: FunctionProto) =
     else:
       inc i
 
+proc rewriteBareIntReturnAdds(proto: FunctionProto) =
+  ## Collapse the fibonacci-like `(+ (self ...) (self ...))` tail return into
+  ## one VM dispatch. Keep this narrower than all Int tail adds: other recursive
+  ## shapes can depend on more general frame/stack behavior.
+  var i = 0
+  while i + 1 < proto.chunk.instructions.len:
+    let add = proto.chunk.instructions[i]
+    let ret = proto.chunk.instructions[i + 1]
+    var sameScopeRecurs = 0
+    let scanStart = max(0, i - 6)
+    for j in scanStart ..< i:
+      if proto.chunk.instructions[j].op in {
+          opRecur1LocalIntSubConstSameScope,
+          opRecur1LocalIntSubImmSameScope}:
+        inc sameScopeRecurs
+    if add.op == opIntAdd2 and ret.op == opReturnBareInt and
+        sameScopeRecurs >= 2:
+      proto.chunk.instructions[i] = Instruction(op: opReturnIntAdd2,
+                                                name: add.name)
+      proto.chunk.instructions[i + 1] = Instruction(op: opNoop)
+      inc i, 2
+    else:
+      inc i
+
 proc rewriteSelfRecursiveCalls(parent: Chunk) =
   for proto in parent.functions:
     if proto.canUseRecur1 and
@@ -812,6 +836,7 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
           else:
             inc i
       proto.rewriteTailReturnGuards()
+    proto.rewriteBareIntReturnAdds()
     proto.chunk.rewriteSelfRecursiveCalls()
 
 proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =

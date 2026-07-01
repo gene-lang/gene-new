@@ -7827,6 +7827,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           frameReturn(if stack.len > 0: stack.pop() else: NIL)
         of opReturnBareInt:
           frameReturnBareInt(if stack.len > 0: stack.pop() else: NIL)
+        of opReturnIntAdd2:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in int add return")
+          let top = stack.len
+          let b = stack[top - 1]
+          let a = stack[top - 2]
+          stack.setLen(top - 2)
+          var value: Value
+          if a.isSmallInt and b.isSmallInt and smallIntAddKnown(a, b, value):
+            frameReturnBareInt(value)
+            continue
+          if a.kind == vkInt and b.kind == vkInt:
+            frameReturnBareInt(intAdd(a, b))
+            continue
+          let callee = scope.loadNativeFast(nfkAdd, inst[].name)
+          var args = [a, b]
+          frameReturnBareInt(applyCall(callee, args, NamedArgs(), scope))
         of opCheckType:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in type check")

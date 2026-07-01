@@ -529,7 +529,7 @@ suite "gir — disassembly":
       "  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))").disassemble()
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=1")
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=2")
-    check dump.contains("opReturnBareInt")
+    check dump.contains("opReturnIntAdd2 name=+")
 
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
