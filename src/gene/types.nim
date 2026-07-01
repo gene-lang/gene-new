@@ -439,6 +439,7 @@ type
     lifecycle: ActorLifecycle
     capacity: int
     queue: seq[ActorMessage]
+    reservedMessages: int
     processing: bool
     state: Value
     restartInit: Value
@@ -2284,7 +2285,8 @@ proc actorSnapshotFields*(v: Value): tuple[state: Value, mailbox: int,
     result.mailbox = data.queue.len
     result.closed = data.lifecycle.closed
     result.processing = data.processing
-    result.idle = not data.processing and data.queue.len == 0
+    result.idle = not data.processing and data.queue.len == 0 and
+      data.reservedMessages == 0
 
 proc finishActorContinue*(v, state: Value) =
   let stored = escapeWeakFunctions(state)
@@ -2298,7 +2300,7 @@ proc tryUpgradeIdleActor*(v, state, handler: Value): bool =
   let storedHandler = escapeWeakFunctions(handler)
   let data = actorData(v)
   withActorLock(data):
-    if data.processing or data.queue.len > 0:
+    if data.processing or data.queue.len > 0 or data.reservedMessages > 0:
       return false
     data.state = storedState
     data.handler = storedHandler
@@ -2357,13 +2359,13 @@ proc actorQueueLen*(v: Value): int =
 proc actorFull*(v: Value): bool =
   let data = actorData(v)
   withActorLock(data):
-    result = data.queue.len >= data.capacity
+    result = data.queue.len + data.reservedMessages >= data.capacity
 
 proc actorSendState*(v: Value): tuple[closed: bool, full: bool] =
   let data = actorData(v)
   withActorLock(data):
     result.closed = data.lifecycle.closed
-    result.full = data.queue.len >= data.capacity
+    result.full = data.queue.len + data.reservedMessages >= data.capacity
 
 proc closeActor*(v: Value) =
   let data = actorData(v)
@@ -2382,6 +2384,7 @@ proc closeActorAndDrainMessages*(v: Value): seq[ActorMessage] =
     data.lifecycle.closed = true
     result = data.queue
     data.queue.setLen(0)
+    data.reservedMessages = 0
     data.processing = false
 
 proc actorMessagesSnapshot*(v: Value): seq[ActorMessage] =
@@ -2408,7 +2411,7 @@ proc tryPushActorMessage*(v, message: Value): tuple[pushed: bool, closed: bool,
   withActorLock(data):
     if data.lifecycle.closed:
       result.closed = true
-    elif data.queue.len >= data.capacity:
+    elif data.queue.len + data.reservedMessages >= data.capacity:
       result.full = true
     else:
       data.queue.add ActorMessage(message: stored, reply: NIL)
@@ -2422,8 +2425,39 @@ proc tryPushActorMessage*(v, message, reply: Value): tuple[pushed: bool,
   withActorLock(data):
     if data.lifecycle.closed:
       result.closed = true
-    elif data.queue.len >= data.capacity:
+    elif data.queue.len + data.reservedMessages >= data.capacity:
       result.full = true
+    else:
+      data.queue.add ActorMessage(message: stored, reply: reply)
+      result.pushed = true
+
+proc tryReserveActorMessage*(v: Value): tuple[reserved: bool, closed: bool,
+                                              full: bool] =
+  let data = actorData(v)
+  withActorLock(data):
+    if data.lifecycle.closed:
+      result.closed = true
+    elif data.queue.len + data.reservedMessages >= data.capacity:
+      result.full = true
+    else:
+      inc data.reservedMessages
+      result.reserved = true
+
+proc releaseReservedActorMessage*(v: Value) =
+  let data = actorData(v)
+  withActorLock(data):
+    if data.reservedMessages > 0:
+      dec data.reservedMessages
+
+proc commitReservedActorMessage*(v, message, reply: Value): tuple[pushed: bool,
+                                                                  closed: bool] =
+  let stored = escapeWeakFunctions(message)
+  let data = actorData(v)
+  withActorLock(data):
+    if data.reservedMessages > 0:
+      dec data.reservedMessages
+    if data.lifecycle.closed:
+      result.closed = true
     else:
       data.queue.add ActorMessage(message: stored, reply: reply)
       result.pushed = true
@@ -3303,6 +3337,7 @@ proc escapeWeakFunctions*(v: Value): Value =
     var lifecycle: ActorLifecycle
     var capacity: int
     var processing: bool
+    var reservedMessages: int
     var sourceState: Value
     var sourceRestartInit: Value
     var sourceHandler: Value
@@ -3315,6 +3350,7 @@ proc escapeWeakFunctions*(v: Value): Value =
       lifecycle = data.lifecycle
       capacity = data.capacity
       processing = data.processing
+      reservedMessages = data.reservedMessages
       sourceState = data.state
       sourceRestartInit = data.restartInit
       sourceHandler = data.handler
@@ -3355,6 +3391,7 @@ proc escapeWeakFunctions*(v: Value): Value =
       lifecycle = lifecycle)
     escapedData.queue = escapedQueue
     escapedData.processing = processing
+    escapedData.reservedMessages = reservedMessages
     boxObject(escapedData)
   of vkActorContext:
     let actor = v.actorContextActor

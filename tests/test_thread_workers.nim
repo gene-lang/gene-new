@@ -184,6 +184,20 @@ suite "threaded scheduler workers":
          "  (success ~ AtomicCell/load))",
          "1"
 
+  test "actor mailbox reservations count toward capacity":
+    let actor = newActorRef(1, NIL, NIL, NIL)
+    let reserved = actor.tryReserveActorMessage()
+    check reserved.reserved
+    check actor.actorFull
+    check actor.tryPushActorMessage(newInt(1)).full
+    actor.releaseReservedActorMessage()
+    let reservedAgain = actor.tryReserveActorMessage()
+    check reservedAgain.reserved
+    let committed = actor.commitReservedActorMessage(newInt(2), NIL)
+    check committed.pushed
+    check actor.actorQueueLen == 1
+    check actor.actorFull
+
   test "root await helps drain worker-candidate queue":
     withGeneWorkerSetting "1":
       ck "(scope " &

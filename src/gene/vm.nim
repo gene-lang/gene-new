@@ -1527,10 +1527,20 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   try:
     var workerLease: SchedulerWorkerLease
     var workerLeaseOpen = false
+    var reservationOpen = false
     defer:
+      if reservationOpen:
+        actor.releaseReservedActorMessage()
+        wakeActorSenders(actor)
       if workerLeaseOpen:
         endSchedulerWorkerLease(workerLease)
-    while actor.actorFull and not actor.actorClosed:
+    while true:
+      let reserved = actor.tryReserveActorMessage()
+      if reserved.reserved:
+        reservationOpen = true
+        break
+      if reserved.closed:
+        raiseActorClosed(scope)
       if currentFiberActive:
         var se: ref SuspendError
         new(se)
@@ -1543,15 +1553,16 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
         workerLeaseOpen = true
       if not schedulerRunOneRoot(workerLease):
         raise newException(GeneError, "actor/ask would suspend on a full mailbox")
-    if actor.actorClosed:
-      raiseActorClosed(scope)
     let task = newPendingTask()
     let reply = newReplyTo(task = task)
     var buildArgs = [reply]
     let message = applyCall(args[1], buildArgs, NamedArgs(), scope)
-    actor.pushActorMessage(checkedActorMessage(actor, message,
-                                               "actor/ask message", scope),
-                            reply)
+    let committed = actor.commitReservedActorMessage(
+      checkedActorMessage(actor, message, "actor/ask message", scope), reply)
+    reservationOpen = false
+    if committed.closed:
+      discard cancelReplyTask(reply)
+      raiseActorClosed(scope)
     if timeoutMs >= 0:
       scheduleAskTimeout(task, reply, scope, timeoutMs)
     scheduleActor(actor, scope)
