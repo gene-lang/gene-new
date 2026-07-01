@@ -172,7 +172,8 @@ participates in equality or hashing.
 > suspension hook for file/network/native operation backends. `Fs/read-text-async`
 > is the first Gene-visible backend: it returns a task and, in threaded
 > atomicArc builds with workers enabled, performs the file read on the worker
-> lane while the awaiting Gene task is suspended.
+> lane while the awaiting Gene task is suspended. `Fs/write-text-async` uses the
+> same worker-backed path for write-authorized text output.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.

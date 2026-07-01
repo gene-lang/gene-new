@@ -430,6 +430,24 @@ suite "threaded scheduler workers":
         "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
         "[1 \"worker async\"]"
 
+  test "root await drives worker-backed async file write":
+    let path = getTempDir() / "gene-threaded-write-text-async-test.txt"
+    defer:
+      if fileExists(path):
+        removeFile(path)
+    let scope = newGlobalScope()
+    scope.define("path", newStr(path))
+    withGeneWorkerSetting "2":
+      check run(compileSource(
+        "(scope " &
+        "  (var out (atomic-cell 0)) " &
+        "  (var write-task (Fs/write-text-async Fs/WriteDir path \"worker write\")) " &
+        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (await marker) " &
+        "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
+        "[1 nil]"
+    check readFile(path) == "worker write"
+
   test "worker-candidate task errors wake root awaiters":
     withGeneWorkerSetting "8":
       ck "(scope " &

@@ -141,10 +141,12 @@ type
 
   AsyncIoKind = enum
     aioReadText
+    aioWriteText
 
   AsyncIoRequest = ref object
     kind: AsyncIoKind
     path: string
+    text: string
     task: Value
 
   CaptureSafetyMode = enum
@@ -282,6 +284,7 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool
 proc enqueueAsyncReadText(path: string, task: Value): bool
+proc enqueueAsyncWriteText(path, text: string, task: Value): bool
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
@@ -2991,11 +2994,24 @@ proc requireFsReadDir(name: string, value: Value) =
   if cap != "Fs/ReadDir" and cap != "Fs/ReadWriteDir":
     raise newException(GeneError, name & " expects Fs/ReadDir authority")
 
+proc requireFsWriteDir(name: string, value: Value) =
+  requireCapability(name, value)
+  let cap = value.capabilityName
+  if cap != "Fs/WriteDir" and cap != "Fs/ReadWriteDir":
+    raise newException(GeneError, name & " expects Fs/WriteDir authority")
+
 proc completedReadTextTask(path: string): Value =
   try:
     newCompletedTask(newStr(readFile(path)))
   except CatchableError as e:
     newFailedTask("Fs/read-text-async failed: " & e.msg)
+
+proc completedWriteTextTask(path, text: string): Value =
+  try:
+    writeFile(path, text)
+    newCompletedTask(NIL)
+  except CatchableError as e:
+    newFailedTask("Fs/write-text-async failed: " & e.msg)
 
 proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -3009,6 +3025,21 @@ proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
     task
   else:
     completedReadTextTask(path)
+
+proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "Fs/write-text-async expects 3 arguments, got " & $args.len)
+  requireFsWriteDir("Fs/write-text-async", args[0])
+  requireString("Fs/write-text-async path", args[1])
+  requireString("Fs/write-text-async text", args[2])
+  let path = args[1].strVal
+  let text = args[2].strVal
+  let task = newExternalTask()
+  if enqueueAsyncWriteText(path, text, task):
+    task
+  else:
+    completedWriteTextTask(path, text)
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -3234,6 +3265,8 @@ proc buildBuiltins(app: Application): Scope =
   fsScope.define("ReadWriteDir", newCapability("Fs/ReadWriteDir"))
   fsScope.define("read-text-async", newNativeFn("Fs/read-text-async",
                                                 biFsReadTextAsync))
+  fsScope.define("write-text-async", newNativeFn("Fs/write-text-async",
+                                                 biFsWriteTextAsync))
   result.define("Fs", newNamespace("Fs", fsScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
@@ -5398,6 +5431,21 @@ proc enqueueAsyncReadText(path: string, task: Value): bool =
       return false
     markSharedValue(task)
     let req = AsyncIoRequest(kind: aioReadText, path: path, task: task)
+    let s = currentScheduler()
+    withSchedulerLock(s):
+      s.asyncIoQueue.add req
+      broadcast(s.workerCond)
+    true
+  else:
+    false
+
+proc enqueueAsyncWriteText(path, text: string, task: Value): bool =
+  when compileOption("threads") and defined(gcAtomicArc):
+    if configuredSchedulerWorkers() <= 0:
+      return false
+    markSharedValue(task)
+    let req = AsyncIoRequest(kind: aioWriteText, path: path, text: text,
+                             task: task)
     let s = currentScheduler()
     withSchedulerLock(s):
       s.asyncIoQueue.add req
@@ -8374,6 +8422,15 @@ when compileOption("threads") and defined(gcAtomicArc):
       except CatchableError as e:
         if tryFailTask(req.task,
                        "Fs/read-text-async failed: " & e.msg):
+          wakeTaskWaiters(req.task)
+    of aioWriteText:
+      try:
+        writeFile(req.path, req.text)
+        if tryCompleteTask(req.task, NIL):
+          wakeTaskWaiters(req.task)
+      except CatchableError as e:
+        if tryFailTask(req.task,
+                       "Fs/write-text-async failed: " & e.msg):
           wakeTaskWaiters(req.task)
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
