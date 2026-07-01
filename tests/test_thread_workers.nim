@@ -71,6 +71,34 @@ suite "threaded scheduler workers":
          "  (+ (await a) (await b)))",
          "43"
 
+  test "worker-candidate tasks share AtomicCell through CAS":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (var counter (atomic-cell 0)) " &
+         "  (fn inc_many [limit] " &
+         "    (var i 0) " &
+         "    (var stored false) " &
+         "    (var old 0) " &
+         "    (while (< i limit) " &
+         "      (set stored false) " &
+         "      (while (not stored) " &
+         "        (set old (counter ~ AtomicCell/load)) " &
+         "        (set stored (counter ~ AtomicCell/compare-exchange old (+ old 1)))) " &
+         "      (set i (+ i 1))) " &
+         "    nil) " &
+         "  (var a (spawn (inc_many 200))) " &
+         "  (var b (spawn (inc_many 200))) " &
+         "  (var c (spawn (inc_many 200))) " &
+         "  (var d (spawn (inc_many 200))) " &
+         "  (var e (spawn (inc_many 200))) " &
+         "  (var f (spawn (inc_many 200))) " &
+         "  (var g (spawn (inc_many 200))) " &
+         "  (var h (spawn (inc_many 200))) " &
+         "  (await a) (await b) (await c) (await d) " &
+         "  (await e) (await f) (await g) (await h) " &
+         "  (counter ~ AtomicCell/load))",
+         "1600"
+
   test "root await helps drain worker-candidate queue":
     withGeneWorkerSetting "1":
       ck "(scope " &
