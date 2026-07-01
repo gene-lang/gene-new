@@ -181,6 +181,11 @@ type
     currentModuleDir: string
     packageRoot: string
 
+# Current threaded scheduler queues are lock-protected seqs shared with worker
+# threads. Reserve enough room up front so worker parking/enqueue paths do not
+# force cross-thread seq reallocation in the experimental M:N lane.
+const schedulerSharedQueueInitialCap = 65536
+
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
@@ -1105,6 +1110,9 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         workerLeaseOpen = true
       wakeChannelWaiters(args[0], wakeSenders = false)
       if not schedulerRunOneRoot(workerLease):
+        let retry = args[0].channelSendState()
+        if retry.closed or not retry.full:
+          continue
         raise newException(GeneError, "Channel/send would suspend on a full channel")
       continue
     let pushed = args[0].tryPushChannel(checkedChannelSendItem(args[0], args[1],
@@ -1171,6 +1179,9 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         workerLeaseOpen = true
       wakeChannelWaiters(args[0], wakeSenders = true)
       if not schedulerRunOneRoot(workerLease):
+        let retry = args[0].channelRecvState()
+        if retry.closed or not retry.empty:
+          continue
         raise newException(GeneError, "Channel/recv would suspend on an empty channel")
       continue
     let popped = args[0].tryPopChannel()
@@ -1560,7 +1571,11 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       if not workerLeaseOpen:
         workerLease = beginSchedulerWorkerLease()
         workerLeaseOpen = true
+      scheduleActor(actor, scope)
       if not schedulerRunOneRoot(workerLease):
+        let retry = actor.actorSendState()
+        if retry.closed or not retry.full:
+          continue
         raise newException(GeneError, "actor/send would suspend on a full mailbox")
       continue
     let pushed = actor.tryPushActorMessage(checkedActorMessage(actor, args[1],
@@ -1637,7 +1652,11 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
       if not workerLeaseOpen:
         workerLease = beginSchedulerWorkerLease()
         workerLeaseOpen = true
+      scheduleActor(actor, scope)
       if not schedulerRunOneRoot(workerLease):
+        let retry = actor.actorSendState()
+        if retry.closed or not retry.full:
+          continue
         raise newException(GeneError, "actor/ask would suspend on a full mailbox")
     let task = newPendingTask()
     let reply = newReplyTo(task = task)
@@ -3305,6 +3324,9 @@ proc normalizedDir(path: string): string =
 
 proc newSchedulerState(): SchedulerState =
   new(result)
+  result.runQueue = newSeqOfCap[Fiber](schedulerSharedQueueInitialCap)
+  result.waiters = newSeqOfCap[Fiber](schedulerSharedQueueInitialCap)
+  result.askTimeouts = newSeqOfCap[AskTimeout](schedulerSharedQueueInitialCap)
   initLock(result.lock)
   when compileOption("threads") and defined(gcAtomicArc):
     initCond(result.workerCond)
