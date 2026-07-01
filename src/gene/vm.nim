@@ -1232,32 +1232,41 @@ proc emitSupervisorFailure(actor, failedMessage: Value, scope: Scope,
 
 proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
                    hasValue = false): bool =
-  if reply.kind != vkReplyTo or reply.replyToSent:
+  if reply.kind != vkReplyTo:
     return false
-  let task = reply.replyToTask
+  let claimed = reply.claimReplyToCancel()
+  if not claimed.claimed:
+    return false
+  let task = claimed.task
   if task.kind != vkTask or task.taskDone:
-    return false
+    return true
   failTask(task, message, errVal, hasValue)
   wakeTaskWaiters(task)
   true
 
 proc panicReplyTask(reply: Value, message: string, errVal: Value = NIL,
                     hasValue = false): bool =
-  if reply.kind != vkReplyTo or reply.replyToSent:
+  if reply.kind != vkReplyTo:
     return false
-  let task = reply.replyToTask
+  let claimed = reply.claimReplyToCancel()
+  if not claimed.claimed:
+    return false
+  let task = claimed.task
   if task.kind != vkTask or task.taskDone:
-    return false
+    return true
   panicTask(task, message, errVal, hasValue)
   wakeTaskWaiters(task)
   true
 
 proc cancelReplyTask(reply: Value): bool =
-  if reply.kind != vkReplyTo or reply.replyToSent:
+  if reply.kind != vkReplyTo:
     return false
-  let task = reply.replyToTask
+  let claimed = reply.claimReplyToCancel()
+  if not claimed.claimed:
+    return false
+  let task = claimed.task
   if task.kind != vkTask:
-    return false
+    return true
   if not task.taskDone:
     task.finishTaskCancel()
   wakeTaskWaiters(task)
@@ -1372,14 +1381,13 @@ proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args[0].replyToSent:
     raise newException(GeneError, "reply has already been sent")
   let scope = actorDispatchScope(call)
-  let task = args[0].replyToTask
-  if task.kind == vkTask and task.taskDone:
-    args[0].cancelReplyTo()
-    return NIL
-  args[0].sendReplyTo(checkedReplyValue(args[0], args[1],
-                                        "ReplyTo/send value", scope))
-  if task.kind == vkTask:
-    wakeTaskWaiters(task)
+  let sent = args[0].trySendReplyTo(checkedReplyValue(args[0], args[1],
+                                                      "ReplyTo/send value",
+                                                      scope))
+  if not sent.sent:
+    raise newException(GeneError, "reply has already been sent")
+  if sent.task.kind == vkTask:
+    wakeTaskWaiters(sent.task)
   NIL
 
 # Actor message processing now runs each handler as a scheduler fiber (see

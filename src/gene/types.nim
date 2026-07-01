@@ -456,6 +456,7 @@ type
     state: Value
 
   ReplyToData = ref object of GeneObjectData
+    lock: Lock
     sent: bool
     result: Value
     resultType: Value
@@ -1894,6 +1895,13 @@ template withActorLock(d: ActorData, body: untyped): untyped =
   finally:
     release(d.lock)
 
+template withReplyToLock(d: ReplyToData, body: untyped): untyped =
+  acquire(d.lock)
+  try:
+    body
+  finally:
+    release(d.lock)
+
 proc newTaskState(done = false, cancelRequested = false, cancelled = false,
                   awaited = false, taskResult = NIL, errorMsg = "",
                   errorValue = NIL, hasErrorValue = false,
@@ -2355,42 +2363,81 @@ proc replyToData(v: Value): ReplyToData =
   ReplyToData(objData(v))
 
 proc replyToSent*(v: Value): bool =
-  replyToData(v).sent
+  let data = replyToData(v)
+  withReplyToLock(data):
+    result = data.sent
 
 proc replyToResult*(v: Value): Value =
-  replyToData(v).result
+  let data = replyToData(v)
+  withReplyToLock(data):
+    result = data.result
 
 proc replyToResultType*(v: Value): Value =
-  replyToData(v).resultType
+  let data = replyToData(v)
+  withReplyToLock(data):
+    result = data.resultType
 
 proc replyToResultScope*(v: Value): Scope =
-  replyToData(v).resultScope
+  let data = replyToData(v)
+  withReplyToLock(data):
+    result = data.resultScope
 
 proc replyToTask*(v: Value): Value =
-  replyToData(v).task
+  let data = replyToData(v)
+  withReplyToLock(data):
+    result = data.task
 
 proc setReplyToResultType*(v, resultType: Value, scope: Scope) =
   let data = replyToData(v)
-  data.resultType = resultType
-  data.resultScope = scope
+  withReplyToLock(data):
+    data.resultType = resultType
+    data.resultScope = scope
 
 proc cancelReplyTo*(v: Value) =
   let data = replyToData(v)
-  data.sent = true
-  data.result = NIL
-  data.task = NIL
+  withReplyToLock(data):
+    data.sent = true
+    data.result = NIL
+    data.task = NIL
 
 proc completeTask*(v, value: Value)
 
-proc sendReplyTo*(v, result: Value) =
+proc claimReplyToCancel*(v: Value): tuple[claimed: bool, task: Value] =
   let data = replyToData(v)
-  if data.sent:
-    raise newException(FieldDefect, "reply has already been sent")
-  data.result = escapeWeakFunctions(result)
-  data.sent = true
-  if data.task.kind == vkTask:
-    completeTask(data.task, data.result)
+  withReplyToLock(data):
+    if data.sent:
+      return
+    data.sent = true
+    data.result = NIL
+    result.task = data.task
     data.task = NIL
+    result.claimed = true
+
+proc trySendReplyTo*(v, value: Value): tuple[sent: bool, task: Value,
+                                             discarded: bool] =
+  let stored = escapeWeakFunctions(value)
+  let data = replyToData(v)
+  withReplyToLock(data):
+    if data.sent:
+      return
+    if data.task.kind == vkTask and data.task.taskDone:
+      data.sent = true
+      data.result = NIL
+      data.task = NIL
+      result.sent = true
+      result.discarded = true
+      return
+    data.result = stored
+    data.sent = true
+    result.task = data.task
+    data.task = NIL
+    result.sent = true
+  if result.task.kind == vkTask:
+    completeTask(result.task, stored)
+
+proc sendReplyTo*(v, value: Value) =
+  if not trySendReplyTo(v, value).sent:
+    raise newException(FieldDefect, "reply has already been sent")
 
 proc cPtrData(v: Value): CPtrData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okCPtr:
@@ -3221,12 +3268,20 @@ proc escapeWeakFunctions*(v: Value): Value =
                             state: escapedState))
   of vkReplyTo:
     let data = replyToData(v)
-    let escapedResult = escapeWeakFunctions(data.result)
-    let escapedTask = escapeWeakFunctions(data.task)
-    if escapedResult.bits != data.result.bits or
-        escapedTask.bits != data.task.bits:
-      data.result = escapedResult
-      data.task = escapedTask
+    var sourceResult: Value
+    var sourceTask: Value
+    withReplyToLock(data):
+      sourceResult = data.result
+      sourceTask = data.task
+    let escapedResult = escapeWeakFunctions(sourceResult)
+    let escapedTask = escapeWeakFunctions(sourceTask)
+    if escapedResult.bits != sourceResult.bits or
+        escapedTask.bits != sourceTask.bits:
+      withReplyToLock(data):
+        if data.result.bits == sourceResult.bits:
+          data.result = escapedResult
+        if data.task.bits == sourceTask.bits:
+          data.task = escapedTask
     v
   of vkEnv:
     let data = EnvData(objData(v))
@@ -3405,11 +3460,13 @@ proc newActorStop*(): Value =
 
 proc newReplyTo*(resultType = NIL, resultScope: Scope = nil,
                  task = NIL): Value =
-  boxObject(ReplyToData(objKind: okReplyTo,
-                        result: NIL,
-                        resultType: resultType,
-                        resultScope: resultScope,
-                        task: task))
+  let data = ReplyToData(objKind: okReplyTo,
+                         result: NIL,
+                         resultType: resultType,
+                         resultScope: resultScope,
+                         task: task)
+  initLock(data.lock)
+  boxObject(data)
 
 proc newCPtr*(address: pointer, targetType: Value = NIL,
               mutable = true): Value =

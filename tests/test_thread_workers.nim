@@ -135,6 +135,49 @@ suite "threaded scheduler workers":
           "  (while (< i 200000) (set i (+ i 1))) " &
           "  (await t))"), newGlobalScope())
 
+  test "worker-candidate tasks race one ReplyTo safely":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (type Get ^props {^reply (ReplyTo Int)}) " &
+         "  (impl Send Get) " &
+         "  (var reply_cell (atomic-cell nil)) " &
+         "  (var success (atomic-cell 0)) " &
+         "  (var gate (channel ^capacity 1)) " &
+         "  (var a (actor/spawn ^init (fn [] 0) " &
+         "    ^handle (fn [ctx state msg] " &
+         "      (var (Get ^reply reply) msg) " &
+         "      (var value (gate ~ Channel/recv)) " &
+         "      (try (reply ~ ReplyTo/send value) catch _ nil) " &
+         "      (actor/continue state)))) " &
+         "  (var pending (a ~ actor/ask " &
+         "    (fn [reply] " &
+         "      (reply_cell ~ AtomicCell/store reply) " &
+         "      (Get ^reply reply)))) " &
+         "  (fn mark_success [] " &
+         "    (var stored false) " &
+         "    (var old 0) " &
+         "    (while (not stored) " &
+         "      (set old (success ~ AtomicCell/load)) " &
+         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "  (fn send_once [value] " &
+         "    (try (do ((reply_cell ~ AtomicCell/load) ~ ReplyTo/send value) " &
+         "             (mark_success)) " &
+         "      catch _ nil)) " &
+         "  (var a1 (spawn (send_once 1))) " &
+         "  (var a2 (spawn (send_once 2))) " &
+         "  (var a3 (spawn (send_once 3))) " &
+         "  (var a4 (spawn (send_once 4))) " &
+         "  (var a5 (spawn (send_once 5))) " &
+         "  (var a6 (spawn (send_once 6))) " &
+         "  (var a7 (spawn (send_once 7))) " &
+         "  (var a8 (spawn (send_once 8))) " &
+         "  (await a1) (await a2) (await a3) (await a4) " &
+         "  (await a5) (await a6) (await a7) (await a8) " &
+         "  (var got (await pending)) " &
+         "  (gate ~ Channel/send 99) " &
+         "  (success ~ AtomicCell/load))",
+         "1"
+
   test "root channel waits run worker-candidate tasks on workers":
     withGeneWorkers:
       ck "(scope (var ch (channel ^capacity 1)) " &
