@@ -142,7 +142,8 @@ participates in equality or hashing.
 > atomic RC for captured manual-RC values. Spawn bytecode also marks leaf-like
 > bodies that do not mutate outer bindings or contain nested `spawn` as worker
 > candidates; when runtime captures are `Send`, the VM queues that task with an
-> isolated snapshot of the captured parent scope. This removes live-parent scope
+> isolated snapshot of the captured parent scope. The cloned snapshot graph is
+> published before worker execution as well, which removes live-parent scope
 > dependence for eligible tasks. In `--mm:atomicArc --threads:on` builds, root
 > program execution and root scheduler pumping for `await`, structured-scope
 > cleanup, channel waits, actor mailbox waits/driving, and `sleep` start a
@@ -262,13 +263,14 @@ non-atomic path. Spawned fibers also publish their captured scope/value graph so
 captured manual-RC values are safe to retain/release from threaded builds.
 Spawned fibers additionally record a worker-candidate bit only when the compiler
 sees no outer-scope mutation or nested `spawn`, and runtime captures satisfy
-`Send`; those eligible tasks receive sparse captured-scope snapshots so they no
-longer read through the live parent scope. Unsafe shared-scope tasks remain
-cooperative. Threaded `atomicArc` smoke checks cover values, VM behavior,
-root-execution/root-wait worker-candidate execution, root-lane helping, timer
-wakeups, and RC leak accounting. Worker threads park on a condition-variable
-wakeup when no eligible work or timer exists, but worker orchestration remains
-experimental and limited to snapshot-isolated leaf candidates.
+`Send`; those eligible tasks receive sparse captured-scope snapshots, publish the
+cloned snapshot graph before worker execution, and no longer read through the
+live parent scope. Unsafe shared-scope tasks remain cooperative. Threaded
+`atomicArc` smoke checks cover values, VM behavior, root-execution/root-wait
+worker-candidate execution, root-lane helping, timer wakeups, and RC leak
+accounting. Worker threads park on a condition-variable wakeup when no eligible
+work or timer exists, but worker orchestration remains experimental and limited
+to snapshot-isolated leaf candidates.
 
 ## License
 

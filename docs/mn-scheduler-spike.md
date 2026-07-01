@@ -16,7 +16,8 @@ manual-RC objects to atomic retain/release after publication. Spawned fibers now
 publish their captured scope/value graph as well, including task/channel/actor
 interior payloads that are protected by their object locks. Worker-candidate
 spawn bodies now run against sparse captured-scope snapshots once their runtime
-captures satisfy `Send`. In `--mm:atomicArc --threads:on` builds,
+captures satisfy `Send`, and the cloned snapshot graph is published before any
+worker thread executes it. In `--mm:atomicArc --threads:on` builds,
 root program execution and root scheduler pumping for `await`, structured-scope
 cleanup, channel waits, actor mailbox waits/driving, and `sleep` now start a
 bounded worker lease by default in `--mm:atomicArc --threads:on` builds.
@@ -124,11 +125,12 @@ Notes:
    contain nested `spawn` as worker candidates, and enqueue records that bit only
    when runtime captures are `Send` and reachable captured functions are also
    leaf-like. Eligible tasks get sparse captured-scope snapshots, including
-   transitive captures of captured functions. The bounded worker lane consumes
-   those eligible tasks while unsafe shared-scope tasks remain cooperative.
-   Worker-owned fibers are tracked under the scheduler lock, and parking rechecks
-   channel/task/actor/timer readiness so a wakeup that races with suspension does
-   not disappear.
+   transitive captures of captured functions, and publish the cloned snapshot
+   graph before worker execution. The bounded worker lane consumes those eligible
+   tasks while unsafe shared-scope tasks remain cooperative. Worker-owned fibers
+   are tracked under the scheduler lock, and parking rechecks task, channel,
+   actor, and timer readiness so a wakeup that races with suspension does not
+   disappear.
 
 ## Staged plan (if/when M:N is prioritized)
 
