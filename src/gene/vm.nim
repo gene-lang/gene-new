@@ -4255,7 +4255,12 @@ proc isSendableValue(value: Value, scope: Scope,
       if not isSendableValue(item, scope, seen, mode):
         return false
     true
-  of vkNamespace, vkModule, vkEnv, vkCell, vkStream, vkActorContext,
+  of vkNamespace:
+    let root =
+      if scope == nil: builtinsScope()
+      else: scope.application().builtinsScope()
+    value.nsScope != nil and value.nsScope.parent == root
+  of vkModule, vkEnv, vkCell, vkStream, vkActorContext,
      vkActorStep, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable:
     false
@@ -5221,7 +5226,7 @@ proc clearWaitReason(f: Fiber) =
   f.waitTimer = false
 
 proc workerCandidate(f: Fiber): bool {.inline.} =
-  f.workerSafe and f.actorOwner.kind != vkActorRef
+  f.workerSafe
 
 template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
   acquire(s.lock)
@@ -5436,6 +5441,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curOwnedScope = fiber.ownedScope
     curNamespaceName = fiber.namespaceName
     evalBudget = scope.evalBudget
+  elif fiber != nil:
+    recycleScope = fiber.recycleScope
 
   template loadFrameRegs(f: Frame) =
     ## Restore the per-frame registers (everything except the operand stack, which
@@ -7873,6 +7880,30 @@ proc wakeTaskWaiters(task: Value) =
       else:
         inc i
 
+proc scopeHasActorOwner(scope: Scope): bool =
+  var current = scope
+  while current != nil:
+    if current.ownsActors:
+      return true
+    current = current.parent
+
+proc actorFiberWorkerSafe(actor, handler, state, message, reply: Value,
+                          scope: Scope): bool =
+  if scope.scopeHasActorOwner():
+    return false
+  if actor.actorFailureStrategy == afsEscalate:
+    return false
+  if reply.kind != vkReplyTo:
+    return false
+  var seen = initHashSet[uint64]()
+  if not isSendableValue(handler, scope, seen, csmWorker):
+    return false
+  if not isSendableValue(state, scope, seen, csmWorker):
+    return false
+  if not isSendableValue(message, scope, seen, csmWorker):
+    return false
+  isSendableValue(reply, scope, seen, csmWorker)
+
 proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   ## Build a fiber that runs the actor's handler on one message. Returns nil if the
   ## handler is not a fiber-able Gene function (the caller then processes inline).
@@ -7883,11 +7914,17 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   let proto = FunctionProto(handler.fnCode)
   if proto.isGenerator:
     return nil
-  let args = [newActorContext(actor), actor.actorState, item.message]
+  let state = actor.actorState
+  let args = [newActorContext(actor), state, item.message]
   let bound = bindCallScope(handler, proto, args, NamedArgs())
-  Fiber(chunk: proto.chunk, scope: bound.scope, actorOwner: actor,
-        actorReturnType: bound.returnType, actorScope: scope,
-        actorAskReply: item.reply, actorMessage: item.message, started: false)
+  let workerSafe =
+    actorFiberWorkerSafe(actor, handler, state, item.message, item.reply, scope)
+  if workerSafe:
+    publishSpawnCapture(bound.scope, proto.chunk)
+  Fiber(chunk: proto.chunk, scope: bound.scope, recycleScope: proto.poolCallScope,
+        actorOwner: actor, actorReturnType: bound.returnType, actorScope: scope,
+        actorAskReply: item.reply, actorMessage: item.message, started: false,
+        workerSafe: workerSafe)
 
 proc scheduleActor(actor: Value, scope: Scope) =
   ## If the actor is idle (no live handler fiber) and has a queued message, start

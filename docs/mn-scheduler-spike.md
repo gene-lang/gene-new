@@ -23,11 +23,12 @@ cleanup, channel waits, actor mailbox waits/driving, and `sleep` now start a
 bounded worker lease by default in `--mm:atomicArc --threads:on` builds.
 `GENE_WORKERS=N` overrides the worker count, and `GENE_WORKERS=0` disables the
 worker lane. That lane lets OS worker threads consume snapshot-isolated worker
-candidates while unsafe shared-scope work remains on the cooperative root lane;
-nested runtime entries can grow an already-running lease when they request a
-larger worker count. Root waits also help drain worker candidates once
-cooperative-only work is exhausted, then wait on scheduler progress
-notifications instead of fixed polling while workers own active progress.
+candidates and sendable actor handler turns while unsafe shared-scope work
+remains on the cooperative root lane; nested runtime entries can grow an
+already-running lease when they request a larger worker count. Root waits also
+help drain worker candidates once cooperative-only work is exhausted, then wait
+on scheduler progress notifications instead of fixed polling while workers own
+active progress.
 Worker candidates are leaf-like: bytecode/runtime eligibility rejects bodies and
 reachable captured functions that contain nested `spawn`. A threaded `atomicArc`
 smoke gate now covers value operations, VM behavior, worker-candidate execution
@@ -55,15 +56,16 @@ a runtime worker pool"), and what it costs.
 - **The real blocker is shared mutable state — scopes above all.** Unsafe spawned
   tasks can still share a mutable parent scope chain; worker-candidate tasks now
   avoid that by using captured-scope snapshots.
-- **M:N fits the share-nothing actor/channel model and snapshot-isolated
-  leaf-like worker-candidate spawns; it does NOT fit arbitrary `spawn` closures
-  that share a parent scope or create nested unsafely shared tasks.**
+- **M:N fits the share-nothing actor/channel model, sendable actor handler
+  turns, and snapshot-isolated leaf-like worker-candidate spawns; it does NOT fit
+  arbitrary `spawn` closures that share a parent scope or create nested unsafely
+  shared tasks.**
 - **Recommendation: keep worker execution bounded and restricted while hardening
   semantics.** The cooperative root lane remains the safety baseline for
   shared-scope tasks. The first OS worker lane now runs snapshot-isolated
-  candidates by default in atomicArc threaded builds, with root-lane helping
-  during waits; the remaining M:N work is lifecycle, broader load balancing, and
-  async integration.
+  candidates and sendable actor handler turns by default in atomicArc threaded
+  builds, with root-lane helping during waits; the remaining M:N work is
+  lifecycle, broader load balancing, and async integration.
 
 ## Measurement: atomic-RC hot-path cost
 
@@ -113,14 +115,16 @@ Notes:
 3. **Scheduler structures need production orchestration.** The runnable/wait/
    timeout queues are now per-`Application` and lock-backed, and task/channel/
    actor interiors have local locks. The bounded worker lane consumes only
-   snapshot-isolated candidates, nested leases can grow the running worker pool,
-   root waits help drain those candidates once cooperative-only work is
-   exhausted, idle workers use condition-variable wakeups rather than fixed
-   polling, worker-candidate timers wake parked workers, root waits block on
-   scheduler progress notifications while workers own active progress, and
-   worker-owned fibers stay visible to root deadlock/cancellation checks while
-   active. M:N still needs production lifecycle, work stealing, richer timer/I/O
-   ownership, async I/O integration, and publication rules. `runStackPool`,
+   snapshot-isolated spawn candidates plus actor handler turns whose
+   handler/state/message/reply graphs are `Send` and worker-safe. Nested leases
+   can grow the running worker pool, root waits help drain those candidates once
+   cooperative-only work is exhausted, idle workers use condition-variable
+   wakeups rather than fixed polling, worker-candidate timers wake parked
+   workers, root waits block on scheduler progress notifications while workers
+   own active progress, and worker-owned fibers stay visible to root
+   deadlock/cancellation checks while active. M:N still needs production
+   lifecycle, work stealing, richer timer/I/O ownership, async I/O integration,
+   and publication rules. `runStackPool`,
    `callScopePool`, and active scheduler context remain per-thread caches/context.
 
 4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
@@ -145,20 +149,23 @@ Notes:
 - **B. Scope isolation semantics.** Parallel/sent work is share-nothing.
   Worker-candidate tasks already receive sparse captured-scope snapshots instead
   of a live shared parent (`no outer mutation`, no nested `spawn`, plus `Send`
-  captures). The bounded worker lane consumes only those eligible fibers.
+  captures). Sendable actor handler turns can also run on workers while actor
+  processing still admits only one active handler per actor. The bounded worker
+  lane consumes only those eligible fibers.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
   The queue/object-locking portion has started, Send-boundary and spawned-fiber
   manual-RC publication have landed, and `nimble threadcheck`/`nimble verify`
   exercise atomicArc smoke coverage, including the worker-candidate lane.
 - **D. Worker pool.** A bounded OS-thread lease consumes snapshot-isolated
-  worker-candidate fibers from the shared scheduler queue during root execution
-  and root waits. AtomicArc threaded builds start the lease by default, with
-  `GENE_WORKERS=N` for explicit sizing and `GENE_WORKERS=0` for disabling it.
-  Nested leases can grow an already-running pool when they request more workers.
-  Idle worker parking now uses scheduler condition-variable wakeups, root waits
-  help with worker candidates and then wait on scheduler progress notifications,
-  and worker-candidate timers wake parked workers.
+  worker-candidate fibers and sendable actor handler turns from the shared
+  scheduler queue during root execution and root waits. AtomicArc threaded builds
+  start the lease by default, with `GENE_WORKERS=N` for explicit sizing and
+  `GENE_WORKERS=0` for disabling it. Nested leases can grow an already-running
+  pool when they request more workers. Idle worker parking now uses scheduler
+  condition-variable wakeups, root waits help with worker candidates and then
+  wait on scheduler progress notifications, and worker-candidate timers wake
+  parked workers.
   Production work stealing, richer timer/I/O ownership, per-thread tuning, and
   pinned global init remain open.
 - **E. Load balancing + the deferred pieces.** Work stealing and async-I/O.
@@ -166,10 +173,11 @@ Notes:
 ## Recommendation
 
 **Keep the OS-thread worker lane bounded and restricted.** It is gated on
-consuming only snapshot-isolated leaf worker-candidate tasks and on `atomicArc`
-threaded builds; the remaining work is production lifecycle/orchestration, not
-the cheap refcount tax. The cooperative root lane is correct and already delivers
-suspendable tasks, channels, await, actor handlers, `actor/ask`, explicit task
+consuming only snapshot-isolated leaf worker-candidate tasks plus sendable
+single-message actor handler turns and on `atomicArc` threaded builds; the
+remaining work is production lifecycle/orchestration, not the cheap refcount tax.
+The cooperative root lane is correct and already delivers suspendable tasks,
+channels, await, actor handlers, `actor/ask`, explicit task
 cancellation, and child-task cancellation when a scope exits by
 error/cancellation. Task cancellation resumes parked fibers through the normal
 `GeneCancel` unwind path, so `ensure` cleanup runs before the task is finally

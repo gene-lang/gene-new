@@ -189,6 +189,27 @@ suite "threaded scheduler workers":
          "  (+ (await a) (await b)))",
          "43"
 
+  test "worker pool runs sendable actor handlers while root runs":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    withGeneWorkers:
+      let pending = run(compileSource(
+        "(type Get ^props {^reply (ReplyTo Int)}) " &
+        "(impl Send Get) " &
+        "(var a (actor/spawn ^init (fn [] 41) " &
+        "  ^handle (fn [ctx state msg] " &
+        "    (record-thread 1) " &
+        "    (msg/reply ~ ReplyTo/send state) " &
+        "    (actor/continue state)))) " &
+        "(var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+        "(var i 0) " &
+        "(while (< i 800000) (set i (+ i 1))) " &
+        "pending"), scope)
+      check pending.kind == vkTask
+      check pending.taskDone
+      check seenThreadCount() >= 1
+
   test "worker-candidate snapshots publish cloned closures":
     withGeneWorkerSetting "8":
       ck "(scope " &

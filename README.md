@@ -151,11 +151,12 @@ participates in equality or hashing.
 > lifecycle remains experimental. Set `GENE_WORKERS=N` to choose the worker
 > count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. The
 > lease lets OS worker threads consume snapshot-isolated worker candidates while
-> unsafe shared-scope tasks stay on the cooperative root lane; nested runtime
-> entries can grow an already-running lease when they request a larger worker
-> count. Root waits also help drain worker candidates after cooperative-only work
-> is exhausted, then wait on scheduler progress notifications while workers own
-> active progress.
+> unsafe shared-scope tasks stay on the cooperative root lane. Sendable actor
+> handler turns whose handler/state/message/reply graphs pass the same worker
+> safety check can also run on that lane. Nested runtime entries can grow an
+> already-running lease when they request a larger worker count. Root waits also
+> help drain worker candidates after cooperative-only work is exhausted, then
+> wait on scheduler progress notifications while workers own active progress.
 > Worker-candidate timer waiters and `actor/ask` timeouts wake parked workers
 > so eligible timer progress is not tied only to root scheduler pumping.
 > Root-level `await` still drives the run queue until the task settles.
@@ -273,9 +274,10 @@ live parent scope. Unsafe shared-scope tasks remain cooperative. Threaded
 worker-candidate execution, root-lane helping, timer wakeups, and RC leak
 accounting. Worker threads park on a condition-variable wakeup when no eligible
 work or timer exists, root waits use the same progress notification path once
-worker candidates have been handed to the worker lane, and nested worker leases
-can grow the running pool. Worker orchestration remains experimental and limited
-to snapshot-isolated leaf candidates.
+worker candidates have been handed to the worker lane, nested worker leases can
+grow the running pool, and sendable actor handlers can run there while preserving
+single-message actor execution. Worker orchestration remains experimental and
+limited to snapshot-isolated leaf candidates plus sendable actor turns.
 
 ## License
 
