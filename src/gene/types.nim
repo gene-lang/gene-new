@@ -2241,6 +2241,35 @@ proc setActorHandler*(v, handler: Value) =
   withActorLock(data):
     data.handler = stored
 
+proc actorSnapshotFields*(v: Value): tuple[state: Value, mailbox: int,
+                                           closed: bool, processing: bool,
+                                           idle: bool] =
+  let data = actorData(v)
+  withActorLock(data):
+    result.state = data.state
+    result.mailbox = data.queue.len
+    result.closed = data.lifecycle.closed
+    result.processing = data.processing
+    result.idle = not data.processing and data.queue.len == 0
+
+proc finishActorContinue*(v, state: Value) =
+  let stored = escapeWeakFunctions(state)
+  let data = actorData(v)
+  withActorLock(data):
+    data.state = stored
+    data.processing = false
+
+proc tryUpgradeIdleActor*(v, state, handler: Value): bool =
+  let storedState = escapeWeakFunctions(state)
+  let storedHandler = escapeWeakFunctions(handler)
+  let data = actorData(v)
+  withActorLock(data):
+    if data.processing or data.queue.len > 0:
+      return false
+    data.state = storedState
+    data.handler = storedHandler
+    result = true
+
 proc actorRestartInit*(v: Value): Value =
   let data = actorData(v)
   withActorLock(data):
@@ -2306,6 +2335,14 @@ proc drainActorMessages*(v: Value): seq[ActorMessage] =
   withActorLock(data):
     result = data.queue
     data.queue.setLen(0)
+
+proc closeActorAndDrainMessages*(v: Value): seq[ActorMessage] =
+  let data = actorData(v)
+  withActorLock(data):
+    data.lifecycle.closed = true
+    result = data.queue
+    data.queue.setLen(0)
+    data.processing = false
 
 proc actorMessagesSnapshot*(v: Value): seq[ActorMessage] =
   let data = actorData(v)

@@ -1538,13 +1538,14 @@ proc biActorSnapshot(args: openArray[Value]): Value {.nimcall.} =
   requireOne("actor/snapshot", args)
   requireActor("actor/snapshot", args[0])
   let actor = args[0]
-  if actor.actorProcessing or actor.actorQueueLen > 0:
+  let snapshot = actor.actorSnapshotFields()
+  if not snapshot.idle:
     raise newException(GeneError, "actor/snapshot requires an idle actor")
   var props = initOrderedTable[string, Value]()
-  props["state"] = actor.actorState
-  props["mailbox"] = newInt(actor.actorQueueLen)
-  props["closed"] = newBool(actor.actorClosed)
-  props["processing"] = newBool(actor.actorProcessing)
+  props["state"] = snapshot.state
+  props["mailbox"] = newInt(snapshot.mailbox)
+  props["closed"] = newBool(snapshot.closed)
+  props["processing"] = newBool(snapshot.processing)
   newNode(newSym("ActorSnapshot"), props = props, immutable = true)
 
 proc biActorUpgrade(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -1554,7 +1555,8 @@ proc biActorUpgrade(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   let scope = actorDispatchScope(call)
   let actor = args[0]
   let handler = args[1]
-  if actor.actorProcessing or actor.actorQueueLen > 0:
+  let snapshot = actor.actorSnapshotFields()
+  if not snapshot.idle:
     raise newException(GeneError, "actor/upgrade requires an idle actor")
   if not handler.valueImplementsCallable(scope):
     raiseTypeError("actor/upgrade handler", "Callable", handler, scope)
@@ -1565,14 +1567,14 @@ proc biActorUpgrade(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     else:
       raise newException(GeneError,
         "actor/upgrade got unexpected named argument: " & name)
-  var nextState = actor.actorState
+  var nextState = snapshot.state
   if migrate.kind != vkNil:
     if not migrate.valueImplementsCallable(scope):
       raiseTypeError("actor/upgrade migrate", "Callable", migrate, scope)
-    var migrateArgs = [actor.actorState]
+    var migrateArgs = [snapshot.state]
     nextState = applyCall(migrate, migrateArgs, NamedArgs(), scope)
-  actor.setActorState(nextState)
-  actor.setActorHandler(handler)
+  if not actor.tryUpgradeIdleActor(nextState, handler):
+    raise newException(GeneError, "actor/upgrade requires an idle actor")
   NIL
 
 proc requireStream(name: string, value: Value) =
@@ -5160,11 +5162,9 @@ proc wakeAllActorSenders(actor: Value) =
         inc i
 
 proc closeActorAndCancelMailbox(actor: Value) =
-  actor.closeActor()
-  for item in actor.drainActorMessages():
+  for item in actor.closeActorAndDrainMessages():
     discard cancelReplyTask(item.reply)
   wakeAllActorSenders(actor)
-  actor.setActorProcessing(false)
 
 proc cancelOwnedActor(actor: Value) =
   ## Scope/supervisor shutdown owns actor lifetime. Closing the mailbox is not
@@ -7801,16 +7801,19 @@ proc scheduleActor(actor: Value, scope: Scope) =
   let f = makeActorFiber(actor, item, scope)
   if f == nil:
     # Non-fiber handler (no current surface produces this): process inline.
-    actor.setActorProcessing(false)
-    var args = [newActorContext(actor), actor.actorState, item.message]
-    let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
-    if step.kind != vkActorStep:
-      raiseTypeError("actor handler return", "ActorStep", step, scope)
-    if step.actorStepContinue: actor.setActorState(step.actorStepState)
-    else: closeActorAndCancelMailbox(actor)
-    if item.reply.kind == vkReplyTo and not item.reply.replyToSent:
-      discard failMissingReply(item.reply, scope)
-    scheduleActor(actor, scope)
+    try:
+      var args = [newActorContext(actor), actor.actorState, item.message]
+      let step = applyCall(actor.actorHandler, args, NamedArgs(), scope)
+      if step.kind != vkActorStep:
+        raiseTypeError("actor handler return", "ActorStep", step, scope)
+      if step.actorStepContinue: actor.finishActorContinue(step.actorStepState)
+      else: closeActorAndCancelMailbox(actor)
+      if item.reply.kind == vkReplyTo and not item.reply.replyToSent:
+        discard failMissingReply(item.reply, scope)
+      scheduleActor(actor, scope)
+    except CatchableError:
+      actor.setActorProcessing(false)
+      raise
   else:
     enqueueRunnable(f)
 
@@ -7840,14 +7843,13 @@ proc runFiber(f: Fiber) =
     if isActorFiber:
       case stop.kind
       of rskReturn:
-        actor.setActorProcessing(false)
         var step = stop.value
         if f.actorReturnType.kind != vkNil:
           step = adaptBoundary("return from actor handler", f.actorReturnType,
                                step, f.actorScope)
         if step.kind != vkActorStep:
           raiseTypeError("actor handler return", "ActorStep", step, f.actorScope)
-        if step.actorStepContinue: actor.setActorState(step.actorStepState)
+        if step.actorStepContinue: actor.finishActorContinue(step.actorStepState)
         else: closeActorAndCancelMailbox(actor)
         if f.actorAskReply.kind == vkReplyTo and
             not f.actorAskReply.replyToSent:
@@ -7881,7 +7883,6 @@ proc runFiber(f: Fiber) =
         wakeTaskWaiters(f.task)
   except GeneError as e:
     if isActorFiber:
-      actor.setActorProcessing(false)
       let askSettled = failReplyTask(f.actorAskReply, e)
       let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
       emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
@@ -7894,8 +7895,9 @@ proc runFiber(f: Fiber) =
             raise
           return
         try:
-          actor.setActorState(applyCall(actor.actorRestartInit, [], NamedArgs(),
-                                         f.actorScope))
+          let restartState =
+            applyCall(actor.actorRestartInit, [], NamedArgs(), f.actorScope)
+          actor.finishActorContinue(restartState)
         except CatchableError:
           closeActorAndCancelMailbox(actor)
           raise
