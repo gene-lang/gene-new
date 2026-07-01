@@ -394,6 +394,28 @@ proc actorOwnerFailureDeadLetters(scope: Scope): Value =
     s = s.parent
   NIL
 
+proc parentActorOwnerFailureEvents(scope: Scope): Value =
+  var s = scope
+  var foundOwner = false
+  while s != nil:
+    if s.ownsActors:
+      if foundOwner:
+        return s.supervisorEvents
+      foundOwner = true
+    s = s.parent
+  NIL
+
+proc parentActorOwnerFailureDeadLetters(scope: Scope): Value =
+  var s = scope
+  var foundOwner = false
+  while s != nil:
+    if s.ownsActors:
+      if foundOwner:
+        return s.supervisorDeadLetters
+      foundOwner = true
+    s = s.parent
+  NIL
+
 proc supervisorStrategy(name: string): ActorFailureStrategy =
   case name
   of "restart": afsRestart
@@ -1256,8 +1278,14 @@ proc emitSupervisorFailure(actor, failedMessage: Value, scope: Scope,
   let event = supervisorFailureValue(scope, actor, failedMessage, message,
                                      errorValue, panic)
   if tryEmitSupervisorFailure(actor.actorFailureEvents, event, scope):
-    return
-  discard tryEmitSupervisorFailure(actor.actorFailureDeadLetters, event, scope)
+    discard
+  else:
+    discard tryEmitSupervisorFailure(actor.actorFailureDeadLetters, event, scope)
+  if actor.actorFailureStrategy == afsEscalate:
+    if tryEmitSupervisorFailure(actor.actorParentFailureEvents, event, scope):
+      return
+    discard tryEmitSupervisorFailure(actor.actorParentFailureDeadLetters, event,
+                                     scope)
 
 proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
                    hasValue = false): bool =
@@ -1440,12 +1468,23 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     if scope == nil: NIL else: scope.actorOwnerFailureEvents()
   let failureDeadLetters =
     if scope == nil: NIL else: scope.actorOwnerFailureDeadLetters()
+  let parentFailureEvents =
+    if scope == nil or failureStrategy != afsEscalate:
+      NIL
+    else:
+      scope.parentActorOwnerFailureEvents()
+  let parentFailureDeadLetters =
+    if scope == nil or failureStrategy != afsEscalate:
+      NIL
+    else:
+      scope.parentActorOwnerFailureDeadLetters()
   let restartInit =
     if failureStrategy == afsRestart: initFn else: NIL
   let state = applyCall(initFn, [], NamedArgs(), scope)
   result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType,
                        restartInit, failureStrategy, failureEvents,
-                       failureDeadLetters)
+                       failureDeadLetters, parentFailureEvents,
+                       parentFailureDeadLetters)
   if scope != nil:
     scope.registerOwnedActor(result)
 
@@ -4656,6 +4695,10 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
                       seenChunks)
     publishSpawnValue(value.actorFailureDeadLetters, seenScopes, seenValues,
                       seenChunks)
+    publishSpawnValue(value.actorParentFailureEvents, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(value.actorParentFailureDeadLetters, seenScopes,
+                      seenValues, seenChunks)
     for item in value.actorMessagesSnapshot:
       publishSpawnValue(item.message, seenScopes, seenValues, seenChunks)
       publishSpawnValue(item.reply, seenScopes, seenValues, seenChunks)

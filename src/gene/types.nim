@@ -448,6 +448,8 @@ type
     failureStrategy: ActorFailureStrategy
     failureEvents: Value
     failureDeadLetters: Value
+    parentFailureEvents: Value
+    parentFailureDeadLetters: Value
 
   ActorContextData = ref object of GeneObjectData
     actor: Value
@@ -957,6 +959,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     emit(d.messageType)
     emit(d.failureEvents)
     emit(d.failureDeadLetters)
+    emit(d.parentFailureEvents)
+    emit(d.parentFailureDeadLetters)
   of okActorContext:
     emit(ActorContextData(data).actor)
   of okActorStep:
@@ -1079,6 +1083,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.messageType)
     clearValueSlot(d.failureEvents)
     clearValueSlot(d.failureDeadLetters)
+    clearValueSlot(d.parentFailureEvents)
+    clearValueSlot(d.parentFailureDeadLetters)
   of okActorContext:
     clearValueSlot(ActorContextData(data).actor)
   of okActorStep:
@@ -1240,7 +1246,7 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
   of okActorRef:
     let d = ActorData(data)
     var state, restartInit, handler, messageType, failureEvents,
-      failureDeadLetters: Value
+      failureDeadLetters, parentFailureEvents, parentFailureDeadLetters: Value
     var queue: seq[ActorMessage]
     acquire(d.lock)
     try:
@@ -1250,6 +1256,8 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
       messageType = d.messageType
       failureEvents = d.failureEvents
       failureDeadLetters = d.failureDeadLetters
+      parentFailureEvents = d.parentFailureEvents
+      parentFailureDeadLetters = d.parentFailureDeadLetters
       queue = d.queue
     finally:
       release(d.lock)
@@ -1259,6 +1267,8 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var HashSet[uint64]) =
     markSharedBits(messageType.bits, seen)
     markSharedBits(failureEvents.bits, seen)
     markSharedBits(failureDeadLetters.bits, seen)
+    markSharedBits(parentFailureEvents.bits, seen)
+    markSharedBits(parentFailureDeadLetters.bits, seen)
     for item in queue:
       markSharedBits(item.message.bits, seen)
       markSharedBits(item.reply.bits, seen)
@@ -1934,6 +1944,8 @@ proc newActorData(capacity: int, state, restartInit, handler,
                   messageType: Value,
                   failureStrategy: ActorFailureStrategy,
                   failureEvents, failureDeadLetters: Value,
+                  parentFailureEvents: Value = NIL,
+                  parentFailureDeadLetters: Value = NIL,
                   lifecycle = ActorLifecycle()): ActorData =
   result = ActorData(objKind: okActorRef,
                      lifecycle: lifecycle,
@@ -1944,7 +1956,9 @@ proc newActorData(capacity: int, state, restartInit, handler,
                      messageType: messageType,
                      failureStrategy: failureStrategy,
                      failureEvents: failureEvents,
-                     failureDeadLetters: failureDeadLetters)
+                     failureDeadLetters: failureDeadLetters,
+                     parentFailureEvents: parentFailureEvents,
+                     parentFailureDeadLetters: parentFailureDeadLetters)
   initLock(result.lock)
 
 proc skipStreamVoids(data: StreamData) =
@@ -2330,6 +2344,16 @@ proc actorFailureDeadLetters*(v: Value): Value =
   let data = actorData(v)
   withActorLock(data):
     result = data.failureDeadLetters
+
+proc actorParentFailureEvents*(v: Value): Value =
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.parentFailureEvents
+
+proc actorParentFailureDeadLetters*(v: Value): Value =
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.parentFailureDeadLetters
 
 proc setActorMessageType*(v, messageType: Value) =
   let data = actorData(v)
@@ -3345,6 +3369,8 @@ proc escapeWeakFunctions*(v: Value): Value =
     var failureStrategy: ActorFailureStrategy
     var sourceFailureEvents: Value
     var sourceFailureDeadLetters: Value
+    var sourceParentFailureEvents: Value
+    var sourceParentFailureDeadLetters: Value
     var sourceQueue: seq[ActorMessage]
     withActorLock(data):
       lifecycle = data.lifecycle
@@ -3358,18 +3384,26 @@ proc escapeWeakFunctions*(v: Value): Value =
       failureStrategy = data.failureStrategy
       sourceFailureEvents = data.failureEvents
       sourceFailureDeadLetters = data.failureDeadLetters
+      sourceParentFailureEvents = data.parentFailureEvents
+      sourceParentFailureDeadLetters = data.parentFailureDeadLetters
       sourceQueue = data.queue
     let escapedState = escapeWeakFunctions(sourceState)
     let escapedRestartInit = escapeWeakFunctions(sourceRestartInit)
     let escapedHandler = escapeWeakFunctions(sourceHandler)
     let escapedFailureEvents = escapeWeakFunctions(sourceFailureEvents)
     let escapedFailureDeadLetters = escapeWeakFunctions(sourceFailureDeadLetters)
+    let escapedParentFailureEvents =
+      escapeWeakFunctions(sourceParentFailureEvents)
+    let escapedParentFailureDeadLetters =
+      escapeWeakFunctions(sourceParentFailureDeadLetters)
     var escapedQueue = newSeq[ActorMessage](sourceQueue.len)
     var changed = escapedState.bits != sourceState.bits or
       escapedRestartInit.bits != sourceRestartInit.bits or
       escapedHandler.bits != sourceHandler.bits or
       escapedFailureEvents.bits != sourceFailureEvents.bits or
-      escapedFailureDeadLetters.bits != sourceFailureDeadLetters.bits
+      escapedFailureDeadLetters.bits != sourceFailureDeadLetters.bits or
+      escapedParentFailureEvents.bits != sourceParentFailureEvents.bits or
+      escapedParentFailureDeadLetters.bits != sourceParentFailureDeadLetters.bits
     for i, item in sourceQueue:
       let escapedMessage = escapeWeakFunctions(item.message)
       let escapedReply = escapeWeakFunctions(item.reply)
@@ -3388,6 +3422,8 @@ proc escapeWeakFunctions*(v: Value): Value =
       failureStrategy = failureStrategy,
       failureEvents = escapedFailureEvents,
       failureDeadLetters = escapedFailureDeadLetters,
+      parentFailureEvents = escapedParentFailureEvents,
+      parentFailureDeadLetters = escapedParentFailureDeadLetters,
       lifecycle = lifecycle)
     escapedData.queue = escapedQueue
     escapedData.processing = processing
@@ -3567,7 +3603,9 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                   restartInit: Value = NIL,
                   failureStrategy: ActorFailureStrategy = afsStop,
                   failureEvents: Value = NIL,
-                  failureDeadLetters: Value = NIL): Value =
+                  failureDeadLetters: Value = NIL,
+                  parentFailureEvents: Value = NIL,
+                  parentFailureDeadLetters: Value = NIL): Value =
   let storedRestartInit =
     if restartInit.kind == vkFunction:
       functionForScopeStorage(restartInit, restartInit.fnScope)
@@ -3585,7 +3623,9 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                          messageType = messageType,
                          failureStrategy = failureStrategy,
                          failureEvents = failureEvents,
-                         failureDeadLetters = failureDeadLetters))
+                         failureDeadLetters = failureDeadLetters,
+                         parentFailureEvents = parentFailureEvents,
+                         parentFailureDeadLetters = parentFailureDeadLetters))
 
 proc newActorContext*(actor: Value): Value =
   boxObject(ActorContextData(objKind: okActorContext, actor: actor))

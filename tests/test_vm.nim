@@ -2225,6 +2225,26 @@ suite "vm — actors":
        "    \"after\") " &
        "  catch (Boom ^message m) m)",
        "\"bad\""
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var parent-events (channel ^capacity 2)) " &
+       "(var outcome " &
+       "  (try " &
+       "    (supervisor ^strategy stop ^events parent-events " &
+       "      (supervisor ^strategy escalate " &
+       "        (var a (actor/spawn ^init (fn [] 0) " &
+       "          ^handle (fn [ctx state msg] " &
+       "            (fail (Boom ^message \"bad\"))))) " &
+       "        (a ~ actor/send 7))) " &
+       "    catch (Boom ^message m) m)) " &
+       "(var event (parent-events ~ Channel/recv)) " &
+       "[outcome " &
+       " (match event " &
+       "   (when (ActorFailure ^failed-message failed " &
+       "                       ^error (Boom ^message m) " &
+       "                       ^strategy s) " &
+       "     [failed m s]))]",
+       "[\"bad\" [7 \"bad\" escalate]]"
     expect GenePanic:
       discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
                      "(impl Send Get) " &
