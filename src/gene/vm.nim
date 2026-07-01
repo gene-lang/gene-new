@@ -5554,6 +5554,20 @@ when compileOption("threads") and defined(gcAtomicArc):
   proc pendingAsyncIoRequestsUnlocked(s: SchedulerState): int {.inline.} =
     s.asyncIoQueue.len - s.asyncIoHead
 
+  proc asyncIoRequestDone(req: AsyncIoRequest): bool {.inline.} =
+    req == nil or (req.task.kind == vkTask and req.task.taskDone)
+
+  proc pruneCompletedAsyncIoRequestsUnlocked(s: SchedulerState) =
+    if s.pendingAsyncIoRequestsUnlocked() == 0:
+      return
+    var pending = newSeqOfCap[AsyncIoRequest](s.pendingAsyncIoRequestsUnlocked())
+    for i in s.asyncIoHead ..< s.asyncIoQueue.len:
+      let req = s.asyncIoQueue[i]
+      if not asyncIoRequestDone(req):
+        pending.add req
+    s.asyncIoQueue = pending
+    s.asyncIoHead = 0
+
 proc clearWaitReason(f: Fiber) =
   f.waitChannel = NIL
   f.waitActor = NIL
@@ -5584,6 +5598,7 @@ proc enqueueAsyncIoRequest(req: AsyncIoRequest): AsyncIoEnqueueResult =
     let s = currentScheduler()
     var queued = false
     withSchedulerLock(s):
+      s.pruneCompletedAsyncIoRequestsUnlocked()
       if s.pendingAsyncIoRequestsUnlocked() < configuredAsyncIoQueueMax():
         markSharedValue(req.task)
         s.asyncIoQueue.add req

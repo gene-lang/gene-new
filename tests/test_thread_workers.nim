@@ -594,6 +594,41 @@ suite "threaded scheduler workers":
     joinThread(serverThread)
     check not fileExists(path)
 
+  test "cancelled queued async IO releases queue capacity":
+    let server = newSocket()
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let port = int(server.getLocalAddr()[1])
+    var serverThread: Thread[Socket]
+    createThread(serverThread, sendDelayedTcpPayloadOnce, server)
+    let cancelledPath =
+      getTempDir() / "gene-threaded-cancelled-queued-capacity-test.txt"
+    let nextPath =
+      getTempDir() / "gene-threaded-next-queued-capacity-test.txt"
+    defer:
+      if fileExists(cancelledPath):
+        removeFile(cancelledPath)
+      if fileExists(nextPath):
+        removeFile(nextPath)
+    let scope = newGlobalScope()
+    scope.define("port", newInt(port))
+    scope.define("cancelledPath", newStr(cancelledPath))
+    scope.define("nextPath", newStr(nextPath))
+    withGeneWorkerSetting "1":
+      withGeneAsyncIoQueueSetting "1":
+        check run(compileSource(
+          "(scope " &
+          "  (var blocker (Net/tcp-read-text-async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+          "  (sleep 10) " &
+          "  (var cancelled (Fs/write-text-async Fs/WriteDir cancelledPath \"cancelled\")) " &
+          "  (cancelled ~ Task/cancel) " &
+          "  (var next (Fs/write-text-async Fs/WriteDir nextPath \"next\")) " &
+          "  [(await blocker) (try (await next) catch {^message m} m)])"),
+          scope).print() == "[\"worker release\" nil]"
+    joinThread(serverThread)
+    check not fileExists(cancelledPath)
+    check readFile(nextPath) == "next"
+
   test "worker-candidate task errors wake root awaiters":
     withGeneWorkerSetting "8":
       ck "(scope " &
