@@ -430,6 +430,33 @@ suite "threaded scheduler workers":
         "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
         "[1 \"worker async\"]"
 
+  test "worker-backed async file read burst drains queued requests":
+    const burst = 80
+    let path = getTempDir() / "gene-threaded-read-text-async-burst-test.txt"
+    writeFile(path, "worker async")
+    defer:
+      if fileExists(path):
+        removeFile(path)
+    let scope = newGlobalScope()
+    scope.define("path", newStr(path))
+    var src = "(scope "
+    for i in 0 ..< burst:
+      src.add "(var t" & $i & " (Fs/read-text-async Fs/ReadDir path)) "
+    src.add "["
+    for i in 0 ..< burst:
+      if i > 0:
+        src.add " "
+      src.add "(await t" & $i & ")"
+    src.add "])"
+    var expected = "["
+    for i in 0 ..< burst:
+      if i > 0:
+        expected.add " "
+      expected.add "\"worker async\""
+    expected.add "]"
+    withGeneWorkerSetting "2":
+      check run(compileSource(src), scope).print() == expected
+
   test "root await drives worker-backed async file write":
     let path = getTempDir() / "gene-threaded-write-text-async-test.txt"
     defer:

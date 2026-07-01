@@ -167,6 +167,7 @@ type
       workerCond: Cond
       activeWorkerFibers: seq[Fiber]
       asyncIoQueue: seq[AsyncIoRequest]
+      asyncIoHead: int
       activeAsyncIoWorkers: int
 
   SchedulerWorkerContext = ref object of RuntimeContext
@@ -8361,8 +8362,11 @@ when compileOption("threads") and defined(gcAtomicArc):
       if cleared:
         broadcast(s.workerCond)
 
+  proc pendingAsyncIoRequests(s: SchedulerState): int {.inline.} =
+    s.asyncIoQueue.len - s.asyncIoHead
+
   proc schedulerHasWorkerProgressUnlocked(s: SchedulerState): bool =
-    if s.activeAsyncIoWorkers > 0 or s.asyncIoQueue.len > 0:
+    if s.activeAsyncIoWorkers > 0 or s.pendingAsyncIoRequests() > 0:
       return true
     for f in s.activeWorkerFibers:
       if f != nil:
@@ -8389,7 +8393,7 @@ when compileOption("threads") and defined(gcAtomicArc):
       true
 
   proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =
-    if s.asyncIoQueue.len > 0:
+    if s.pendingAsyncIoRequests() > 0:
       return true
     for f in s.runQueue:
       if f.workerCandidate:
@@ -8397,10 +8401,16 @@ when compileOption("threads") and defined(gcAtomicArc):
 
   proc popAsyncIoRequest(s: SchedulerState): AsyncIoRequest =
     withSchedulerLock(s):
-      if s.asyncIoQueue.len == 0:
+      if s.pendingAsyncIoRequests() == 0:
         return nil
-      result = s.asyncIoQueue[0]
-      s.asyncIoQueue.delete(0)
+      result = s.asyncIoQueue[s.asyncIoHead]
+      inc s.asyncIoHead
+      if s.asyncIoHead == s.asyncIoQueue.len:
+        s.asyncIoQueue.setLen(0)
+        s.asyncIoHead = 0
+      elif s.asyncIoHead >= 64 and s.asyncIoHead * 2 >= s.asyncIoQueue.len:
+        s.asyncIoQueue = s.asyncIoQueue[s.asyncIoHead ..< s.asyncIoQueue.len]
+        s.asyncIoHead = 0
       inc s.activeAsyncIoWorkers
       broadcast(s.workerCond)
 
