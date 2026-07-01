@@ -118,6 +118,16 @@ suite "threaded scheduler workers":
          "  (+ (await a) (await b)))",
          "43"
 
+  test "worker-candidate snapshots publish cloned closures":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (var base 1) " &
+         "  (fn add [x] (+ base x)) " &
+         "  (var a (spawn (add 40))) " &
+         "  (set base 100) " &
+         "  [(await a) (add 40)])",
+         "[41 140]"
+
   test "worker-candidate tasks share AtomicCell through CAS":
     withGeneWorkerSetting "8":
       ck "(scope " &

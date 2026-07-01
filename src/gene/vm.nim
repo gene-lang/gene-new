@@ -7422,6 +7422,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let taskParent =
             if workerSafe: snapshotSpawnScope(scope, body)
             else: scope
+          if workerSafe:
+            # Snapshotting can allocate replacement functions/containers for
+            # captured scope chains. Publish the snapshot graph too so worker
+            # threads see atomic manual-RC objects, not just the original graph.
+            publishSpawnCapture(taskParent, body)
           let taskScope = newScope(taskParent)
           let task = spawnFiber(body, taskScope, workerSafe)
           scope.registerOwnedTask(task)
