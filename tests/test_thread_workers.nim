@@ -199,8 +199,9 @@ suite "threaded scheduler workers":
         "(impl Send Get) " &
         "(var a (actor/spawn ^init (fn [] 41) " &
         "  ^handle (fn [ctx state msg] " &
+        "    (var (Get ^reply reply) msg) " &
         "    (record-thread 1) " &
-        "    (msg/reply ~ ReplyTo/send state) " &
+        "    (reply ~ ReplyTo/send state) " &
         "    (actor/continue state)))) " &
         "(var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &

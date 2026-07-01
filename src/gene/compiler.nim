@@ -2072,6 +2072,9 @@ proc compileVar(c: var Compiler, node: Value) =
     if body[0].symVal == "self":
       c.selfAvailable = true
   else:
+    if c.useLocalSlots:
+      for name in patternBindingNames(body[0]):
+        discard c.reserveLocal(name)
     discard c.emit(opMatchBind, c.chunk.addConst(body[0]))  # destructuring
     if patternBindsSelf(body[0]):
       c.selfAvailable = true

@@ -275,6 +275,19 @@ suite "compiler — GIR emission":
     check sawLoadA
     check sawSetTotal
 
+  test "emits slots for var destructuring bindings":
+    let chunk = compileSource("(var [a b] [1 2]) (+ a b)")
+    check chunk.localNames == @["a", "b"]
+    var sawLoadA = false
+    var sawLoadB = false
+    for inst in chunk.instructions:
+      if inst.op == opLoadLocal and inst.name == "a" and inst.intArg == 0:
+        sawLoadA = true
+      if inst.op == opLoadLocal and inst.name == "b" and inst.intArg == 1:
+        sawLoadB = true
+    check sawLoadA
+    check sawLoadB
+
   test "emits one branch slot for typed pattern binders":
     let chunk = compileSource("(match \"hi\" (when (s : Str) s))")
     let body = chunk.matches[0].clauses[0].body
