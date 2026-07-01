@@ -99,6 +99,91 @@ suite "threaded scheduler workers":
          "  (counter ~ AtomicCell/load))",
          "1600"
 
+  test "worker-candidate channel try-send respects capacity":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (var ch (channel ^capacity 1)) " &
+         "  (var success (atomic-cell 0)) " &
+         "  (fn mark_success [] " &
+         "    (var stored false) " &
+         "    (var old 0) " &
+         "    (while (not stored) " &
+         "      (set old (success ~ AtomicCell/load)) " &
+         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "  (fn send_once [value] " &
+         "    (if (ch ~ Channel/try-send value) (mark_success) nil)) " &
+         "  (var a (spawn (send_once 1))) " &
+         "  (var b (spawn (send_once 2))) " &
+         "  (var c (spawn (send_once 3))) " &
+         "  (var d (spawn (send_once 4))) " &
+         "  (var e (spawn (send_once 5))) " &
+         "  (var f (spawn (send_once 6))) " &
+         "  (var g (spawn (send_once 7))) " &
+         "  (var h (spawn (send_once 8))) " &
+         "  (await a) (await b) (await c) (await d) " &
+         "  (await e) (await f) (await g) (await h) " &
+         "  (success ~ AtomicCell/load))",
+         "1"
+
+  test "worker-candidate channel try-recv claims one item":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (var ch (channel ^capacity 1)) " &
+         "  (var success (atomic-cell 0)) " &
+         "  (ch ~ Channel/send 99) " &
+         "  (fn mark_success [] " &
+         "    (var stored false) " &
+         "    (var old 0) " &
+         "    (while (not stored) " &
+         "      (set old (success ~ AtomicCell/load)) " &
+         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "  (fn recv_once [] " &
+         "    (var got (ch ~ Channel/try-recv)) " &
+         "    (if (same? got void) nil (mark_success))) " &
+         "  (var a (spawn (recv_once))) " &
+         "  (var b (spawn (recv_once))) " &
+         "  (var c (spawn (recv_once))) " &
+         "  (var d (spawn (recv_once))) " &
+         "  (var e (spawn (recv_once))) " &
+         "  (var f (spawn (recv_once))) " &
+         "  (var g (spawn (recv_once))) " &
+         "  (var h (spawn (recv_once))) " &
+         "  (await a) (await b) (await c) (await d) " &
+         "  (await e) (await f) (await g) (await h) " &
+         "  (success ~ AtomicCell/load))",
+         "1"
+
+  test "worker-candidate actor try-send respects mailbox capacity":
+    withGeneWorkerSetting "8":
+      ck "(scope " &
+         "  (var gate (channel ^capacity 1)) " &
+         "  (var success (atomic-cell 0)) " &
+         "  (var a (actor/spawn ^mailbox 1 ^init (fn [] 0) " &
+         "    ^handle (fn [ctx state msg] " &
+         "      (gate ~ Channel/recv) " &
+         "      (actor/continue (+ state msg))))) " &
+         "  (a ~ actor/send 0) " &
+         "  (fn mark_success [] " &
+         "    (var stored false) " &
+         "    (var old 0) " &
+         "    (while (not stored) " &
+         "      (set old (success ~ AtomicCell/load)) " &
+         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "  (fn send_once [value] " &
+         "    (if (a ~ actor/try-send value) (mark_success) nil)) " &
+         "  (var t1 (spawn (send_once 1))) " &
+         "  (var t2 (spawn (send_once 2))) " &
+         "  (var t3 (spawn (send_once 3))) " &
+         "  (var t4 (spawn (send_once 4))) " &
+         "  (var t5 (spawn (send_once 5))) " &
+         "  (var t6 (spawn (send_once 6))) " &
+         "  (var t7 (spawn (send_once 7))) " &
+         "  (var t8 (spawn (send_once 8))) " &
+         "  (await t1) (await t2) (await t3) (await t4) " &
+         "  (await t5) (await t6) (await t7) (await t8) " &
+         "  (success ~ AtomicCell/load))",
+         "1"
+
   test "root await helps drain worker-candidate queue":
     withGeneWorkerSetting "1":
       ck "(scope " &

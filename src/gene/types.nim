@@ -2189,6 +2189,18 @@ proc channelFull*(v: Value): bool =
   withChannelStateLock(state):
     result = state.items.len >= state.capacity
 
+proc channelSendState*(v: Value): tuple[closed: bool, full: bool] =
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result.closed = state.closed
+    result.full = state.items.len >= state.capacity
+
+proc channelRecvState*(v: Value): tuple[closed: bool, empty: bool] =
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    result.closed = state.closed
+    result.empty = state.items.len == 0
+
 proc channelItemType*(v: Value): Value =
   channelData(v).itemType
 
@@ -2206,6 +2218,19 @@ proc pushChannel*(v, item: Value) =
   withChannelStateLock(state):
     state.items.add stored
 
+proc tryPushChannel*(v, item: Value): tuple[pushed: bool, closed: bool,
+                                            full: bool] =
+  let stored = escapeWeakFunctions(item)
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    if state.closed:
+      result.closed = true
+    elif state.items.len >= state.capacity:
+      result.full = true
+    else:
+      state.items.add stored
+      result.pushed = true
+
 proc popChannel*(v: Value): Value =
   let state = channelData(v).state
   withChannelStateLock(state):
@@ -2213,6 +2238,15 @@ proc popChannel*(v: Value): Value =
       raise newException(FieldDefect, "channel is empty")
     result = state.items[0]
     state.items.delete(0)
+
+proc tryPopChannel*(v: Value): tuple[popped: bool, item: Value] =
+  let state = channelData(v).state
+  withChannelStateLock(state):
+    if state.items.len == 0:
+      return (false, NIL)
+    result.item = state.items[0]
+    state.items.delete(0)
+    result.popped = true
 
 proc actorData(v: Value): ActorData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okActorRef:
@@ -2325,6 +2359,12 @@ proc actorFull*(v: Value): bool =
   withActorLock(data):
     result = data.queue.len >= data.capacity
 
+proc actorSendState*(v: Value): tuple[closed: bool, full: bool] =
+  let data = actorData(v)
+  withActorLock(data):
+    result.closed = data.lifecycle.closed
+    result.full = data.queue.len >= data.capacity
+
 proc closeActor*(v: Value) =
   let data = actorData(v)
   withActorLock(data):
@@ -2360,6 +2400,33 @@ proc pushActorMessage*(v, message, reply: Value) =
   let data = actorData(v)
   withActorLock(data):
     data.queue.add ActorMessage(message: stored, reply: reply)
+
+proc tryPushActorMessage*(v, message: Value): tuple[pushed: bool, closed: bool,
+                                                    full: bool] =
+  let stored = escapeWeakFunctions(message)
+  let data = actorData(v)
+  withActorLock(data):
+    if data.lifecycle.closed:
+      result.closed = true
+    elif data.queue.len >= data.capacity:
+      result.full = true
+    else:
+      data.queue.add ActorMessage(message: stored, reply: NIL)
+      result.pushed = true
+
+proc tryPushActorMessage*(v, message, reply: Value): tuple[pushed: bool,
+                                                           closed: bool,
+                                                           full: bool] =
+  let stored = escapeWeakFunctions(message)
+  let data = actorData(v)
+  withActorLock(data):
+    if data.lifecycle.closed:
+      result.closed = true
+    elif data.queue.len >= data.capacity:
+      result.full = true
+    else:
+      data.queue.add ActorMessage(message: stored, reply: reply)
+      result.pushed = true
 
 proc popActorMessage*(v: Value): ActorMessage =
   let data = actorData(v)

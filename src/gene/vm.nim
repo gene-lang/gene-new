@@ -1048,95 +1048,113 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len != 2:
     raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
   requireChannel("Channel/send", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
   defer:
     if workerLeaseOpen:
       endSchedulerWorkerLease(workerLease)
-  while args[0].channelFull and not args[0].channelClosed:
-    if currentFiberActive:
-      # Inside a scheduled fiber: park the whole task until space frees up.
-      var se: ref SuspendError
-      new(se)
-      se.msg = "Channel/send suspends on a full channel"
-      se.channel = args[0]
-      se.isSend = true
-      se.sendValue = args[1]
-      raise se
-    # At the root: cooperatively run a fiber (a receiver may drain), then retry.
-    if not workerLeaseOpen:
-      workerLease = beginSchedulerWorkerLease()
-      workerLeaseOpen = true
-    if not schedulerRunOneRoot(workerLease):
-      raise newException(GeneError, "Channel/send would suspend on a full channel")
-  if args[0].channelClosed:
-    raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
-  let scope = if call == nil: nil else: call[].dispatchScope
-  args[0].pushChannel(checkedChannelSendItem(args[0], args[1],
+  while true:
+    let state = args[0].channelSendState()
+    if state.closed:
+      raiseChannelClosed(scope)
+    if state.full:
+      if currentFiberActive:
+        # Inside a scheduled fiber: park the whole task until space frees up.
+        var se: ref SuspendError
+        new(se)
+        se.msg = "Channel/send suspends on a full channel"
+        se.channel = args[0]
+        se.isSend = true
+        se.sendValue = args[1]
+        raise se
+      # At the root: cooperatively run a fiber (a receiver may drain), then retry.
+      if not workerLeaseOpen:
+        workerLease = beginSchedulerWorkerLease()
+        workerLeaseOpen = true
+      if not schedulerRunOneRoot(workerLease):
+        raise newException(GeneError, "Channel/send would suspend on a full channel")
+      continue
+    let pushed = args[0].tryPushChannel(checkedChannelSendItem(args[0], args[1],
                                              "Channel/send item", scope))
-  wakeChannelWaiters(args[0], wakeSenders = false)   # a buffered value may wake a receiver
-  NIL
+    if pushed.pushed:
+      wakeChannelWaiters(args[0], wakeSenders = false)   # a buffered value may wake a receiver
+      return NIL
+    if pushed.closed:
+      raiseChannelClosed(scope)
 
 proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Channel/try-send expects 2 arguments, got " & $args.len)
   requireChannel("Channel/try-send", args[0])
-  if args[0].channelClosed or args[0].channelFull:
+  let state = args[0].channelSendState()
+  if state.closed or state.full:
     return FALSE
   let scope = if call == nil: nil else: call[].dispatchScope
-  args[0].pushChannel(checkedChannelSendItem(args[0], args[1],
+  let pushed = args[0].tryPushChannel(checkedChannelSendItem(args[0], args[1],
                                              "Channel/try-send item", scope))
+  if not pushed.pushed:
+    return FALSE
   wakeChannelWaiters(args[0], wakeSenders = false)  # a new value may wake a parked receiver
   TRUE
 
 proc nativeChannelTrySend*(channel, item: Value, scope: Scope = nil): bool =
   withScopedScheduler(scope):
     requireChannel("native channel try-send", channel)
-    if channel.channelClosed or channel.channelFull:
+    let state = channel.channelSendState()
+    if state.closed or state.full:
       return false
-    channel.pushChannel(checkedChannelSendItem(channel, item,
+    let pushed = channel.tryPushChannel(checkedChannelSendItem(channel, item,
                                                "native channel item", scope))
+    if not pushed.pushed:
+      return false
     wakeChannelWaiters(channel, wakeSenders = false)
     true
 
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
   defer:
     if workerLeaseOpen:
       endSchedulerWorkerLease(workerLease)
-  while args[0].channelLen == 0:
-    if args[0].channelClosed:
-      raiseChannelClosed(if call == nil: nil else: call[].dispatchScope)
-    if currentFiberActive:
-      # Inside a scheduled fiber: park the whole task until a value arrives.
-      var se: ref SuspendError
-      new(se)
-      se.msg = "Channel/recv suspends on an empty channel"
-      se.channel = args[0]
-      se.isSend = false
-      raise se
-    # At the root: cooperatively run a fiber (a sender may push), then retry.
-    if not workerLeaseOpen:
-      workerLease = beginSchedulerWorkerLease()
-      workerLeaseOpen = true
-    if not schedulerRunOneRoot(workerLease):
-      raise newException(GeneError, "Channel/recv would suspend on an empty channel")
-  let scope = if call == nil: nil else: call[].dispatchScope
-  let item = checkedChannelItem(args[0], args[0].popChannel(),
-                                "Channel/recv item", scope)
-  wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a sender
-  return item
+  while true:
+    let state = args[0].channelRecvState()
+    if state.empty:
+      if state.closed:
+        raiseChannelClosed(scope)
+      if currentFiberActive:
+        # Inside a scheduled fiber: park the whole task until a value arrives.
+        var se: ref SuspendError
+        new(se)
+        se.msg = "Channel/recv suspends on an empty channel"
+        se.channel = args[0]
+        se.isSend = false
+        raise se
+      # At the root: cooperatively run a fiber (a sender may push), then retry.
+      if not workerLeaseOpen:
+        workerLease = beginSchedulerWorkerLease()
+        workerLeaseOpen = true
+      if not schedulerRunOneRoot(workerLease):
+        raise newException(GeneError, "Channel/recv would suspend on an empty channel")
+      continue
+    let popped = args[0].tryPopChannel()
+    if popped.popped:
+      let item = checkedChannelItem(args[0], popped.item,
+                                    "Channel/recv item", scope)
+      wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a sender
+      return item
 
 proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/try-recv", args)
   requireChannel("Channel/try-recv", args[0])
-  if args[0].channelLen == 0:
+  let popped = args[0].tryPopChannel()
+  if not popped.popped:
     return VOID
   let scope = if call == nil: nil else: call[].dispatchScope
-  let item = checkedChannelItem(args[0], args[0].popChannel(), "Channel/try-recv item",
+  let item = checkedChannelItem(args[0], popped.item, "Channel/try-recv item",
                                 scope)
   wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a parked sender
   item
@@ -1144,9 +1162,10 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
 proc nativeChannelTryRecv*(channel: Value, scope: Scope = nil): Value =
   withScopedScheduler(scope):
     requireChannel("native channel try-recv", channel)
-    if channel.channelLen == 0:
+    let popped = channel.tryPopChannel()
+    if not popped.popped:
       return VOID
-    result = checkedChannelItem(channel, channel.popChannel(),
+    result = checkedChannelItem(channel, popped.item,
                                 "native channel item", scope)
     wakeChannelWaiters(channel, wakeSenders = true)
 
@@ -1211,11 +1230,16 @@ proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
   newNode(head, props = props)
 
 proc tryEmitSupervisorFailure(sink, event: Value, scope: Scope): bool =
-  if sink.kind != vkChannel or sink.channelClosed or sink.channelFull:
+  if sink.kind != vkChannel:
     return false
   try:
-    sink.pushChannel(checkedChannelSendItem(sink, event,
+    let state = sink.channelSendState()
+    if state.closed or state.full:
+      return false
+    let pushed = sink.tryPushChannel(checkedChannelSendItem(sink, event,
                                             "supervisor failure event", scope))
+    if not pushed.pushed:
+      return false
   except CatchableError:
     return false
   wakeChannelWaiters(sink, wakeSenders = false)
@@ -1431,39 +1455,48 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   defer:
     if workerLeaseOpen:
       endSchedulerWorkerLease(workerLease)
-  while actor.actorFull and not actor.actorClosed:
-    if currentFiberActive:
-      # Inside a scheduled fiber: park this task until the mailbox drains.
-      var se: ref SuspendError
-      new(se)
-      se.msg = "actor/send suspends on a full mailbox"
-      se.actor = actor
-      se.isSend = true
-      raise se
-    # At the root: cooperatively run the actor's handler fiber to free a slot.
-    if not workerLeaseOpen:
-      workerLease = beginSchedulerWorkerLease()
-      workerLeaseOpen = true
-    if not schedulerRunOneRoot(workerLease):
-      raise newException(GeneError, "actor/send would suspend on a full mailbox")
-  if actor.actorClosed:
-    raiseActorClosed(scope)
-  actor.pushActorMessage(checkedActorMessage(actor, args[1],
+  while true:
+    let state = actor.actorSendState()
+    if state.closed:
+      raiseActorClosed(scope)
+    if state.full:
+      if currentFiberActive:
+        # Inside a scheduled fiber: park this task until the mailbox drains.
+        var se: ref SuspendError
+        new(se)
+        se.msg = "actor/send suspends on a full mailbox"
+        se.actor = actor
+        se.isSend = true
+        raise se
+      # At the root: cooperatively run the actor's handler fiber to free a slot.
+      if not workerLeaseOpen:
+        workerLease = beginSchedulerWorkerLease()
+        workerLeaseOpen = true
+      if not schedulerRunOneRoot(workerLease):
+        raise newException(GeneError, "actor/send would suspend on a full mailbox")
+      continue
+    let pushed = actor.tryPushActorMessage(checkedActorMessage(actor, args[1],
                                              "actor/send message", scope))
-  scheduleActor(actor, scope)
-  if not currentFiberActive:
-    driveActor(actor)   # root send stays synchronous: process the message now
-  NIL
+    if pushed.pushed:
+      scheduleActor(actor, scope)
+      if not currentFiberActive:
+        driveActor(actor)   # root send stays synchronous: process the message now
+      return NIL
+    if pushed.closed:
+      raiseActorClosed(scope)
 
 proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "actor/try-send expects 2 arguments, got " & $args.len)
   requireActor("actor/try-send", args[0])
-  if args[0].actorClosed or args[0].actorFull:
+  let state = args[0].actorSendState()
+  if state.closed or state.full:
     return FALSE
   let scope = actorDispatchScope(call)
-  args[0].pushActorMessage(checkedActorMessage(args[0], args[1],
+  let pushed = args[0].tryPushActorMessage(checkedActorMessage(args[0], args[1],
                                                "actor/try-send message", scope))
+  if not pushed.pushed:
+    return FALSE
   scheduleActor(args[0], scope)
   if not currentFiberActive:
     driveActor(args[0])
@@ -1472,10 +1505,13 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
   withScopedScheduler(scope):
     requireActor("native actor try-send", actor)
-    if actor.actorClosed or actor.actorFull:
+    let state = actor.actorSendState()
+    if state.closed or state.full:
       return false
-    actor.pushActorMessage(checkedActorMessage(actor, message,
+    let pushed = actor.tryPushActorMessage(checkedActorMessage(actor, message,
                                                "native actor message", scope))
+    if not pushed.pushed:
+      return false
     scheduleActor(actor, scope)
     if not currentFiberActive:
       driveActor(actor)
