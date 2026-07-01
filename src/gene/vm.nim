@@ -8460,11 +8460,29 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
         if not (typeExpr.isBareIntType and rhs.kind == vkInt):
           rhs = adaptBoundary("parameter '" & positional[1] & "'",
                               typeExpr, rhs, callee.fnScope)
+    var selected =
+      if proto.nativeParamIndex == 0:
+        lhs
+      elif proto.nativeParamIndex == 1:
+        rhs
+      else:
+        args[proto.nativeParamIndex]
+    if proto.nativeOp in {ncoIntIdentity, ncoI64Identity, ncoF64Identity}:
+      for i in 2 ..< args.len:
+        var value = args[i]
+        if proto.hasParamTypes and i < proto.paramTypes.len and
+            proto.paramTypes[i].kind != vkNil:
+          let typeExpr = proto.paramTypes[i]
+          if not (typeExpr.isBareIntType and value.kind == vkInt):
+            value = adaptBoundary("parameter '" & positional[i] & "'",
+                                  typeExpr, value, callee.fnScope)
+        if i == proto.nativeParamIndex:
+          selected = value
 
     let resultValue =
       case proto.nativeOp
       of ncoIntIdentity, ncoI64Identity, ncoF64Identity:
-        lhs
+        selected
       of ncoIntAdd:
         intAdd(lhs, rhs)
       of ncoIntSub:

@@ -154,7 +154,13 @@ suite "compiler — GIR emission":
 
     let identityChunk = compileSource("(fn id [x : Int] : Int x)")
     check identityChunk.functions[0].nativeOp == ncoIntIdentity
+    check identityChunk.functions[0].nativeParamIndex == 0
     check "native=int-identity" in identityChunk.disassemble()
+
+    let pickChunk = compileSource(
+      "(fn pick [a : Int b : Int c : Int] : Int b)")
+    check pickChunk.functions[0].nativeOp == ncoIntIdentity
+    check pickChunk.functions[0].nativeParamIndex == 1
 
     let i64Chunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y))")
     check i64Chunk.functions[0].nativeOp == ncoI64Add
@@ -911,6 +917,9 @@ suite "vm — functions and closures":
     ck "(fn add [x : Int y : Int] : Int (+ x y)) " &
        "(try (add \"bad\" 1) catch (TypeError ^where w) w)",
        "\"parameter 'x'\""
+    ck "(fn pick [a : Int b : Int c : Int] : Int b) " &
+       "(try (pick 1 2 \"bad\") catch (TypeError ^where w) w)",
+       "\"parameter 'c'\""
     ck "(fn outer [] (add \"bad\" 1)) " &
        "(fn add [x : Int y : Int] : Int (+ x y)) " &
        "(try (outer) catch (TypeError ^trace t) " &

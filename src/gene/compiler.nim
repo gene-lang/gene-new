@@ -1720,40 +1720,42 @@ proc nativeIdentityOp(typeName: string): NativeCompileOp =
 proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
                            bodyStart: int, returnType: Value,
                            typeParams: openArray[string],
-                           checksErrors, sawYield: bool): NativeCompileOp =
+                           checksErrors, sawYield: bool):
+    tuple[op: NativeCompileOp, paramIndex: int] =
   ## Native-compilation slices for small typed scalar shapes. Dynamic function
   ## entry still performs normal boundary checks before these ops run.
   if typeParams.len != 0 or checksErrors or sawYield:
-    return ncoNone
+    return (ncoNone, 0)
   if specs.rest.len != 0 or specs.named.len != 0:
-    return ncoNone
+    return (ncoNone, 0)
   if specs.hasOptionalPositional or body.len != bodyStart + 1:
-    return ncoNone
+    return (ncoNone, 0)
   let typeName = returnType.nativeScalarType
   if typeName.len == 0:
-    return ncoNone
+    return (ncoNone, 0)
   for t in specs.positionalTypes:
     if t.nativeScalarType != typeName:
-      return ncoNone
+      return (ncoNone, 0)
 
   let expr = body[bodyStart]
-  if specs.positional.len == 1:
-    if expr.kind == vkSymbol and expr.symVal == specs.positional[0]:
-      return nativeIdentityOp(typeName)
-    return ncoNone
+  if expr.kind == vkSymbol:
+    for i, param in specs.positional:
+      if expr.symVal == param:
+        return (nativeIdentityOp(typeName), i)
+    return (ncoNone, 0)
 
   if specs.positional.len != 2:
-    return ncoNone
+    return (ncoNone, 0)
   if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
       expr.body.len != 2 or expr.head.kind != vkSymbol:
-    return ncoNone
+    return (ncoNone, 0)
   if expr.body[0].kind != vkSymbol or expr.body[1].kind != vkSymbol:
-    return ncoNone
+    return (ncoNone, 0)
   if expr.body[0].symVal != specs.positional[0] or
       expr.body[1].symVal != specs.positional[1]:
-    return ncoNone
+    return (ncoNone, 0)
 
-  nativeArithmeticOp(typeName, expr.head.symVal)
+  (nativeArithmeticOp(typeName, expr.head.symVal), 0)
 
 proc aotAvailableFunctions(functions: openArray[FunctionProto],
                            typeName: string): Table[string, int] =
@@ -1914,9 +1916,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let callScopeNeedsSlotNames = fnCompiler.chunk.chunkNeedsCallScopeSlotNames()
   let callScopeNeedsSlotReset =
     fnCompiler.localNames.len != specs.positional.len or specs.positional.len > 64
-  let nativeOp = specs.detectNativeCompileOp(body, start, returnType,
-                                             typeParams, checksErrors,
-                                             fnCompiler.sawYield)
+  let native = specs.detectNativeCompileOp(body, start, returnType,
+                                           typeParams, checksErrors,
+                                           fnCompiler.sawYield)
   let aotExpr = c.detectAotExpr(specs, body, start, returnType,
                                 typeParams, checksErrors, fnCompiler.sawYield)
   let aotFrameKind =
@@ -1972,7 +1974,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          fastBindPositionalInt: fastBindPositionalInt,
                          isGenerator: fnCompiler.sawYield,
                          selfParentSlot: selfParentSlot,
-                         nativeOp: nativeOp,
+                         nativeOp: native.op,
+                         nativeParamIndex: native.paramIndex,
                          aotExpr: aotExpr,
                          aotFrameKind: aotFrameKind,
                          aotFrameCanSuspend: false,

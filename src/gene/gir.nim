@@ -166,6 +166,7 @@ type
     isGenerator*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
+    nativeParamIndex*: int
     aotExpr*: Value
     aotFrameKind*: AotFrameKind
     aotFrameCanSuspend*: bool
