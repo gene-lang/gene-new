@@ -231,6 +231,27 @@ suite "threaded scheduler workers":
       check pending.taskDone
       check seenThreadCount() >= 1
 
+  test "worker pool runs sendable actor sends while root runs":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    withGeneWorkers:
+      check run(compileSource(
+        "(type Put ^props {^value Int}) " &
+        "(impl Send Put) " &
+        "(var seen (atomic-cell 0)) " &
+        "(var a (actor/spawn ^init (fn [] 0) " &
+        "  ^handle (fn [ctx state msg] " &
+        "    (var (Put ^value value) msg) " &
+        "    (record-thread 1) " &
+        "    (seen ~ AtomicCell/store value) " &
+        "    (actor/continue value)))) " &
+        "(spawn (a ~ actor/try-send (Put ^value 42))) " &
+        "(var i 0) " &
+        "(while (< i 800000) (set i (+ i 1))) " &
+        "(seen ~ AtomicCell/load)"), scope).print() == "42"
+      check seenThreadCount() >= 1
+
   test "worker-candidate snapshots publish cloned closures":
     withGeneWorkerSetting "8":
       ck "(scope " &

@@ -7933,7 +7933,7 @@ proc actorFiberWorkerSafe(actor, handler, state, message, reply: Value,
     return false
   if actor.actorFailureStrategy == afsEscalate:
     return false
-  if reply.kind != vkReplyTo:
+  if reply.kind notin {vkNil, vkReplyTo}:
     return false
   var seen = initHashSet[uint64]()
   if not isSendableValue(handler, scope, seen, csmWorker):
@@ -7942,7 +7942,7 @@ proc actorFiberWorkerSafe(actor, handler, state, message, reply: Value,
     return false
   if not isSendableValue(message, scope, seen, csmWorker):
     return false
-  isSendableValue(reply, scope, seen, csmWorker)
+  reply.kind == vkNil or isSendableValue(reply, scope, seen, csmWorker)
 
 proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   ## Build a fiber that runs the actor's handler on one message. Returns nil if the
