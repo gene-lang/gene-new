@@ -170,16 +170,16 @@ participates in equality or hashing.
 > rooted completion/failure hooks; root `await` treats those tasks as external
 > progress rather than scheduler deadlock, which is the first async-I/O
 > suspension hook for file/network/native operation backends. `Fs/read-text-async`
-> is the first Gene-visible backend: it returns a task and, in threaded
-> atomicArc builds with workers enabled, performs the file read on the worker
-> lane while the awaiting Gene task is suspended. `Fs/write-text-async` uses the
-> same worker-backed path for write-authorized text output.
+> and `Fs/write-text-async` return tasks and, in threaded atomicArc builds with
+> workers enabled, perform text file I/O on the worker lane while the awaiting
+> Gene task is suspended. `Net/tcp-read-text-async` uses the same path for a
+> bounded TCP connect/read with explicit `Net/Connect` authority.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
 > `Task/detach` explicitly removes a task from structured scope ownership. What
-> is *not* built yet: production M:N lifecycle/load-balancing, production
-> network/native async-I/O backends,
+> is *not* built yet: production M:N lifecycle/load-balancing, broader
+> production network/native async-I/O backends,
 > guaranteed failure-event delivery/backpressure, and stable production
 > concurrency semantics.
 

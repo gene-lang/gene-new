@@ -1,6 +1,6 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, locks, math, monotimes, os, sets, strutils,
+import std/[algorithm, dynlib, locks, math, monotimes, net, os, sets, strutils,
             tables, times, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
@@ -142,11 +142,16 @@ type
   AsyncIoKind = enum
     aioReadText
     aioWriteText
+    aioTcpReadText
 
   AsyncIoRequest = ref object
     kind: AsyncIoKind
     path: string
     text: string
+    host: string
+    port: int
+    maxBytes: int
+    timeoutMs: int
     task: Value
 
   CaptureSafetyMode = enum
@@ -286,6 +291,8 @@ proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool
 proc enqueueAsyncReadText(path: string, task: Value): bool
 proc enqueueAsyncWriteText(path, text: string, task: Value): bool
+proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
+                             task: Value): bool
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
@@ -3001,6 +3008,23 @@ proc requireFsWriteDir(name: string, value: Value) =
   if cap != "Fs/WriteDir" and cap != "Fs/ReadWriteDir":
     raise newException(GeneError, name & " expects Fs/WriteDir authority")
 
+proc requireNetConnect(name: string, value: Value) =
+  requireCapability(name, value)
+  if value.capabilityName != "Net/Connect":
+    raise newException(GeneError, name & " expects Net/Connect authority")
+
+proc requirePort(name: string, value: Value): int =
+  let raw = requireInt64(name, value)
+  if raw < 1 or raw > 65535:
+    raise newException(GeneError, name & " expects a TCP port in 1..65535")
+  int(raw)
+
+proc requirePositiveInt(name: string, value: Value): int =
+  let raw = requireInt64(name, value)
+  if raw < 1 or raw > int32.high:
+    raise newException(GeneError, name & " expects a positive Int")
+  int(raw)
+
 proc completedReadTextTask(path: string): Value =
   try:
     newCompletedTask(newStr(readFile(path)))
@@ -3013,6 +3037,21 @@ proc completedWriteTextTask(path, text: string): Value =
     newCompletedTask(NIL)
   except CatchableError as e:
     newFailedTask("Fs/write-text-async failed: " & e.msg)
+
+proc tcpReadText(host: string, port, maxBytes, timeoutMs: int): string =
+  let socket = newSocket()
+  try:
+    socket.connect(host, Port(port), timeoutMs)
+    socket.recv(maxBytes, timeoutMs)
+  finally:
+    socket.close()
+
+proc completedTcpReadTextTask(host: string, port, maxBytes,
+                              timeoutMs: int): Value =
+  try:
+    newCompletedTask(newStr(tcpReadText(host, port, maxBytes, timeoutMs)))
+  except CatchableError as e:
+    newFailedTask("Net/tcp-read-text-async failed: " & e.msg)
 
 proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -3041,6 +3080,24 @@ proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
     task
   else:
     completedWriteTextTask(path, text)
+
+proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 5:
+    raise newException(GeneError,
+      "Net/tcp-read-text-async expects 5 arguments, got " & $args.len)
+  requireNetConnect("Net/tcp-read-text-async", args[0])
+  requireString("Net/tcp-read-text-async host", args[1])
+  let host = args[1].strVal
+  let port = requirePort("Net/tcp-read-text-async port", args[2])
+  let maxBytes = requirePositiveInt("Net/tcp-read-text-async max-bytes",
+                                    args[3])
+  let timeoutMs = requirePositiveInt("Net/tcp-read-text-async timeout-ms",
+                                     args[4])
+  let task = newExternalTask()
+  if enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs, task):
+    task
+  else:
+    completedTcpReadTextTask(host, port, maxBytes, timeoutMs)
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -3269,6 +3326,12 @@ proc buildBuiltins(app: Application): Scope =
   fsScope.define("write-text-async", newNativeFn("Fs/write-text-async",
                                                  biFsWriteTextAsync))
   result.define("Fs", newNamespace("Fs", fsScope))
+  let netScope = newScope(result)
+  netScope.define("Connect", newCapability("Net/Connect"))
+  netScope.define("tcp-read-text-async",
+                  newNativeFn("Net/tcp-read-text-async",
+                              biNetTcpReadTextAsync))
+  result.define("Net", newNamespace("Net", netScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
   cellScope.define("get", newNativeFn("Cell/get", biCellGet))
@@ -5446,6 +5509,23 @@ proc enqueueAsyncWriteText(path, text: string, task: Value): bool =
       return false
     markSharedValue(task)
     let req = AsyncIoRequest(kind: aioWriteText, path: path, text: text,
+                             task: task)
+    let s = currentScheduler()
+    withSchedulerLock(s):
+      s.asyncIoQueue.add req
+      broadcast(s.workerCond)
+    true
+  else:
+    false
+
+proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
+                             task: Value): bool =
+  when compileOption("threads") and defined(gcAtomicArc):
+    if configuredSchedulerWorkers() <= 0:
+      return false
+    markSharedValue(task)
+    let req = AsyncIoRequest(kind: aioTcpReadText, host: host, port: port,
+                             maxBytes: maxBytes, timeoutMs: timeoutMs,
                              task: task)
     let s = currentScheduler()
     withSchedulerLock(s):
@@ -8441,6 +8521,18 @@ when compileOption("threads") and defined(gcAtomicArc):
       except CatchableError as e:
         if tryFailTask(req.task,
                        "Fs/write-text-async failed: " & e.msg):
+          wakeTaskWaiters(req.task)
+    of aioTcpReadText:
+      try:
+        let text = tcpReadText(req.host, req.port, req.maxBytes,
+                               req.timeoutMs)
+        let value = newStr(text)
+        markSharedValue(value)
+        if tryCompleteTask(req.task, value):
+          wakeTaskWaiters(req.task)
+      except CatchableError as e:
+        if tryFailTask(req.task,
+                       "Net/tcp-read-text-async failed: " & e.msg):
           wakeTaskWaiters(req.task)
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =

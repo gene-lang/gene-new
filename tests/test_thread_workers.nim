@@ -1,5 +1,5 @@
 import gene/[compiler, printer, types, vm]
-import std/[locks, os, sets, unittest]
+import std/[locks, net, os, sets, unittest]
 
 var probeLock: Lock
 var probeLockReady = false
@@ -41,6 +41,14 @@ proc biRecordThread(args: openArray[Value]): Value {.nimcall.} =
     release(probeLock)
   os.sleep(sleepMs)
   NIL
+
+proc sendTcpPayloadOnce(server: Socket) {.thread.} =
+  var client: owned(Socket)
+  var address = ""
+  server.acceptAddr(client, address)
+  client.send("worker tcp")
+  client.close()
+  server.close()
 
 proc biResizeAndRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let workerCount =
@@ -474,6 +482,26 @@ suite "threaded scheduler workers":
         "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
         "[1 nil]"
     check readFile(path) == "worker write"
+
+  test "root await drives worker-backed async tcp read":
+    let server = newSocket()
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let port = int(server.getLocalAddr()[1])
+    var serverThread: Thread[Socket]
+    createThread(serverThread, sendTcpPayloadOnce, server)
+    let scope = newGlobalScope()
+    scope.define("port", newInt(port))
+    withGeneWorkerSetting "2":
+      check run(compileSource(
+        "(scope " &
+        "  (var out (atomic-cell 0)) " &
+        "  (var read-task (Net/tcp-read-text-async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (await marker) " &
+        "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
+        "[1 \"worker tcp\"]"
+    joinThread(serverThread)
 
   test "worker-candidate task errors wake root awaiters":
     withGeneWorkerSetting "8":

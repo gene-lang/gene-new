@@ -1714,6 +1714,12 @@ suite "vm — cooperative scheduler":
       discard run(compileSource(
         "(Fs/write-text-async Fs/ReadDir path \"nope\")"), scope)
 
+  test "Net/tcp-read-text-async requires connect authority":
+    expect GeneError:
+      discard run(compileSource(
+        "(Net/tcp-read-text-async Fs/ReadDir \"127.0.0.1\" 1 1 1)"),
+        newGlobalScope())
+
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch (channel ^capacity 1)) " &
        "  (spawn (do (sleep 5) (ch ~ Channel/send 7))) " &
