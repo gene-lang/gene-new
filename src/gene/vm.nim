@@ -4950,6 +4950,26 @@ proc completedTaskFromPanic(e: ref GenePanic): Value =
   else:
     newPanickedTask(e.msg)
 
+proc nativeNewAsyncTask*(): Value =
+  newExternalTask()
+
+proc nativeTaskComplete*(task, value: Value, scope: Scope = nil): bool =
+  withScopedScheduler(scope):
+    if task.kind != vkTask:
+      raise newException(GeneError, "native task complete expects a Task")
+    result = tryCompleteTask(task, value)
+    if result:
+      wakeTaskWaiters(task)
+
+proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
+                     hasValue = false, scope: Scope = nil): bool =
+  withScopedScheduler(scope):
+    if task.kind != vkTask:
+      raise newException(GeneError, "native task fail expects a Task")
+    result = tryFailTask(task, message, value, hasValue)
+    if result:
+      wakeTaskWaiters(task)
+
 proc taskBoundaryScopeOr(task: Value, fallback: Scope = nil): Scope =
   let boundaryScope = task.taskBoundaryScope
   if boundaryScope == nil: fallback else: boundaryScope
@@ -8472,6 +8492,13 @@ proc pumpUntilDone(task: Value) =
     if not schedulerRunOneRoot(workerLease):
       if task.taskDone:
         break
+      when compileOption("threads") and defined(gcAtomicArc):
+        if task.taskExternalPending:
+          discard task.waitExternalTaskChange()
+          if task.taskDone:
+            break
+          if task.taskExternalPending:
+            continue
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
 

@@ -79,8 +79,9 @@ participates in equality or hashing.
   and slice constructors plus checked Buffer accessors, version-checked dynamic
   native-module initializer lookup, and host-created `Ffi/Load` authority
   values, non-suspending rooted channel/actor send hooks for attached
-  native code, deterministic native callback handles, and explicit native
-  thread attachment before callback entry), experimental idle actor state
+  native code, native-created external-pending tasks with rooted
+  completion/failure settlement hooks, deterministic native callback handles,
+  and explicit native thread attachment before callback entry), experimental idle actor state
   snapshots and handler upgrades for migration tooling,
   boxed `Buffer` values with checked element boundaries,
   explicit runtime FFI library loading through `ffi/open` and opaque
@@ -165,11 +166,16 @@ participates in equality or hashing.
 > Worker-safe runnable/timer/timeout transitions broadcast to parked workers so
 > a queued eligible backlog can spread across the active lease instead of
 > waking only one parked worker.
+> Native code can create external-pending tasks and settle them later through
+> rooted completion/failure hooks; root `await` treats those tasks as external
+> progress rather than scheduler deadlock, which is the first async-I/O
+> suspension hook for future file/network/native operation backends.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
 > `Task/detach` explicitly removes a task from structured scope ownership. What
-> is *not* built yet: production M:N lifecycle/load-balancing, async-I/O,
+> is *not* built yet: production M:N lifecycle/load-balancing, production
+> async-I/O backends,
 > guaranteed failure-event delivery/backpressure, and stable production
 > concurrency semantics.
 

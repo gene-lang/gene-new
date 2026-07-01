@@ -39,6 +39,11 @@ type
   GeneChannelTryRecvProc* = proc(channel: Value, scope: Scope): GeneResult
   GeneActorTrySendProc* = proc(actor: Value, message: GeneRoot,
                                scope: Scope): GeneResult
+  GeneNewAsyncTaskProc* = proc(): Value
+  GeneTaskCompleteProc* = proc(task: Value, value: GeneRoot,
+                               scope: Scope): GeneResult
+  GeneTaskFailProc* = proc(task: Value, message: string, value: GeneRoot,
+                           hasValue: bool, scope: Scope): GeneResult
   GeneNewCallbackProc* = proc(callee: Value): GeneCallbackHandle
   GeneCallCallbackProc* = proc(callback: GeneCallbackHandle,
                                call: GeneCall): GeneResult
@@ -107,6 +112,9 @@ type
     channelTrySend*: GeneChannelTrySendProc
     channelTryRecv*: GeneChannelTryRecvProc
     actorTrySend*: GeneActorTrySendProc
+    newAsyncTask*: GeneNewAsyncTaskProc
+    taskComplete*: GeneTaskCompleteProc
+    taskFail*: GeneTaskFailProc
     newCallback*: GeneNewCallbackProc
     callCallback*: GeneCallCallbackProc
     releaseCallback*: GeneReleaseCallbackProc
@@ -116,7 +124,7 @@ type
     threadAttached*: GeneThreadAttachedProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 26
+const GeneApiFeatureCount* = 29
 const GeneModuleInitSymbol* = "gene_module_init"
 
 var geneThreadAttachDepth {.threadvar.}: int
@@ -296,6 +304,36 @@ proc geneActorTrySend*(actor: Value, message: GeneRoot,
   except GenePanic as e:
     result = panicResult(e)
 
+proc geneNewAsyncTask*(): Value =
+  vm.nativeNewAsyncTask()
+
+proc geneTaskComplete*(task: Value, value: GeneRoot,
+                       scope: Scope): GeneResult =
+  try:
+    result.status = gsOk
+    result.value =
+      if vm.nativeTaskComplete(task, geneRootGet(value), scope): TRUE
+      else: FALSE
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneTaskFail*(task: Value, message: string, value: GeneRoot,
+                   hasValue: bool, scope: Scope): GeneResult =
+  try:
+    result.status = gsOk
+    let errValue =
+      if hasValue: geneRootGet(value)
+      else: NIL
+    result.value =
+      if vm.nativeTaskFail(task, message, errValue, hasValue, scope): TRUE
+      else: FALSE
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
 proc geneNewCallback*(callee: Value): GeneCallbackHandle =
   GeneCallbackHandle(callee: geneRoot(callee))
 
@@ -404,6 +442,9 @@ proc geneApi*(): GeneApi =
           channelTrySend: geneChannelTrySend,
           channelTryRecv: geneChannelTryRecv,
           actorTrySend: geneActorTrySend,
+          newAsyncTask: geneNewAsyncTask,
+          taskComplete: geneTaskComplete,
+          taskFail: geneTaskFail,
           newCallback: geneNewCallback,
           callCallback: geneCallCallback,
           releaseCallback: geneReleaseCallback,

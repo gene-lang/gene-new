@@ -229,6 +229,39 @@ suite "native api — roots and trampoline":
     check released.status == gsError
     check released.message.contains("native root has been released")
 
+  test "versioned API table exposes external async task settlement":
+    let api = geneApi()
+    let scope = newGlobalScope()
+    let task = api.newAsyncTask()
+    check task.kind == vkTask
+    check not task.taskDone
+    let valueRoot = api.root(newInt(42))
+    let completed = api.taskComplete(task, valueRoot, scope)
+    check completed.status == gsOk
+    check completed.value == TRUE
+    scope.define("completed-task", task)
+    check run(compileSource("(await completed-task)"), scope).print() == "42"
+    let again = api.taskComplete(task, valueRoot, scope)
+    check again.status == gsOk
+    check again.value == FALSE
+    api.rootRelease(valueRoot)
+
+    let failedTask = api.newAsyncTask()
+    scope.define("failed-task", failedTask)
+    let errorRoot = api.root(newStr("detail"))
+    let failed = api.taskFail(failedTask, "native async failed", errorRoot,
+                              true, scope)
+    check failed.status == gsOk
+    check failed.value == TRUE
+    try:
+      discard run(compileSource("(await failed-task)"), scope)
+      check false
+    except GeneError as e:
+      check e.msg == "native async failed"
+      check e.hasErrVal
+      check e.errVal.print() == "\"detail\""
+    api.rootRelease(errorRoot)
+
   test "versioned API table exposes rooted callback handles":
     let api = geneApi()
     let scope = newGlobalScope()

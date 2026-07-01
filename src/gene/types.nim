@@ -398,10 +398,13 @@ type
 
   TaskState = ref object
     lock: Lock
+    when compileOption("threads") and defined(gcAtomicArc):
+      cond: Cond
     done: bool
     cancelRequested: bool
     cancelled: bool
     awaited: bool
+    external: bool
     result: Value
     errorMsg: string
     errorValue: Value
@@ -1915,16 +1918,19 @@ template withReplyToLock(d: ReplyToData, body: untyped): untyped =
     release(d.lock)
 
 proc newTaskState(done = false, cancelRequested = false, cancelled = false,
-                  awaited = false, taskResult = NIL, errorMsg = "",
+                  awaited = false, external = false, taskResult = NIL, errorMsg = "",
                   errorValue = NIL, hasErrorValue = false,
                   panicMsg = "", panicValue = NIL,
                   hasPanicValue = false): TaskState =
   new(result)
   initLock(result.lock)
+  when compileOption("threads") and defined(gcAtomicArc):
+    initCond(result.cond)
   result.done = done
   result.cancelRequested = cancelRequested
   result.cancelled = cancelled
   result.awaited = awaited
+  result.external = external
   result.result = taskResult
   result.errorMsg = errorMsg
   result.errorValue = errorValue
@@ -2091,6 +2097,24 @@ proc taskAwaited*(v: Value): bool =
   withTaskStateLock(data):
     result = data.awaited
 
+proc taskExternalPending*(v: Value): bool =
+  let data = taskState(v)
+  withTaskStateLock(data):
+    result = data.external and not data.done
+
+proc waitExternalTaskChange*(v: Value): bool =
+  ## Wait for a native/external operation to settle this task. Returns true when
+  ## the task is now done; false means it was not an external-pending task.
+  when compileOption("threads") and defined(gcAtomicArc):
+    let data = taskState(v)
+    withTaskStateLock(data):
+      if not data.external or data.done:
+        return data.done
+      wait(data.cond, data.lock)
+      result = data.done
+  else:
+    false
+
 proc cancelTask*(v: Value) =
   let data = taskState(v)
   withTaskStateLock(data):
@@ -2104,6 +2128,9 @@ proc finishTaskCancel*(v: Value) =
       data.done = true
       data.cancelRequested = false
       data.cancelled = true
+      data.external = false
+      when compileOption("threads") and defined(gcAtomicArc):
+        broadcast(data.cond)
 
 proc taskResult*(v: Value): Value =
   let data = taskState(v)
@@ -3542,17 +3569,13 @@ proc newPendingTask*(): Value =
   ## outcome with completeTask/failTask/panicTask once its fiber settles.
   boxObject(TaskData(objKind: okTask, state: newTaskState(done = false)))
 
-proc completeTask*(v, value: Value) =
-  let stored = escapeWeakFunctions(value)
-  let data = taskState(v)
-  withTaskStateLock(data):
-    if data.done:
-      return
-    data.done = true
-    data.cancelRequested = false
-    data.result = stored
+proc newExternalTask*(): Value =
+  ## A task whose result is owned by a native/external operation. Awaiting it is
+  ## treated as external progress rather than scheduler deadlock.
+  boxObject(TaskData(objKind: okTask,
+                     state: newTaskState(done = false, external = true)))
 
-proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+proc tryCompleteTask*(v, value: Value): bool =
   let stored = escapeWeakFunctions(value)
   let data = taskState(v)
   withTaskStateLock(data):
@@ -3560,11 +3583,37 @@ proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) 
       return
     data.done = true
     data.cancelRequested = false
+    data.external = false
+    data.result = stored
+    result = true
+    when compileOption("threads") and defined(gcAtomicArc):
+      broadcast(data.cond)
+
+proc completeTask*(v, value: Value) =
+  discard tryCompleteTask(v, value)
+
+proc tryFailTask*(v: Value, message: string, value: Value = NIL,
+                  hasValue = false): bool =
+  let stored = escapeWeakFunctions(value)
+  let data = taskState(v)
+  withTaskStateLock(data):
+    if data.done:
+      return
+    data.done = true
+    data.cancelRequested = false
+    data.external = false
     data.errorMsg = message
     data.errorValue = stored
     data.hasErrorValue = hasValue
+    result = true
+    when compileOption("threads") and defined(gcAtomicArc):
+      broadcast(data.cond)
 
-proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+  discard tryFailTask(v, message, value, hasValue)
+
+proc tryPanicTask*(v: Value, message: string, value: Value = NIL,
+                   hasValue = false): bool =
   let stored = escapeWeakFunctions(value)
   let data = taskState(v)
   withTaskStateLock(data):
@@ -3572,9 +3621,16 @@ proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false)
       return
     data.done = true
     data.cancelRequested = false
+    data.external = false
     data.panicMsg = message
     data.panicValue = stored
     data.hasPanicValue = hasValue
+    result = true
+    when compileOption("threads") and defined(gcAtomicArc):
+      broadcast(data.cond)
+
+proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
+  discard tryPanicTask(v, message, value, hasValue)
 
 proc newFailedTask*(message: string, value: Value = NIL,
                     hasValue = false): Value =
