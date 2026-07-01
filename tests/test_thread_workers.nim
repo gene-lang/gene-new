@@ -108,6 +108,26 @@ suite "threaded scheduler workers":
       discard run(compileSource("(resize-and-run 4)"), scope)
     check seenThreadCount() >= 3
 
+  test "worker lease spreads worker-candidate backlog across workers":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    withGeneWorkerSetting "4":
+      discard run(compileSource(
+        "(scope " &
+        "  (fn work [] (record-thread 20)) " &
+        "  (var a (spawn (work))) " &
+        "  (var b (spawn (work))) " &
+        "  (var c (spawn (work))) " &
+        "  (var d (spawn (work))) " &
+        "  (var e (spawn (work))) " &
+        "  (var f (spawn (work))) " &
+        "  (var g (spawn (work))) " &
+        "  (var h (spawn (work))) " &
+        "  (await a) (await b) (await c) (await d) " &
+        "  (await e) (await f) (await g) (await h))"), scope)
+    check seenThreadCount() >= 3
+
   test "worker leases keep application scheduler queues isolated":
     let app1 = newApplication()
     let scope1 = newGlobalScope(app1)

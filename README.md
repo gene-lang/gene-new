@@ -159,6 +159,9 @@ participates in equality or hashing.
 > wait on scheduler progress notifications while workers own active progress.
 > Worker-candidate timer waiters and `actor/ask` timeouts wake parked workers
 > so eligible timer progress is not tied only to root scheduler pumping.
+> Worker-safe runnable/timer/timeout transitions broadcast to parked workers so
+> a queued eligible backlog can spread across the active lease instead of
+> waking only one parked worker.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.

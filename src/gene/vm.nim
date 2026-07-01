@@ -5240,7 +5240,7 @@ proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
   s.runQueue.add f
   when compileOption("threads") and defined(gcAtomicArc):
     if f.workerCandidate:
-      signal(s.workerCond)
+      broadcast(s.workerCond)
 
 proc inCancelCleanup(f: Fiber): bool =
   if f.frameKind == fkEnsureCancelBody:
@@ -7744,7 +7744,7 @@ proc parkFiber(f: Fiber) =
       s.waiters.add f
       when compileOption("threads") and defined(gcAtomicArc):
         if f.waitTimer and f.workerCandidate:
-          signal(s.workerCond)
+          broadcast(s.workerCond)
 
 proc hasRunnableFiber(): bool =
   let s = currentScheduler()
@@ -7780,7 +7780,7 @@ proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64) =
     s.askTimeouts.add AskTimeout(task: task, reply: reply, scope: scope,
                                  deadline: timerDeadline(timeoutMs))
     when compileOption("threads") and defined(gcAtomicArc):
-      signal(s.workerCond)
+      broadcast(s.workerCond)
 
 proc failExpiredAskTimeouts(now: MonoTime): bool =
   let s = currentScheduler()
