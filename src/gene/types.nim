@@ -2121,16 +2121,21 @@ proc cancelTask*(v: Value) =
     if not data.done:
       data.cancelRequested = true
 
-proc finishTaskCancel*(v: Value) =
+proc tryCancelTask*(v: Value): bool =
   let data = taskState(v)
   withTaskStateLock(data):
-    if not data.done:
-      data.done = true
-      data.cancelRequested = false
-      data.cancelled = true
-      data.external = false
-      when compileOption("threads") and defined(gcAtomicArc):
-        broadcast(data.cond)
+    if data.done:
+      return
+    data.done = true
+    data.cancelRequested = false
+    data.cancelled = true
+    data.external = false
+    result = true
+    when compileOption("threads") and defined(gcAtomicArc):
+      broadcast(data.cond)
+
+proc finishTaskCancel*(v: Value) =
+  discard tryCancelTask(v)
 
 proc taskResult*(v: Value): Value =
   let data = taskState(v)

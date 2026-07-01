@@ -167,9 +167,9 @@ participates in equality or hashing.
 > a queued eligible backlog can spread across the active lease instead of
 > waking only one parked worker.
 > Native code can create external-pending tasks and settle them later through
-> rooted completion/failure hooks; root `await` treats those tasks as external
-> progress rather than scheduler deadlock, which is the first async-I/O
-> suspension hook for file/network/native operation backends. `Fs/read-text-async`
+> rooted completion, failure, or cancellation hooks; root `await` treats those
+> tasks as external progress rather than scheduler deadlock, which is the first
+> async-I/O suspension hook for file/network/native operation backends. `Fs/read-text-async`
 > and `Fs/write-text-async` return tasks and, in threaded atomicArc builds with
 > workers enabled, perform text file I/O on the worker lane while the awaiting
 > Gene task is suspended. `Net/tcp-read-text-async` uses the same path for a

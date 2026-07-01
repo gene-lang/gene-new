@@ -12,6 +12,12 @@ type AsyncCompleteArgs = ref object
   status: GeneStatus
   completed: bool
 
+type AsyncCancelArgs = ref object
+  taskRoot: GeneRoot
+  scope: Scope
+  status: GeneStatus
+  cancelled: bool
+
 proc completeTaskOnWorker(args: AsyncCompleteArgs) {.thread.} =
   {.cast(gcsafe).}:
     let attachment = geneAttachThread()
@@ -20,6 +26,15 @@ proc completeTaskOnWorker(args: AsyncCompleteArgs) {.thread.} =
                                   args.scope)
     args.status = result.status
     args.completed = result.value == TRUE
+    geneDetachThread(attachment)
+
+proc cancelTaskOnWorker(args: AsyncCancelArgs) {.thread.} =
+  {.cast(gcsafe).}:
+    let attachment = geneAttachThread()
+    os.sleep(10)
+    let result = geneTaskCancel(geneRootGet(args.taskRoot), args.scope)
+    args.status = result.status
+    args.cancelled = result.value == TRUE
     geneDetachThread(attachment)
 
 suite "native api threaded attachment":
@@ -64,4 +79,20 @@ suite "native api threaded attachment":
     check args.status == gsOk
     check args.completed
     geneRootRelease(args.valueRoot)
+    geneRootRelease(args.taskRoot)
+
+  test "foreign thread can cancel a native async task awaited at root":
+    let scope = newGlobalScope()
+    let task = geneNewAsyncTask()
+    scope.define("pending", task)
+    let args = AsyncCancelArgs(taskRoot: geneRoot(task), scope: scope)
+
+    var worker: Thread[AsyncCancelArgs]
+    createThread(worker, cancelTaskOnWorker, args)
+    expect GeneCancel:
+      discard run(compileSource("(await pending)"), scope)
+    joinThread(worker)
+
+    check args.status == gsOk
+    check args.cancelled
     geneRootRelease(args.taskRoot)

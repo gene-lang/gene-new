@@ -5127,6 +5127,14 @@ proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
     if result:
       wakeTaskWaiters(task)
 
+proc nativeTaskCancel*(task: Value, scope: Scope = nil): bool =
+  withScopedScheduler(scope):
+    if task.kind != vkTask:
+      raise newException(GeneError, "native task cancel expects a Task")
+    result = tryCancelTask(task)
+    if result:
+      wakeTaskWaiters(task)
+
 proc taskBoundaryScopeOr(task: Value, fallback: Scope = nil): Scope =
   let boundaryScope = task.taskBoundaryScope
   if boundaryScope == nil: fallback else: boundaryScope

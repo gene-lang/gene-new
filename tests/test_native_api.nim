@@ -262,6 +262,21 @@ suite "native api — roots and trampoline":
       check e.errVal.print() == "\"detail\""
     api.rootRelease(errorRoot)
 
+    let cancelledTask = api.newAsyncTask()
+    scope.define("cancelled-task", cancelledTask)
+    let cancelled = api.taskCancel(cancelledTask, scope)
+    check cancelled.status == gsOk
+    check cancelled.value == TRUE
+    expect GeneCancel:
+      discard run(compileSource("(await cancelled-task)"), scope)
+    let cancelAgain = api.taskCancel(cancelledTask, scope)
+    check cancelAgain.status == gsOk
+    check cancelAgain.value == FALSE
+
+    let invalidCancel = api.taskCancel(newInt(1), scope)
+    check invalidCancel.status == gsError
+    check invalidCancel.message.contains("native task cancel expects a Task")
+
   test "versioned API table exposes rooted callback handles":
     let api = geneApi()
     let scope = newGlobalScope()
