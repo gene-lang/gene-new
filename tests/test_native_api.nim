@@ -220,6 +220,8 @@ suite "native api — roots and trampoline":
     let actorSent = api.actorTrySend(actor, msgRoot, scope)
     check actorSent.status == gsOk
     check actorSent.value == TRUE
+    check actor.actorState.print() == "0"
+    discard run(compileSource("(sleep 1)"), scope)
     check actor.actorState.print() == "5"
     api.rootRelease(msgRoot)
 

@@ -1371,6 +1371,17 @@ suite "spec — actors from design":
                "(out ~ Cell/get)",
                "7")
 
+  test "actor try-send returns immediately":
+    check_eval("(var gate (channel ^capacity 1)) " &
+               "(var seen (cell 0)) " &
+               "(var a (actor/spawn ^init (fn [] 0) " &
+               "  ^handle (fn [ctx state msg] " &
+               "    (gate ~ Channel/recv) " &
+               "    (seen ~ Cell/set msg) " &
+               "    (actor/continue msg)))) " &
+               "[(a ~ actor/try-send 7) (seen ~ Cell/get)]",
+               "[true 0]")
+
   test "actor snapshots expose idle state metadata":
     check_eval("(fn handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
                "  (actor/continue (+ state msg))) " &

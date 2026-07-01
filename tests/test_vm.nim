@@ -2030,6 +2030,29 @@ suite "vm — actors":
        "(out ~ Cell/get)",
        "7"
 
+  test "actor try-send returns before running the handler":
+    ck "(var gate (channel ^capacity 1)) " &
+       "(var seen (cell 0)) " &
+       "(var a (actor/spawn ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg] " &
+       "    (gate ~ Channel/recv) " &
+       "    (seen ~ Cell/set msg) " &
+       "    (actor/continue msg)))) " &
+       "[(a ~ actor/try-send 7) (seen ~ Cell/get)]",
+       "[true 0]"
+    ck "(var gate (channel ^capacity 1)) " &
+       "(var seen (cell 0)) " &
+       "(var a (actor/spawn ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg] " &
+       "    (gate ~ Channel/recv) " &
+       "    (seen ~ Cell/set msg) " &
+       "    (actor/continue msg)))) " &
+       "(a ~ actor/try-send 7) " &
+       "(gate ~ Channel/send 1) " &
+       "(sleep 1) " &
+       "(seen ~ Cell/get)",
+       "7"
+
   test "actor stop closes the actor":
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &

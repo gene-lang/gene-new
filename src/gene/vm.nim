@@ -1584,8 +1584,6 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   if not pushed.pushed:
     return FALSE
   scheduleActor(args[0], scope)
-  if not currentFiberActive:
-    driveActor(args[0])
   TRUE
 
 proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
@@ -1599,8 +1597,6 @@ proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
     if not pushed.pushed:
       return false
     scheduleActor(actor, scope)
-    if not currentFiberActive:
-      driveActor(actor)
     true
 
 proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
