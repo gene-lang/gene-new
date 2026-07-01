@@ -1717,6 +1717,15 @@ suite "vm — cooperative scheduler":
       discard runStr("(scope (var ch (channel ^capacity 1)) " &
                      "  (spawn (ch ~ Channel/recv)) " &
                      "  nil)")
+    ck "(var ch (channel ^capacity 1)) " &
+       "(var out (cell 0)) " &
+       "(try (scope " &
+       "       (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 1))) " &
+       "       nil) " &
+       "  catch {^message m} m) " &
+       "(ch ~ Channel/send 1) " &
+       "(sleep 1) " &
+       "(out ~ Cell/get)", "0"
   test "task scope error exit cancels pending child tasks":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error Boom) " &

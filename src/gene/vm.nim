@@ -351,11 +351,16 @@ proc cancelOwnedTasks(scope: Scope) =
 proc waitOwnedTasks(scope: Scope) =
   if scope.ownedTasks.len == 0:
     return
-  for i in 0 ..< scope.ownedTasks.len:
-    let task = scope.ownedTasks[i]
-    if task.kind == vkTask and not task.taskDone:
-      pumpUntilDone(task)
-  scope.ownedTasks.setLen(0)
+  try:
+    for i in 0 ..< scope.ownedTasks.len:
+      let task = scope.ownedTasks[i]
+      if task.kind == vkTask and not task.taskDone:
+        pumpUntilDone(task)
+  except CatchableError:
+    scope.cancelOwnedTasks()
+    raise
+  finally:
+    scope.ownedTasks.setLen(0)
 
 proc closeOwnedActors(scope: Scope) =
   if scope.ownedActors.len == 0:
