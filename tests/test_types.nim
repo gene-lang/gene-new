@@ -1250,6 +1250,14 @@ proc ffiTestSliceFirstByte(data: pointer, len: csize_t): cint {.cdecl.} =
   else:
     cint(cast[ptr uint8](data)[])
 
+proc ffiTestBufferFill(data: pointer, len: csize_t) {.cdecl.} =
+  if data == nil:
+    return
+  let bytes = cast[ptr UncheckedArray[uint8]](data)
+  if len > 0: bytes[0] = 90'u8
+  if len > 1: bytes[1] = 91'u8
+  if len > 2: bytes[2] = 92'u8
+
 proc ffiTestSliceLenI32(data: pointer, len: csize_t): int32 {.cdecl.} =
   if data == nil: -1'i32 else: int32(len) + 5'i32
 
@@ -4725,6 +4733,13 @@ suite "types — function boundaries":
                                   @[newNode(newSym("Buffer"),
                                             body = @[newSym("C/UInt8")])],
                                   newSym("C/Int")))
+      scope.define("buffer-fill",
+                   newFfiCallable("ffiTestBufferFill",
+                                  "ffiTestBufferFill",
+                                  cast[pointer](ffiTestBufferFill), lib,
+                                  @[newNode(newSym("Buffer"),
+                                            body = @[newSym("C/UInt8")])],
+                                  newSym("C/Void")))
       scope.define("buffer-len-i32",
                    newFfiCallable("ffiTestSliceLenI32",
                                   "ffiTestSliceLenI32",
@@ -6638,6 +6653,8 @@ suite "types — function boundaries":
                 scope).print() == "3"
       check run(compileSource("(buffer-first-byte byte-buffer)"),
                 scope).print() == "65"
+      check run(compileSource("(buffer-fill byte-buffer) (Buffer/to_list byte-buffer)"),
+                scope).print() == "[90 91 92]"
       check run(compileSource("(buffer-len-i32 byte-buffer)"),
                 scope).print() == "8"
       check run(compileSource("(buffer-len-i16 byte-buffer)"),
