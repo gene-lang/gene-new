@@ -1580,7 +1580,8 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     return FALSE
   let scope = actorDispatchScope(call)
   let pushed = args[0].tryPushActorMessage(checkedActorMessage(args[0], args[1],
-                                               "actor/try-send message", scope))
+                                               "actor/try-send message", scope),
+                                             workerAllowed = true)
   if not pushed.pushed:
     return FALSE
   scheduleActor(args[0], scope)
@@ -1593,7 +1594,8 @@ proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
     if state.closed or state.full:
       return false
     let pushed = actor.tryPushActorMessage(checkedActorMessage(actor, message,
-                                               "native actor message", scope))
+                                               "native actor message", scope),
+                                             workerAllowed = true)
     if not pushed.pushed:
       return false
     scheduleActor(actor, scope)
@@ -2752,6 +2754,13 @@ proc biSleep(args: openArray[Value]): Value {.nimcall.} =
   if milliseconds < 0:
     raise newException(GeneError, "sleep duration must be non-negative")
   if milliseconds == 0:
+    if currentFiberActive:
+      var se: ref SuspendError
+      new(se)
+      se.timer = true
+      se.deadline = getMonoTime()
+      raise se
+    discard schedulerRunOne(skipWorkerSafe = false)
     return NIL
   let deadline = timerDeadline(milliseconds)
   if currentFiberActive:
@@ -7954,7 +7963,8 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   let args = [newActorContext(actor), state, item.message]
   let bound = bindCallScope(handler, proto, args, NamedArgs())
   let workerSafe =
-    actorFiberWorkerSafe(actor, handler, state, item.message, item.reply, scope)
+    item.workerAllowed and actorFiberWorkerSafe(actor, handler, state,
+                                                item.message, item.reply, scope)
   if workerSafe:
     publishSpawnCapture(bound.scope, proto.chunk)
   Fiber(chunk: proto.chunk, scope: bound.scope, recycleScope: proto.poolCallScope,

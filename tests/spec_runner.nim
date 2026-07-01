@@ -1189,6 +1189,12 @@ suite "spec — structured tasks from design":
                "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
                "[2 1 1]")
 
+  test "zero-duration sleep yields a scheduler turn":
+    check_eval("(var out (cell 0)) " &
+               "(spawn (out ~ Cell/set 1)) " &
+               "[(out ~ Cell/get) (sleep 0) (out ~ Cell/get)]",
+               "[0 nil 1]")
+
   test "scope normal exit waits for live child tasks":
     check_eval("(var out (cell 0)) " &
                "(scope (var ch (channel ^capacity 1)) " &
@@ -1379,7 +1385,10 @@ suite "spec — actors from design":
                "    (gate ~ Channel/recv) " &
                "    (seen ~ Cell/set msg) " &
                "    (actor/continue msg)))) " &
-               "[(a ~ actor/try-send 7) (seen ~ Cell/get)]",
+               "(var before [(a ~ actor/try-send 7) (seen ~ Cell/get)]) " &
+               "(gate ~ Channel/send 1) " &
+               "(sleep 0) " &
+               "before",
                "[true 0]")
 
   test "actor snapshots expose idle state metadata":

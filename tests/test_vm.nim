@@ -1678,6 +1678,13 @@ suite "vm — cooperative scheduler":
        "  (await fast) " &
        "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
        "[2 1 1]"
+
+  test "sleep zero yields one scheduler turn":
+    ck "(var out (cell 0)) " &
+       "(spawn (out ~ Cell/set 1)) " &
+       "[(out ~ Cell/get) (sleep 0) (out ~ Cell/get)]",
+       "[0 nil 1]"
+
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch (channel ^capacity 1)) " &
        "  (spawn (do (sleep 5) (ch ~ Channel/send 7))) " &
@@ -2038,7 +2045,10 @@ suite "vm — actors":
        "    (gate ~ Channel/recv) " &
        "    (seen ~ Cell/set msg) " &
        "    (actor/continue msg)))) " &
-       "[(a ~ actor/try-send 7) (seen ~ Cell/get)]",
+       "(var before [(a ~ actor/try-send 7) (seen ~ Cell/get)]) " &
+       "(gate ~ Channel/send 1) " &
+       "(sleep 0) " &
+       "before",
        "[true 0]"
     ck "(var gate (channel ^capacity 1)) " &
        "(var seen (cell 0)) " &
@@ -2049,7 +2059,7 @@ suite "vm — actors":
        "    (actor/continue msg)))) " &
        "(a ~ actor/try-send 7) " &
        "(gate ~ Channel/send 1) " &
-       "(sleep 1) " &
+       "(sleep 0) " &
        "(seen ~ Cell/get)",
        "7"
 

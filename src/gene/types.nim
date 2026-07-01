@@ -430,6 +430,7 @@ type
   ActorMessage* = object
     message*: Value
     reply*: Value
+    workerAllowed*: bool
 
   ActorLifecycle = ref object
     closed: bool
@@ -2420,16 +2421,20 @@ proc pushActorMessage*(v, message: Value) =
   let stored = escapeWeakFunctions(message)
   let data = actorData(v)
   withActorLock(data):
-    data.queue.add ActorMessage(message: stored, reply: NIL)
+    data.queue.add ActorMessage(message: stored, reply: NIL,
+                                workerAllowed: false)
 
 proc pushActorMessage*(v, message, reply: Value) =
   let stored = escapeWeakFunctions(message)
   let data = actorData(v)
   withActorLock(data):
-    data.queue.add ActorMessage(message: stored, reply: reply)
+    data.queue.add ActorMessage(message: stored, reply: reply,
+                                workerAllowed: true)
 
-proc tryPushActorMessage*(v, message: Value): tuple[pushed: bool, closed: bool,
-                                                    full: bool] =
+proc tryPushActorMessage*(v, message: Value,
+                          workerAllowed = false): tuple[pushed: bool,
+                                                        closed: bool,
+                                                        full: bool] =
   let stored = escapeWeakFunctions(message)
   let data = actorData(v)
   withActorLock(data):
@@ -2438,7 +2443,8 @@ proc tryPushActorMessage*(v, message: Value): tuple[pushed: bool, closed: bool,
     elif data.queue.len + data.reservedMessages >= data.capacity:
       result.full = true
     else:
-      data.queue.add ActorMessage(message: stored, reply: NIL)
+      data.queue.add ActorMessage(message: stored, reply: NIL,
+                                  workerAllowed: workerAllowed)
       result.pushed = true
 
 proc tryPushActorMessage*(v, message, reply: Value): tuple[pushed: bool,
@@ -2452,7 +2458,8 @@ proc tryPushActorMessage*(v, message, reply: Value): tuple[pushed: bool,
     elif data.queue.len + data.reservedMessages >= data.capacity:
       result.full = true
     else:
-      data.queue.add ActorMessage(message: stored, reply: reply)
+      data.queue.add ActorMessage(message: stored, reply: reply,
+                                  workerAllowed: true)
       result.pushed = true
 
 proc tryReserveActorMessage*(v: Value): tuple[reserved: bool, closed: bool,
@@ -2483,7 +2490,8 @@ proc commitReservedActorMessage*(v, message, reply: Value): tuple[pushed: bool,
     if data.lifecycle.closed:
       result.closed = true
     else:
-      data.queue.add ActorMessage(message: stored, reply: reply)
+      data.queue.add ActorMessage(message: stored, reply: reply,
+                                  workerAllowed: true)
       result.pushed = true
 
 proc popActorMessage*(v: Value): ActorMessage =
@@ -3408,7 +3416,8 @@ proc escapeWeakFunctions*(v: Value): Value =
       let escapedMessage = escapeWeakFunctions(item.message)
       let escapedReply = escapeWeakFunctions(item.reply)
       escapedQueue[i] = ActorMessage(message: escapedMessage,
-                                     reply: escapedReply)
+                                     reply: escapedReply,
+                                     workerAllowed: item.workerAllowed)
       if escapedMessage.bits != item.message.bits or
           escapedReply.bits != item.reply.bits:
         changed = true

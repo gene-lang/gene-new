@@ -252,6 +252,14 @@ suite "threaded scheduler workers":
         "(seen ~ AtomicCell/load)"), scope).print() == "42"
       check seenThreadCount() >= 1
 
+  test "root actor send errors stay on root lane":
+    withGeneWorkers:
+      expect GeneError:
+        discard run(compileSource(
+          "(var a (actor/spawn ^init (fn [] 0) " &
+          "  ^handle (fn [ctx state msg] 99))) " &
+          "(a ~ actor/send 1)"), newGlobalScope())
+
   test "worker-candidate snapshots publish cloned closures":
     withGeneWorkerSetting "8":
       ck "(scope " &

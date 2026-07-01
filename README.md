@@ -132,6 +132,8 @@ participates in equality or hashing.
 > scheduler: `spawn` queues a task body, scheduled fibers yield at VM safepoints,
 > blocking channel ops, actor mailbox send/ask, `await`, and `sleep` park only
 > the current task, and timers wake parked tasks on monotonic deadlines.
+> `sleep 0` is a zero-delay scheduler yield: it gives one queued task a chance
+> to run without waiting for a timer deadline.
 > `Channel/send`/`Channel/recv`, timers, and actor mailbox backpressure suspend
 > and resume the whole task by capturing its heap frame stack. `actor/ask
 > ^timeout-ms N` fails the pending request with `ActorError` if no reply arrives
