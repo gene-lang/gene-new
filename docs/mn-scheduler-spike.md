@@ -24,9 +24,10 @@ bounded worker lease by default in `--mm:atomicArc --threads:on` builds.
 `GENE_WORKERS=N` overrides the worker count, and `GENE_WORKERS=0` disables the
 worker lane. That lane lets OS worker threads consume snapshot-isolated worker
 candidates while unsafe shared-scope work remains on the cooperative root lane;
-root waits also help drain worker candidates once cooperative-only work is
-exhausted, then wait on scheduler progress notifications instead of fixed
-polling while workers own active progress.
+nested runtime entries can grow an already-running lease when they request a
+larger worker count. Root waits also help drain worker candidates once
+cooperative-only work is exhausted, then wait on scheduler progress
+notifications instead of fixed polling while workers own active progress.
 Worker candidates are leaf-like: bytecode/runtime eligibility rejects bodies and
 reachable captured functions that contain nested `spawn`. A threaded `atomicArc`
 smoke gate now covers value operations, VM behavior, worker-candidate execution
@@ -112,14 +113,14 @@ Notes:
 3. **Scheduler structures need production orchestration.** The runnable/wait/
    timeout queues are now per-`Application` and lock-backed, and task/channel/
    actor interiors have local locks. The bounded worker lane consumes only
-   snapshot-isolated candidates, root waits help drain those candidates once
-   cooperative-only work is exhausted, idle workers use condition-variable
-   wakeups rather than fixed polling, worker-candidate timers wake parked
-   workers, root waits block on scheduler progress notifications while workers
-   own active progress, and worker-owned fibers stay visible to root
-   deadlock/cancellation checks while active. M:N still needs production
-   lifecycle, work stealing, richer timer/I/O ownership, async I/O integration,
-   and publication rules. `runStackPool`,
+   snapshot-isolated candidates, nested leases can grow the running worker pool,
+   root waits help drain those candidates once cooperative-only work is
+   exhausted, idle workers use condition-variable wakeups rather than fixed
+   polling, worker-candidate timers wake parked workers, root waits block on
+   scheduler progress notifications while workers own active progress, and
+   worker-owned fibers stay visible to root deadlock/cancellation checks while
+   active. M:N still needs production lifecycle, work stealing, richer timer/I/O
+   ownership, async I/O integration, and publication rules. `runStackPool`,
    `callScopePool`, and active scheduler context remain per-thread caches/context.
 
 4. **Publishing / `Send` boundary.** Channel sends, actor messages/replies, and
@@ -154,6 +155,7 @@ Notes:
   worker-candidate fibers from the shared scheduler queue during root execution
   and root waits. AtomicArc threaded builds start the lease by default, with
   `GENE_WORKERS=N` for explicit sizing and `GENE_WORKERS=0` for disabling it.
+  Nested leases can grow an already-running pool when they request more workers.
   Idle worker parking now uses scheduler condition-variable wakeups, root waits
   help with worker candidates and then wait on scheduler progress notifications,
   and worker-candidate timers wake parked workers.

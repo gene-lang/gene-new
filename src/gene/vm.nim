@@ -8145,24 +8145,31 @@ when compileOption("threads") and defined(gcAtomicArc):
         finally:
           markSchedulerWorkerInactive(s, ctx.slot, f)
 
+  proc growSchedulerWorkersUnlocked(s: SchedulerState, workerCount: int) =
+    let oldCount = s.workers.len
+    if workerCount <= oldCount:
+      return
+    s.activeWorkerFibers.setLen(workerCount)
+    s.workerContexts.setLen(workerCount)
+    s.workers.setLen(workerCount)
+    for i in oldCount ..< workerCount:
+      let ctx = SchedulerWorkerContext(scheduler: s, slot: i)
+      s.workerContexts[i] = ctx
+      createThread(s.workers[i], schedulerWorkerLoop, ctx)
+
   proc startSchedulerWorkers(s: SchedulerState): bool =
     withSchedulerLock(s):
+      let workerCount = configuredSchedulerWorkers()
       if s.workersStarted:
+        s.growSchedulerWorkersUnlocked(workerCount)
         inc s.workerLeaseCount
         return true
-      let workerCount = configuredSchedulerWorkers()
       if workerCount <= 0:
         return false
       s.workerStop = false
-      s.activeWorkerFibers = newSeq[Fiber](workerCount)
-      s.workerContexts.setLen(workerCount)
-      s.workers.setLen(workerCount)
       s.workersStarted = true
       s.workerLeaseCount = 1
-      for i in 0 ..< workerCount:
-        let ctx = SchedulerWorkerContext(scheduler: s, slot: i)
-        s.workerContexts[i] = ctx
-        createThread(s.workers[i], schedulerWorkerLoop, ctx)
+      s.growSchedulerWorkersUnlocked(workerCount)
       true
 
   proc stopSchedulerWorkers(s: SchedulerState) =

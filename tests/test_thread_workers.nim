@@ -1,5 +1,65 @@
 import gene/[compiler, printer, types, vm]
-import std/[os, unittest]
+import std/[locks, os, sets, unittest]
+
+var probeLock: Lock
+var probeLockReady = false
+var probeNextThread = 0
+var probeSeenThreads = initHashSet[int]()
+var probeThreadId {.threadvar.}: int
+
+proc ensureProbeLock() =
+  if not probeLockReady:
+    initLock(probeLock)
+    probeLockReady = true
+
+proc resetThreadProbe() =
+  ensureProbeLock()
+  acquire(probeLock)
+  try:
+    probeNextThread = 0
+    probeSeenThreads.clear()
+  finally:
+    release(probeLock)
+
+proc seenThreadCount(): int =
+  acquire(probeLock)
+  try:
+    result = probeSeenThreads.len
+  finally:
+    release(probeLock)
+
+proc biRecordThread(args: openArray[Value]): Value {.nimcall.} =
+  let sleepMs = if args.len > 0 and args[0].kind == vkInt: int(args[0].intVal) else: 1
+  ensureProbeLock()
+  acquire(probeLock)
+  try:
+    if probeThreadId == 0:
+      inc probeNextThread
+      probeThreadId = probeNextThread
+    probeSeenThreads.incl(probeThreadId)
+  finally:
+    release(probeLock)
+  os.sleep(sleepMs)
+  NIL
+
+proc biResizeAndRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let workerCount =
+    if args.len > 0 and args[0].kind == vkInt: args[0].intVal else: 1
+  putEnv("GENE_WORKERS", $workerCount)
+  let src =
+    "(scope " &
+    "  (fn work [] (record-thread 20)) " &
+    "  (var a (spawn (work))) " &
+    "  (var b (spawn (work))) " &
+    "  (var c (spawn (work))) " &
+    "  (var d (spawn (work))) " &
+    "  (var e (spawn (work))) " &
+    "  (var f (spawn (work))) " &
+    "  (var g (spawn (work))) " &
+    "  (var h (spawn (work))) " &
+    "  (await a) (await b) (await c) (await d) " &
+    "  (await e) (await f) (await g) (await h))"
+  run(compileSource(src), call[].dispatchScope)
 
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
@@ -36,6 +96,17 @@ suite "threaded scheduler workers":
         "t"), newGlobalScope())
       check task.kind == vkTask
       check not task.taskDone
+
+  test "nested worker leases can grow the running pool":
+    resetThreadProbe()
+    let scope = newGlobalScope()
+    scope.define("record-thread", newNativeFn("record-thread", biRecordThread))
+    scope.define("resize-and-run", newNativeCallFn("resize-and-run",
+                                                   biResizeAndRun,
+                                                   acceptsNamed = false))
+    withGeneWorkerSetting "1":
+      discard run(compileSource("(resize-and-run 4)"), scope)
+    check seenThreadCount() >= 3
 
   test "worker leases keep application scheduler queues isolated":
     let app1 = newApplication()
