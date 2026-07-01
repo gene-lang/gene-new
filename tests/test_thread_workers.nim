@@ -37,6 +37,37 @@ suite "threaded scheduler workers":
       check task.kind == vkTask
       check not task.taskDone
 
+  test "worker leases keep application scheduler queues isolated":
+    let app1 = newApplication()
+    let scope1 = newGlobalScope(app1)
+    let ch = run(compileSource("(channel ^capacity 1)"), scope1)
+    scope1.define("ch", ch)
+    var pending: Value
+    withGeneWorkerSetting "0":
+      pending = run(compileSource("(spawn (ch ~ Channel/send 42))"), scope1)
+    check pending.kind == vkTask
+    check not pending.taskDone
+    check ch.channelLen == 0
+
+    withGeneWorkerSetting "2":
+      let app2 = newApplication()
+      let scope2 = newGlobalScope(app2)
+      let other = run(compileSource(
+        "(var t (spawn 99)) " &
+        "(var i 0) " &
+        "(while (< i 200000) (set i (+ i 1))) " &
+        "t"), scope2)
+      check other.kind == vkTask
+      check other.taskDone
+
+    check ch.channelLen == 0
+    check not pending.taskDone
+    scope1.define("pending", pending)
+    withGeneWorkerSetting "2":
+      check run(compileSource("(await pending)"), scope1).kind == vkNil
+    check pending.taskDone
+    check ch.channelLen == 1
+
   test "high worker counts do not false-deadlock task await chains":
     withGeneWorkerSetting "8":
       ck "(scope (var ch (channel ^capacity 1)) " &
