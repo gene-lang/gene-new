@@ -8520,6 +8520,8 @@ when compileOption("threads") and defined(gcAtomicArc):
       broadcast(s.workerCond)
 
   proc runAsyncIoRequest(req: AsyncIoRequest) =
+    if req.task.kind == vkTask and req.task.taskDone:
+      return
     case req.kind
     of aioReadText:
       try:

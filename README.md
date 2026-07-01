@@ -176,7 +176,8 @@ participates in equality or hashing.
 > bounded TCP connect/read with explicit `Net/Connect` authority. The worker
 > async-I/O queue is bounded by `GENE_ASYNC_IO_MAX_QUEUE` (default 1024); a full
 > queue returns a failed task so producers receive an explicit backpressure
-> signal.
+> signal. Cancelling a queued async-I/O task settles it as cancelled and workers
+> skip the stale queued request when they reach it.
 > Root-level `await` still drives the run queue until the task settles.
 > Structured scopes wait for live child tasks on normal exit, cancel children on
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.

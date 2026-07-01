@@ -50,6 +50,15 @@ proc sendTcpPayloadOnce(server: Socket) {.thread.} =
   client.close()
   server.close()
 
+proc sendDelayedTcpPayloadOnce(server: Socket) {.thread.} =
+  var client: owned(Socket)
+  var address = ""
+  server.acceptAddr(client, address)
+  os.sleep(100)
+  client.send("worker release")
+  client.close()
+  server.close()
+
 proc biResizeAndRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let workerCount =
     if args.len > 0 and args[0].kind == vkInt: args[0].intVal else: 1
@@ -525,6 +534,31 @@ suite "threaded scheduler workers":
         "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
         "[1 \"worker tcp\"]"
     joinThread(serverThread)
+
+  test "cancelled queued worker-backed async write is skipped":
+    let server = newSocket()
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let port = int(server.getLocalAddr()[1])
+    var serverThread: Thread[Socket]
+    createThread(serverThread, sendDelayedTcpPayloadOnce, server)
+    let path = getTempDir() / "gene-threaded-cancelled-queued-write-test.txt"
+    defer:
+      if fileExists(path):
+        removeFile(path)
+    let scope = newGlobalScope()
+    scope.define("port", newInt(port))
+    scope.define("path", newStr(path))
+    withGeneWorkerSetting "1":
+      check run(compileSource(
+        "(scope " &
+        "  (var blocker (Net/tcp-read-text-async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+        "  (var write-task (Fs/write-text-async Fs/WriteDir path \"cancelled write\")) " &
+        "  (write-task ~ Task/cancel) " &
+        "  (await blocker))"), scope).print() ==
+        "\"worker release\""
+    joinThread(serverThread)
+    check not fileExists(path)
 
   test "worker-candidate task errors wake root awaiters":
     withGeneWorkerSetting "8":
