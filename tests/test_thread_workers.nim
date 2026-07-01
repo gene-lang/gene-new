@@ -59,6 +59,18 @@ proc sendDelayedTcpPayloadOnce(server: Socket) {.thread.} =
   client.close()
   server.close()
 
+type TcpReceiveArgs = ref object
+  server: Socket
+  payload: string
+
+proc receiveTcpPayloadOnce(args: TcpReceiveArgs) {.thread.} =
+  var client: owned(Socket)
+  var address = ""
+  args.server.acceptAddr(client, address)
+  args.payload = client.recv(64, 1000)
+  client.close()
+  args.server.close()
+
 proc biResizeAndRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let workerCount =
     if args.len > 0 and args[0].kind == vkInt: args[0].intVal else: 1
@@ -534,6 +546,28 @@ suite "threaded scheduler workers":
         "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
         "[1 \"worker tcp\"]"
     joinThread(serverThread)
+
+  test "root await drives worker-backed async tcp write":
+    let server = newSocket()
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let port = int(server.getLocalAddr()[1])
+    let receiveArgs = TcpReceiveArgs(server: server)
+    var serverThread: Thread[TcpReceiveArgs]
+    createThread(serverThread, receiveTcpPayloadOnce, receiveArgs)
+    let scope = newGlobalScope()
+    scope.define("port", newInt(port))
+    withGeneWorkerSetting "2":
+      check run(compileSource(
+        "(scope " &
+        "  (var out (atomic-cell 0)) " &
+        "  (var write-task (Net/tcp-write-text-async Net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
+        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (await marker) " &
+        "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
+        "[1 nil]"
+    joinThread(serverThread)
+    check receiveArgs.payload == "worker tcp write"
 
   test "cancelled queued worker-backed async write is skipped":
     let server = newSocket()

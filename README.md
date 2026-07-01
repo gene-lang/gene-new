@@ -80,8 +80,8 @@ participates in equality or hashing.
   native-module initializer lookup, and host-created `Ffi/Load` authority
   values, non-suspending rooted channel/actor send hooks for attached
   native code, native-created external-pending tasks with rooted
-  completion/failure settlement hooks, deterministic native callback handles,
-  and explicit native thread attachment before callback entry), experimental idle actor state
+  completion/failure/cancellation settlement hooks, deterministic native
+  callback handles, and explicit native thread attachment before callback entry), experimental idle actor state
   snapshots and handler upgrades for migration tooling,
   boxed `Buffer` values with checked element boundaries,
   explicit runtime FFI library loading through `ffi/open` and opaque
@@ -117,7 +117,9 @@ participates in equality or hashing.
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
   Module/root_namespace Module/name Module/path Module/meta Module/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
-  Stream/next Stream/close Task/cancel Task/detach sleep print println`).
+  Stream/next Stream/close Task/cancel Task/detach Fs/read-text-async
+  Fs/write-text-async Net/tcp-read-text-async Net/tcp-write-text-async sleep
+  print println`).
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
@@ -172,8 +174,9 @@ participates in equality or hashing.
 > async-I/O suspension hook for file/network/native operation backends. `Fs/read-text-async`
 > and `Fs/write-text-async` return tasks and, in threaded atomicArc builds with
 > workers enabled, perform text file I/O on the worker lane while the awaiting
-> Gene task is suspended. `Net/tcp-read-text-async` uses the same path for a
-> bounded TCP connect/read with explicit `Net/Connect` authority. The worker
+> Gene task is suspended. `Net/tcp-read-text-async` and
+> `Net/tcp-write-text-async` use the same path for bounded TCP connect/read and
+> connect/write operations with explicit `Net/Connect` authority. The worker
 > async-I/O queue is bounded by `GENE_ASYNC_IO_MAX_QUEUE` (default 1024); a full
 > queue returns a failed task so producers receive an explicit backpressure
 > signal. Cancelling a queued async-I/O task settles it as cancelled and workers

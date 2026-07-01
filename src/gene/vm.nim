@@ -143,6 +143,7 @@ type
     aioReadText
     aioWriteText
     aioTcpReadText
+    aioTcpWriteText
 
   AsyncIoEnqueueResult = enum
     aioUnavailable
@@ -299,6 +300,9 @@ proc enqueueAsyncWriteText(path, text: string,
                            task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
                              task: Value): AsyncIoEnqueueResult
+proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
+                              timeoutMs: int,
+                              task: Value): AsyncIoEnqueueResult
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
@@ -3059,6 +3063,22 @@ proc completedTcpReadTextTask(host: string, port, maxBytes,
   except CatchableError as e:
     newFailedTask("Net/tcp-read-text-async failed: " & e.msg)
 
+proc tcpWriteText(host: string, port: int, text: string, timeoutMs: int) =
+  let socket = newSocket()
+  try:
+    socket.connect(host, Port(port), timeoutMs)
+    socket.send(text)
+  finally:
+    socket.close()
+
+proc completedTcpWriteTextTask(host: string, port: int, text: string,
+                               timeoutMs: int): Value =
+  try:
+    tcpWriteText(host, port, text, timeoutMs)
+    newCompletedTask(NIL)
+  except CatchableError as e:
+    newFailedTask("Net/tcp-write-text-async failed: " & e.msg)
+
 proc asyncIoQueueFullTask(name: string): Value =
   newFailedTask(name & " failed: async I/O queue full")
 
@@ -3116,6 +3136,27 @@ proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
     completedTcpReadTextTask(host, port, maxBytes, timeoutMs)
   of aioQueueFull:
     asyncIoQueueFullTask("Net/tcp-read-text-async")
+
+proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 5:
+    raise newException(GeneError,
+      "Net/tcp-write-text-async expects 5 arguments, got " & $args.len)
+  requireNetConnect("Net/tcp-write-text-async", args[0])
+  requireString("Net/tcp-write-text-async host", args[1])
+  let host = args[1].strVal
+  let port = requirePort("Net/tcp-write-text-async port", args[2])
+  requireString("Net/tcp-write-text-async text", args[3])
+  let text = args[3].strVal
+  let timeoutMs = requirePositiveInt("Net/tcp-write-text-async timeout-ms",
+                                     args[4])
+  let task = newExternalTask()
+  case enqueueAsyncTcpWriteText(host, port, text, timeoutMs, task)
+  of aioQueued:
+    task
+  of aioUnavailable:
+    completedTcpWriteTextTask(host, port, text, timeoutMs)
+  of aioQueueFull:
+    asyncIoQueueFullTask("Net/tcp-write-text-async")
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -3349,6 +3390,9 @@ proc buildBuiltins(app: Application): Scope =
   netScope.define("tcp-read-text-async",
                   newNativeFn("Net/tcp-read-text-async",
                               biNetTcpReadTextAsync))
+  netScope.define("tcp-write-text-async",
+                  newNativeFn("Net/tcp-write-text-async",
+                              biNetTcpWriteTextAsync))
   result.define("Net", newNamespace("Net", netScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
@@ -5563,6 +5607,13 @@ proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
                              task: Value): AsyncIoEnqueueResult =
   enqueueAsyncIoRequest(AsyncIoRequest(kind: aioTcpReadText, host: host,
                                        port: port, maxBytes: maxBytes,
+                                       timeoutMs: timeoutMs, task: task))
+
+proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
+                              timeoutMs: int,
+                              task: Value): AsyncIoEnqueueResult =
+  enqueueAsyncIoRequest(AsyncIoRequest(kind: aioTcpWriteText, host: host,
+                                       port: port, text: text,
                                        timeoutMs: timeoutMs, task: task))
 
 proc inCancelCleanup(f: Fiber): bool =
@@ -8579,6 +8630,15 @@ when compileOption("threads") and defined(gcAtomicArc):
       except CatchableError as e:
         if tryFailTask(req.task,
                        "Net/tcp-read-text-async failed: " & e.msg):
+          wakeTaskWaiters(req.task)
+    of aioTcpWriteText:
+      try:
+        tcpWriteText(req.host, req.port, req.text, req.timeoutMs)
+        if tryCompleteTask(req.task, NIL):
+          wakeTaskWaiters(req.task)
+      except CatchableError as e:
+        if tryFailTask(req.task,
+                       "Net/tcp-write-text-async failed: " & e.msg):
           wakeTaskWaiters(req.task)
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
