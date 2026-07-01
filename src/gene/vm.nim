@@ -1103,6 +1103,7 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       if not workerLeaseOpen:
         workerLease = beginSchedulerWorkerLease()
         workerLeaseOpen = true
+      wakeChannelWaiters(args[0], wakeSenders = false)
       if not schedulerRunOneRoot(workerLease):
         raise newException(GeneError, "Channel/send would suspend on a full channel")
       continue
@@ -1168,6 +1169,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       if not workerLeaseOpen:
         workerLease = beginSchedulerWorkerLease()
         workerLeaseOpen = true
+      wakeChannelWaiters(args[0], wakeSenders = true)
       if not schedulerRunOneRoot(workerLease):
         raise newException(GeneError, "Channel/recv would suspend on an empty channel")
       continue
