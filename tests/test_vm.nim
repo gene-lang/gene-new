@@ -2240,6 +2240,11 @@ suite "vm — actors":
        "  (spawn (a ~ actor/send 5)) " &
        "  (sleep 1) " &
        "  (var event (events ~ Channel/recv)) " &
+       "  (var tries 0) " &
+       "  (while (< tries 100) " &
+       "    (if (= (seen ~ Cell/get) 0) " &
+       "      (do (sleep 1) (set tries (+ tries 1))) " &
+       "      (set tries 100))) " &
        "  [(seen ~ Cell/get) " &
        "   (match event " &
        "     (when (ActorFailure ^failed-message failed " &
@@ -2267,6 +2272,28 @@ suite "vm — actors":
        "                         ^strategy s) " &
        "       [failed m s]))])",
        "[\"busy\" [1 \"bad\" restart]]"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var events (channel ^capacity 1)) " &
+       "(var dead (channel ^capacity 1)) " &
+       "(events ~ Channel/send \"busy\") " &
+       "(dead ~ Channel/send \"dead-busy\") " &
+       "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+       "  (var a (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (fail (Boom ^message \"bad\"))))) " &
+       "  (a ~ actor/send 4) " &
+       "  (sleep 1) " &
+       "  (var dead-busy (dead ~ Channel/recv)) " &
+       "  (var event (dead ~ Channel/recv)) " &
+       "  (var busy (events ~ Channel/recv)) " &
+       "  [busy dead-busy " &
+       "   (match event " &
+       "     (when (ActorFailure ^failed-message failed " &
+       "                         ^error (Boom ^message m) " &
+       "                         ^strategy s) " &
+       "       [failed m s]))])",
+       "[\"busy\" \"dead-busy\" [4 \"bad\" restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error Boom) " &
        "(var events (channel ^capacity 1)) " &
