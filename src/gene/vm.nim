@@ -129,6 +129,9 @@ type
     waitTask: Value        # task the fiber is parked on, when suspended in `await`
     waitTimer: bool        # fiber is parked until `waitDeadline`
     waitDeadline: MonoTime
+    internalSendChannel: Value
+    internalSendValue: Value
+    internalSendScope: Scope
 
   AskTimeout = object
     task: Value
@@ -245,6 +248,7 @@ template currentFiberActive: untyped =
 # moving it from the wait list to the run queue. Defined with the scheduler below.
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
 proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool)
+proc enqueueRunnable(f: Fiber)
 
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
@@ -1256,36 +1260,74 @@ proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
     head = failureType
   newNode(head, props = props)
 
-proc tryEmitSupervisorFailure(sink, event: Value, scope: Scope): bool =
+type SupervisorEmitResult = enum
+  serDelivered
+  serFull
+  serUnavailable
+
+proc tryEmitSupervisorFailure(sink, event: Value,
+                              scope: Scope): SupervisorEmitResult =
   if sink.kind != vkChannel:
-    return false
+    return serUnavailable
   try:
     let state = sink.channelSendState()
-    if state.closed or state.full:
-      return false
+    if state.closed:
+      return serUnavailable
+    if state.full:
+      return serFull
     let pushed = sink.tryPushChannel(checkedChannelSendItem(sink, event,
                                             "supervisor failure event", scope))
     if not pushed.pushed:
-      return false
+      return serUnavailable
   except CatchableError:
-    return false
+    return serUnavailable
   wakeChannelWaiters(sink, wakeSenders = false)
-  true
+  serDelivered
+
+proc queueSupervisorFailure(sink, event: Value, scope: Scope) =
+  if sink.kind != vkChannel:
+    return
+  let task = newPendingTask()
+  let f = Fiber(scope: scope, task: task, actorOwner: NIL,
+                internalSendChannel: sink, internalSendValue: event,
+                internalSendScope: scope)
+  enqueueRunnable(f)
+
+proc emitOrQueueSupervisorFailure(sink, fallback, event: Value, scope: Scope) =
+  case tryEmitSupervisorFailure(sink, event, scope)
+  of serDelivered:
+    discard
+  of serFull:
+    if fallback.kind == vkChannel and not same(fallback, sink):
+      case tryEmitSupervisorFailure(fallback, event, scope)
+      of serDelivered:
+        discard
+      of serFull:
+        queueSupervisorFailure(fallback, event, scope)
+      of serUnavailable:
+        discard
+    else:
+      queueSupervisorFailure(sink, event, scope)
+  of serUnavailable:
+    if fallback.kind == vkChannel and not same(fallback, sink):
+      case tryEmitSupervisorFailure(fallback, event, scope)
+      of serDelivered:
+        discard
+      of serFull:
+        queueSupervisorFailure(fallback, event, scope)
+      of serUnavailable:
+        discard
 
 proc emitSupervisorFailure(actor, failedMessage: Value, scope: Scope,
                            message: string, errorValue: Value,
                            panic = false) =
   let event = supervisorFailureValue(scope, actor, failedMessage, message,
                                      errorValue, panic)
-  if tryEmitSupervisorFailure(actor.actorFailureEvents, event, scope):
-    discard
-  else:
-    discard tryEmitSupervisorFailure(actor.actorFailureDeadLetters, event, scope)
+  emitOrQueueSupervisorFailure(actor.actorFailureEvents,
+                               actor.actorFailureDeadLetters, event, scope)
   if actor.actorFailureStrategy == afsEscalate:
-    if tryEmitSupervisorFailure(actor.actorParentFailureEvents, event, scope):
-      return
-    discard tryEmitSupervisorFailure(actor.actorParentFailureDeadLetters, event,
-                                     scope)
+    emitOrQueueSupervisorFailure(actor.actorParentFailureEvents,
+      actor.actorParentFailureDeadLetters, event, scope)
 
 proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
                    hasValue = false): bool =
@@ -5217,8 +5259,6 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 const schedulerInstructionBudget = 2048
 const schedulerWorkerTimerPollMs = 1
 
-proc enqueueRunnable(f: Fiber)
-
 proc clearWaitReason(f: Fiber) =
   f.waitChannel = NIL
   f.waitActor = NIL
@@ -7960,6 +8000,42 @@ proc runFiber(f: Fiber) =
   ## failure strategy) and advances the actor to its next message. A parked fiber
   ## had its continuation captured by the dispatch loop, so just keep it on the
   ## wait list.
+  if f.internalSendChannel.kind == vkChannel:
+    try:
+      let state = f.internalSendChannel.channelSendState()
+      if state.closed:
+        completeTask(f.task, NIL)
+        wakeTaskWaiters(f.task)
+        return
+      if state.full:
+        f.waitChannel = f.internalSendChannel
+        f.waitActor = NIL
+        f.waitIsSend = true
+        f.waitSendValue = f.internalSendValue
+        f.waitTask = NIL
+        f.waitTimer = false
+        parkFiber(f)
+        return
+      let pushed = f.internalSendChannel.tryPushChannel(
+        checkedChannelSendItem(f.internalSendChannel, f.internalSendValue,
+                               "supervisor failure event", f.internalSendScope))
+      if pushed.pushed:
+        wakeChannelWaiters(f.internalSendChannel, wakeSenders = false)
+      elif not pushed.closed:
+        f.waitChannel = f.internalSendChannel
+        f.waitActor = NIL
+        f.waitIsSend = true
+        f.waitSendValue = f.internalSendValue
+        f.waitTask = NIL
+        f.waitTimer = false
+        parkFiber(f)
+        return
+      completeTask(f.task, NIL)
+      wakeTaskWaiters(f.task)
+    except CatchableError:
+      completeTask(f.task, NIL)
+      wakeTaskWaiters(f.task)
+    return
   if not f.started:
     f.scope.prepareChunkScope(f.chunk)
   var dummyStack: seq[Value]

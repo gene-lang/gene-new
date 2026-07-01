@@ -136,8 +136,9 @@ participates in equality or hashing.
 > and resume the whole task by capturing its heap frame stack. `actor/ask
 > ^timeout-ms N` fails the pending request with `ActorError` if no reply arrives
 > before the timer. `supervisor ^events ch` emits `ActorFailure` events for actor
-> handler failures, with optional `^dead-letter ch` fallback when the primary
-> event sink is unavailable.
+> handler failures, supports optional `^dead-letter ch` fallback when the primary
+> event sink is closed, full, or rejects the event, and queues retryable delivery
+> when a full sink has no available fallback.
 > Spawned fibers publish their captured scope/value graph so threaded builds use
 > atomic RC for captured manual-RC values. Spawn bytecode also marks leaf-like
 > bodies that do not mutate outer bindings or contain nested `spawn` as worker

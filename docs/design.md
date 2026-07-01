@@ -1657,9 +1657,11 @@ the failing actor path. An event includes the actor reference, failed message,
 error value, display message, panic flag, and active supervisor strategy. A
 supervisor may also be given `^dead-letter channel`; when the primary event
 channel is closed, full, or rejects the event, the runtime attempts to write the
-same `ActorFailure` to the dead-letter channel. If both channels are unavailable,
-the MVP drops the event rather than masking or blocking failure handling;
-stronger delivery and backpressure policies are future runtime work.
+same `ActorFailure` to the dead-letter channel. A full sink without an available
+fallback queues the failure for retry when channel space is freed. If both
+channels are unavailable, the MVP drops the event rather than masking or
+blocking failure handling; stronger durable delivery and explicit backpressure
+policies are future runtime work.
 
 Restart policy must define whether queued messages are retained, discarded, or moved to a dead-letter channel. The MVP default should discard the message that caused failure and retain later queued messages only for explicitly restartable actors.
 

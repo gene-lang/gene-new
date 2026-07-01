@@ -1,5 +1,5 @@
 import gene/[compiler, gir, printer, types, vm]
-import std/[strutils, unittest]
+import std/[os, strutils, unittest]
 
 template ck(src, expected: string) =
   ## Compile and run a program string, then compare its printed result.
@@ -7,6 +7,17 @@ template ck(src, expected: string) =
 
 template runStr(src: string): Value =
   run(compileSource(src), newGlobalScope())
+
+template withoutGeneWorkers(body: untyped) =
+  when compileOption("threads") and defined(gcAtomicArc):
+    let previousWorkers = getEnv("GENE_WORKERS")
+    putEnv("GENE_WORKERS", "0")
+    try:
+      body
+    finally:
+      putEnv("GENE_WORKERS", previousWorkers)
+  else:
+    body
 
 proc collectSpawnFlags(chunk: Chunk, flags: var seq[bool]) =
   if chunk == nil:
@@ -1626,27 +1637,28 @@ suite "vm — cooperative scheduler":
        "2"
 
   test "applications keep scheduler queues isolated":
-    let app1 = newApplication()
-    let scope1 = newGlobalScope(app1)
-    let ch = run(compileSource("(channel ^capacity 1)"), scope1)
-    scope1.define("ch", ch)
-    let pending = run(compileSource("(spawn (ch ~ Channel/send 1))"), scope1)
-    check pending.kind == vkTask
-    check not pending.taskDone
-    check ch.channelLen == 0
+    withoutGeneWorkers:
+      let app1 = newApplication()
+      let scope1 = newGlobalScope(app1)
+      let ch = run(compileSource("(channel ^capacity 1)"), scope1)
+      scope1.define("ch", ch)
+      let pending = run(compileSource("(spawn (ch ~ Channel/send 1))"), scope1)
+      check pending.kind == vkTask
+      check not pending.taskDone
+      check ch.channelLen == 0
 
-    let app2 = newApplication()
-    let scope2 = newGlobalScope(app2)
-    expect GeneError:
-      discard run(compileSource(
-        "(var ch (channel ^capacity 1)) (ch ~ Channel/recv)"), scope2)
+      let app2 = newApplication()
+      let scope2 = newGlobalScope(app2)
+      expect GeneError:
+        discard run(compileSource(
+          "(var ch (channel ^capacity 1)) (ch ~ Channel/recv)"), scope2)
 
-    check ch.channelLen == 0
-    check not pending.taskDone
-    scope1.define("pending", pending)
-    check run(compileSource("(await pending)"), scope1).kind == vkNil
-    check pending.taskDone
-    check ch.channelLen == 1
+      check ch.channelLen == 0
+      check not pending.taskDone
+      scope1.define("pending", pending)
+      check run(compileSource("(await pending)"), scope1).kind == vkNil
+      check pending.taskDone
+      check ch.channelLen == 1
 
   test "CPU-bound fibers yield at scheduler safepoints":
     ck "(scope (var out (cell 0)) " &
@@ -2183,6 +2195,24 @@ suite "vm — actors":
        "                         ^strategy s) " &
        "       [failed m s]))])",
        "[\"busy\" [1 \"bad\" restart]]"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
+       "(var events (channel ^capacity 1)) " &
+       "(events ~ Channel/send \"busy\") " &
+       "(supervisor ^strategy restart ^events events " &
+       "  (var a (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (fail (Boom ^message \"bad\"))))) " &
+       "  (a ~ actor/send 3) " &
+       "  (var busy (events ~ Channel/recv)) " &
+       "  (var event (events ~ Channel/recv)) " &
+       "  [busy " &
+       "   (match event " &
+       "     (when (ActorFailure ^failed-message failed " &
+       "                         ^error (Boom ^message m) " &
+       "                         ^strategy s) " &
+       "       [failed m s]))])",
+       "[\"busy\" [3 \"bad\" restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error Boom) " &
        "(var events (channel ^capacity 1)) " &
