@@ -2,11 +2,11 @@
 
 Status: **decision doc** (spike result plus staged implementation notes). Date:
 2026-06-28; updated 2026-06-30 for the default bounded worker lease.
-Branch context: `scheduler` (cooperative single-worker scheduler, channel/task/
-actor suspension, explicit `Task/cancel`, and error/cancel scope-exit child-task
-cancellation with cleanup plus normal-exit child waiting done; actor scope
-shutdown cancels pending asks and parked handlers; bounded worker-candidate OS
-worker lane started).
+Branch context: `main` (cooperative root scheduler with bounded
+worker-candidate OS worker lane, channel/task/actor suspension, explicit
+`Task/cancel`, and error/cancel scope-exit child-task cancellation with cleanup
+plus normal-exit child waiting done; actor scope shutdown cancels pending asks
+and parked handlers).
 
 Follow-up implementation note: scheduler run/wait/timeout queues have moved from
 raw `threadvar` storage into per-`Application` scheduler state with a lock, task
@@ -28,16 +28,17 @@ exhausted.
 Worker candidates are leaf-like: bytecode/runtime eligibility rejects bodies and
 reachable captured functions that contain nested `spawn`. A threaded `atomicArc`
 smoke gate now covers value operations, VM behavior, worker-candidate execution
-during root execution and root waits, cancellation/wait races at higher worker
-counts, and RC leak accounting, including typed task/channel and actor ask paths.
-This removes more runtime data-race classes and keeps ORC-object atomicity
-regressions visible, but it is still not production M:N: work stealing, async
-I/O, pinned lifecycle, and production semantics remain open. Idle worker threads
-park on a condition-variable wakeup when no worker-candidate fiber or worker
-timer is queued; worker-candidate timer waiters and `actor/ask` timeouts signal
-parked workers so eligible timeout progress is not tied only to root scheduler
-pumping. Worker-owned fibers are tracked while active so root deadlock detection
-and cancellation do not miss claimed work.
+during root execution and root waits, parked and active worker-candidate
+cancellation/wait races, higher worker counts, and RC leak accounting, including
+typed task/channel and actor ask paths. This removes more runtime data-race
+classes and keeps ORC-object atomicity regressions visible, but it is still not
+production M:N: work stealing, async I/O, pinned lifecycle, and production
+semantics remain open. Idle worker threads park on a condition-variable wakeup
+when no worker-candidate fiber or worker timer is queued; worker-candidate timer
+waiters and `actor/ask` timeouts signal parked workers so eligible timeout
+progress is not tied only to root scheduler pumping. Worker-owned fibers are
+tracked while active so root deadlock detection and cancellation do not miss
+claimed work.
 
 ## Goal
 
