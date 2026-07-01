@@ -8061,29 +8061,44 @@ when compileOption("threads") and defined(gcAtomicArc):
 
   proc markSchedulerWorkerInactive(s: SchedulerState, slot: int, f: Fiber) =
     withSchedulerLock(s):
+      var cleared = false
       if slot >= 0 and slot < s.activeWorkerFibers.len and
           s.activeWorkerFibers[slot] == f:
         s.activeWorkerFibers[slot] = nil
-        return
-      for i in 0 ..< s.activeWorkerFibers.len:
-        if s.activeWorkerFibers[i] == f:
-          s.activeWorkerFibers[i] = nil
-          break
+        cleared = true
+      else:
+        for i in 0 ..< s.activeWorkerFibers.len:
+          if s.activeWorkerFibers[i] == f:
+            s.activeWorkerFibers[i] = nil
+            cleared = true
+            break
+      if cleared:
+        broadcast(s.workerCond)
+
+  proc schedulerHasWorkerProgressUnlocked(s: SchedulerState): bool =
+    for f in s.activeWorkerFibers:
+      if f != nil:
+        return true
+    for f in s.runQueue:
+      if f.workerCandidate:
+        return true
+    for f in s.waiters:
+      if f.workerCandidate and f.waitTimer:
+        return true
+    for item in s.askTimeouts:
+      if item.task.kind == vkTask and not item.task.taskDone:
+        return true
 
   proc schedulerHasWorkerProgress(s: SchedulerState): bool =
     withSchedulerLock(s):
-      for f in s.activeWorkerFibers:
-        if f != nil:
-          return true
-      for f in s.runQueue:
-        if f.workerCandidate:
-          return true
-      for f in s.waiters:
-        if f.workerCandidate and f.waitTimer:
-          return true
-      for item in s.askTimeouts:
-        if item.task.kind == vkTask and not item.task.taskDone:
-          return true
+      result = s.schedulerHasWorkerProgressUnlocked()
+
+  proc waitForSchedulerWorkerProgressChange(s: SchedulerState): bool =
+    withSchedulerLock(s):
+      if not s.schedulerHasWorkerProgressUnlocked():
+        return false
+      wait(s.workerCond, s.lock)
+      true
 
   proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =
     for f in s.runQueue:
@@ -8194,8 +8209,11 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
   # worker-candidate queue instead of idling while OS workers own all candidates.
   if lease.active and schedulerRunOne(skipWorkerSafe = false):
     return true
+  when compileOption("threads") and defined(gcAtomicArc):
+    if lease.active and lease.scheduler != nil and
+        waitForSchedulerWorkerProgressChange(lease.scheduler):
+      return true
   if schedulerWorkerLeaseHasProgress(lease):
-    os.sleep(1)
     return true
   false
 

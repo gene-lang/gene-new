@@ -152,7 +152,8 @@ participates in equality or hashing.
 > count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. The
 > lease lets OS worker threads consume snapshot-isolated worker candidates while
 > unsafe shared-scope tasks stay on the cooperative root lane; root waits also
-> help drain worker candidates after cooperative-only work is exhausted.
+> help drain worker candidates after cooperative-only work is exhausted, then
+> wait on scheduler progress notifications while workers own active progress.
 > Worker-candidate timer waiters and `actor/ask` timeouts wake parked workers
 > so eligible timer progress is not tied only to root scheduler pumping.
 > Root-level `await` still drives the run queue until the task settles.
@@ -269,8 +270,9 @@ live parent scope. Unsafe shared-scope tasks remain cooperative. Threaded
 `atomicArc` smoke checks cover values, VM behavior, root-execution/root-wait
 worker-candidate execution, root-lane helping, timer wakeups, and RC leak
 accounting. Worker threads park on a condition-variable wakeup when no eligible
-work or timer exists, but worker orchestration remains experimental and limited
-to snapshot-isolated leaf candidates.
+work or timer exists, and root waits use the same progress notification path
+once worker candidates have been handed to the worker lane. Worker orchestration
+remains experimental and limited to snapshot-isolated leaf candidates.
 
 ## License
 
