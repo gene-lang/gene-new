@@ -186,9 +186,8 @@ participates in equality or hashing.
 > error/cancellation, and run `ensure` cleanup before cancellation is observed.
 > `Task/detach` explicitly removes a task from structured scope ownership. What
 > is *not* built yet: production M:N lifecycle/load-balancing, broader
-> production network/native async-I/O backends, broader failure-event delivery,
-> and stable production
-> concurrency semantics.
+> production network/native async-I/O backends, durable failure-event
+> backpressure/acknowledgement, and stable production concurrency semantics.
 
 ## Quick start
 

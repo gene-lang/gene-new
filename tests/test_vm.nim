@@ -2332,6 +2332,23 @@ suite "vm — actors":
        "[2 \"bad\" restart]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error Boom) " &
+       "(var events : (Channel Int) (channel ^capacity 1)) " &
+       "(var dead (channel ^capacity 1)) " &
+       "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+       "  (var a (actor/spawn ^init (fn [] 0) " &
+       "    ^handle (fn [ctx state msg] " &
+       "      (fail (Boom ^message \"bad\"))))) " &
+       "  (a ~ actor/send 6) " &
+       "  (sleep 1) " &
+       "  (var event (dead ~ Channel/recv)) " &
+       "  (match event " &
+       "    (when (ActorFailure ^failed-message failed " &
+       "                        ^error (Boom ^message m) " &
+       "                        ^strategy s) " &
+       "      [failed m s])))",
+       "[6 \"bad\" restart]"
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error Boom) " &
        "(var events (channel ^capacity 1)) " &
        "(var dead (channel ^capacity 1)) " &
        "(events ~ Channel/close) " &
