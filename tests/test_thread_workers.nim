@@ -94,6 +94,22 @@ suite "threaded scheduler workers":
           "  (t ~ Task/cancel) " &
           "  (await t))"), newGlobalScope())
 
+  test "active worker-candidate cancellation wakes root awaiters":
+    withGeneWorkerSetting "1":
+      expect GeneCancel:
+        discard run(compileSource(
+          "(scope " &
+          "  (var started (atomic-cell 0)) " &
+          "  (var t (spawn (do " &
+          "    (started ~ AtomicCell/store 1) " &
+          "    (var i 0) " &
+          "    (while (< i 50000000) (set i (+ i 1))) " &
+          "    i))) " &
+          "  (sleep 10) " &
+          "  (if (< (started ~ AtomicCell/load) 1) (panic \"worker did not start\") nil) " &
+          "  (t ~ Task/cancel) " &
+          "  (await t))"), newGlobalScope())
+
   test "worker pool runs worker-candidate tasks":
     withGeneWorkers:
       ck "(scope (var x 20) " &
