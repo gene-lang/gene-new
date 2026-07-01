@@ -1686,6 +1686,19 @@ suite "vm — cooperative scheduler":
        "[(out ~ Cell/get) (sleep 0) (out ~ Cell/get)]",
        "[0 nil 1]"
 
+  test "Fs/read-text-async returns an awaitable task":
+    let path = getTempDir() / "gene-read-text-async-test.txt"
+    writeFile(path, "hello async")
+    defer:
+      if fileExists(path):
+        removeFile(path)
+    let scope = newGlobalScope()
+    scope.define("path", newStr(path))
+    check run(compileSource("(await (Fs/read-text-async Fs/ReadDir path))"),
+              scope).print() == "\"hello async\""
+    expect GeneError:
+      discard run(compileSource("(Fs/read-text-async Fs/WriteDir path)"), scope)
+
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch (channel ^capacity 1)) " &
        "  (spawn (do (sleep 5) (ch ~ Channel/send 7))) " &

@@ -139,6 +139,14 @@ type
     scope: Scope
     deadline: MonoTime
 
+  AsyncIoKind = enum
+    aioReadText
+
+  AsyncIoRequest = ref object
+    kind: AsyncIoKind
+    path: string
+    task: Value
+
   CaptureSafetyMode = enum
     csmSend
     csmWorker
@@ -156,6 +164,8 @@ type
       workerStop: bool
       workerCond: Cond
       activeWorkerFibers: seq[Fiber]
+      asyncIoQueue: seq[AsyncIoRequest]
+      activeAsyncIoWorkers: int
 
   SchedulerWorkerContext = ref object of RuntimeContext
     scheduler: SchedulerState
@@ -271,6 +281,7 @@ proc endSchedulerWorkerLease(lease: SchedulerWorkerLease)
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool
+proc enqueueAsyncReadText(path: string, task: Value): bool
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
@@ -2965,10 +2976,39 @@ proc requireCapability(name: string, value: Value) =
   if value.kind != vkCapability:
     raise newException(GeneError, name & " expects a Capability")
 
+proc requireString(name: string, value: Value) =
+  if value.kind != vkString:
+    raise newException(GeneError, name & " expects a Str")
+
 proc biCapabilityName(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Capability/name", args)
   requireCapability("Capability/name", args[0])
   newStr(args[0].capabilityName)
+
+proc requireFsReadDir(name: string, value: Value) =
+  requireCapability(name, value)
+  let cap = value.capabilityName
+  if cap != "Fs/ReadDir" and cap != "Fs/ReadWriteDir":
+    raise newException(GeneError, name & " expects Fs/ReadDir authority")
+
+proc completedReadTextTask(path: string): Value =
+  try:
+    newCompletedTask(newStr(readFile(path)))
+  except CatchableError as e:
+    newFailedTask("Fs/read-text-async failed: " & e.msg)
+
+proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "Fs/read-text-async expects 2 arguments, got " & $args.len)
+  requireFsReadDir("Fs/read-text-async", args[0])
+  requireString("Fs/read-text-async path", args[1])
+  let path = args[1].strVal
+  let task = newExternalTask()
+  if enqueueAsyncReadText(path, task):
+    task
+  else:
+    completedReadTextTask(path)
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -3192,6 +3232,8 @@ proc buildBuiltins(app: Application): Scope =
   fsScope.define("ReadDir", newCapability("Fs/ReadDir"))
   fsScope.define("WriteDir", newCapability("Fs/WriteDir"))
   fsScope.define("ReadWriteDir", newCapability("Fs/ReadWriteDir"))
+  fsScope.define("read-text-async", newNativeFn("Fs/read-text-async",
+                                                biFsReadTextAsync))
   result.define("Fs", newNamespace("Fs", fsScope))
   result.define("cell", newNativeFn("cell", biCell))
   let cellScope = newScope(result)
@@ -5308,6 +5350,25 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
 const schedulerInstructionBudget = 2048
 const schedulerWorkerTimerPollMs = 1
 
+when compileOption("threads") and defined(gcAtomicArc):
+  const MaxSchedulerWorkers = 32
+
+  proc configuredSchedulerWorkers(): int =
+    let raw = getEnv("GENE_WORKERS")
+    if raw.len == 0:
+      result = min(4, max(1, countProcessors() - 1))
+      if result > MaxSchedulerWorkers:
+        result = MaxSchedulerWorkers
+      return
+    try:
+      result = parseInt(raw)
+    except ValueError:
+      return 0
+    if result < 0:
+      result = 0
+    elif result > MaxSchedulerWorkers:
+      result = MaxSchedulerWorkers
+
 proc clearWaitReason(f: Fiber) =
   f.waitChannel = NIL
   f.waitActor = NIL
@@ -5330,6 +5391,20 @@ proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
   when compileOption("threads") and defined(gcAtomicArc):
     if f.workerCandidate:
       broadcast(s.workerCond)
+
+proc enqueueAsyncReadText(path: string, task: Value): bool =
+  when compileOption("threads") and defined(gcAtomicArc):
+    if configuredSchedulerWorkers() <= 0:
+      return false
+    markSharedValue(task)
+    let req = AsyncIoRequest(kind: aioReadText, path: path, task: task)
+    let s = currentScheduler()
+    withSchedulerLock(s):
+      s.asyncIoQueue.add req
+      broadcast(s.workerCond)
+    true
+  else:
+    false
 
 proc inCancelCleanup(f: Fiber): bool =
   if f.frameKind == fkEnsureCancelBody:
@@ -8218,24 +8293,6 @@ proc runFiber(f: Fiber) =
       wakeTaskWaiters(f.task)
 
 when compileOption("threads") and defined(gcAtomicArc):
-  const MaxSchedulerWorkers = 32
-
-  proc configuredSchedulerWorkers(): int =
-    let raw = getEnv("GENE_WORKERS")
-    if raw.len == 0:
-      result = min(4, max(1, countProcessors() - 1))
-      if result > MaxSchedulerWorkers:
-        result = MaxSchedulerWorkers
-      return
-    try:
-      result = parseInt(raw)
-    except ValueError:
-      return 0
-    if result < 0:
-      result = 0
-    elif result > MaxSchedulerWorkers:
-      result = MaxSchedulerWorkers
-
   proc schedulerWorkerStopRequested(s: SchedulerState): bool =
     withSchedulerLock(s):
       s.workerStop
@@ -8257,6 +8314,8 @@ when compileOption("threads") and defined(gcAtomicArc):
         broadcast(s.workerCond)
 
   proc schedulerHasWorkerProgressUnlocked(s: SchedulerState): bool =
+    if s.activeAsyncIoWorkers > 0 or s.asyncIoQueue.len > 0:
+      return true
     for f in s.activeWorkerFibers:
       if f != nil:
         return true
@@ -8282,9 +8341,40 @@ when compileOption("threads") and defined(gcAtomicArc):
       true
 
   proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =
+    if s.asyncIoQueue.len > 0:
+      return true
     for f in s.runQueue:
       if f.workerCandidate:
         return true
+
+  proc popAsyncIoRequest(s: SchedulerState): AsyncIoRequest =
+    withSchedulerLock(s):
+      if s.asyncIoQueue.len == 0:
+        return nil
+      result = s.asyncIoQueue[0]
+      s.asyncIoQueue.delete(0)
+      inc s.activeAsyncIoWorkers
+      broadcast(s.workerCond)
+
+  proc finishAsyncIoRequest(s: SchedulerState) =
+    withSchedulerLock(s):
+      if s.activeAsyncIoWorkers > 0:
+        dec s.activeAsyncIoWorkers
+      broadcast(s.workerCond)
+
+  proc runAsyncIoRequest(req: AsyncIoRequest) =
+    case req.kind
+    of aioReadText:
+      try:
+        let text = readFile(req.path)
+        let value = newStr(text)
+        markSharedValue(value)
+        if tryCompleteTask(req.task, value):
+          wakeTaskWaiters(req.task)
+      except CatchableError as e:
+        if tryFailTask(req.task,
+                       "Fs/read-text-async failed: " & e.msg):
+          wakeTaskWaiters(req.task)
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
     var pollTimer = false
@@ -8314,6 +8404,13 @@ when compileOption("threads") and defined(gcAtomicArc):
       activeScheduler = s
       while not schedulerWorkerStopRequested(s):
         discard wakeExpiredTimers()
+        let req = popAsyncIoRequest(s)
+        if req != nil:
+          try:
+            runAsyncIoRequest(req)
+          finally:
+            finishAsyncIoRequest(s)
+          continue
         let f = popRunnableFiber(workerOnly = true, activeWorkerSlot = ctx.slot)
         if f == nil:
           waitForSchedulerWorkerCandidate(s)
