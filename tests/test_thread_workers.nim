@@ -80,6 +80,14 @@ template withGeneWorkerSetting(value: string, body: untyped) =
   finally:
     putEnv("GENE_WORKERS", previousWorkers)
 
+template withGeneAsyncIoQueueSetting(value: string, body: untyped) =
+  let previousMax = getEnv("GENE_ASYNC_IO_MAX_QUEUE")
+  putEnv("GENE_ASYNC_IO_MAX_QUEUE", value)
+  try:
+    body
+  finally:
+    putEnv("GENE_ASYNC_IO_MAX_QUEUE", previousMax)
+
 template withGeneWorkers(body: untyped) =
   withGeneWorkerSetting("2"):
     body
@@ -464,6 +472,21 @@ suite "threaded scheduler workers":
     expected.add "]"
     withGeneWorkerSetting "2":
       check run(compileSource(src), scope).print() == expected
+
+  test "worker-backed async file read reports queue backpressure":
+    let path = getTempDir() / "gene-threaded-read-text-async-backpressure-test.txt"
+    writeFile(path, "worker async")
+    defer:
+      if fileExists(path):
+        removeFile(path)
+    let scope = newGlobalScope()
+    scope.define("path", newStr(path))
+    withGeneWorkerSetting "2":
+      withGeneAsyncIoQueueSetting "0":
+        check run(compileSource(
+          "(try (await (Fs/read-text-async Fs/ReadDir path)) " &
+          " catch {^message m} m)"), scope).print() ==
+          "\"Fs/read-text-async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
     let path = getTempDir() / "gene-threaded-write-text-async-test.txt"

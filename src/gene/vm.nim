@@ -144,6 +144,11 @@ type
     aioWriteText
     aioTcpReadText
 
+  AsyncIoEnqueueResult = enum
+    aioUnavailable
+    aioQueued
+    aioQueueFull
+
   AsyncIoRequest = ref object
     kind: AsyncIoKind
     path: string
@@ -289,10 +294,11 @@ proc endSchedulerWorkerLease(lease: SchedulerWorkerLease)
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool
-proc enqueueAsyncReadText(path: string, task: Value): bool
-proc enqueueAsyncWriteText(path, text: string, task: Value): bool
+proc enqueueAsyncReadText(path: string, task: Value): AsyncIoEnqueueResult
+proc enqueueAsyncWriteText(path, text: string,
+                           task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
-                             task: Value): bool
+                             task: Value): AsyncIoEnqueueResult
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
@@ -3053,6 +3059,9 @@ proc completedTcpReadTextTask(host: string, port, maxBytes,
   except CatchableError as e:
     newFailedTask("Net/tcp-read-text-async failed: " & e.msg)
 
+proc asyncIoQueueFullTask(name: string): Value =
+  newFailedTask(name & " failed: async I/O queue full")
+
 proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
@@ -3061,10 +3070,13 @@ proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   requireString("Fs/read-text-async path", args[1])
   let path = args[1].strVal
   let task = newExternalTask()
-  if enqueueAsyncReadText(path, task):
+  case enqueueAsyncReadText(path, task)
+  of aioQueued:
     task
-  else:
+  of aioUnavailable:
     completedReadTextTask(path)
+  of aioQueueFull:
+    asyncIoQueueFullTask("Fs/read-text-async")
 
 proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
@@ -3076,10 +3088,13 @@ proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   let path = args[1].strVal
   let text = args[2].strVal
   let task = newExternalTask()
-  if enqueueAsyncWriteText(path, text, task):
+  case enqueueAsyncWriteText(path, text, task)
+  of aioQueued:
     task
-  else:
+  of aioUnavailable:
     completedWriteTextTask(path, text)
+  of aioQueueFull:
+    asyncIoQueueFullTask("Fs/write-text-async")
 
 proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 5:
@@ -3094,10 +3109,13 @@ proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   let timeoutMs = requirePositiveInt("Net/tcp-read-text-async timeout-ms",
                                      args[4])
   let task = newExternalTask()
-  if enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs, task):
+  case enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs, task)
+  of aioQueued:
     task
-  else:
+  of aioUnavailable:
     completedTcpReadTextTask(host, port, maxBytes, timeoutMs)
+  of aioQueueFull:
+    asyncIoQueueFullTask("Net/tcp-read-text-async")
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -5449,6 +5467,8 @@ const schedulerWorkerTimerPollMs = 1
 
 when compileOption("threads") and defined(gcAtomicArc):
   const MaxSchedulerWorkers = 32
+  const DefaultAsyncIoQueueMax = 1024
+  const MaxAsyncIoQueueMax = 65536
 
   proc configuredSchedulerWorkers(): int =
     let raw = getEnv("GENE_WORKERS")
@@ -5465,6 +5485,22 @@ when compileOption("threads") and defined(gcAtomicArc):
       result = 0
     elif result > MaxSchedulerWorkers:
       result = MaxSchedulerWorkers
+
+  proc configuredAsyncIoQueueMax(): int =
+    let raw = getEnv("GENE_ASYNC_IO_MAX_QUEUE")
+    if raw.len == 0:
+      return DefaultAsyncIoQueueMax
+    try:
+      result = parseInt(raw)
+    except ValueError:
+      return DefaultAsyncIoQueueMax
+    if result < 0:
+      result = 0
+    elif result > MaxAsyncIoQueueMax:
+      result = MaxAsyncIoQueueMax
+
+  proc pendingAsyncIoRequestsUnlocked(s: SchedulerState): int {.inline.} =
+    s.asyncIoQueue.len - s.asyncIoHead
 
 proc clearWaitReason(f: Fiber) =
   f.waitChannel = NIL
@@ -5489,51 +5525,37 @@ proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
     if f.workerCandidate:
       broadcast(s.workerCond)
 
-proc enqueueAsyncReadText(path: string, task: Value): bool =
+proc enqueueAsyncIoRequest(req: AsyncIoRequest): AsyncIoEnqueueResult =
   when compileOption("threads") and defined(gcAtomicArc):
     if configuredSchedulerWorkers() <= 0:
-      return false
-    markSharedValue(task)
-    let req = AsyncIoRequest(kind: aioReadText, path: path, task: task)
+      return aioUnavailable
     let s = currentScheduler()
+    var queued = false
     withSchedulerLock(s):
-      s.asyncIoQueue.add req
-      broadcast(s.workerCond)
-    true
+      if s.pendingAsyncIoRequestsUnlocked() < configuredAsyncIoQueueMax():
+        markSharedValue(req.task)
+        s.asyncIoQueue.add req
+        broadcast(s.workerCond)
+        queued = true
+    if queued: aioQueued else: aioQueueFull
   else:
-    false
+    aioUnavailable
 
-proc enqueueAsyncWriteText(path, text: string, task: Value): bool =
-  when compileOption("threads") and defined(gcAtomicArc):
-    if configuredSchedulerWorkers() <= 0:
-      return false
-    markSharedValue(task)
-    let req = AsyncIoRequest(kind: aioWriteText, path: path, text: text,
-                             task: task)
-    let s = currentScheduler()
-    withSchedulerLock(s):
-      s.asyncIoQueue.add req
-      broadcast(s.workerCond)
-    true
-  else:
-    false
+proc enqueueAsyncReadText(path: string,
+                          task: Value): AsyncIoEnqueueResult =
+  enqueueAsyncIoRequest(AsyncIoRequest(kind: aioReadText, path: path,
+                                       task: task))
+
+proc enqueueAsyncWriteText(path, text: string,
+                           task: Value): AsyncIoEnqueueResult =
+  enqueueAsyncIoRequest(AsyncIoRequest(kind: aioWriteText, path: path,
+                                       text: text, task: task))
 
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
-                             task: Value): bool =
-  when compileOption("threads") and defined(gcAtomicArc):
-    if configuredSchedulerWorkers() <= 0:
-      return false
-    markSharedValue(task)
-    let req = AsyncIoRequest(kind: aioTcpReadText, host: host, port: port,
-                             maxBytes: maxBytes, timeoutMs: timeoutMs,
-                             task: task)
-    let s = currentScheduler()
-    withSchedulerLock(s):
-      s.asyncIoQueue.add req
-      broadcast(s.workerCond)
-    true
-  else:
-    false
+                             task: Value): AsyncIoEnqueueResult =
+  enqueueAsyncIoRequest(AsyncIoRequest(kind: aioTcpReadText, host: host,
+                                       port: port, maxBytes: maxBytes,
+                                       timeoutMs: timeoutMs, task: task))
 
 proc inCancelCleanup(f: Fiber): bool =
   if f.frameKind == fkEnsureCancelBody:
@@ -8442,11 +8464,8 @@ when compileOption("threads") and defined(gcAtomicArc):
       if cleared:
         broadcast(s.workerCond)
 
-  proc pendingAsyncIoRequests(s: SchedulerState): int {.inline.} =
-    s.asyncIoQueue.len - s.asyncIoHead
-
   proc schedulerHasWorkerProgressUnlocked(s: SchedulerState): bool =
-    if s.activeAsyncIoWorkers > 0 or s.pendingAsyncIoRequests() > 0:
+    if s.activeAsyncIoWorkers > 0 or s.pendingAsyncIoRequestsUnlocked() > 0:
       return true
     for f in s.activeWorkerFibers:
       if f != nil:
@@ -8473,7 +8492,7 @@ when compileOption("threads") and defined(gcAtomicArc):
       true
 
   proc schedulerHasWorkerCandidateUnlocked(s: SchedulerState): bool =
-    if s.pendingAsyncIoRequests() > 0:
+    if s.pendingAsyncIoRequestsUnlocked() > 0:
       return true
     for f in s.runQueue:
       if f.workerCandidate:
@@ -8481,7 +8500,7 @@ when compileOption("threads") and defined(gcAtomicArc):
 
   proc popAsyncIoRequest(s: SchedulerState): AsyncIoRequest =
     withSchedulerLock(s):
-      if s.pendingAsyncIoRequests() == 0:
+      if s.pendingAsyncIoRequestsUnlocked() == 0:
         return nil
       result = s.asyncIoQueue[s.asyncIoHead]
       inc s.asyncIoHead
