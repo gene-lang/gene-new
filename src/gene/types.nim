@@ -544,6 +544,7 @@ type
     name: string
     messages: OrderedTable[string, Value]
     deriveFn: Value
+    parents: seq[Value]      # direct ^inherit parents (design docs/core.md §3)
 
   ProtocolMessageData = ref object of GeneObjectData
     name: string
@@ -1011,6 +1012,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     for _, val in d.messages:
       emit(val)
     emit(d.deriveFn)
+    for val in d.parents:
+      emit(val)
   of okProtocolMessage:
     discard
 
@@ -1131,6 +1134,7 @@ proc clearObjectEdges(data: GeneObjectData) =
     let d = ProtocolData(data)
     d.messages = initOrderedTable[string, Value]()
     clearValueSlot(d.deriveFn)
+    d.parents.setLen(0)
   of okProtocolMessage:
     ProtocolMessageData(data).protocolBits = 0
 
@@ -3933,14 +3937,54 @@ proc newProtocolMessage*(protocol: Value, name: string): Value =
                                 protocolBits: protocol.bits))
 
 proc newProtocol*(name: string, messageNames: openArray[string],
-                  deriveFn: Value = NIL): Value =
+                  deriveFn: Value = NIL, parents: sink seq[Value] = @[]): Value =
+  ## `parents` are already-constructed ^inherit ancestors (design docs/core.md
+  ## §3). The flattened message closure is merged eagerly here, mirroring how
+  ## `newType` eagerly merges `^is` fields: a message is identified by its
+  ## defining protocol, so diamond re-inheritance of the same message (same
+  ## value identity, reached through two parents) is not a conflict, but two
+  ## unrelated parents contributing distinct messages under the same name is
+  ## rejected at definition time (docs/core.md §3.3 — a simplification of the
+  ## original design's use-site-ambiguity proposal, chosen because the message
+  ## table here is name-keyed, not defining-protocol-keyed).
   var messages = initOrderedTable[string, Value]()
+  for parent in parents:
+    if parent.kind != vkProtocol:
+      raise newException(GeneError, "protocol ^inherit entries must be protocols")
+    for pname, pmsg in ProtocolData(objData(parent)).messages:
+      if messages.hasKey(pname):
+        if messages[pname].bits != pmsg.bits:
+          raise newException(GeneError,
+            "protocol " & name & " has conflicting inherited message: " & pname)
+      else:
+        messages[pname] = pmsg
   let data = ProtocolData(objKind: okProtocol, name: name, messages: messages,
-                          deriveFn: deriveFn)
+                          deriveFn: deriveFn, parents: parents)
   let protocol = boxObject(data)
   for messageName in messageNames:
+    if data.messages.hasKey(messageName):
+      raise newException(GeneError,
+        "protocol " & name & " message conflicts with inherited message: " &
+        messageName)
     data.messages[messageName] = newProtocolMessage(protocol, messageName)
   protocol
+
+proc protocolParents*(v: Value): lent seq[Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  ProtocolData(objData(v)).parents
+
+proc protocolIsOrInherits*(candidate, target: Value): bool =
+  ## True if `candidate` is `target`, or `target` is a transitive ^inherit
+  ## ancestor of `candidate` (design docs/core.md §3.5).
+  if candidate.kind != vkProtocol or target.kind != vkProtocol:
+    return false
+  if candidate.bits == target.bits:
+    return true
+  for parent in ProtocolData(objData(candidate)).parents:
+    if protocolIsOrInherits(parent, target):
+      return true
+  false
 
 proc internName*(v: string): string =
   ## Deduplicate a prop-key string so identical keys share storage.

@@ -4292,10 +4292,13 @@ proc makeImplsVisible(importingScope, sourceScope: Scope) =
       importingScope.impls.add imported
 
 proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
+  # An impl of a protocol that ^inherits `protocol` also satisfies `protocol`
+  # (docs/core.md §3.5 — structural subtyping from the impl).
   var s = scope
   while s != nil:
     for impl in s.impls:
-      if same(impl.protocol, protocol) and receiver.isSubtypeOf(impl.receiver):
+      if protocolIsOrInherits(impl.protocol, protocol) and
+          receiver.isSubtypeOf(impl.receiver):
         return true
     s = s.parent
   false
@@ -5362,11 +5365,14 @@ proc materializeEvalParent(env: Value): Scope =
 
 proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
                             matches: var seq[Value]) =
+  # `protocol` is the message's defining protocol; an impl of a protocol that
+  # ^inherits it also provides the message (docs/core.md §3.5).
   for impl in scope.impls:
-    if same(impl.protocol, protocol) and recvType.isSubtypeOf(impl.receiver):
+    if protocolIsOrInherits(impl.protocol, protocol) and
+        recvType.isSubtypeOf(impl.receiver):
       if not impl.messages.hasKey(message.protocolMessageName):
         raise newException(GeneError,
-          "impl " & protocol.protocolName & " for " & impl.receiver.typeName &
+          "impl " & impl.protocol.protocolName & " for " & impl.receiver.typeName &
           " is missing message: " & message.protocolMessageName)
       matches.add impl.messages[message.protocolMessageName]
 
@@ -6470,14 +6476,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack.add typ
         of opMakeProtocol:
           let proto = chunk.protocolProtos[inst[].intArg]
+          var parents = newSeq[Value](proto.parentCount)
+          if proto.parentCount > 0:
+            for i in countdown(proto.parentCount - 1, 0):
+              let parentProtocol = stack.pop()
+              if parentProtocol.kind != vkProtocol:
+                raise newException(GeneError,
+                  "protocol ^inherit entries must be protocols")
+              parents[i] = parentProtocol
           var deriveFn = NIL
           if proto.deriveFn != nil:
             deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
                                    proto.deriveFn, scope)
             deriveFn = functionForScopeStorage(deriveFn, scope)
-          let protocol = newProtocol(proto.name, proto.messageNames, deriveFn)
-          for _, message in protocol.protocolMessages:
-            scope.define(message.protocolMessageName, message)
+          let protocol = newProtocol(proto.name, proto.messageNames, deriveFn,
+                                     parents)
+          # Only bind this protocol's own message names here — inherited
+          # message names are already bound where their defining ancestor
+          # protocol was declared (docs/core.md §3.2).
+          for message in proto.messageNames:
+            scope.define(message, protocol.protocolMessages[message])
           stack.add protocol
         of opMakeImpl:
           let proto = chunk.implProtos[inst[].intArg]

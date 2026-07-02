@@ -301,6 +301,7 @@ type
     name*: string
     messageNames*: seq[string]
     deriveFn*: FunctionProto
+    parentCount*: int
 
   ImplMessageProto* = object
     name*: string

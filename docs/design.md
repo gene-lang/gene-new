@@ -1139,6 +1139,10 @@ MVP restrictions:
 - a manual impl and generated impl for the same `(protocol, type)` pair is an error;
 - generated impls are type-checked normally.
 
+Protocol inheritance (`^inherit`), type-direct messages, type/protocol
+inheritance interaction, and `~` message-resolution semantics are designed as
+an extension of this section in `docs/core.md`.
+
 ---
 
 ## 11. Macros, templates, and compile-time code

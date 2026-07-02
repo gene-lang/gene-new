@@ -3378,11 +3378,20 @@ proc compileProtocol(c: var Compiler, node: Value) =
       raise newException(GeneError, "duplicate protocol message: " & message)
     seen[message] = true
     messageNames.add message
+  var parentCount = 0
+  if node.props.hasKey("inherit"):
+    let parents = node.props["inherit"]
+    if parents.kind != vkList:
+      raise newException(GeneError, "protocol ^inherit must be a list")
+    for parentExpr in parents.listItems:
+      compileExpr(c, parentExpr)
+      inc parentCount
   for message in messageNames:
     discard c.reserveLocal(message)
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
                                               messageNames: messageNames,
-                                              deriveFn: deriveFn))
+                                              deriveFn: deriveFn,
+                                              parentCount: parentCount))
   discard c.emit(opMakeProtocol, idx)
   c.emitDefineBinding(name)
 

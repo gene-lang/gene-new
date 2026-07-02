@@ -1,0 +1,93 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Types, protocols, and protocol inheritance (docs/core.md)
+#
+# Demonstrates:
+#   - type declarations and single type inheritance (^is)
+#   - protocol declarations and impl
+#   - impl lookup walking a type's ^is chain (docs/core.md §2.1)
+#   - protocol inheritance (^inherit): single parent, and multiple
+#     unrelated parents with no shared type ancestor (docs/core.md §3)
+#   - structural subtyping: implementing a child protocol satisfies every
+#     ^inherit ancestor for a ^impl [...] requirement, with no extra
+#     declaration (docs/core.md §3.5)
+#   - dispatch by bare name, by ~ flipped call, and by qualified
+#     Protocol/message
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# A base type, and a protocol implemented only on that base type.
+# -----------------------------------------------------------------------------
+
+(type Animal ^props {^name Str})
+
+(protocol Describable
+  (message describe [self : Self] : Str))
+
+(impl Describable Animal
+  (message describe [self] : Str $"a creature named ${self/name}"))
+
+# -----------------------------------------------------------------------------
+# Protocol inheritance, single parent: Ord ^inherit [Comparable]. An impl of
+# Ord must cover Comparable's message too — the closure is flattened once,
+# at protocol declaration time (docs/core.md §3.2).
+# -----------------------------------------------------------------------------
+
+(protocol Comparable
+  (message compare [self : Self, other : Self] : Int))
+
+(protocol Ord ^inherit [Comparable]
+  (message bigger [self : Self, other : Self]))
+
+# -----------------------------------------------------------------------------
+# Types: single inheritance via ^is. Dog has no impl of its own for
+# Describable — lookup walks Dog's ^is chain to find Animal's impl
+# (docs/core.md §2.1). ^impl [Comparable] requires a visible impl to exist by
+# the time this scope completes; only `impl Ord Dog` is declared below, and
+# that alone satisfies it (docs/core.md §3.5, structural subtyping).
+# -----------------------------------------------------------------------------
+
+(type Dog ^is Animal ^props {^breed Str ^weight Int} ^impl [Comparable])
+
+(impl Ord Dog
+  (message compare [self other]
+    : Int
+    (- self/weight other/weight))
+  (message bigger [self other]
+    (if (< (compare self other) 0) other self)))
+
+# -----------------------------------------------------------------------------
+# Protocol inheritance, multiple unrelated parents, no diamond: Summary pulls
+# together two independently-declared protocols with no shared ancestor
+# (docs/core.md §3, "no-diamond" case).
+# -----------------------------------------------------------------------------
+
+(protocol Sized
+  (message size_of [self : Self] : Int))
+
+(protocol Named
+  (message name_of [self : Self] : Str))
+
+(protocol Summary ^inherit [Sized Named]
+  (message blurb [self : Self] : Str))
+
+(impl Summary Dog
+  (message size_of [self] : Int self/weight)
+  (message name_of [self] : Str self/name)
+  (message blurb [self] : Str $"${(name_of self)} (${(size_of self)} lbs)"))
+
+# -----------------------------------------------------------------------------
+# Run it.
+# -----------------------------------------------------------------------------
+
+(var rex (Dog ^name "Rex" ^breed "Labrador" ^weight 70))
+(var fido (Dog ^name "Fido" ^breed "Pug" ^weight 18))
+
+(println (describe rex))               # inherited via Dog's ^is chain (§2.1)
+(println (rex ~ describe))              # same message, ~ flipped-call form
+(println (rex ~ Describable/describe))  # same message, qualified form
+
+(println (compare rex fido))            # Ord's own closure includes Comparable
+(println ((bigger rex fido) ~ name_of)) # Ord/bigger, then Summary/name_of
+
+(println (blurb rex))                   # Summary: Sized + Named, no diamond

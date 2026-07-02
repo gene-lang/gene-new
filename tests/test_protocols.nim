@@ -211,6 +211,84 @@ suite "protocols — declarations and dispatch":
                      "(type T ^props {}) " &
                      "(impl P T (message a [self] 1) (message b [self] 2))")
 
+  test "^inherit flattens ancestor messages into the impl requirement":
+    ck "(protocol A (message do_a [self] : Str)) " &
+       "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl B T " &
+       "  (message do_a [self] : Str \"a\") " &
+       "  (message do_b [self] : Str \"b\")) " &
+       "[(do_a (T)) (do_b (T)) ((T) ~ A/do_a) ((T) ~ B/do_b)]",
+       "[\"a\" \"b\" \"a\" \"b\"]"
+
+  test "^inherit diamond does not duplicate the inherited message":
+    ck "(protocol A (message do_a [self] : Str)) " &
+       "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+       "(protocol C ^inherit [A B] (message do_c [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl C T " &
+       "  (message do_a [self] : Str \"a\") " &
+       "  (message do_b [self] : Str \"b\") " &
+       "  (message do_c [self] : Str \"c\")) " &
+       "[(do_a (T)) (do_b (T)) (do_c (T))]",
+       "[\"a\" \"b\" \"c\"]"
+
+  test "^inherit with multiple unrelated parents, no diamond":
+    ck "(protocol X (message do_x [self] : Str)) " &
+       "(protocol Y (message do_y [self] : Str)) " &
+       "(protocol Z ^inherit [X Y] (message do_z [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl Z T " &
+       "  (message do_x [self] : Str \"x\") " &
+       "  (message do_y [self] : Str \"y\") " &
+       "  (message do_z [self] : Str \"z\")) " &
+       "[(do_x (T)) (do_y (T)) (do_z (T))]",
+       "[\"x\" \"y\" \"z\"]"
+
+  test "impl missing an inherited message is rejected":
+    expect GeneError:
+      discard runStr("(protocol A (message do_a [self] : Str)) " &
+                     "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+                     "(type T ^props {}) " &
+                     "(impl B T (message do_b [self] : Str \"b\"))")
+
+  test "child protocol cannot redeclare an inherited message name":
+    expect GeneError:
+      discard runStr("(protocol A (message do_a [self] : Str)) " &
+                     "(protocol B ^inherit [A] (message do_a [self] : Str))")
+
+  test "independent parents with a colliding message name conflict at definition":
+    expect GeneError:
+      discard runStr("(protocol X (message clash [self] : Str)) " &
+                     "(protocol Y (message clash [self] : Str)) " &
+                     "(protocol Z ^inherit [X Y] (message do_z [self] : Str))")
+
+  test "^inherit requires already-defined parent protocols":
+    expect GeneError:
+      discard runStr("(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+                     "(protocol A (message do_a [self] : Str))")
+
+  test "impl of a child protocol satisfies a parent-typed ^impl requirement":
+    ck "(protocol A (message do_a [self] : Str)) " &
+       "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+       "(type T ^props {} ^impl [A]) " &
+       "(impl B T " &
+       "  (message do_a [self] : Str \"a\") " &
+       "  (message do_b [self] : Str \"b\")) " &
+       "(do_a (T))",
+       "\"a\""
+
+  test "overlapping impls of a protocol and its child are ambiguous at use":
+    expect GeneError:
+      discard runStr("(protocol A (message do_a [self] : Str)) " &
+                     "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+                     "(type T ^props {}) " &
+                     "(impl A T (message do_a [self] : Str \"a-direct\")) " &
+                     "(impl B T " &
+                     "  (message do_a [self] : Str \"a-via-b\") " &
+                     "  (message do_b [self] : Str \"b\")) " &
+                     "(do_a (T))")
+
   test "deep recursion through a protocol message uses heap frames":
     # Message dispatch resolves to the receiver's impl at the call site and pushes
     # a heap frame, instead of double-recursing through applyCall. Deep recursion
