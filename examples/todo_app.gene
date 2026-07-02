@@ -1,0 +1,207 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene TODO app — end-to-end web application on the net/http MVP server.
+#
+#   HTML page:  GET  /                   server-rendered todo list + forms
+#   Form flow:  POST /todos              create (redirects to /)
+#               POST /todos/toggle       toggle done flag (redirects to /)
+#               POST /todos/delete       delete (redirects to /)
+#   JSON API:   GET  /api/todos          list todos
+#               POST /api/todos          create   (form body: text=...)
+#               POST /api/todos/toggle   toggle   (form body: id=N)
+#               POST /api/todos/delete   delete   (form body: id=N)
+#
+# Run:  bin/gene run examples/todo_app.gene
+# Then: open http://127.0.0.1:8090
+# =============================================================================
+
+(mod todo-app
+  @doc "in-memory TODO list with an HTML page and a JSON API")
+
+(import html [escape])
+(import url [parse_query UrlError])
+(import str [split join])
+(import std/parse [parse_int ParseError])
+(import std/stream [to_stream map filter into])
+(import net/http [Request Response Server serve json redirect not_found])
+
+# -----------------------------------------------------------------------------
+# Store: a cell holding an immutable-by-convention list of todo maps.
+# -----------------------------------------------------------------------------
+
+(var todos (cell []))
+(var next-id (cell 1))
+
+(fn add_todo [text : Str] : Int
+  (var id (Cell/get next-id))
+  (Cell/set next-id (+ id 1))
+  (Cell/update todos (fn [xs]
+    ((to_stream [{^id id ^text text ^done false}]) ~ into xs)))
+  id)
+
+(fn toggle_todo [id : Int] : Nil
+  (Cell/update todos (fn [xs]
+    ((to_stream xs)
+      ~ map (fn [t]
+          (if (= t/id id)
+            {^id t/id ^text t/text ^done (not t/done)}
+            t))
+      ; ~ into [])))
+  nil)
+
+(fn delete_todo [id : Int] : Nil
+  (Cell/update todos (fn [xs]
+    ((to_stream xs) ~ filter (fn [t] (not (= t/id id))) ; ~ into [])))
+  nil)
+
+# -----------------------------------------------------------------------------
+# JSON rendering (hand-rolled until a ToJson derive lands).
+# -----------------------------------------------------------------------------
+
+(fn replace_all [s : Str, from : Str, to : Str] : Str
+  ((split s from) ~ join to))
+
+(fn json_escape [s : Str] : Str
+  (replace_all (replace_all s "\\" "\\\\") "\"" "\\\""))
+
+(fn todo_json [t] : Str
+  (var text (json_escape t/text))
+  (var done (if t/done "true" "false"))
+  $"{\"id\":${t/id},\"text\":\"${text}\",\"done\":${done}}")
+
+(fn todos_json [] : Str
+  (var parts ((to_stream (Cell/get todos)) ~ map todo_json ; ~ into []))
+  (var body (join parts ","))
+  $"[${body}]")
+
+# -----------------------------------------------------------------------------
+# HTML rendering.
+# -----------------------------------------------------------------------------
+
+(var css """
+  body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}
+  .wrap{max-width:560px;margin:40px auto;padding:0 20px}
+  .card{padding:20px 24px;border-radius:14px;margin:16px 0;background:#fff}
+  ul{list-style:none;padding:0}
+  li{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eee}
+  li.done .text{text-decoration:line-through;opacity:.5}
+  .text{flex:1}
+  form.inline{display:inline}
+  button{border:0;border-radius:8px;padding:4px 10px;cursor:pointer;background:#e4e4e7}
+  .add input[type=text]{flex:1;padding:8px;border:1px solid #ddd;border-radius:8px}
+  .add{display:flex;gap:8px}
+  .muted{opacity:.6;font-size:.85em}
+""")
+
+(fn todo_row [t] : Str
+  (var text (escape t/text))
+  (var mark (if t/done "&#10003;" "&#9675;"))
+  (var cls (if t/done "done" "open"))
+  ($ "<li class=\"" cls "\">"
+     "<form class=\"inline\" method=\"post\" action=\"/todos/toggle\">"
+     "<input type=\"hidden\" name=\"id\" value=\"" t/id "\">"
+     "<button title=\"toggle\">" mark "</button></form>"
+     "<span class=\"text\">" text "</span>"
+     "<form class=\"inline\" method=\"post\" action=\"/todos/delete\">"
+     "<input type=\"hidden\" name=\"id\" value=\"" t/id "\">"
+     "<button title=\"delete\">&#10005;</button></form>"
+     "</li>"))
+
+(fn page [] : Str
+  (var items (Cell/get todos))
+  (var rows_list ((to_stream items) ~ map todo_row ; ~ into []))
+  (var rows (join rows_list ""))
+  (var count (size items))
+  ($ "<!doctype html><html><head><title>Gene TODO</title><style>" css
+     "</style></head><body><main class=\"wrap\">"
+     "<header><h1>Gene TODO</h1></header>"
+     "<section class=\"card\">"
+     "<form class=\"add\" method=\"post\" action=\"/todos\">"
+     "<input type=\"text\" name=\"text\" placeholder=\"What needs doing?\" autofocus>"
+     "<button>Add</button></form>"
+     "<ul>" rows "</ul>"
+     "<p class=\"muted\">" count " item(s) &middot; JSON at <a href=\"/api/todos\">/api/todos</a></p>"
+     "</section></main></body></html>"))
+
+# -----------------------------------------------------------------------------
+# Request helpers. Form bodies are URL-encoded; ids must parse as integers.
+# -----------------------------------------------------------------------------
+
+(fn parse_form [req]
+  (try
+    (parse_query req/body)
+  catch (UrlError ^message _)
+    {}))
+
+(fn form_text [req] : Str
+  (var form (parse_form req))
+  (var text form/text)
+  (if (= text void) "" text))
+
+(fn form_id [req] : Int
+  (var form (parse_form req))
+  (var raw form/id)
+  (if (= raw void)
+    -1
+    (try
+      (parse_int raw)
+    catch (ParseError ^message _)
+      -1)))
+
+(fn bad_request [msg : Str]
+  (Response ^status 400 ^body msg))
+
+# -----------------------------------------------------------------------------
+# Routing: method + path, HTML flows redirect, API flows return JSON.
+# -----------------------------------------------------------------------------
+
+(fn handle [req]
+  (match [req/method req/path]
+    (when ["GET" "/"]
+      (page))
+    (when ["POST" "/todos"]
+      (var text (form_text req))
+      (if (= text "")
+        (bad_request "text is required")
+        (do (add_todo text) (redirect "/"))))
+    (when ["POST" "/todos/toggle"]
+      (var id (form_id req))
+      (if (= id -1)
+        (bad_request "id must be an integer")
+        (do (toggle_todo id) (redirect "/"))))
+    (when ["POST" "/todos/delete"]
+      (var id (form_id req))
+      (if (= id -1)
+        (bad_request "id must be an integer")
+        (do (delete_todo id) (redirect "/"))))
+    (when ["GET" "/api/todos"]
+      (json (todos_json)))
+    (when ["POST" "/api/todos"]
+      (var text (form_text req))
+      (if (= text "")
+        (bad_request "text is required")
+        (do
+          (var id (add_todo text))
+          (var body (todos_json))
+          (Response ^status 201
+                    ^headers {^content-type "application/json"}
+                    ^body body))))
+    (when ["POST" "/api/todos/toggle"]
+      (var id (form_id req))
+      (if (= id -1)
+        (bad_request "id must be an integer")
+        (do (toggle_todo id) (json (todos_json)))))
+    (when ["POST" "/api/todos/delete"]
+      (var id (form_id req))
+      (if (= id -1)
+        (bad_request "id must be an integer")
+        (do (delete_todo id) (json (todos_json)))))
+    (else
+      (not_found "<h1>404</h1><p>No such route.</p>"))))
+
+# -----------------------------------------------------------------------------
+# Entry point: serve until the process is stopped.
+# -----------------------------------------------------------------------------
+
+(println "TODO app listening on http://127.0.0.1:8090")
+(serve (Server ^host "127.0.0.1" ^port 8090) handle)

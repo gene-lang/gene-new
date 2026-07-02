@@ -1913,6 +1913,86 @@ suite "spec — modules from design":
                   newGlobalScope())
     check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
 
+suite "spec — stdlib namespaces from stdlib plan":
+  test "std/stream, std/node, and std/parse resolve as namespace imports":
+    check_eval("(import std/stream [to_stream map into]) " &
+               "((to_stream [1 2 3]) ~ map (fn [x] (* x x)) ; ~ into [])",
+               "[1 4 9]")
+    check_eval("(import std/stream [to_stream each]) " &
+               "(var sum (cell 0)) " &
+               "(each (to_stream [1 2 3]) (fn [x] " &
+               "  (Cell/update sum (fn [s] (+ s x))))) " &
+               "(Cell/get sum)",
+               "6")
+    check_eval("(import std/node [head]) (head (quote (a 1)))", "a")
+    check_eval("(import std/parse [parse_int]) (parse_int \" 42 \")", "42")
+    check_eval("(import std/parse [parse_int ParseError]) " &
+               "(try (parse_int \"4x\") catch (ParseError ^message _) -1)",
+               "-1")
+
+  test "str module covers join/split/trim/lower and predicates":
+    check_eval("(import str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
+    check_eval("(import str [join]) ([\"a\" \"b\"] ~ join \"\")", "\"ab\"")
+    check_eval("(import str [split]) (split \"a,b,,c\" \",\")",
+               "[\"a\" \"b\" \"\" \"c\"]")
+    check_eval("(import str [trim lower]) (lower (trim \"  MiXeD  \"))",
+               "\"mixed\"")
+    check_eval("(import str [starts_with? ends_with? contains?]) " &
+               "[(starts_with? \"hello\" \"he\") (ends_with? \"hello\" \"lo\") " &
+               " (contains? \"hello\" \"xyz\")]",
+               "[true true false]")
+
+  test "html/escape neutralizes markup and quote characters":
+    check_eval("(import html [escape]) " &
+               "(escape \"<a b=\\\"x\\\">&'\")",
+               "\"&lt;a b=&quot;x&quot;&gt;&amp;&#39;\"")
+
+  test "url module encodes, decodes, and parses queries":
+    check_eval("(import url [encode_component]) (encode_component \"a b&c\")",
+               "\"a%20b%26c\"")
+    check_eval("(import url [decode_component]) (decode_component \"a%20b\")",
+               "\"a b\"")
+    check_eval("(import url [parse_query]) " &
+               "(parse_query \"text=hello+world&x=%2F\")",
+               "{^text \"hello world\" ^x \"/\"}")
+    check_eval("(import url [format_query]) " &
+               "(format_query {^a \"1\" ^b \"x y\"})",
+               "\"a=1&b=x%20y\"")
+    check_eval("(import url [decode_component UrlError]) " &
+               "(try (decode_component \"a%zz\") " &
+               "catch (UrlError ^message _) \"bad\")",
+               "\"bad\"")
+
+suite "spec — net/http surface from stdlib plan":
+  test "response helpers build typed Response nodes":
+    check_eval("(import net/http [text]) (import std/node [body]) " &
+               "(var r (text \"hi\")) " &
+               "[r/status r/headers/content-type (body r)]",
+               "[200 \"text/plain; charset=utf-8\" [\"hi\"]]")
+    check_eval("(import net/http [json]) (var r (json \"{}\")) " &
+               "r/headers/content-type",
+               "\"application/json\"")
+    check_eval("(import net/http [redirect]) (var r (redirect \"/x\")) " &
+               "[r/status r/headers/location]",
+               "[302 \"/x\"]")
+    check_eval("(import net/http [not_found]) (var r (not_found)) r/status",
+               "404")
+
+  test "Server and Response types construct with typed props":
+    check_eval("(import net/http [Server]) " &
+               "(var s (Server ^host \"127.0.0.1\" ^port 8088)) " &
+               "[s/host s/port]",
+               "[\"127.0.0.1\" 8088]")
+    check_eval("(import net/http [Response]) " &
+               "(var r (Response ^status 201)) r/status",
+               "201")
+
+  test "serve validates its Server argument":
+    check_eval("(import net/http [serve HttpError]) " &
+               "(try (serve nil (fn [q] q)) " &
+               "catch (HttpError ^message _) \"bad server\")",
+               "\"bad server\"")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))
