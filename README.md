@@ -155,7 +155,8 @@ participates in equality or hashing.
 > cleanup, channel waits, actor mailbox waits/driving, and `sleep` start a
 > bounded worker lease by default, capped conservatively while the worker
 > lifecycle remains experimental. Set `GENE_WORKERS=N` to choose the worker
-> count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. The
+> count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. In
+> default non-threaded builds, `GENE_WORKERS` is ignored. The
 > lease lets OS worker threads consume snapshot-isolated worker candidates while
 > unsafe shared-scope tasks stay on the cooperative root lane. Sendable actor
 > handler turns whose handler/state/message/reply graphs pass the same worker
