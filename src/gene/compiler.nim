@@ -2842,6 +2842,12 @@ proc compileSelectorParts(c: var Compiler, parts: openArray[Value]) =
     body[i] = part
   compileSelector(c, newNode(newSym("select"), body = body))
 
+proc isPathSendSegment(part: Value): bool =
+  part.kind == vkSymbol and part.symVal.len > 1 and part.symVal.startsWith("~")
+
+proc pathSendName(part: Value): string =
+  part.symVal[1 .. ^1]
+
 proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
   if parts.len == 0:
@@ -2850,9 +2856,19 @@ proc compilePath(c: var Compiler, node: Value) =
   if parts.len == 1:
     compileExpr(c, parts[0])
     return
-  compileSelectorParts(c, parts.toOpenArray(1, parts.high))
   compileExpr(c, parts[0])
-  discard c.emit(opApplySelector)
+  var i = 1
+  while i < parts.len:
+    if parts[i].isPathSendSegment:
+      discard c.emit(opResolveMessage, name = parts[i].pathSendName)
+      c.chunk.callSites[c.emitPlainCall(1)] = node
+      inc i
+    else:
+      let start = i
+      while i < parts.len and not parts[i].isPathSendSegment:
+        inc i
+      compileSelectorParts(c, parts.toOpenArray(start, i - 1))
+      discard c.emit(opApplySelectorTop)
 
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind

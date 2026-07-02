@@ -326,7 +326,7 @@ unquote        = "%", ( symbol | node ) ;
 path_form      = selector_literal | access_or_qualified_path ;
 selector_literal = "/", path_segment, { "/", path_segment } ;
 access_or_qualified_path = atom, "/", path_segment, { "/", path_segment } ;
-path_segment   = symbol | integer | "%", symbol ;
+path_segment   = symbol | integer | "%", symbol | "~", symbol ;
 
 atom           = number | symbol ;
 separator      = spacing, [ "," ], spacing ;
@@ -582,6 +582,14 @@ Short slash syntax permits only simple static segments, numeric indices, and `%n
 /users/%i/name
 ```
 
+Access paths also permit `~message` send segments. A send segment applies the
+message to the value produced by the previous path segment:
+
+```gene
+users/~size        # (users ~ size)
+users/%i/~to_html  # ((users/%i) ~ to_html)
+```
+
 Complex selector stages must use long form:
 
 ```gene
@@ -610,7 +618,9 @@ Static lookup:
 
 - on `Node`: read prop/body/index-like member according to segment type;
 - on `PropMap`/`Map`: read key;
-- on `List`: integer segment indexes list; selected fixed members such as `size`, `empty?`, `first`, and `last` are also available as library-defined selector members;
+- on `List`: integer segment indexes the list. Computed list behavior such as
+  `size`, `empty?`, `first`, and `last` is reached with sends, including path
+  send segments like `xs/~size`, not selector property lookup;
 - on namespace/module values: read exported binding/member;
 - missing lookup returns `void`.
 
@@ -689,7 +699,7 @@ A function containing `yield` is a generator and returns a `Stream`.
 ```gene
 (fn users* [users : (List User)] : (Stream User Never)
   (var i 0)
-  (while (< i users/size)
+  (while (< i users/~size)
     (yield users/%i)
     (set i (+ i 1))))
 ```

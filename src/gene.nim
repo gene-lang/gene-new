@@ -10,7 +10,7 @@
 ##   gene compile --target c <file> print experimental typed-native C
 ##   gene doc <file>     print module metadata, imports, and declarations
 
-import std/[algorithm, os, strutils, tables]
+import std/[algorithm, os, strutils, tables, terminal]
 import gene/[compiler, gir, printer, reader, types, vm]
 
 proc usage() =
@@ -49,10 +49,17 @@ proc cmdEval(src: string) =
 proc cmdRepl() =
   let app = initModuleContext(getCurrentDir())
   let scope = newGlobalScope(app)
+  let interactive = isatty(stdin)
   var line: string
+  if interactive:
+    stdout.write "gene> "
+    stdout.flushFile()
   while stdin.readLine(line):
     let trimmed = line.strip()
     if trimmed.len == 0:
+      if interactive:
+        stdout.write "gene> "
+        stdout.flushFile()
       continue
     if trimmed in [":quit", ":exit", "quit", "exit"]:
       break
@@ -65,6 +72,9 @@ proc cmdRepl() =
       quit(1)
     except GeneError as e:
       stderr.writeLine "Error: " & e.msg
+    if interactive:
+      stdout.write "gene> "
+      stdout.flushFile()
 
 proc argsList(args: openArray[string]): Value =
   var values = newSeq[Value](args.len)

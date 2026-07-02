@@ -118,7 +118,7 @@
 
 (fn menu_rows* [items : (List MenuItem), limit : Int] : (Stream Node Never)
   (var i 0)
-  (var n (min limit items/size))
+  (var n (min limit items/~size))
   (while (< i n)
     (yield (items/%i ~ to_html))
     (set i (+ i 1))))

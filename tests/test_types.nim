@@ -1979,8 +1979,8 @@ suite "types — function boundaries":
                      "(fn name-of [x : Animal] x/name) (name-of (Rock ^name \"granite\"))")
 
   test "simple container annotations check elements":
-    ck "(fn size [xs : (List Int)] xs/size) (size [1 2 3])", "3"
-    ck "(try (fn size [xs : (List Int)] xs/size) (size [1 \"bad\"]) " &
+    ck "(fn size [xs : (List Int)] xs/~size) (size [1 2 3])", "3"
+    ck "(try (fn size [xs : (List Int)] xs/~size) (size [1 \"bad\"]) " &
        "catch (TypeError ^expected e) e)", "\"(List Int)\""
     ck "(fn value [m : (Map Sym Int)] m/a) (value {^a 3})", "3"
     ck "(var routes (into (to_stream [[\"handler\" (fn [] 7)]]) {})) " &

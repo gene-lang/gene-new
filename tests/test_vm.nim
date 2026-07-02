@@ -1040,13 +1040,14 @@ suite "vm — selectors":
        "\"selector lookup failed at segment: name\""
     expect GeneError:
       discard runStr("((select ^strict 1 name) {^age 37})")
-  test "selectors read list indexes and fixed list members":
+  test "selectors read list indexes and path sends expose list behavior":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"
-    ck "(var xs [10 20 30]) xs/size", "3"
-    ck "(var xs [10 20 30]) [xs/empty? xs/first xs/last]",
-       "[false 10 30]"
-    ck "(var xs []) [xs/empty? xs/first xs/last]", "[true void void]"
+    ck "(var xs [10 20 30]) xs/size", "void"
+    ck "(var xs [10 20 30]) [xs/~size xs/~empty? xs/~first xs/~last]",
+       "[3 false 10 30]"
+    ck "(var xs []) [xs/~empty? xs/~first xs/~last]", "[true void void]"
+    ck "(fn size [xs] xs/~size) (size [1 2 3])", "3"
   test "selectors read node props, body indexes, and projections":
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/1", "20"

@@ -2520,6 +2520,26 @@ proc requireNode(name: string, value: Value) =
   if value.kind != vkNode:
     raise newException(GeneError, name & " expects a Node")
 
+proc biListSize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("size", args)
+  requireList("size", args[0])
+  newInt(args[0].listItems.len)
+
+proc biListEmpty(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("empty?", args)
+  requireList("empty?", args[0])
+  newBool(args[0].listItems.len == 0)
+
+proc biListFirst(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("first", args)
+  requireList("first", args[0])
+  if args[0].listItems.len > 0: args[0].listItems[0] else: VOID
+
+proc biListLast(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("last", args)
+  requireList("last", args[0])
+  if args[0].listItems.len > 0: args[0].listItems[^1] else: VOID
+
 proc biListAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "List/assoc expects 3 arguments, got " & $args.len)
@@ -3325,6 +3345,10 @@ proc buildBuiltins(app: Application): Scope =
   result.define("key", newNativeFn("key", biSelectorKey))
   result.define("buffer", newNativeCallFn("buffer", biBuffer,
                                           acceptsNamed = false))
+  result.define("size", newNativeFn("size", biListSize))
+  result.define("empty?", newNativeFn("empty?", biListEmpty))
+  result.define("first", newNativeFn("first", biListFirst))
+  result.define("last", newNativeFn("last", biListLast))
   let listScope = newScope(result)
   listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
   listScope.define("set!", newNativeFn("List/set!", biListSetBang))
@@ -4400,6 +4424,17 @@ proc valueImplementsCallable(value: Value, scope: Scope): bool =
     return false
   let protocol = builtinBinding(scope, "Callable")
   protocol.kind == vkProtocol and typeImplementsProtocol(scope, typ, protocol)
+
+proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value =
+  case receiver.kind
+  of vkList:
+    case name
+    of "size", "empty?", "first", "last":
+      builtinBinding(scope, name)
+    else:
+      NIL
+  else:
+    NIL
 
 proc capturedScope(scope: Scope, captureDepth: int): Scope =
   if captureDepth <= 0:
@@ -6532,6 +6567,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let target = stack.pop()
           let selector = stack.pop()
           stack.add applySelector(selector, target)
+        of opApplySelectorTop:
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in selector apply")
+          let selector = stack.pop()
+          let target = stack.pop()
+          stack.add applySelector(selector, target)
         of opMakeFn:
           let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
@@ -7130,6 +7171,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             callee = typeDirectMessage(recvType, inst[].name)
             if callee.kind == vkNil:
               callee = resolveReceiverMessage(scope, recvType, inst[].name)
+          if callee.kind == vkNil:
+            callee = builtinReceiverMessage(scope, receiver, inst[].name)
           if callee.kind == vkNil:
             if not scope.lookupOptional(inst[].name, callee):
               raise newException(GeneError, "undefined symbol: " & inst[].name)
@@ -10271,12 +10314,7 @@ proc staticLookup(target, segment: Value): Value =
         of "meta": newMap(target.meta)
         else: VOID
     of vkList:
-      case key
-      of "size": newInt(target.listItems.len)
-      of "empty?": newBool(target.listItems.len == 0)
-      of "first": (if target.listItems.len > 0: target.listItems[0] else: VOID)
-      of "last": (if target.listItems.len > 0: target.listItems[^1] else: VOID)
-      else: VOID
+      VOID
     of vkNamespace:
       # Qualified access reads the namespace's own exports (not its parent chain).
       target.exportedBinding(key)

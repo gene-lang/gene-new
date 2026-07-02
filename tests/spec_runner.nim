@@ -27,6 +27,7 @@ suite "spec — reader surface from design":
     check_read("/users/0/name", "(select users 0 name)")
     check_read("users/-1/name", "(path users -1 name)")
     check_read("(import net/http [Request])", "(import (path net http) [Request])")
+    check_read("xs/~size", "(path xs ~size)")
     check_read("(fn f [^server : Http/Server] nil)",
                "(fn f [^ server : Http/Server] nil)")
     check_read("(~ f a)", "(~ f a)")
@@ -1093,12 +1094,13 @@ suite "spec — streams from design":
                "catch {^message m} m)",
                "\"selector lookup failed at segment: name\"")
 
-  test "list selectors expose fixed members":
+  test "list path sends expose behavior while selectors stay generic":
     check_eval("(var xs [10 20 30]) " &
-               "[(xs ~ /size) (xs ~ /empty?) (xs ~ /first) (xs ~ /last)]",
-               "[3 false 10 30]")
-    check_eval("(var xs []) [(xs ~ /empty?) (xs ~ /first) (xs ~ /last)]",
+               "[xs/~size xs/~empty? xs/~first xs/~last xs/size]",
+               "[3 false 10 30 void]")
+    check_eval("(var xs []) [xs/~empty? xs/~first xs/~last]",
                "[true void void]")
+    check_eval("(fn size [xs] xs/~size) (size [1 2 3])", "3")
 
   test "complex selector stages adapt stream helpers":
     check_eval("(var users [{^name \"Ada\" ^adult true} " &

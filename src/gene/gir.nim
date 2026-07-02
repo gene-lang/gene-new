@@ -28,6 +28,7 @@ type
     opMakeNode
     opMakeSelector
     opApplySelector
+    opApplySelectorTop
     opMakeFn
     opMakeNamespace
     opSetModuleName
@@ -512,6 +513,8 @@ proc formatInstruction(inst: Instruction): string =
   of opMakeSelector:
     result.add " count=" & $inst.intArg
   of opApplySelector:
+    discard
+  of opApplySelectorTop:
     discard
   of opMakeFn:
     result.add " fn=" & $inst.intArg
