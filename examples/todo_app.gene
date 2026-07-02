@@ -1,6 +1,7 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene TODO app — end-to-end web application on the net/http MVP server.
+# Gene TODO app — end-to-end web application on the net/http MVP server,
+# persisted in SQLite through the shared Db protocol.
 #
 #   HTML page:  GET  /                   server-rendered todo list + forms
 #   Form flow:  POST /todos              create (redirects to /)
@@ -11,48 +12,52 @@
 #               POST /api/todos/toggle   toggle   (form body: id=N)
 #               POST /api/todos/delete   delete   (form body: id=N)
 #
-# Run:  bin/gene run examples/todo_app.gene
+# Run:  bin/gene run examples/todo_app.gene        (creates ./todo.db)
 # Then: open http://127.0.0.1:8090
+#
+# The store functions only speak the Db protocol (exec/query/execute), so
+# swapping in db/postgres means changing `open` and the SQL placeholder
+# style ($1 instead of ?) — the app code shape stays the same.
 # =============================================================================
 
 (mod todo-app
-  @doc "in-memory TODO list with an HTML page and a JSON API")
+  @doc "SQLite-backed TODO list with an HTML page and a JSON API")
 
 (import html [escape])
 (import url [parse_query UrlError])
 (import str [split join])
 (import std/parse [parse_int ParseError])
-(import std/stream [to_stream map filter into])
+(import std/stream [to_stream map into])
 (import net/http [Request Response Server serve json redirect not_found])
+(import db/sqlite [open DbError])
 
 # -----------------------------------------------------------------------------
-# Store: a cell holding an immutable-by-convention list of todo maps.
+# Store: SQLite via the Db protocol. `done` is stored as 0/1.
 # -----------------------------------------------------------------------------
 
-(var todos (cell []))
-(var next-id (cell 1))
+(var db (open "todo.db"))
+(db ~ exec "create table if not exists todos (
+  id integer primary key autoincrement,
+  text text not null,
+  done integer not null default 0)")
 
-(fn add_todo [text : Str] : Int
-  (var id (Cell/get next-id))
-  (Cell/set next-id (+ id 1))
-  (Cell/update todos (fn [xs]
-    ((to_stream [{^id id ^text text ^done false}]) ~ into xs)))
-  id)
+(fn list_todos [] : (List Map)
+  (db ~ query "select id, text, done from todos order by id"))
+
+(fn add_todo [text : Str] : Nil
+  (db ~ execute "insert into todos(text) values (?)" text)
+  nil)
 
 (fn toggle_todo [id : Int] : Nil
-  (Cell/update todos (fn [xs]
-    ((to_stream xs)
-      ~ map (fn [t]
-          (if (= t/id id)
-            {^id t/id ^text t/text ^done (not t/done)}
-            t))
-      ; ~ into [])))
+  (db ~ execute "update todos set done = 1 - done where id = ?" id)
   nil)
 
 (fn delete_todo [id : Int] : Nil
-  (Cell/update todos (fn [xs]
-    ((to_stream xs) ~ filter (fn [t] (not (= t/id id))) ; ~ into [])))
+  (db ~ execute "delete from todos where id = ?" id)
   nil)
+
+(fn done? [t] : Bool
+  (not (= t/done 0)))
 
 # -----------------------------------------------------------------------------
 # JSON rendering (hand-rolled until a ToJson derive lands).
@@ -66,11 +71,11 @@
 
 (fn todo_json [t] : Str
   (var text (json_escape t/text))
-  (var done (if t/done "true" "false"))
+  (var done (if (done? t) "true" "false"))
   $"{\"id\":${t/id},\"text\":\"${text}\",\"done\":${done}}")
 
 (fn todos_json [] : Str
-  (var parts ((to_stream (Cell/get todos)) ~ map todo_json ; ~ into []))
+  (var parts ((to_stream (list_todos)) ~ map todo_json ; ~ into []))
   (var body (join parts ","))
   $"[${body}]")
 
@@ -95,8 +100,8 @@
 
 (fn todo_row [t] : Str
   (var text (escape t/text))
-  (var mark (if t/done "&#10003;" "&#9675;"))
-  (var cls (if t/done "done" "open"))
+  (var mark (if (done? t) "&#10003;" "&#9675;"))
+  (var cls (if (done? t) "done" "open"))
   ($ "<li class=\"" cls "\">"
      "<form class=\"inline\" method=\"post\" action=\"/todos/toggle\">"
      "<input type=\"hidden\" name=\"id\" value=\"" t/id "\">"
@@ -108,7 +113,7 @@
      "</li>"))
 
 (fn page [] : Str
-  (var items (Cell/get todos))
+  (var items (list_todos))
   (var rows_list ((to_stream items) ~ map todo_row ; ~ into []))
   (var rows (join rows_list ""))
   (var count (size items))

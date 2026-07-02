@@ -18,7 +18,21 @@ Implementation status:
   construction uses helpers or `(Response ^status N ^body s)` because type
   constructors take named fields only; `cookie`/`set_cookie`/`static_file` are
   not implemented yet.
-- Phase 4 (SQLite) and Phase 5 (`web/router` etc.) — not started.
+- Phase 4 (databases) — implemented beyond the original SQLite-only plan: a
+  shared `Db` protocol (`exec`/`query`/`query_one`/`execute`/`transaction`/
+  `close`/`closed?`) in the `db` namespace with `db/sqlite` and `db/postgres`
+  backends. Both load their C client library at runtime via dynlib (no
+  link-time dependency; `GENE_LIBPQ` overrides the libpq path). Connections
+  are `SqliteDb`/`PostgresDb` nodes whose `^handle` is an owned C pointer
+  wired to the library close function. Rows are maps with typed values;
+  parameters are positional (`?` for sqlite, `$1` for postgres — SQL dialect
+  is not abstracted). Failures raise catchable `DbError`. `transaction` rolls
+  back on recoverable error or panic and commits on normal return. Statement
+  values, named parameters, and blob columns are not implemented.
+  `examples/todo_app.gene` persists through `db/sqlite`. Backend impls live
+  on the namespace scopes, so only importing programs pay protocol-dispatch
+  cost.
+- Phase 5 (`web/router` etc.) — not started.
 
 ## Goals
 

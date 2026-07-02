@@ -1993,6 +1993,50 @@ suite "spec — net/http surface from stdlib plan":
                "catch (HttpError ^message _) \"bad server\")",
                "\"bad server\"")
 
+suite "spec — db protocol from stdlib plan":
+  test "sqlite backend covers CRUD, typed params, and typed rows":
+    check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
+               "(c ~ exec \"create table t (id integer primary key, x text, f float, b integer)\") " &
+               "(c ~ execute \"insert into t(x, f, b) values (?, ?, ?)\" \"a\" 1.5 true) " &
+               "(c ~ query \"select * from t\")",
+               "[{^id 1 ^x \"a\" ^f 1.5 ^b 1}]")
+    check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
+               "(c ~ exec \"create table t (x text)\") " &
+               "(c ~ query_one \"select * from t where x = ?\" \"missing\")",
+               "nil")
+    check_eval("(import db/sqlite [open DbError]) " &
+               "(var c (open \":memory:\")) " &
+               "(try (c ~ query \"select * from missing\") " &
+               "catch (DbError ^message _) \"caught\")",
+               "\"caught\"")
+
+  test "sqlite transactions roll back on recoverable failure":
+    check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
+               "(c ~ exec \"create table t (x text)\") " &
+               "(try (c ~ transaction (fn [d] " &
+               "  (d ~ execute \"insert into t(x) values (?)\" \"doomed\") " &
+               "  (fail \"abort\"))) catch * nil) " &
+               "(c ~ transaction (fn [d] " &
+               "  (d ~ execute \"insert into t(x) values (?)\" \"kept\"))) " &
+               "(c ~ query \"select x from t\")",
+               "[{^x \"kept\"}]")
+
+  test "connections close explicitly and reject further use":
+    check_eval("(import db/sqlite [open DbError]) " &
+               "(var c (open \":memory:\")) " &
+               "(var before (c ~ closed?)) (c ~ close) " &
+               "[before (c ~ closed?) " &
+               " (try (c ~ query \"select 1\") " &
+               " catch (DbError ^message _) \"rejected\")]",
+               "[false true \"rejected\"]")
+
+  test "sqlite and postgres share one Db protocol":
+    check_eval("(import db [Db]) " &
+               "[(same? Db (Namespace/lookup db/sqlite \"Db\")) " &
+               " (same? Db (Namespace/lookup db/postgres \"Db\")) " &
+               " (not (= (Namespace/lookup db/postgres \"open\") void))]",
+               "[true true true]")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))
