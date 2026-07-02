@@ -426,3 +426,72 @@ suite "types — type-direct messages and sends":
     expect GeneError:
       discard runStr("(protocol P (message m [self])) " &
                      "(type T ^props {} (message P/m [self] 1))")
+
+suite "types — inline protocol impls":
+  test "inline impls dispatch like standalone impls":
+    ck "(protocol A (message do_a [self] : Str)) " &
+       "(type T ^props {} " &
+       "  (impl A (message do_a [self] : Str \"inline\"))) " &
+       "(var t (T)) " &
+       "[(t ~ do_a) (t ~ A/do_a)]",
+       "[\"inline\" \"inline\"]"
+
+  test "inline marker impls satisfy ^impl requirements":
+    ck "(type Token ^props {^id Int} ^impl [Send] (impl Send)) " &
+       "(var t (Token ^id 7)) t/id",
+       "7"
+
+  test "inline impls must cover the protocol closure":
+    expect GeneError:
+      discard runStr("(protocol P (message a [self]) (message b [self])) " &
+                     "(type T ^props {} (impl P (message a [self] 1)))")
+
+  test "inline impls cover ^inherit ancestor messages":
+    ck "(protocol A (message do_a [self] : Str)) " &
+       "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
+       "(type T ^props {} ^impl [A] " &
+       "  (impl B " &
+       "    (message do_a [self] : Str \"a\") " &
+       "    (message do_b [self] : Str \"b\"))) " &
+       "(var t (T)) " &
+       "[(t ~ do_a) (t ~ do_b)]",
+       "[\"a\" \"b\"]"
+
+  test "inline impls qualify same-named closure messages":
+    ck "(protocol X (message clash [self] : Str)) " &
+       "(protocol Y (message clash [self] : Str)) " &
+       "(protocol Z ^inherit [X Y]) " &
+       "(type T ^props {} " &
+       "  (impl Z " &
+       "    (message X/clash [self] : Str \"x\") " &
+       "    (message Y/clash [self] : Str \"y\"))) " &
+       "(var t (T)) " &
+       "[(t ~ X/clash) (t ~ Y/clash)]",
+       "[\"x\" \"y\"]"
+
+  test "inline impls coexist with type-direct messages":
+    ck "(protocol A (message do_a [self] : Str)) " &
+       "(type T ^props {^val Int} " &
+       "  (message own [self] self/val) " &
+       "  (impl A (message do_a [self] : Str \"via-impl\"))) " &
+       "(var t (T ^val 9)) " &
+       "[(t ~ own) (t ~ do_a)]",
+       "[9 \"via-impl\"]"
+
+  test "inline impls take no receiver":
+    expect GeneError:
+      discard runStr("(protocol A (message do_a [self] : Str)) " &
+                     "(type T ^props {} " &
+                     "  (impl A T (message do_a [self] : Str \"x\")))")
+
+  test "inline plus standalone impls of one protocol are duplicates":
+    expect GeneError:
+      discard runStr("(protocol A (message do_a [self] : Str)) " &
+                     "(type T ^props {} " &
+                     "  (impl A (message do_a [self] : Str \"inline\"))) " &
+                     "(impl A T (message do_a [self] : Str \"standalone\"))")
+
+  test "inline impl targets must be protocols":
+    expect GeneError:
+      discard runStr("(var NotProtocol 1) " &
+                     "(type T ^props {} (impl NotProtocol))")

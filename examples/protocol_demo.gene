@@ -45,20 +45,21 @@
   (message bigger [self : Self, other : Self]))
 
 # -----------------------------------------------------------------------------
-# ^impl [Comparable] requires a visible impl by scope completion; the single
-# `impl Ord Dog` below satisfies it structurally (§3.5) — no separate
-# `impl Comparable Dog` is needed.
+# ^impl [Comparable] requires a visible impl by scope completion; the inline
+# `impl Ord` block satisfies it structurally (§3.5) — no separate
+# `impl Comparable Dog` is needed. Inline impls take no receiver: the
+# enclosing type is the receiver (§8), so this is identical to writing
+# `(impl Ord Dog ...)` after the declaration.
 # -----------------------------------------------------------------------------
 
 (type Dog ^is Animal ^props {^breed Str ^weight Int} ^impl [Comparable]
-  (message tag [self] $"${self/name} the ${self/breed}"))
-
-(impl Ord Dog
-  (message compare [self other]
-    : Int
-    (- self/weight other/weight))
-  (message bigger [self other]
-    (if (< (self ~ compare other) 0) other self)))
+  (message tag [self] $"${self/name} the ${self/breed}")
+  (impl Ord
+    (message compare [self other]
+      : Int
+      (- self/weight other/weight))
+    (message bigger [self other]
+      (if (< (self ~ compare other) 0) other self))))
 
 # -----------------------------------------------------------------------------
 # Multiple unrelated parents with a same-name message: Sized/size_of and

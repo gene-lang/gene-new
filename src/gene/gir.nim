@@ -298,6 +298,7 @@ type
     deriveProtocolCount*: int
     deriveRequests*: seq[Value]
     messages*: seq[ImplMessageProto] # type-direct messages (docs/core.md §8)
+    inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (docs/core.md §8)
 
   ProtocolProto* = ref object
     name*: string
@@ -311,6 +312,12 @@ type
     fn*: FunctionProto
 
   ImplProto* = ref object
+    messages*: seq[ImplMessageProto]
+
+  ## An (impl P (message ...) ...) block inside a type body; the receiver is
+  ## the enclosing type (docs/core.md §8). The protocol expression is compiled
+  ## onto the stack alongside the message error rows.
+  InlineImplProto* = object
     messages*: seq[ImplMessageProto]
 
   Chunk* = ref object

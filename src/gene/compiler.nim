@@ -3401,14 +3401,22 @@ proc compileType(c: var Compiler, node: Value) =
     raise newException(GeneError, "type requires a name")
   rejectUnknownTypeProps(node)
   let name = body[0].symVal
+  var messageNodes: seq[Value]
+  var implNodes: seq[Value]
+  for i in 1 ..< body.len:
+    let item = body[i]
+    if item.kind == vkNode and item.head.isSymbol("message"):
+      messageNodes.add item
+    elif item.kind == vkNode and item.head.isSymbol("impl"):
+      implNodes.add item
+    else:
+      raise newException(GeneError,
+        "type body items must be message or impl declarations")
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
-  for i in 1 ..< body.len:
-    if body[i].kind != vkNode or not body[i].head.isSymbol("message"):
-      raise newException(GeneError,
-        "type body items must be message declarations")
-    rejectReservedEffects(body[i])
-    let mp = implMessageProto(c, body[i])
+  for item in messageNodes:
+    rejectReservedEffects(item)
+    let mp = implMessageProto(c, item)
     if mp.protocolName.len > 0:
       raise newException(GeneError,
         "type-direct message names must be simple: " &
@@ -3417,6 +3425,29 @@ proc compileType(c: var Compiler, node: Value) =
       raise newException(GeneError, "duplicate type message: " & mp.name)
     seenMessages[mp.name] = true
     messages.add mp
+  # Inline impls (docs/core.md §8): (impl P (message ...) ...) with the
+  # receiver implied — the enclosing type. Each impl emits its message error
+  # rows and then its protocol expression, in declaration order.
+  var inlineImpls: seq[InlineImplProto]
+  for item in implNodes:
+    if item.body.len == 0:
+      raise newException(GeneError, "inline impl requires a protocol")
+    var implMessages: seq[ImplMessageProto]
+    var seenImplMessages = initTable[string, bool]()
+    for j in 1 ..< item.body.len:
+      let msgNode = item.body[j]
+      if msgNode.kind != vkNode or not msgNode.head.isSymbol("message"):
+        raise newException(GeneError,
+          "inline impl body items must be message declarations " &
+          "(the enclosing type is the receiver)")
+      let mp = implMessageProto(c, msgNode)
+      let key = mp.protocolName & "/" & mp.name
+      if seenImplMessages.hasKey(key):
+        raise newException(GeneError, "duplicate impl message: " & mp.name)
+      seenImplMessages[key] = true
+      implMessages.add mp
+    compileExpr(c, item.body[0])
+    inlineImpls.add InlineImplProto(messages: implMessages)
   var fields: seq[TypeField]
   if node.props.hasKey("props"):
     let schema = node.props["props"]
@@ -3464,7 +3495,8 @@ proc compileType(c: var Compiler, node: Value) =
                                            requiredImplCount: requiredImplCount,
                                            deriveProtocolCount: deriveProtocolCount,
                                            deriveRequests: deriveRequests,
-                                           messages: messages)))
+                                           messages: messages,
+                                           inlineImpls: inlineImpls)))
   c.emitDefineBinding(name)
 
 proc compileProtocol(c: var Compiler, node: Value) =

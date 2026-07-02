@@ -1105,6 +1105,17 @@ A type can require manual implementations:
 
 The compiler checks that an `impl ToHtml MenuItem` exists.
 
+An implementation may also be written inline in the type body, with the
+receiver implied (`docs/core.md §8`):
+
+```gene
+(type MenuItem
+  ^props {^name Str ^price Int}
+  (impl ToHtml
+    (message to_html [self] : Node
+      `(tr (td %self/name)))))
+```
+
 A type can request generated implementations:
 
 ```gene

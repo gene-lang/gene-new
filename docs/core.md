@@ -515,12 +515,51 @@ contracts, type messages are private convenience.
   protocol for typed boundaries or multi-type dispatch, they write an
   explicit `protocol` + `impl`.
 
+### Inline protocol impls
+
+A type body may also carry `impl` blocks with the receiver implied — the
+enclosing type:
+
+```gene
+(protocol A (message do_a [self : Self] : Any))
+
+(type T ^props {...}
+  (impl A
+    (message do_a [self] ...)))
+```
+
+This is pure placement sugar: it is semantically identical to writing
+`(impl A T (message do_a [self] ...))` immediately after the type
+declaration, in the same scope. Everything about standalone impls carries
+over unchanged:
+
+- the impl must cover the protocol's full transitive closure (§3.2), with
+  the same qualified-name rules for same-named closure messages (§3.6.1);
+- it registers as an ordinary visible impl — an inline `impl A` plus a
+  separate `impl A T` elsewhere is the usual duplicate-impl error, and an
+  inline impl plus a `^derive`-generated impl for the same protocol
+  conflicts the same way a manual one does;
+- it satisfies a `^impl [A]` requirement on the same type (listing both is
+  redundant but harmless, per OQ-D);
+- a marker protocol needs no messages: `(impl Send)` inline works.
+
+Unlike type-direct messages, inline impls **are** the protocol system —
+`(t ~ do_a)` and `(t ~ A/do_a)` dispatch through them exactly as through a
+standalone impl. The two body-item kinds compose freely in one type body:
+`(message …)` items are private receiver-owned behavior, `(impl P …)` items
+are public contract implementations, grouped at the declaration site.
+
+Writing a receiver inside an inline impl is an error (`(impl A T …)` inside
+`(type T …)` — the receiver is always the enclosing type).
+
 ### Error forms
 
-- A type body item that is not a `(message …)` form is a compile-time error.
+- A type body item that is not a `(message …)` or `(impl …)` form is a
+  compile-time error.
 - A `(message …)` form missing a name or parameter vector is a compile-time
   error (same validation as `impl` message forms).
 - Duplicate message names in the same type body are a compile-time error.
+- An inline `(impl …)` form naming a receiver is a compile-time error.
 
 ### Implementation sketch
 
@@ -712,6 +751,11 @@ implemented and stable, and sit at implementation-order item 13; base
 - §7, §8 — type-direct messages: `compileType` scans `(message ...)` body
   forms into a per-type table (`TypeData.messages`), reached via qualified
   access (`Box/get`) and sends, walking `^is` with most-derived-wins
+- §8 inline protocol impls — `(impl P (message ...) ...)` in a type body
+  registers as an ordinary visible impl with the enclosing type as receiver,
+  identical to a standalone `(impl P T ...)` after the declaration (same
+  closure coverage, qualification, duplicate, and `^impl`-satisfaction
+  rules; `(impl Send)` works for markers)
 - §9.1 — receiver-first sends: the reader preserves `(x ~ f a)` nodes
   (round-trips exactly); `opResolveMessage` resolves tier 1 (type-direct
   walking `^is`, then visible protocol impl entries by simple name with the

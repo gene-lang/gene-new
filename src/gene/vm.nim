@@ -4898,6 +4898,11 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
       publishSpawnScope(field.typeBodyFieldScope(nil), seenScopes, seenValues, seenChunks)
     for value in proto.deriveRequests:
       publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+    for message in proto.messages:
+      publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
+    for inline in proto.inlineImpls:
+      for message in inline.messages:
+        publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
   for proto in chunk.protocolProtos:
     publishSpawnFunctionProto(proto.deriveFn, seenScopes, seenValues, seenChunks)
   for proto in chunk.implProtos:
@@ -6550,6 +6555,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if protocol.kind != vkProtocol:
                 raise newException(GeneError, "type ^impl entries must be protocols")
               requiredProtocols[i] = protocol
+          var inlineProtocols = newSeq[Value](proto.inlineImpls.len)
+          var inlineErrorTypes = newSeq[seq[seq[Value]]](proto.inlineImpls.len)
+          if proto.inlineImpls.len > 0:
+            for i in countdown(proto.inlineImpls.len - 1, 0):
+              let protocolValue = stack.pop()
+              if protocolValue.kind != vkProtocol:
+                raise newException(GeneError, "impl target must be a protocol")
+              inlineProtocols[i] = protocolValue
+              let inlineMessages = proto.inlineImpls[i].messages
+              inlineErrorTypes[i] = newSeq[seq[Value]](inlineMessages.len)
+              for j in countdown(inlineMessages.len - 1, 0):
+                inlineErrorTypes[i][j] =
+                  stack.popCheckedErrorTypes(inlineMessages[j].fn.errorTypeCount,
+                                             scope)
           var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
           if proto.messages.len > 0:
             for i in countdown(proto.messages.len - 1, 0):
@@ -6564,6 +6583,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
                             derivedProtocols, proto.deriveRequests,
                             proto.bodyFields, messages)
+          # Inline impls register exactly like standalone (impl P T ...) forms
+          # written after the type declaration (docs/core.md §8), before
+          # ^derive runs so manual-vs-generated conflicts surface normally.
+          for i, inline in proto.inlineImpls:
+            var entries: seq[ImplMessage]
+            for j, message in inline.messages:
+              let resolved = resolveImplMessage(scope, inlineProtocols[i],
+                                                message.protocolName,
+                                                message.name)
+              let fn = newFunction(message.fn.name, message.fn.params,
+                                   message.fn, scope, message.fn.checksErrors,
+                                   inlineErrorTypes[i][j])
+              entries.add ImplMessage(message: resolved,
+                                      fn: functionForScopeStorage(fn, scope))
+            scope.registerImpl(inlineProtocols[i], typ, entries)
           if proto.requiredImplCount > 0:
             scope.requiredImplTypes.add typ
           for i, protocol in derivedProtocols:
