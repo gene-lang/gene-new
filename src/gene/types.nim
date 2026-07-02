@@ -208,10 +208,17 @@ type
     body: seq[Value]
     meta: PropTable
 
+  ## One implemented message inside a ProtocolImpl. `message` is the protocol
+  ## message value — the qualified identity (docs/core.md §3.2): two messages
+  ## with the same simple name in different protocols are distinct entries.
+  ImplMessage* = object
+    message*: Value
+    fn*: Value
+
   ProtocolImpl* = object
     protocol*: Value
     receiver*: Value
-    messages*: Table[string, Value]
+    messages*: seq[ImplMessage]
 
   TypeBinding* = object
     expr*: Value
@@ -526,6 +533,7 @@ type
     requiredProtocols: seq[Value]
     derivedProtocols: seq[Value]
     deriveRequests: seq[Value]
+    messages: Table[string, Value] # type-direct messages (docs/core.md §8)
 
   TypeField* = object
     name*: string
@@ -542,9 +550,13 @@ type
 
   ProtocolData = ref object of GeneObjectData
     name: string
-    messages: OrderedTable[string, Value]
+    messages: OrderedTable[string, Value] # own messages, keyed by local name
     deriveFn: Value
-    parents: seq[Value]      # direct ^inherit parents (design docs/core.md §3)
+    parents: seq[Value]      # direct ^inherit parents (docs/core.md §3)
+    closure: seq[Value]      # full transitive message closure, ancestors
+                             # first, deduped by message identity; same-name
+                             # messages from different protocols coexist
+                             # (docs/core.md §3.2-§3.3)
 
   ProtocolMessageData = ref object of GeneObjectData
     name: string
@@ -1007,12 +1019,16 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
       emit(val)
     for val in d.deriveRequests:
       emit(val)
+    for _, val in d.messages:
+      emit(val)
   of okProtocol:
     let d = ProtocolData(data)
     for _, val in d.messages:
       emit(val)
     emit(d.deriveFn)
     for val in d.parents:
+      emit(val)
+    for val in d.closure:
       emit(val)
   of okProtocolMessage:
     discard
@@ -1130,11 +1146,13 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.requiredProtocols.setLen(0)
     d.derivedProtocols.setLen(0)
     d.deriveRequests.setLen(0)
+    d.messages = initTable[string, Value]()
   of okProtocol:
     let d = ProtocolData(data)
     d.messages = initOrderedTable[string, Value]()
     clearValueSlot(d.deriveFn)
     d.parents.setLen(0)
+    d.closure.setLen(0)
   of okProtocolMessage:
     ProtocolMessageData(data).protocolBits = 0
 
@@ -3899,7 +3917,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,
               derivedProtocols: sink seq[Value] = @[],
               deriveRequests: sink seq[Value] = @[],
-              ownBodyFields: seq[TypeBodyField] = @[]): Value =
+              ownBodyFields: seq[TypeBodyField] = @[],
+              messages: sink Table[string, Value] = initTable[string, Value]()): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -3929,7 +3948,20 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
                      weakScope: cast[pointer](scope),
                      requiredProtocols: requiredProtocols,
                      derivedProtocols: derivedProtocols,
-                     deriveRequests: deriveRequests))
+                     deriveRequests: deriveRequests,
+                     messages: messages))
+
+proc typeDirectMessage*(v: Value, name: string): Value =
+  ## Type-direct message lookup, walking the ^is chain — most-derived type
+  ## wins (docs/core.md §8). Returns NIL when no type in the chain defines
+  ## `name`; stored messages are always functions, never NIL.
+  var t = v
+  while t.kind == vkType:
+    let data = TypeData(objData(t))
+    if data.messages.hasKey(name):
+      return data.messages[name]
+    t = data.parent
+  NIL
 
 proc newProtocolMessage*(protocol: Value, name: string): Value =
   boxObject(ProtocolMessageData(objKind: okProtocolMessage,
@@ -3938,41 +3970,65 @@ proc newProtocolMessage*(protocol: Value, name: string): Value =
 
 proc newProtocol*(name: string, messageNames: openArray[string],
                   deriveFn: Value = NIL, parents: sink seq[Value] = @[]): Value =
-  ## `parents` are already-constructed ^inherit ancestors (design docs/core.md
-  ## §3). The flattened message closure is merged eagerly here, mirroring how
-  ## `newType` eagerly merges `^is` fields: a message is identified by its
-  ## defining protocol, so diamond re-inheritance of the same message (same
-  ## value identity, reached through two parents) is not a conflict, but two
-  ## unrelated parents contributing distinct messages under the same name is
-  ## rejected at definition time (docs/core.md §3.3 — a simplification of the
-  ## original design's use-site-ambiguity proposal, chosen because the message
-  ## table here is name-keyed, not defining-protocol-keyed).
-  var messages = initOrderedTable[string, Value]()
+  ## `parents` are already-constructed ^inherit ancestors (docs/core.md §3).
+  ## The message closure is flattened eagerly, ancestors first, deduped by
+  ## message identity. A protocol message is identified by its defining
+  ## protocol plus local name (docs/core.md §3.2): same-name messages from
+  ## unrelated parents coexist in the closure, and an own message may reuse
+  ## an inherited simple name — it is a new distinct message, not an override
+  ## (docs/core.md §3.3-§3.4). Diamond re-inheritance contributes one entry
+  ## because it is the same message value through two paths.
+  var closure: seq[Value]
   for parent in parents:
     if parent.kind != vkProtocol:
       raise newException(GeneError, "protocol ^inherit entries must be protocols")
-    for pname, pmsg in ProtocolData(objData(parent)).messages:
-      if messages.hasKey(pname):
-        if messages[pname].bits != pmsg.bits:
-          raise newException(GeneError,
-            "protocol " & name & " has conflicting inherited message: " & pname)
-      else:
-        messages[pname] = pmsg
-  let data = ProtocolData(objKind: okProtocol, name: name, messages: messages,
-                          deriveFn: deriveFn, parents: parents)
+    for pmsg in ProtocolData(objData(parent)).closure:
+      var present = false
+      for existing in closure:
+        if existing.bits == pmsg.bits:
+          present = true
+          break
+      if not present:
+        closure.add pmsg
+  let data = ProtocolData(objKind: okProtocol, name: name,
+                          messages: initOrderedTable[string, Value](),
+                          deriveFn: deriveFn, parents: parents,
+                          closure: closure)
   let protocol = boxObject(data)
   for messageName in messageNames:
-    if data.messages.hasKey(messageName):
-      raise newException(GeneError,
-        "protocol " & name & " message conflicts with inherited message: " &
-        messageName)
-    data.messages[messageName] = newProtocolMessage(protocol, messageName)
+    let message = newProtocolMessage(protocol, messageName)
+    data.messages[messageName] = message
+    data.closure.add message
   protocol
 
 proc protocolParents*(v: Value): lent seq[Value] =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
     raise newException(FieldDefect, "value is not a Protocol")
   ProtocolData(objData(v)).parents
+
+proc protocolClosure*(v: Value): lent seq[Value] =
+  ## The full transitive message closure (own + inherited), ancestors first.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  ProtocolData(objData(v)).closure
+
+proc protocolClosureByName*(v: Value, name: string): seq[Value] =
+  ## All closure messages whose local name is `name`. More than one result
+  ## means the simple name is ambiguous and needs qualification
+  ## (docs/core.md §3.3/§3.6.1).
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  for message in ProtocolData(objData(v)).closure:
+    if ProtocolMessageData(objData(message)).name == name:
+      result.add message
+
+proc protocolClosureContains*(v, message: Value): bool =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    return false
+  for existing in ProtocolData(objData(v)).closure:
+    if existing.bits == message.bits:
+      return true
+  false
 
 proc protocolIsOrInherits*(candidate, target: Value): bool =
   ## True if `candidate` is `target`, or `target` is a transitive ^inherit

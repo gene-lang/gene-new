@@ -135,9 +135,15 @@ proc main() =
     "(type Box ^props {^x Int}) " &
     "(impl ToInt Box (message to_int [self] : Int self/x)) " &
     "(var box (Box ^x 10))"), protocolScope)
-  let protocolChunk = compileSource("(to_int box)")
+  # Message names are not lexical bindings (docs/core.md §1); the hot
+  # dispatch path is now the send form, resolved receiver-first (§9.1).
+  let protocolChunk = compileSource("(box ~ to_int)")
   bench("vm.protocol_message.compiled_chunk", 500_000, i):
     let v = run(protocolChunk, protocolScope)
+    checksum = checksum + v.intVal
+  let qualifiedChunk = compileSource("(box ~ ToInt/to_int)")
+  bench("vm.protocol_message.qualified.compiled_chunk", 500_000, i):
+    let v = run(qualifiedChunk, protocolScope)
     checksum = checksum + v.intVal
 
   let restScope = newGlobalScope()

@@ -136,7 +136,7 @@ suite "errors — checked rows":
        "(type Job ^props {}) " &
        "(impl Run Job " &
        "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &
-       "(try (run (Job)) catch (Boom ^message m) m)", "\"x\""
+       "(try ((Job) ~ run) catch (Boom ^message m) m)", "\"x\""
 
   test "checked rows can declare built-in MatchError":
     ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &

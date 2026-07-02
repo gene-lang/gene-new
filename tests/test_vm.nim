@@ -372,16 +372,17 @@ suite "compiler — GIR emission":
     check useProto.chunk.instructions[0].depth == 1
     check useProto.chunk.instructions[0].intArg == 1
 
-  test "emits slots for generated protocol messages":
+  test "protocol messages get no scope slots; sends resolve by name":
+    # Message names are not bound in the enclosing scope (docs/core.md §1);
+    # a send compiles to opResolveMessage with the message name.
     let chunk = compileSource(
-      "(protocol P (message ping [x])) (fn use [x] (ping x))")
-    check chunk.localNames == @["ping", "P", "use"]
+      "(protocol P (message ping [x])) (fn use [x] (x ~ ping))")
+    check chunk.localNames == @["P", "use"]
 
     let useProto = chunk.functions[0]
     var sawPing = false
     for inst in useProto.chunk.instructions:
-      if inst.op == opCallParentLocal1 and inst.name == "ping" and
-          inst.intArg == 0:
+      if inst.op == opResolveMessage and inst.name == "ping":
         sawPing = true
     check sawPing
 

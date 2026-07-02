@@ -31,7 +31,7 @@ suite "spec — reader surface from design":
                "(fn f [^ server : Http/Server] nil)")
     check_read("(~ f a)", "(~ f a)")
     check_read("(x; parse; (or _ default))", "(or ((x) parse) default)")
-    check_read("(x ~ parse; (or _ default))", "(or (parse x) default)")
+    check_read("(x ~ parse; (or _ default))", "(or (x ~ parse) default)")
 
   test "template unquote supports interpolation and dynamic paths":
     check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
@@ -918,7 +918,7 @@ suite "spec — protocol derive from design":
                "    `(impl HasLabel %t " &
                "       (message label [self] : Str self/name)))) " &
                "(type MenuItem ^props {^name Str} ^derive [HasLabel]) " &
-               "(label (MenuItem ^name \"Soup\"))",
+               "((MenuItem ^name \"Soup\") ~ label)",
                "\"Soup\"")
 
   test "protocol-local derive is limited to its own impls":

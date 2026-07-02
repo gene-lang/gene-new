@@ -3213,8 +3213,6 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Call", callType)
   let callableProtocol = newProtocol("Callable", ["apply"])
   result.define("Callable", callableProtocol)
-  for _, message in callableProtocol.protocolMessages:
-    result.define(message.protocolMessageName, message)
   let toStrProtocol = newProtocol("ToStr", ["to-str"])
   result.define("ToStr", toStrProtocol)
   var typeErrorFields: seq[TypeField]
@@ -3225,24 +3223,21 @@ proc buildBuiltins(app: Application): Scope =
                           @[errorProtocol], result)
   result.define("TypeError", typeError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: typeError,
-                                messages: initTable[string, Value]())
+                                receiver: typeError)
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
                                        typeExpr: newSym("Str"), scope: result)],
                            @[errorProtocol], result)
   result.define("MatchError", matchError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: matchError,
-                                messages: initTable[string, Value]())
+                                receiver: matchError)
   let compileError = newType("CompileError", NIL,
                              @[TypeField(name: "message", optional: false,
                                          typeExpr: newSym("Str"), scope: result)],
                              @[errorProtocol], result)
   result.define("CompileError", compileError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: compileError,
-                                messages: initTable[string, Value]())
+                                receiver: compileError)
   let parseError = newType("ParseError", compileError, @[], @[], result)
   result.define("ParseError", parseError)
   let lexError = newType("LexError", compileError, @[], @[], result)
@@ -3266,16 +3261,14 @@ proc buildBuiltins(app: Application): Scope =
                               @[errorProtocol], result)
   result.define("ChannelClosed", channelClosed)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: channelClosed,
-                                messages: initTable[string, Value]())
+                                receiver: channelClosed)
   let actorError = newType("ActorError", NIL,
                             @[TypeField(name: "message", optional: false,
                                         typeExpr: newSym("Str"), scope: result)],
                             @[errorProtocol], result)
   result.define("ActorError", actorError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: actorError,
-                                messages: initTable[string, Value]())
+                                receiver: actorError)
   let actorClosed = newType("ActorClosed", actorError, @[], @[], result)
   result.define("ActorClosed", actorClosed)
   let actorFailure = newType("ActorFailure", NIL,
@@ -3296,8 +3289,7 @@ proc buildBuiltins(app: Application): Scope =
                              @[sendProtocol], result)
   result.define("ActorFailure", actorFailure)
   result.impls.add ProtocolImpl(protocol: sendProtocol,
-                                receiver: actorFailure,
-                                messages: initTable[string, Value]())
+                                receiver: actorFailure)
   app.nativeAdd = newNativeFn("+", biAdd)
   app.nativeSub = newNativeFn("-", biSub)
   app.nativeMul = newNativeFn("*", biMul)
@@ -4237,21 +4229,68 @@ proc releaseCallScope(scope: Scope) =
     callScopePool[callScopePoolLen] = scope
     inc callScopePoolLen
 
+proc qualifiedMessageName(message: Value): string =
+  let owner = message.protocolMessageProtocol
+  if owner.kind == vkProtocol:
+    owner.protocolName & "/" & message.protocolMessageName
+  else:
+    message.protocolMessageName
+
+proc resolveImplMessage(scope: Scope, protocol: Value,
+                        protocolName, name: string): Value =
+  ## Resolve one impl-body message name against the target protocol's closure
+  ## (docs/core.md §3.6.1). Qualified names (`A/do_x`) resolve through the
+  ## named protocol's own messages; unqualified names must be unique in the
+  ## closure.
+  if protocolName.len > 0:
+    var qualifier: Value
+    if scope == nil or not scope.lookupOptional(protocolName, qualifier) or
+        qualifier.kind != vkProtocol:
+      raise newException(GeneError,
+        "impl message qualifier is not a protocol: " & protocolName)
+    let message = qualifier.protocolMessages.getOrDefault(name, NIL)
+    if message.kind != vkProtocolMessage:
+      raise newException(GeneError,
+        "protocol " & protocolName & " has no message: " & name)
+    if not protocol.protocolClosureContains(message):
+      raise newException(GeneError,
+        "message " & protocolName & "/" & name & " is not in protocol " &
+        protocol.protocolName & "'s closure")
+    return message
+  let candidates = protocol.protocolClosureByName(name)
+  if candidates.len == 0:
+    raise newException(GeneError,
+      "protocol " & protocol.protocolName & " has no message: " & name)
+  if candidates.len > 1:
+    var spellings: seq[string]
+    for candidate in candidates:
+      spellings.add qualifiedMessageName(candidate)
+    raise newException(GeneError,
+      "ambiguous message name '" & name & "' in impl body; qualify as one of: " &
+      spellings.join(", "))
+  candidates[0]
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
-                  messages: sink Table[string, Value]) =
+                  entries: sink seq[ImplMessage]) =
   if protocol.kind != vkProtocol:
     raise newException(GeneError, "impl target must be a protocol")
   if receiver.kind != vkType:
     raise newException(GeneError, "impl receiver must be a type")
-  for name in protocol.protocolMessages.keys:
-    if not messages.hasKey(name):
+  # Completeness is keyed by message identity: every message in the
+  # protocol's transitive closure must be provided exactly once
+  # (docs/core.md §3.2/§4).
+  for message in protocol.protocolClosure:
+    var count = 0
+    for entry in entries:
+      if entry.message.bits == message.bits:
+        inc count
+    if count == 0:
       raise newException(GeneError,
         "impl " & protocol.protocolName & " for " & receiver.typeName &
-        " is missing message: " & name)
-  for name in messages.keys:
-    if not protocol.protocolMessages.hasKey(name):
+        " is missing message: " & qualifiedMessageName(message))
+    if count > 1:
       raise newException(GeneError,
-        "protocol " & protocol.protocolName & " has no message: " & name)
+        "duplicate impl message: " & qualifiedMessageName(message))
   var s = scope
   while s != nil:
     for impl in s.impls:
@@ -4261,13 +4300,18 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
           " for " & receiver.typeName)
     s = s.parent
   scope.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
-                               messages: messages)
+                               messages: entries)
 
 proc sameImplMessages(a, b: ProtocolImpl): bool =
   if a.messages.len != b.messages.len:
     return false
-  for name, fn in a.messages:
-    if not b.messages.hasKey(name) or not same(fn, b.messages[name]):
+  for entry in a.messages:
+    var found = false
+    for other in b.messages:
+      if other.message.bits == entry.message.bits and same(entry.fn, other.fn):
+        found = true
+        break
+    if not found:
       return false
   true
 
@@ -4778,9 +4822,10 @@ proc snapshotScopeChain(source: Scope,
   for name, binding in source.varTypes:
     result.varTypes[name] = snapshotTypeBinding(binding, scopeMap)
   for impl in source.impls:
-    var messages = initTable[string, Value]()
-    for message, fn in impl.messages:
-      messages[message] = cloneForCapturedSnapshot(fn, scopeMap)
+    var messages: seq[ImplMessage]
+    for entry in impl.messages:
+      messages.add ImplMessage(message: entry.message,
+                               fn: cloneForCapturedSnapshot(entry.fn, scopeMap))
     result.impls.add ProtocolImpl(protocol: impl.protocol,
                                   receiver: impl.receiver,
                                   messages: messages)
@@ -5070,8 +5115,9 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     for impl in current.impls:
       publishSpawnValue(impl.protocol, seenScopes, seenValues, seenChunks)
       publishSpawnValue(impl.receiver, seenScopes, seenValues, seenChunks)
-      for _, message in impl.messages:
-        publishSpawnValue(message, seenScopes, seenValues, seenChunks)
+      for entry in impl.messages:
+        publishSpawnValue(entry.message, seenScopes, seenValues, seenChunks)
+        publishSpawnValue(entry.fn, seenScopes, seenValues, seenChunks)
     for value in current.requiredImplTypes:
       publishSpawnValue(value, seenScopes, seenValues, seenChunks)
     publishSpawnValue(current.supervisorEvents, seenScopes, seenValues,
@@ -5363,24 +5409,22 @@ proc materializeEvalParent(env: Value): Scope =
     current = bindingScope
   current
 
-proc collectProtocolMatches(scope: Scope, protocol, recvType, message: Value,
+proc collectProtocolMatches(scope: Scope, recvType, message: Value,
                             matches: var seq[Value]) =
-  # `protocol` is the message's defining protocol; an impl of a protocol that
-  # ^inherits it also provides the message (docs/core.md §3.5).
+  # Dispatch is keyed by message identity (docs/core.md §3.2/§4): an impl of
+  # any protocol whose closure includes `message` carries an entry for it, so
+  # matching entries directly also covers impls of ^inherit descendants.
   for impl in scope.impls:
-    if protocolIsOrInherits(impl.protocol, protocol) and
-        recvType.isSubtypeOf(impl.receiver):
-      if not impl.messages.hasKey(message.protocolMessageName):
-        raise newException(GeneError,
-          "impl " & impl.protocol.protocolName & " for " & impl.receiver.typeName &
-          " is missing message: " & message.protocolMessageName)
-      matches.add impl.messages[message.protocolMessageName]
+    if recvType.isSubtypeOf(impl.receiver):
+      for entry in impl.messages:
+        if entry.message.bits == message.bits:
+          matches.add entry.fn
 
-proc collectProtocolMatchesChain(scope: Scope, protocol, recvType, message: Value,
+proc collectProtocolMatchesChain(scope: Scope, recvType, message: Value,
                                  matches: var seq[Value]) =
   var s = scope
   while s != nil:
-    collectProtocolMatches(s, protocol, recvType, message, matches)
+    collectProtocolMatches(s, recvType, message, matches)
     s = s.parent
 
 proc hasSeenScope(seen: openArray[Scope], scope: Scope): bool =
@@ -5389,14 +5433,14 @@ proc hasSeenScope(seen: openArray[Scope], scope: Scope): bool =
       return true
   false
 
-proc collectProtocolMatchesExtra(scope, currentScope: Scope, protocol, recvType,
+proc collectProtocolMatchesExtra(scope, currentScope: Scope, recvType,
                                  message: Value, seen: var seq[Scope],
                                  matches: var seq[Value]) =
   var s = scope
   while s != nil:
     if not currentScope.scopeChainContains(s) and not seen.hasSeenScope(s):
       seen.add s
-      collectProtocolMatches(s, protocol, recvType, message, matches)
+      collectProtocolMatches(s, recvType, message, matches)
     s = s.parent
 
 proc dedupeProtocolMatches(matches: var seq[Value]) =
@@ -5423,13 +5467,13 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       "protocol message '" & message.protocolMessageName &
       "' requires a typed receiver")
   var matches: seq[Value]
-  collectProtocolMatchesChain(scope, protocol, recvType, message, matches)
+  collectProtocolMatchesChain(scope, recvType, message, matches)
   var seenExtraScopes: seq[Scope]
   var typ = recvType
   while typ.kind == vkType:
     let definingScope = typ.typeScope
     if definingScope != nil and not scope.scopeChainContains(definingScope):
-      collectProtocolMatchesExtra(definingScope, scope, protocol, recvType, message,
+      collectProtocolMatchesExtra(definingScope, scope, recvType, message,
                                   seenExtraScopes, matches)
     typ = typ.typeParent
   matches.dedupeProtocolMatches()
@@ -5439,6 +5483,46 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
   if matches.len > 1:
     raise newException(GeneError,
       "ambiguous impl " & protocol.protocolName & " for " & recvType.typeName)
+  matches[0]
+
+proc collectReceiverMessageMatches(scope: Scope, recvType: Value, name: string,
+                                   matches: var seq[Value]) =
+  for impl in scope.impls:
+    if recvType.isSubtypeOf(impl.receiver):
+      for entry in impl.messages:
+        if entry.message.protocolMessageName == name:
+          matches.add entry.fn
+
+proc resolveReceiverMessage(scope: Scope, recvType: Value, name: string): Value =
+  ## Receiver-context protocol lookup for message sends (docs/core.md §9.1
+  ## tier 1): find any visible impl for the receiver's type providing a
+  ## message named `name`, regardless of which protocol owns it. Returns NIL
+  ## when no impl provides the name; multiple distinct providers is the usual
+  ## use-site ambiguity error.
+  var matches: seq[Value]
+  var s = scope
+  while s != nil:
+    collectReceiverMessageMatches(s, recvType, name, matches)
+    s = s.parent
+  var seenExtraScopes: seq[Scope]
+  var typ = recvType
+  while typ.kind == vkType:
+    let definingScope = typ.typeScope
+    if definingScope != nil and not scope.scopeChainContains(definingScope):
+      var ds = definingScope
+      while ds != nil:
+        if not scope.scopeChainContains(ds) and
+            not seenExtraScopes.hasSeenScope(ds):
+          seenExtraScopes.add ds
+          collectReceiverMessageMatches(ds, recvType, name, matches)
+        ds = ds.parent
+    typ = typ.typeParent
+  matches.dedupeProtocolMatches()
+  if matches.len == 0:
+    return NIL
+  if matches.len > 1:
+    raise newException(GeneError,
+      "ambiguous message '" & name & "' for " & recvType.typeName)
   matches[0]
 
 proc appendSplicedBody(target: var seq[Value], value: Value) =
@@ -6466,9 +6550,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if protocol.kind != vkProtocol:
                 raise newException(GeneError, "type ^impl entries must be protocols")
               requiredProtocols[i] = protocol
+          var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
+          if proto.messages.len > 0:
+            for i in countdown(proto.messages.len - 1, 0):
+              messageErrorTypes[i] =
+                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
+          var messages = initTable[string, Value]()
+          for i, message in proto.messages:
+            let fn = newFunction(message.fn.name, message.fn.params, message.fn,
+                                 scope, message.fn.checksErrors,
+                                 messageErrorTypes[i])
+            messages[message.name] = functionForScopeStorage(fn, scope)
           let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
                             derivedProtocols, proto.deriveRequests,
-                            proto.bodyFields)
+                            proto.bodyFields, messages)
           if proto.requiredImplCount > 0:
             scope.requiredImplTypes.add typ
           for i, protocol in derivedProtocols:
@@ -6491,11 +6586,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             deriveFn = functionForScopeStorage(deriveFn, scope)
           let protocol = newProtocol(proto.name, proto.messageNames, deriveFn,
                                      parents)
-          # Only bind this protocol's own message names here — inherited
-          # message names are already bound where their defining ancestor
-          # protocol was declared (docs/core.md §3.2).
-          for message in proto.messageNames:
-            scope.define(message, protocol.protocolMessages[message])
+          # Message names are not bound in the enclosing scope (docs/core.md
+          # §1, OQ-I): messages are reached via Protocol/name and sends.
           stack.add protocol
         of opMakeImpl:
           let proto = chunk.implProtos[inst[].intArg]
@@ -6506,13 +6598,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
           let receiver = stack.pop()
           let protocol = stack.pop()
-          var messages = initTable[string, Value]()
+          if protocol.kind != vkProtocol:
+            raise newException(GeneError, "impl target must be a protocol")
+          var entries: seq[ImplMessage]
           for i, message in proto.messages:
+            let resolved = resolveImplMessage(scope, protocol,
+                                              message.protocolName,
+                                              message.name)
             let fn = newFunction(message.fn.name, message.fn.params, message.fn,
                                  scope, message.fn.checksErrors,
                                  messageErrorTypes[i])
-            messages[message.name] = functionForScopeStorage(fn, scope)
-          scope.registerImpl(protocol, receiver, messages)
+            entries.add ImplMessage(message: resolved,
+                                    fn: functionForScopeStorage(fn, scope))
+          scope.registerImpl(protocol, receiver, entries)
           stack.add NIL
         of opMakeNamespace:
           # Run the ns body in a fresh child scope; its bindings become the
@@ -6942,6 +7040,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             frameReturnBareInt(a)
             continue
           ip += 4
+        of opResolveMessage:
+          # Receiver-first message send (docs/core.md §9.1): tier 1 is the
+          # receiver's runtime type context (type-direct messages walking ^is,
+          # then protocol messages from visible impls); tier 2 is the ordinary
+          # lexical binding. The resolved callee is inserted below any named
+          # argument values already on the stack, then the receiver goes back
+          # on top as the first positional argument.
+          let receiver = stack.pop()
+          var callee = NIL
+          let recvType = receiver.receiverType
+          if recvType.kind == vkType:
+            callee = typeDirectMessage(recvType, inst[].name)
+            if callee.kind == vkNil:
+              callee = resolveReceiverMessage(scope, recvType, inst[].name)
+          if callee.kind == vkNil:
+            if not scope.lookupOptional(inst[].name, callee):
+              raise newException(GeneError, "undefined symbol: " & inst[].name)
+          if inst[].intArg > 0:
+            stack.insert(callee, stack.len - inst[].intArg)
+          else:
+            stack.add callee
+          stack.add receiver
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
@@ -10087,7 +10207,26 @@ proc staticLookup(target, segment: Value): Value =
     of vkModule:
       target.moduleRootNamespace.exportedBinding(key)
     of vkProtocol:
-      target.protocolMessages.getOrDefault(key, VOID)
+      # Own message first; otherwise a unique closure match lets an inherited
+      # message be spelled through the child protocol (docs/core.md §3.2).
+      let own = target.protocolMessages.getOrDefault(key, VOID)
+      if own.kind != vkVoid:
+        own
+      else:
+        let candidates = target.protocolClosureByName(key)
+        if candidates.len == 1:
+          candidates[0]
+        elif candidates.len > 1:
+          raise newException(GeneError,
+            "ambiguous message '" & key & "' in protocol " &
+            target.protocolName & "; qualify with the defining protocol")
+        else:
+          VOID
+    of vkType:
+      # Qualified type-direct message access, e.g. Box/get (docs/core.md §8);
+      # walks the ^is chain like send resolution does.
+      let message = typeDirectMessage(target, key)
+      if message.kind == vkNil: VOID else: message
     else:
       VOID
   of vkNode:

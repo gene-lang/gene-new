@@ -198,7 +198,7 @@ x : T        # annotation
 _            # wildcard / ignore
 name!        # macro naming convention
 (a; b; c)    # pipe: pure reader head-folding
-(x ~ f a)    # flipped-call sugar: (f x a)
+(x ~ f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
 x/user/name  # apply selector to x
 #[a b]       # shallow immutable list
@@ -217,7 +217,8 @@ x...         => (... x)
 $"a ${x}"    => ($ "a " x)
 ^due? T      => ^due (opt T)
 (a; b c; d)  => (((a) b c) d)
-(x ~ f a)    => (f x a)
+(x ~ f a)    # preserved as read; resolved receiver-first at compile/dispatch
+             # time (docs/core.md §9) — not a reader rewrite to (f x a)
 /user/name   => (select user name)
 x/user/name  => (x ~ (select user name))
 /user/%field => (select user %field)
@@ -412,19 +413,20 @@ Templates may capture lexical bindings. Forcing a template uses `eval`:
 (xs filter p; map f) # => ((xs filter p) map f)
 ```
 
-The first segment is preserved as read. Pipe does not insert the previous value as an argument. For data-flow style pipelines, use explicit flipped-call sugar `~`:
+The first segment is preserved as read. Pipe does not insert the previous value as an argument. For data-flow style pipelines, use explicit message sends with `~`:
 
 ```gene
 (xs ~ filter; ~ map f; ~ take 10)
 # reader => (((xs ~ filter) ~ map f) ~ take 10)
-# sugar  => (take (map (filter xs) f) 10)
+# when filter/map/take resolve to plain functions (Section 3), each send
+# evaluates like (take (map (filter xs) f) 10)
 ```
 
 A segment containing `_` is a slot form:
 
 ```gene
 (x; parse; (or _ default))
-# => (or (parse x) default)
+# => (or ((x) parse) default)
 ```
 
 ---
@@ -461,17 +463,22 @@ Normal calls are callable-first:
 
 There is no implicit subject-call rule.
 
-Flipped-call sugar:
+Message sends use `~`:
 
 ```gene
-(x ~ f a b) # => (f x a b)
+(x ~ f a b)   # send f to x: f resolves in x's context, then evaluates as (f x a b)
+(x ~ X/f a b) # qualified: X/f resolves lexically, then (X/f x a b)
+(~ f a b)     # send to lexical self: (self ~ f a b)
 ```
 
-If a lexical binding named `self` exists, a leading flipped call may omit it:
-
-```gene
-(~ f a b) # => (f self a b)
-```
+For an unqualified send, `f` is resolved receiver-first: the receiver's
+type-direct messages (walking `^is`), then protocol messages provided by
+impls visible for the receiver's type, then the enclosing lexical scope as a
+fallback — so pipeline sends like `(xs ~ filter p)` reach the plain `filter`
+function when the receiver defines no such message. A bare call `(f x)`
+remains purely lexical, and message names are not bound in the enclosing
+scope, so `(f x)` never resolves to a protocol message. Full resolution
+rules: `docs/core.md §9`.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
@@ -493,12 +500,12 @@ read comments/discards
 → tokenize according to the reader EBNF, including slash paths and qualified-name/path tokens
 → build raw nodes
 → pipe folding
-→ local reader sugars such as `~`, flags, spread markers, and interpolation
+→ local reader sugars such as flags, spread markers, and interpolation
 → quasiquote/template expansion with depth tracking
 → macro expansion and special-form analysis
 ```
 
-`~` is recognized only in call-like forms where it appears as the second token or as a leading omitted-self flipped call. Elsewhere it is an ordinary symbol.
+`~` is recognized only in call-like forms where it appears as the second token or as a leading send to `self`. Elsewhere it is an ordinary symbol. The reader preserves send forms as read (they round-trip); resolution happens at compile/dispatch time (`docs/core.md §9`).
 
 ---
 
@@ -1080,10 +1087,12 @@ ensure
     `(tr (td %self/name))))
 ```
 
-Message dispatch is on the first argument's head/type. Messages are ordinary callable values and can be used with `~`:
+Message dispatch is on the first argument's head/type. Messages are ordinary callable values, but their names are **not** bound in the enclosing lexical scope — a message is reached with a send, or as a qualified member of its protocol (`docs/core.md §1/§9`):
 
 ```gene
-(item ~ to_html)
+(item ~ to_html)          # send: to_html resolves in item's context
+(item ~ ToHtml/to_html)   # qualified send: always unambiguous
+(ToHtml/to_html item)     # qualified call through the protocol value
 ```
 
 A type can require manual implementations:
@@ -2714,7 +2723,8 @@ Deferred until after the first implementation slice:
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- Leading flipped calls may use lexical `self`: `(~ f a)` means `(f self a)` when `self` is in scope.
+- `~` is the message-send operator: `(x ~ f a)` resolves `f` receiver-first (type-direct messages, then protocol impls, then lexical fallback); `(x ~ X/f a)` resolves `X/f` lexically. Message names are not bound in the enclosing scope. See `docs/core.md §9`.
+- Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.
 - Generic constraints are deferred until needed for generic derived implementations.
 - Raw strings and binary literals are useful but not MVP.

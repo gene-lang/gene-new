@@ -56,10 +56,12 @@ suite "reader — sugars":
   test "pipe slot form":
     check_read("(x; parse; (or _ default))", "(or ((x) parse) default)")
     check_read("(x; f _ y)", "(f (x) y)")
-  test "pipe with flipped call":
+  test "pipe with message sends":
+    # Sends are preserved as read; the compiler resolves them receiver-first
+    # (docs/core.md §9), so the reader no longer erases `~`.
     check_read("(xs ~ filter; ~ map f; ~ take 10)",
-               "(take (map (filter xs) f) 10)")
-  test "flipped call":       check_read("(x ~ f a b)", "(f x a b)")
+               "(((xs ~ filter) ~ map f) ~ take 10)")
+  test "message send round-trips": check_read("(x ~ f a b)", "(x ~ f a b)")
   test "flipped standalone": check_read("(~ f a b)",   "(~ f a b)")
   test "spread":             check_read("x...",         "(... x)")
   test "bare at can be a node head":

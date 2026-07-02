@@ -2929,7 +2929,53 @@ proc compileListValue(c: var Compiler, value: Value) =
   else:
     discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
+proc compileCall(c: var Compiler, node: Value)
+
+proc compileSend(c: var Compiler, node: Value, receiver: Value,
+                 sendName: string, argsStart: int) =
+  ## Message send (docs/core.md §9.1): the name after `~` resolves
+  ## receiver-first at runtime, falling back to the lexical binding. Stack
+  ## shape matches ordinary calls: [callee, named..., receiver, args...].
+  var names: seq[string]
+  for k, value in node.props:
+    names.add k
+    compileExpr(c, value)
+  compileExpr(c, receiver)
+  discard c.emit(opResolveMessage, names.len, name = sendName)
+  var splices = @[false]
+  var hasSplice = false
+  compileSpreadValues(c, node.body, argsStart, forList = false, splices,
+                      hasSplice)
+  if hasSplice:
+    let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
+    c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
+  else:
+    let argCount = node.body.len - argsStart + 1
+    let callIndex =
+      if names.len == 0:
+        c.emitPlainCall(argCount)
+      else:
+        c.emit(opCall, argCount, names = names)
+    c.chunk.callSites[callIndex] = node
+
 proc compileCall(c: var Compiler, node: Value) =
+  if node.body.len > 1 and node.body[0].kind == vkSymbol and
+      node.body[0].symVal == "~":
+    # (x ~ f a) — infix message send / flipped call (docs/core.md §9.1).
+    if node.body[1].kind == vkSymbol and
+        not node.props.hasKey("protocol") and
+        not node.props.hasKey("receiver") and
+        not node.props.hasKey("types"):
+      compileSend(c, node, node.head, node.body[1].symVal, 2)
+      return
+    # Qualified or expression callees keep flipped-call semantics:
+    # (x ~ X/f a) => (X/f x a). Direct-call metadata also stays on this path.
+    var args = newSeqOfCap[Value](node.body.len - 1)
+    args.add node.head
+    for i in 2 ..< node.body.len:
+      args.add node.body[i]
+    compileCall(c, newNode(node.body[1], node.props, args, node.meta))
+    return
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
     let direct = c.lexicalCallSlot0(node.head.symVal)
     if direct.slot >= 0:
@@ -3006,7 +3052,12 @@ proc compileCall(c: var Compiler, node: Value) =
       messageName: node.head.symVal,
       protocolExpr: node.props["protocol"],
       receiverExpr: node.props["receiver"]))
-  compileExpr(c, node.head)
+    # Message names are not lexical bindings (docs/core.md §1); reach the
+    # message through the protocol value: (path <protocol> <name>).
+    compileExpr(c, newNode(newSym("path"),
+                           body = @[node.props["protocol"], node.head]))
+  else:
+    compileExpr(c, node.head)
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:
@@ -3028,11 +3079,17 @@ proc compileCall(c: var Compiler, node: Value) =
     c.chunk.callSites[callIndex] = node
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
+  # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
   if node.body.len == 0:
     raise newException(GeneError, "`~` requires a callable")
   if not c.selfAvailable:
     raise newException(GeneError, "leading `~` requires lexical self")
-  compileExpr(c, node.body[0])
+  if node.body[0].kind == vkSymbol and
+      not node.props.hasKey("protocol") and
+      not node.props.hasKey("receiver") and
+      not node.props.hasKey("types"):
+    compileSend(c, node, newSym("self"), node.body[0].symVal, 1)
+    return
   let hasProtocol = node.props.hasKey("protocol")
   let hasReceiver = node.props.hasKey("receiver")
   if hasProtocol or hasReceiver:
@@ -3046,6 +3103,12 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
       messageName: node.body[0].symVal,
       protocolExpr: node.props["protocol"],
       receiverExpr: node.props["receiver"]))
+    # Message names are not lexical bindings (docs/core.md §1); reach the
+    # message through the protocol value: (path <protocol> <name>).
+    compileExpr(c, newNode(newSym("path"),
+                           body = @[node.props["protocol"], node.body[0]]))
+  else:
+    compileExpr(c, node.body[0])
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:
@@ -3290,15 +3353,70 @@ proc rejectUnknownTypeProps(node: Value) =
     raise newException(GeneError,
       "type got unexpected named argument: " & key)
 
+proc messageNameParts(node: Value): tuple[protocolName, name: string] =
+  ## A message name is a simple symbol, or `Protocol/name` in impl bodies for
+  ## disambiguating same-named closure messages (docs/core.md §3.6.1).
+  if node.kind != vkNode or not node.head.isSymbol("message"):
+    raise newException(GeneError, "protocol/impl body must contain message declarations")
+  if node.body.len < 2 or node.body[1].kind != vkList:
+    raise newException(GeneError, "message requires a name and parameter vector")
+  let nameForm = node.body[0]
+  if nameForm.kind == vkSymbol:
+    return ("", nameForm.symVal)
+  if nameForm.kind == vkNode and nameForm.head.isSymbol("path") and
+      nameForm.body.len == 2 and nameForm.body[0].kind == vkSymbol and
+      nameForm.body[1].kind == vkSymbol:
+    return (nameForm.body[0].symVal, nameForm.body[1].symVal)
+  raise newException(GeneError, "message requires a name and parameter vector")
+
+proc messageName(node: Value): string =
+  let parts = messageNameParts(node)
+  if parts.protocolName.len > 0:
+    raise newException(GeneError,
+      "qualified message names are only valid in impl bodies: " &
+      parts.protocolName & "/" & parts.name)
+  parts.name
+
+proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
+  let parts = messageNameParts(node)
+  let displayName =
+    if parts.protocolName.len > 0: parts.protocolName & "/" & parts.name
+    else: parts.name
+  let errorRow = compileErrorRow(c, node)
+  ImplMessageProto(name: parts.name,
+                   protocolName: parts.protocolName,
+                   fn: buildFunctionProto(c, displayName, node.body[1],
+                                          node.body, 2,
+                                          checksErrors = errorRow.checks,
+                                          errorTypeCount = errorRow.count))
+
 proc compileType(c: var Compiler, node: Value) =
-  ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]) —
+  ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]
+  ##  (message name [self] ...) ...) —
   ## field annotations and protocol references are checked at runtime. Derive
   ## requests are passed to protocol-local derive forms after the type is created.
+  ## Body items after the name are type-direct messages (docs/core.md §8).
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "type requires a name")
   rejectUnknownTypeProps(node)
   let name = body[0].symVal
+  var messages: seq[ImplMessageProto]
+  var seenMessages = initTable[string, bool]()
+  for i in 1 ..< body.len:
+    if body[i].kind != vkNode or not body[i].head.isSymbol("message"):
+      raise newException(GeneError,
+        "type body items must be message declarations")
+    rejectReservedEffects(body[i])
+    let mp = implMessageProto(c, body[i])
+    if mp.protocolName.len > 0:
+      raise newException(GeneError,
+        "type-direct message names must be simple: " &
+        mp.protocolName & "/" & mp.name)
+    if seenMessages.hasKey(mp.name):
+      raise newException(GeneError, "duplicate type message: " & mp.name)
+    seenMessages[mp.name] = true
+    messages.add mp
   var fields: seq[TypeField]
   if node.props.hasKey("props"):
     let schema = node.props["props"]
@@ -3345,15 +3463,9 @@ proc compileType(c: var Compiler, node: Value) =
                                            bodyFields: bodyFields,
                                            requiredImplCount: requiredImplCount,
                                            deriveProtocolCount: deriveProtocolCount,
-                                           deriveRequests: deriveRequests)))
+                                           deriveRequests: deriveRequests,
+                                           messages: messages)))
   c.emitDefineBinding(name)
-
-proc messageName(node: Value): string =
-  if node.kind != vkNode or not node.head.isSymbol("message"):
-    raise newException(GeneError, "protocol/impl body must contain message declarations")
-  if node.body.len < 2 or node.body[0].kind != vkSymbol or node.body[1].kind != vkList:
-    raise newException(GeneError, "message requires a name and parameter vector")
-  node.body[0].symVal
 
 proc compileProtocol(c: var Compiler, node: Value) =
   let body = node.body
@@ -3386,22 +3498,15 @@ proc compileProtocol(c: var Compiler, node: Value) =
     for parentExpr in parents.listItems:
       compileExpr(c, parentExpr)
       inc parentCount
-  for message in messageNames:
-    discard c.reserveLocal(message)
+  # Message names are deliberately not bound in the enclosing scope
+  # (docs/core.md §1, OQ-I): messages are reached via qualified access
+  # (Protocol/name) and sends only.
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
                                               messageNames: messageNames,
                                               deriveFn: deriveFn,
                                               parentCount: parentCount))
   discard c.emit(opMakeProtocol, idx)
   c.emitDefineBinding(name)
-
-proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
-  let name = messageName(node)
-  let errorRow = compileErrorRow(c, node)
-  ImplMessageProto(name: name,
-                   fn: buildFunctionProto(c, name, node.body[1], node.body, 2,
-                                          checksErrors = errorRow.checks,
-                                          errorTypeCount = errorRow.count))
 
 proc compileImpl(c: var Compiler, node: Value) =
   let body = node.body
@@ -3413,9 +3518,10 @@ proc compileImpl(c: var Compiler, node: Value) =
   var seen = initTable[string, bool]()
   for i in 2 ..< body.len:
     let mp = implMessageProto(c, body[i])
-    if seen.hasKey(mp.name):
+    let key = mp.protocolName & "/" & mp.name
+    if seen.hasKey(key):
       raise newException(GeneError, "duplicate impl message: " & mp.name)
-    seen[mp.name] = true
+    seen[key] = true
     messages.add mp
   let idx = c.chunk.addImpl(ImplProto(messages: messages))
   discard c.emit(opMakeImpl, idx)

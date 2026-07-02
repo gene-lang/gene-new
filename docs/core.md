@@ -29,7 +29,23 @@ as follow-on patches.
 - Message dispatch is on the receiver's runtime type, not literal node head
   identity — this already holds for scalars (`docs/design.md §1.1`) and
   extends unchanged to inheritance and `Nil` below.
-- Messages are ordinary callable values (`(item ~ to_html)`).
+- Messages are ordinary callable values. The qualified spelling
+  (`(item ~ ToHtml/to_html)`) is always unambiguous; bare `(item ~ to_html)`
+  is only shorthand when receiver-context lookup finds a unique applicable
+  message with that simple name (§9).
+- **Message names are not bound in the enclosing lexical scope.** Declaring
+  `(protocol ToName (message to_name ...))` binds `ToName` only; `to_name`
+  is reachable as `ToName/to_name` (qualified member access, like
+  `Stream/next`) and through sends (`(x ~ to_name)`), never as a bare
+  lexical binding. Bare calls `(to_name x)` are therefore undefined-symbol
+  errors — use a send or the qualified spelling. This is a deliberate
+  revision (earlier drafts and the pre-revision implementation bound each
+  message name in scope); scope binding can be reintroduced later as an
+  additive feature if it proves worth having, but starting without it keeps
+  `(f x)` = lexically-resolved function call and `(x ~ m)` = message send as
+  two cleanly separate operations, and removes the duplicate-binding
+  collision that same-named messages across protocols would otherwise cause
+  in a shared scope.
 - `^impl [P]` on a type requires a visible `impl P T` covering `P`'s full
   message set.
 - `^derive [P]` triggers `P`'s protocol-local `derive` form, generating an
@@ -128,52 +144,71 @@ closure-flattened via ^inherit per §3}`.
 values. Order is left-to-right and matters only for the `^derive` option
 placement in §6, not for message resolution.
 
-### 3.2 Transitive closure and message ownership
+### 3.2 Transitive closure and qualified message ownership
 
-A message is identified by its **defining protocol**, not by name alone. When
-`C ^inherit [A B]`, `C`'s flattened message set is the union of `A`, `B`, and
-`C`'s own messages. In a diamond (`C ^inherit [A B]`, `B ^inherit [A]`), `A`'s
-messages appear once — reachability through two paths does not duplicate them.
+A protocol message is identified by its **defining protocol plus local
+message name**, not by simple name alone. `A/do_x` and `B/do_x` are distinct
+messages even though both have the local name `do_x`.
+
+When `C ^inherit [A B]`, `C`'s message closure is the union of `A`, `B`, and
+`C`'s own messages, keyed by qualified identity. In a diamond (`C ^inherit
+[A B]`, `B ^inherit [A]`), `A`'s messages appear once — reachability through
+two paths does not duplicate them.
 
 `impl C T` must provide (directly, or via §3.6/§5) every message in `C`'s
 transitive closure. Missing one is a compile error: `"impl C T is missing
 message A/do_a"`.
 
-### 3.3 Name conflicts across independent parents
+### 3.3 Same-name messages across independent parents
 
 ```gene
 (protocol X (message clash [self : Self] : Any))
 (protocol Y (message clash [self : Self] : Any))
-(protocol Z ^inherit [X Y] (message do_z [self : Self] : Any))  # ERROR
+(protocol Z ^inherit [X Y] (message do_z [self : Self] : Any))  # OK
 ```
 
-**Implemented as a compile-time error at `Z`'s definition, not a use-site
-ambiguity error.** An earlier draft of this section recommended letting `Z`
-define successfully and only rejecting an unqualified `(clash t)` at the use
-site. That was not implementable without a bigger representational change:
-`ProtocolData.messages` is a `name → message value` table (flattened eagerly
-at protocol-construction time, mirroring how `newType` eagerly merges `^is`
-fields), so two distinct messages can't occupy the same name slot at all —
-there is no "both exist, pick one at the use site" state to be ambiguous
-about. Diamond re-inheritance is not a conflict (`X`'s message reached
-through two parents is the *same* value, checked by identity, not by name),
-but two different parents contributing two different messages under the same
-name is rejected when `Z` is defined. Reaching name-keyed messages through
-qualified access (`X/clash`) still works normally; only `Z`'s own combined
-table is affected.
+Same-name messages across unrelated protocols are expected and supported.
+This is required for real protocol composition: two independently-authored
+contracts can both have `open`, `close`, `read`, `write`, `len`, `name`,
+`compare`, or `do_x` without being semantically the same operation.
 
-### 3.4 No re-declaration of an inherited name
+The collision is resolved by qualified message identity:
 
-A child protocol may not redeclare a message name owned by an ancestor:
+```gene
+(type T ^derive [Z] ...)
+
+(t ~ X/clash ...)
+(t ~ Y/clash ...)
+```
+
+Bare `(t ~ clash ...)` is not a protocol conflict resolver. If `T` has no
+type-direct `clash` message and more than one visible protocol message named
+`clash` applies, the unqualified send is ambiguous and must be written with
+`X/clash` or `Y/clash`. If exactly one protocol message named `clash`
+applies, the bare send resolves to it — this exactly-one rule is normative
+(OQ-H), not implementation-defined. The qualified form is always available
+and always unambiguous.
+
+Because message names are never bound in the enclosing scope (§1), declaring
+`X` and `Y` with the same message name in one module is not a binding
+collision either — there is nothing at module scope to collide.
+
+### 3.4 Re-declaring an inherited simple name
+
+A child protocol may declare its own message with the same simple name as an
+ancestor. It creates a new qualified message owned by the child protocol:
 
 ```gene
 (protocol B ^inherit [A]
-  (message do_a [self : Self] : Any)  # ERROR: conflicts with inherited A/do_a
-  ...)
+  (message do_a [self : Self] : Any))  # B/do_a, distinct from A/do_a
 ```
 
-If different behavior is needed, define a differently-named message. This
-keeps message ownership unambiguous and avoids override/MRO complexity.
+`B/do_a` does not override `A/do_a`; both messages are in `B`'s closure and
+both must be implemented unless one is satisfied by a default or separate
+ancestor impl. There is still no override/MRO mechanism for protocol
+inheritance. If a default body or implementation needs one of the operations,
+it should call the qualified message (`A/do_a` or `B/do_a`) rather than rely
+on the simple name.
 
 ### 3.5 Subtyping is structural from the impl
 
@@ -195,7 +230,7 @@ rule in §2.1: `T`'s ancestors' impls contribute to the same registration.
 
 ```gene
 (impl A T (message do_a [self] "from A impl"))
-(impl B T (message do_b [self] ...))  # omits do_a
+(impl B T (message do_b [self] ...))  # omits A/do_a
 ```
 
 If `impl A T` is already visible when `impl B T` is compiled, `impl B T` may
@@ -213,6 +248,26 @@ inheritance.
 This is the highest-risk piece of the design (see §11) because it requires
 the compiler to merge completeness evidence across separate impl
 declarations rather than checking one impl body in isolation.
+
+### 3.6.1 Implementing same-named messages
+
+When a protocol closure contains more than one message with the same simple
+name, an `impl` body must qualify those message definitions:
+
+```gene
+(protocol A (message do_x [self : Self] : Str))
+(protocol B (message do_x [self : Self] : Str))
+(protocol C ^inherit [A B])
+
+(impl C T
+  (message A/do_x [self] "A behavior")
+  (message B/do_x [self] "B behavior"))
+```
+
+For a message name that is unique in the target protocol's closure,
+`(message do_y ...)` is shorthand for that one qualified message. If the
+simple name is ambiguous, using it in an `impl` body is a compile-time error
+with a diagnostic listing the candidate qualified messages.
 
 ### 3.7 Circular inheritance
 
@@ -251,12 +306,20 @@ With inheritance, looking up `B/do_b` on `T` must consider `impl C T` where
 `C`'s closure includes `B`, not only a direct `impl B T` — and, per §2.1,
 must also consider impls visible on `T`'s `^is` ancestors.
 
-**Message-name flattening is eager, at protocol-construction time.** `C`'s
-`messageNames → message value` table is computed once when `C` is
-constructed (merging each parent's already-flattened table, deduped by value
-identity — see §3.2/§3.3), so `impl C T`'s completeness check and every
-downstream lookup by name already sees the full transitive closure with zero
-per-call cost. This part matches the original "flatten eagerly" intent.
+**Message closure flattening is eager, at protocol-construction time.** `C`'s
+qualified message set is computed once when `C` is constructed (merging each
+parent's already-flattened closure, deduped by qualified identity — see
+§3.2/§3.3), so `impl C T`'s completeness check and every downstream lookup
+by qualified message already sees the full transitive closure with zero
+per-call cost.
+
+Simple names are a secondary index, not the dispatch key. A protocol can have
+more than one closure message whose local name is `do_x`; the key used by
+completeness checking and dispatch is the message value / qualified identity
+(`A/do_x`, `B/do_x`). The simple-name index is useful for diagnostics and for
+the unique-name shorthand in impl bodies and unqualified sends, but it must
+be able to represent "ambiguous: qualify this name" rather than storing only
+one message.
 
 **Protocol-ancestor matching at dispatch time walks the parent chain, and
 this is a deliberate deviation from an earlier draft of this section**, which
@@ -291,7 +354,7 @@ time, unchanged.
 ```gene
 (protocol B ^inherit [A]
   (message do_b [self : Self] : Any
-    (do_a self)))  # default body, calls an inherited message
+    (A/do_a self)))  # default body, calls an inherited message
 ```
 
 A message may carry a default implementation in its own protocol body. If
@@ -311,10 +374,11 @@ names, `^opt`/`^skip` options); a default never needs that, so routing it
 through the derive/overlay machinery would pay per-type codegen cost for a
 mechanism that is supposed to be free.
 
-Ancestor defaults are visible to descendants. Since re-declaration of an
-inherited message name is disallowed (§3.4), a default can only be
-overridden by a descendant protocol defining a genuinely new message name, so
-no default-resolution conflict can arise.
+Ancestor defaults are visible to descendants. A descendant protocol declaring
+the same simple name creates a distinct qualified message (§3.4); it does
+not override or replace the ancestor default. If a protocol closure contains
+both `A/do_x` and `B/do_x`, each message independently either has an explicit
+impl body, a default body, or a missing-message error.
 
 **Fully-defaulted protocols need no impl at all.** If every message in a
 protocol's transitive closure has a default, the base coherence rule in §1
@@ -368,14 +432,21 @@ their compiler passes separate (see open question OQ-E).
 
 ---
 
-## 7. Overriding an inherited message
+## 7. No protocol-message overriding
 
-Disallowed — see §3.4. There is no override/MRO mechanism for protocol
-inheritance. Wanting different per-type behavior for the "same" concept
-means either a manual `impl` (no default is used once the impl provides the
-message) or a genuinely new message name. (Type inheritance has its own,
-different override rule — most-specific `^is` ancestor wins — per §2.1 and
-§8.)
+Protocol inheritance has no override/MRO mechanism. Reusing an inherited
+simple name creates another qualified message, not an override:
+
+```gene
+(protocol A (message render [self : Self] : Node))
+(protocol B ^inherit [A]
+  (message render [self : Self] : Str))  # B/render, not an override of A/render
+```
+
+An implementation of `B` must account for both `A/render` and `B/render`.
+Callers choose with `(x ~ A/render)` or `(x ~ B/render)`. Type inheritance
+has its own different rule for type-direct messages — most-derived `^is`
+ancestor wins — per §2.1 and §8.
 
 ---
 
@@ -471,43 +542,84 @@ what created the cross-type collision problem in the first place.
 
 ## 9. Message resolution and `~`
 
-Three sources can provide behavior for a receiver: protocol messages (§1,
-§4), type-direct messages (§8), and fully-defaulted protocols (§5). `~` is
-the entry point for reaching all of them by unqualified name, and needs a
-resolution rule precise enough to keep existing non-message uses of `~`
-working unchanged.
+`~` is Gene's message-send operator. Three sources can provide behavior for
+a receiver: protocol messages (§1, §4), type-direct messages (§8), and
+fully-defaulted protocols (§5). `~` reaches all of them by unqualified name,
+resolved **in the receiver's context** — this is what distinguishes a send
+from an ordinary call. A bare call `(f x)` resolves `f` lexically, like any
+call head; a send `(x ~ f)` resolves `f` against `x` first.
 
-### 9.1 The two forms
+### 9.1 The three forms
 
 ```gene
-(x ~ name ...)     # unqualified — message send, resolved in the context of x
-(x ~ X/name ...)   # qualified — X resolved as an ordinary/built-in name, then applied
+(x ~ name ...)     # message send: name resolved in the context of x
+(~ name ...)       # message send to self: (self ~ name ...)
+(x ~ X/name ...)   # qualified: X/name resolved lexically, then applied to x
 ```
 
 The **qualified** form is unchanged from the base design (`docs/design.md
-§3`): `X/name` resolves via ordinary qualified-name rules, then `x` is
-prepended. `X` must already be a built-in or a name resolved in the current
-lexical scope — no receiver-based resolution is involved.
+§3`): `X/name` resolves via ordinary qualified-name rules — `X` must be a
+built-in or a name resolved in the current lexical scope — then `x` is
+prepended. No receiver-based resolution is involved.
 
-The **unqualified** form gets a two-tier fallback:
+The **implicit-self** form desugars to a send to the lexical `self` binding,
+mirroring the leading flipped call in `docs/design.md §3`: `(~ f a)` means
+`(self ~ f a)`, and it is a compile-time error when no `self` is in scope.
+Resolution is identical to the explicit form, with `self` as the receiver.
 
-1. **Lexical first.** Resolve `name` as an ordinary bound name, exactly as
-   today. This covers both non-message uses of `~` (`(xs ~ filter p)`,
-   `(xs ~ map f)` — `filter`/`map` are plain functions, not messages) and
-   protocol messages already reachable by their existing lexical binding
-   (`(item ~ to_html)`). If found, use it — **this preserves every existing
-   use of `~` unchanged.**
-2. **Type-direct fallback.** If `name` is not bound lexically at all, look it
-   up in the receiver's runtime type's message table (§8), walking the `^is`
-   chain. This is the new path, and exists specifically to reach type-direct
-   messages, which are deliberately *not* bound bare in lexical scope (§8).
-3. Neither resolves → compile-time missing-message error.
+The **unqualified send** resolves `name` receiver-first:
 
-If `x`'s static type is known, step 2 resolves at compile time to a direct
-call — zero overhead, same cost as the qualified form. If `x : Any`, it's one
-dynamic table lookup keyed by `(runtime-type, name)`, walking `^is` at
-runtime; an inline cache at the call site is the expected optimization once
-this is on a hot path.
+1. **Receiver context.** Look `name` up in the receiver's runtime type's
+   context: type-direct messages (§8), walking the `^is` chain, then
+   protocol messages provided by impls visible for the receiver's type
+   (including via `^inherit`, §3.5/§4). A type-direct message with that name
+   wins over protocol-message candidates because it is receiver-owned
+   behavior. A protocol simple-name match is usable only when exactly one
+   qualified protocol message with that simple name applies; if `A/do_x` and
+   `B/do_x` both apply, bare `(x ~ do_x ...)` is ambiguous and the caller must
+   write `(x ~ A/do_x ...)` or `(x ~ B/do_x ...)`. Ambiguity among multiple
+   visible impls for the same qualified protocol message remains the usual
+   use-site error.
+2. **Lexical fallback.** If the receiver's context has no `name`, resolve it
+   as an ordinary lexical binding — `(xs ~ filter p)` keeps working today
+   because `filter` is a plain function and `List` defines no `filter`
+   message. Note the fallback can only ever produce plain values: protocol
+   message names are not bound in lexical scope (§1), so a message never
+   arrives via this tier.
+3. Neither resolves → missing-message error (at compile time when the
+   receiver's static type is known; otherwise at the send).
+
+**This flips the tier order from an earlier draft of this section**, which
+resolved lexically first and used the receiver's context only as a fallback.
+Lexical-first kept `~` essentially flipped-call sugar with a patch on top —
+under it, `(x ~ f a)` resolved `f` exactly like an ordinary call head
+whenever `f` was bound at all, which contradicts the intent that a send
+resolves the name *differently*, in the receiver's context. Receiver-first
+makes the operator mean one thing: ask the receiver first, fall back to the
+surrounding scope.
+
+Consequences accepted with receiver-first:
+
+- When a name exists in both places, the receiver's message wins silently
+  (§9.3/OQ-F, now inverted relative to the earlier draft). That is the
+  message-send semantics working as intended, but it also means *adding* a
+  message to a type can re-route existing `~` call sites on that type. A
+  lint ("send resolves to `T/name`, shadowing lexical `name`") is the
+  mitigation, not an error.
+- If `x`'s static type is known, resolution happens at compile time — zero
+  runtime overhead, same as the qualified form. If `x : Any`, tier 1 costs
+  one dynamic lookup keyed by `(runtime-type, name)` before any lexical
+  fallback; an inline cache at the call site is the expected optimization.
+- Protocol messages reached through their qualified lexical binding and
+  through the receiver's context agree whenever both apply, so `(item ~
+  ToHtml/to_html)` behaves identically under either tier order. Bare `(item ~
+  to_html)` is only a convenience when the receiver context has exactly one
+  matching protocol message or a type-direct message.
+
+`docs/design.md §3` still describes `~` as pure flipped-call sugar
+(`(x ~ f a) => (f x a)`); that reading remains correct for the qualified
+form and for tier-2 fallback, but this section supersedes it for unqualified
+sends.
 
 ### 9.2 Universal / fully-defaulted protocols
 
@@ -519,12 +631,13 @@ dispatch (tier 1 above). When no impl is found for a type, dispatch falls
 through to the default instead of raising a missing-impl error, only when
 the protocol's whole closure is defaulted.
 
-### 9.3 Open question — silent shadowing
+### 9.3 Shadowing between the two tiers
 
-If an unrelated lexical binding happens to share a name with a type-direct
-message (some plain function `speak` in scope, and `Dog` also has a
-type-direct `speak`), tier 1 wins silently under the rule above — no
-ambiguity error is raised. See OQ-F.
+With receiver-first resolution, a message on the receiver's type silently
+wins over a same-named lexical binding at send sites — the reverse of the
+earlier lexical-first draft. `(d ~ speak)` calls `Dog`'s `speak` message even
+when a plain function `speak` is in scope; the lexical `speak` remains
+reachable as an ordinary bare call, `(speak d)`. See OQ-F.
 
 ---
 
@@ -577,21 +690,37 @@ implemented and stable, and sit at implementation-order item 13; base
 
 **Implemented (`protocol-inheritance` branch):**
 
+- §1 — message names are no longer bound in the enclosing scope (OQ-I);
+  bare calls like `(to_name x)` were migrated to sends/qualified calls in
+  tests, examples, and benchmarks
 - §2 — turned out to already be implemented (see the §2.1 correction); no
-  change needed.
-- §3.1–§3.2, §3.4, §3.7 (protocol-inheritance syntax, transitive closure with
-  diamond dedup, no-redeclaration-of-inherited-name, circular-inheritance
-  rejection — the last one falls out for free from top-to-bottom evaluation
-  order, since a protocol can only reference an already-defined parent)
-- §3.3, implemented as a protocol-definition-time conflict error rather than
-  a use-site ambiguity error (see the §3.3 correction — a name-keyed message
-  table can't represent "two distinct messages, same name" at all)
-- §3.5 (structural subtyping — `impl C T` satisfies every `^inherit` ancestor
-  of `C` for boundary checks and dispatch, via `protocolIsOrInherits`)
-- §4 (message-name flattening at protocol-construction time; protocol-ancestor
-  dispatch matching via a parent-chain walk rather than per-ancestor
-  registration — see the §4 correction)
-- Tests: `tests/test_protocols.nim`
+  change needed
+- §3.1–§3.5, §3.6.1, §3.7 — the qualified-message-identity model:
+  `ProtocolData` stores an identity-deduped transitive closure;
+  `ProtocolImpl` entries are keyed by message value, not name; impl bodies
+  accept `(message A/do_x ...)` qualification with unique-simple-name
+  shorthand; same-name messages across parents coexist; redeclaring an
+  inherited simple name creates a distinct message; circular inheritance is
+  impossible by evaluation order
+- §3.5 structural subtyping via `protocolIsOrInherits` for boundary/`^impl`
+  checks; dispatch itself matches impl entries by message identity, which
+  covers `^inherit` descendants without a protocol-level walk
+- §4 — closure flattening at protocol-construction time; qualified access
+  through a child protocol (`C/do_a` for an inherited unambiguous name)
+  resolves through the closure; ambiguous spellings error with the candidate
+  list
+- §7, §8 — type-direct messages: `compileType` scans `(message ...)` body
+  forms into a per-type table (`TypeData.messages`), reached via qualified
+  access (`Box/get`) and sends, walking `^is` with most-derived-wins
+- §9.1 — receiver-first sends: the reader preserves `(x ~ f a)` nodes
+  (round-trips exactly); `opResolveMessage` resolves tier 1 (type-direct
+  walking `^is`, then visible protocol impl entries by simple name with the
+  exactly-one rule) and falls back to the lexical binding; `(~ f a)` sends
+  to lexical `self`; qualified sends and the `^protocol`/`^receiver`
+  direct-call metadata path go through protocol member access
+- Tests: `tests/test_protocols.nim`, plus migrated cases in
+  `tests/test_modules.nim`, `tests/test_errors.nim`, `tests/test_vm.nim`,
+  `tests/test_reader.nim`, `tests/test_rc.nim`, `tests/spec_runner.nim`
 
 **Not yet implemented / out of scope for this slice:**
 
@@ -605,12 +734,10 @@ implemented and stable, and sit at implementation-order item 13; base
 - §6 transitive `^derive` — `ProtocolProto`/`applyProtocolDerive` don't yet
   resolve or run ancestor derive forms before a child's own; `^derive [B]`
   today only runs `B`'s own derive form
-- §7, §8 — type-direct messages (`(type T (message ...) ...)`) don't exist
-  in the compiler yet; `compileType` has no message-scanning step
-- §9 — `~`'s resolution is unchanged from the base design (pure lexical,
-  per `docs/design.md §3`); the two-tier fallback has no receiver-type
-  message table to fall back to until §8 exists
-- §10 — checked empirically (`./bin/gene eval '(protocol P (message m [self] : Str "x")) (impl P Nil (message m [self] : Str "n")) (m nil)'`) and it does **not** work yet: `Nil`/`Bool`/`Int`/etc. are recognized only as special-case strings inside the gradual type-boundary checker (`matchesBuiltinType` in `src/gene/vm.nim`), not as bound `vkType` values, so `Nil` isn't a resolvable symbol in impl-receiver position at all — "undefined symbol: Nil". Separately, protocol dispatch (`receiverType` in `src/gene/vm.nim`) currently requires a `vkNode` value with a `vkType` head; a bare scalar like the `nil` literal (`vkNil`) has no such head, so it couldn't dispatch through a protocol message even if `Nil` resolved to a type value. This is a larger, pre-existing gap in scalar/singleton dispatch, not specific to inheritance — out of scope for this slice, correcting an earlier claim in this document that it "already works."
+- §9.1's compile-time resolution for statically-known receiver types, the
+  shadowing lint (OQ-F), and inline caches for dynamic sends — all sends
+  currently resolve dynamically at the call site
+- §10 — checked empirically (`./bin/gene eval '(protocol P (message m [self] : Str "x")) (impl P Nil (message m [self] : Str "n")) (m nil)'`) and it does **not** work yet: `Nil`/`Bool`/`Int`/etc. are recognized only as special-case strings inside the gradual type-boundary checker (`matchesBuiltinType` in `src/gene/vm.nim`), not as bound `vkType` values, so `Nil` isn't a resolvable symbol in impl-receiver position at all — "undefined symbol: Nil". Separately, protocol dispatch (`receiverType` in `src/gene/vm.nim`) currently requires a `vkNode` value with a `vkType` head; a bare scalar like the `nil` literal (`vkNil`) has no such head, so it couldn't dispatch through a protocol message even if `Nil` resolved to a type value. This is a larger, pre-existing gap in scalar/singleton dispatch, not specific to inheritance — out of scope for this slice.
 
 ---
 
@@ -623,20 +750,26 @@ implemented and stable, and sit at implementation-order item 13; base
 | OQ-C | Generic protocol inheritance (§3.8): exact type-parameter match only, or allow specialization (`^inherit [(Container Int)]` under a still-generic child)? | Exact match only for MVP. Specialization introduces associated-type-like complexity that doesn't have a clear need yet; revisit if a concrete use case appears. |
 | OQ-D | Should the compiler warn or error on a redundant `^impl [A B]` when `B`'s closure already implies `A`? | Warn, not error. Redundant but harmless; a lint ("`A` is already implied by `B`") is enough. |
 | OQ-E | Defaults (§5) and derive (§6) both feed the impl-completeness checker at compile time. Should they be one compiler pass or two? | Keep them as two separate, ordered passes: resolve default-fallback dispatch entries as a dispatch-table concern (§4/§5), and run derive expansion as a separate codegen concern, with completeness-checking happening only after both have run. A single merged pass makes it harder to tell whether a missing-message error came from a broken default or a broken derive. |
-| OQ-F | Should `~`'s tier-1 lexical match (§9.1) silently shadow a same-named type-direct message on the receiver's type, or is that an ambiguity error? | Silent shadow, for now. This preserves `~`'s existing behavior exactly and keeps step 1 a zero-cost, zero-new-rule lookup. The collision is narrow (an unrelated top-level binding must accidentally share a name with a type-direct message on the *specific* receiver type in use) — revisit only if it causes real confusion in practice. |
+| OQ-F | Under receiver-first resolution (§9.1), a type message silently shadows a same-named lexical binding at `~` send sites. Error, lint, or silence? | Lint, not error. The shadow is the intended semantics — a send asks the receiver first — but a diagnostic ("send resolves to `T/name`, shadowing lexical `name`") catches the migration hazard where adding a message to a type silently re-routes existing sends. Bare calls `(name x)` are unaffected; they stay purely lexical. |
+| OQ-G | Should the lexical fallback (§9.1 tier 2) exist at all, or should `~` be receiver-only? | Keep the fallback for MVP. Dropping it breaks the entire pipeline idiom (`(xs ~ filter p; ~ map f)` — `filter`/`map` are plain stdlib functions today), which the main design doc and `examples/web_demo.gene` lean on heavily. Revisit once std stream/list operations become protocol messages on their receiver types; at that point receiver-only would make `~` purely a send, and the fallback could be deprecated with a lint. |
+| OQ-H | Should bare `(x ~ name)` ever resolve a protocol message, or only type-direct messages plus lexical fallback? | **Settled — normative in §3.3/§9.1.** Resolves iff exactly one applicable protocol message has that simple name; ambiguity requires qualification. |
+| OQ-I | Should protocol declarations also bind message simple names in the enclosing scope (enabling bare calls like `(to_name x)`)? | **Settled — no, for now.** Messages are reachable via qualified access and sends only (§1). Scope binding can be added later as an additive feature; adding it would require an ambiguity-marker binding design for same-named messages across protocols in one scope. |
 
 ---
 
 ## Complexity assessment
 
-- **Dispatch table flattening (§4)** touches the core impl-lookup mechanism
-  all dispatch depends on. Must preserve the existing O(1) dispatch
-  guarantee — this is the piece to get right first.
-- **Type-direct message namespacing and `~`'s two-tier resolution (§8-§9)**
-  add a new per-type message table and touch qualified-name resolution. Tier
-  1 (lexical-first) is the guard that must not regress: every existing
-  non-message use of `~` (pipeline-style flips) has to keep resolving
-  exactly as before.
+- **Qualified message identity (§3-§4)** touches the core protocol storage
+  and impl-lookup mechanism all protocol dispatch depends on. The central
+  invariant is that completeness and dispatch are keyed by message identity
+  (`Protocol/name`), while simple names are only a possibly-ambiguous index
+  for diagnostics and shorthand. This is the piece to get right first.
+- **Type-direct message namespacing and `~`'s receiver-first resolution
+  (§8-§9)** add a new per-type message table and change what unqualified `~`
+  heads mean. The guard that must not regress: existing pipeline sends
+  (`(xs ~ filter p)`) must keep resolving through the lexical fallback until
+  receiver types actually define those messages, and bare calls `(f x)` must
+  remain purely lexical.
 - **Transitive derive expansion (§6)** interacts with the macro system;
   ancestor derives must run before descendant derives, which means
   inheritance depth must be known at derive-expansion time.

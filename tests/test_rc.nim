@@ -115,7 +115,7 @@ when defined(geneRcStats):
                           "(type User ^props {^name Str} " &
                           "  ^impl [HasLabel] " &
                           "  ^derive [HasLabel]) " &
-                          "(label (User ^name \"Ada\"))") == 0
+                          "((User ^name \"Ada\") ~ label)") == 0
 
     test "returned named functions keep their defining scope alive":
       var f = NIL

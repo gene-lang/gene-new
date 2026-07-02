@@ -108,7 +108,7 @@
 (impl ToHtml MenuItem
   (message to_html [self] : Node
     `(tr
-       (td %(label self))
+       (td %(self ~ label))
        (td %$"$${self/price}")
        (td (span ^class "badge" %self/tag)))))
 
@@ -127,7 +127,7 @@
   (for item items
     (if item/featured
       (yield `(article ^class "card"
-                (h3 %(label item))
+                (h3 %(item ~ label))
                 (p %$"${item/tag} · $${item/price}")))
       (yield void)))) # streams skip void
 

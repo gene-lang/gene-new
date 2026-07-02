@@ -494,16 +494,9 @@ proc replacePipeSlot(value, replacement: Value): Value =
 
 proc finishNodeSegment(head: Value, props: PropTable, body: seq[Value],
                        meta: PropTable, immutable: bool): Value =
-  # Flipped call sugar: (x ~ f a) -> (f x a)
-  if body.len > 0 and body[0].kind == vkSymbol and body[0].symVal == "~":
-    # (head ~ f b1 b2 ...)
-    if body.len >= 2:
-      let f = body[1]
-      var args = newSeqOfCap[Value](body.len - 1)
-      args.add head
-      for i in 2 ..< body.len:
-        args.add body[i]
-      return newNode(f, props, args, meta, immutable)
+  # Message sends (x ~ f a) are preserved as read; the compiler resolves the
+  # message receiver-first (docs/core.md §9), so the reader must not erase
+  # the `~` by desugaring to (f x a).
   newNode(head, props, body, meta, immutable)
 
 proc pipeSegmentExpr(forms: seq[Value], props: PropTable, meta: PropTable,
@@ -596,14 +589,6 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
 
   if inPipe:
     result = finishPipeSegment(head, props, body, meta, immutable, inPipe)
-  elif body.len > 0 and body[0].kind == vkSymbol and body[0].symVal == "~":
-    # Flipped call sugar: (x ~ f a) -> (f x a)
-    if body.len >= 2:
-      let f = body[1]
-      let args = @[head] & body[2..^1]
-      result = newNode(f, props, args, meta, immutable)
-    else:
-      result = newNode(head, props, body, meta, immutable)
   else:
     result = newNode(head, props, body, meta, immutable)
 

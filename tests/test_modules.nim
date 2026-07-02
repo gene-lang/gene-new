@@ -138,10 +138,10 @@ suite "modules — file imports":
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(impl ToJson User (message to_json [self] : Str self/name))")
-    check runProgram("(import [ToJson, to_json] from \"./json\") " &
+    check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(import from \"./json_ext\" ^as ext) " &
-      "(to_json (User ^name \"Ada\"))").print() == "\"Ada\""
+      "((User ^name \"Ada\") ~ to_json)").print() == "\"Ada\""
 
   test "reimporting the same extension impl is idempotent":
     writeModule("json.gene",
@@ -152,11 +152,11 @@ suite "modules — file imports":
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(impl ToJson User (message to_json [self] : Str self/name))")
-    check runProgram("(import [ToJson, to_json] from \"./json\") " &
+    check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(import from \"./json_ext\" ^as ext1) " &
       "(import from \"./json_ext\" ^as ext2) " &
-      "(to_json (User ^name \"Ada\"))").print() == "\"Ada\""
+      "((User ^name \"Ada\") ~ to_json)").print() == "\"Ada\""
 
   test "conflicting imported extension impls are rejected":
     writeModule("json.gene",
@@ -268,7 +268,7 @@ suite "modules — namespace-path imports and mod":
       "(type T ^props {}) " &
       "(ns ext (impl Show T (message show [self] : Str \"ok\"))) " &
       "(import ext ^as imported) " &
-      "(show (T))"),
+      "((T) ~ show)"),
       newGlobalScope()).print() == "\"ok\""
 
   test "mod header runs its body":
@@ -310,4 +310,4 @@ suite "modules — Env imports":
       "(type T ^props {}) " &
       "(impl Show T (message show [self] : Str \"ok\"))")
     check runProgram("(var e (env ^imports [\"./showlib\"])) " &
-      "(eval (quote (show (T))) ^in e)").print() == "\"ok\""
+      "(eval (quote ((T) ~ show)) ^in e)").print() == "\"ok\""

@@ -58,6 +58,7 @@ type
     opCall2
     opCall
     opCallSplice
+    opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
     opIntAdd2
     opReturnIntAdd2
     opIntSub2
@@ -296,6 +297,7 @@ type
     requiredImplCount*: int
     deriveProtocolCount*: int
     deriveRequests*: seq[Value]
+    messages*: seq[ImplMessageProto] # type-direct messages (docs/core.md §8)
 
   ProtocolProto* = ref object
     name*: string
@@ -305,6 +307,7 @@ type
 
   ImplMessageProto* = object
     name*: string
+    protocolName*: string # qualifier for (message A/do_x ...); "" = unqualified
     fn*: FunctionProto
 
   ImplProto* = ref object
@@ -583,6 +586,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
+  of opResolveMessage:
+    result.add " name=" & inst.name & " named=" & $inst.intArg
   of opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
      opIntLe2, opIntGe2, opIntFast2:
     result.add " name=" & inst.name
