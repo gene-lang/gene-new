@@ -46,9 +46,10 @@ lane, so root deadlock detection and cancellation do not miss claimed work.
 
 ## Goal
 
-Decide whether/how to move the cooperative scheduler (one worker, `threadvar`
-state) to the design's M:N model (§13.1: "many Gene tasks run cooperatively across
-a runtime worker pool"), and what it costs.
+Track the staged move from the original cooperative scheduler (`threadvar`
+state, no OS worker lane) toward the design's M:N model (§13.1: "many Gene
+tasks run cooperatively across a runtime worker pool"), and keep the remaining
+production gaps explicit.
 
 ## TL;DR
 
@@ -85,9 +86,9 @@ Prototype: made every manual refcount atomic (`inc/dec` → `atomicInc/atomicDec
 Notes:
 - Worst case is ~2–4% on the hottest paths; uncontended arm64 atomics are cheap.
   x86 `LOCK`-prefixed ops may cost a bit more but are still modest uncontended.
-- The intended design (per-object `shared` flag, atomic only for *published*
-  values — see `TODO(vm-shared-rc)` in `types.nim`) keeps thread-local objects on
-  the plain path, so steady-state cost for the common case is **below** this bound
+- The implemented design uses a per-object `shared` flag and atomic retain/release
+  only for *published* values; thread-local manual-RC objects stay on the plain
+  path, so steady-state cost for the common case is **below** this bound
   (just a flag load + predictable branch).
 - Conclusion: **refcount atomicity does not block M:N.**
 

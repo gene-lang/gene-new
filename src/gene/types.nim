@@ -28,8 +28,10 @@
 ## Values crossing a `Send` boundary, plus captured values published to spawned
 ## fibers, are marked shared; in threaded builds manual RC objects then use atomic
 ## inc/dec while thread-local objects stay on the cheap non-atomic path. Generic
-## ORC objects also carry the marker, but a full M:N worker pool still needs
-## atomicArc (or equivalent) for those OBJECT_TAG refs and isolated spawn scopes.
+## ORC objects also carry the marker. The threaded worker lane is therefore
+## built and tested under `--mm:atomicArc --threads:on`, with eligible spawned
+## fibers running against isolated captured-scope snapshots while unsafe
+## shared-scope work stays on the cooperative root lane.
 
 import std/[locks, sets, strutils, sysatomics, tables, unicode]
 
