@@ -226,11 +226,17 @@ for what `T` implements; a lone `^impl [C]` and an `impl C T` elsewhere both
 register `T → {A, B, C}` in the same way. This composes with the `^is`-walk
 rule in §2.1: `T`'s ancestors' impls contribute to the same registration.
 
-### 3.6 Reusing a separately visible ancestor impl
+### 3.6 Reusing a separately visible ancestor impl — **deferred, not implemented** (OQ-A)
+
+This section describes intended future behavior. The current implementation
+deliberately rejects it: an impl body must provide every message in the
+protocol's transitive closure itself (`registerImpl` in `src/gene/vm.nim`),
+per the OQ-A recommendation to defer partial impl composition. Until OQ-A is
+revisited, treat everything below as design intent only.
 
 ```gene
 (impl A T (message do_a [self] "from A impl"))
-(impl B T (message do_b [self] ...))  # omits A/do_a
+(impl B T (message do_b [self] ...))  # omits A/do_a — rejected today
 ```
 
 If `impl A T` is already visible when `impl B T` is compiled, `impl B T` may

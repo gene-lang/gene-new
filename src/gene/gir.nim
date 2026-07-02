@@ -308,7 +308,8 @@ type
 
   ImplMessageProto* = object
     name*: string
-    protocolName*: string # qualifier for (message A/do_x ...); "" = unqualified
+    protocolPath*: seq[string] # qualifier for (message A/do_x ...) or
+                               # (message p/A/do_x ...); empty = unqualified
     fn*: FunctionProto
 
   ImplProto* = ref object

@@ -495,3 +495,48 @@ suite "types — inline protocol impls":
     expect GeneError:
       discard runStr("(var NotProtocol 1) " &
                      "(type T ^props {} (impl NotProtocol))")
+
+suite "protocols — namespace-qualified declaration paths":
+  test "^inherit accepts namespace-qualified parents":
+    ck "(ns p (protocol A (message do_a [self] : Str))) " &
+       "(protocol B ^inherit [p/A] (message do_b [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl B T " &
+       "  (message do_a [self] : Str \"a\") " &
+       "  (message do_b [self] : Str \"b\")) " &
+       "(var t (T)) " &
+       "[(t ~ do_a) (t ~ do_b) (t ~ p/A/do_a)]",
+       "[\"a\" \"b\" \"a\"]"
+
+  test "^impl accepts namespace-qualified protocols":
+    ck "(ns p (protocol A (message do_a [self] : Str))) " &
+       "(type T ^props {} ^impl [p/A]) " &
+       "(impl p/A T (message do_a [self] : Str \"ok\")) " &
+       "((T) ~ do_a)",
+       "\"ok\""
+
+  test "impl bodies accept namespace-qualified message owners":
+    ck "(ns p " &
+       "  (protocol X (message clash [self] : Str)) " &
+       "  (protocol Y (message clash [self] : Str))) " &
+       "(protocol Z ^inherit [p/X p/Y]) " &
+       "(type T ^props {}) " &
+       "(impl Z T " &
+       "  (message p/X/clash [self] : Str \"x\") " &
+       "  (message p/Y/clash [self] : Str \"y\")) " &
+       "(var t (T)) " &
+       "[(t ~ p/X/clash) (t ~ p/Y/clash)]",
+       "[\"x\" \"y\"]"
+
+  test "^derive accepts namespace-qualified protocols":
+    # The derive template names its own protocol; the generated impl runs in
+    # the deriving type's scope where the protocol may not be bound, so the
+    # validated protocol value is substituted before execution.
+    ck "(ns p " &
+       "  (protocol HasLabel " &
+       "    (message label [self] : Str) " &
+       "    (derive [t req] " &
+       "      `(impl HasLabel %t (message label [self] : Str self/name))))) " &
+       "(type U ^props {^name Str} ^derive [p/HasLabel]) " &
+       "((U ^name \"Ada\") ~ label)",
+       "\"Ada\""

@@ -4237,24 +4237,31 @@ proc qualifiedMessageName(message: Value): string =
     message.protocolMessageName
 
 proc resolveImplMessage(scope: Scope, protocol: Value,
-                        protocolName, name: string): Value =
+                        protocolPath: openArray[string], name: string): Value =
   ## Resolve one impl-body message name against the target protocol's closure
-  ## (docs/core.md §3.6.1). Qualified names (`A/do_x`) resolve through the
-  ## named protocol's own messages; unqualified names must be unique in the
-  ## closure.
-  if protocolName.len > 0:
+  ## (docs/core.md §3.6.1). Qualified names (`A/do_x`, or `ns/A/do_x` for
+  ## namespace-qualified owners) resolve through the named protocol's own
+  ## messages; unqualified names must be unique in the closure.
+  if protocolPath.len > 0:
+    let spelled = protocolPath.join("/")
     var qualifier: Value
-    if scope == nil or not scope.lookupOptional(protocolName, qualifier) or
-        qualifier.kind != vkProtocol:
+    if scope == nil or not scope.lookupOptional(protocolPath[0], qualifier):
       raise newException(GeneError,
-        "impl message qualifier is not a protocol: " & protocolName)
+        "impl message qualifier is not a protocol: " & spelled)
+    for i in 1 ..< protocolPath.len:
+      if qualifier.kind == vkModule:
+        qualifier = qualifier.moduleRootNamespace
+      qualifier = qualifier.exportedBinding(protocolPath[i])
+    if qualifier.kind != vkProtocol:
+      raise newException(GeneError,
+        "impl message qualifier is not a protocol: " & spelled)
     let message = qualifier.protocolMessages.getOrDefault(name, NIL)
     if message.kind != vkProtocolMessage:
       raise newException(GeneError,
-        "protocol " & protocolName & " has no message: " & name)
+        "protocol " & spelled & " has no message: " & name)
     if not protocol.protocolClosureContains(message):
       raise newException(GeneError,
-        "message " & protocolName & "/" & name & " is not in protocol " &
+        "message " & spelled & "/" & name & " is not in protocol " &
         protocol.protocolName & "'s closure")
     return message
   let candidates = protocol.protocolClosureByName(name)
@@ -5799,7 +5806,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              validateArg = true, fiber: Fiber = nil,
              injectCancel = false, instructionBudget = 0): RunStop
 
-proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
+proc generatedDeriveProtocol(scope: Scope, protocol, decl: Value): Value =
   if decl.kind != vkNode:
     raise newException(GeneError, "derive generated declarations must be nodes")
   if not decl.head.isSymbol("impl") or decl.body.len < 2:
@@ -5811,21 +5818,56 @@ proc generatedDeriveProtocol(scope: Scope, decl: Value): Value =
     result = protocolExpr
   of vkSymbol:
     if not scope.lookupOptional(protocolExpr.symVal, result):
+      # Derive templates are written in the protocol's defining scope, but
+      # they run in the deriving type's scope, where a namespaced protocol
+      # may not be bound. Only the deriving protocol is legal here anyway
+      # (identity-checked by the caller), so its own name always resolves.
+      if protocolExpr.symVal == protocol.protocolName:
+        return protocol
       raise newException(GeneError,
         "derive generated impl protocol is undefined: " & protocolExpr.symVal)
     if result.kind != vkProtocol:
       raise newException(GeneError,
         "derive generated impl target must be a protocol")
+  of vkNode:
+    if protocolExpr.head.isSymbol("path") and protocolExpr.body.len >= 2:
+      var resolved: Value
+      let head = protocolExpr.body[0]
+      if head.kind != vkSymbol or scope == nil or
+          not scope.lookupOptional(head.symVal, resolved):
+        raise newException(GeneError,
+          "derive generated impl protocol is undefined: " & print(protocolExpr))
+      for i in 1 ..< protocolExpr.body.len:
+        if protocolExpr.body[i].kind != vkSymbol:
+          raise newException(GeneError,
+            "derive generated impl must name its protocol directly")
+        if resolved.kind == vkModule:
+          resolved = resolved.moduleRootNamespace
+        resolved = resolved.exportedBinding(protocolExpr.body[i].symVal)
+      if resolved.kind != vkProtocol:
+        raise newException(GeneError,
+          "derive generated impl target must be a protocol")
+      result = resolved
+    else:
+      raise newException(GeneError,
+        "derive generated impl must name its protocol directly")
   else:
     raise newException(GeneError,
       "derive generated impl must name its protocol directly")
 
 proc runGeneratedDeriveDecl(scope: Scope, protocol, decl: Value) =
-  let generatedProtocol = generatedDeriveProtocol(scope, decl)
+  let generatedProtocol = generatedDeriveProtocol(scope, protocol, decl)
   if not same(generatedProtocol, protocol):
     raise newException(GeneError,
       "derive may only generate impl declarations for its own protocol")
-  discard run(compileForm(decl), scope, validateImplRequirements = false)
+  # Substitute the validated protocol value for its spelled name so the
+  # generated impl compiles/runs in the deriving type's scope even when the
+  # protocol is not bound there (e.g. declared inside a namespace).
+  var body = @[protocol]
+  for i in 1 ..< decl.body.len:
+    body.add decl.body[i]
+  let rewritten = newNode(decl.head, decl.props, body, decl.meta)
+  discard run(compileForm(rewritten), scope, validateImplRequirements = false)
 
 proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   let deriveFn = protocol.protocolDeriveFn
@@ -6590,7 +6632,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             var entries: seq[ImplMessage]
             for j, message in inline.messages:
               let resolved = resolveImplMessage(scope, inlineProtocols[i],
-                                                message.protocolName,
+                                                message.protocolPath,
                                                 message.name)
               let fn = newFunction(message.fn.name, message.fn.params,
                                    message.fn, scope, message.fn.checksErrors,
@@ -6637,7 +6679,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var entries: seq[ImplMessage]
           for i, message in proto.messages:
             let resolved = resolveImplMessage(scope, protocol,
-                                              message.protocolName,
+                                              message.protocolPath,
                                               message.name)
             let fn = newFunction(message.fn.name, message.fn.params, message.fn,
                                  scope, message.fn.checksErrors,

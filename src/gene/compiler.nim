@@ -3353,38 +3353,44 @@ proc rejectUnknownTypeProps(node: Value) =
     raise newException(GeneError,
       "type got unexpected named argument: " & key)
 
-proc messageNameParts(node: Value): tuple[protocolName, name: string] =
-  ## A message name is a simple symbol, or `Protocol/name` in impl bodies for
-  ## disambiguating same-named closure messages (docs/core.md §3.6.1).
+proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: string] =
+  ## A message name is a simple symbol, or a qualified path in impl bodies for
+  ## disambiguating same-named closure messages (docs/core.md §3.6.1):
+  ## `Protocol/name`, or `ns/Protocol/name` for namespace-qualified owners.
   if node.kind != vkNode or not node.head.isSymbol("message"):
     raise newException(GeneError, "protocol/impl body must contain message declarations")
   if node.body.len < 2 or node.body[1].kind != vkList:
     raise newException(GeneError, "message requires a name and parameter vector")
   let nameForm = node.body[0]
   if nameForm.kind == vkSymbol:
-    return ("", nameForm.symVal)
+    return (@[], nameForm.symVal)
   if nameForm.kind == vkNode and nameForm.head.isSymbol("path") and
-      nameForm.body.len == 2 and nameForm.body[0].kind == vkSymbol and
-      nameForm.body[1].kind == vkSymbol:
-    return (nameForm.body[0].symVal, nameForm.body[1].symVal)
+      nameForm.body.len >= 2:
+    var segments: seq[string]
+    for segment in nameForm.body:
+      if segment.kind != vkSymbol:
+        raise newException(GeneError,
+          "message requires a name and parameter vector")
+      segments.add segment.symVal
+    return (segments[0 ..^ 2], segments[^1])
   raise newException(GeneError, "message requires a name and parameter vector")
 
 proc messageName(node: Value): string =
   let parts = messageNameParts(node)
-  if parts.protocolName.len > 0:
+  if parts.protocolPath.len > 0:
     raise newException(GeneError,
       "qualified message names are only valid in impl bodies: " &
-      parts.protocolName & "/" & parts.name)
+      parts.protocolPath.join("/") & "/" & parts.name)
   parts.name
 
 proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
   let parts = messageNameParts(node)
   let displayName =
-    if parts.protocolName.len > 0: parts.protocolName & "/" & parts.name
+    if parts.protocolPath.len > 0: parts.protocolPath.join("/") & "/" & parts.name
     else: parts.name
   let errorRow = compileErrorRow(c, node)
   ImplMessageProto(name: parts.name,
-                   protocolName: parts.protocolName,
+                   protocolPath: parts.protocolPath,
                    fn: buildFunctionProto(c, displayName, node.body[1],
                                           node.body, 2,
                                           checksErrors = errorRow.checks,
@@ -3417,10 +3423,10 @@ proc compileType(c: var Compiler, node: Value) =
   for item in messageNodes:
     rejectReservedEffects(item)
     let mp = implMessageProto(c, item)
-    if mp.protocolName.len > 0:
+    if mp.protocolPath.len > 0:
       raise newException(GeneError,
         "type-direct message names must be simple: " &
-        mp.protocolName & "/" & mp.name)
+        mp.protocolPath.join("/") & "/" & mp.name)
     if seenMessages.hasKey(mp.name):
       raise newException(GeneError, "duplicate type message: " & mp.name)
     seenMessages[mp.name] = true
@@ -3441,7 +3447,7 @@ proc compileType(c: var Compiler, node: Value) =
           "inline impl body items must be message declarations " &
           "(the enclosing type is the receiver)")
       let mp = implMessageProto(c, msgNode)
-      let key = mp.protocolName & "/" & mp.name
+      let key = mp.protocolPath.join("/") & "/" & mp.name
       if seenImplMessages.hasKey(key):
         raise newException(GeneError, "duplicate impl message: " & mp.name)
       seenImplMessages[key] = true
@@ -3469,7 +3475,9 @@ proc compileType(c: var Compiler, node: Value) =
     if required.kind != vkList:
       raise newException(GeneError, "type ^impl must be a list")
     for protocolExpr in required.listItems:
-      compileExpr(c, protocolExpr)
+      # List items keep glued slash paths as symbols (p/A); desugar like
+      # ordinary evaluated list items so namespace-qualified protocols work.
+      compileEvaluatedListItem(c, protocolExpr)
       inc requiredImplCount
   var deriveProtocolCount = 0
   var deriveRequests: seq[Value]
@@ -3481,7 +3489,7 @@ proc compileType(c: var Compiler, node: Value) =
       let protocolExpr = deriveProtocolExpr(request)
       if protocolExpr.kind == vkNil or protocolExpr.kind == vkVoid:
         raise newException(GeneError, "type ^derive entries must name protocols")
-      compileExpr(c, protocolExpr)
+      compileEvaluatedListItem(c, protocolExpr)
       deriveRequests.add request
       inc deriveProtocolCount
   if node.props.hasKey("is"):
@@ -3528,7 +3536,9 @@ proc compileProtocol(c: var Compiler, node: Value) =
     if parents.kind != vkList:
       raise newException(GeneError, "protocol ^inherit must be a list")
     for parentExpr in parents.listItems:
-      compileExpr(c, parentExpr)
+      # List items keep glued slash paths as symbols (p/A); desugar like
+      # ordinary evaluated list items so namespace-qualified parents work.
+      compileEvaluatedListItem(c, parentExpr)
       inc parentCount
   # Message names are deliberately not bound in the enclosing scope
   # (docs/core.md §1, OQ-I): messages are reached via qualified access
@@ -3550,7 +3560,7 @@ proc compileImpl(c: var Compiler, node: Value) =
   var seen = initTable[string, bool]()
   for i in 2 ..< body.len:
     let mp = implMessageProto(c, body[i])
-    let key = mp.protocolName & "/" & mp.name
+    let key = mp.protocolPath.join("/") & "/" & mp.name
     if seen.hasKey(key):
       raise newException(GeneError, "duplicate impl message: " & mp.name)
     seen[key] = true
