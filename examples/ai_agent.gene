@@ -164,21 +164,31 @@
 
 # Pull the assistant's text out of a Responses `output` list (message items ->
 # content parts of type output_text).
+(fn response-output-items [resp]
+  (if (= resp/output void)
+    []
+    (try
+      ((to_stream resp/output) ~ into [])
+    catch * [])))
+
 (fn response-text [resp] : Str
-  (var acc (cell ""))
-  ((to_stream resp/output)
-    ~ each (fn [item]
-        (if (= item/type "message")
-          ((to_stream item/content)
-            ~ each (fn [part]
-                (if (= part/type "output_text")
-                  (Cell/set acc $"${(Cell/get acc)}${part/text}")
-                  nil))))))
-  (Cell/get acc))
+  (if (not (= resp/output_text void))
+    resp/output_text
+    (do
+      (var acc (cell ""))
+      ((to_stream (response-output-items resp))
+        ~ each (fn [item]
+            (if (= item/type "message")
+              ((to_stream item/content)
+                ~ each (fn [part]
+                    (if (= part/type "output_text")
+                      (Cell/set acc $"${(Cell/get acc)}${part/text}")
+                      nil))))))
+      (Cell/get acc))))
 
 # function_call items the model emitted this turn.
 (fn response-calls [resp]
-  ((to_stream resp/output)
+  ((to_stream (response-output-items resp))
     ~ filter (fn [item] (= item/type "function_call"))
     ; ~ into []))
 
@@ -202,6 +212,12 @@
 # Both take a request-body string and return a parsed Responses map.
 # -----------------------------------------------------------------------------
 
+(fn api-error-text [resp]
+  (var status (if (= resp/status void) "?" resp/status))
+  (var message (if (= resp/error/message void) "unknown API error" resp/error/message))
+  (var code (if (= resp/error/code void) "" $" (${resp/error/code})"))
+  $"OpenAI API error ${status}: ${message}${code}")
+
 (fn live-transport [body : Str]
   (var r (exec Exec ^cmd "curl"
                ^args ["-sS" "-X" "POST" $"${base}/v1/responses"
@@ -210,8 +226,16 @@
                       "-d" body]
                ^timeout-ms 60000 ^max-bytes 4000000))
   (if (not (= r/status 0))
-    (fail (redact $"curl failed (${r/status}): ${r/stderr}"))
-    (parse r/stdout)))
+    {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
+    (do
+      (var resp
+        (try
+          (parse r/stdout)
+        catch (JsonError ^message m)
+          {^agent_error (redact $"OpenAI API returned invalid JSON: ${m}")}))
+      (if (not (= resp/error void))
+        {^agent_error (redact (api-error-text resp))}
+        resp))))
 
 (fn call-model [transport, input-items]
   (var body (stringify {^model model ^input input-items ^tools tool-schemas}))
@@ -224,23 +248,28 @@
 # model that never stops calling tools cannot loop forever.
 (fn run-turn [transport, input-items, render, budget]
   (var resp (call-model transport input-items))
-  (var calls (response-calls resp))
-  (if (empty? calls)
+  (if (not (= resp/agent_error void))
     (do
-      (render (redact (response-text resp)))
+      (render resp/agent_error)
       input-items)
-    (if (<= budget 0)
-      (do
-        (render "[stopped: tool-call budget exhausted]")
-        input-items)
-      (do
-        (var outputs ((to_stream calls) ~ map run-tool-call ; ~ into []))
-        (each (to_stream calls) (fn [c]
-          (render $"  · tool ${c/name} ${c/arguments}")))
-        (run-turn transport
-                  ((to_stream outputs) ~ into (append-all input-items resp/output))
-                  render
-                  (- budget 1))))))
+    (do
+      (var calls (response-calls resp))
+      (if (empty? calls)
+        (do
+          (render (redact (response-text resp)))
+          input-items)
+        (if (<= budget 0)
+          (do
+            (render "[stopped: tool-call budget exhausted]")
+            input-items)
+          (do
+            (var outputs ((to_stream calls) ~ map run-tool-call ; ~ into []))
+            (each (to_stream calls) (fn [c]
+              (render $"  · tool ${c/name} ${c/arguments}")))
+            (run-turn transport
+                      ((to_stream outputs) ~ into (append-all input-items (response-output-items resp)))
+                      render
+                      (- budget 1))))))))
 
 (fn append-all [xs, ys]
   ((to_stream ys) ~ into xs))
