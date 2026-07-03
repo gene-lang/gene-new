@@ -12,6 +12,10 @@ bin           = @["gene"]
 
 requires "nim >= 2.0.0"
 
+task speedy, "Optimized build for maximum performance":
+  exec "mkdir -p bin"
+  exec "nim c -d:release --mm:orc --opt:speed --passC:\"-march=native -O3\" -o:bin/gene src/gene.nim"
+
 task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
 
