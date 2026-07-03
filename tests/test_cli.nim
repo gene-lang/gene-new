@@ -1,4 +1,5 @@
 import std/[os, osproc, strutils, unittest]
+import gene/[repl, vm]
 
 let cliDir = getTempDir() / "gene_cli_tests"
 let geneExe = cliDir / "gene-test-bin"
@@ -106,6 +107,30 @@ suite "cli — gene repl":
   setup:
     createDir(cliDir)
 
+  test "runReplSession can be driven programmatically":
+    let app = initModuleContext(cliDir)
+    let scope = newGlobalScope(app)
+    var inputs = @["(var x 2)", "(+ x 4)", ":quit"]
+    var index = 0
+    var outText = ""
+    var errText = ""
+    let reader = proc(line: var string): bool =
+      if index >= inputs.len:
+        return false
+      line = inputs[index]
+      inc index
+      true
+    let writeOut = proc(text: string) =
+      outText.add text
+    let writeErr = proc(text: string) =
+      errText.add text
+
+    let code = runReplSession(scope, reader, writeOut, writeErr)
+
+    check code == 0
+    check outText.strip.splitLines == @["2", "6"]
+    check errText == ""
+
   test "retains declarations across input lines":
     let ran = runGeneInput(["repl"], "(var x 2)\n(+ x 3)\n")
     check ran.exitCode == 0
@@ -116,6 +141,28 @@ suite "cli — gene repl":
     check ran.exitCode == 0
     check "eval cannot use import; add imports to Env" in ran.output
     check ran.output.strip.splitLines[^1] == "3"
+
+  test "REPL_ON_ERROR enters repl after eval errors":
+    buildGeneCli()
+    let command = "env REPL_ON_ERROR=1 " & shellQuote(geneExe) &
+                  " eval " & shellQuote("(var x 2) missing")
+    let ran = execCmdEx(command, input = "x\n:quit\n")
+    check ran.exitCode == 1
+    check "Error: undefined symbol: missing" in ran.output
+    check "REPL_ON_ERROR=1: entering Gene REPL" in ran.output
+    check "\n2\n" in ran.output
+
+  test "REPL_ON_ERROR enters module repl after run errors":
+    let path = writeCliProgram("run_error_repl.gene",
+      "(var x 41) (fn main [] missing)")
+    buildGeneCli()
+    let command = "env REPL_ON_ERROR=1 " & shellQuote(geneExe) &
+                  " run " & shellQuote(path)
+    let ran = execCmdEx(command, input = "x\n:quit\n")
+    check ran.exitCode == 1
+    check "Error: undefined symbol: missing" in ran.output
+    check "REPL_ON_ERROR=1: entering Gene REPL" in ran.output
+    check "\n41\n" in ran.output
 
 suite "cli — gene parse/fmt/compile":
   setup:

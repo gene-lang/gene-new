@@ -10,8 +10,8 @@
 ##   gene compile --target c <file> print experimental typed-native C
 ##   gene doc <file>     print module metadata, imports, and declarations
 
-import std/[algorithm, os, strutils, tables, terminal]
-import gene/[compiler, gir, printer, reader, types, vm]
+import std/[algorithm, os, strutils, tables]
+import gene/[compiler, gir, printer, reader, repl, types, vm]
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -32,49 +32,46 @@ proc readSourceFile(path: string): string =
     quit(1)
   readFile(path)
 
+proc replOnErrorEnabled(): bool =
+  let value = getEnv("REPL_ON_ERROR").strip().toLowerAscii()
+  value in ["1", "true", "yes", "on"]
+
+proc replFallbackScope(scope: Scope, app: Application = nil): Scope =
+  if scope != nil:
+    return scope
+  if app != nil:
+    return newGlobalScope(app)
+  newGlobalScope(initModuleContext(getCurrentDir()))
+
+proc maybeReplOnError(scope: Scope, app: Application = nil) =
+  if replOnErrorEnabled():
+    stderr.writeLine "REPL_ON_ERROR=1: entering Gene REPL (:quit to exit)."
+    let code = runRepl(replFallbackScope(scope, app))
+    if code != 0:
+      quit(code)
+
 proc cmdEval(src: string) =
+  let app = initModuleContext(getCurrentDir())
+  let scope = newGlobalScope(app)
   try:
-    let app = initModuleContext(getCurrentDir())
-    echo run(compileEvalSource(src), newGlobalScope(app)).print()
+    echo run(compileEvalSource(src), scope).print()
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
+    maybeReplOnError(scope, app)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
     stderr.writeLine "Error: " & e.msg
+    maybeReplOnError(scope, app)
     quit(1)
 
 proc cmdRepl() =
   let app = initModuleContext(getCurrentDir())
-  let scope = newGlobalScope(app)
-  let interactive = isatty(stdin)
-  var line: string
-  if interactive:
-    stdout.write "gene> "
-    stdout.flushFile()
-  while stdin.readLine(line):
-    let trimmed = line.strip()
-    if trimmed.len == 0:
-      if interactive:
-        stdout.write "gene> "
-        stdout.flushFile()
-      continue
-    if trimmed in [":quit", ":exit", "quit", "exit"]:
-      break
-    try:
-      echo run(compileEvalSource(line, useLocalSlots = false), scope).print()
-    except ReadError as e:
-      stderr.writeLine "Read error: " & e.msg
-    except GenePanic as e:
-      stderr.writeLine "Panic: " & e.msg
-      quit(1)
-    except GeneError as e:
-      stderr.writeLine "Error: " & e.msg
-    if interactive:
-      stdout.write "gene> "
-      stdout.flushFile()
+  let code = runRepl(newGlobalScope(app))
+  if code != 0:
+    quit(code)
 
 proc argsList(args: openArray[string]): Value =
   var values = newSeq[Value](args.len)
@@ -138,11 +135,14 @@ proc cmdRun(path: string, args: openArray[string] = []) =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
     quit(1)
+  var app: Application = nil
+  var replScope: Scope = nil
   try:
     let absPath = normalizedPath(absolutePath(path))
-    let app = newApplication(parentDir(absPath))
+    app = newApplication(parentDir(absPath))
     let entryModule = app.loadFileModule(absPath)
     let scope = entryModule.moduleRootNamespace.nsScope
+    replScope = scope
     var mainBinding: Value
     if scope.lookupOptional("main", mainBinding):
       let result =
@@ -153,12 +153,14 @@ proc cmdRun(path: string, args: openArray[string] = []) =
       exitFromMain(scope, result)
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
+    maybeReplOnError(replScope, app)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
     stderr.writeLine "Error: " & e.msg
+    maybeReplOnError(replScope, app)
     quit(1)
 
 proc cmdParse(path: string) =
