@@ -5,13 +5,16 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[sequtils, strutils, unittest]
+import std/[os, sequtils, strutils, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
 
 template check_eval(src: string, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
+
+proc geneString(s: string): string =
+  "\"" & s.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
 
 suite "spec — reader surface from design":
   test "programs contain multiple top-level forms":
@@ -2036,6 +2039,70 @@ suite "spec — db protocol from stdlib plan":
                " (same? Db (Namespace/lookup db/postgres \"Db\")) " &
                " (not (= (Namespace/lookup db/postgres \"open\") void))]",
                "[true true true]")
+
+suite "spec — os and json from ai-agent plan":
+  test "os/get-env reads, defaults, and errors under Os/Env":
+    check_eval("(import os [get-env env? Env]) " &
+               "[(env? Env \"GENE_SPEC_UNSET_XYZ\") " &
+               " (get-env Env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
+               "[nil \"fallback\"]")
+    check_eval("(import os [get-env Env OsError]) " &
+               "(try (get-env Env \"GENE_SPEC_UNSET_XYZ\") " &
+               "catch (OsError ^message _) \"unset\")",
+               "\"unset\"")
+
+  test "os/get-env rejects a non-Os/Env capability":
+    check_eval("(import os [get-env OsError]) " &
+               "(try (get-env Net/Connect \"HOME\") " &
+               "catch (OsError ^message _) \"denied\")",
+               "\"denied\"")
+
+  test "os/exec runs a program, captures output, and enforces timeout":
+    check_eval("(import os [exec Exec]) " &
+               "(var r (exec Exec ^cmd \"echo\" ^args [\"hi\"])) " &
+               "[r/status r/timed-out]",
+               "[0 false]")
+    check_eval("(import os [exec Exec]) " &
+               "(var r (exec Exec ^cmd \"sleep\" ^args [\"5\"] ^timeout-ms 150)) " &
+               "r/timed-out",
+               "true")
+    check_eval("(import os [exec Exec]) " &
+               "(var r (exec Exec ^cmd \"printf\" ^args [\"abcdef\"] ^max-bytes 3)) " &
+               "[r/stdout r/stdout-truncated r/truncated]",
+               "[\"abc\" true true]")
+
+  test "Fs sync helpers read, write, and list under capabilities":
+    let dir = getTempDir() / "gene-ai-agent-fs-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    let path = dir / "note.txt"
+    check_eval("(import Fs [read-text write-text list-dir ReadDir WriteDir]) " &
+               "(write-text WriteDir " & geneString(path) & " \"hello\") " &
+               "[(read-text ReadDir " & geneString(path) & ") " &
+               " (list-dir ReadDir " & geneString(dir) & ")]",
+               "[\"hello\" [\"note.txt\"]]")
+
+  test "json round-trips objects, arrays, scalars, and escapes":
+    check_eval("(import json [parse stringify]) " &
+               "(stringify (parse \"{\\\"a\\\":1,\\\"b\\\":[true,null,2.5]}\"))",
+               "\"{\\\"a\\\":1,\\\"b\\\":[true,null,2.5]}\"")
+    check_eval("(import json [parse]) (var m (parse \"{\\\"x\\\":\\\"a\\\\nb\\\"}\")) m/x",
+               "\"a\\nb\"")
+
+  test "json/parse raises JsonError on malformed input and trailing junk":
+    check_eval("(import json [parse JsonError]) " &
+               "(try (parse \"{bad}\") catch (JsonError ^message _) \"e1\")",
+               "\"e1\"")
+    check_eval("(import json [parse JsonError]) " &
+               "(try (parse \"[1] extra\") catch (JsonError ^message _) \"e2\")",
+               "\"e2\"")
+
+  test "json/stringify raises JsonError for unsupported values":
+    check_eval("(import json [stringify JsonError]) " &
+               "(try (stringify (fn [] nil)) " &
+               "catch (JsonError ^message _) \"bad\")",
+               "\"bad\"")
 
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":

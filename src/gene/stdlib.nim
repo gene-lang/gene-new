@@ -472,6 +472,489 @@ proc biHttpRedirect(args: openArray[Value], call: ptr NativeCall): Value {.nimca
           props = props, body = @[newStr("")])
 
 
+# --- os: environment, subprocess, and line input (docs/ai-agent.md §3,§6) ---
+#
+# Host authority is capability-gated exactly like Fs/Net: `os/get-env` needs an
+# `Os/Env` value and `os/exec` needs `Os/Exec`, so a launcher can hand out
+# env+file access without shell access. Errors are the typed `OsError`.
+
+proc raiseOsError(message: string, scope: Scope) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, "OsError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc requireOsEnv(name: string, value: Value, scope: Scope) =
+  if value.kind != vkCapability or value.capabilityName != "Os/Env":
+    raiseOsError(name & " expects Os/Env authority", scope)
+
+proc requireOsExec(name: string, value: Value, scope: Scope) =
+  if value.kind != vkCapability or value.capabilityName != "Os/Exec":
+    raiseOsError(name & " expects Os/Exec authority", scope)
+
+proc biOsGetEnv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len notin 2..3:
+    raise newException(GeneError,
+      "os/get-env expects (Os/Env, name) or (Os/Env, name, default), got " &
+      $args.len & " arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOsEnv("os/get-env", args[0], scope)
+  requireStr("os/get-env name", args[1])
+  if existsEnv(args[1].strVal):
+    newStr(getEnv(args[1].strVal))
+  elif args.len == 3:
+    args[2]
+  else:
+    raiseOsError("os/get-env: environment variable not set: " &
+                 args[1].strVal, scope)
+    NIL
+
+proc biOsEnvOpt(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "os/env? expects (Os/Env, name)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOsEnv("os/env?", args[0], scope)
+  requireStr("os/env? name", args[1])
+  if existsEnv(args[1].strVal): newStr(getEnv(args[1].strVal)) else: NIL
+
+const osExecDefaultOutputCap = 1024 * 1024
+const osExecPollMs = 5
+
+proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Run a subprocess and return {^status ^stdout ^stderr ^timed-out}.
+  ## `^cmd` is the program, `^args` a list of Str arguments (no shell parsing
+  ## unless the caller passes a shell explicitly), `^timeout-ms` bounds the run,
+  ## and captured output is truncated at `^max-bytes`. Never uses a shell to
+  ## split the command, so injection through argument values is not possible.
+  if args.len != 1:
+    raise newException(GeneError,
+      "os/exec expects the Os/Exec capability plus named arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOsExec("os/exec", args[0], scope)
+  var cmd = ""
+  var cmdSet = false
+  var procArgs: seq[string]
+  var timeoutMs = -1
+  var maxBytes = osExecDefaultOutputCap
+  var workdir = ""
+  if call != nil:
+    for i, name in call[].namedNames:
+      let v = call[].namedValues[i]
+      case name
+      of "cmd":
+        requireStr("os/exec ^cmd", v)
+        cmd = v.strVal
+        cmdSet = true
+      of "args":
+        if v.kind != vkList:
+          raiseOsError("os/exec ^args must be a List of Str", scope)
+        for item in v.listItems:
+          requireStr("os/exec ^args item", item)
+          procArgs.add item.strVal
+      of "timeout-ms": timeoutMs = int(requireInt64("os/exec ^timeout-ms", v))
+      of "max-bytes": maxBytes = int(requireInt64("os/exec ^max-bytes", v))
+      of "dir":
+        requireStr("os/exec ^dir", v)
+        workdir = v.strVal
+      else:
+        raiseOsError("os/exec got unexpected named argument: " & name, scope)
+  if not cmdSet or cmd.len == 0:
+    raiseOsError("os/exec requires a non-empty ^cmd", scope)
+  if maxBytes <= 0:
+    maxBytes = osExecDefaultOutputCap
+  var process: Process
+  try:
+    process = startProcess(cmd, workingDir = workdir, args = procArgs,
+                           options = {poUsePath})
+  except OSError as e:
+    raiseOsError("os/exec could not start '" & cmd & "': " & e.msg, scope)
+  var outText = ""
+  var errText = ""
+  var outTruncated = false
+  var errTruncated = false
+  var timedOut = false
+  let deadline =
+    if timeoutMs >= 0: getMonoTime() + initDuration(milliseconds = timeoutMs)
+    else: getMonoTime()
+
+  proc appendCapped(into: var string, truncated: var bool, chunk: string) =
+    if into.len >= maxBytes:
+      if chunk.len > 0:
+        truncated = true
+      return
+    if into.len + chunk.len <= maxBytes:
+      into.add chunk
+    else:
+      truncated = true
+      into.add chunk.substr(0, maxBytes - into.len - 1)
+
+  # POSIX: drain the child's stdout/stderr *concurrently* with waiting, using
+  # non-blocking reads. Reading as the child writes keeps the OS pipe buffer
+  # from filling — otherwise a child emitting more than the ~64 KB pipe buffer
+  # (a large API response) blocks on write, never exits, and hits the timeout
+  # with its output lost. Non-blocking reads also let the wall-clock timeout
+  # fire on a child that produces no output (the `sleep` case).
+  when defined(posix):
+    let outFd = process.outputHandle.cint
+    let errFd = process.errorHandle.cint
+    discard fcntl(outFd, F_SETFL, fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
+    discard fcntl(errFd, F_SETFL, fcntl(errFd, F_GETFL, 0) or O_NONBLOCK)
+    var buf: array[4096, char]
+    proc drainAvailable(fd: cint, into: var string, truncated: var bool) =
+      while true:
+        let n = read(fd, addr buf[0], buf.len)
+        if n > 0:
+          var chunk = newString(n)
+          copyMem(addr chunk[0], addr buf[0], n)
+          appendCapped(into, truncated, chunk)
+        else:
+          break                       # EAGAIN, EOF, or error: nothing right now
+    while process.running:
+      drainAvailable(outFd, outText, outTruncated)
+      drainAvailable(errFd, errText, errTruncated)
+      if timeoutMs >= 0 and getMonoTime() >= deadline:
+        timedOut = true
+        process.terminate()
+        break
+      os.sleep(osExecPollMs)
+    var exitCode = 0
+    try:
+      exitCode = if timedOut: (discard process.waitForExit(); -1)
+                 else: process.waitForExit()
+      drainAvailable(outFd, outText, outTruncated) # final sweep after exit
+      drainAvailable(errFd, errText, errTruncated)
+    finally:
+      process.close()
+  else:
+    # Non-POSIX fallback: enforce the timeout via waitForExit, then read to EOF.
+    # (Windows is a documented non-goal for the agent; this keeps exec usable.)
+    var exitCode = process.waitForExit(if timeoutMs >= 0: timeoutMs else: -1)
+    if process.running:
+      timedOut = true
+      process.terminate()
+      exitCode = -1
+    appendCapped(outText, outTruncated, process.outputStream.readAll())
+    appendCapped(errText, errTruncated, process.errorStream.readAll())
+    process.close()
+  var props = initOrderedTable[string, Value]()
+  props["status"] = newInt(exitCode)
+  props["stdout"] = newStr(outText)
+  props["stderr"] = newStr(errText)
+  props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
+  props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+  props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
+  props["timed-out"] = if timedOut: TRUE else: FALSE
+  newMap(props)
+
+proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
+  ## Read one line from stdin; returns nil at EOF. No capability: reading the
+  ## program's own stdin is not host authority the way env/exec/files are.
+  if args.len != 0:
+    raise newException(GeneError, "os/read-line takes no arguments")
+  try:
+    newStr(stdin.readLine())
+  except EOFError:
+    NIL
+
+# --- fs: synchronous read + directory listing (docs/ai-agent.md §6) ---
+
+proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Fs/read-text expects (Fs/ReadDir, path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsReadDir("Fs/read-text", args[0])
+  requireStr("Fs/read-text path", args[1])
+  try:
+    newStr(readFile(args[1].strVal))
+  except IOError as e:
+    raiseOsError("Fs/read-text: " & e.msg, scope)
+    NIL
+
+proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Fs/write-text expects (Fs/WriteDir, path, text)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsWriteDir("Fs/write-text", args[0])
+  requireStr("Fs/write-text path", args[1])
+  requireStr("Fs/write-text text", args[2])
+  try:
+    writeFile(args[1].strVal, args[2].strVal)
+  except IOError as e:
+    raiseOsError("Fs/write-text: " & e.msg, scope)
+  NIL
+
+proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Fs/list-dir expects (Fs/ReadDir, path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsReadDir("Fs/list-dir", args[0])
+  requireStr("Fs/list-dir path", args[1])
+  if not dirExists(args[1].strVal):
+    raiseOsError("Fs/list-dir: not a directory: " & args[1].strVal, scope)
+  var names: seq[Value]
+  try:
+    for kind, path in walkDir(args[1].strVal, relative = true):
+      names.add newStr(path)
+  except OSError as e:
+    raiseOsError("Fs/list-dir: " & e.msg, scope)
+  newList(names)
+
+# --- json: parse and stringify over Gene value kinds (docs/ai-agent.md §5) ---
+
+const jsonMaxDepth = 200
+
+type JsonParser = object
+  input: string
+  pos: int
+  scope: Scope
+
+proc raiseJsonError(p: var JsonParser, message: string) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr("json/parse: " & message & " at offset " & $p.pos)
+  var e: ref GeneError
+  new(e)
+  e.msg = "json/parse: " & message
+  e.errVal = newNode(builtInTypeHead(p.scope, "JsonError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc raiseJsonValueError(scope: Scope, message: string) =
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, "JsonError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc jsonSkipWs(p: var JsonParser) =
+  while p.pos < p.input.len and p.input[p.pos] in {' ', '\t', '\n', '\r'}:
+    inc p.pos
+
+proc parseJsonValue(p: var JsonParser, depth: int): Value
+
+proc parseJsonString(p: var JsonParser): string =
+  inc p.pos                             # opening quote
+  var s = ""
+  while true:
+    if p.pos >= p.input.len:
+      raiseJsonError(p, "unterminated string")
+    let c = p.input[p.pos]
+    if c == '"':
+      inc p.pos
+      return s
+    elif c == '\\':
+      inc p.pos
+      if p.pos >= p.input.len:
+        raiseJsonError(p, "unterminated escape")
+      let e = p.input[p.pos]
+      case e
+      of '"': s.add '"'
+      of '\\': s.add '\\'
+      of '/': s.add '/'
+      of 'b': s.add '\b'
+      of 'f': s.add '\f'
+      of 'n': s.add '\n'
+      of 'r': s.add '\r'
+      of 't': s.add '\t'
+      of 'u':
+        if p.pos + 4 >= p.input.len:
+          raiseJsonError(p, "truncated \\u escape")
+        let hex = p.input[p.pos + 1 .. p.pos + 4]
+        var code = 0
+        try:
+          code = fromHex[int](hex)
+        except ValueError:
+          raiseJsonError(p, "invalid \\u escape")
+        s.add toUTF8(Rune(code))
+        p.pos += 4
+      else:
+        raiseJsonError(p, "invalid escape \\" & e)
+      inc p.pos
+    elif c < ' ':
+      raiseJsonError(p, "control character in string")
+    else:
+      s.add c
+      inc p.pos
+
+proc parseJsonNumber(p: var JsonParser): Value =
+  let start = p.pos
+  var isFloat = false
+  if p.pos < p.input.len and p.input[p.pos] == '-':
+    inc p.pos
+  while p.pos < p.input.len:
+    let c = p.input[p.pos]
+    if c in {'0'..'9'}:
+      inc p.pos
+    elif c in {'.', 'e', 'E', '+', '-'}:
+      isFloat = true
+      inc p.pos
+    else:
+      break
+  let text = p.input[start ..< p.pos]
+  if isFloat:
+    try: newFloat(parseFloat(text))
+    except ValueError: (raiseJsonError(p, "invalid number"); NIL)
+  else:
+    try: newInt(parseBiggestInt(text))
+    except ValueError:
+      try: newFloat(parseFloat(text))
+      except ValueError: (raiseJsonError(p, "invalid number"); NIL)
+
+proc jsonLiteral(p: var JsonParser, word: string, value: Value): Value =
+  if p.pos + word.len <= p.input.len and
+      p.input[p.pos ..< p.pos + word.len] == word:
+    p.pos += word.len
+    value
+  else:
+    raiseJsonError(p, "invalid literal")
+    NIL
+
+proc parseJsonValue(p: var JsonParser, depth: int): Value =
+  if depth > jsonMaxDepth:
+    raiseJsonError(p, "nesting too deep")
+  jsonSkipWs(p)
+  if p.pos >= p.input.len:
+    raiseJsonError(p, "unexpected end of input")
+  let c = p.input[p.pos]
+  case c
+  of '{':
+    inc p.pos
+    var entries = initOrderedTable[string, Value]()
+    jsonSkipWs(p)
+    if p.pos < p.input.len and p.input[p.pos] == '}':
+      inc p.pos
+      return newMap(entries)
+    while true:
+      jsonSkipWs(p)
+      if p.pos >= p.input.len or p.input[p.pos] != '"':
+        raiseJsonError(p, "expected object key string")
+      let key = parseJsonString(p)
+      jsonSkipWs(p)
+      if p.pos >= p.input.len or p.input[p.pos] != ':':
+        raiseJsonError(p, "expected ':' after object key")
+      inc p.pos
+      entries[key] = parseJsonValue(p, depth + 1)
+      jsonSkipWs(p)
+      if p.pos >= p.input.len:
+        raiseJsonError(p, "unterminated object")
+      if p.input[p.pos] == ',':
+        inc p.pos
+      elif p.input[p.pos] == '}':
+        inc p.pos
+        break
+      else:
+        raiseJsonError(p, "expected ',' or '}' in object")
+    newMap(entries)
+  of '[':
+    inc p.pos
+    var items: seq[Value]
+    jsonSkipWs(p)
+    if p.pos < p.input.len and p.input[p.pos] == ']':
+      inc p.pos
+      return newList(items)
+    while true:
+      items.add parseJsonValue(p, depth + 1)
+      jsonSkipWs(p)
+      if p.pos >= p.input.len:
+        raiseJsonError(p, "unterminated array")
+      if p.input[p.pos] == ',':
+        inc p.pos
+      elif p.input[p.pos] == ']':
+        inc p.pos
+        break
+      else:
+        raiseJsonError(p, "expected ',' or ']' in array")
+    newList(items)
+  of '"':
+    newStr(parseJsonString(p))
+  of '-', '0'..'9':
+    parseJsonNumber(p)
+  of 't':
+    jsonLiteral(p, "true", TRUE)
+  of 'f':
+    jsonLiteral(p, "false", FALSE)
+  of 'n':
+    jsonLiteral(p, "null", NIL)
+  else:
+    raiseJsonError(p, "unexpected character '" & c & "'")
+    NIL
+
+proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("json/parse", args)
+  requireStr("json/parse", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  var p = JsonParser(input: args[0].strVal, pos: 0, scope: scope)
+  result = parseJsonValue(p, 0)
+  jsonSkipWs(p)
+  if p.pos != p.input.len:
+    raiseJsonError(p, "trailing characters after JSON value")
+
+proc jsonEscapeInto(s: string, into: var string) =
+  into.add '"'
+  for c in s:
+    case c
+    of '"': into.add "\\\""
+    of '\\': into.add "\\\\"
+    of '\b': into.add "\\b"
+    of '\f': into.add "\\f"
+    of '\n': into.add "\\n"
+    of '\r': into.add "\\r"
+    of '\t': into.add "\\t"
+    else:
+      if c < ' ':
+        into.add "\\u"
+        into.add toHex(ord(c), 4).toLowerAscii()
+      else:
+        into.add c
+  into.add '"'
+
+proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
+                       depth: int) =
+  if depth > jsonMaxDepth:
+    raiseJsonValueError(scope, "json/stringify: nesting too deep")
+  case value.kind
+  of vkNil, vkVoid: into.add "null"
+  of vkBool: into.add (if value.boolVal: "true" else: "false")
+  of vkInt: into.add $value.intVal
+  of vkFloat: into.add $value.floatVal
+  of vkString: jsonEscapeInto(value.strVal, into)
+  of vkSymbol: jsonEscapeInto(value.symVal, into)
+  of vkList:
+    into.add '['
+    var first = true
+    for item in value.listItems:
+      if not first: into.add ','
+      first = false
+      jsonStringifyInto(item, into, scope, depth + 1)
+    into.add ']'
+  of vkMap:
+    into.add '{'
+    var first = true
+    for key, item in value.mapEntries:
+      if not first: into.add ','
+      first = false
+      jsonEscapeInto(key, into)
+      into.add ':'
+      jsonStringifyInto(item, into, scope, depth + 1)
+    into.add '}'
+  else:
+    raiseJsonValueError(scope, "json/stringify: cannot serialize a " &
+                        $value.kind)
+
+proc biJsonStringify(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("json/stringify", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  var buffer = ""
+  jsonStringifyInto(args[0], buffer, scope, 0)
+  newStr(buffer)
+
+
 # --- db backends: sqlite and postgres behind the shared Db protocol ---
 #
 # Both backends load their C client library at runtime through std/dynlib, so
@@ -1000,6 +1483,15 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("HttpError", httpError)
   root.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: httpError)
+  proc defineErrorType(name: string): Value =
+    result = newType(name, NIL,
+                     @[TypeField(name: "message", optional: false,
+                                 typeExpr: newSym("Str"), scope: root)],
+                     @[errorProtocol], root)
+    root.define(name, result)
+    root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
+  let osError = defineErrorType("OsError")
+  let jsonError = defineErrorType("JsonError")
   # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
   # built-ins above under stable module paths, so source programs can write
   # `(import std/stream [map])` / `(import str [join])` today and swap in
@@ -1191,3 +1683,37 @@ proc registerStdlibNamespaces(root: Scope) =
   dbScope.define("postgres", newNamespace("db/postgres", dbPostgresScope))
   root.define("db", newNamespace("db", dbScope))
 
+  # os: env, subprocess, line input (docs/ai-agent.md §3,§6). Capabilities are
+  # ambient values like Net/Connect; a launcher can withhold them.
+  let osScope = newScope(root)
+  osScope.define("Env", newCapability("Os/Env"))
+  osScope.define("Exec", newCapability("Os/Exec"))
+  osScope.define("get-env", newNativeCallFn("os/get-env", biOsGetEnv,
+                                            acceptsNamed = false))
+  osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
+                                         acceptsNamed = false))
+  osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
+  osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
+  osScope.define("OsError", osError)
+  root.define("os", newNamespace("os", osScope))
+
+  # Extend the existing Fs namespace (built in vm.nim) with sync helpers the
+  # agent file tools need.
+  let fsNs = root.vars.getOrDefault("Fs", VOID)
+  if fsNs.kind == vkNamespace:
+    fsNs.nsScope.define("read-text",
+      newNativeCallFn("Fs/read-text", biFsReadTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("write-text",
+      newNativeCallFn("Fs/write-text", biFsWriteTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("list-dir",
+      newNativeCallFn("Fs/list-dir", biFsListDir, acceptsNamed = false))
+
+  # json: parse/stringify over Gene value kinds (docs/ai-agent.md §5).
+  let jsonScope = newScope(root)
+  jsonScope.define("parse", newNativeCallFn("json/parse", biJsonParse,
+                                            acceptsNamed = false))
+  jsonScope.define("stringify", newNativeCallFn("json/stringify",
+                                                biJsonStringify,
+                                                acceptsNamed = false))
+  jsonScope.define("JsonError", jsonError)
+  root.define("json", newNamespace("json", jsonScope))

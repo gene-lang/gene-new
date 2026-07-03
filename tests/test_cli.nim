@@ -64,6 +64,15 @@ suite "cli — gene run":
     let ran = runGene(["run", argMain, "ok"])
     check ran.exitCode == 0
 
+  test "ai agent example runs offline demo without an API key":
+    buildGeneCli()
+    let ran = execCmdEx("env -u OPENAI_API_KEY " & shellQuote(geneExe) &
+                        " run examples/ai_agent.gene")
+    check ran.exitCode == 0
+    check "No OPENAI_API_KEY set" in ran.output
+    check "agent>   · tool list_dir" in ran.output
+    check "Demo complete" in ran.output
+
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")
     let ran = runGene(["run", badMain])

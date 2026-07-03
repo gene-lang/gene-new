@@ -1,0 +1,303 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene AI coding agent — MVP (docs/ai-agent.md milestones 1-4).
+#
+#   * Talks to OpenAI's Responses API (POST /v1/responses), non-streaming.
+#   * Transport is `curl` shelled out through os/exec (bootstrap milestone).
+#   * Tools: read_file / write_file / list_dir / run_shell, each run under the
+#     §8.5 safety contract (workspace-root confinement, path normalization,
+#     timeout + output caps, secret redaction).
+#   * Line-based UI (os/read-line); the curses TUI is a later milestone.
+#
+# Run live:   OPENAI_API_KEY=... gene run examples/ai_agent.gene
+# Auto-approve write/shell tools: GENE_AGENT_YOLO=1
+# Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
+#             that drives the same loop with a scripted transport, incl. a
+#             tool-call round trip — needs no network)
+#
+# Auth is an OAuth bearer token from the environment (e.g. minted through your
+# provider's OAuth flow / device login), sent as `Authorization: Bearer ...`.
+# =============================================================================
+
+(mod ai-agent
+  @doc "a terminal coding agent over the OpenAI Responses API")
+
+(import os [get-env env? exec read-line Env Exec OsError])
+(import json [parse stringify JsonError])
+(import str [join split starts_with? contains? lower])
+(import std/stream [to_stream map filter into each])
+(import Fs [read-text write-text list-dir ReadDir WriteDir])
+
+# -----------------------------------------------------------------------------
+# Config (all from the environment; nothing hard-coded).
+# -----------------------------------------------------------------------------
+
+(var api-key (env? Env "OPENAI_API_KEY"))
+(var base    (get-env Env "OPENAI_BASE_URL" "https://api.openai.com"))
+(var model   (get-env Env "OPENAI_MODEL" "gpt-4o"))
+(var workspace-root ".")
+(var yolo (get-env Env "GENE_AGENT_YOLO" "0"))
+
+# -----------------------------------------------------------------------------
+# §8.5 safety contract.
+# -----------------------------------------------------------------------------
+
+(fn replace-all [s : Str, from : Str, to : Str] : Str
+  ((split s from) ~ join to))
+
+# Never let the API token surface in transcript, logs, or errors.
+(fn redact [s : Str] : Str
+  (if (= api-key nil)
+    s
+    (replace-all s api-key "sk-***REDACTED***")))
+
+# Confine every file path to the workspace root. Conservative primitive: reject
+# absolute paths and any `..` segment (a production build should realpath and
+# prefix-check against the resolved root — see docs/ai-agent.md §8.5).
+(fn safe-path [p : Str] : Str
+  (if (starts_with? p "/")
+    (fail $"unsafe path rejected (absolute): ${p}")
+    (if (contains? p "..")
+      (fail $"unsafe path rejected (escapes workspace): ${p}")
+      p)))
+
+(fn denied-command? [cmd : Str]
+  (if (contains? cmd "rm -rf")
+    true
+    (if (contains? cmd "curl ")
+      true
+      (if (contains? cmd "wget ")
+        true
+        (contains? cmd "nc ")))))
+
+(fn approve? [tool : Str, detail : Str]
+  (if (= yolo "1")
+    true
+    (do
+      (print $"approve ${tool}: ${(redact detail)}? [y/N] ")
+      (var answer (read-line))
+      (if (= answer nil)
+        false
+        (do
+          (set answer (lower answer))
+          (if (= answer "y") true (= answer "yes")))))))
+
+# -----------------------------------------------------------------------------
+# Tools. Each is fn(args-map) -> Str, described to the model by tool-schemas.
+# -----------------------------------------------------------------------------
+
+(fn tool-read-file [args]
+  (read-text ReadDir (safe-path args/path)))
+
+(fn tool-write-file [args]
+  (if (approve? "write_file" args/path)
+    (do
+      (write-text WriteDir (safe-path args/path) args/content)
+      $"wrote ${args/path}")
+    "denied by user policy"))
+
+(fn tool-list-dir [args]
+  (var p (if (= args/path void) "." args/path))
+  ((list-dir ReadDir (safe-path p)) ~ join "\n"))
+
+(fn tool-run-shell [args]
+  (if (denied-command? args/command)
+    "denied by command policy"
+    (if (approve? "run_shell" args/command)
+      (do
+        (var r (exec Exec ^cmd "sh" ^args ["-c" args/command] ^dir workspace-root
+                     ^timeout-ms 10000 ^max-bytes 65536))
+        (var tail (if r/timed-out "\n[timed out]" ""))
+        $"${r/stdout}${r/stderr}${tail}")
+      "denied by user policy")))
+
+(fn tool-grep [args]
+  (var p (if (= args/path void) "." args/path))
+  (var r (exec Exec ^cmd "grep"
+               ^args ["-rn" args/pattern (safe-path p)]
+               ^dir workspace-root
+               ^timeout-ms 10000 ^max-bytes 65536))
+  (var tail (if r/timed-out "\n[timed out]" ""))
+  $"${r/stdout}${r/stderr}${tail}")
+
+(var tools {})
+(tools ~ Map/put! "read_file" tool-read-file)
+(tools ~ Map/put! "write_file" tool-write-file)
+(tools ~ Map/put! "list_dir" tool-list-dir)
+(tools ~ Map/put! "run_shell" tool-run-shell)
+(tools ~ Map/put! "grep" tool-grep)
+
+(var tool-schemas
+  [{^type "function" ^name "read_file"
+    ^description "Read a UTF-8 text file inside the workspace."
+    ^parameters {^type "object"
+                 ^properties {^path {^type "string"}}
+                 ^required ["path"]}}
+   {^type "function" ^name "write_file"
+    ^description "Write a UTF-8 text file inside the workspace."
+    ^parameters {^type "object"
+                 ^properties {^path {^type "string"} ^content {^type "string"}}
+                 ^required ["path" "content"]}}
+   {^type "function" ^name "list_dir"
+    ^description "List directory entries inside the workspace."
+    ^parameters {^type "object" ^properties {^path {^type "string"}}}}
+   {^type "function" ^name "run_shell"
+    ^description "Run a shell command in the workspace (10s timeout)."
+    ^parameters {^type "object"
+                 ^properties {^command {^type "string"}}
+                 ^required ["command"]}}
+   {^type "function" ^name "grep"
+    ^description "Search files in the workspace with grep -rn."
+    ^parameters {^type "object"
+                 ^properties {^pattern {^type "string"} ^path {^type "string"}}
+                 ^required ["pattern"]}}])
+
+# -----------------------------------------------------------------------------
+# Responses-API item helpers.
+# -----------------------------------------------------------------------------
+
+(fn user-item [text : Str]
+  {^role "user" ^content text})
+
+(fn system-item [text : Str]
+  {^role "system" ^content text})
+
+# Pull the assistant's text out of a Responses `output` list (message items ->
+# content parts of type output_text).
+(fn response-text [resp] : Str
+  (var acc (cell ""))
+  ((to_stream resp/output)
+    ~ each (fn [item]
+        (if (= item/type "message")
+          ((to_stream item/content)
+            ~ each (fn [part]
+                (if (= part/type "output_text")
+                  (Cell/set acc $"${(Cell/get acc)}${part/text}")
+                  nil))))))
+  (Cell/get acc))
+
+# function_call items the model emitted this turn.
+(fn response-calls [resp]
+  ((to_stream resp/output)
+    ~ filter (fn [item] (= item/type "function_call"))
+    ; ~ into []))
+
+# Execute one function_call item, returning its function_call_output item.
+(fn run-tool-call [call]
+  (var name call/name)
+  (var handler (tools ~ Map/get name))
+  (var output
+    (if (= handler void)
+      $"error: unknown tool ${call/name}"
+      (try
+        (var args (parse call/arguments))
+        (handler args)
+      catch (OsError ^message m) $"error: ${m}"
+      catch (JsonError ^message m) $"error: bad tool arguments: ${m}"
+      catch * "error: tool failed")))
+  {^type "function_call_output" ^call_id call/call_id ^output output})
+
+# -----------------------------------------------------------------------------
+# Transport. Live mode shells out to curl; demo mode uses a scripted closure.
+# Both take a request-body string and return a parsed Responses map.
+# -----------------------------------------------------------------------------
+
+(fn live-transport [body : Str]
+  (var r (exec Exec ^cmd "curl"
+               ^args ["-sS" "-X" "POST" $"${base}/v1/responses"
+                      "-H" $"Authorization: Bearer ${api-key}"
+                      "-H" "Content-Type: application/json"
+                      "-d" body]
+               ^timeout-ms 60000 ^max-bytes 4000000))
+  (if (not (= r/status 0))
+    (fail (redact $"curl failed (${r/status}): ${r/stderr}"))
+    (parse r/stdout)))
+
+(fn call-model [transport, input-items]
+  (var body (stringify {^model model ^input input-items ^tools tool-schemas}))
+  (transport body))
+
+(var max-tool-turns 12)
+
+# One turn: call the model; if it asked for tools, run them and recurse with the
+# outputs appended, else render the final text. `budget` bounds tool rounds so a
+# model that never stops calling tools cannot loop forever.
+(fn run-turn [transport, input-items, render, budget]
+  (var resp (call-model transport input-items))
+  (var calls (response-calls resp))
+  (if (empty? calls)
+    (do
+      (render (redact (response-text resp)))
+      input-items)
+    (if (<= budget 0)
+      (do
+        (render "[stopped: tool-call budget exhausted]")
+        input-items)
+      (do
+        (var outputs ((to_stream calls) ~ map run-tool-call ; ~ into []))
+        (each (to_stream calls) (fn [c]
+          (render $"  · tool ${c/name} ${c/arguments}")))
+        (run-turn transport
+                  ((to_stream outputs) ~ into (append-all input-items resp/output))
+                  render
+                  (- budget 1))))))
+
+(fn append-all [xs, ys]
+  ((to_stream ys) ~ into xs))
+
+(fn append [xs, x]
+  ((to_stream [x]) ~ into xs))
+
+# -----------------------------------------------------------------------------
+# Offline demo transport: turn 1 asks to list the workspace, turn 2 answers.
+# Proves the full tool-call loop with no network or key.
+# -----------------------------------------------------------------------------
+
+(fn demo-transport-for []
+  (var calls (cell 0))
+  (fn [body]
+    (Cell/set calls (+ (Cell/get calls) 1))
+    (if (= (Cell/get calls) 1)
+      {^output [{^type "function_call" ^name "list_dir"
+                 ^call_id "call_1" ^arguments "{\"path\":\".\"}"}]}
+      {^output [{^type "message" ^role "assistant"
+                 ^content [{^type "output_text"
+                            ^text "I listed the workspace via the list_dir tool."}]}]})))
+
+# -----------------------------------------------------------------------------
+# Entry point.
+# -----------------------------------------------------------------------------
+
+(fn run-demo []
+  (println "No OPENAI_API_KEY set — running the offline demo.")
+  (println "user> what's in this directory?")
+  (var items [(system-item "You are a coding agent.")
+              (user-item "what's in this directory?")])
+  (run-turn (demo-transport-for) items
+    (fn [text] (println $"agent> ${text}"))
+    max-tool-turns)
+  (println "Demo complete. Set OPENAI_API_KEY to talk to the real API."))
+
+(fn run-repl []
+  (println $"Gene AI agent — model ${model}. Type /quit to exit.")
+  (var items (cell [(system-item "You are a helpful coding agent.")]))
+  (var running (cell true))
+  (var line nil)
+  (while (Cell/get running)
+    (print "you> ")
+    (set line (read-line))
+    (if (= line nil)
+      (Cell/set running false)
+      (if (= line "/quit")
+        (Cell/set running false)
+        (Cell/set items
+          (run-turn live-transport
+                    (append (Cell/get items) (user-item line))
+                    (fn [text] (println $"agent> ${text}"))
+                    max-tool-turns))))))
+
+# `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
+(fn main []
+  (if (= api-key nil)
+    (run-demo)
+    (run-repl)))

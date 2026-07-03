@@ -1,11 +1,16 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, locks, math, monotimes, net, os, sets, strutils,
-            tables, times, unicode]
+import std/[algorithm, dynlib, locks, math, monotimes, net, os, osproc, sets,
+            strutils, tables, times, unicode]
 import ./[compiler, equality, gir, printer, reader, types]
 
 when compileOption("threads") and defined(gcAtomicArc):
   import std/cpuinfo
+
+when defined(posix):
+  import std/posix
+else:
+  import std/streams
 
 when sizeof(csize_t) == sizeof(clong):
   type GeneCPtrDiff = clong
@@ -5668,7 +5673,7 @@ when compileOption("threads") and defined(gcAtomicArc):
   proc configuredSchedulerWorkers(): int =
     let raw = getEnv("GENE_WORKERS")
     if raw.len == 0:
-      result = min(4, max(1, countProcessors() - 1))
+      result = min(4, max(1, cpuinfo.countProcessors() - 1))
       if result > MaxSchedulerWorkers:
         result = MaxSchedulerWorkers
       return
