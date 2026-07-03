@@ -22,7 +22,7 @@
 (mod ai-agent
   @doc "a terminal coding agent over the OpenAI Responses API")
 
-(import os [get-env env? exec read-line Env Exec OsError])
+(import os [get-env env? exec exec-stdio stdin-tty? read-line Env Exec OsError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower])
 (import std/stream [to_stream map filter into each])
@@ -370,6 +370,63 @@
     max-tool-turns)
   (println "Demo complete. Set OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN to talk to Codex."))
 
+(fn exit-word? [line]
+  (if (= line "exit")
+    true
+    (= line "quit")))
+
+(fn run-shell-session []
+  (var shell (get-env Env "SHELL" "sh"))
+  (println $"Entering shell (${shell}). Type exit/quit or Ctrl-D to return.")
+  (if (stdin-tty?)
+    (do
+      (var script "while true; do printf 'sh> '; IFS= read -r line || break; case \"$line\" in exit|quit) break;; *) eval \"$line\";; esac; done")
+      (exec-stdio Exec ^cmd shell ^args ["-c" script] ^dir workspace-root)
+      nil)
+    (do
+      (var running (cell true))
+      (var line nil)
+      (var r nil)
+      (while (Cell/get running)
+        (print "sh> ")
+        (set line (read-line))
+        (if (= line nil)
+          (Cell/set running false)
+          (if (exit-word? line)
+            (Cell/set running false)
+            (do
+              (set r (exec Exec ^cmd shell ^args ["-lc" line] ^dir workspace-root
+                         ^timeout-ms 60000 ^max-bytes 400000))
+              (print (redact r/stdout))
+              (print (redact r/stderr))
+              (if r/timed-out
+                (println "[timed out]")
+                nil))))))))
+
+(fn run-session-repl [items]
+  (var session {^items items
+                ^model model
+                ^workspace-root workspace-root
+                ^tools tools
+                ^tool-schemas tool-schemas})
+  (var repl-env (env ^bindings {^session session}))
+  (println "Entering Gene REPL. session is available. Type exit/quit or Ctrl-D to return.")
+  (var running (cell true))
+  (var line nil)
+  (while (Cell/get running)
+    (print "gene> ")
+    (set line (read-line))
+    (if (= line nil)
+      (Cell/set running false)
+      (if (exit-word? line)
+        (Cell/set running false)
+        (try
+          (println (eval (read-one line) ^in repl-env))
+        catch {^message m}
+          (println $"Error: ${m}")
+        catch *
+          (println "Error: failed"))))))
+
 (fn run-repl []
   (println $"Gene AI agent — model ${model}. Type /quit to exit.")
   (var items (cell [(system-item "You are a helpful coding agent.")]))
@@ -382,11 +439,15 @@
       (Cell/set running false)
       (if (= line "/quit")
         (Cell/set running false)
-        (Cell/set items
-          (run-turn live-transport
-                    (append (Cell/get items) (user-item line))
-                    (fn [text] (println $"agent> ${text}"))
-                    max-tool-turns))))))
+        (if (= line "/sh")
+          (run-shell-session)
+          (if (= line "/repl")
+            (run-session-repl items)
+            (Cell/set items
+              (run-turn live-transport
+                        (append (Cell/get items) (user-item line))
+                        (fn [text] (println $"agent> ${text}"))
+                        max-tool-turns))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main []

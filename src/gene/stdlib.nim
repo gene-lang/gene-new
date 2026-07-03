@@ -475,8 +475,8 @@ proc biHttpRedirect(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 # --- os: environment, subprocess, and line input (docs/ai-agent.md §3,§6) ---
 #
 # Host authority is capability-gated exactly like Fs/Net: `os/get-env` needs an
-# `Os/Env` value and `os/exec` needs `Os/Exec`, so a launcher can hand out
-# env+file access without shell access. Errors are the typed `OsError`.
+# `Os/Env` value and `os/exec`/`os/exec-stdio` need `Os/Exec`, so a launcher can
+# hand out env+file access without shell access. Errors are the typed `OsError`.
 
 proc raiseOsError(message: string, scope: Scope) =
   var props = initOrderedTable[string, Value]()
@@ -649,6 +649,59 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
   props["timed-out"] = if timedOut: TRUE else: FALSE
   newMap(props)
+
+proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Run a subprocess attached to this process's stdin/stdout/stderr and return
+  ## its exit status. This is for terminal handoff cases where captured
+  ## `os/exec` would break interactive behavior.
+  if args.len != 1:
+    raise newException(GeneError,
+      "os/exec-stdio expects the Os/Exec capability plus named arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOsExec("os/exec-stdio", args[0], scope)
+  var cmd = ""
+  var cmdSet = false
+  var procArgs: seq[string]
+  var workdir = ""
+  if call != nil:
+    for i, name in call[].namedNames:
+      let v = call[].namedValues[i]
+      case name
+      of "cmd":
+        requireStr("os/exec-stdio ^cmd", v)
+        cmd = v.strVal
+        cmdSet = true
+      of "args":
+        if v.kind != vkList:
+          raiseOsError("os/exec-stdio ^args must be a List of Str", scope)
+        for item in v.listItems:
+          requireStr("os/exec-stdio ^args item", item)
+          procArgs.add item.strVal
+      of "dir":
+        requireStr("os/exec-stdio ^dir", v)
+        workdir = v.strVal
+      else:
+        raiseOsError("os/exec-stdio got unexpected named argument: " & name, scope)
+  if not cmdSet or cmd.len == 0:
+    raiseOsError("os/exec-stdio requires a non-empty ^cmd", scope)
+  var process: Process
+  try:
+    process = startProcess(cmd, workingDir = workdir, args = procArgs,
+                           options = {poUsePath, poParentStreams})
+  except OSError as e:
+    raiseOsError("os/exec-stdio could not start '" & cmd & "': " & e.msg, scope)
+  try:
+    newInt(process.waitForExit())
+  finally:
+    process.close()
+
+proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/stdin-tty? takes no arguments")
+  when defined(posix):
+    if isatty(STDIN_FILENO) != 0: TRUE else: FALSE
+  else:
+    FALSE
 
 proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
   ## Read one line from stdin; returns nil at EOF. No capability: reading the
@@ -1693,6 +1746,8 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
                                          acceptsNamed = false))
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
+  osScope.define("exec-stdio", newNativeCallFn("os/exec-stdio", biOsExecStdio))
+  osScope.define("stdin-tty?", newNativeFn("os/stdin-tty?", biOsStdinTty))
   osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))

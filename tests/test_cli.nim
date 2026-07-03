@@ -67,12 +67,32 @@ suite "cli — gene run":
 
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
-    let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN " & shellQuote(geneExe) &
-                        " run examples/ai_agent.gene")
+    let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN -u CODEX_ACCESS_TOKEN " &
+                        shellQuote(geneExe) & " run examples/ai_agent.gene")
     check ran.exitCode == 0
     check "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set" in ran.output
     check "agent>   · tool list_dir" in ran.output
     check "Demo complete" in ran.output
+
+  test "ai agent slash sh opens a shell loop":
+    buildGeneCli()
+    let command = "printf '/sh\\nprintf hi\\nexit\\n/quit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execCmdEx(command)
+    check ran.exitCode == 0
+    check "Entering shell" in ran.output
+    check "hi" in ran.output
+
+  test "ai agent slash repl exposes session binding":
+    buildGeneCli()
+    let command = "printf '/repl\\nsession/model\\nquit\\n/quit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execCmdEx(command)
+    check ran.exitCode == 0
+    check "Entering Gene REPL" in ran.output
+    check "gpt-5.5" in ran.output
 
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")

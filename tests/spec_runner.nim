@@ -2071,6 +2071,11 @@ suite "spec — os and json from ai-agent plan":
                "[r/stdout r/stdout-truncated r/truncated]",
                "[\"abc\" true true]")
 
+  test "os/exec-stdio runs with parent streams and returns status":
+    check_eval("(import os [exec-stdio Exec]) " &
+               "(exec-stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
+               "7")
+
   test "Fs sync helpers read, write, and list under capabilities":
     let dir = getTempDir() / "gene-ai-agent-fs-spec"
     if dirExists(dir):
