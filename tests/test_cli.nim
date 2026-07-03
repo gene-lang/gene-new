@@ -197,6 +197,41 @@ suite "cli — gene repl":
     check ran.exitCode == 0
     check ran.output.strip.splitLines == @["2", "5"]
 
+  test "continues reading after incomplete input":
+    let ran = runGeneInput(["repl"], "(+ 1\n2)\n")
+    check ran.exitCode == 0
+    check ran.output.strip == "3"
+
+  test "reports incomplete input on eof":
+    let ran = runGeneInput(["repl"], "(+ 1\n")
+    check ran.exitCode == 0
+    check "Read error: unexpected EOF: unclosed '('" in ran.output
+
+  test "interactive incomplete input uses continuation prompt":
+    let app = initModuleContext(cliDir)
+    let scope = newGlobalScope(app)
+    var inputs = @["(+ 1", "2)", ":quit"]
+    var index = 0
+    var outText = ""
+    var errText = ""
+    let reader = proc(line: var string): bool =
+      if index >= inputs.len:
+        return false
+      line = inputs[index]
+      inc index
+      true
+    let writeOut = proc(text: string) =
+      outText.add text
+    let writeErr = proc(text: string) =
+      errText.add text
+
+    let code = runReplSession(scope, reader, writeOut, writeErr,
+                              ReplOptions(interactive: true, prompt: "gene> "))
+
+    check code == 0
+    check outText == "gene> ....> 3\ngene> "
+    check errText == ""
+
   test "rejects unknown repl options":
     let ran = runGene(["repl", "--bogus"])
     check ran.exitCode == 1

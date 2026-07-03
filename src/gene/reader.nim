@@ -32,6 +32,10 @@ type
     tokIdx: int
 
   ReadError* = object of CatchableError
+  ReadIncompleteError* = object of ReadError
+
+proc raiseReadIncomplete(message: string) {.noReturn.} =
+  raise newException(ReadIncompleteError, message)
 
 proc isIntLexeme(lexeme: string): bool =
   if lexeme.len == 0:
@@ -87,7 +91,7 @@ proc parseFixedUnicodeEscape(r: var Reader, digits: int): Rune =
   var code = 0
   for _ in 0 ..< digits:
     if r.pos >= r.src.len:
-      raise newException(ReadError, "unterminated Unicode character escape")
+      raiseReadIncomplete("unterminated Unicode character escape")
     let value = hexValue(r.nextChar())
     if value < 0:
       raise newException(ReadError, "invalid Unicode character escape")
@@ -111,7 +115,7 @@ proc parseBracedUnicodeEscape(r: var Reader): Rune =
       raise newException(ReadError, "Unicode character escape is too large")
     r.advance()
   if r.pos >= r.src.len or r.nextChar() != '}':
-    raise newException(ReadError, "unterminated Unicode character escape")
+    raiseReadIncomplete("unterminated Unicode character escape")
   r.advance() # consume }
   if digits == 0 or not isUnicodeScalar(code):
     raise newException(ReadError, "Unicode character escape is not a scalar value")
@@ -119,7 +123,7 @@ proc parseBracedUnicodeEscape(r: var Reader): Rune =
 
 proc parseEscapeRune(r: var Reader, context: string): Rune =
   if r.pos >= r.src.len:
-    raise newException(ReadError, "unterminated " & context)
+    raiseReadIncomplete("unterminated " & context)
   let esc = r.nextChar()
   r.advance()
   case esc
@@ -146,7 +150,7 @@ proc parseCharEscape(r: var Reader): Rune =
 proc parseCharLiteral(r: var Reader): string =
   r.advance() # consume opening '
   if r.pos >= r.src.len:
-    raise newException(ReadError, "unterminated character literal")
+    raiseReadIncomplete("unterminated character literal")
   if r.nextChar() == '\'':
     raise newException(ReadError, "empty character literal")
 
@@ -163,6 +167,8 @@ proc parseCharLiteral(r: var Reader): string =
       decoded
 
   if r.pos >= r.src.len or r.nextChar() != '\'':
+    if r.pos >= r.src.len:
+      raiseReadIncomplete("unterminated character literal")
     raise newException(ReadError, "character literal must contain one Unicode scalar value")
   r.advance()
   ch.toUTF8()
@@ -199,7 +205,7 @@ proc tokenize(r: var Reader) =
           else:
             r.advance()
         if depth > 0:
-          raise newException(ReadError, "unterminated block comment")
+          raiseReadIncomplete("unterminated block comment")
       else:
         # Line comment
         while r.pos < r.src.len and r.nextChar() != '\n':
@@ -267,7 +273,7 @@ proc tokenize(r: var Reader) =
           lexeme.add r.nextChar()
           r.advance()
         if not closed:
-          raise newException(ReadError, "unterminated triple-quoted string literal")
+          raiseReadIncomplete("unterminated triple-quoted string literal")
       else:
         var closed = false
         while r.pos < r.src.len:
@@ -283,7 +289,7 @@ proc tokenize(r: var Reader) =
             lexeme.add c2
             r.advance()
         if not closed:
-          raise newException(ReadError, "unterminated string literal")
+          raiseReadIncomplete("unterminated string literal")
 
       if isInterpolated:
         # Simple implementation: split by ${...}
@@ -389,7 +395,10 @@ proc skipDatumComments(r: var Reader) =
   ## since `parseForm` itself skips leading datum comments before its datum.
   while r.peekKind() == tkUnderscore:
     discard r.next()
-    if r.peekKind() in {tkEof, tkRParen, tkRBracket, tkRBrace}:
+    let k = r.peekKind()
+    if k == tkEof:
+      raiseReadIncomplete("#_ datum comment requires a following form")
+    if k in {tkRParen, tkRBracket, tkRBrace}:
       raise newException(ReadError, "#_ datum comment requires a following form")
     discard r.parseForm()
 
@@ -433,7 +442,7 @@ proc parseList(r: var Reader, closing: TokenKind, immutable = false): Value =
     if k == closing or k == tkEof: break
     items.add r.parseForm(inList = true)
   if r.peekKind() == tkEof:
-    raise newException(ReadError, "unexpected EOF: unclosed '['")
+    raiseReadIncomplete("unexpected EOF: unclosed '['")
   discard r.next() # consume closing
   result = newList(items, immutable)
 
@@ -584,7 +593,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         body.add form
 
   if r.peekKind() == tkEof:
-    raise newException(ReadError, "unexpected EOF: unclosed '('")
+    raiseReadIncomplete("unexpected EOF: unclosed '('")
   discard r.next()
 
   if inPipe:
@@ -611,7 +620,7 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
     items[key] = val
     if r.peekKind() == tkComma: discard r.next()
   if r.peekKind() == tkEof:
-    raise newException(ReadError, "unexpected EOF: unclosed '{'")
+    raiseReadIncomplete("unexpected EOF: unclosed '{'")
   discard r.next()
   result = newMap(items, immutable)
 
@@ -632,7 +641,7 @@ proc parseInterpolatedString(lexeme: string): Value =
         elif lexeme[i] == '}': depth -= 1
         i += 1
       if depth > 0:
-        raise newException(ReadError, "unterminated interpolation '${...}'")
+        raiseReadIncomplete("unterminated interpolation '${...}'")
       let exprStr = lexeme[start ..< i-1]
       body.add read(exprStr)
       last = i
@@ -647,7 +656,7 @@ proc parseInterpolatedString(lexeme: string): Value =
         elif lexeme[i] == ')': depth -= 1
         i += 1
       if depth > 0:
-        raise newException(ReadError, "unterminated interpolation '$(...)'")
+        raiseReadIncomplete("unterminated interpolation '$(...)'")
       let exprStr = lexeme[start ..< i]
       body.add read(exprStr)
       last = i
@@ -709,7 +718,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkRParen, tkRBracket, tkRBrace:
     raise newException(ReadError, "unexpected closing delimiter '" & tok.lexeme & "'")
   of tkEof:
-    raise newException(ReadError, "unexpected end of input")
+    raiseReadIncomplete("unexpected end of input")
   else: return NIL
 
 proc read*(src: string): Value =

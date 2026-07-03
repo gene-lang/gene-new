@@ -133,6 +133,12 @@ suite "reader — malformed input is rejected":
   test "unclosed node":      expect ReadError: discard read("(a b")
   test "unclosed vector":    expect ReadError: discard read("[1 2")
   test "unclosed map":       expect ReadError: discard read("{^a 1")
+  test "incomplete input uses specific read error":
+    expect ReadIncompleteError: discard read("(a b")
+    expect ReadIncompleteError: discard read("[1 2")
+    expect ReadIncompleteError: discard read("{^a 1")
+    expect ReadIncompleteError: discard read("\"unterminated")
+    expect ReadIncompleteError: discard read("#_")
   test "unterminated block comment":
     expect ReadError: discard read("#< open")
   test "datum comment at EOF":

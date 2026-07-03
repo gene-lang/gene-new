@@ -8402,29 +8402,50 @@ proc runReplSession*(scope: Scope,
   ## when a panic aborts the session. Recoverable Gene/read errors are printed
   ## and the session continues.
   var line: string
+  var pendingSource = ""
+  var pendingError = ""
+  let continuationPrompt = "....> "
   if options.interactive:
     writeOut(options.prompt)
   while readLine(line):
     let trimmed = line.strip()
-    if trimmed.len == 0:
+    if pendingSource.len == 0 and trimmed.len == 0:
       if options.interactive:
         writeOut(options.prompt)
       continue
-    if trimmed in [":quit", ":exit", "quit", "exit"]:
+    if pendingSource.len == 0 and trimmed in [":quit", ":exit", "quit", "exit"]:
       return 0
+    let source =
+      if pendingSource.len == 0: line
+      else: pendingSource & "\n" & line
     try:
-      writeOut(run(compileEvalSource(line, useLocalSlots = false), scope).print() & "\n")
+      writeOut(run(compileEvalSource(source, useLocalSlots = false), scope).print() & "\n")
+      pendingSource = ""
+      pendingError = ""
+    except ReadIncompleteError as e:
+      pendingSource = source
+      pendingError = e.msg
+      if options.interactive:
+        writeOut(continuationPrompt)
+      continue
     except ReadError as e:
+      pendingSource = ""
+      pendingError = ""
       writeErr("Read error: " & e.msg & "\n")
     except GenePanic as e:
       writeErr("Panic: " & e.msg & "\n")
       return 1
     except GeneError as e:
+      pendingSource = ""
+      pendingError = ""
       writeErr("Error: " & e.msg & "\n")
     if options.interactive:
       writeOut(options.prompt)
   if options.interactive:
     writeOut("\n")
+  if pendingSource.len > 0:
+    let msg = if pendingError.len == 0: "unexpected end of input" else: pendingError
+    writeErr("Read error: " & msg & "\n")
   0
 
 proc runReplSessionForEnv*(env: Value,
