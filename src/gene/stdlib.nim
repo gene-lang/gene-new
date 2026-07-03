@@ -37,10 +37,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   {.emit: """
 #include <locale.h>
+#include <signal.h>
+#include <stdlib.h>
 #include <termios.h>
 #include <unistd.h>
 static struct termios gene_curses_orig_termios;
 static int gene_curses_termios_saved = 0;
+static int gene_curses_restore_hooks_installed = 0;
 static int gene_curses_color_pair(short pair) { return COLOR_PAIR(pair); }
 static void gene_curses_setlocale(void) { setlocale(LC_ALL, ""); }
 static void gene_curses_save_termios(void) {
@@ -51,16 +54,54 @@ static void gene_curses_save_termios(void) {
   }
 }
 static void gene_curses_restore_termios(void) {
+  struct termios mode;
   if (gene_curses_termios_saved) {
     tcsetattr(STDIN_FILENO, TCSANOW, &gene_curses_orig_termios);
     gene_curses_termios_saved = 0;
   }
+  if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &mode) == 0) {
+    mode.c_iflag |= ICRNL;
+    mode.c_oflag |= OPOST;
+#ifdef ONLCR
+    mode.c_oflag |= ONLCR;
+#endif
+    mode.c_lflag |= ICANON | ECHO | ISIG | IEXTEN;
+    tcsetattr(STDIN_FILENO, TCSANOW, &mode);
+  }
+}
+static void gene_curses_restore_display(void) {
+  if (isatty(STDOUT_FILENO)) {
+    const char *seq = "\033[?2004l\033[?1l\033>\033[0m\033[?25h\033[r\r";
+    write(STDOUT_FILENO, seq, sizeof("\033[?2004l\033[?1l\033>\033[0m\033[?25h\033[r\r") - 1);
+  }
+}
+static void gene_curses_restore_for_exit(void) {
+  gene_curses_restore_termios();
+  gene_curses_restore_display();
+}
+static void gene_curses_signal_restore(int sig) {
+  gene_curses_restore_for_exit();
+  if (isatty(STDOUT_FILENO)) {
+    const char nl = '\n';
+    write(STDOUT_FILENO, &nl, 1);
+  }
+  _exit(128 + sig);
+}
+static void gene_curses_install_restore_hooks(void) {
+  if (gene_curses_restore_hooks_installed) return;
+  gene_curses_restore_hooks_installed = 1;
+  atexit(gene_curses_restore_for_exit);
+  signal(SIGINT, gene_curses_signal_restore);
+  signal(SIGTERM, gene_curses_signal_restore);
+  signal(SIGHUP, gene_curses_signal_restore);
 }
 """.}
   proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
   proc cSetLocale() {.importc: "gene_curses_setlocale".}
   proc cSaveTermios() {.importc: "gene_curses_save_termios".}
   proc cRestoreTermios() {.importc: "gene_curses_restore_termios".}
+  proc cRestoreDisplay() {.importc: "gene_curses_restore_display".}
+  proc cInstallRestoreHooks() {.importc: "gene_curses_install_restore_hooks".}
 
   var stdscr {.importc: "stdscr", header: "<ncurses.h>".}: CursesWindow
   var LINES {.importc: "LINES", header: "<ncurses.h>".}: cint
@@ -984,6 +1025,7 @@ proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc openCursesInput() =
     if not cursesInputActive:
+      cInstallRestoreHooks()
       cSaveTermios()
       cSetLocale()
       if cInitscr() == nil:
@@ -1021,10 +1063,11 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       discard curs_set(1)
       discard cEndwin()
       discard reset_shell_mode()
-      cRestoreTermios()
       cursesInputActive = false
       cursesColorsReady = false
       cursesPasteReady = false
+    cRestoreTermios()
+    cRestoreDisplay()
 
   proc utf8CharLenAt(text: string, i: int): int =
     let b = text[i].ord
