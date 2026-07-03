@@ -318,10 +318,19 @@ on error (the same `ensure`-based cleanup discipline as `db` connection close).
 Window handles are owned C pointers wired to `endwin`/`delwin`, matching the db
 `^handle` ownership model.
 
-Curses is the largest single piece; it can trail the rest. **Milestone 1 can use
-a plain line-based stdin/stdout REPL** (already possible with `print`/`println`
-and a `read-line` — add `os/read-line` if absent) and switch to curses once the
-core loop works. This keeps the API-integration risk separate from the TUI risk.
+Curses is the largest single piece; it can trail the rest. The current agent uses
+a narrow `os/read-input` helper for the prompt: on a TTY it opens a small
+ncurses editor with multiline input and bracketed paste support, and in pipes it
+falls back to `read-line` so scripted tests stay deterministic. The helper owns
+a fixed layout:
+color-coded scrollback/output above a `─` separator, one or more promptless input
+rows above a second `─` separator, and a status line at the bottom. The agent
+adds a short `─` separator before each user turn in the scrollback, uses
+`read-input` persistently across prompts to avoid terminal-mode flicker, and
+calls `close-input` before handing control to `/sh`, `/repl`, EOF, or process
+exit. `close-input` restores echo/cbreak/keypad/cursor state before leaving
+ncurses. A full `curses` namespace and scrollable transcript TUI can still
+remain a later milestone.
 
 ## 8. Capabilities and the launcher (§8)
 
@@ -445,15 +454,17 @@ Ordered so each stage is independently testable and the risky pieces (TLS,
 curses) are isolated behind working milestones.
 
 1. **`os` namespace**: `get-env`/`env?` (`Os/Env`), `exec` (`Os/Exec`) with
-   `^timeout-ms` + output cap, `read-line`; `Fs/read-text`/`Fs/list-dir` sync
+   `^timeout-ms` + output cap, `read-line`, `read-input`, `close-input`; `Fs/read-text`/`Fs/list-dir` sync
    helpers. Spec-tested.
 2. **`json`**: `parse`/`stringify` with `JsonError`; round-trip spec tests
    including escapes, nesting, and a depth cap.
 3. **Agent loop, bootstrap transport — non-streaming.** One blocking
    request/response against `POST /v1/responses` by shelling out to `curl` via
-   `os/exec`; parse the full response with `json/parse`; line-based
-   stdin/stdout UI. This is deliberately *not* streamed (§4). First end-to-end
-   conversation with the API. Gated on `OPENAI_AUTH_TOKEN`; tests inject a fake
+   `os/exec`; parse the full response with `json/parse`; plain
+   stdin/stdout loop. This is deliberately *not* streamed (§4). First end-to-end
+   conversation with the API. The interactive prompt can use ncurses-backed
+   multiline input while preserving line-based behavior in non-TTY tests. Gated
+   on `OPENAI_AUTH_TOKEN`; tests inject a fake
    transport (a recorded Responses body) so CI needs no network or key. Model
    the response decoder around Responses output *items* from the start, so the
    later streaming client slots in without reshaping the agent.
@@ -475,11 +486,12 @@ curses) are isolated behind working milestones.
 
 Milestones 1–4 make the agent genuinely usable (real API, real tools, real
 safety). The new runtime surface they require is: the `os` namespace
-(`get-env`/`env?`/`exec`/`read-line` with `Os/Env`+`Os/Exec`), the `Fs/read-text`
+(`get-env`/`env?`/`exec`/`read-line`/`read-input`/`close-input` with `Os/Env`+`Os/Exec`), the `Fs/read-text`
 and `Fs/list-dir` sync helpers, and the `json` namespace — plus the §8.5 safety
 layer in Gene. Crucially, **no TLS, curses, or OS-level sandbox build-out is
-required first** — that is what makes this the sharp MVP. Streaming (5) and the
-full TUI (6) are isolated behind it. Each stage follows the repo's rule set: `nimble
+required first** — that is what makes this the sharp MVP. The prompt may use
+ncurses, but the full TUI (6) and streaming (5) are isolated behind it. Each
+stage follows the repo's rule set: `nimble
 test` / `nimble spec` / `nimble perf` before commit, natives implemented in
 `src/gene/stdlib.nim` beside the existing db/http code, and every new host power
 expressed as a capability value.

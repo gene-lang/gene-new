@@ -6,6 +6,75 @@
 ## is registered by `registerStdlibNamespaces`, which buildBuiltins calls on
 ## the built-ins root scope; nothing in this file touches VM dispatch state.
 
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  {.passL: "-lncurses".}
+
+  type CursesWindow = pointer
+
+  proc cInitscr(): CursesWindow {.importc: "initscr", header: "<ncurses.h>".}
+  proc cEndwin(): cint {.importc: "endwin", header: "<ncurses.h>".}
+  proc cbreak(): cint {.importc, header: "<ncurses.h>".}
+  proc nocbreak(): cint {.importc, header: "<ncurses.h>".}
+  proc noecho(): cint {.importc, header: "<ncurses.h>".}
+  proc cEcho(): cint {.importc: "echo", header: "<ncurses.h>".}
+  proc noraw(): cint {.importc, header: "<ncurses.h>".}
+  proc keypad(win: CursesWindow, bf: cint): cint {.importc, header: "<ncurses.h>".}
+  proc curs_set(visibility: cint): cint {.importc, header: "<ncurses.h>".}
+  proc reset_shell_mode(): cint {.importc, header: "<ncurses.h>".}
+  proc wclear(win: CursesWindow): cint {.importc, header: "<ncurses.h>".}
+  proc refresh(): cint {.importc, header: "<ncurses.h>".}
+  proc cMove(y, x: cint): cint {.importc: "move", header: "<ncurses.h>".}
+  proc clrtoeol(): cint {.importc, header: "<ncurses.h>".}
+  proc addnstr(s: cstring, n: cint): cint {.importc, header: "<ncurses.h>".}
+  proc getch(): cint {.importc, header: "<ncurses.h>".}
+  proc beep(): cint {.importc, header: "<ncurses.h>".}
+  proc timeout(delay: cint) {.importc, header: "<ncurses.h>".}
+  proc start_color(): cint {.importc, header: "<ncurses.h>".}
+  proc use_default_colors(): cint {.importc, header: "<ncurses.h>".}
+  proc init_pair(pair, fg, bg: cshort): cint {.importc, header: "<ncurses.h>".}
+  proc cAttrOn(attrs: cint): cint {.importc: "attron", header: "<ncurses.h>".}
+  proc cAttrOff(attrs: cint): cint {.importc: "attroff", header: "<ncurses.h>".}
+
+  {.emit: """
+#include <locale.h>
+static int gene_curses_color_pair(short pair) { return COLOR_PAIR(pair); }
+static void gene_curses_setlocale(void) { setlocale(LC_ALL, ""); }
+""".}
+  proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
+  proc cSetLocale() {.importc: "gene_curses_setlocale".}
+
+  var stdscr {.importc: "stdscr", header: "<ncurses.h>".}: CursesWindow
+  var LINES {.importc: "LINES", header: "<ncurses.h>".}: cint
+  var COLS {.importc: "COLS", header: "<ncurses.h>".}: cint
+
+  {.emit: "#undef clear".}
+
+  const
+    CursesErr = -1
+    KeyCtrlD = 4
+    KeyEsc = 27
+    KeyEnter = 10
+    KeyReturn = 13
+    KeyBackspace = 263
+    KeyDelete = 330
+    KeyLeft = 260
+    KeyRight = 261
+    KeyHome = 262
+    KeyEnd = 360
+    KeyNcursesEnter = 343
+    KeyShiftEnter = 410
+    ColorGreen = 2
+    ColorCyan = 6
+    ColorWhite = 7
+    PairInput = 1
+    PairOutput = 2
+    PairSeparator = 3
+    PairStatus = 4
+
+  var cursesInputActive = false
+  var cursesColorsReady = false
+  var cursesPasteReady = false
+
 proc biStrJoin(args: openArray[Value]): Value {.nimcall.} =
   if args.len notin 1..2:
     raise newException(GeneError, "str/join expects 1..2 arguments, got " & $args.len)
@@ -717,6 +786,409 @@ proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
       if isatty(STDIN_FILENO) != 0:
         cClearErr(stdin)
     NIL
+
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  proc openCursesInput() =
+    if not cursesInputActive:
+      cSetLocale()
+      if cInitscr() == nil:
+        raise newException(GeneError, "os/read-input could not initialize ncurses")
+      cursesInputActive = true
+      cursesColorsReady = false
+      cursesPasteReady = false
+    discard cbreak()
+    discard noecho()
+    discard keypad(stdscr, 1)
+    discard curs_set(1)
+    if not cursesPasteReady:
+      stdout.write("\e[?2004h")
+      stdout.flushFile()
+      cursesPasteReady = true
+    if not cursesColorsReady and start_color() != CursesErr:
+      discard use_default_colors()
+      discard init_pair(PairInput.cshort, ColorCyan.cshort, (-1).cshort)
+      discard init_pair(PairOutput.cshort, ColorGreen.cshort, (-1).cshort)
+      discard init_pair(PairSeparator.cshort, ColorWhite.cshort, (-1).cshort)
+      discard init_pair(PairStatus.cshort, ColorWhite.cshort, (-1).cshort)
+      cursesColorsReady = true
+
+  proc closeCursesInput() =
+    if cursesInputActive:
+      if cursesPasteReady:
+        stdout.write("\e[?2004l")
+        stdout.flushFile()
+        cursesPasteReady = false
+      timeout(-1)
+      discard keypad(stdscr, 0)
+      discard cEcho()
+      discard nocbreak()
+      discard noraw()
+      discard curs_set(1)
+      discard reset_shell_mode()
+      discard cEndwin()
+      cursesInputActive = false
+      cursesColorsReady = false
+      cursesPasteReady = false
+
+  proc utf8CharLenAt(text: string, i: int): int =
+    let b = text[i].ord
+    if b < 0x80: 1
+    elif b < 0xE0: 2
+    elif b < 0xF0: 3
+    else: 4
+
+  proc clipUtf8Chars(text: string, maxChars: int): string =
+    if maxChars <= 0:
+      return ""
+    var i = 0
+    var chars = 0
+    while i < text.len and chars < maxChars:
+      let step = min(utf8CharLenAt(text, i), text.len - i)
+      result.add text.substr(i, i + step - 1)
+      inc i, step
+      inc chars
+
+  proc addCursesText(text: string, maxWidth: int) =
+    if maxWidth <= 0:
+      return
+    let clipped =
+      if text.len > maxWidth: clipUtf8Chars(text, maxWidth)
+      else: text
+    discard addnstr(clipped.cstring, clipped.len.cint)
+
+  proc withCursesColor(pair: int, body: proc()) =
+    if cursesColorsReady:
+      let attr = cColorPair(pair.cshort)
+      discard cAttrOn(attr)
+      try:
+        body()
+      finally:
+        discard cAttrOff(attr)
+    else:
+      body()
+
+  proc lineStart(input: string, cursor: int): int =
+    result = 0
+    let last = min(cursor, input.len)
+    for i in 0 ..< last:
+      if input[i] == '\n':
+        result = i + 1
+
+  proc cursorRowCol(input: string, cursor: int): tuple[row, col: int] =
+    var row = 0
+    var col = 0
+    let last = min(cursor, input.len)
+    for i in 0 ..< last:
+      if input[i] == '\n':
+        inc row
+        col = 0
+      else:
+        inc col
+    (row, col)
+
+  proc splitCursesLines(text: string): seq[string] =
+    var start = 0
+    for i, ch in text:
+      if ch == '\n':
+        if i > start:
+          result.add text.substr(start, i - 1)
+        else:
+          result.add ""
+        start = i + 1
+    if start < text.len:
+      result.add text.substr(start)
+    elif text.len == 0 or (text.len > 0 and text[^1] == '\n'):
+      result.add ""
+
+  proc isSeparatorLine(line: string): bool =
+    if line.len == 0 or (line.len mod 3) != 0:
+      return false
+    var i = 0
+    while i < line.len:
+      if line[i].ord != 0xE2 or line[i + 1].ord != 0x94 or
+          line[i + 2].ord != 0x80:
+        return false
+      inc i, 3
+    true
+
+  proc displayTranscriptLine(line: string, currentPair: var int): tuple[text: string, pair: int] =
+    if line.startsWith("user|"):
+      currentPair = PairInput
+      (line.substr(5), PairInput)
+    elif line.startsWith("assistant|"):
+      currentPair = PairOutput
+      (line.substr(10), PairOutput)
+    elif line.startsWith("sep|"):
+      currentPair = PairInput
+      (repeat("─", max(1, line.substr(4).parseInt())), PairSeparator)
+    elif isSeparatorLine(line):
+      currentPair = PairInput
+      (line, PairSeparator)
+    elif line.startsWith("agent>") or line.startsWith("  · tool") or
+        line.startsWith("Gene AI agent"):
+      currentPair = PairOutput
+      (line, PairOutput)
+    else:
+      (line, currentPair)
+
+  proc drawSeparator(row, width: int) =
+    discard cMove(row.cint, 0)
+    withCursesColor(PairSeparator,
+      proc() =
+        addCursesText(repeat("─", width), width))
+    discard clrtoeol()
+
+  proc drawCursesInput(prompt, status, output, input: string, cursor: int) =
+    discard wclear(stdscr)
+    let height = max(1, int(LINES))
+    let width = max(1, int(COLS))
+    if height < 4:
+      discard cMove(0, 0)
+      let lines = splitCursesLines(input)
+      let line =
+        if lines.len == 0: ""
+        else: lines[min(lines.high, cursorRowCol(input, cursor).row)]
+      withCursesColor(PairInput,
+        proc() =
+          addCursesText(line, width))
+      discard clrtoeol()
+      discard cMove(0, min(width - 1, cursorRowCol(input, cursor).col).cint)
+      discard refresh()
+      return
+
+    let pos = cursorRowCol(input, cursor)
+    let inputLines = splitCursesLines(input)
+    let inputTotal = max(1, inputLines.len)
+    let maxInputRows = max(1, height - 3)
+    let inputRows = min(inputTotal, maxInputRows)
+    let cursorLine = min(pos.row, inputTotal - 1)
+    let firstInputLine = min(max(0, cursorLine - inputRows + 1),
+                             max(0, inputTotal - inputRows))
+    let statusRow = height - 1
+    let bottomSepRow = statusRow - 1
+    let inputTop = bottomSepRow - inputRows
+    let topSepRow = inputTop - 1
+    let outputRows = max(0, topSepRow)
+
+    let outputLines = splitCursesLines(output)
+    let firstOutput =
+      if outputLines.len > outputRows:
+        outputLines.len - outputRows
+      else:
+        0
+    var transcriptPair = PairOutput
+    for idx in 0 ..< firstOutput:
+      discard displayTranscriptLine(outputLines[idx], transcriptPair)
+    for row in 0 ..< outputRows:
+      discard cMove(row.cint, 0)
+      let idx = firstOutput + row
+      if idx < outputLines.len:
+        let rendered = displayTranscriptLine(outputLines[idx], transcriptPair)
+        withCursesColor(rendered.pair,
+          proc() =
+            addCursesText(rendered.text, width))
+      discard clrtoeol()
+
+    drawSeparator(topSepRow, width)
+    for row in 0 ..< inputRows:
+      discard cMove((inputTop + row).cint, 0)
+      let idx = firstInputLine + row
+      if idx < inputLines.len:
+        withCursesColor(PairInput,
+          proc() =
+            addCursesText(inputLines[idx], width))
+      else:
+        discard
+      discard clrtoeol()
+    drawSeparator(bottomSepRow, width)
+    discard cMove(statusRow.cint, 0)
+    withCursesColor(PairStatus,
+      proc() =
+        addCursesText(status, width))
+    discard clrtoeol()
+
+    let cursorVisibleRow = cursorLine - firstInputLine
+    let y = min(bottomSepRow - 1, inputTop + max(0, cursorVisibleRow))
+    let x = min(width - 1, pos.col)
+    discard cMove(y.cint, x.cint)
+    discard refresh()
+
+  proc defaultInputStatus(multiline: bool): string =
+    if multiline:
+      "Enter sends | Paste, Shift+Enter, or Alt+Enter keeps newlines | Ctrl-D cancels"
+    else:
+      "Enter sends | Ctrl-D cancels"
+
+  proc isEscFinalByte(ch: char): bool =
+    let code = ch.ord
+    code >= 0x40 and code <= 0x7E
+
+  proc readEscSequence(): string =
+    timeout(60)
+    try:
+      let first = getch()
+      if first == CursesErr:
+        return
+      if first < 0 or first > 255:
+        return
+      result.add char(first)
+      if result[0] == '[' or result[0] == 'O':
+        while true:
+          let ch = getch()
+          if ch == CursesErr:
+            break
+          if ch < 0 or ch > 255:
+            break
+          let c = char(ch)
+          result.add c
+          if isEscFinalByte(c):
+            break
+    finally:
+      timeout(-1)
+
+  proc isShiftEnterSequence(seq: string): bool =
+    seq == "\n" or seq == "\r" or seq == "[13;2u" or seq == "[13;2~" or
+      seq == "[27;2;13~"
+
+  proc isPasteStartSequence(seq: string): bool =
+    seq == "[200~"
+
+  proc isPasteEndSequence(seq: string): bool =
+    seq == "[201~"
+
+  proc insertTextAt(input: var string, cursor: var int, text: string) =
+    if text.len == 0:
+      return
+    input.insert(text, cursor)
+    inc cursor, text.len
+
+  proc insertCharAt(input: var string, cursor: var int, ch: char) =
+    input.insert($ch, cursor)
+    inc cursor
+
+  proc readCursesInput(prompt, status, output: string,
+                       multiline, persistent: bool): Value =
+    openCursesInput()
+    try:
+      let statusText =
+        if status.len > 0: status
+        else: defaultInputStatus(multiline)
+      var input = ""
+      var cursor = 0
+      var pasteMode = false
+      while true:
+        drawCursesInput(prompt, statusText, output, input, cursor)
+        let ch = getch()
+        if pasteMode:
+          if ch == KeyEsc:
+            let seq = readEscSequence()
+            if isPasteEndSequence(seq):
+              pasteMode = false
+            else:
+              insertCharAt(input, cursor, char(KeyEsc))
+              insertTextAt(input, cursor, seq)
+          elif ch == KeyReturn or ch == KeyEnter or ch == KeyNcursesEnter:
+            insertCharAt(input, cursor, '\n')
+          elif ch >= 0 and ch <= 255:
+            insertCharAt(input, cursor, char(ch))
+          else:
+            discard
+        else:
+          case ch
+          of KeyCtrlD:
+            return NIL
+          of KeyEnter, KeyReturn, KeyNcursesEnter:
+            return newStr(input)
+          of KeyShiftEnter:
+            if multiline:
+              insertCharAt(input, cursor, '\n')
+            else:
+              discard beep()
+          of KeyBackspace, 127, 8:
+            if cursor > 0:
+              input.delete(cursor - 1 .. cursor - 1)
+              dec cursor
+            else:
+              discard beep()
+          of KeyDelete:
+            if cursor < input.len:
+              input.delete(cursor .. cursor)
+            else:
+              discard beep()
+          of KeyLeft:
+            if cursor > 0: dec cursor else: discard beep()
+          of KeyRight:
+            if cursor < input.len: inc cursor else: discard beep()
+          of KeyHome:
+            cursor = lineStart(input, cursor)
+          of KeyEnd:
+            let nl = input.find('\n', cursor)
+            cursor = if nl >= 0: nl else: input.len
+          of KeyEsc:
+            let seq = readEscSequence()
+            if isPasteStartSequence(seq):
+              pasteMode = true
+            elif multiline and isShiftEnterSequence(seq):
+              insertCharAt(input, cursor, '\n')
+            else:
+              discard beep()
+          else:
+            if ch >= 32 and ch <= 255:
+              insertCharAt(input, cursor, char(ch))
+            else:
+              discard beep()
+    finally:
+      if not persistent:
+        closeCursesInput()
+
+proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Read one submitted input string. On a TTY this uses a small ncurses editor;
+  ## in pipes it falls back to read-line so scripts and tests stay deterministic.
+  if args.len != 0:
+    raise newException(GeneError, "os/read-input expects named arguments only")
+  var prompt = ""
+  var status = ""
+  var output = ""
+  var multiline = true
+  var persistent = false
+  if call != nil:
+    for i, name in call[].namedNames:
+      let v = call[].namedValues[i]
+      case name
+      of "prompt":
+        requireStr("os/read-input ^prompt", v)
+        prompt = v.strVal
+      of "status":
+        requireStr("os/read-input ^status", v)
+        status = v.strVal
+      of "output":
+        requireStr("os/read-input ^output", v)
+        output = v.strVal
+      of "multiline":
+        if v.kind != vkBool:
+          raise newException(GeneError, "os/read-input ^multiline must be Bool")
+        multiline = v.boolVal
+      of "persistent":
+        if v.kind != vkBool:
+          raise newException(GeneError, "os/read-input ^persistent must be Bool")
+        persistent = v.boolVal
+      else:
+        raise newException(GeneError,
+          "os/read-input got unexpected named argument: " & name)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if isatty(STDIN_FILENO) != 0:
+      return readCursesInput(prompt, status, output, multiline, persistent)
+  if prompt.len > 0:
+    stdout.write(prompt)
+    stdout.flushFile()
+  biOsReadLine([])
+
+proc biOsCloseInput(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/close-input takes no arguments")
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    closeCursesInput()
+  NIL
 
 # --- repl: reusable interactive evaluator ---
 
@@ -1796,6 +2268,8 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("exec-stdio", newNativeCallFn("os/exec-stdio", biOsExecStdio))
   osScope.define("stdin-tty?", newNativeFn("os/stdin-tty?", biOsStdinTty))
   osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
+  osScope.define("read-input", newNativeCallFn("os/read-input", biOsReadInput))
+  osScope.define("close-input", newNativeFn("os/close-input", biOsCloseInput))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))
 

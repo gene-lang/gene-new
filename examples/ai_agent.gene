@@ -7,7 +7,7 @@
 #   * Tools: read_file / write_file / list_dir / run_shell, each run under the
 #     §8.5 safety contract (workspace-root confinement, path normalization,
 #     timeout + output caps, secret redaction).
-#   * Line-based UI (os/read-line); the curses TUI is a later milestone.
+#   * Ncurses-backed prompt on TTY; paste and Shift+Enter/Alt+Enter keep newlines.
 #
 # Run live:   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
 # Auto-approve write/shell tools: GENE_AGENT_YOLO=1
@@ -22,7 +22,7 @@
 (mod ai-agent
   @doc "a terminal coding agent over the OpenAI Responses API")
 
-(import os [get-env env? exec exec-stdio stdin-tty? read-line Env Exec OsError])
+(import os [get-env env? exec exec-stdio stdin-tty? read-line read-input close-input Env Exec OsError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower trim])
 (import std/stream [to_stream map filter into each])
@@ -379,7 +379,31 @@
 (fn blank-line? [line]
   (= (trim line) ""))
 
+(fn append-transcript [transcript text]
+  (Cell/set transcript (join [(Cell/get transcript) text] "")))
+
+(fn close-user-input []
+  (if (stdin-tty?)
+    (close-input)
+    nil))
+
+(fn read-user-input [transcript]
+  (if (stdin-tty?)
+    (read-input ^prompt "" ^multiline true
+                ^persistent true
+                ^output (Cell/get transcript)
+                ^status "Enter sends | Paste/Shift+Enter keep newlines | /sh shell | /repl Gene REPL | /quit exit")
+    (do
+      (print "you> ")
+      (read-line))))
+
+(fn render-agent-text [transcript text]
+  (if (stdin-tty?)
+    (append-transcript transcript $"agent> ${text}\n")
+    (println $"agent> ${text}")))
+
 (fn run-shell-session []
+  (close-user-input)
   (var shell (get-env Env "SHELL" "sh"))
   (println $"Entering shell (${shell}). Type exit/quit or Ctrl-D to return.")
   (if (stdin-tty?)
@@ -410,6 +434,7 @@
       (println ""))))
 
 (fn run-session-repl [items]
+  (close-user-input)
   (var session {^items items
                 ^model model
                 ^workspace-root workspace-root
@@ -421,31 +446,41 @@
   nil)
 
 (fn run-repl []
-  (println $"Gene AI agent — model ${model}. Type /quit to exit.")
+  (println $"Gene AI agent - model ${model}. Type /quit to exit.")
   (var items (cell [(system-item "You are a helpful coding agent.")]))
+  (var transcript (cell $"Gene AI agent - model ${model}\n"))
   (var running (cell true))
   (var line nil)
   (while (Cell/get running)
-    (print "you> ")
-    (set line (read-line))
+    (set line (read-user-input transcript))
     (if (= line nil)
-      (Cell/set running false)
+      (do
+        (close-user-input)
+        (Cell/set running false))
       (if (= line "/quit")
-        (Cell/set running false)
+        (do
+          (close-user-input)
+          (Cell/set running false))
         (if (= line "/sh")
           (run-shell-session)
           (if (= line "/repl")
             (run-session-repl items)
             (if (blank-line? line)
               nil
-              (Cell/set items
-                (run-turn live-transport
-                          (append (Cell/get items) (user-item line))
-                          (fn [text] (println $"agent> ${text}"))
-                          max-tool-turns)))))))))
+              (do
+                (append-transcript transcript $"──────\n${line}\n")
+                (Cell/set items
+                  (run-turn live-transport
+                            (append (Cell/get items) (user-item line))
+                            (fn [text]
+                              (render-agent-text transcript text))
+                            max-tool-turns))))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main []
   (if (= auth-token nil)
     (run-demo)
-    (run-repl)))
+    (try
+      (run-repl)
+      ensure
+        (close-user-input))))
