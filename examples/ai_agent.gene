@@ -9,7 +9,7 @@
 #     timeout + output caps, secret redaction).
 #   * Line-based UI (os/read-line); the curses TUI is a later milestone.
 #
-# Run live:   OPENAI_API_KEY=... gene run examples/ai_agent.gene
+# Run live:   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
 # Auto-approve write/shell tools: GENE_AGENT_YOLO=1
 # Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
@@ -32,7 +32,7 @@
 # Config (all from the environment; nothing hard-coded).
 # -----------------------------------------------------------------------------
 
-(var api-key (env? Env "OPENAI_API_KEY"))
+(var auth-token (env? Env "OPENAI_AUTH_TOKEN"))
 (var base    (get-env Env "OPENAI_BASE_URL" "https://api.openai.com"))
 (var model   (get-env Env "OPENAI_MODEL" "gpt-4o"))
 (var workspace-root ".")
@@ -47,9 +47,9 @@
 
 # Never let the API token surface in transcript, logs, or errors.
 (fn redact [s : Str] : Str
-  (if (= api-key nil)
+  (if (= auth-token nil)
     s
-    (replace-all s api-key "sk-***REDACTED***")))
+    (replace-all s auth-token "auth-***REDACTED***")))
 
 # Confine every file path to the workspace root. Conservative primitive: reject
 # absolute paths and any `..` segment (a production build should realpath and
@@ -205,7 +205,7 @@
 (fn live-transport [body : Str]
   (var r (exec Exec ^cmd "curl"
                ^args ["-sS" "-X" "POST" $"${base}/v1/responses"
-                      "-H" $"Authorization: Bearer ${api-key}"
+                      "-H" $"Authorization: Bearer ${auth-token}"
                       "-H" "Content-Type: application/json"
                       "-d" body]
                ^timeout-ms 60000 ^max-bytes 4000000))
@@ -269,14 +269,14 @@
 # -----------------------------------------------------------------------------
 
 (fn run-demo []
-  (println "No OPENAI_API_KEY set — running the offline demo.")
+  (println "No OPENAI_AUTH_TOKEN set — running the offline demo.")
   (println "user> what's in this directory?")
   (var items [(system-item "You are a coding agent.")
               (user-item "what's in this directory?")])
   (run-turn (demo-transport-for) items
     (fn [text] (println $"agent> ${text}"))
     max-tool-turns)
-  (println "Demo complete. Set OPENAI_API_KEY to talk to the real API."))
+  (println "Demo complete. Set OPENAI_AUTH_TOKEN to talk to the real API."))
 
 (fn run-repl []
   (println $"Gene AI agent — model ${model}. Type /quit to exit.")
@@ -298,6 +298,6 @@
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main []
-  (if (= api-key nil)
+  (if (= auth-token nil)
     (run-demo)
     (run-repl)))

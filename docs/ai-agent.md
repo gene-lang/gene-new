@@ -47,7 +47,7 @@ the `net/http` server, capability values, and the async task/worker model).
 A CLI, launched as:
 
 ```bash
-OPENAI_API_KEY=sk-... gene run examples/ai_agent.gene
+OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
 ```
 
 Behavior, mirroring a coding agent:
@@ -123,7 +123,7 @@ fine for simple 0–3 arg C functions but is not the vehicle here.
 
 ## 3. Environment variables (§3)
 
-The agent reads `OPENAI_API_KEY` (required), and optionally `OPENAI_BASE_URL`
+The agent reads `OPENAI_AUTH_TOKEN` (required), and optionally `OPENAI_BASE_URL`
 (default `https://api.openai.com`) and `OPENAI_MODEL`.
 
 Before this work there was no OS-environment access at the Gene surface. The
@@ -137,7 +137,7 @@ everything else:
 
 ```gene
 (import os [get-env Env])
-(var token (get-env env "OPENAI_API_KEY"))   ; env : Os/Env
+(var token (get-env env "OPENAI_AUTH_TOKEN"))   ; env : Os/Env
 ```
 
 Native surface (small, in `src/gene/stdlib.nim` next to the db backends):
@@ -388,7 +388,7 @@ cases — the same defensive-test posture as the `net/http` request-parser caps.
 
 ```
 # capabilities/handles granted by the launcher (§8): env sh fs http
-token := os/get-env(env, "OPENAI_API_KEY")                 # required
+token := os/get-env(env, "OPENAI_AUTH_TOKEN")              # required
 base  := os/get-env(env, "OPENAI_BASE_URL", "https://api.openai.com")
 model := os/get-env(env, "OPENAI_MODEL",   "gpt-4o")
 
@@ -453,7 +453,7 @@ curses) are isolated behind working milestones.
    request/response against `POST /v1/responses` by shelling out to `curl` via
    `os/exec`; parse the full response with `json/parse`; line-based
    stdin/stdout UI. This is deliberately *not* streamed (§4). First end-to-end
-   conversation with the API. Gated on `OPENAI_API_KEY`; tests inject a fake
+   conversation with the API. Gated on `OPENAI_AUTH_TOKEN`; tests inject a fake
    transport (a recorded Responses body) so CI needs no network or key. Model
    the response decoder around Responses output *items* from the start, so the
    later streaming client slots in without reshaping the agent.

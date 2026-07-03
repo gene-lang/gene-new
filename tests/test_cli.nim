@@ -64,12 +64,12 @@ suite "cli — gene run":
     let ran = runGene(["run", argMain, "ok"])
     check ran.exitCode == 0
 
-  test "ai agent example runs offline demo without an API key":
+  test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
-    let ran = execCmdEx("env -u OPENAI_API_KEY " & shellQuote(geneExe) &
+    let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN " & shellQuote(geneExe) &
                         " run examples/ai_agent.gene")
     check ran.exitCode == 0
-    check "No OPENAI_API_KEY set" in ran.output
+    check "No OPENAI_AUTH_TOKEN set" in ran.output
     check "agent>   · tool list_dir" in ran.output
     check "Demo complete" in ran.output
 
