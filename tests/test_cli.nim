@@ -102,7 +102,7 @@ suite "cli — gene run":
     let ran = execCmdEx(command)
     check ran.exitCode == 0
     check "Entering Gene REPL" in ran.output
-    check "gpt-5.5" in ran.output
+    check "gpt-5.4-mini" in ran.output
     check "41" in ran.output
     check "42" in ran.output
 
@@ -113,7 +113,7 @@ suite "cli — gene run":
                   shellQuote(geneExe) & " run examples/ai_agent.gene"
     let ran = execCmdEx(command)
     check ran.exitCode == 0
-    check "gpt-5.5" in ran.output
+    check "gpt-5.4-mini" in ran.output
     check "gene> \nyou>" in ran.output
 
   test "invalid main return is a boundary TypeError":

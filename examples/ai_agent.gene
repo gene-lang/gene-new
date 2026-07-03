@@ -37,7 +37,7 @@
 (if (= auth-token nil)
   (set auth-token (env? Env "CODEX_ACCESS_TOKEN")))
 (var base    (get-env Env "OPENAI_BASE_URL" "https://chatgpt.com/backend-api/codex"))
-(var model   (get-env Env "OPENAI_MODEL" "gpt-5.5"))
+(var model   (get-env Env "OPENAI_MODEL" "gpt-5.4-mini"))
 (var workspace-root ".")
 (var yolo (get-env Env "GENE_AGENT_YOLO" "0"))
 
