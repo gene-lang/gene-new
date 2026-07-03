@@ -65,6 +65,12 @@ suite "cli — gene run":
     let ran = runGene(["run", argMain, "ok"])
     check ran.exitCode == 0
 
+  test "main receives raw command-line argument tail":
+    let rawMain = writeCliProgram("raw_arg_main.gene",
+      "(fn main [args] (if (= args/raw \"a b, c\") 0 4))")
+    let ran = runGene(["run", rawMain, "a", "b,", "c"])
+    check ran.exitCode == 0
+
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
     let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN -u CODEX_ACCESS_TOKEN " &

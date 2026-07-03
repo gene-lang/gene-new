@@ -166,6 +166,62 @@
 (fn system-item [text : Str]
   {^role "system" ^content text})
 
+(var gene-system-prompt """
+You are a coding agent working in the Gene language repository. You can read and
+write files, list directories, grep, and run shell commands after user approval.
+
+When writing Gene code, use the current repo's language, not generic Lisp:
+
+- Programs are s-expressions. Calls are callable-first: `(f x y)`.
+- Top-level forms run in order. `gene run file.gene` calls `(fn main [...])` if
+  present; scripts may also do work at top level.
+- Comments start with `#`. Modules may start with `(mod name @doc "...")`.
+- Imports use namespace/module forms:
+  `(import str [join split trim lower])`
+  `(import std/stream [to_stream map filter each into])`
+  `(import [foo : local] from "./module")`
+- Bind with `(var name value)` or `(var name : Type value)`. Reassign existing
+  bindings with `(set name value)`. Avoid redeclaring the same local name in a
+  loop or branch; allocate mutable loop state once and update it.
+- Functions use `(fn name [a : Type, b] : Return body...)`; anonymous functions
+  use `(fn [x] body)`. The last expression is returned.
+- Basic control forms: `(do ...)`, `(if cond then else)`, `(while cond ...)`,
+  `(for item items ...)`, and `match` with `(when pattern ...)` and `(else ...)`.
+- Recoverable errors use `(try body catch (ErrorType ^field name) recovery
+  ensure cleanup)`. Use `fail` for recoverable errors and `panic` only for fatal
+  bugs.
+- Data:
+  - Lists: `[a b c]`
+  - Maps: `{^key value}`; property access is `m/key`
+  - Nodes: `(tag ^prop value child...)`; quasiquote nodes with backtick and
+    unquote with `%`, for example `` `(p ^class "x" %text)``.
+  - `nil` is absence, `void` means missing selector/omitted storage.
+- Selectors and sends:
+  - `x/key` is selector/property/index access.
+  - `xs/~size` sends the `size` message to `xs`; prefer this over `size xs`
+    when modeling receiver behavior.
+  - `(x ~ msg arg)` sends a message; `(x ~ Protocol/msg)` disambiguates protocol
+    message collisions.
+  - Type-direct messages live inside `type`; protocol messages live inside
+    `protocol` and are implemented with `impl`.
+- Types/protocols:
+  `(type T ^props {^name Str} (message label [self] self/name))`
+  `(protocol P (message render [self : Self] : Str))`
+  `(impl P T (message render [self] "..."))`
+  Single data inheritance is `^is`; behavioral composition is `^inherit`.
+- Streams are pull-based and skip `void`. Common shape:
+  `((to_stream xs) ~ map (fn [x] ...) ; ~ filter pred ; ~ into [])`.
+- Useful stdlib examples:
+  - `examples/todo_app.gene` for end-to-end web + sqlite.
+  - `examples/web_demo.gene` for nodes, streams, routes, selectors.
+  - `examples/protocol_demo.gene` for types, protocols, inheritance, messages.
+  - `docs/design.md`, `docs/core.md`, and `docs/stdlib.md` for details.
+
+Before changing Gene code, inspect nearby examples or docs if uncertain. After
+writing Gene code, verify with at least `bin/gene parse file.gene` or
+`bin/gene compile file.gene`; use `bin/gene run file.gene` when behavior matters.
+""")
+
 # Pull the assistant's text out of a Responses `output` list (message items ->
 # content parts of type output_text).
 (fn response-output-items [resp]
@@ -399,13 +455,47 @@
 (fn run-demo []
   (println "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set — running the offline demo.")
   (println "user> what's in this directory?")
-  (var items [(system-item "You are a coding agent.")
+  (var items [(system-item gene-system-prompt)
               (user-item "what's in this directory?")])
   (run-turn (demo-transport-for) items
     (fn [text] (println $"agent> ${text}"))
     ignore-stream-delta
     max-tool-turns)
   (println "Demo complete. Set OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN to talk to Codex."))
+
+(fn run-one-shot [task : Str]
+  (println $"Gene AI agent - model ${model}")
+  (println $"user> ${task}")
+  (if (= auth-token nil)
+    (println "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set - using offline demo transport.")
+    nil)
+  (var streaming (cell false))
+  (var transport (if (= auth-token nil) (demo-transport-for) live-transport))
+  (run-turn transport
+            [(system-item gene-system-prompt) (user-item task)]
+            (fn [text]
+              (if (Cell/get streaming)
+                (do
+                  (println "")
+                  (Cell/set streaming false))
+                nil)
+              (if (= text "")
+                nil
+                (println $"agent> ${text}")))
+            (fn [text]
+              (if (= text "")
+                nil
+                (do
+                  (if (Cell/get streaming)
+                    nil
+                    (do
+                      (print "agent> ")
+                      (Cell/set streaming true)))
+                  (print text))))
+            max-tool-turns)
+  (if (Cell/get streaming)
+    (println "")
+    nil))
 
 (fn exit-word? [line]
   (if (= line "exit")
@@ -529,7 +619,7 @@
 
 (fn run-repl []
   (println $"Gene AI agent - model ${model}. Type /quit to exit.")
-  (var items (cell [(system-item "You are a helpful coding agent.")]))
+  (var items (cell [(system-item gene-system-prompt)]))
   (var transcript (cell $"Gene AI agent - model ${model}\n"))
   (var running (cell true))
   (var line nil)
@@ -564,10 +654,13 @@
                             max-tool-turns))))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
-(fn main []
-  (if (= auth-token nil)
-    (run-demo)
-    (try
-      (run-repl)
-      ensure
-        (close-user-input))))
+(fn main [args]
+  (var task args/raw)
+  (if (blank-line? task)
+    (if (= auth-token nil)
+      (run-demo)
+      (try
+        (run-repl)
+        ensure
+          (close-user-input)))
+    (run-one-shot task)))

@@ -82,11 +82,15 @@ proc cmdRepl(useCurses = false) =
   if code != 0:
     quit(code)
 
-proc argsList(args: openArray[string]): Value =
+proc argsValue(args: openArray[string]): Value =
+  # Preserve positional argv compatibility through node body indexes while
+  # exposing the whole shell argument tail for future script-level parsing.
+  var props = initOrderedTable[string, Value]()
+  props["raw"] = newStr(args.join(" "))
   var values = newSeq[Value](args.len)
   for i, arg in args:
     values[i] = newStr(arg)
-  newList(values)
+  newNode(newSym("args"), props = props, body = values)
 
 proc commandArgs(first: int): seq[string] =
   if first <= paramCount():
@@ -158,7 +162,7 @@ proc cmdRun(path: string, args: openArray[string] = []) =
         if mainBinding.kind == vkFunction and mainBinding.fnParams.len == 0:
           mainBinding.call()
         else:
-          mainBinding.call(@[argsList(args)])
+          mainBinding.call(@[argsValue(args)])
       exitFromMain(scope, result)
   except ReadError as e:
     stderr.writeLine "Read error: " & e.msg
