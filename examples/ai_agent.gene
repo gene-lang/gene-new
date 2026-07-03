@@ -2,7 +2,7 @@
 # =============================================================================
 # Gene AI coding agent — MVP (docs/ai-agent.md milestones 1-4).
 #
-#   * Talks to OpenAI's Responses API (POST /v1/responses), non-streaming.
+#   * Talks to Codex's ChatGPT-account Responses backend, streaming.
 #   * Transport is `curl` shelled out through os/exec (bootstrap milestone).
 #   * Tools: read_file / write_file / list_dir / run_shell, each run under the
 #     §8.5 safety contract (workspace-root confinement, path normalization,
@@ -15,8 +15,8 @@
 #             that drives the same loop with a scripted transport, incl. a
 #             tool-call round trip — needs no network)
 #
-# Auth is an OAuth bearer token from the environment (e.g. minted through your
-# provider's OAuth flow / device login), sent as `Authorization: Bearer ...`.
+# Auth is a Codex/ChatGPT OAuth bearer token from `OPENAI_AUTH_TOKEN` or
+# `CODEX_ACCESS_TOKEN`, sent to chatgpt.com/backend-api/codex.
 # =============================================================================
 
 (mod ai-agent
@@ -33,8 +33,10 @@
 # -----------------------------------------------------------------------------
 
 (var auth-token (env? Env "OPENAI_AUTH_TOKEN"))
-(var base    (get-env Env "OPENAI_BASE_URL" "https://api.openai.com"))
-(var model   (get-env Env "OPENAI_MODEL" "gpt-4o"))
+(if (= auth-token nil)
+  (set auth-token (env? Env "CODEX_ACCESS_TOKEN")))
+(var base    (get-env Env "OPENAI_BASE_URL" "https://chatgpt.com/backend-api/codex"))
+(var model   (get-env Env "OPENAI_MODEL" "gpt-5.5"))
 (var workspace-root ".")
 (var yolo (get-env Env "GENE_AGENT_YOLO" "0"))
 
@@ -214,31 +216,92 @@
 
 (fn api-error-text [resp]
   (var status (if (= resp/status void) "?" resp/status))
-  (var message (if (= resp/error/message void) "unknown API error" resp/error/message))
+  (var message
+    (if (= resp/error/message void)
+      (if (= resp/detail void) "unknown API error" resp/detail)
+      resp/error/message))
   (var code (if (= resp/error/code void) "" $" (${resp/error/code})"))
   $"OpenAI API error ${status}: ${message}${code}")
 
+(fn sse-data-payload [line : Str]
+  (if (starts_with? line "data: ")
+    (do
+      (var parts (split line "data: "))
+      parts/1)
+    nil))
+
+(fn sse-response [raw : Str]
+  (var output (cell []))
+  (var output-text (cell ""))
+  (var final (cell nil))
+  ((to_stream (split raw "\n"))
+    ~ each (fn [line]
+        (var payload (sse-data-payload line))
+        (if (= payload nil)
+          nil
+          (if (= payload void)
+            nil
+            (if (= payload "[DONE]")
+              nil
+              (try
+                (var event (parse payload))
+                (if (= event/type "response.output_item.done")
+                  (Cell/set output (append (Cell/get output) event/item))
+                  (if (= event/type "response.output_text.done")
+                    (Cell/set output-text event/text)
+                    (if (= event/type "response.completed")
+                      (Cell/set final event/response)
+                      (if (= event/type "response.failed")
+                        (Cell/set final event/response)
+                        (if (= event/type "response.incomplete")
+                          (Cell/set final event/response)
+                          nil)))))
+              catch (JsonError ^message _) nil))))))
+  (if (= (Cell/get final) nil)
+    {^output (Cell/get output) ^output_text (Cell/get output-text)}
+    (do
+      ((Cell/get final) ~ Map/put! "output" (Cell/get output))
+      ((Cell/get final) ~ Map/put! "output_text" (Cell/get output-text))
+      (Cell/get final))))
+
 (fn live-transport [body : Str]
   (var r (exec Exec ^cmd "curl"
-               ^args ["-sS" "-X" "POST" $"${base}/v1/responses"
+               ^args ["-sS" "-X" "POST" $"${base}/responses"
                       "-H" $"Authorization: Bearer ${auth-token}"
                       "-H" "Content-Type: application/json"
+                      "-H" "Accept: text/event-stream"
+                      "-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
+                      "-H" "originator: codex_cli_rs"
                       "-d" body]
                ^timeout-ms 60000 ^max-bytes 4000000))
   (if (not (= r/status 0))
     {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
     (do
       (var resp
-        (try
-          (parse r/stdout)
-        catch (JsonError ^message m)
-          {^agent_error (redact $"OpenAI API returned invalid JSON: ${m}")}))
-      (if (not (= resp/error void))
-        {^agent_error (redact (api-error-text resp))}
-        resp))))
+        (if (starts_with? r/stdout "event:")
+          (sse-response r/stdout)
+          (try
+            (parse r/stdout)
+          catch (JsonError ^message m)
+            {^agent_error (redact $"OpenAI API returned invalid JSON: ${m}")})))
+      (if (= resp/error void)
+        (if (= resp/status "failed")
+          {^agent_error (redact (api-error-text resp))}
+          resp)
+        (if (= resp/error nil)
+          (if (= resp/status "failed")
+            {^agent_error (redact (api-error-text resp))}
+            resp)
+          {^agent_error (redact (api-error-text resp))})))))
 
 (fn call-model [transport, input-items]
-  (var body (stringify {^model model ^input input-items ^tools tool-schemas}))
+  (var body (stringify {^model model
+                        ^store false
+                        ^stream true
+                        ^input input-items
+                        ^tools tool-schemas
+                        ^tool_choice "auto"
+                        ^parallel_tool_calls true}))
   (transport body))
 
 (var max-tool-turns 12)
@@ -298,14 +361,14 @@
 # -----------------------------------------------------------------------------
 
 (fn run-demo []
-  (println "No OPENAI_AUTH_TOKEN set — running the offline demo.")
+  (println "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set — running the offline demo.")
   (println "user> what's in this directory?")
   (var items [(system-item "You are a coding agent.")
               (user-item "what's in this directory?")])
   (run-turn (demo-transport-for) items
     (fn [text] (println $"agent> ${text}"))
     max-tool-turns)
-  (println "Demo complete. Set OPENAI_AUTH_TOKEN to talk to the real API."))
+  (println "Demo complete. Set OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN to talk to Codex."))
 
 (fn run-repl []
   (println $"Gene AI agent — model ${model}. Type /quit to exit.")

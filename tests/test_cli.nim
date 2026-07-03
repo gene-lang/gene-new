@@ -69,7 +69,7 @@ suite "cli — gene run":
     let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN " & shellQuote(geneExe) &
                         " run examples/ai_agent.gene")
     check ran.exitCode == 0
-    check "No OPENAI_AUTH_TOKEN set" in ran.output
+    check "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set" in ran.output
     check "agent>   · tool list_dir" in ran.output
     check "Demo complete" in ran.output
 
