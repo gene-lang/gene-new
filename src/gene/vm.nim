@@ -2819,17 +2819,32 @@ proc biPanic(args: openArray[Value]): Value {.nimcall.} =
   e.hasErrVal = true
   raise e
 
+when defined(geneWasm):
+  # Under the wasm profile there is no useful process stdout; `print`/`println`
+  # append to a per-eval buffer the host reads through the ABI (docs/wasm.md
+  # §A.4 `gene_result_out_*`). `geneWasmCapture` is nil outside an eval so
+  # startup prints (if any) are harmless.
+  var geneWasmCapture*: ref string = nil
+  proc geneWasmEmit(s: string) =
+    if geneWasmCapture != nil: geneWasmCapture[].add s
+    else: stdout.write s
+
 proc biPrint(args: openArray[Value]): Value {.nimcall.} =
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
-  stdout.write parts.join(" ")
+  when defined(geneWasm): geneWasmEmit(parts.join(" "))
+  else: stdout.write parts.join(" ")
   NIL
 
 proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   var parts: seq[string]
   for a in args: parts.add displayStr(a)
-  stdout.write parts.join(" ")
-  stdout.write "\n"
+  when defined(geneWasm):
+    geneWasmEmit(parts.join(" "))
+    geneWasmEmit("\n")
+  else:
+    stdout.write parts.join(" ")
+    stdout.write "\n"
   NIL
 
 proc timerDeadline(milliseconds: int64): MonoTime =

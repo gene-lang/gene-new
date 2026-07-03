@@ -4,6 +4,7 @@ temp/
 
 tests/*
 !tests/*.nim
+!tests/*.mjs
 
 benchmarks/bench_core
 

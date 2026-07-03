@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gene Playground (WASM)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b111a;
+      --bg-panel: #111926;
+      --fg: #d8e0ee;
+      --fg-muted: #90a0ba;
+      --accent: #2fd4b5;
+      --border: #243247;
+      --good: #31d39a;
+      --bad: #ff6b7f;
+      --shadow: rgba(0, 0, 0, 0.28);
+      --font-ui: "Space Grotesk", "Trebuchet MS", "Segoe UI", sans-serif;
+      --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%; color: var(--fg);
+      background:
+        radial-gradient(1200px 600px at 90% -10%, rgba(47, 212, 181, 0.1), transparent 60%),
+        radial-gradient(1000px 500px at -15% 120%, rgba(246, 171, 89, 0.1), transparent 60%),
+        var(--bg);
+      font-family: var(--font-ui);
+    }
+    .app { height: 100%; padding: 20px; display: grid; grid-template-rows: auto auto 1fr; gap: 12px; }
+    .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+    .title { margin: 0; font-size: 1.05rem; letter-spacing: 0.02em; font-weight: 600; }
+    .title small { color: var(--fg-muted); font-weight: 400; font-size: 0.8rem; }
+    .status {
+      font-family: var(--font-mono); font-size: 0.78rem; color: var(--fg-muted);
+      padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px;
+      background: rgba(18, 28, 42, 0.72);
+    }
+    .status[data-state="ready"] { color: var(--good); border-color: rgba(49, 211, 154, 0.45); }
+    .status[data-state="error"] { color: var(--bad); border-color: rgba(255, 107, 127, 0.45); }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .btn {
+      appearance: none; border: 1px solid var(--border);
+      background: linear-gradient(180deg, #182437, #111a28); color: var(--fg);
+      font: 500 0.82rem/1 var(--font-ui); padding: 8px 12px; border-radius: 10px;
+      cursor: pointer; transition: transform 120ms ease, border-color 120ms ease;
+    }
+    .btn:hover { border-color: #345279; transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn.run {
+      border-color: rgba(47, 212, 181, 0.5);
+      background: linear-gradient(180deg, rgba(47, 212, 181, 0.25), rgba(47, 212, 181, 0.08));
+      color: #dffaf4;
+    }
+    .hint { margin: 0; font-size: 0.77rem; color: var(--fg-muted); font-family: var(--font-mono); }
+    .split { min-height: 0; display: grid; grid-template-columns: 1fr 0.9fr; gap: 12px; }
+    .panel {
+      min-height: 0; display: grid; grid-template-rows: auto 1fr;
+      border: 1px solid var(--border); border-radius: 14px;
+      background: linear-gradient(180deg, rgba(17, 25, 38, 0.96), rgba(12, 18, 29, 0.96));
+      box-shadow: 0 10px 30px var(--shadow); overflow: hidden;
+    }
+    .panel h2 {
+      margin: 0; padding: 10px 12px; font-size: 0.82rem; font-weight: 600;
+      letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-muted);
+      border-bottom: 1px solid var(--border); background: rgba(255, 255, 255, 0.01);
+    }
+    #editor {
+      width: 100%; height: 100%; padding: 12px; border: 0; outline: 0; resize: none;
+      font: 0.9rem/1.45 var(--font-mono); color: #d9e7ff; background: transparent; tab-size: 2;
+    }
+    .out-wrap { min-height: 0; overflow: auto; padding: 12px; }
+    .out-label {
+      font: 500 0.7rem/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--fg-muted); margin: 0 0 6px;
+    }
+    .out-label:not(:first-child) { margin-top: 14px; }
+    pre.block { margin: 0; font: 0.9rem/1.45 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+    pre.stdout { color: #cfe0f5; }
+    pre.value { color: #d5ffe9; }
+    pre.value.error { color: #ffd6de; }
+    @media (max-width: 960px) {
+      .app { padding: 14px; }
+      .split { grid-template-columns: 1fr; }
+      .panel { min-height: 280px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="topbar">
+      <h1 class="title">Gene Playground <small>— the Gene VM, compiled to WebAssembly</small></h1>
+      <div class="status" id="status" data-state="loading">Loading Gene WASM module…</div>
+    </div>
+
+    <div class="toolbar">
+      <button class="btn run" id="run" disabled>Run ▸</button>
+      <span class="hint">Ctrl/Cmd+Enter</span>
+      <button class="btn preset" data-preset="core">Core</button>
+      <button class="btn preset" data-preset="streams">Streams</button>
+      <button class="btn preset" data-preset="json">JSON + Strings</button>
+      <button class="btn preset" data-preset="match">Match + Errors</button>
+    </div>
+
+    <div class="split">
+      <section class="panel">
+        <h2>Gene source</h2>
+        <textarea id="editor" spellcheck="false"></textarea>
+      </section>
+      <section class="panel">
+        <h2>Result</h2>
+        <div class="out-wrap">
+          <p class="out-label">stdout (print / println)</p>
+          <pre class="block stdout" id="stdout"></pre>
+          <p class="out-label">value</p>
+          <pre class="block value" id="value">Loading…</pre>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    // Presets are all pure-language / pure-stdlib, which is exactly what the
+    // reduced wasm profile runs (docs/wasm.md §A.1). Every one is verified to
+    // evaluate in the built module.
+    const presets = {
+      core:
+`# Core: bindings, typed functions, lists, maps
+(var greeting "hello from Gene in wasm")
+(println greeting)
+
+(fn add [a : Int, b : Int] : Int (+ a b))
+
+(var nums [1 2 3 4 5])
+{^sum (add 40 2) ^first nums/0 ^count (nums ~ size)}`,
+      streams:
+`# Lazy streams: map / filter / collect
+(import std/stream [to_stream map filter into])
+
+(var kept
+  ((to_stream [1 2 3 4 5 6])
+    ~ map (fn [x] (* x x))
+    ; ~ filter (fn [x] (> x 10))
+    ; ~ into []))
+
+(println "squares over 10:" kept)
+kept`,
+      json:
+`# JSON + string helpers (both pure stdlib -> available in wasm)
+(import json [stringify])
+(import str [join lower])
+
+(var user {^name "Ada" ^langs ["Gene" "Nim"] ^active true})
+(println (lower (join user/langs ", ")))
+(stringify user)`,
+      match:
+`# Pattern matching + typed recoverable errors
+(import std/parse [parse_int ParseError])
+
+(fn classify [s : Str] : Str
+  (try
+    (var n (parse_int s))
+    (match n
+      (when 0 "zero")
+      (else (if (> n 0) "positive" "negative")))
+  catch (ParseError ^message _) "not a number"))
+
+[(classify "42") (classify "-7") (classify "0") (classify "xyz")]`
+    };
+
+    const editor = document.getElementById("editor");
+    const stdoutEl = document.getElementById("stdout");
+    const valueEl = document.getElementById("value");
+    const runBtn = document.getElementById("run");
+    const statusNode = document.getElementById("status");
+    let M = null;
+
+    const STATUS_NAME = { 0: "ok", 1: "error", 2: "panic", 3: "parse/compile error" };
+
+    function setStatus(text, state) {
+      statusNode.textContent = text;
+      statusNode.dataset.state = state;
+    }
+
+    function loadPreset(name) {
+      if (presets[name]) editor.value = presets[name];
+    }
+
+    // The §A.4 host ABI: alloc a source buffer, gene_eval -> handle, read the
+    // status + rendered value + captured output out of wasm memory, free.
+    function geneEval(src) {
+      const bytes = new TextEncoder().encode(src);
+      const p = M._gene_alloc(bytes.length);
+      if (bytes.length > 0 && p === 0) throw new Error("gene_alloc failed");
+      if (bytes.length > 0) M.HEAPU8.set(bytes, p);
+      const h = M._gene_eval(p, bytes.length);
+      if (h === 0) throw new Error("gene_eval rejected input");
+      M._gene_free(p);
+      const readStr = (ptr, len) => len === 0 ? "" :
+          new TextDecoder().decode(M.HEAPU8.subarray(ptr, ptr + len));
+      const result = {
+        status: M._gene_result_status(h),
+        value: readStr(M._gene_result_text_ptr(h), M._gene_result_text_len(h)),
+        out: readStr(M._gene_result_out_ptr(h), M._gene_result_out_len(h)),
+      };
+      M._gene_result_free(h);
+      return result;
+    }
+
+    function runCode() {
+      if (!M) return;
+      let r;
+      try {
+        r = geneEval(editor.value);
+      } catch (err) {
+        valueEl.textContent = `Bridge error: ${err?.message || err}`;
+        valueEl.classList.add("error");
+        return;
+      }
+      stdoutEl.textContent = r.out;
+      const isErr = r.status !== 0;
+      valueEl.classList.toggle("error", isErr);
+      valueEl.textContent = isErr ? `[${STATUS_NAME[r.status] || r.status}] ${r.value}` : r.value;
+    }
+
+    loadPreset("core");
+    runBtn.addEventListener("click", runCode);
+    editor.addEventListener("keydown", (evt) => {
+      if ((evt.ctrlKey || evt.metaKey) && evt.key === "Enter") {
+        evt.preventDefault();
+        runCode();
+      }
+    });
+    document.querySelectorAll(".preset").forEach((btn) =>
+      btn.addEventListener("click", () => { loadPreset(btn.dataset.preset); runCode(); }));
+
+    function boot() {
+      // gene.js is an Emscripten MODULARIZE bundle: loading it as a classic
+      // script defines the global factory GeneModule(); calling it returns a
+      // promise for the instantiated module. (Node uses tests/test_wasm.mjs, which
+      // imports the same file as an ES module.)
+      GeneModule({ locateFile: (p) => new URL(p, window.location.href).toString() })
+        .then((mod) => {
+          M = mod;
+          runBtn.disabled = false;
+          setStatus("Ready — VM in WebAssembly", "ready");
+          runCode();
+        })
+        .catch((err) => {
+          setStatus("WASM init failed", "error");
+          valueEl.classList.add("error");
+          valueEl.textContent = `WASM runtime error: ${err?.message || err}`;
+        });
+    }
+
+    if (window.location.protocol === "file:") {
+      setStatus("Serve over HTTP, not file://", "error");
+      valueEl.textContent =
+        "The wasm module can't load from file://. Serve this folder, e.g.:\n\n" +
+        "  python3 -m http.server --directory web 8000\n\n" +
+        "then open http://localhost:8000";
+    } else {
+      const loader = document.createElement("script");
+      loader.src = "gene.js";
+      loader.onload = boot;
+      loader.onerror = () => {
+        setStatus("Build the module first: nimble wasm", "error");
+        valueEl.classList.add("error");
+        valueEl.textContent =
+          "Could not load gene.js.\n\nBuild it with:  nimble wasm";
+      };
+      document.body.appendChild(loader);
+    }
+  </script>
+</body>
+</html>

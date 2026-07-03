@@ -10,11 +10,15 @@ Before every commit, run:
 nimble test
 nimble spec
 nimble perf
+nimble wasm
 ```
 
 If benchmark output gets worse, do not hide it. Include the before/after
 numbers and the reason the regression is acceptable or unavoidable in the
 commit message. If the regression is avoidable, fix it before committing.
+
+`nimble wasm` requires the Emscripten SDK (`emcc`) on PATH. If it cannot be run,
+state that explicitly before committing.
 
 For broad or risky changes, run the combined command:
 
