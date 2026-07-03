@@ -11,14 +11,14 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
-import gene/[compiler, gir, printer, reader, repl, types, vm]
+import gene/[compiler, gir, printer, reader, repl, repl_curses, types, vm]
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
   echo ""
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
-  echo "  gene repl              read/eval/print source lines from stdin"
+  echo "  gene repl [--curses]   read/eval/print source lines from stdin"
   echo "  gene run <file.gene> [args...] execute a file, then call main if present"
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
@@ -67,9 +67,18 @@ proc cmdEval(src: string) =
     maybeReplOnError(scope, app)
     quit(1)
 
-proc cmdRepl() =
+proc cursesReplEnabled(): bool =
+  let value = getEnv("GENE_REPL_NCURSES").strip().toLowerAscii()
+  value in ["1", "true", "yes", "on"]
+
+proc cmdRepl(useCurses = false) =
   let app = initModuleContext(getCurrentDir())
-  let code = runRepl(newGlobalScope(app))
+  let scope = newGlobalScope(app)
+  let code =
+    if useCurses or cursesReplEnabled():
+      runCursesRepl(scope)
+    else:
+      runRepl(scope)
   if code != 0:
     quit(code)
 
@@ -318,7 +327,16 @@ proc main() =
       quit(1)
     cmdEval(paramStr(2))
   of "repl":
-    cmdRepl()
+    var useCurses = false
+    if paramCount() >= 2:
+      for i in 2 .. paramCount():
+        case paramStr(i)
+        of "--curses":
+          useCurses = true
+        else:
+          stderr.writeLine "Error: unknown repl option: " & paramStr(i)
+          quit(1)
+    cmdRepl(useCurses)
   of "run":
     if paramCount() < 2:
       stderr.writeLine "Error: 'run' needs a file path"

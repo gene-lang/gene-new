@@ -197,6 +197,11 @@ suite "cli — gene repl":
     check ran.exitCode == 0
     check ran.output.strip.splitLines == @["2", "5"]
 
+  test "rejects unknown repl options":
+    let ran = runGene(["repl", "--bogus"])
+    check ran.exitCode == 1
+    check "unknown repl option: --bogus" in ran.output
+
   test "uses eval authority rules for each input line":
     let ran = runGeneInput(["repl"], "(import [x] from \"./missing\")\n(+ 1 2)\n")
     check ran.exitCode == 0
