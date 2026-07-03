@@ -719,6 +719,181 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   props["timed-out"] = if timedOut: TRUE else: FALSE
   newMap(props)
 
+proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Run a subprocess like os/exec, but invoke optional callbacks as output
+  ## arrives: ^stdout receives raw chunks and ^stdout-line receives complete
+  ## stdout lines without the trailing newline. The final return value keeps the
+  ## same captured-output shape as os/exec.
+  if args.len != 1:
+    raise newException(GeneError,
+      "os/exec-stream expects the Os/Exec capability plus named arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOsExec("os/exec-stream", args[0], scope)
+  var cmd = ""
+  var cmdSet = false
+  var procArgs: seq[string]
+  var timeoutMs = -1
+  var maxBytes = osExecDefaultOutputCap
+  var workdir = ""
+  var stdoutCb = NIL
+  var stdoutLineCb = NIL
+  var stderrCb = NIL
+  if call != nil:
+    for i, name in call[].namedNames:
+      let v = call[].namedValues[i]
+      case name
+      of "cmd":
+        requireStr("os/exec-stream ^cmd", v)
+        cmd = v.strVal
+        cmdSet = true
+      of "args":
+        if v.kind != vkList:
+          raiseOsError("os/exec-stream ^args must be a List of Str", scope)
+        for item in v.listItems:
+          requireStr("os/exec-stream ^args item", item)
+          procArgs.add item.strVal
+      of "timeout-ms": timeoutMs = int(requireInt64("os/exec-stream ^timeout-ms", v))
+      of "max-bytes": maxBytes = int(requireInt64("os/exec-stream ^max-bytes", v))
+      of "dir":
+        requireStr("os/exec-stream ^dir", v)
+        workdir = v.strVal
+      of "stdout":
+        stdoutCb = v
+      of "stdout-line":
+        stdoutLineCb = v
+      of "stderr":
+        stderrCb = v
+      else:
+        raiseOsError("os/exec-stream got unexpected named argument: " & name, scope)
+  if not cmdSet or cmd.len == 0:
+    raiseOsError("os/exec-stream requires a non-empty ^cmd", scope)
+  if maxBytes <= 0:
+    maxBytes = osExecDefaultOutputCap
+
+  var process: Process
+  try:
+    process = startProcess(cmd, workingDir = workdir, args = procArgs,
+                           options = {poUsePath})
+  except OSError as e:
+    raiseOsError("os/exec-stream could not start '" & cmd & "': " & e.msg, scope)
+
+  var outText = ""
+  var errText = ""
+  var outTruncated = false
+  var errTruncated = false
+  var timedOut = false
+  var stdoutLineBuf = ""
+  let deadline =
+    if timeoutMs >= 0: getMonoTime() + initDuration(milliseconds = timeoutMs)
+    else: getMonoTime()
+
+  proc appendCapped(into: var string, truncated: var bool, chunk: string) =
+    if into.len >= maxBytes:
+      if chunk.len > 0:
+        truncated = true
+      return
+    if into.len + chunk.len <= maxBytes:
+      into.add chunk
+    else:
+      truncated = true
+      into.add chunk.substr(0, maxBytes - into.len - 1)
+
+  proc callChunk(cb: Value, chunk: string) =
+    if cb.kind != vkNil:
+      discard applyCall(cb, [newStr(chunk)], NamedArgs(), scope)
+
+  proc callStdoutLines(chunk: string) =
+    if stdoutLineCb.kind == vkNil:
+      return
+    for ch in chunk:
+      if ch == '\n':
+        if stdoutLineBuf.len > 0 and stdoutLineBuf[^1] == '\r':
+          stdoutLineBuf.setLen(stdoutLineBuf.len - 1)
+        discard applyCall(stdoutLineCb, [newStr(stdoutLineBuf)], NamedArgs(), scope)
+        stdoutLineBuf.setLen(0)
+      else:
+        stdoutLineBuf.add ch
+
+  proc finishStdoutLine() =
+    if stdoutLineCb.kind != vkNil and stdoutLineBuf.len > 0:
+      discard applyCall(stdoutLineCb, [newStr(stdoutLineBuf)], NamedArgs(), scope)
+      stdoutLineBuf.setLen(0)
+
+  proc handleStdoutChunk(chunk: string) =
+    callChunk(stdoutCb, chunk)
+    callStdoutLines(chunk)
+    appendCapped(outText, outTruncated, chunk)
+
+  proc handleStderrChunk(chunk: string) =
+    callChunk(stderrCb, chunk)
+    appendCapped(errText, errTruncated, chunk)
+
+  try:
+    when defined(posix):
+      let outFd = process.outputHandle.cint
+      let errFd = process.errorHandle.cint
+      discard fcntl(outFd, F_SETFL, fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
+      discard fcntl(errFd, F_SETFL, fcntl(errFd, F_GETFL, 0) or O_NONBLOCK)
+      var buf: array[4096, char]
+      proc drainAvailable(fd: cint, handle: proc(chunk: string)) =
+        while true:
+          let n = read(fd, addr buf[0], buf.len)
+          if n > 0:
+            var chunk = newString(n)
+            copyMem(addr chunk[0], addr buf[0], n)
+            handle(chunk)
+          else:
+            break
+      while process.running:
+        drainAvailable(outFd, handleStdoutChunk)
+        drainAvailable(errFd, handleStderrChunk)
+        if timeoutMs >= 0 and getMonoTime() >= deadline:
+          timedOut = true
+          process.terminate()
+          break
+        os.sleep(osExecPollMs)
+      var exitCode = 0
+      exitCode = if timedOut: (discard process.waitForExit(); -1)
+                 else: process.waitForExit()
+      drainAvailable(outFd, handleStdoutChunk)
+      drainAvailable(errFd, handleStderrChunk)
+      finishStdoutLine()
+      var props = initOrderedTable[string, Value]()
+      props["status"] = newInt(exitCode)
+      props["stdout"] = newStr(outText)
+      props["stderr"] = newStr(errText)
+      props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
+      props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+      props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
+      props["timed-out"] = if timedOut: TRUE else: FALSE
+      return newMap(props)
+    else:
+      var exitCode = process.waitForExit(if timeoutMs >= 0: timeoutMs else: -1)
+      if process.running:
+        timedOut = true
+        process.terminate()
+        exitCode = -1
+      let allOut = process.outputStream.readAll()
+      let allErr = process.errorStream.readAll()
+      handleStdoutChunk(allOut)
+      handleStderrChunk(allErr)
+      finishStdoutLine()
+      var props = initOrderedTable[string, Value]()
+      props["status"] = newInt(exitCode)
+      props["stdout"] = newStr(outText)
+      props["stderr"] = newStr(errText)
+      props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
+      props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+      props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
+      props["timed-out"] = if timedOut: TRUE else: FALSE
+      return newMap(props)
+  except:
+    if process.running:
+      process.terminate()
+    raise
+  finally:
+    process.close()
+
 proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Run a subprocess attached to this process's stdin/stdout/stderr and return
   ## its exit status. This is for terminal handoff cases where captured
@@ -1182,6 +1357,39 @@ proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     stdout.write(prompt)
     stdout.flushFile()
   biOsReadLine([])
+
+proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Redraw the ncurses input surface without reading. This lets a program using
+  ## persistent os/read-input repaint streamed output between prompts.
+  if args.len != 0:
+    raise newException(GeneError, "os/refresh-input expects named arguments only")
+  var prompt = ""
+  var status = ""
+  var output = ""
+  if call != nil:
+    for i, name in call[].namedNames:
+      let v = call[].namedValues[i]
+      case name
+      of "prompt":
+        requireStr("os/refresh-input ^prompt", v)
+        prompt = v.strVal
+      of "status":
+        requireStr("os/refresh-input ^status", v)
+        status = v.strVal
+      of "output":
+        requireStr("os/refresh-input ^output", v)
+        output = v.strVal
+      else:
+        raise newException(GeneError,
+          "os/refresh-input got unexpected named argument: " & name)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if isatty(STDIN_FILENO) != 0:
+      openCursesInput()
+      let statusText =
+        if status.len > 0: status
+        else: defaultInputStatus(true)
+      drawCursesInput(prompt, statusText, output, "", 0)
+  NIL
 
 proc biOsCloseInput(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -2261,14 +2469,16 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("Env", newCapability("Os/Env"))
   osScope.define("Exec", newCapability("Os/Exec"))
   osScope.define("get-env", newNativeCallFn("os/get-env", biOsGetEnv,
-                                            acceptsNamed = false))
+                 acceptsNamed = false))
   osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
-                                         acceptsNamed = false))
+                 acceptsNamed = false))
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
+  osScope.define("exec-stream", newNativeCallFn("os/exec-stream", biOsExecStream))
   osScope.define("exec-stdio", newNativeCallFn("os/exec-stdio", biOsExecStdio))
   osScope.define("stdin-tty?", newNativeFn("os/stdin-tty?", biOsStdinTty))
   osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
   osScope.define("read-input", newNativeCallFn("os/read-input", biOsReadInput))
+  osScope.define("refresh-input", newNativeCallFn("os/refresh-input", biOsRefreshInput))
   osScope.define("close-input", newNativeFn("os/close-input", biOsCloseInput))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))

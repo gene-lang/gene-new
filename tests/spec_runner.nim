@@ -2071,6 +2071,16 @@ suite "spec — os and json from ai-agent plan":
                "[r/stdout r/stdout-truncated r/truncated]",
                "[\"abc\" true true]")
 
+  test "os/exec-stream invokes stdout callbacks while retaining captured output":
+    check_eval("(import os [exec-stream Exec]) " &
+               "(import std/stream [to_stream into]) " &
+               "(var seen (cell [])) " &
+               "(var r (exec-stream Exec ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
+               "                    ^stdout-line (fn [line] " &
+               "                      (seen ~ Cell/set ((to_stream [line]) ~ into (seen ~ Cell/get)))))) " &
+               "[r/status r/stdout (seen ~ Cell/get)]",
+               "[0 \"a\\nb\\n\" [\"a\" \"b\"]]")
+
   test "os/exec-stdio runs with parent streams and returns status":
     check_eval("(import os [exec-stdio Exec]) " &
                "(exec-stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",

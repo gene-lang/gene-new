@@ -1,19 +1,20 @@
 # Gene AI Agent — Design
 
-Status: **milestones 1–4 implemented; 5–7 planned.** Date: 2026-07-02.
+Status: **milestones 1–4 implemented; subprocess streaming prompt shipped; 5–7 planned.** Date: 2026-07-03.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
-timeout + output caps, `read-line`), `Fs/read-text`/`Fs/write-text`/
+timeout + output caps, `exec-stream` with stdout callbacks, `read-line`,
+`read-input`/`refresh-input`/`close-input`), `Fs/read-text`/`Fs/write-text`/
 `Fs/list-dir`, the `json` namespace (`parse`/`stringify`/`JsonError`), and the
-agent itself — a non-streaming Responses-API loop with a `curl`-subprocess
-transport, the §8.5 safety contract (workspace-root path confinement, timeout/
-output caps with truncation flags, approval policy, secret redaction), and tool
-use (`read_file`, `write_file`, `list_dir`, `run_shell`, `grep`), plus an
-offline demo transport so the loop runs (and is verified) with no network or
-key. Not yet built: the
-native libcurl streaming client (§4 option 1, milestone 5), the curses TUI
-(§7, milestone 6), and capability injection via `gene run` flags (milestone 7).
+agent itself — a streaming Responses-API loop over a `curl` subprocess, the
+§8.5 safety contract (workspace-root path confinement, timeout/output caps with
+truncation flags, approval policy, secret redaction), and tool use
+(`read_file`, `write_file`, `list_dir`, `run_shell`, `grep`), plus an offline
+demo transport so the loop runs (and is verified) with no network or key. Not
+yet built: the native libcurl client (§4 option 1, milestone 5), the full
+scrollback TUI (§7, milestone 6), and capability injection via `gene run` flags
+(milestone 7).
 
 This document specifies a Claude-Code-like AI coding agent written in Gene: a
 terminal program that holds a conversation with OpenAI's hosted API
@@ -55,8 +56,7 @@ Behavior, mirroring a coding agent:
 - a full-screen terminal UI (curses): scrollable transcript pane, a status
   line, and an input line;
 - a conversation loop that sends the running input-item list to the Responses
-  API and (once the native client lands) streams the assistant reply into the
-  transcript as items arrive;
+  API and streams assistant text deltas into the transcript as items arrive;
 - **tool use**: the model may return `function_call` items (`read_file`,
   `write_file`, `list_dir`, `run_shell`, `grep`); the agent executes them
   against the local workspace under explicit capabilities and safety policy
@@ -89,7 +89,7 @@ Pure stdlib / runtime pieces (no new authority):
 |---|---|---|---|
 | JSON parse / serialize | API request + response bodies | **implemented** | §5 |
 | TLS transport code | ride on `Net/Connect` | **missing** (native client) | §4 |
-| Terminal UI (curses) | the TUI | **missing** | §7 |
+| Terminal UI (curses) | the TUI | **partial** — prompt layout + repaint helper exist; full scrollback controls pending | §7 |
 
 What already exists and is directly reusable:
 
@@ -152,10 +152,12 @@ root scope, or injected by a launcher (see §8).
 ## 4. HTTPS client (§4)
 
 The API is HTTPS with `Authorization: Bearer <token>` and JSON request bodies.
-For a good UX the Responses API can stream (`"stream": true` yields SSE
+For a good UX the Responses API streams (`"stream": true` yields SSE
 `data: {json}` events for `response.output_text.delta`, `response.completed`,
-etc.), but **streaming and non-streaming are separate transport capabilities**,
-and the MVP uses only the non-streaming one (see the conflict note below).
+etc.). The current agent supports this through `curl -N` launched by
+`os/exec-stream`: stdout-line callbacks parse SSE lines and repaint the
+ncurses prompt as text deltas arrive. This is still a bootstrap transport; it
+does not replace the native HTTPS client planned below.
 
 The runtime's networking is **plaintext TCP only** (`Net/tcp-read-text-async` /
 `Net/tcp-write-text-async` in `src/gene/vm.nim`), with no TLS. Three ways to get
@@ -198,23 +200,26 @@ HTTPS, in order of recommendation:
    libcurl dependency is unacceptable.
 
 3. **Shell out to `curl(1)`** via the subprocess capability (§6). Zero new TLS
-   code — the bootstrap milestone. But `os/exec` (§6) is a **blocking
-   request/response** call that returns the whole body at once; it cannot stream.
-   So the bootstrap is explicitly **non-streaming**: send the request, await the
-   full JSON response, render it in one shot.
+   code — the bootstrap milestone. `os/exec` is still a blocking
+   request/response helper, but `os/exec-stream` adds synchronous stdout chunk
+   and stdout-line callbacks while retaining the final captured result. The
+   current agent uses that shape for SSE streaming, with the same timeout/output
+   cap contract as `os/exec`.
 
 ### Streaming vs. the blocking subprocess — resolving the conflict
 
-These two facts are in tension: `os/exec` returns a complete
-`{^status ^stdout ^stderr}` (§6), but SSE streaming needs incremental stdout.
-The doc resolves it by **scoping streaming out of the MVP**:
+These two facts are now split into distinct subprocess primitives: `os/exec`
+returns a complete `{^status ^stdout ^stderr}` result, while `os/exec-stream`
+returns the same shape and also invokes callbacks as stdout arrives.
 
-- **Milestone 1 (bootstrap):** non-streaming only, via `os/exec` + `curl`. The
-  full response arrives as one body; simplest correct thing.
-- **Streaming arrives with the native libcurl client (milestone 5)**, through the
-  channel path above — not through the subprocess.
-- If subprocess streaming is ever wanted independently, it needs a *new* stdlib
-  primitive (`os/spawn` yielding a stdout `Channel`), which is out of scope here.
+- **Bootstrap:** `os/exec-stream` + `curl -N` gives visible Responses SSE text
+  deltas without adding TLS code to Gene.
+- **Native client (milestone 5):** still replaces the subprocess with libcurl
+  and should expose a scheduler-friendly stream/channel API, so cancellation and
+  worker-thread boundaries are explicit.
+- **Future general subprocess API:** a long-lived `os/spawn` with stdin/stdout
+  handles or channels may still be useful, but is not needed for the current
+  agent.
 
 Both transports present the same non-streaming Gene API; only the native client
 adds `stream`:
@@ -453,18 +458,19 @@ fn main() {
 Ordered so each stage is independently testable and the risky pieces (TLS,
 curses) are isolated behind working milestones.
 
-1. **`os` namespace**: `get-env`/`env?` (`Os/Env`), `exec` (`Os/Exec`) with
-   `^timeout-ms` + output cap, `read-line`, `read-input`, `close-input`; `Fs/read-text`/`Fs/list-dir` sync
+1. **`os` namespace**: `get-env`/`env?` (`Os/Env`), `exec`/`exec-stream`
+   (`Os/Exec`) with `^timeout-ms` + output cap, `read-line`, `read-input`,
+   `refresh-input`, `close-input`; `Fs/read-text`/`Fs/list-dir` sync
    helpers. Spec-tested.
 2. **`json`**: `parse`/`stringify` with `JsonError`; round-trip spec tests
    including escapes, nesting, and a depth cap.
-3. **Agent loop, bootstrap transport — non-streaming.** One blocking
-   request/response against `POST /v1/responses` by shelling out to `curl` via
-   `os/exec`; parse the full response with `json/parse`; plain
-   stdin/stdout loop. This is deliberately *not* streamed (§4). First end-to-end
-   conversation with the API. The interactive prompt can use ncurses-backed
-   multiline input while preserving line-based behavior in non-TTY tests. Gated
-   on `OPENAI_AUTH_TOKEN`; tests inject a fake
+3. **Agent loop, bootstrap transport — streaming subprocess.** One streaming
+   request against `POST /v1/responses` by shelling out to `curl -N` via
+   `os/exec-stream`; parse SSE `data:` lines with `json/parse`; stream text
+   deltas into the transcript while retaining the final response item list for
+   tool calls. The interactive prompt uses ncurses-backed multiline input while
+   preserving line-based behavior in non-TTY tests. Gated on `OPENAI_AUTH_TOKEN`;
+   tests inject a fake
    transport (a recorded Responses body) so CI needs no network or key. Model
    the response decoder around Responses output *items* from the start, so the
    later streaming client slots in without reshaping the agent.
@@ -475,9 +481,8 @@ curses) are isolated behind working milestones.
    Verified against a scripted model-response fixture plus escape/timeout/
    redaction spec tests.
 5. **`net/http-client` (libcurl namespace)**: replace the `curl` subprocess with
-   the native client; adds streaming via the channel path in §4. Non-streaming
-   Gene API is unchanged, so the agent loop only gains an optional streaming
-   render path.
+   the native client; keep streaming via the channel path in §4 and add real
+   cancellation rather than killing a child process.
 6. **`curses` namespace + TUI**: scrollable transcript, status line, input line,
    Ctrl-C interrupt; `with-screen` cleanup; swap the line UI for the full
    screen.
@@ -486,11 +491,13 @@ curses) are isolated behind working milestones.
 
 Milestones 1–4 make the agent genuinely usable (real API, real tools, real
 safety). The new runtime surface they require is: the `os` namespace
-(`get-env`/`env?`/`exec`/`read-line`/`read-input`/`close-input` with `Os/Env`+`Os/Exec`), the `Fs/read-text`
-and `Fs/list-dir` sync helpers, and the `json` namespace — plus the §8.5 safety
-layer in Gene. Crucially, **no TLS, curses, or OS-level sandbox build-out is
-required first** — that is what makes this the sharp MVP. The prompt may use
-ncurses, but the full TUI (6) and streaming (5) are isolated behind it. Each
+(`get-env`/`env?`/`exec`/`exec-stream`/`read-line`/`read-input`/`refresh-input`/`close-input`
+with `Os/Env`+`Os/Exec`), the `Fs/read-text` and `Fs/list-dir` sync helpers,
+and the `json` namespace — plus the §8.5 safety layer in Gene. Crucially,
+**no TLS, full curses namespace, or OS-level sandbox build-out is required
+first** — that is what makes this the sharp MVP. The prompt may use ncurses and
+subprocess SSE streaming, but the full TUI (6) and native HTTP client (5) are
+isolated behind it. Each
 stage follows the repo's rule set: `nimble
 test` / `nimble spec` / `nimble perf` before commit, natives implemented in
 `src/gene/stdlib.nim` beside the existing db/http code, and every new host power

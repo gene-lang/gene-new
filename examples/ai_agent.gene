@@ -3,7 +3,7 @@
 # Gene AI coding agent — MVP (docs/ai-agent.md milestones 1-4).
 #
 #   * Talks to Codex's ChatGPT-account Responses backend, streaming.
-#   * Transport is `curl` shelled out through os/exec (bootstrap milestone).
+#   * Transport is `curl` shelled out through os/exec-stream.
 #   * Tools: read_file / write_file / list_dir / run_shell, each run under the
 #     §8.5 safety contract (workspace-root confinement, path normalization,
 #     timeout + output caps, secret redaction).
@@ -22,7 +22,7 @@
 (mod ai-agent
   @doc "a terminal coding agent over the OpenAI Responses API")
 
-(import os [get-env env? exec exec-stdio stdin-tty? read-line read-input close-input Env Exec OsError])
+(import os [get-env env? exec exec-stream exec-stdio stdin-tty? read-line read-input refresh-input close-input Env Exec OsError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower trim])
 (import std/stream [to_stream map filter into each])
@@ -231,33 +231,10 @@
       parts/1)
     nil))
 
-(fn sse-response [raw : Str]
-  (var output (cell []))
-  (var output-text (cell ""))
-  (var final (cell nil))
-  ((to_stream (split raw "\n"))
-    ~ each (fn [line]
-        (var payload (sse-data-payload line))
-        (if (= payload nil)
-          nil
-          (if (= payload void)
-            nil
-            (if (= payload "[DONE]")
-              nil
-              (try
-                (var event (parse payload))
-                (if (= event/type "response.output_item.done")
-                  (Cell/set output (append (Cell/get output) event/item))
-                  (if (= event/type "response.output_text.done")
-                    (Cell/set output-text event/text)
-                    (if (= event/type "response.completed")
-                      (Cell/set final event/response)
-                      (if (= event/type "response.failed")
-                        (Cell/set final event/response)
-                        (if (= event/type "response.incomplete")
-                          (Cell/set final event/response)
-                          nil)))))
-              catch (JsonError ^message _) nil))))))
+(fn ignore-stream-delta [text]
+  nil)
+
+(fn sse-build-response [output, output-text, final]
   (if (= (Cell/get final) nil)
     {^output (Cell/get output) ^output_text (Cell/get output-text)}
     (do
@@ -265,22 +242,72 @@
       ((Cell/get final) ~ Map/put! "output_text" (Cell/get output-text))
       (Cell/get final))))
 
-(fn live-transport [body : Str]
-  (var r (exec Exec ^cmd "curl"
-               ^args ["-sS" "-X" "POST" $"${base}/responses"
+(fn sse-handle-payload [payload : Str, output, output-text, final, render-stream]
+  (if (= payload "[DONE]")
+    nil
+    (try
+      (var event (parse payload))
+      (if (= event/type "response.output_text.delta")
+        (do
+          (render-stream (redact event/delta))
+          (Cell/set output-text $"${(Cell/get output-text)}${event/delta}"))
+        (if (= event/type "response.output_item.done")
+          (Cell/set output (append (Cell/get output) event/item))
+          (if (= event/type "response.output_text.done")
+            (Cell/set output-text event/text)
+            (if (= event/type "response.completed")
+              (Cell/set final event/response)
+              (if (= event/type "response.failed")
+                (Cell/set final event/response)
+                (if (= event/type "response.incomplete")
+                  (Cell/set final event/response)
+                  nil))))))
+    catch (JsonError ^message _) nil)))
+
+(fn sse-handle-line [line : Str, output, output-text, final, render-stream]
+  (var payload (sse-data-payload line))
+  (if (= payload nil)
+    nil
+    (if (= payload void)
+      nil
+      (sse-handle-payload payload output output-text final render-stream))))
+
+(fn sse-response [raw : Str]
+  (var output (cell []))
+  (var output-text (cell ""))
+  (var final (cell nil))
+  ((to_stream (split raw "\n"))
+    ~ each (fn [line]
+        (sse-handle-line line output output-text final ignore-stream-delta)))
+  (sse-build-response output output-text final))
+
+(fn live-transport [body : Str, render-stream]
+  (var output (cell []))
+  (var output-text (cell ""))
+  (var final (cell nil))
+  (var saw-sse (cell false))
+  (var r (exec-stream Exec ^cmd "curl"
+               ^args ["-sS" "-N" "-X" "POST" $"${base}/responses"
                       "-H" $"Authorization: Bearer ${auth-token}"
                       "-H" "Content-Type: application/json"
                       "-H" "Accept: text/event-stream"
                       "-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
                       "-H" "originator: codex_cli_rs"
                       "-d" body]
-               ^timeout-ms 60000 ^max-bytes 4000000))
+               ^timeout-ms 60000 ^max-bytes 4000000
+               ^stdout-line (fn [line]
+                 (if (starts_with? line "event:")
+                   (Cell/set saw-sse true)
+                   (if (starts_with? line "data:")
+                     (Cell/set saw-sse true)
+                     nil))
+                 (sse-handle-line line output output-text final render-stream))))
   (if (not (= r/status 0))
     {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
     (do
       (var resp
-        (if (starts_with? r/stdout "event:")
-          (sse-response r/stdout)
+        (if (Cell/get saw-sse)
+          (sse-build-response output output-text final)
           (try
             (parse r/stdout)
           catch (JsonError ^message m)
@@ -295,7 +322,7 @@
             resp)
           {^agent_error (redact (api-error-text resp))})))))
 
-(fn call-model [transport, input-items]
+(fn call-model [transport, input-items, render-stream]
   (var body (stringify {^model model
                         ^store false
                         ^stream true
@@ -303,15 +330,19 @@
                         ^tools tool-schemas
                         ^tool_choice "auto"
                         ^parallel_tool_calls true}))
-  (transport body))
+  (transport body render-stream))
 
 (var max-tool-turns 12)
 
 # One turn: call the model; if it asked for tools, run them and recurse with the
 # outputs appended, else render the final text. `budget` bounds tool rounds so a
 # model that never stops calling tools cannot loop forever.
-(fn run-turn [transport, input-items, render, budget]
-  (var resp (call-model transport input-items))
+(fn run-turn [transport, input-items, render, render-stream, budget]
+  (var streamed (cell false))
+  (var resp (call-model transport input-items
+              (fn [text]
+                (Cell/set streamed true)
+                (render-stream text))))
   (if (not (= resp/agent_error void))
     (do
       (render resp/agent_error)
@@ -320,7 +351,9 @@
       (var calls (response-calls resp))
       (if (empty? calls)
         (do
-          (render (redact (response-text resp)))
+          (if (Cell/get streamed)
+            (render "")
+            (render (redact (response-text resp))))
           input-items)
         (if (<= budget 0)
           (do
@@ -333,6 +366,7 @@
             (run-turn transport
                       ((to_stream outputs) ~ into (append-all input-items (response-output-items resp)))
                       render
+                      render-stream
                       (- budget 1))))))))
 
 (fn append-all [xs, ys]
@@ -348,7 +382,7 @@
 
 (fn demo-transport-for []
   (var calls (cell 0))
-  (fn [body]
+  (fn [body, render-stream]
     (Cell/set calls (+ (Cell/get calls) 1))
     (if (= (Cell/get calls) 1)
       {^output [{^type "function_call" ^name "list_dir"
@@ -368,6 +402,7 @@
               (user-item "what's in this directory?")])
   (run-turn (demo-transport-for) items
     (fn [text] (println $"agent> ${text}"))
+    ignore-stream-delta
     max-tool-turns)
   (println "Demo complete. Set OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN to talk to Codex."))
 
@@ -382,6 +417,8 @@
 (fn append-transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
+(var input-status "Enter sends | Paste/Shift+Enter keep newlines | /sh shell | /repl Gene REPL | /quit exit")
+
 (fn close-user-input []
   (if (stdin-tty?)
     (close-input)
@@ -392,15 +429,59 @@
     (read-input ^prompt "" ^multiline true
                 ^persistent true
                 ^output (Cell/get transcript)
-                ^status "Enter sends | Paste/Shift+Enter keep newlines | /sh shell | /repl Gene REPL | /quit exit")
+                ^status input-status)
     (do
       (print "you> ")
       (read-line))))
 
-(fn render-agent-text [transcript text]
+(fn refresh-user-input [transcript]
   (if (stdin-tty?)
-    (append-transcript transcript $"agent> ${text}\n")
-    (println $"agent> ${text}")))
+    (refresh-input ^prompt "" ^output (Cell/get transcript) ^status input-status)
+    nil))
+
+(fn render-agent-delta [transcript streaming text]
+  (if (= text "")
+    nil
+    (if (stdin-tty?)
+      (do
+        (if (Cell/get streaming)
+          nil
+          (do
+            (append-transcript transcript "agent> ")
+            (Cell/set streaming true)))
+        (append-transcript transcript text)
+        (refresh-user-input transcript))
+      (do
+        (if (Cell/get streaming)
+          nil
+          (do
+            (print "agent> ")
+            (Cell/set streaming true)))
+        (print text)))))
+
+(fn finish-agent-stream [transcript streaming]
+  (if (Cell/get streaming)
+    (do
+      (if (stdin-tty?)
+        (do
+          (append-transcript transcript "\n")
+          (refresh-user-input transcript))
+        (println ""))
+      (Cell/set streaming false))
+    nil))
+
+(fn render-agent-text [transcript streaming text]
+  (finish-agent-stream transcript streaming)
+  (if (stdin-tty?)
+    (do
+      (if (= text "")
+        nil
+        (do
+          (append-transcript transcript $"agent> ${text}\n")
+          (refresh-user-input transcript))))
+    (if (= text "")
+      nil
+      (println $"agent> ${text}"))))
 
 (fn run-shell-session []
   (close-user-input)
@@ -469,11 +550,15 @@
               nil
               (do
                 (append-transcript transcript $"──────\n${line}\n")
+                (refresh-user-input transcript)
+                (var streaming (cell false))
                 (Cell/set items
                   (run-turn live-transport
                             (append (Cell/get items) (user-item line))
                             (fn [text]
-                              (render-agent-text transcript text))
+                              (render-agent-text transcript streaming text))
+                            (fn [text]
+                              (render-agent-delta transcript streaming text))
                             max-tool-turns))))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
