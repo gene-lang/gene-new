@@ -1,6 +1,6 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
-import std/[strutils, tables]
+import std/[sets, strutils, tables]
 import ./[equality, gir, reader, types]
 
 type
@@ -28,6 +28,13 @@ type
     hasMacros: bool
     macroExpansionDepth: int
     allowAmbientImports: bool
+    # Cross-module macros (design §11/§15): the module loader pre-loads each
+    # top-level `from "path"` dependency and hands us its macro exports keyed
+    # by the raw path string as written in the source. Selections that name a
+    # macro are spliced into `macros` at compile time and recorded here so
+    # they are not re-exported and not looked up as runtime bindings.
+    importedMacroSets: Table[string, Table[string, MacroDef]]
+    importedMacroNames: HashSet[string]
 
   ParamSpecs = object
     positional: seq[string]
@@ -54,7 +61,10 @@ type
     pattern: Value
     defaultValue: MacroDefault
 
-  MacroDef = object
+  ## Exported so the module loader can carry a module's macro definitions to
+  ## the compilers of importing modules (design §11 + §15: macros are module
+  ## exports). The fields stay private — embedders only shuttle the values.
+  MacroDef* = object
     params: seq[MacroParam]
     named: seq[MacroNamedParam]
     rest: string
@@ -88,6 +98,12 @@ proc enableLocalSlots(c: var Compiler) =
   c.localNames = @[]
 
 proc reserveLocal(c: var Compiler, name: string): int =
+  # One name, one meaning: a binding may not reuse a visible macro's name —
+  # head-position dispatch would still pick the macro, so the binding could
+  # never mean the same thing in both positions (design §11).
+  if c.hasMacros and c.macros.hasKey(name):
+    raise newException(GeneError,
+      "binding '" & name & "' conflicts with a macro of the same name")
   if not c.useLocalSlots:
     return -1
   if c.localSlots.hasKey(name):
@@ -255,6 +271,11 @@ proc lexicalCallSlot0(c: Compiler, name: string): tuple[op: OpCode, depth: int, 
   (opCall, -1, -1)
 
 proc emitLoadBinding(c: var Compiler, name: string) =
+  # One name, one meaning: a macro name may not be used in value position
+  # (design §11). Macros are compile-time rewriters, not runtime values.
+  if c.hasMacros and c.macros.hasKey(name):
+    raise newException(GeneError,
+      "macro '" & name & "' cannot be used as a value; call it in head position")
   let slot = c.localSlot(name)
   if slot >= 0:
     if c.fastLocalLoads.hasKey(name) and c.fastLocalLoads[name] == slot:
@@ -343,7 +364,9 @@ proc childCompiler(c: Compiler): Compiler =
            ffiLibraryNames: c.ffiLibraryNames,
            macros: c.macros, hasMacros: c.hasMacros,
            macroExpansionDepth: c.macroExpansionDepth,
-           allowAmbientImports: c.allowAmbientImports)
+           allowAmbientImports: c.allowAmbientImports,
+           importedMacroSets: c.importedMacroSets,
+           importedMacroNames: c.importedMacroNames)
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   inc c.gensym
@@ -1654,6 +1677,12 @@ proc compileMacro(c: var Compiler, node: Value) =
   let sig = c.macroParamDef(body[1])
   if c.hasMacros and c.macros.hasKey(body[0].symVal):
     raise newException(GeneError, "duplicate macro: " & body[0].symVal)
+  # One name, one meaning (design §11): a macro may not reuse the name of a
+  # visible binding — call sites would silently switch from the function to
+  # the macro while value positions kept the old binding.
+  if c.localSlot(body[0].symVal) >= 0 or c.parentSlot(body[0].symVal).slot >= 0:
+    raise newException(GeneError,
+      "macro '" & body[0].symVal & "' conflicts with a binding of the same name")
   if not c.hasMacros:
     c.macros = initTable[string, MacroDef]()
   var macroBody: seq[Value]
@@ -2602,6 +2631,28 @@ proc compileImport(c: var Compiler, node: Value) =
       spec.selections = importSelections(body[1])
   if spec.alias.len == 0 and spec.selections.len == 0:
     raise newException(GeneError, "import needs `^as` or a selection list")
+  # Cross-module macros: selections that name a macro exported by the target
+  # module become compile-time definitions here and are stripped from the
+  # runtime spec (macros are not runtime namespace bindings). The opImport
+  # still runs so the module executes and its impls become visible.
+  if spec.fromModule and c.importedMacroSets.hasKey(spec.modulePath):
+    let exported = c.importedMacroSets[spec.modulePath]
+    var runtimeSelections: seq[ImportSelection]
+    for sel in spec.selections:
+      if exported.hasKey(sel.name):
+        if c.hasMacros and c.macros.hasKey(sel.local):
+          raise newException(GeneError, "duplicate macro: " & sel.local)
+        if c.localSlot(sel.local) >= 0 or c.parentSlot(sel.local).slot >= 0:
+          raise newException(GeneError,
+            "macro '" & sel.local & "' conflicts with a binding of the same name")
+        if not c.hasMacros:
+          c.macros = initTable[string, MacroDef]()
+          c.hasMacros = true
+        c.macros[sel.local] = exported[sel.name]
+        c.importedMacroNames.incl sel.local
+      else:
+        runtimeSelections.add sel
+    spec.selections = runtimeSelections
   if c.useLocalSlots:
     if spec.alias.len > 0:
       discard c.reserveLocal(spec.alias)
@@ -3722,11 +3773,8 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   else:
     c.emitConst node
 
-proc compileForms*(forms: openArray[Value],
-                   allowAmbientImports = true,
-                   useLocalSlots = true): Chunk =
-  var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports,
-                   ffiLibraryNames: initTable[string, bool]())
+proc compileFormsInto(c: var Compiler, forms: openArray[Value],
+                      useLocalSlots: bool): Chunk =
   if useLocalSlots:
     c.enableLocalSlots()
   if forms.len == 0:
@@ -3742,6 +3790,29 @@ proc compileForms*(forms: openArray[Value],
     c.chunk.mirrorSlots = true
   c.chunk.rewriteSelfRecursiveCalls()
   c.chunk
+
+proc compileForms*(forms: openArray[Value],
+                   allowAmbientImports = true,
+                   useLocalSlots = true): Chunk =
+  var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports,
+                   ffiLibraryNames: initTable[string, bool]())
+  compileFormsInto(c, forms, useLocalSlots)
+
+proc compileFormsWithMacros*(forms: openArray[Value],
+    importedMacros: Table[string, Table[string, MacroDef]]):
+    tuple[chunk: Chunk, macroExports: Table[string, MacroDef]] =
+  ## Module-loader entry point (design §11/§15): compile a source unit with the
+  ## macro exports of its `from "path"` dependencies available (keyed by the
+  ## raw path string), and return this unit's own macro definitions — imported
+  ## macros are usable but not re-exported.
+  var c = Compiler(chunk: newChunk(), allowAmbientImports: true,
+                   ffiLibraryNames: initTable[string, bool](),
+                   importedMacroSets: importedMacros)
+  result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
+  if c.hasMacros:
+    for name, def in c.macros:
+      if name notin c.importedMacroNames:
+        result.macroExports[name] = def
 
 proc compileForm*(form: Value): Chunk =
   let forms = @[form]

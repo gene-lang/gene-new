@@ -196,7 +196,7 @@ x...         # spread/gather
 x : T        # annotation
 ^due? T      # optional prop schema
 _            # wildcard / ignore
-name!        # macro naming convention
+name!        # "visible rewriting": macros (§11) and in-place mutation ops (§12)
 (a; b; c)    # pipe: pure reader head-folding
 (x ~ f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
@@ -1177,7 +1177,9 @@ an extension of this section in `docs/core.md`.
 
 ## 11. Macros, templates, and compile-time code
 
-Macros are compile-time functions from syntax nodes to syntax nodes. The `!` suffix marks visible rewriting.
+Macros are compile-time functions from syntax nodes to syntax nodes. The `!` suffix marks visible rewriting; it is a naming convention, not an enforced rule — `(macro twice [x] ...)` is legal, but stdlib and examples should keep the `!`.
+
+A name means the same thing in head position and value position. Macro names therefore share the single name space with bindings: defining or importing a macro whose name matches a visible binding is an error, binding (including function parameters) a name that matches a visible macro is an error, and using a macro name in value position is an error ("call it in head position") — macros are compile-time rewriters, not runtime values. This is stricter than the special-form rule (a value named `if` may exist); macros reserve their name outright within their visibility region.
 
 ```gene
 (macro when! [cond, body...]
@@ -1185,6 +1187,14 @@ Macros are compile-time functions from syntax nodes to syntax nodes. The `!` suf
      (then %body...)
      (else nil)))
 ```
+
+Macros are module exports like any other binding, selected through `from "path"` import lists and honoring selection aliases:
+
+```gene
+(import [when! : unless-not!] from "./control")
+```
+
+Because expansion happens while the importer compiles, a top-level `from "path"` import pre-loads its module before the importing module's own top level runs. Imported macros are usable but are not re-exported by the importing module; importing a macro whose local name collides with a visible macro or binding is an error (single-name-space rule above). Namespace-path imports (`import std/stream [...]`) do not carry macros, and imports inside nested scopes resolve at runtime only, so macros must be imported at the top level.
 
 Macro call arguments are syntax nodes. Macro parameters may destructure those syntax nodes with patterns, but a macro definition does not mandate which arguments are syntax and which are values. If a macro needs a compile-time value, the macro body explicitly evaluates or resolves the received syntax in a compile-time environment. `%` at a macro call site is not a special macro-argument convention; `%` remains the normal unquote/escape operator inside template-like contexts.
 

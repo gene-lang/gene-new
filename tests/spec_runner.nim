@@ -5,7 +5,7 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[os, sequtils, strutils, unittest]
+import std/[os, sequtils, strutils, tables, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
@@ -1915,6 +1915,91 @@ suite "spec — modules from design":
       discard run(compileSource("(ns m (var x 1) (var x 2))"),
                   newGlobalScope())
     check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
+
+suite "spec — macros across modules (design §11/§15)":
+  # Macros are compile-time definitions, so `from "path"` imports pre-load the
+  # dependency and splice its macro exports into the importer's compiler.
+  proc macroModuleDir(): string =
+    result = getTempDir() / "gene_spec_macro_modules"
+    removeDir(result)
+    createDir(result)
+    writeFile(result / "mlib.gene",
+      "(mod mlib)\n" &
+      "(macro triple! [x] `(* 3 %x))\n" &
+      "(fn use_it [] (triple! 5))\n")
+
+  proc moduleVar(m: Value, name: string): string =
+    m.moduleRootNamespace.nsScope.vars[name].print()
+
+  test "module macros import alongside values and expand at compile time":
+    let dir = macroModuleDir()
+    writeFile(dir / "muse.gene",
+      "(import [triple! use_it] from \"./mlib\")\n" &
+      "(var a (triple! 7))\n" &
+      "(var b (use_it))\n")
+    let app = newApplication(dir)
+    let m = app.loadFileModule(dir / "muse.gene")
+    check moduleVar(m, "a") == "21"
+    check moduleVar(m, "b") == "15"
+
+  test "macro-only imports and selection aliases work":
+    let dir = macroModuleDir()
+    writeFile(dir / "muse.gene",
+      "(import [triple! : t3!] from \"./mlib\")\n" &
+      "(var a (t3! 4))\n")
+    let app = newApplication(dir)
+    check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "12"
+
+  test "imported macros are usable but not re-exported":
+    let dir = macroModuleDir()
+    writeFile(dir / "mid.gene",
+      "(mod mid)\n" &
+      "(import [triple!] from \"./mlib\")\n" &
+      "(fn nine_x [x] (triple! (triple! x)))\n")
+    writeFile(dir / "muse.gene",
+      "(import [nine_x] from \"./mid\")\n" &
+      "(var a (nine_x 2))\n")
+    let app = newApplication(dir)
+    check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "18"
+    writeFile(dir / "reexport.gene",
+      "(import [triple!] from \"./mid\")\n")
+    let app2 = newApplication(dir)
+    expect GeneError:
+      discard app2.loadFileModule(dir / "reexport.gene")
+
+  test "importing a macro over a local macro name is a duplicate":
+    let dir = macroModuleDir()
+    writeFile(dir / "muse.gene",
+      "(import [triple!] from \"./mlib\")\n" &
+      "(macro triple! [x] `(+ %x %x %x))\n")
+    let app = newApplication(dir)
+    expect GeneError:
+      discard app.loadFileModule(dir / "muse.gene")
+
+  test "one name means one thing in head and value positions":
+    # fn then macro, macro then fn, macro-as-value, param over macro: all
+    # rejected so a name can never dispatch differently by position.
+    expect GeneError:
+      discard compileSource("(fn f [x] x) (macro f [x] `%x)")
+    expect GeneError:
+      discard compileSource("(macro f [x] `%x) (fn f [x] x)")
+    expect GeneError:
+      discard compileSource("(macro f [x] `%x) (var g f)")
+    expect GeneError:
+      discard compileSource("(macro f [x] `%x) (fn g [f] f)")
+
+  test "importing a macro over a value binding is rejected both ways":
+    let dir = macroModuleDir()
+    writeFile(dir / "clash1.gene",
+      "(fn triple! [x] x)\n" &
+      "(import [triple!] from \"./mlib\")\n")
+    expect GeneError:
+      discard newApplication(dir).loadFileModule(dir / "clash1.gene")
+    writeFile(dir / "clash2.gene",
+      "(import [triple!] from \"./mlib\")\n" &
+      "(var triple! 5)\n")
+    expect GeneError:
+      discard newApplication(dir).loadFileModule(dir / "clash2.gene")
 
 suite "spec — stdlib namespaces from stdlib plan":
   test "std/stream, std/node, and std/parse resolve as namespace imports":

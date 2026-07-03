@@ -213,6 +213,10 @@ type
     nativeGe: Value
     moduleCache: Table[string, Value]
     moduleLoading: HashSet[string]
+    # Macro exports per loaded module (abs path -> name -> def). Filled when a
+    # module compiles; consumed by importing modules' compilers so `(import
+    # [m!] from "path")` expands at the importer's compile time (design §11).
+    moduleMacros: Table[string, Table[string, MacroDef]]
     currentModuleDir: string
     packageRoot: string
 
@@ -15523,9 +15527,30 @@ proc call*(callee: Value, args: seq[Value], namedNames: seq[string],
   applyCall(callee, args, NamedArgs(names: namedNames, values: namedValues),
             dispatchScope, site)
 
+proc importFromPath(form: Value): string =
+  ## The raw `from "path"` string of a top-level import form, or "" when the
+  ## form is not a from-import.
+  if form.kind != vkNode or form.head.kind != vkSymbol or
+      form.head.symVal != "import":
+    return ""
+  let body = form.body
+  for i, e in body:
+    if e.kind == vkSymbol and e.symVal == "from":
+      if i + 1 < body.len and body[i + 1].kind == vkString:
+        return body[i + 1].strVal
+      return ""
+  ""
+
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Load, execute, and cache a module; return its first-class Module value.
   ## Modules run at most once (cache) and import cycles are rejected (loading set).
+  ##
+  ## Macros cross modules at compile time, so top-level `from "path"` imports
+  ## are pre-loaded before this module compiles: each dependency's macro
+  ## exports are handed to the compiler keyed by the raw path string, and this
+  ## module's own macro definitions are recorded for its importers (design
+  ## §11/§15). A consequence is that a dependency's top level runs before any
+  ## of this module's code, even code textually above the import.
   if app.moduleCache.hasKey(absPath):
     return app.moduleCache[absPath]
   if absPath in app.moduleLoading:
@@ -15539,7 +15564,20 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   let savedDir = app.currentModuleDir
   app.currentModuleDir = parentDir(absPath)
   try:
-    discard run(compileSource(src), modScope)
+    let forms = readAll(src)
+    var importedMacros = initTable[string, Table[string, MacroDef]]()
+    for form in forms:
+      let raw = importFromPath(form)
+      if raw.len == 0 or importedMacros.hasKey(raw):
+        continue
+      let depPath = app.resolveModulePath(raw)
+      discard loadModuleValue(app, depPath)
+      importedMacros[raw] =
+        app.moduleMacros.getOrDefault(depPath,
+                                      initTable[string, MacroDef]())
+    let compiled = compileFormsWithMacros(forms, importedMacros)
+    app.moduleMacros[absPath] = compiled.macroExports
+    discard run(compiled.chunk, modScope)
   finally:
     app.currentModuleDir = savedDir
     app.moduleLoading.excl absPath
