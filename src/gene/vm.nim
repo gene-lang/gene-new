@@ -8194,6 +8194,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack.setLen(top)
           if not cond.isTruthy:
             ip = inst[].intArg
+        of opJumpIfFalseOrPop:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in conditional jump")
+          if stack[stack.len - 1].isTruthy:
+            stack.setLen(stack.len - 1)
+          else:
+            ip = inst[].intArg
+        of opJumpIfTrueOrPop:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in conditional jump")
+          if stack[stack.len - 1].isTruthy:
+            ip = inst[].intArg
+          else:
+            stack.setLen(stack.len - 1)
+        of opNot:
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in not")
+          let top = stack.len - 1
+          stack[top] = if stack[top].isTruthy: FALSE else: TRUE
         of opJump:
           ip = inst[].intArg
         of opReturn:

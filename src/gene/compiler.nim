@@ -2107,6 +2107,29 @@ proc compileIf(c: var Compiler, node: Value) =
     c.emitConst NIL
   c.patchJump(endJump)
 
+# && and || evaluate operands left to right, stop at the first falsy (&&) or
+# truthy (||) operand, and yield the last operand evaluated — not a coerced
+# Bool — so `(|| maybe-void "default")` works as a default-value form.
+proc compileShortCircuit(c: var Compiler, node: Value, op: OpCode,
+                         emptyValue: Value) =
+  let body = node.body
+  if body.len == 0:
+    c.emitConst emptyValue
+    return
+  var jumps: seq[int] = @[]
+  for i in 0 ..< body.len:
+    compileExpr(c, body[i])
+    if i < body.len - 1:
+      jumps.add c.emitJump(op)
+  for at in jumps:
+    c.patchJump(at)
+
+proc compileNot(c: var Compiler, node: Value) =
+  if node.body.len != 1:
+    raise newException(GeneError, "! expects exactly one argument")
+  compileExpr(c, node.body[0])
+  discard c.emit(opNot)
+
 proc compileVar(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
@@ -3662,6 +3685,15 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "if":
       compileIf(c, node)
+      return
+    of "&&":
+      compileShortCircuit(c, node, opJumpIfFalseOrPop, TRUE)
+      return
+    of "||":
+      compileShortCircuit(c, node, opJumpIfTrueOrPop, NIL)
+      return
+    of "!":
+      compileNot(c, node)
       return
     of "var":
       compileVar(c, node)

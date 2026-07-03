@@ -95,6 +95,9 @@ type
     opPanic           # pop a value and raise it through GenePanic
     opYield           # suspend a generator and expose the stack top as item
     opJumpIfFalse
+    opJumpIfFalseOrPop # falsy top: jump keeping the value; truthy: pop it (&&)
+    opJumpIfTrueOrPop  # truthy top: jump keeping the value; falsy: pop it (||)
+    opNot              # replace the top with the Bool inverse of its truthiness
     opJump
     opReturn
     opReturnBareInt
@@ -629,10 +632,10 @@ proc formatInstruction(inst: Instruction): string =
       result.add " sinks=" & formatNames(inst.names)
   of opFail, opPanic:
     discard
-  of opJumpIfFalse, opJump:
+  of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJump:
     result.add " target=" & $inst.intArg
-  of opNoop, opPop, opMakeIterator, opIteratorHasNext, opIteratorNext, opAwait,
-     opYield, opReturn, opReturnBareInt:
+  of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
+     opAwait, opYield, opReturn, opReturnBareInt:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =

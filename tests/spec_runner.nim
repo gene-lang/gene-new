@@ -34,8 +34,8 @@ suite "spec — reader surface from design":
     check_read("(fn f [^server : Http/Server] nil)",
                "(fn f [^ server : Http/Server] nil)")
     check_read("(~ f a)", "(~ f a)")
-    check_read("(x; parse; (or _ default))", "(or ((x) parse) default)")
-    check_read("(x ~ parse; (or _ default))", "(or (x ~ parse) default)")
+    check_read("(x; parse; (|| _ default))", "(|| ((x) parse) default)")
+    check_read("(x ~ parse; (|| _ default))", "(|| (x ~ parse) default)")
 
   test "template unquote supports interpolation and dynamic paths":
     check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
@@ -868,6 +868,26 @@ suite "spec — static effects from design":
       discard compileSource("(protocol Run (message run [self])) " &
                             "(impl Run Job " &
                             "  (message run ^effects [fs] [self] 1))")
+
+suite "spec — short-circuit operators from design":
+  test "&& and || yield the last operand evaluated":
+    check_eval("[(&& 1 2) (&& nil 2) (&& false 2) (&& 1 2 nil 4) (&&)]",
+               "[2 nil false nil true]")
+    check_eval("[(|| nil \"d\") (|| void \"d\") (|| \"a\" \"b\") (||)]",
+               "[\"d\" \"d\" \"a\" nil]")
+
+  test "&& and || stop evaluating at the deciding operand":
+    check_eval("(var n 0) (&& false (set n 1)) (|| true (set n 2)) n", "0")
+    check_eval("(|| nil false 3 (panic \"not reached\"))", "3")
+    check_eval("(&& 1 nil (panic \"not reached\"))", "nil")
+
+  test "! is unary truthiness negation over false, nil, void":
+    check_eval("[(! nil) (! void) (! false) (! 1) (! \"\")]",
+               "[true true true false false]")
+    expect GeneError:
+      discard compileSource("(! 1 2)")
+    expect GeneError:
+      discard compileSource("(!)")
 
 suite "spec — checked errors from design":
   test "Never contributes no errors and rows deduplicate":

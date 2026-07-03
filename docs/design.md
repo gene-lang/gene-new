@@ -425,8 +425,8 @@ The first segment is preserved as read. Pipe does not insert the previous value 
 A segment containing `_` is a slot form:
 
 ```gene
-(x; parse; (or _ default))
-# => (or ((x) parse) default)
+(x; parse; (|| _ default))
+# => (|| ((x) parse) default)
 ```
 
 ---
@@ -1040,6 +1040,19 @@ Compact expression form:
 ```gene
 (if cond true-expr false-expr)
 ```
+
+Short-circuit boolean operators:
+
+```gene
+(&& a b c)   # left to right; stop at the first falsy operand
+(|| a b c)   # left to right; stop at the first truthy operand
+(! x)        # Bool inverse of x's truthiness
+```
+
+`&&` and `||` yield the last operand evaluated — not a coerced `Bool` — so
+`||` doubles as a default-value form over falsy `void`/`nil` results:
+`(|| maybe-missing "default")`. With no operands `(&&)` is `true` and `(||)`
+is `nil`. `!` takes exactly one operand and always yields a `Bool`.
 
 Recoverable errors are typed nodes whose type implements the marker protocol `Error`:
 
