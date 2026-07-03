@@ -4,13 +4,13 @@
 #
 #   * Talks to Codex's ChatGPT-account Responses backend, streaming.
 #   * Transport is `curl` shelled out through os/exec-stream.
-#   * Tools: read_file / write_file / list_dir / run_shell, each run under the
-#     §8.5 safety contract (workspace-root confinement, path normalization,
-#     timeout + output caps, secret redaction).
+#   * Tools: read_file / write_file / edit_file / list_dir / run_shell, each run
+#     under the §8.5 safety contract (workspace-root confinement, path
+#     normalization, timeout + output caps, secret redaction).
 #   * Ncurses-backed prompt on TTY; paste and Shift+Enter/Alt+Enter keep newlines.
 #
 # Run live:   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
-# Auto-approve write/shell tools: GENE_AGENT_YOLO=1
+# Auto-approve tools: GENE_AGENT_APPROVE_ALL=1 (or legacy GENE_AGENT_YOLO=1)
 # Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
 #             tool-call round trip — needs no network)
@@ -40,6 +40,7 @@
 (var model   (get-env Env "OPENAI_MODEL" "gpt-5.4-mini"))
 (var workspace-root ".")
 (var yolo (get-env Env "GENE_AGENT_YOLO" "0"))
+(var approve-all (get-env Env "GENE_AGENT_APPROVE_ALL" yolo))
 
 # -----------------------------------------------------------------------------
 # §8.5 safety contract.
@@ -65,16 +66,20 @@
       p)))
 
 (fn denied-command? [cmd : Str]
-  (if (contains? cmd "rm -rf")
-    true
-    (if (contains? cmd "curl ")
-      true
-      (if (contains? cmd "wget ")
-        true
-        (contains? cmd "nc ")))))
+  (|| (contains? cmd "rm -rf")
+      (contains? cmd "curl ")
+      (contains? cmd "wget ")
+      (contains? cmd "nc ")))
+
+(fn flag-enabled? [value : Str]
+  (var v (lower (trim value)))
+  (|| (= v "1")
+      (= v "true")
+      (= v "yes")
+      (= v "on")))
 
 (fn approve? [tool : Str, detail : Str]
-  (if (= yolo "1")
+  (if (flag-enabled? approve-all)
     true
     (do
       (close-user-input)
@@ -84,7 +89,7 @@
         false
         (do
           (set answer (lower (trim answer)))
-          (if (= answer "y") true (= answer "yes")))))))
+          (|| (= answer "y") (= answer "yes")))))))
 
 # -----------------------------------------------------------------------------
 # Tools. Each is fn(args-map) -> Str, described to the model by tool-schemas.
@@ -99,6 +104,26 @@
       (write-text WriteDir (safe-path args/path) args/content)
       $"wrote ${args/path}")
     "denied by user policy"))
+
+(fn tool-edit-file [args]
+  (var path (safe-path args/path))
+  (var old-text args/old_text)
+  (var new-text args/new_text)
+  (if (= old-text "")
+    "error: old_text must not be empty"
+    (if (approve? "edit_file" args/path)
+      (do
+        (var text (read-text ReadDir path))
+        (var parts (split text old-text))
+        (var matches (- parts/~size 1))
+        (if (= matches 0)
+          "error: old_text not found"
+          (if (> matches 1)
+            $"error: old_text matched ${matches} times; provide a larger unique old_text"
+            (do
+              (write-text WriteDir path (join parts new-text))
+              $"edited ${args/path}"))))
+      "denied by user policy")))
 
 (fn tool-list-dir [args]
   (var p (if (= args/path void) "." args/path))
@@ -127,6 +152,7 @@
 (var tools {})
 (tools ~ Map/put! "read_file" tool-read-file)
 (tools ~ Map/put! "write_file" tool-write-file)
+(tools ~ Map/put! "edit_file" tool-edit-file)
 (tools ~ Map/put! "list_dir" tool-list-dir)
 (tools ~ Map/put! "run_shell" tool-run-shell)
 (tools ~ Map/put! "grep" tool-grep)
@@ -142,6 +168,13 @@
     ^parameters {^type "object"
                  ^properties {^path {^type "string"} ^content {^type "string"}}
                  ^required ["path" "content"]}}
+   {^type "function" ^name "edit_file"
+    ^description "Replace one exact text span in a UTF-8 text file inside the workspace."
+    ^parameters {^type "object"
+                 ^properties {^path {^type "string"}
+                              ^old_text {^type "string"}
+                              ^new_text {^type "string"}}
+                 ^required ["path" "old_text" "new_text"]}}
    {^type "function" ^name "list_dir"
     ^description "List directory entries inside the workspace."
     ^parameters {^type "object" ^properties {^path {^type "string"}}}}
@@ -167,8 +200,9 @@
   {^role "system" ^content text})
 
 (var gene-system-prompt """
-You are a coding agent working in the Gene language repository. You can read and
-write files, list directories, grep, and run shell commands after user approval.
+You are a coding agent working in the Gene language repository. You can read,
+write, and edit files, list directories, grep, and run shell commands after user
+approval.
 
 When writing Gene code, use the current repo's language, not generic Lisp:
 
@@ -187,6 +221,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   use `(fn [x] body)`. The last expression is returned.
 - Basic control forms: `(do ...)`, `(if cond then else)`, `(while cond ...)`,
   `(for item items ...)`, and `match` with `(when pattern ...)` and `(else ...)`.
+  Boolean operators are `(&& a b)`, `(|| a b)`, and `(! a)`.
 - Recoverable errors use `(try body catch (ErrorType ^field name) recovery
   ensure cleanup)`. Use `fail` for recoverable errors and `panic` only for fatal
   bugs.
@@ -232,7 +267,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     catch * [])))
 
 (fn response-text [resp] : Str
-  (if (not (= resp/output_text void))
+  (if (! (= resp/output_text void))
     resp/output_text
     (do
       (var acc (cell ""))
@@ -353,13 +388,12 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                       "-d" body]
                ^timeout-ms 60000 ^max-bytes 4000000
                ^stdout-line (fn [line]
-                 (if (starts_with? line "event:")
+                 (if (|| (starts_with? line "event:")
+                         (starts_with? line "data:"))
                    (Cell/set saw-sse true)
-                   (if (starts_with? line "data:")
-                     (Cell/set saw-sse true)
-                     nil))
+                   nil)
                  (sse-handle-line line output output-text final render-stream))))
-  (if (not (= r/status 0))
+  (if (! (= r/status 0))
     {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
     (do
       (var resp
@@ -400,7 +434,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
               (fn [text]
                 (Cell/set streamed true)
                 (render-stream text))))
-  (if (not (= resp/agent_error void))
+  (if (! (= resp/agent_error void))
     (do
       (render resp/agent_error)
       input-items)
@@ -498,9 +532,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     nil))
 
 (fn exit-word? [line]
-  (if (= line "exit")
-    true
-    (= line "quit")))
+  (|| (= line "exit") (= line "quit")))
 
 (fn blank-line? [line]
   (= (trim line) ""))
