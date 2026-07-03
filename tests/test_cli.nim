@@ -83,16 +83,38 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "Entering shell" in ran.output
     check "hi" in ran.output
+    check "sh> \nyou>" in ran.output
+
+  test "ai agent ignores blank input":
+    buildGeneCli()
+    let command = "printf '   \\n/quit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execCmdEx(command)
+    check ran.exitCode == 0
+    check "agent>" notin ran.output
 
   test "ai agent slash repl exposes session binding":
     buildGeneCli()
-    let command = "printf '/repl\\nsession/model\\nquit\\n/quit\\n' | " &
+    let command = "printf '/repl\\nsession/model\\n(var x 41)\\n(+ x 1)\\nquit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent.gene"
     let ran = execCmdEx(command)
     check ran.exitCode == 0
     check "Entering Gene REPL" in ran.output
     check "gpt-5.5" in ran.output
+    check "41" in ran.output
+    check "42" in ran.output
+
+  test "ai agent repl eof returns to agent prompt":
+    buildGeneCli()
+    let command = "printf '/repl\\nsession/model\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execCmdEx(command)
+    check ran.exitCode == 0
+    check "gpt-5.5" in ran.output
+    check "gene> \nyou>" in ran.output
 
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")
@@ -149,6 +171,25 @@ suite "cli — gene repl":
 
     check code == 0
     check outText.strip.splitLines == @["2", "6"]
+    check errText == ""
+
+  test "runReplSession writes newline on interactive eof":
+    let app = initModuleContext(cliDir)
+    let scope = newGlobalScope(app)
+    var outText = ""
+    var errText = ""
+    let reader = proc(line: var string): bool =
+      false
+    let writeOut = proc(text: string) =
+      outText.add text
+    let writeErr = proc(text: string) =
+      errText.add text
+
+    let code = runReplSession(scope, reader, writeOut, writeErr,
+                              ReplOptions(interactive: true, prompt: "gene> "))
+
+    check code == 0
+    check outText == "gene> \n"
     check errText == ""
 
   test "retains declarations across input lines":

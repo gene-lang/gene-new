@@ -1,53 +1,10 @@
-## Reusable Gene REPL loop.
+## File-backed Gene REPL wrapper.
 ##
-## The CLI uses `runRepl`, while embedders can call `runReplSession` with
-## custom read/write callbacks to drive a REPL from tests, a socket, or another
-## host process.
+## The reusable session loop lives in vm.nim so the CLI and in-language
+## `repl/run` native use the same declaration-persistent evaluation behavior.
 
-import std/[terminal, strutils]
-import ./[compiler, printer, reader, types, vm]
-
-type
-  ReplReadLine* = proc(line: var string): bool {.closure.}
-  ReplWrite* = proc(text: string) {.closure.}
-  ReplOptions* = object
-    interactive*: bool
-    prompt*: string
-
-proc defaultReplOptions*(interactive = false): ReplOptions =
-  ReplOptions(interactive: interactive, prompt: "gene> ")
-
-proc runReplSession*(scope: Scope,
-                     readLine: ReplReadLine,
-                     writeOut: ReplWrite,
-                     writeErr: ReplWrite,
-                     options = defaultReplOptions()): int =
-  ## Run a REPL against an existing scope. Returns 0 for a normal exit and 1
-  ## when a panic aborts the session. Recoverable Gene/read errors are printed
-  ## and the session continues.
-  var line: string
-  if options.interactive:
-    writeOut(options.prompt)
-  while readLine(line):
-    let trimmed = line.strip()
-    if trimmed.len == 0:
-      if options.interactive:
-        writeOut(options.prompt)
-      continue
-    if trimmed in [":quit", ":exit", "quit", "exit"]:
-      return 0
-    try:
-      writeOut(run(compileEvalSource(line, useLocalSlots = false), scope).print() & "\n")
-    except ReadError as e:
-      writeErr("Read error: " & e.msg & "\n")
-    except GenePanic as e:
-      writeErr("Panic: " & e.msg & "\n")
-      return 1
-    except GeneError as e:
-      writeErr("Error: " & e.msg & "\n")
-    if options.interactive:
-      writeOut(options.prompt)
-  0
+import std/terminal
+import ./[types, vm]
 
 proc runRepl*(scope: Scope,
               input: File = stdin,

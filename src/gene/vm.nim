@@ -18,6 +18,12 @@ else:
   type GeneCPtrDiff = clonglong
 
 type
+  ReplReadLine* = proc(line: var string): bool {.closure.}
+  ReplWrite* = proc(text: string) {.closure.}
+  ReplOptions* = object
+    interactive*: bool
+    prompt*: string
+
   RunStopKind = enum
     rskReturn
     rskYield
@@ -3215,6 +3221,12 @@ proc cAbiTypeValue(name: string): Value =
 proc ffiTypeValue(name: string): Value =
   newNode(newSym("ffi-type"), body = @[newSym(name)])
 
+proc runReplSessionForEnv*(env: Value,
+                           readLine: ReplReadLine,
+                           writeOut: ReplWrite,
+                           writeErr: ReplWrite,
+                           options: ReplOptions): int
+
 include ./stdlib
 
 proc buildBuiltins(app: Application): Scope =
@@ -5612,6 +5624,14 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
     raise newException(GeneError, "node splice expects a list, map, or node")
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value
+proc defaultReplOptions*(interactive = false): ReplOptions =
+  ReplOptions(interactive: interactive, prompt: "gene> ")
+
+proc runReplSession*(scope: Scope,
+                     readLine: ReplReadLine,
+                     writeOut: ReplWrite,
+                     writeErr: ReplWrite,
+                     options = defaultReplOptions()): int
 
 proc stackFrameValue(name, kind: string): Value =
   var props = initOrderedTable[string, Value]()
@@ -8372,6 +8392,51 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
     if stopped.kind == rskCancel:
       raise newException(GeneCancel, "task was cancelled")
     stopped.value
+
+proc runReplSession*(scope: Scope,
+                     readLine: ReplReadLine,
+                     writeOut: ReplWrite,
+                     writeErr: ReplWrite,
+                     options = defaultReplOptions()): int =
+  ## Run a REPL against an existing scope. Returns 0 for a normal exit and 1
+  ## when a panic aborts the session. Recoverable Gene/read errors are printed
+  ## and the session continues.
+  var line: string
+  if options.interactive:
+    writeOut(options.prompt)
+  while readLine(line):
+    let trimmed = line.strip()
+    if trimmed.len == 0:
+      if options.interactive:
+        writeOut(options.prompt)
+      continue
+    if trimmed in [":quit", ":exit", "quit", "exit"]:
+      return 0
+    try:
+      writeOut(run(compileEvalSource(line, useLocalSlots = false), scope).print() & "\n")
+    except ReadError as e:
+      writeErr("Read error: " & e.msg & "\n")
+    except GenePanic as e:
+      writeErr("Panic: " & e.msg & "\n")
+      return 1
+    except GeneError as e:
+      writeErr("Error: " & e.msg & "\n")
+    if options.interactive:
+      writeOut(options.prompt)
+  if options.interactive:
+    writeOut("\n")
+  0
+
+proc runReplSessionForEnv*(env: Value,
+                           readLine: ReplReadLine,
+                           writeOut: ReplWrite,
+                           writeErr: ReplWrite,
+                           options: ReplOptions): int =
+  if env.kind != vkEnv:
+    raise newException(GeneError, "repl/run expects an Env")
+  let scope = newScope(materializeEvalParent(env))
+  scope.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
+  runReplSession(scope, readLine, writeOut, writeErr, options)
 
 proc runPooled(chunk: Chunk, scope: Scope,
                validateImplRequirements = true): Value =

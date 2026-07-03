@@ -703,6 +703,8 @@ proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
   else:
     FALSE
 
+proc cClearErr(f: File) {.importc: "clearerr", header: "<stdio.h>".}
+
 proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
   ## Read one line from stdin; returns nil at EOF. No capability: reading the
   ## program's own stdin is not host authority the way env/exec/files are.
@@ -711,7 +713,52 @@ proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
   try:
     newStr(stdin.readLine())
   except EOFError:
+    when defined(posix):
+      if isatty(STDIN_FILENO) != 0:
+        cClearErr(stdin)
     NIL
+
+# --- repl: reusable interactive evaluator ---
+
+proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "repl/run expects one Env argument")
+  if args[0].kind != vkEnv:
+    raise newException(GeneError, "repl/run expects an Env")
+  var prompt = "gene> "
+  var interactive =
+    when defined(posix):
+      isatty(STDIN_FILENO) != 0
+    else:
+      false
+  if call != nil:
+    for i, name in call[].namedNames:
+      let v = call[].namedValues[i]
+      case name
+      of "prompt":
+        requireStr("repl/run ^prompt", v)
+        prompt = v.strVal
+      of "interactive":
+        if v.kind != vkBool:
+          raise newException(GeneError, "repl/run ^interactive must be Bool")
+        interactive = v.boolVal
+      else:
+        raise newException(GeneError,
+          "repl/run got unexpected named argument: " & name)
+  let reader = proc(line: var string): bool =
+    result = stdin.readLine(line)
+    when defined(posix):
+      if not result and isatty(STDIN_FILENO) != 0:
+        cClearErr(stdin)
+  let writeOut = proc(text: string) =
+    stdout.write(text)
+    stdout.flushFile()
+  let writeErr = proc(text: string) =
+    stderr.write(text)
+    stderr.flushFile()
+  newInt(runReplSessionForEnv(args[0], reader, writeOut, writeErr,
+                              ReplOptions(interactive: interactive,
+                                          prompt: prompt)))
 
 # --- fs: synchronous read + directory listing (docs/ai-agent.md §6) ---
 
@@ -1751,6 +1798,12 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))
+
+  # repl: shared declaration-persistent REPL loop used by the CLI wrapper and
+  # interactive programs that need a scoped sub-REPL.
+  let replScope = newScope(root)
+  replScope.define("run", newNativeCallFn("repl/run", biReplRun))
+  root.define("repl", newNamespace("repl", replScope))
 
   # Extend the existing Fs namespace (built in vm.nim) with sync helpers the
   # agent file tools need.
