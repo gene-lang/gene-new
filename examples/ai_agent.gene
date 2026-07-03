@@ -77,12 +77,13 @@
   (if (= yolo "1")
     true
     (do
+      (close-user-input)
       (print $"approve ${tool}: ${(redact detail)}? [y/N] ")
       (var answer (read-line))
       (if (= answer nil)
         false
         (do
-          (set answer (lower answer))
+          (set answer (lower (trim answer)))
           (if (= answer "y") true (= answer "yes")))))))
 
 # -----------------------------------------------------------------------------
@@ -532,6 +533,7 @@
   (var transcript (cell $"Gene AI agent - model ${model}\n"))
   (var running (cell true))
   (var line nil)
+  (var streaming (cell false))
   (while (Cell/get running)
     (set line (read-user-input transcript))
     (if (= line nil)
@@ -551,7 +553,7 @@
               (do
                 (append-transcript transcript $"──────\n${line}\n")
                 (refresh-user-input transcript)
-                (var streaming (cell false))
+                (Cell/set streaming false)
                 (Cell/set items
                   (run-turn live-transport
                             (append (Cell/get items) (user-item line))

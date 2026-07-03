@@ -37,11 +37,30 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   {.emit: """
 #include <locale.h>
+#include <termios.h>
+#include <unistd.h>
+static struct termios gene_curses_orig_termios;
+static int gene_curses_termios_saved = 0;
 static int gene_curses_color_pair(short pair) { return COLOR_PAIR(pair); }
 static void gene_curses_setlocale(void) { setlocale(LC_ALL, ""); }
+static void gene_curses_save_termios(void) {
+  if (!gene_curses_termios_saved && isatty(STDIN_FILENO)) {
+    if (tcgetattr(STDIN_FILENO, &gene_curses_orig_termios) == 0) {
+      gene_curses_termios_saved = 1;
+    }
+  }
+}
+static void gene_curses_restore_termios(void) {
+  if (gene_curses_termios_saved) {
+    tcsetattr(STDIN_FILENO, TCSANOW, &gene_curses_orig_termios);
+    gene_curses_termios_saved = 0;
+  }
+}
 """.}
   proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
   proc cSetLocale() {.importc: "gene_curses_setlocale".}
+  proc cSaveTermios() {.importc: "gene_curses_save_termios".}
+  proc cRestoreTermios() {.importc: "gene_curses_restore_termios".}
 
   var stdscr {.importc: "stdscr", header: "<ncurses.h>".}: CursesWindow
   var LINES {.importc: "LINES", header: "<ncurses.h>".}: cint
@@ -965,6 +984,7 @@ proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc openCursesInput() =
     if not cursesInputActive:
+      cSaveTermios()
       cSetLocale()
       if cInitscr() == nil:
         raise newException(GeneError, "os/read-input could not initialize ncurses")
@@ -999,8 +1019,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       discard nocbreak()
       discard noraw()
       discard curs_set(1)
-      discard reset_shell_mode()
       discard cEndwin()
+      discard reset_shell_mode()
+      cRestoreTermios()
       cursesInputActive = false
       cursesColorsReady = false
       cursesPasteReady = false
