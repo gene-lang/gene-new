@@ -300,18 +300,21 @@ proc tokenize(r: var Reader) =
 
       r.advance()
       var lexeme = ""
-      var triple = false
       if r.src.continuesWith("\"\"", r.pos):
-        triple = true
         r.advance(); r.advance()
         var closed = false
         while r.pos < r.src.len:
           if r.src.continuesWith("\"\"\"", r.pos):
-            r.advance(); r.advance(); r.advance()
+            r.advanceBytes(3)
             closed = true
             break
-          lexeme.add r.nextChar()
-          r.advance()
+          let c2 = r.nextChar()
+          if c2 == '\\':
+            r.advance()
+            lexeme.add r.parseEscapeRune("triple-quoted string literal").toUTF8()
+          else:
+            lexeme.add c2
+            r.advance()
         if not closed:
           r.raiseReadIncomplete("unterminated triple-quoted string literal")
       else:

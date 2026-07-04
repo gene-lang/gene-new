@@ -23,6 +23,9 @@ suite "reader — atoms and containers":
   test "string escapes":
     check_read("\"line\\n\\\"slash\\\\\"", "\"line\\n\\\"slash\\\\\"")
     check_read("\"\\u00E9\\u{1F600}\"", "\"é😀\"")
+  test "triple-quoted string":
+    check_read("\"\"\"say \"hi\" now\"\"\"", "\"say \\\"hi\\\" now\"")
+    check_read("\"\"\"hello \"Gene\\\"\"\"\"", "\"hello \\\"Gene\\\"\"")
 
 suite "reader — char literals":
   test "ASCII char":
@@ -69,6 +72,7 @@ suite "reader — sugars":
     check_read("(x @line 7)", "(x @line 7)")
   test "string interpolation":
     check_read("$\"hello ${name}\"", "($ \"hello \" name)")
+    check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
     check_read("($ \"hello \" name)", "($ \"hello \" name)")
 
 suite "reader — paths":

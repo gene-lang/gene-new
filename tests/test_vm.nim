@@ -606,6 +606,8 @@ suite "vm — strings and interpolation":
 
   test "interpolated strings execute through dollar":
     ck "(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\""
+    ck "(var name \"Ada\") $\"\"\"hello \"${name}\\\"\"\"\"",
+       "\"hello \\\"Ada\\\"\""
     ck "$\"sum = $(+ 1 2)\"", "\"sum = 3\""
 
 suite "vm — quasiquote templates":

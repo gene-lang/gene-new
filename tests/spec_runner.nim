@@ -51,9 +51,11 @@ suite "spec — reader surface from design":
 
   test "strings decode Unicode escapes":
     check_read("\"\\u00E9\\u{1F600}\"", "\"é😀\"")
+    check_read("\"\"\"say \"hi\" now\"\"\"", "\"say \\\"hi\\\" now\"")
 
   test "dollar interpolation keeps the canonical call form distinct":
     check_read("$\"hello ${name}\"", "($ \"hello \" name)")
+    check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
     check_read("($ \"hello \" name)", "($ \"hello \" name)")
 
   test "malformed syntax is rejected":

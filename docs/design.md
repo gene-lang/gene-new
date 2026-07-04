@@ -356,6 +356,14 @@ $"hello ${name}"
 $"sum = $(+ a b)"
 ```
 
+Long strings use triple quotes and may contain unescaped `"` characters. They
+can also be interpolated by prefixing the opening delimiter with `$`:
+
+```gene
+"""say "hello" """
+$"""hello "${name}\""""
+```
+
 Canonical form:
 
 ```gene
