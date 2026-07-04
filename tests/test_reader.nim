@@ -26,6 +26,14 @@ suite "reader — atoms and containers":
   test "triple-quoted string":
     check_read("\"\"\"say \"hi\" now\"\"\"", "\"say \\\"hi\\\" now\"")
     check_read("\"\"\"hello \"Gene\\\"\"\"\"", "\"hello \\\"Gene\\\"\"")
+  test "bytes":
+    check_read("0!01000001", "0x41")
+    check_read("0x4869", "0x4869")
+    check_read("0#SGk=", "0x4869")
+    check_read("0!01001000~ 01101001", "0x4869")
+    check_read("0x48~\n 69", "0x4869")
+  test "general map":
+    check_read("{{\"a\" : 1 2 : \"b\"}}", "{{\"a\" : 1 2 : \"b\"}}")
 
 suite "reader — char literals":
   test "ASCII char":

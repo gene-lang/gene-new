@@ -1991,6 +1991,16 @@ suite "types — function boundaries":
        "catch (TypeError ^expected e) e)", "\"(Map Sym Int)\""
     ck "(try (fn value [m : (Map Int Str)] m) (value {^a \"ok\"}) " &
        "catch (TypeError ^expected e) e)", "\"(Map Int Str)\""
+    ck "(fn value [m : (HashMap Str Int)] (Map/get m \"a\")) " &
+       "(value {{\"a\" : 3}})", "3"
+    ck "(fn value [m : (Map Str Int)] (Map/get m \"a\")) " &
+       "(value {{\"a\" : 3}})", "3"
+    ck "(try (fn value [m : (HashMap Str Int)] m) (value {{1 : 2}}) " &
+       "catch (TypeError ^expected e) e)", "\"(HashMap Str Int)\""
+    ck "(fn count [s : (Set Int)] (size s)) (count (Set 1 2 1))", "2"
+    ck "(try (fn count [s : (Set Int)] s) (count (Set 1 \"bad\")) " &
+       "catch (TypeError ^expected e) e)", "\"(Set Int)\""
+    ck "(fn len [b : Bytes] (size b)) (len 0x4869)", "2"
 
   test "fixed-width integer annotations range-check boundaries":
     ck "(fn f [x : SignedInt] x) [(f -1) (f 0) (f 1)]", "[-1 0 1]"

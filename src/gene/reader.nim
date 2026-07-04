@@ -1,5 +1,5 @@
 ## Lexer & core parser for Gene (design §2.2)
-import std/[strutils, unicode, tables, parseutils]
+import std/[base64, strutils, unicode, tables, parseutils]
 import ./types
 
 type
@@ -8,6 +8,7 @@ type
     tkLParen, tkRParen,      # ( )
     tkLBracket, tkRBracket,  # [ ]
     tkLBrace, tkRBrace,      # { }
+    tkHashMapStart,             # {{
     tkHashLParen,            # #(
     tkHashLBracket,          # #[
     tkHashLBrace,            # #{
@@ -15,7 +16,7 @@ type
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # ~
     tkDotDotDot,             # ...
-    tkString, tkInt, tkFloat, tkSymbol, tkChar,
+    tkString, tkBytes, tkInt, tkFloat, tkSymbol, tkChar,
     tkComma, tkColon, tkEqual, tkSemi, tkSlash, tkPercent,
     tkBacktick, tkDollar, tkUnderscore
 
@@ -97,6 +98,110 @@ proc initReader(src: string, sourceName = ""): Reader =
 
 proc isSymbolChar(c: char): bool =
   c notin {'(', ')', '[', ']', '{', '}', ' ', '\t', '\n', '\r', ',', ';', '\"', '\'', '`', '#'}
+
+proc isHexDigit(c: char): bool =
+  c in {'0'..'9', 'a'..'f', 'A'..'F'}
+
+proc isBase64Char(c: char): bool =
+  c in {'A'..'Z', 'a'..'z', '0'..'9', '+', '/', '='}
+
+proc isBytesPrefix(c: char): bool =
+  c in {'!', 'x', '#'}
+
+proc isBytesDigit(prefix, c: char): bool =
+  case prefix
+  of '!': c in {'0', '1'}
+  of 'x': isHexDigit(c)
+  of '#': isBase64Char(c)
+  else: false
+
+proc isBytesLexeme(lexeme: string): bool =
+  if lexeme.len <= 2 or lexeme[0] != '0':
+    return false
+  case lexeme[1]
+  of '!':
+    if lexeme.len == 2: return false
+    for i in 2 ..< lexeme.len:
+      if lexeme[i] notin {'0', '1'}:
+        return false
+    true
+  of 'x':
+    if lexeme.len == 2: return false
+    for i in 2 ..< lexeme.len:
+      if not isHexDigit(lexeme[i]):
+        return false
+    true
+  of '#':
+    if lexeme.len == 2: return false
+    for i in 2 ..< lexeme.len:
+      if not isBase64Char(lexeme[i]):
+        return false
+    true
+  else:
+    false
+
+proc hexValue(c: char): int
+proc nextChar(r: var Reader): char
+proc advance(r: var Reader)
+
+proc tryScanBytesLexeme(r: var Reader, lexeme: var string): bool =
+  if r.pos + 2 >= r.src.len or r.src[r.pos] != '0' or
+      not isBytesPrefix(r.src[r.pos + 1]) or
+      not isBytesDigit(r.src[r.pos + 1], r.src[r.pos + 2]):
+    return false
+  let prefix = r.src[r.pos + 1]
+  lexeme = "0"
+  lexeme.add prefix
+  r.advance()
+  r.advance()
+  while r.pos < r.src.len:
+    let c = r.nextChar()
+    if isBytesDigit(prefix, c):
+      lexeme.add c
+      r.advance()
+    elif c == '~':
+      r.advance()
+      while r.pos < r.src.len and r.nextChar() in {' ', '\t', '\r', '\n'}:
+        r.advance()
+      if r.pos >= r.src.len or not isBytesDigit(prefix, r.nextChar()):
+        r.raiseReadIncomplete("byte literal continuation requires another byte group")
+    else:
+      break
+  true
+
+proc parseBytesLiteral(r: var Reader, lexeme: string): Value =
+  case lexeme[1]
+  of '!':
+    let bitLen = lexeme.len - 2
+    if bitLen mod 8 != 0:
+      r.raiseReadError("bit byte literal must contain a multiple of 8 bits")
+    var data = newString(bitLen div 8)
+    for byteIdx in 0 ..< data.len:
+      var b = 0
+      for bitIdx in 0 ..< 8:
+        b = (b shl 1) or (if lexeme[2 + byteIdx * 8 + bitIdx] == '1': 1 else: 0)
+      data[byteIdx] = char(b)
+    newBytes(data)
+  of 'x':
+    let hexLen = lexeme.len - 2
+    if hexLen mod 2 != 0:
+      r.raiseReadError("hex byte literal must contain an even number of digits")
+    var data = newString(hexLen div 2)
+    for i in 0 ..< data.len:
+      data[i] = char((hexValue(lexeme[2 + i * 2]) shl 4) or
+                     hexValue(lexeme[3 + i * 2]))
+    newBytes(data)
+  of '#':
+    var encoded = lexeme[2 .. ^1]
+    let pad = encoded.len mod 4
+    if pad != 0:
+      encoded.add repeat("=", 4 - pad)
+    try:
+      newBytes(base64.decode(encoded))
+    except ValueError:
+      r.raiseReadError("invalid base64 byte literal")
+  else:
+    r.raiseReadError("invalid byte literal")
 
 proc nextChar(r: var Reader): char =
   if r.pos < r.src.len:
@@ -254,9 +359,16 @@ proc tokenize(r: var Reader) =
     of ')': r.advance(); r.tokens.add Token(kind: tkRParen, lexeme: ")", line: startLine, col: startCol)
     of '[': r.advance(); r.tokens.add Token(kind: tkLBracket, lexeme: "[", line: startLine, col: startCol)
     of ']': r.advance(); r.tokens.add Token(kind: tkRBracket, lexeme: "]", line: startLine, col: startCol)
-    of '{': r.advance(); r.tokens.add Token(kind: tkLBrace, lexeme: "{", line: startLine, col: startCol)
+    of '{':
+      r.advance()
+      if r.nextChar() == '{':
+        r.advance()
+        r.tokens.add Token(kind: tkHashMapStart, lexeme: "{{", line: startLine, col: startCol)
+      else:
+        r.tokens.add Token(kind: tkLBrace, lexeme: "{", line: startLine, col: startCol)
     of '}': r.advance(); r.tokens.add Token(kind: tkRBrace, lexeme: "}", line: startLine, col: startCol)
     of ',': r.advance(); r.tokens.add Token(kind: tkComma, lexeme: ",", line: startLine, col: startCol)
+    of ':': r.advance(); r.tokens.add Token(kind: tkColon, lexeme: ":", line: startLine, col: startCol)
     of ';': r.advance(); r.tokens.add Token(kind: tkSemi, lexeme: ";", line: startLine, col: startCol)
     of '~': r.advance(); r.tokens.add Token(kind: tkTilde, lexeme: "~", line: startLine, col: startCol)
     of '%': r.advance(); r.tokens.add Token(kind: tkPercent, lexeme: "%", line: startLine, col: startCol)
@@ -349,6 +461,11 @@ proc tokenize(r: var Reader) =
       let lexeme = r.parseCharLiteral()
       r.tokens.add Token(kind: tkChar, lexeme: lexeme, line: startLine, col: startCol)
     else:
+      var bytesLexeme = ""
+      if r.tryScanBytesLexeme(bytesLexeme):
+        r.tokens.add Token(kind: tkBytes, lexeme: bytesLexeme, line: startLine, col: startCol)
+        continue
+
       # Atoms: numbers, symbols
       let start = r.pos
       while r.pos < r.src.len and isSymbolChar(r.nextChar()):
@@ -359,9 +476,11 @@ proc tokenize(r: var Reader) =
         r.advance() # Should not happen with isSymbolChar
         continue
 
-      # Check if it's a number
+      # Check if it's a byte literal or number.
       var valFloat: float
-      if lexeme.isIntLexeme:
+      if isBytesLexeme(lexeme):
+        r.tokens.add Token(kind: tkBytes, lexeme: lexeme, line: startLine, col: startCol)
+      elif lexeme.isIntLexeme:
         r.tokens.add Token(kind: tkInt, lexeme: lexeme, line: startLine, col: startCol)
       elif parseutils.parseFloat(lexeme, valFloat) == lexeme.len:
         r.tokens.add Token(kind: tkFloat, lexeme: lexeme, line: startLine, col: startCol)
@@ -379,6 +498,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkRBracket: "r-bracket"
   of tkLBrace: "l-brace"
   of tkRBrace: "r-brace"
+  of tkHashMapStart: "hash-map-start"
   of tkHashLParen: "hash-l-paren"
   of tkHashLBracket: "hash-l-bracket"
   of tkHashLBrace: "hash-l-brace"
@@ -389,6 +509,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkTilde: "tilde"
   of tkDotDotDot: "dot-dot-dot"
   of tkString: "string"
+  of tkBytes: "bytes"
   of tkInt: "int"
   of tkFloat: "float"
   of tkSymbol: "symbol"
@@ -433,7 +554,7 @@ proc next(r: var Reader): Token =
 proc parseForm(r: var Reader, inList = false): Value
 
 proc hasStableSourceIdentity(v: Value): bool =
-  v.kind in {vkList, vkMap, vkNode}
+  v.kind in {vkBytes, vkList, vkMap, vkSet, vkHashMap, vkNode}
 
 proc recordSourceLoc(r: var Reader, value: Value, tok: Token) =
   if value.hasStableSourceIdentity:
@@ -517,6 +638,13 @@ proc containsPipeSlot(value: Value): bool =
     containsPipeSlot(value.listItems)
   of vkMap:
     containsPipeSlot(value.mapEntries)
+  of vkSet:
+    containsPipeSlot(value.setItems)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      if containsPipeSlot(entry.key) or containsPipeSlot(entry.val):
+        return true
+    false
   of vkNode:
     containsPipeSlot(value.head) or containsPipeSlot(value.props) or
       containsPipeSlot(value.body) or containsPipeSlot(value.meta)
@@ -543,6 +671,14 @@ proc replacePipeSlot(value, replacement: Value): Value =
     newList(replacePipeSlot(value.listItems, replacement), value.listImmutable)
   of vkMap:
     newMap(replacePipeSlot(value.mapEntries, replacement), value.mapImmutable)
+  of vkSet:
+    newSet(replacePipeSlot(value.setItems, replacement))
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      entries.add HashMapEntry(key: replacePipeSlot(entry.key, replacement),
+                               val: replacePipeSlot(entry.val, replacement))
+    newHashMap(entries)
   of vkNode:
     newNode(replacePipeSlot(value.head, replacement),
             replacePipeSlot(value.props, replacement),
@@ -675,6 +811,31 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
   discard r.next()
   result = newMap(items, immutable)
 
+proc parseHashMap(r: var Reader): Value =
+  var entries: seq[HashMapEntry]
+  while true:
+    r.skipDatumComments()
+    let k = r.peekKind()
+    if k == tkEof: break
+    if k == tkRBrace:
+      if r.tokIdx + 1 < r.tokens.len and r.tokens[r.tokIdx + 1].kind == tkRBrace:
+        break
+      r.raiseReadIncomplete("unexpected EOF: unclosed '{{'")
+    let key = r.parseForm()
+    if r.peekKind() != tkColon:
+      r.raiseReadError("general map entries require ':' between key and value")
+    discard r.next()
+    if r.peekKind() in {tkRBrace, tkEof}:
+      r.raiseReadError("general map entry requires a value")
+    let val = r.parseForm()
+    entries.add HashMapEntry(key: key, val: val)
+    if r.peekKind() == tkComma: discard r.next()
+  if r.peekKind() == tkEof:
+    r.raiseReadIncomplete("unexpected EOF: unclosed '{{'")
+  discard r.next()
+  discard r.next()
+  result = newHashMap(entries)
+
 proc read*(src: string, sourceName = ""): Value
 
 proc parseInterpolatedString(lexeme, sourceName: string,
@@ -729,6 +890,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkInt: finish newIntFromDecimal(tok.lexeme)
   of tkFloat: finish newFloat(parseFloat(tok.lexeme))
   of tkString: finish newStr(tok.lexeme)
+  of tkBytes: finish r.parseBytesLiteral(tok.lexeme)
   of tkChar: finish newChar(runeAt(tok.lexeme, 0))
   of tkSymbol:
     case tok.lexeme
@@ -746,6 +908,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkLParen: finish r.parseNode(tkRParen)
   of tkLBracket: finish r.parseList(tkRBracket)
   of tkLBrace: finish r.parseMap(tkRBrace)
+  of tkHashMapStart: finish r.parseHashMap()
   of tkHashLParen: finish r.parseNode(tkRParen, immutable = true)
   of tkHashLBracket: finish r.parseList(tkRBracket, immutable = true)
   of tkHashLBrace: finish r.parseMap(tkRBrace, immutable = true)

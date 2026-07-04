@@ -443,6 +443,16 @@ proc containsYield(value: Value): bool =
       if containsYield(item):
         return true
     false
+  of vkSet:
+    for item in value.setItems:
+      if containsYield(item):
+        return true
+    false
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      if containsYield(entry.key) or containsYield(entry.val):
+        return true
+    false
   else:
     false
 
@@ -469,6 +479,16 @@ proc containsAwait(value: Value): bool =
   of vkMap:
     for _, item in value.mapEntries:
       if containsAwait(item):
+        return true
+    false
+  of vkSet:
+    for item in value.setItems:
+      if containsAwait(item):
+        return true
+    false
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      if containsAwait(entry.key) or containsAwait(entry.val):
         return true
     false
   else:
@@ -509,6 +529,14 @@ proc patternBindsSelf(pattern: Value): bool =
   of vkMap:
     for _, value in pattern.mapEntries:
       if patternBindsSelf(value):
+        return true
+  of vkSet:
+    for value in pattern.setItems:
+      if patternBindsSelf(value):
+        return true
+  of vkHashMap:
+    for entry in pattern.hashMapEntries:
+      if patternBindsSelf(entry.key) or patternBindsSelf(entry.val):
         return true
   of vkNode:
     if pattern.isTypedPattern:
@@ -1358,6 +1386,18 @@ proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
     for key, item in value.mapEntries:
       entries[key] = expandMacroQuasi(item, env, depth, c, hygiene)
     newMap(entries, value.mapImmutable)
+  of vkSet:
+    var items: seq[Value]
+    for item in value.setItems:
+      items.add expandMacroQuasi(item, env, depth, c, hygiene)
+    newSet(items)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      entries.add HashMapEntry(
+        key: expandMacroQuasi(entry.key, env, depth, c, hygiene),
+        val: expandMacroQuasi(entry.val, env, depth, c, hygiene))
+    newHashMap(entries)
   of vkSymbol:
     hygienicSymbol(value, hygiene)
   else:
@@ -1413,8 +1453,16 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
     (true, value.kind == vkFloat)
   of "List":
     (true, value.kind == vkList)
-  of "Map", "PropMap":
+  of "Set":
+    (true, value.kind == vkSet)
+  of "Map":
+    (true, value.kind in {vkMap, vkHashMap})
+  of "PropMap":
     (true, value.kind == vkMap)
+  of "HashMap":
+    (true, value.kind == vkHashMap)
+  of "Bytes":
+    (true, value.kind == vkBytes)
   of "Gene", "Node":
     (true, value.kind == vkNode)
   of "Selector":
@@ -3071,6 +3119,12 @@ proc compileListValue(c: var Compiler, value: Value) =
   else:
     discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
 
+proc compileHashMapValue(c: var Compiler, value: Value) =
+  for entry in value.hashMapEntries:
+    compileExpr(c, entry.key)
+    compileExpr(c, entry.val)
+  discard c.emit(opMakeHashMap, value.hashMapEntries.len)
+
 proc compileCall(c: var Compiler, node: Value)
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
@@ -3983,6 +4037,8 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
       keys.add k
       compileExpr(c, value)
     discard c.emit(opMakeMap, keys.len, names = keys, flag = node.mapImmutable)
+  of vkHashMap:
+    compileHashMapValue(c, node)
   else:
     c.emitConst node
 

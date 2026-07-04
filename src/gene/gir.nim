@@ -25,6 +25,7 @@ type
     opMakeList
     opMakeListSplice
     opMakeMap
+    opMakeHashMap
     opMakeNode
     opMakeSelector
     opApplySelector
@@ -520,6 +521,8 @@ proc formatInstruction(inst: Instruction): string =
   of opMakeMap:
     result.add " count=" & $inst.intArg & " names=" & formatNames(inst.names)
     if inst.flag: result.add " immutable=true"
+  of opMakeHashMap:
+    result.add " count=" & $inst.intArg
   of opMakeNode:
     result.add " node=" & $inst.intArg
   of opMakeSelector:

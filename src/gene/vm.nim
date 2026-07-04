@@ -945,6 +945,44 @@ proc biHash(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "hash expects a hash-stable value")
   newInt(int64(hash(args[0])))
 
+proc findEqualValue(items: openArray[Value], key: Value): int =
+  for i, item in items:
+    if equal(item, key):
+      return i
+  -1
+
+proc findHashMapKey(entries: openArray[HashMapEntry], key: Value): int =
+  for i, entry in entries:
+    if equal(entry.key, key):
+      return i
+  -1
+
+proc requireHashStableKey(name: string, key: Value) =
+  if not isHashStable(key):
+    raiseTypeError(name, "HashStable", key, nil)
+
+proc buildSet(name: string, values: openArray[Value]): Value =
+  var items: seq[Value]
+  for value in values:
+    requireHashStableKey(name, value)
+    if findEqualValue(items, value) < 0:
+      items.add value
+  newSet(items)
+
+proc buildHashMap(name: string, pairs: openArray[HashMapEntry]): Value =
+  var entries: seq[HashMapEntry]
+  for entry in pairs:
+    requireHashStableKey(name, entry.key)
+    let idx = findHashMapKey(entries, entry.key)
+    if entry.val.kind == vkVoid:
+      if idx >= 0:
+        entries.delete(idx)
+    elif idx >= 0:
+      entries[idx].val = entry.val
+    else:
+      entries.add entry
+  newHashMap(entries)
+
 proc biNot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1: raise newException(GeneError, "not expects 1 argument")
   newBool(not isTruthy(args[0]))
@@ -1890,20 +1928,34 @@ proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 
 proc biToStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_stream", args)
-  if args[0].kind != vkList:
-    raise newException(GeneError, "to_stream expects a List")
+  if args[0].kind notin {vkList, vkSet}:
+    raise newException(GeneError, "to_stream expects a List or Set")
   var items: seq[Value]
-  for item in args[0].listItems:
-    items.add item
+  case args[0].kind
+  of vkList:
+    for item in args[0].listItems:
+      items.add item
+  of vkSet:
+    for item in args[0].setItems:
+      items.add item
+  else:
+    discard
   newStream(items)
 
 proc biToPairsStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_pairs_stream", args)
-  if args[0].kind != vkMap:
+  if args[0].kind notin {vkMap, vkHashMap}:
     raise newException(GeneError, "to_pairs_stream expects a Map")
   var pairs: seq[Value]
-  for key, value in args[0].mapEntries:
-    pairs.add newList(@[newSym(key), value])
+  case args[0].kind
+  of vkMap:
+    for key, value in args[0].mapEntries:
+      pairs.add newList(@[newSym(key), value])
+  of vkHashMap:
+    for entry in args[0].hashMapEntries:
+      pairs.add newList(@[entry.key, entry.val])
+  else:
+    discard
   newStream(pairs)
 
 proc biStreamHasNext(args: openArray[Value]): Value {.nimcall.} =
@@ -1982,7 +2034,7 @@ proc freezeRejectName(value: Value): string =
 
 proc freezeValue(value: Value): Value =
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol,
      vkType, vkProtocol, vkProtocolMessage:
     value
   of vkList:
@@ -1992,6 +2044,17 @@ proc freezeValue(value: Value): Value =
     newList(items, immutable = true)
   of vkMap:
     newMap(freezeEntries(value.mapEntries), immutable = true)
+  of vkSet:
+    var items = newSeq[Value](value.setItems.len)
+    for i, item in value.setItems:
+      items[i] = freezeValue(item)
+    buildSet("freeze", items)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      entries.add HashMapEntry(key: freezeValue(entry.key),
+                               val: freezeValue(entry.val))
+    buildHashMap("freeze", entries)
   of vkNode:
     var body = newSeq[Value](value.body.len)
     for i, item in value.body:
@@ -2016,6 +2079,17 @@ proc thawValue(value: Value): Value =
     newList(items, immutable = false)
   of vkMap:
     newMap(thawEntries(value.mapEntries), immutable = false)
+  of vkSet:
+    var items = newSeq[Value](value.setItems.len)
+    for i, item in value.setItems:
+      items[i] = thawValue(item)
+    buildSet("thaw", items)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      entries.add HashMapEntry(key: thawValue(entry.key),
+                               val: thawValue(entry.val))
+    buildHashMap("thaw", entries)
   of vkNode:
     var body = newSeq[Value](value.body.len)
     for i, item in value.body:
@@ -2035,6 +2109,13 @@ proc biFreezeShallow(args: openArray[Value]): Value {.nimcall.} =
     newList(copyItems(args[0].listItems), immutable = true)
   of vkMap:
     newMap(copyEntries(args[0].mapEntries), immutable = true)
+  of vkSet:
+    newSet(copyItems(args[0].setItems))
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in args[0].hashMapEntries:
+      entries.add entry
+    newHashMap(entries)
   of vkNode:
     newNode(args[0].head,
             props = copyEntries(args[0].props),
@@ -2079,10 +2160,13 @@ proc declarationKind*(value: Value): string =
   of vkInt: "Int"
   of vkFloat: "Float"
   of vkString: "Str"
+  of vkBytes: "Bytes"
   of vkChar: "Char"
   of vkSymbol: "Sym"
   of vkList: "List"
   of vkMap: "Map"
+  of vkSet: "Set"
+  of vkHashMap: "HashMap"
   of vkNode: "Node"
   of vkFunction: "Fn"
   of vkNativeFn: "NativeFn"
@@ -2533,8 +2617,12 @@ proc requireList(name: string, value: Value) =
     raise newException(GeneError, name & " expects a List")
 
 proc requireMap(name: string, value: Value) =
-  if value.kind != vkMap:
+  if value.kind notin {vkMap, vkHashMap}:
     raise newException(GeneError, name & " expects a Map")
+
+proc requirePropMap(name: string, value: Value) =
+  if value.kind != vkMap:
+    raise newException(GeneError, name & " expects a PropMap")
 
 proc requireNode(name: string, value: Value) =
   if value.kind != vkNode:
@@ -2542,13 +2630,35 @@ proc requireNode(name: string, value: Value) =
 
 proc biListSize(args: openArray[Value]): Value {.nimcall.} =
   requireOne("size", args)
-  requireList("size", args[0])
-  newInt(args[0].listItems.len)
+  case args[0].kind
+  of vkList:
+    newInt(args[0].listItems.len)
+  of vkMap:
+    newInt(args[0].mapEntries.len)
+  of vkSet:
+    newInt(args[0].setItems.len)
+  of vkHashMap:
+    newInt(args[0].hashMapEntries.len)
+  of vkBytes:
+    newInt(args[0].bytesVal.len)
+  else:
+    raise newException(GeneError, "size expects a collection")
 
 proc biListEmpty(args: openArray[Value]): Value {.nimcall.} =
   requireOne("empty?", args)
-  requireList("empty?", args[0])
-  newBool(args[0].listItems.len == 0)
+  case args[0].kind
+  of vkList:
+    newBool(args[0].listItems.len == 0)
+  of vkMap:
+    newBool(args[0].mapEntries.len == 0)
+  of vkSet:
+    newBool(args[0].setItems.len == 0)
+  of vkHashMap:
+    newBool(args[0].hashMapEntries.len == 0)
+  of vkBytes:
+    newBool(args[0].bytesVal.len == 0)
+  else:
+    raise newException(GeneError, "empty? expects a collection")
 
 proc biListFirst(args: openArray[Value]): Value {.nimcall.} =
   requireOne("first", args)
@@ -2580,10 +2690,27 @@ proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setListItem(index, stored)
   stored
 
+proc biSet(args: openArray[Value]): Value {.nimcall.} =
+  buildSet("Set", args)
+
+proc biSetHas(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Set/has expects 2 arguments, got " & $args.len)
+  if args[0].kind != vkSet:
+    raise newException(GeneError, "Set/has expects a Set")
+  requireHashStableKey("Set/has", args[1])
+  newBool(findEqualValue(args[0].setItems, args[1]) >= 0)
+
+proc biSetSize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Set/size", args)
+  if args[0].kind != vkSet:
+    raise newException(GeneError, "Set/size expects a Set")
+  newInt(args[0].setItems.len)
+
 proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "Map/put! expects 3 arguments, got " & $args.len)
-  requireMap("Map/put!", args[0])
+  requirePropMap("Map/put!", args[0])
   args[0].putMapEntry(keySegment("Map/put!", args[1]), args[2])
   args[2]
 
@@ -2591,19 +2718,37 @@ proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "Map/assoc expects 3 arguments, got " & $args.len)
   requireMap("Map/assoc", args[0])
-  var entries = copyEntries(args[0].mapEntries)
-  let key = keySegment("Map/assoc", args[1])
-  if args[2].kind == vkVoid:
-    entries.del(key)
+  case args[0].kind
+  of vkMap:
+    var entries = copyEntries(args[0].mapEntries)
+    let key = keySegment("Map/assoc", args[1])
+    if args[2].kind == vkVoid:
+      entries.del(key)
+    else:
+      entries[key] = args[2]
+    newMap(entries, args[0].mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in args[0].hashMapEntries:
+      entries.add entry
+    entries.add HashMapEntry(key: args[1], val: args[2])
+    buildHashMap("Map/assoc", entries)
   else:
-    entries[key] = args[2]
-  newMap(entries, args[0].mapImmutable)
+    raise newException(GeneError, "Map/assoc expects a Map")
 
 proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Map/get expects 2 arguments, got " & $args.len)
   requireMap("Map/get", args[0])
-  args[0].mapEntries.getOrDefault(keySegment("Map/get", args[1]), VOID)
+  case args[0].kind
+  of vkMap:
+    args[0].mapEntries.getOrDefault(keySegment("Map/get", args[1]), VOID)
+  of vkHashMap:
+    requireHashStableKey("Map/get", args[1])
+    let idx = findHashMapKey(args[0].hashMapEntries, args[1])
+    if idx >= 0: args[0].hashMapEntries[idx].val else: VOID
+  else:
+    VOID
 
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
@@ -3388,6 +3533,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define("key", newNativeFn("key", biSelectorKey))
   result.define("buffer", newNativeCallFn("buffer", biBuffer,
                                           acceptsNamed = false))
+  result.define("Set", newNativeFn("Set", biSet))
+  result.define("set-has?", newNativeFn("set-has?", biSetHas))
+  result.define("set-size", newNativeFn("set-size", biSetSize))
   result.define("size", newNativeFn("size", biListSize))
   result.define("empty?", newNativeFn("empty?", biListEmpty))
   result.define("first", newNativeFn("first", biListFirst))
@@ -3970,6 +4118,11 @@ proc forItems(coll: Value): seq[Value] =
     for it in coll.body: result.add it
   of vkMap:
     for k, v in coll.mapEntries: result.add newList(@[newSym(k), v])
+  of vkSet:
+    for it in coll.setItems: result.add it
+  of vkHashMap:
+    for entry in coll.hashMapEntries:
+      result.add newList(@[entry.key, entry.val])
   of vkString:
     for r in coll.strVal.runes:
       result.add newChar(r)
@@ -3991,6 +4144,13 @@ proc iteratorStream(coll: Value): Value =
     var pairs: seq[Value]
     for k, v in coll.mapEntries:
       pairs.add newList(@[newSym(k), v])
+    newStream(pairs)
+  of vkSet:
+    newStream(copyItems(coll.setItems))
+  of vkHashMap:
+    var pairs: seq[Value]
+    for entry in coll.hashMapEntries:
+      pairs.add newList(@[entry.key, entry.val])
     newStream(pairs)
   of vkString:
     var chars: seq[Value]
@@ -4629,12 +4789,12 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
 proc isSendableValue(value: Value, scope: Scope,
                      seen: var HashSet[uint64],
                      mode = csmSend): bool =
-  if value.kind in {vkList, vkMap, vkNode, vkFunction}:
+  if value.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction}:
     if seen.contains(value.bits):
       return true
     seen.incl value.bits
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol,
      vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
      vkType, vkProtocol, vkProtocolMessage:
     true
@@ -4673,6 +4833,18 @@ proc isSendableValue(value: Value, scope: Scope,
       return false
     for _, item in value.mapEntries:
       if not isSendableValue(item, scope, seen, mode):
+        return false
+    true
+  of vkSet:
+    for item in value.setItems:
+      if not isSendableValue(item, scope, seen, mode):
+        return false
+    true
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      if not isSendableValue(entry.key, scope, seen, mode):
+        return false
+      if not isSendableValue(entry.val, scope, seen, mode):
         return false
     true
   of vkNamespace:
@@ -6695,6 +6867,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if values[i].kind != vkVoid:
               entries[key] = values[i]
           stack.add newMap(entries, inst[].flag)
+        of opMakeHashMap:
+          var entries = newSeq[HashMapEntry](inst[].intArg)
+          if inst[].intArg > 0:
+            for i in countdown(inst[].intArg - 1, 0):
+              let val = stack.pop()
+              let key = stack.pop()
+              entries[i] = HashMapEntry(key: key, val: val)
+          stack.add buildHashMap("general map literal", entries)
         of opMakeNode:
           let proto = chunk.nodeBuilds[inst[].intArg]
           var bodyParts = newSeq[Value](proto.bodyCount)
@@ -9706,6 +9886,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkInt: newSym("Int")
   of vkFloat: newSym("Float")
   of vkString: newSym("Str")
+  of vkBytes: newSym("Bytes")
   of vkChar: newSym("Char")
   of vkSymbol: newSym("Sym")
   of vkList:
@@ -9727,6 +9908,15 @@ proc runtimeTypeExpr(value: Value): Value =
     for _, item in value.mapEntries:
       values.add item
     typeNode("Map", @[commonRuntimeTypeExpr(values)])
+  of vkSet:
+    typeNode("Set", @[commonRuntimeTypeExpr(value.setItems)])
+  of vkHashMap:
+    var keys, values: seq[Value]
+    for entry in value.hashMapEntries:
+      keys.add entry.key
+      values.add entry.val
+    typeNode("HashMap", @[commonRuntimeTypeExpr(keys),
+                          commonRuntimeTypeExpr(values)])
   of vkNode:
     if value.head.kind == vkType:
       value.head
@@ -10137,6 +10327,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkBool)
   of "Str", "String":
     (true, value.kind == vkString)
+  of "Bytes":
+    (true, value.kind == vkBytes)
   of "Char":
     (true, value.kind == vkChar)
   of "Sym", "Symbol":
@@ -10185,8 +10377,14 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkFfiLibrary)
   of "Ffi/Callable":
     (true, value.kind == vkFfiCallable)
-  of "Map", "PropMap":
+  of "Set":
+    (true, value.kind == vkSet)
+  of "Map":
+    (true, value.kind in {vkMap, vkHashMap})
+  of "PropMap":
     (true, value.kind == vkMap)
+  of "HashMap":
+    (true, value.kind == vkHashMap)
   of "Gene", "Node":
     (true, value.kind == vkNode)
   of "Fn", "Function":
@@ -10451,18 +10649,67 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           if not matchesTypeExpr(expr.body[0], item, scope):
             return false
         return true
-      of "Map", "PropMap":
-        if value.kind != vkMap:
+      of "Set":
+        if value.kind != vkSet:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Set T) expects one item type")
+        for item in value.setItems:
+          if not matchesTypeExpr(expr.body[0], item, scope):
+            return false
+        return true
+      of "Map":
+        if value.kind notin {vkMap, vkHashMap}:
           return false
         if expr.body.len == 0:
           return true
         if expr.body.len notin [1, 2]:
           raise newException(GeneError, "(Map K V) expects key and value types")
         let valueType = expr.body[^1]
+        case value.kind
+        of vkMap:
+          for key, item in value.mapEntries:
+            if expr.body.len == 2 and not matchesMapKeyType(expr.body[0], key, scope):
+              return false
+            if not matchesTypeExpr(valueType, item, scope):
+              return false
+        of vkHashMap:
+          for entry in value.hashMapEntries:
+            if expr.body.len == 2 and not matchesTypeExpr(expr.body[0], entry.key, scope):
+              return false
+            if not matchesTypeExpr(valueType, entry.val, scope):
+              return false
+        else:
+          discard
+        return true
+      of "PropMap":
+        if value.kind != vkMap:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len notin [1, 2]:
+          raise newException(GeneError, "(PropMap K V) expects key and value types")
+        let valueType = expr.body[^1]
         for key, item in value.mapEntries:
           if expr.body.len == 2 and not matchesMapKeyType(expr.body[0], key, scope):
             return false
           if not matchesTypeExpr(valueType, item, scope):
+            return false
+        return true
+      of "HashMap":
+        if value.kind != vkHashMap:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len notin [1, 2]:
+          raise newException(GeneError, "(HashMap K V) expects key and value types")
+        let valueType = expr.body[^1]
+        for entry in value.hashMapEntries:
+          if expr.body.len == 2 and not matchesTypeExpr(expr.body[0], entry.key, scope):
+            return false
+          if not matchesTypeExpr(valueType, entry.val, scope):
             return false
         return true
       of "Stream":

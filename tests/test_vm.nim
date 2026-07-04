@@ -575,6 +575,21 @@ suite "vm — literals and self-evaluation":
       discard runStr("(+ ... [1])")
   test "map evaluates its values":
     ck "{^a (+ 1 1) ^b 3}", "{^a 2 ^b 3}"
+  test "general map evaluates keys and values":
+    ck "(var k \"a\") (Map/get {{k : (+ 1 2)}} \"a\")", "3"
+    ck "{{\"a\" : 1 \"a\" : 2}}", "{{\"a\" : 2}}"
+    ck "{{\"a\" : 1 \"a\" : void}}", "{{}}"
+    expect GeneError:
+      discard runStr("{{[1] : 2}}")
+  test "set constructor deduplicates hash-stable values":
+    ck "(Set 1 2 1)", "(Set 1 2)"
+    ck "(set-has? (Set \"a\" \"b\") \"b\")", "true"
+    ck "(size (Set 1 2 1))", "2"
+    expect GeneError:
+      discard runStr("(Set [1])")
+    ck "(Set #[1])", "(Set #[1])"
+  test "bytes literals are self-evaluating":
+    ck "[0!01000001 0x4869 0#SGk=]", "[0x41 0x4869 0x4869]"
   test "map and node storage drops void props":
     ck "{^a void ^b 1}", "{^b 1}"
     ck "(quote (x ^a void ^b 1 @m void @n 2))", "(x @n 2 ^b 1)"

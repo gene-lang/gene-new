@@ -19,6 +19,20 @@ proc tablesEqual(a, b: PropTable): bool =
     if not equal(va, b[k]): return false
   true
 
+proc setContains(items: openArray[Value], needle: Value): bool =
+  for item in items:
+    if equal(item, needle):
+      return true
+  false
+
+proc hashMapGet(entries: openArray[HashMapEntry], key: Value,
+                value: var Value): bool =
+  for entry in entries:
+    if equal(entry.key, key):
+      value = entry.val
+      return true
+  false
+
 proc equal*(a, b: Value): bool =
   if a.isNil or b.isNil: return a.isNil and b.isNil
   if a.kind != b.kind:
@@ -29,6 +43,7 @@ proc equal*(a, b: Value): bool =
   of vkInt:    intCompare(a, b) == 0
   of vkFloat:  a.floatVal == b.floatVal
   of vkString: a.strVal == b.strVal
+  of vkBytes:  a.bytesVal == b.bytesVal
   of vkChar:   int32(a.charVal) == int32(b.charVal)
   of vkSymbol: a.symVal == b.symVal
   of vkList:
@@ -38,6 +53,20 @@ proc equal*(a, b: Value): bool =
     true
   of vkMap:
     tablesEqual(a.mapEntries, b.mapEntries)
+  of vkSet:
+    if a.setItems.len != b.setItems.len: return false
+    for item in a.setItems:
+      if not setContains(b.setItems, item): return false
+    true
+  of vkHashMap:
+    if a.hashMapEntries.len != b.hashMapEntries.len: return false
+    for entry in a.hashMapEntries:
+      var other: Value
+      if not hashMapGet(b.hashMapEntries, entry.key, other):
+        return false
+      if not equal(entry.val, other):
+        return false
+    true
   of vkNode:
     # meta-blind: head + props + body only
     if not equal(a.head, b.head): return false
@@ -59,9 +88,9 @@ proc same*(a, b: Value): bool =
   if a.kind != b.kind:
     return false
   case a.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol:
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol:
     equal(a, b)
-  of vkList, vkMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
+  of vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable, vkType, vkProtocol,
@@ -77,6 +106,7 @@ proc hash*(v: Value): Hash =
   of vkInt:    h = h !& hash(v.intToString)
   of vkFloat:  h = h !& hash(v.floatVal)
   of vkString: h = h !& hash(v.strVal)
+  of vkBytes:  h = h !& hash(v.bytesVal)
   of vkChar:   h = h !& hash(int32(v.charVal))
   of vkSymbol: h = h !& hash(v.symVal)
   of vkList:
@@ -85,6 +115,16 @@ proc hash*(v: Value): Hash =
     var acc: Hash = 0
     for k, val in v.mapEntries:
       acc = acc xor (hash(k) !& hash(val))   # order-independent
+    h = h !& acc
+  of vkSet:
+    var acc: Hash = 0
+    for it in v.setItems:
+      acc = acc xor hash(it)
+    h = h !& acc
+  of vkHashMap:
+    var acc: Hash = 0
+    for entry in v.hashMapEntries:
+      acc = acc xor (hash(entry.key) !& hash(entry.val))
     h = h !& acc
   of vkNode:
     h = h !& hash(v.head)
@@ -101,13 +141,13 @@ proc hash*(v: Value): Hash =
   !$h
 
 proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
-  if v.kind in {vkList, vkMap, vkNode}:
+  if v.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode}:
     if seen.contains(v.bits):
       return true
     seen.incl v.bits
 
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar, vkSymbol,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
      vkProtocol, vkProtocolMessage:
@@ -127,6 +167,18 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
       return false
     for _, val in v.mapEntries:
       if not isHashStable(val, seen):
+        return false
+    true
+  of vkSet:
+    for item in v.setItems:
+      if not isHashStable(item, seen):
+        return false
+    true
+  of vkHashMap:
+    for entry in v.hashMapEntries:
+      if not isHashStable(entry.key, seen):
+        return false
+      if not isHashStable(entry.val, seen):
         return false
     true
   of vkNode:

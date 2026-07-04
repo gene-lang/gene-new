@@ -1021,6 +1021,55 @@ If fully typed code violates an already-checked internal representation invarian
 
 For generic containers, Gene checks element types. For streams, checking is lazy: each item is checked as it is pulled.
 
+### 7.5 Hashable collections and bytes
+
+These extend the §7.2 hierarchy beyond the original MVP.
+
+**`Set`** — `(Set 1 2 3)`. A hashable-element collection. The first
+implementation is immutable and preserves first-insertion order for printing and
+iteration; duplicate equal elements collapse to the first occurrence. Elements
+must be hash-stable, so mutable structural values are rejected by the §12.4
+mutable-key rule. Mutable/frozen set variants may be added later if they pull
+their weight.
+
+**General map `{{ … }}`** — an any-key hashed map, distinct from the Sym-keyed
+`PropMap` literal `{^k v}`. The literal shape is flat and requires `:` between
+each evaluated key and value:
+
+```gene
+{{k1 : v1 k2 : v2}}
+```
+
+`{{` is tokenized specially; the close is two ordinary `}` tokens, so adjacent
+ordinary map closes such as `{^a {^b 1}}` remain unchanged. Keys must be
+hash-stable; mutable structural keys raise `TypeError`. Iteration and
+`to_pairs_stream` yield `[key value]` pairs in insertion order. Duplicate equal
+keys use last-write-wins; a final `void` value deletes the key. `(Map K V)`
+accepts both `PropMap` and general maps for compatibility; `PropMap` and
+`HashMap` name the precise variants.
+
+**Binary / `Bytes`** — immutable byte strings distinct from the mutable typed
+`Buffer` (§16). Three literal notations:
+
+```gene
+0!01010101   # bits
+0x1f3a       # hex
+0#SGVsbG8=   # base64
+```
+
+Bytes are currently heap-backed; inlining 1–4 byte values into the NaN-boxed
+payload remains an optimization option. `0x` is reserved for bytes rather than
+hex integers. Bit literals must contain a multiple of 8 bits. Base64 literals
+accept standard padded or unpadded input and print canonically as hex bytes. A
+`~` separator may appear between byte groups and may be followed by whitespace,
+including newlines:
+
+```gene
+0!11111111~ 11111111~ 11111111
+0xaaaa~ aaaa
+0#SGVs~ bG8=
+```
+
 ---
 
 ## 8. Pattern matching and destructuring

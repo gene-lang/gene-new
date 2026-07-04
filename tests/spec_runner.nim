@@ -587,6 +587,25 @@ suite "spec — strings from design":
                "$\"hello ${user}\"",
                "\"hello Ada\"")
 
+suite "spec — hashable collections and bytes from design":
+  test "Bytes literals read as immutable byte strings":
+    check_eval("[0!01000001 0x4869 0#SGk=]", "[0x41 0x4869 0x4869]")
+    check_eval("[0!01001000~ 01101001 0x48~ 69 0#SGk=]",
+               "[0x4869 0x4869 0x4869]")
+
+  test "Set deduplicates hash-stable values in insertion order":
+    check_eval("[(Set 1 2 1) (set-has? (Set \"a\" \"b\") \"b\")]",
+               "[(Set 1 2) true]")
+    check_eval("(try (Set [1]) catch (TypeError ^expected e) e)",
+               "\"HashStable\"")
+
+  test "general maps evaluate any hash-stable keys":
+    check_eval("(var k \"a\") [(Map/get {{k : (+ 1 2)}} \"a\") " &
+               "{{\"x\" : 1 \"x\" : 2}}]",
+               "[3 {{\"x\" : 2}}]")
+    check_eval("(try {{[1] : 2}} catch (TypeError ^expected e) e)",
+               "\"HashStable\"")
+
 suite "spec — equality and identity from design":
   test "same question mark is scalar identity or heap identity":
     check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",

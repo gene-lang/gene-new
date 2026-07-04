@@ -43,6 +43,11 @@ proc escapeChar(r: Rune): string =
     else:
       $r
 
+proc printBytes(data: string): string =
+  result = "0x"
+  for ch in data:
+    result.add toHex(ord(ch), 2).toLowerAscii
+
 proc printProps(sb: var string, props: PropTable, sigil: string) =
   for k, val in props:
     sb.add ' '
@@ -62,6 +67,7 @@ proc print*(v: Value): string =
   of vkInt:    v.intToString
   of vkFloat:  printFloat(v.floatVal)
   of vkString: escapeStr(v.strVal)
+  of vkBytes:  printBytes(v.bytesVal)
   of vkChar:   "'" & escapeChar(v.charVal) & "'"
   of vkSymbol: v.symVal
   of vkList:
@@ -82,6 +88,24 @@ proc print*(v: Value): string =
       else:
         sb.add "^" & k & " " & print(val)
     sb.add '}'
+    sb
+  of vkSet:
+    var sb = "(Set"
+    for it in v.setItems:
+      sb.add ' '
+      sb.add print(it)
+    sb.add ')'
+    sb
+  of vkHashMap:
+    var sb = "{{"
+    var first = true
+    for entry in v.hashMapEntries:
+      if not first: sb.add ' '
+      first = false
+      sb.add print(entry.key)
+      sb.add " : "
+      sb.add print(entry.val)
+    sb.add "}}"
     sb
   of vkNode:
     var sb = if v.nodeImmutable: "#(" else: "("

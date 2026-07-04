@@ -69,10 +69,13 @@ type
     vkInt       ## mathematical Int; fixnums/int64 fast paths, bigint on overflow
     vkFloat     ## F64 (design `Float` alias)
     vkString    ## immutable UTF-8 string
+    vkBytes     ## immutable byte string
     vkChar      ## one Unicode scalar value
     vkSymbol    ## interned simple symbol (Sym)
     vkList      ## pure body / list
     vkMap       ## pure props / PropMap (symbol-keyed)
+    vkSet       ## immutable hash-stable element set
+    vkHashMap   ## immutable any-key hashed map
     vkNode      ## general node (head + props + body + meta)
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
@@ -211,6 +214,10 @@ type
     immutable: bool
     entries: PropTable
 
+  HashMapEntry* = object
+    key*: Value
+    val*: Value
+
   GeneNode = object
     refCount: int
     shared: int
@@ -331,6 +338,9 @@ type
     okNamespace
     okModule
     okBigInt
+    okBytes
+    okSet
+    okHashMap
     okEnv
     okCell
     okAtomicCell
@@ -371,6 +381,15 @@ type
 
   BigIntData = ref object of GeneObjectData
     value: BigIntValue
+
+  BytesData = ref object of GeneObjectData
+    data: string
+
+  SetData = ref object of GeneObjectData
+    items: seq[Value]
+
+  HashMapData = ref object of GeneObjectData
+    entries: seq[HashMapEntry]
 
   EnvData = ref object of GeneObjectData
     cycleRefs: int            # Value-held refs, for trial-deletion collection
@@ -948,6 +967,15 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
       emit(val)
   of okBigInt:
     discard
+  of okBytes:
+    discard
+  of okSet:
+    for val in SetData(data).items:
+      emit(val)
+  of okHashMap:
+    for entry in HashMapData(data).entries:
+      emit(entry.key)
+      emit(entry.val)
   of okEnv:
     let d = EnvData(data)
     emit(d.parent)
@@ -1076,6 +1104,12 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.meta = initOrderedTable[string, Value]()
   of okBigInt:
     discard
+  of okBytes:
+    BytesData(data).data.setLen(0)
+  of okSet:
+    SetData(data).items.setLen(0)
+  of okHashMap:
+    HashMapData(data).entries.setLen(0)
   of okEnv:
     let d = EnvData(data)
     clearValueSlot(d.parent)
@@ -1520,6 +1554,9 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okNamespace: vkNamespace
     of okModule: vkModule
     of okBigInt: vkInt
+    of okBytes: vkBytes
+    of okSet: vkSet
+    of okHashMap: vkHashMap
     of okEnv: vkEnv
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
@@ -1586,6 +1623,11 @@ proc strVal*(v: Value): lent string =
     raise newException(FieldDefect, "value is not a String")
   cast[ptr GeneString](v.bits and PAYLOAD_MASK).s
 
+proc bytesVal*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okBytes:
+    raise newException(FieldDefect, "value is not Bytes")
+  BytesData(objData(v)).data
+
 proc charVal*(v: Value): Rune {.inline.} =
   if v.tagOf != CHAR_TAG:
     raise newException(FieldDefect, "value is not a Char")
@@ -1615,6 +1657,16 @@ proc mapImmutable*(v: Value): bool =
   if v.tagOf != MAP_TAG:
     raise newException(FieldDefect, "value is not a Map")
   cast[ptr GeneMap](v.bits and PAYLOAD_MASK).immutable
+
+proc setItems*(v: Value): lent seq[Value] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okSet:
+    raise newException(FieldDefect, "value is not a Set")
+  SetData(objData(v)).items
+
+proc hashMapEntries*(v: Value): lent seq[HashMapEntry] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okHashMap:
+    raise newException(FieldDefect, "value is not a HashMap")
+  HashMapData(objData(v)).entries
 
 proc head*(v: Value): Value =
   if v.tagOf != NODE_TAG:
@@ -3095,6 +3147,9 @@ proc newStr*(v: sink string): Value =
   p.s = v
   boxPtr(STRING_TAG, p)
 
+proc newBytes*(v: sink string): Value =
+  boxObject(BytesData(objKind: okBytes, data: v))
+
 proc newChar*(r: Rune): Value {.inline.} =
   mkImm(CHAR_TAG, uint64(int32(r)) and 0xffffffff'u64)
 
@@ -3140,6 +3195,12 @@ proc newMap*(entries: sink PropTable = initOrderedTable[string, Value](),
   p.immutable = immutable
   p.entries = withoutVoidEntries(entries)
   boxPtr(MAP_TAG, p)
+
+proc newSet*(items: sink seq[Value] = @[]): Value =
+  boxObject(SetData(objKind: okSet, items: items))
+
+proc newHashMap*(entries: sink seq[HashMapEntry] = @[]): Value =
+  boxObject(HashMapData(objKind: okHashMap, entries: entries))
 
 proc newNode*(head: Value,
               props: sink PropTable = initOrderedTable[string, Value](),
@@ -3235,6 +3296,33 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
     for key, val in v.mapEntries:
       entries[key] = weakenScopeFunctions(val, owner)
     newMap(entries, v.mapImmutable)
+  of vkSet:
+    for i, item in v.setItems:
+      let weakened = weakenScopeFunctions(item, owner)
+      if weakened.bits != item.bits:
+        var items = newSeq[Value](v.setItems.len)
+        for j in 0 ..< i:
+          items[j] = v.setItems[j]
+        items[i] = weakened
+        for j in i + 1 ..< v.setItems.len:
+          items[j] = weakenScopeFunctions(v.setItems[j], owner)
+        return newSet(items)
+    v
+  of vkHashMap:
+    var changed = false
+    for entry in v.hashMapEntries:
+      let weakenedKey = weakenScopeFunctions(entry.key, owner)
+      let weakenedVal = weakenScopeFunctions(entry.val, owner)
+      if weakenedKey.bits != entry.key.bits or weakenedVal.bits != entry.val.bits:
+        changed = true
+        break
+    if not changed:
+      return v
+    var entries: seq[HashMapEntry]
+    for entry in v.hashMapEntries:
+      entries.add HashMapEntry(key: weakenScopeFunctions(entry.key, owner),
+                               val: weakenScopeFunctions(entry.val, owner))
+    newHashMap(entries)
   of vkNode:
     let weakenedHead = weakenScopeFunctions(v.head, owner)
     var changed = weakenedHead.bits != v.head.bits
@@ -3321,6 +3409,33 @@ proc escapeWeakFunctions*(v: Value): Value =
     for key, val in v.mapEntries:
       entries[key] = escapeWeakFunctions(val)
     newMap(entries, v.mapImmutable)
+  of vkSet:
+    for i, item in v.setItems:
+      let escaped = escapeWeakFunctions(item)
+      if escaped.bits != item.bits:
+        var items = newSeq[Value](v.setItems.len)
+        for j in 0 ..< i:
+          items[j] = v.setItems[j]
+        items[i] = escaped
+        for j in i + 1 ..< v.setItems.len:
+          items[j] = escapeWeakFunctions(v.setItems[j])
+        return newSet(items)
+    v
+  of vkHashMap:
+    var changed = false
+    for entry in v.hashMapEntries:
+      let escapedKey = escapeWeakFunctions(entry.key)
+      let escapedVal = escapeWeakFunctions(entry.val)
+      if escapedKey.bits != entry.key.bits or escapedVal.bits != entry.val.bits:
+        changed = true
+        break
+    if not changed:
+      return v
+    var entries: seq[HashMapEntry]
+    for entry in v.hashMapEntries:
+      entries.add HashMapEntry(key: escapeWeakFunctions(entry.key),
+                               val: escapeWeakFunctions(entry.val))
+    newHashMap(entries)
   of vkNode:
     let escapedHead = escapeWeakFunctions(v.head)
     var changed = escapedHead.bits != v.head.bits
@@ -4114,6 +4229,8 @@ proc isTruthy*(v: Value): bool {.inline.} =
 
 proc isImmutable*(v: Value): bool =
   case v.kind
+  of vkBytes, vkSet, vkHashMap:
+    true
   of vkList: v.listImmutable
   of vkMap: v.mapImmutable
   of vkNode: v.nodeImmutable
