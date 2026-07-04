@@ -3,21 +3,25 @@
 # Gene TODO app — end-to-end web application on the net/http MVP server,
 # persisted in SQLite through the shared Db protocol.
 #
-#   HTML page:  GET  /                   server-rendered todo list + forms
-#   Form flow:  POST /todos              create (redirects to /)
-#               POST /todos/toggle       toggle done flag (redirects to /)
-#               POST /todos/delete       delete (redirects to /)
-#   JSON API:   GET  /api/todos          list todos
-#               POST /api/todos          create   (form body: text=...)
-#               POST /api/todos/toggle   toggle   (form body: id=N)
-#               POST /api/todos/delete   delete   (form body: id=N)
+#   HTML page:  GET  /                     server-rendered todo list + forms
+#               GET  /?filter=active|done  same page, filtered rows
+#   Form flow:  POST /todos                create (redirects to /)
+#               POST /todos/toggle         toggle done flag (redirects to /)
+#               POST /todos/delete         delete (redirects to /)
+#               POST /todos/clear-done     drop finished todos (redirects to /)
+#   JSON API:   GET  /api/todos            list todos (honors ?filter=...)
+#               POST /api/todos            create   (form body: text=...)
+#               POST /api/todos/toggle     toggle   (form body: id=N)
+#               POST /api/todos/delete     delete   (form body: id=N)
 #
 # Run:  bin/gene run examples/todo_app.gene        (creates ./todo.db)
 # Then: open http://127.0.0.1:8090
 #
 # The store functions only speak the Db protocol (exec/query/execute), so
 # swapping in db/postgres means changing `open` and the SQL placeholder
-# style ($1 instead of ?) — the app code shape stays the same.
+# style ($1 instead of ?) — the app code shape stays the same. Markup is
+# ordinary node data built with quasiquote templates; one `render` edge
+# converts nodes to HTML text at the response boundary.
 # =============================================================================
 
 (mod todo-app
@@ -25,9 +29,10 @@
 
 (import html [escape])
 (import url [parse_query UrlError])
-(import str [split join])
+(import str [join])
+(import json [stringify])
 (import std/parse [parse_int ParseError])
-(import std/stream [to_stream map into])
+(import std/stream [to_stream map filter into])
 (import net/http [Request Response Server serve json redirect not_found])
 (import db/sqlite [open DbError])
 
@@ -56,32 +61,77 @@
   (db ~ execute "delete from todos where id = ?" id)
   nil)
 
+(fn clear_done [] : Nil
+  (db ~ execute "delete from todos where done = 1")
+  nil)
+
 (fn done? [t] : Bool
-  (not (= t/done 0)))
+  (! (= t/done 0)))
 
 # -----------------------------------------------------------------------------
-# JSON rendering (hand-rolled until a ToJson derive lands).
+# Filter views: every listing route accepts all | active | done.
 # -----------------------------------------------------------------------------
 
-(fn replace_all [s : Str, from : Str, to : Str] : Str
-  ((split s from) ~ join to))
+(fn keep? [flt : Str]
+  (match flt
+    (when "active" (fn [t] (! (done? t))))
+    (when "done"   done?)
+    (else          (fn [t] true))))
 
-(fn json_escape [s : Str] : Str
-  (replace_all (replace_all s "\\" "\\\\") "\"" "\\\""))
-
-(fn todo_json [t] : Str
-  (var text (json_escape t/text))
-  (var done (if (done? t) "true" "false"))
-  $"{\"id\":${t/id},\"text\":\"${text}\",\"done\":${done}}")
-
-(fn todos_json [] : Str
-  (var parts ((to_stream (list_todos)) ~ map todo_json ; ~ into []))
-  (var body (join parts ","))
-  $"[${body}]")
+(fn todos_for [flt : Str] : (List Map)
+  ((to_stream (list_todos)) ~ filter (keep? flt) ; ~ into []))
 
 # -----------------------------------------------------------------------------
-# HTML rendering.
+# JSON rendering: plain maps in, json/stringify out.
 # -----------------------------------------------------------------------------
+
+(fn todo_map [t] : Map
+  {^id t/id ^text t/text ^done (done? t)})
+
+(fn todos_json [flt : Str] : Str
+  (stringify ((to_stream (todos_for flt)) ~ map todo_map ; ~ into [])))
+
+# -----------------------------------------------------------------------------
+# HTML rendering: markup is node data; this is the one node -> text edge.
+# Strings render escaped, so the css below stays free of & < > " on purpose.
+# -----------------------------------------------------------------------------
+
+(fn render_attr [pair] : Str
+  (var [k, v] pair)
+  (if (= v void)
+    ""
+    $" ${(to-str k)}=\"${(escape (to-str v))}\""))
+
+(fn render_attrs [n : Node] : Str
+  (n/%props/%to_pairs_stream
+    ~ map render_attr
+    ; ~ into []
+    ; ~ join ""))
+
+(fn render_children [n : Node] : Str
+  (n/%body/%to_stream
+    ~ map render
+    ; ~ into []
+    ; ~ join ""))
+
+(fn void_tag? [tag : Str] : Bool
+  (|| (= tag "input") (= tag "br") (= tag "hr") (= tag "meta")))
+
+(fn render_node [n : Node] : Str
+  (var tag (to-str (n ~ head)))
+  (var open ($ "<" tag (render_attrs n) ">"))
+  (if (void_tag? tag)
+    open
+    ($ open (render_children n) "</" tag ">")))
+
+(fn render [x] : Str
+  (match x
+    (when (s : Str)
+      (escape s))
+    (when (n : Node)
+      (render_node n))
+    (else
+      (escape (to-str x)))))
 
 (var css """
   body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}
@@ -96,37 +146,63 @@
   .add input[type=text]{flex:1;padding:8px;border:1px solid #ddd;border-radius:8px}
   .add{display:flex;gap:8px}
   .muted{opacity:.6;font-size:.85em}
+  .foot{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .filters{display:flex;gap:8px}
+  a.filter{color:inherit;text-decoration:none;opacity:.55}
+  a.filter.on{opacity:1;font-weight:600}
 """)
 
-(fn todo_row [t] : Str
-  (var text (escape t/text))
-  (var mark (if (done? t) "&#10003;" "&#9675;"))
+(fn todo_row [t] : Node
+  (var id t/id)
+  (var text t/text)
+  (var mark (if (done? t) "✓" "○"))
   (var cls (if (done? t) "done" "open"))
-  ($ "<li class=\"" cls "\">"
-     "<form class=\"inline\" method=\"post\" action=\"/todos/toggle\">"
-     "<input type=\"hidden\" name=\"id\" value=\"" t/id "\">"
-     "<button title=\"toggle\">" mark "</button></form>"
-     "<span class=\"text\">" text "</span>"
-     "<form class=\"inline\" method=\"post\" action=\"/todos/delete\">"
-     "<input type=\"hidden\" name=\"id\" value=\"" t/id "\">"
-     "<button title=\"delete\">&#10005;</button></form>"
-     "</li>"))
+  `(li ^class %cls
+     (form ^class "inline" ^method "post" ^action "/todos/toggle"
+       (input ^type "hidden" ^name "id" ^value %id)
+       (button ^title "toggle" %mark))
+     (span ^class "text" %text)
+     (form ^class "inline" ^method "post" ^action "/todos/delete"
+       (input ^type "hidden" ^name "id" ^value %id)
+       (button ^title "delete" "✕"))))
 
-(fn page [] : Str
-  (var items (list_todos))
-  (var rows_list ((to_stream items) ~ map todo_row ; ~ into []))
-  (var rows (join rows_list ""))
-  (var count (size items))
-  ($ "<!doctype html><html><head><title>Gene TODO</title><style>" css
-     "</style></head><body><main class=\"wrap\">"
-     "<header><h1>Gene TODO</h1></header>"
-     "<section class=\"card\">"
-     "<form class=\"add\" method=\"post\" action=\"/todos\">"
-     "<input type=\"text\" name=\"text\" placeholder=\"What needs doing?\" autofocus>"
-     "<button>Add</button></form>"
-     "<ul>" rows "</ul>"
-     "<p class=\"muted\">" count " item(s) &middot; JSON at <a href=\"/api/todos\">/api/todos</a></p>"
-     "</section></main></body></html>"))
+(fn filter_link [flt : Str, target : Str] : Node
+  (var cls (if (= flt target) "filter on" "filter"))
+  (var href (if (= target "all") "/" $"/?filter=${target}"))
+  `(a ^class %cls ^href %href %target))
+
+(fn page [flt : Str] : Str
+  (var rows ((to_stream (todos_for flt)) ~ map todo_row ; ~ into []))
+  (var all_items (list_todos))
+  (var done_count (size ((to_stream all_items) ~ filter done? ; ~ into [])))
+  (var open_count (- (size all_items) done_count))
+  (var counts $"${open_count} open · ${done_count} done")
+  (var clear
+    (if (> done_count 0)
+      `(form ^class "inline" ^method "post" ^action "/todos/clear-done"
+         (button ^title "delete all done todos" "clear done"))
+      ""))
+  ($ "<!doctype html>"
+     (render
+       `(html
+          (head (title "Gene TODO") (style %css))
+          (body
+            (main ^class "wrap"
+              (header (h1 "Gene TODO"))
+              (section ^class "card"
+                (form ^class "add" ^method "post" ^action "/todos"
+                  (input ^type "text" ^name "text"
+                         ^placeholder "What needs doing?" ^autofocus "")
+                  (button "Add"))
+                (ul %rows...)
+                (div ^class "muted foot"
+                  (span %counts)
+                  (span ^class "filters"
+                    %(filter_link flt "all")
+                    %(filter_link flt "active")
+                    %(filter_link flt "done"))
+                  %clear
+                  (a ^href "/api/todos" "JSON")))))))))
 
 # -----------------------------------------------------------------------------
 # Request helpers. Form bodies are URL-encoded; ids must parse as integers.
@@ -140,21 +216,30 @@
 
 (fn form_text [req] : Str
   (var form (parse_form req))
-  (var text form/text)
-  (if (= text void) "" text))
+  (|| form/text ""))
 
 (fn form_id [req] : Int
   (var form (parse_form req))
-  (var raw form/id)
-  (if (= raw void)
-    -1
-    (try
-      (parse_int raw)
-    catch (ParseError ^message _)
-      -1)))
+  (try
+    (parse_int (|| form/id ""))
+  catch (ParseError ^message _)
+    -1))
 
 (fn bad_request [msg : Str]
   (Response ^status 400 ^body msg))
+
+# Run `action` with a validated form field, or answer 400 without it.
+(fn with_text [req, action]
+  (var text (form_text req))
+  (if (= text "")
+    (bad_request "text is required")
+    (action text)))
+
+(fn with_id [req, action]
+  (var id (form_id req))
+  (if (= id -1)
+    (bad_request "id must be an integer")
+    (action id)))
 
 # -----------------------------------------------------------------------------
 # Routing: method + path, HTML flows redirect, API flows return JSON.
@@ -163,44 +248,28 @@
 (fn handle [req]
   (match [req/method req/path]
     (when ["GET" "/"]
-      (page))
+      (page (|| req/params/filter "all")))
     (when ["POST" "/todos"]
-      (var text (form_text req))
-      (if (= text "")
-        (bad_request "text is required")
-        (do (add_todo text) (redirect "/"))))
+      (with_text req (fn [text] (add_todo text) (redirect "/"))))
     (when ["POST" "/todos/toggle"]
-      (var id (form_id req))
-      (if (= id -1)
-        (bad_request "id must be an integer")
-        (do (toggle_todo id) (redirect "/"))))
+      (with_id req (fn [id] (toggle_todo id) (redirect "/"))))
     (when ["POST" "/todos/delete"]
-      (var id (form_id req))
-      (if (= id -1)
-        (bad_request "id must be an integer")
-        (do (delete_todo id) (redirect "/"))))
+      (with_id req (fn [id] (delete_todo id) (redirect "/"))))
+    (when ["POST" "/todos/clear-done"]
+      (clear_done)
+      (redirect "/"))
     (when ["GET" "/api/todos"]
-      (json (todos_json)))
+      (json (todos_json (|| req/params/filter "all"))))
     (when ["POST" "/api/todos"]
-      (var text (form_text req))
-      (if (= text "")
-        (bad_request "text is required")
-        (do
-          (var id (add_todo text))
-          (var body (todos_json))
-          (Response ^status 201
-                    ^headers {^content-type "application/json"}
-                    ^body body))))
+      (with_text req (fn [text]
+        (add_todo text)
+        (Response ^status 201
+                  ^headers {^content-type "application/json"}
+                  ^body (todos_json "all")))))
     (when ["POST" "/api/todos/toggle"]
-      (var id (form_id req))
-      (if (= id -1)
-        (bad_request "id must be an integer")
-        (do (toggle_todo id) (json (todos_json)))))
+      (with_id req (fn [id] (toggle_todo id) (json (todos_json "all")))))
     (when ["POST" "/api/todos/delete"]
-      (var id (form_id req))
-      (if (= id -1)
-        (bad_request "id must be an integer")
-        (do (delete_todo id) (json (todos_json)))))
+      (with_id req (fn [id] (delete_todo id) (json (todos_json "all")))))
     (else
       (not_found "<h1>404</h1><p>No such route.</p>"))))
 

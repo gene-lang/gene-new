@@ -66,6 +66,15 @@ when defined(geneRcStats):
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
       check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0
+      # Regression: a transient stream whose callable captures an inner scope
+      # that has already returned must keep that scope alive while pulling
+      # (no use-after-free) and leave nothing behind once consumed.
+      check leakedManaged("(fn mk [] (fn [x] (> x 1))) " &
+                          "(into (filter (to_stream [1 2 3]) (mk)) [])") == 0
+      check leakedManaged("(var items [1 2 3]) " &
+                          "(fn mk [k] (match k (else (fn [x] true)))) " &
+                          "(fn go [k] (into (filter (to_stream items) (mk k)) [])) " &
+                          "(go \"a\")") == 0
       check leakedManaged("(freeze [1 {^a [2]}])") == 0
       check leakedManaged("(fn gen [] (yield 1)) " &
                           "(var s (gen)) " &

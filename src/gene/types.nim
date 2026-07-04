@@ -3179,6 +3179,19 @@ proc functionForScopeStorage*(v: Value, owner: Scope): Value =
   ## reclaimed after its ordinary references are dropped.
   if v.kind == vkFunction and not v.fnHasWeakScope and v.fnScope == owner:
     return cloneFunctionCapture(v, owner, weak = true)
+  if v.kind == vkStream:
+    # Same cycle, one hop removed: a lazy stream stored into the scope its
+    # callables capture (scope -> stream -> callable -> scope). Weaken the
+    # callable edges along the source chain here — the sound point, where the
+    # owner is known — never at stream construction, where nothing guarantees
+    # another strong reference to the callable survives.
+    var cur = v
+    while cur.kind == vkStream:
+      let data = streamData(cur)
+      let cb = data.callable
+      if cb.kind == vkFunction and not cb.fnHasWeakScope and cb.fnScope == owner:
+        data.callable = cloneFunctionCapture(cb, owner, weak = true)
+      cur = data.source
   v
 
 proc weakenScopeFunctions(v: Value, owner: Scope): Value =
@@ -3901,11 +3914,12 @@ proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope): Valu
 
 proc newLazyStream*(source: Value, pull: StreamPullProc,
                     callable: Value = NIL, remaining: int64 = -1): Value =
-  let storedCallable =
-    if callable.kind == vkFunction:
-      functionForScopeStorage(callable, callable.fnScope)
-    else:
-      callable
+  # The stream owns its callable strongly, like every other heap container
+  # (channels, cells, actor state). Weakening the captured-scope edge here
+  # dangles when the operand stack held the only strong reference to an
+  # inline lambda; the scope->stream->callable->scope self-cycle this trades
+  # back is a leak, not a crash, matching the container-wide tradeoff.
+  let storedCallable = escapeWeakFunctions(callable)
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
                        remaining: remaining, pull: pull, closed: false))
 

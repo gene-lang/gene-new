@@ -1031,6 +1031,18 @@ suite "spec — streams from design":
                "(fn key [x : Sym] x) (key pair/0)",
                "a")
 
+  test "lazy streams own inline callables beyond the defining frame":
+    # Regression: the stream must hold its callable strongly. An inline
+    # lambda whose only other reference was the operand stack used to leave
+    # the stream with a dangling weak captured-scope edge (use-after-free).
+    check_eval("(fn make-pred [] (fn [x] (> x 1))) " &
+               "(fn make-stream [] (filter (to_stream [1 2 3]) (make-pred))) " &
+               "(into (make-stream) [])",
+               "[2 3]")
+    check_eval("(fn make-stream [] (map (to_stream [1 2]) (fn [x] (+ x 10)))) " &
+               "(into (make-stream) [])",
+               "[11 12]")
+
   test "stream helpers are lazy":
     check_eval("(var hits (cell 0)) " &
                "(var s (map (to_stream [1 2]) " &
