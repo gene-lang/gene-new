@@ -86,6 +86,9 @@ type
     opMakeIterator    # pop an iterable value, push a stream iterator
     opIteratorHasNext # pop a stream iterator, push Bool
     opIteratorNext    # pop a stream iterator, push next item
+    opIteratorClose   # pop a stream iterator and close it
+    opLoopBreak       # exit the nearest active loop
+    opLoopContinue    # skip to the next iteration of the nearest active loop
     opTry             # run a body with catch clauses and an ensure block
     opTaskScope       # run a structured task scope body
     opSupervisor      # run a supervised actor-owner body
@@ -641,7 +644,8 @@ proc formatInstruction(inst: Instruction): string =
   of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJump:
     result.add " target=" & $inst.intArg
   of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
-     opAwait, opYield, opReturn, opReturnBareInt:
+     opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield, opReturn,
+     opReturnBareInt:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =

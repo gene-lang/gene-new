@@ -124,7 +124,7 @@
     (set i (+ i 1))))
 
 (fn featured_cards* [items : (List MenuItem)] : (Stream Node Never)
-  (for item items
+  (for item in items
     (if item/featured
       (yield `(article ^class "card"
                 (h3 %(item ~ label))

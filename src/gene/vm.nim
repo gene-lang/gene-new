@@ -57,6 +57,7 @@ type
     pendingCancel: ref GeneCancel
     forItems: seq[Value]
     forIndex: int
+    forStream: Value
     forPattern: Value
     forBody: Chunk
     ownedScope: Scope
@@ -121,6 +122,7 @@ type
     pendingCancel: ref GeneCancel
     forItems: seq[Value]
     forIndex: int
+    forStream: Value
     forPattern: Value
     forBody: Chunk
     ownedScope: Scope
@@ -3968,6 +3970,9 @@ proc forItems(coll: Value): seq[Value] =
     for it in coll.body: result.add it
   of vkMap:
     for k, v in coll.mapEntries: result.add newList(@[newSym(k), v])
+  of vkString:
+    for r in coll.strVal.runes:
+      result.add newChar(r)
   of vkStream:
     while coll.streamHasNext:
       result.add checkedStreamNext(coll, "for item")
@@ -3987,6 +3992,11 @@ proc iteratorStream(coll: Value): Value =
     for k, v in coll.mapEntries:
       pairs.add newList(@[newSym(k), v])
     newStream(pairs)
+  of vkString:
+    var chars: seq[Value]
+    for r in coll.strVal.runes:
+      chars.add newChar(r)
+    newStream(chars)
   of vkStream:
     coll
   of vkNil, vkVoid:
@@ -6053,6 +6063,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curPendingCancel: ref GeneCancel = nil
   var curForItems: seq[Value] = @[]
   var curForIndex = 0
+  var curForStream = NIL
   var curForPattern = NIL
   var curForBody: Chunk = nil
   var curOwnedScope: Scope = nil
@@ -6085,6 +6096,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curPendingCancel = fiber.pendingCancel
     curForItems = move fiber.forItems
     curForIndex = fiber.forIndex
+    curForStream = fiber.forStream
     curForPattern = fiber.forPattern
     curForBody = fiber.forBody
     curOwnedScope = fiber.ownedScope
@@ -6118,6 +6130,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curPendingCancel = nil
       curForItems = @[]
       curForIndex = 0
+      curForStream = NIL
       curForPattern = NIL
       curForBody = nil
       curOwnedScope = nil
@@ -6131,6 +6144,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curPendingCancel = f.extra.pendingCancel
       curForItems = move f.extra.forItems
       curForIndex = f.extra.forIndex
+      curForStream = f.extra.forStream
       curForPattern = f.extra.forPattern
       curForBody = f.extra.forBody
       curOwnedScope = f.extra.ownedScope
@@ -6140,7 +6154,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template pushFrame() =
     let frameExtra =
       if curFrameKind == fkNormal and curEnsureBody == nil and
-          curForItems.len == 0 and curOwnedScope == nil and
+          curForItems.len == 0 and curForStream.kind != vkStream and
+          curOwnedScope == nil and
           curPendingError == nil and curPendingPanic == nil and
           curPendingCancel == nil:
         nil
@@ -6152,6 +6167,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                    pendingPanic: curPendingPanic,
                    pendingCancel: curPendingCancel,
                    forItems: move curForItems, forIndex: curForIndex,
+                   forStream: curForStream,
                    forPattern: curForPattern, forBody: curForBody,
                    ownedScope: curOwnedScope,
                    namespaceName: curNamespaceName)
@@ -6176,7 +6192,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
   template pushCallFrame() =
     if curFrameKind == fkNormal and curEnsureBody == nil and
-        curForItems.len == 0 and curOwnedScope == nil and
+        curForItems.len == 0 and curForStream.kind != vkStream and
+        curOwnedScope == nil and
         curPendingError == nil and curPendingPanic == nil and
         curPendingCancel == nil:
       pushFrameFastNormal()
@@ -6206,6 +6223,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curPendingCancel = nil
     curForItems = @[]
     curForIndex = 0
+    curForStream = NIL
     curForPattern = NIL
     curForBody = nil
     curOwnedScope = nil
@@ -6235,6 +6253,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.pendingCancel = curPendingCancel
     fiber.forItems = move curForItems
     fiber.forIndex = curForIndex
+    fiber.forStream = curForStream
     fiber.forPattern = curForPattern
     fiber.forBody = curForBody
     fiber.ownedScope = curOwnedScope
@@ -6249,9 +6268,85 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       releaseCallScope(scope)
       recycleScope = false
 
+  template closeCurrentForStream() =
+    if curForStream.kind == vkStream:
+      curForStream.closeStream()
+      curForStream = NIL
+
   proc releaseFrameCallScope(f: Frame) =
+    if f.extra != nil and f.extra.forStream.kind == vkStream:
+      f.extra.forStream.closeStream()
     if f.recycleScope:
       releaseCallScope(f.scope)
+
+  template advanceForLoop() =
+    if curForStream.kind == vkStream:
+      if curForStream.streamHasNext:
+        let item = checkedStreamNext(curForStream, "for item")
+        let ownerScope = frames[^1].scope
+        let loopScope = newScope(ownerScope)
+        loopScope.prepareChunkScope(curForBody)
+        var binds = initTable[string, Value]()
+        if not tryMatch(curForPattern, item, loopScope, binds):
+          curForStream.closeStream()
+          curForStream = NIL
+          raiseMatchError(loopScope, "for pattern did not match an item")
+        loopScope.bindMatchedValues(binds, replaceExisting = false)
+        chunk = curForBody
+        scope = loopScope
+        stack = acquireRunStack()
+        ip = 0
+        validateImplRequirements = true
+        returnType = NIL
+        returnLabel = ""
+        curChecksErrors = false
+        curErrorTypes = @[]
+        curFnName = ""
+        curFrameKind = fkForBody
+        evalBudget = scope.evalBudget
+      else:
+        curForStream.closeStream()
+        curForStream = NIL
+        var owner = frames.pop()
+        stack = move owner.stack
+        loadFrameRegs(owner)
+        stack.add NIL
+    elif curForIndex < curForItems.len:
+      let item = curForItems[curForIndex]
+      inc curForIndex
+      let ownerScope = frames[^1].scope
+      let loopScope = newScope(ownerScope)
+      loopScope.prepareChunkScope(curForBody)
+      var binds = initTable[string, Value]()
+      if not tryMatch(curForPattern, item, loopScope, binds):
+        raiseMatchError(loopScope, "for pattern did not match an item")
+      loopScope.bindMatchedValues(binds, replaceExisting = false)
+      chunk = curForBody
+      scope = loopScope
+      stack = acquireRunStack()
+      ip = 0
+      validateImplRequirements = true
+      returnType = NIL
+      returnLabel = ""
+      curChecksErrors = false
+      curErrorTypes = @[]
+      curFnName = ""
+      curFrameKind = fkForBody
+      evalBudget = scope.evalBudget
+    else:
+      var owner = frames.pop()
+      stack = move owner.stack
+      loadFrameRegs(owner)
+      stack.add NIL
+
+  template breakForLoop() =
+    if curForStream.kind == vkStream:
+      curForStream.closeStream()
+      curForStream = NIL
+    var owner = frames.pop()
+    stack = move owner.stack
+    loadFrameRegs(owner)
+    stack.add NIL
 
   template finishFrameReturn(retValue: Value) =
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
@@ -6294,33 +6389,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       stack.add preserved
     elif curFrameKind == fkForBody:
       releaseRunStack(stack)
-      if curForIndex < curForItems.len:
-        let item = curForItems[curForIndex]
-        inc curForIndex
-        let ownerScope = frames[^1].scope
-        let loopScope = newScope(ownerScope)
-        loopScope.prepareChunkScope(curForBody)
-        var binds = initTable[string, Value]()
-        if not tryMatch(curForPattern, item, loopScope, binds):
-          raiseMatchError(loopScope, "for pattern did not match an item")
-        loopScope.bindMatchedValues(binds, replaceExisting = false)
-        chunk = curForBody
-        scope = loopScope
-        stack = acquireRunStack()
-        ip = 0
-        validateImplRequirements = true
-        returnType = NIL
-        returnLabel = ""
-        curChecksErrors = false
-        curErrorTypes = @[]
-        curFnName = ""
-        curFrameKind = fkForBody
-        evalBudget = scope.evalBudget
-      else:
-        var owner = frames.pop()
-        stack = move owner.stack
-        loadFrameRegs(owner)
-        stack.add NIL
+      advanceForLoop()
     elif curFrameKind == fkTaskScopeBody:
       let owned = curOwnedScope
       curFrameKind = fkNormal
@@ -6479,7 +6548,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
       raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
     if curFrameKind != fkNormal or curEnsureBody != nil or curForItems.len != 0 or
-        curOwnedScope != nil or curPendingError != nil or curPendingPanic != nil or
+        curForStream.kind == vkStream or curOwnedScope != nil or
+        curPendingError != nil or curPendingPanic != nil or
         curPendingCancel != nil:
       enterRecur1Frame(arg, argKnownBareInt)
     let slot = proto.positionalSlots[0]
@@ -8075,6 +8145,30 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opForEach:
           let coll = stack.pop()
           let fp = chunk.forLoops[inst[].intArg]
+          if coll.kind == vkStream:
+            var item = NIL
+            try:
+              if not coll.streamHasNext:
+                coll.closeStream()
+                stack.add NIL
+                continue
+              item = checkedStreamNext(coll, "for item")
+            except GeneError:
+              coll.closeStream()
+              raise
+            let loopScope = newScope(scope)
+            loopScope.prepareChunkScope(fp.body)
+            var binds = initTable[string, Value]()
+            if not tryMatch(fp.pattern, item, loopScope, binds):
+              coll.closeStream()
+              raiseMatchError(loopScope, "for pattern did not match an item")
+            loopScope.bindMatchedValues(binds, replaceExisting = false)
+            pushFrame()
+            enterFrame(fp.body, loopScope, true, fkForBody)
+            curForStream = coll
+            curForPattern = fp.pattern
+            curForBody = fp.body
+            continue
           let items = forItems(coll)
           if items.len == 0:
             stack.add NIL
@@ -8106,6 +8200,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if not stream.streamHasNext:
             raiseEndOfStream()
           stack.add checkedStreamNext(stream, "for item")
+        of opIteratorClose:
+          let stream = stack.pop()
+          requireStream("for iterator", stream)
+          stream.closeStream()
+        of opLoopBreak:
+          if curFrameKind != fkForBody:
+            raise newException(GeneError, "break is only valid inside a loop")
+          releaseRunStack(stack)
+          breakForLoop()
+          continue
+        of opLoopContinue:
+          if curFrameKind != fkForBody:
+            raise newException(GeneError, "continue is only valid inside a loop")
+          releaseRunStack(stack)
+          advanceForLoop()
+          continue
         of opTry:
           # Run the try body as a Frame on the heap stack (not a nested runLoop), so
           # deep recursion through try-wrapped code does not grow the Nim stack. The
@@ -8292,6 +8402,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
       attachSourceLoc(err, errorLoc)
       appendVmTrace(err, curFnName, errorLoc, frames)
+      if curFrameKind == fkForBody and
+          not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
+        closeCurrentForStream()
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -8348,6 +8461,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             var f = frames.pop()
             stack = move f.stack
             loadFrameRegs(f)
+            closeCurrentForStream()
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
             releaseCurrentCallScope()
         elif frames.len == 0:
@@ -8357,6 +8471,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var f = frames.pop()
           stack = move f.stack
           loadFrameRegs(f)
+          closeCurrentForStream()
           err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
           releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
@@ -8364,6 +8479,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     except GenePanic as p:
       # Panics are not catchable, but ensure blocks still run as the panic unwinds
       # out of every active `try` (innermost first), matching the old `finally`.
+      if curFrameKind == fkForBody and
+          not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
+        closeCurrentForStream()
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -8400,6 +8518,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
       # not see it, but cleanup still runs as the task unwinds.
+      if curFrameKind == fkForBody and
+          not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
+        closeCurrentForStream()
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope

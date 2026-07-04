@@ -309,7 +309,7 @@ suite "compiler — GIR emission":
 
   test "emits slots for for and catch child scopes":
     let loopChunk = compileSource(
-      "(var total 0) (for [a b] [[1 2]] (set total (+ total a b)))")
+      "(var total 0) (for [a b] in [[1 2]] (set total (+ total a b)))")
     let loopBody = loopChunk.forLoops[0].body
     check loopBody.localNames == @["a", "b"]
 
@@ -1554,7 +1554,7 @@ suite "vm — cooperative scheduler":
        "  (await t))", "7"
     ck "(scope (var ch (channel ^capacity 1)) " &
        "  (var out (cell 0)) " &
-       "  (var t (spawn (for x [1] " &
+       "  (var t (spawn (for x in [1] " &
        "                  (out ~ Cell/set (ch ~ Channel/recv))))) " &
        "  (spawn (ch ~ Channel/send 8)) " &
        "  (await t) " &

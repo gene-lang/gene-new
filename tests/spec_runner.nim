@@ -926,7 +926,102 @@ suite "spec — pattern destructuring from design":
                                 "catch (Boom ^message m) m) m"),
                   newGlobalScope())
     expect GeneError:
-      discard run(compileSource("(for x [1 2 3] x) x"), newGlobalScope())
+      discard run(compileSource("(for x in [1 2 3] x) x"), newGlobalScope())
+
+  test "for iterates streams lazily and closes on pattern failure":
+    check_eval("(var hits (cell 0)) " &
+               "(var source (map (to_stream [1 2 3]) " &
+               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "(var first-hits 0) " &
+               "(for x in source " &
+               "  (if (= x 1) (set first-hits (hits ~ Cell/get)))) " &
+               "first-hits",
+               "1")
+    check_eval("(var hits (cell 0)) " &
+               "(var source (map (to_stream [1 2 3]) " &
+               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "(try (for [a b] in source nil) " &
+               " catch (MatchError ^message m) nil) " &
+               "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+               "[1 false]")
+
+  test "for treats strings as char streams":
+    check_eval("(var out [nil nil]) " &
+               "(var i 0) " &
+               "(for ch in \"Aé\" " &
+               "  (set out (List/assoc out i ch)) " &
+               "  (set i (+ i 1))) " &
+               "out",
+               "['A' 'é']")
+    expect GeneError:
+      discard compileSource("(for ch \"Aé\" ch)")
+
+  test "loops support break and continue":
+    check_eval("(var i 0) (var sum 0) " &
+               "(while true " &
+               "  (set i (+ i 1)) " &
+               "  (if (= i 2) (then (continue))) " &
+               "  (if (> i 4) (then (break))) " &
+               "  (set sum (+ sum i))) " &
+               "[sum i]",
+               "[8 5]")
+    check_eval("(var i 0) (var sum 0) " &
+               "(loop " &
+               "  (set i (+ i 1)) " &
+               "  (if (= i 2) (then (continue))) " &
+               "  (if (> i 4) (then (break))) " &
+               "  (set sum (+ sum i))) " &
+               "[sum i]",
+               "[8 5]")
+    check_eval("(var i 0) (var sum 0) " &
+               "(repeat 6 " &
+               "  (set i (+ i 1)) " &
+               "  (if (= i 2) (then (continue))) " &
+               "  (if (> i 4) (then (break))) " &
+               "  (set sum (+ sum i))) " &
+               "[sum i]",
+               "[8 5]")
+    check_eval("(var sum 0) " &
+               "(repeat i in 5 " &
+               "  (set sum (+ sum i))) " &
+               "sum",
+               "10")
+    check_eval("(var sum 0) " &
+               "(repeat i in 6 " &
+               "  (if (= i 2) (then (continue))) " &
+               "  (if (> i 4) (then (break))) " &
+               "  (set sum (+ sum i))) " &
+               "sum",
+               "8")
+    check_eval("(var n 0) (repeat (do (set n (+ n 1)) 3) nil) n", "1")
+    check_eval("(var n 0) (repeat i in (do (set n (+ n 1)) 3) nil) n", "1")
+    check_eval("(var n 0) (repeat 0 (set n 1)) (repeat -1 (set n 2)) " &
+               "(repeat i in 0 (set n 3)) (repeat j in -1 (set n 4)) n",
+               "0")
+    check_eval("(var s 0) " &
+               "(for x in [1 2 3 4 5] " &
+               "  (if (= x 2) (then (continue))) " &
+               "  (if (> x 4) (then (break))) " &
+               "  (set s (+ s x))) " &
+               "s",
+               "8")
+    check_eval("(var hits (cell 0)) " &
+               "(var source (map (to_stream [1 2 3]) " &
+               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "(for x in source (break)) " &
+               "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+               "[1 false]")
+    expect GeneError:
+      discard compileSource("(break)")
+    expect GeneError:
+      discard compileSource("(continue)")
+    expect GeneError:
+      discard compileSource("(loop)")
+    expect GeneError:
+      discard compileSource("(repeat)")
+    expect GeneError:
+      discard compileSource("(repeat [i] in 3 nil)")
+
   test "alternation alternatives bind the same names":
     check_eval("(match [2 7] (when (| [1 a] [2 a]) a))", "7")
     expect GeneError:
@@ -1102,7 +1197,7 @@ suite "spec — streams from design":
                "(var source (map (to_stream [1 2 3]) " &
                "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
                "(fn copy [s] : (Stream Int Never) " &
-               "  (for x s (yield x))) " &
+               "  (for x in s (yield x))) " &
                "(var out (copy source)) " &
                "[(hits ~ Cell/get) " &
                " (out ~ Stream/next) " &
@@ -1110,6 +1205,19 @@ suite "spec — streams from design":
                " (out ~ Stream/next) " &
                " (hits ~ Cell/get)]",
                "[0 1 1 2 2]")
+    check_eval("(var hits (cell 0)) " &
+               "(var source (map (to_stream [1 2 3]) " &
+               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "(fn take-one [s] : (Stream Int Never) " &
+               "  (for x in s " &
+               "    (if (= x 2) (then (break))) " &
+               "    (yield x))) " &
+               "(var out (take-one source)) " &
+               "[(out ~ Stream/next) " &
+               " (out ~ Stream/has_next) " &
+               " (hits ~ Cell/get) " &
+               " (source ~ Stream/has_next)]",
+               "[1 false 2 false]")
 
   test "typed stream boundaries check items when pulled":
     check_eval("(try (fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &

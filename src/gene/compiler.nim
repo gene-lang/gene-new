@@ -8,6 +8,12 @@ type
     arity: int
     returnType: Value
 
+  LoopCompileContext = object
+    isInline: bool
+    continueTarget: int
+    breakJumps: seq[int]
+    continueJumps: seq[int]
+
   Compiler = object
     chunk: Chunk
     sourceName: string
@@ -18,6 +24,8 @@ type
     seenModDecl: bool
     allowYield: bool
     sawYield: bool
+    loopDepth: int
+    loopStack: seq[LoopCompileContext]
     gensym: int
     useLocalSlots: bool
     localSlots: Table[string, int]
@@ -358,6 +366,29 @@ proc emitJump(c: var Compiler, op: OpCode): int =
 
 proc patchJump(c: var Compiler, at: int) =
   c.chunk.patchJump(at, c.chunk.instructions.len)
+
+proc compileBreak(c: var Compiler, node: Value) =
+  if node.body.len != 0 or node.props.len != 0:
+    raise newException(GeneError, "break expects no arguments")
+  if c.loopDepth <= 0:
+    raise newException(GeneError, "break is only valid inside a loop")
+  if c.loopStack.len > 0 and c.loopStack[^1].isInline:
+    c.loopStack[^1].breakJumps.add c.emitJump(opJump)
+  else:
+    discard c.emit(opLoopBreak)
+
+proc compileContinue(c: var Compiler, node: Value) =
+  if node.body.len != 0 or node.props.len != 0:
+    raise newException(GeneError, "continue expects no arguments")
+  if c.loopDepth <= 0:
+    raise newException(GeneError, "continue is only valid inside a loop")
+  if c.loopStack.len > 0 and c.loopStack[^1].isInline:
+    if c.loopStack[^1].continueTarget >= 0:
+      discard c.emit(opJump, c.loopStack[^1].continueTarget)
+    else:
+      c.loopStack[^1].continueJumps.add c.emitJump(opJump)
+  else:
+    discard c.emit(opLoopContinue)
 
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
@@ -3274,25 +3305,129 @@ proc compileWhile(c: var Compiler, node: Value) =
   if body.len == 0:
     raise newException(GeneError, "while requires a condition")
   let start = c.chunk.instructions.len
+  c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
+  inc c.loopDepth
   compileExpr(c, body[0])
   let exitJump = c.emitJump(opJumpIfFalse)
   compileBodyFrom(c, body, 1)
   discard c.emit(opPop)                     # discard each iteration's body value
   discard c.emit(opJump, start)             # loop back to the condition
   c.patchJump(exitJump)
+  let loop = c.loopStack.pop()
+  for jump in loop.breakJumps:
+    c.patchJump(jump)
+  dec c.loopDepth
   c.emitConst NIL                           # while evaluates to nil
+
+proc compileLoop(c: var Compiler, node: Value) =
+  if node.props.len != 0:
+    raise newException(GeneError, "loop does not accept props")
+  let body = node.body
+  if body.len == 0:
+    raise newException(GeneError, "loop requires a body")
+  let start = c.chunk.instructions.len
+  c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
+  inc c.loopDepth
+  compileBodyFrom(c, body, 0)
+  discard c.emit(opPop)                     # discard each iteration's body value
+  discard c.emit(opJump, start)
+  let loop = c.loopStack.pop()
+  for jump in loop.breakJumps:
+    c.patchJump(jump)
+  dec c.loopDepth
+  c.emitConst NIL
+
+proc compileRepeat(c: var Compiler, node: Value) =
+  let body = node.body
+  if node.props.len != 0:
+    raise newException(GeneError, "repeat does not accept props")
+  if body.len == 0:
+    raise newException(GeneError, "repeat requires a count")
+
+  if body.len >= 2 and body[1].isSymbol("in"):
+    if body.len < 3:
+      raise newException(GeneError, "repeat requires an index, in, and a count")
+    if body[0].kind != vkSymbol:
+      raise newException(GeneError, "repeat index must be a local name")
+    let indexName = body[0].symVal
+    let limitName = c.nextTemp("repeat_limit")
+    compileExpr(c, body[2])
+    c.emitDefineBinding(limitName)
+    c.emitConst newInt(0)
+    c.emitDefineBinding(indexName)
+
+    let start = c.chunk.instructions.len
+    c.emitLoadBinding(indexName)
+    c.emitLoadBinding(limitName)
+    discard c.emit(opNativeFast2, ord(nfkLt), name = "<")
+    let exitJump = c.emitJump(opJumpIfFalse)
+
+    c.loopStack.add LoopCompileContext(isInline: true, continueTarget: -1)
+    inc c.loopDepth
+    compileBodyFrom(c, body, 3)
+    discard c.emit(opPop)                   # discard each iteration's body value
+    c.loopStack[^1].continueTarget = c.chunk.instructions.len
+    for jump in c.loopStack[^1].continueJumps:
+      c.patchJump(jump)
+    c.emitLoadBinding(indexName)
+    c.emitConst newInt(1)
+    discard c.emit(opNativeFast2, ord(nfkAdd), name = "+")
+    c.emitSetBinding(indexName)
+    discard c.emit(opPop)                   # discard set result
+    discard c.emit(opJump, start)
+    c.patchJump(exitJump)
+    let loop = c.loopStack.pop()
+    for jump in loop.breakJumps:
+      c.patchJump(jump)
+    dec c.loopDepth
+    c.emitConst NIL
+    return
+
+  let remainingName = c.nextTemp("repeat_remaining")
+  compileExpr(c, body[0])
+  c.emitDefineBinding(remainingName)
+
+  let start = c.chunk.instructions.len
+  c.emitLoadBinding(remainingName)
+  c.emitConst newInt(0)
+  discard c.emit(opNativeFast2, ord(nfkGt), name = ">")
+  let exitJump = c.emitJump(opJumpIfFalse)
+
+  c.loopStack.add LoopCompileContext(isInline: true, continueTarget: -1)
+  inc c.loopDepth
+  compileBodyFrom(c, body, 1)
+  discard c.emit(opPop)                     # discard each iteration's body value
+  c.loopStack[^1].continueTarget = c.chunk.instructions.len
+  for jump in c.loopStack[^1].continueJumps:
+    c.patchJump(jump)
+  c.emitLoadBinding(remainingName)
+  c.emitConst newInt(1)
+  discard c.emit(opNativeFast2, ord(nfkSub), name = "-")
+  c.emitSetBinding(remainingName)
+  discard c.emit(opPop)                     # discard set result
+  discard c.emit(opJump, start)
+  c.patchJump(exitJump)
+  let loop = c.loopStack.pop()
+  for jump in loop.breakJumps:
+    c.patchJump(jump)
+  dec c.loopDepth
+  c.emitConst NIL
 
 proc compileFor(c: var Compiler, node: Value) =
   let body = node.body
-  if body.len < 2:
-    raise newException(GeneError, "for requires a pattern and a collection")
-  if c.allowYield and body.bodyContainsYield(2):
+  if body.len < 3:
+    raise newException(GeneError, "for requires a pattern, in, and an iterable")
+  if body[1].kind != vkSymbol or body[1].symVal != "in":
+    raise newException(GeneError, "for requires 'in' after the pattern")
+  if c.allowYield and body.bodyContainsYield(3):
     let iterName = c.nextTemp("iter")
-    compileExpr(c, body[1])                   # collection on the stack
+    compileExpr(c, body[2])                   # iterable on the stack
     discard c.emit(opMakeIterator)
     c.emitDefineBinding(iterName)
 
     let start = c.chunk.instructions.len
+    c.loopStack.add LoopCompileContext(isInline: true, continueTarget: start)
+    inc c.loopDepth
     c.emitLoadBinding(iterName)
     discard c.emit(opIteratorHasNext)
     let exitJump = c.emitJump(opJumpIfFalse)
@@ -3301,15 +3436,22 @@ proc compileFor(c: var Compiler, node: Value) =
     discard c.emit(opIteratorNext)
     discard c.emit(opMatchBindReplace, c.chunk.addConst(body[0]))
     discard c.emit(opPop)                     # discard the matched item
-    compileBodyFrom(c, body, 2)
+    compileBodyFrom(c, body, 3)
     discard c.emit(opPop)                     # discard each iteration's body value
     discard c.emit(opJump, start)
     c.patchJump(exitJump)
+    let loop = c.loopStack.pop()
+    for jump in loop.breakJumps:
+      c.patchJump(jump)
+    dec c.loopDepth
+    c.emitLoadBinding(iterName)
+    discard c.emit(opIteratorClose)
     c.emitConst NIL
     return
 
-  compileExpr(c, body[1])                   # collection on the stack
+  compileExpr(c, body[2])                   # iterable on the stack
   var bodyCompiler = c.childCompiler()
+  bodyCompiler.loopDepth = c.loopDepth + 1
   bodyCompiler.enableLocalSlots()
   bodyCompiler.parentSlots = c.parentFrames()
   for name in patternBindingNames(body[0]):
@@ -3318,7 +3460,7 @@ proc compileFor(c: var Compiler, node: Value) =
       bodyCompiler.selfAvailable = true
   if patternBindsSelf(body[0]):
     bodyCompiler.selfAvailable = true
-  compileBodyFrom(bodyCompiler, body, 2)
+  compileBodyFrom(bodyCompiler, body, 3)
   discard bodyCompiler.emit(opReturn)
   bodyCompiler.chunk.localNames = bodyCompiler.localNames
   let fp = ForProto(pattern: body[0], body: bodyCompiler.chunk)
@@ -3764,8 +3906,20 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "while":
       compileWhile(c, node)
       return
+    of "loop":
+      compileLoop(c, node)
+      return
+    of "repeat":
+      compileRepeat(c, node)
+      return
     of "for":
       compileFor(c, node)
+      return
+    of "break":
+      compileBreak(c, node)
+      return
+    of "continue":
+      compileContinue(c, node)
       return
     of "yield":
       compileYield(c, node)

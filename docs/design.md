@@ -529,15 +529,16 @@ If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 MVP core special forms:
 
 ```text
-var set do if && || ! match for while fn macro type protocol impl derive
-try fail panic quote quasiquote select eval mod ns import yield scope
-supervisor spawn await
+var set do if && || ! match for while loop repeat break continue fn macro type
+protocol impl derive try fail panic quote quasiquote select eval mod ns
+import yield scope supervisor spawn await
 ```
 
-`&&`, `||`, and `!` are boolean control flow (§9); `while` is the looping
-counterpart to `for`; `supervisor` owns a concurrency scope (§13.6). Like the
-rest, they are reserved in head position, so `(&& ...)` and `(while ...)`
-always use the special-form rule and cannot be shadowed by a binding.
+`&&`, `||`, and `!` are boolean control flow (§9); `while`, `loop`, `repeat`,
+`break`, and `continue` are loop control; `supervisor` owns a concurrency scope
+(§13.6). Like the rest, they are reserved in head position, so `(&& ...)`,
+`(while ...)`, and `(break)` always use the special-form rule and cannot be
+shadowed by a binding.
 
 Core special forms are reserved in head position. They are not ordinary bindings that `Env` can shadow. A value named `if` may exist in data or as a qualified member, but `(if ...)` always uses the special-form rule. Clause heads such as `then`, `elif`, `else`, `when`, `catch`, and `ensure` are recognized only inside their owning special form.
 
@@ -1071,11 +1072,77 @@ scope like an ordinary `var`.
 (var [x, y] point)
 (var (Task ^id id ^title title) task)
 
-(for [k, v] pairs
+(for [k, v] in pairs
   ...)
 ```
 
 If destructuring fails, Gene raises `MatchError`.
+
+### 8.1 `for`
+
+`for` iterates an iterable value, matches each item with a pattern, and evaluates
+its body in a fresh loop-body scope for each item:
+
+```gene
+(for pattern in iterable
+  body...)
+```
+
+The MVP iterable set is:
+
+- `List`: each list item;
+- `Node`: each positional body item;
+- `Map`: `[key value]` pairs, with keys as `Sym`;
+- `Stream`: pulled lazily, one item per body iteration;
+- `Str`: Unicode scalar `Char` values;
+- `nil` and `void`: empty iteration.
+
+The loop evaluates to `nil`. If an item does not match `pattern`, `for` raises
+`MatchError`. For stream inputs, `for` closes the active stream on normal
+exhaustion and when an uncaught item-pattern/body error unwinds out of the loop.
+`break` and `continue` are loop-only special forms:
+
+```gene
+(for item in items
+  (if (skip? item)
+    (then (continue)))
+  (if (done? item)
+    (then (break)))
+  (process item))
+```
+
+`while` evaluates its condition before each iteration. `loop` is an unconditional
+loop:
+
+```gene
+(loop
+  body...)
+```
+
+`repeat` evaluates its count once, then runs its body while the remaining count is
+greater than zero:
+
+```gene
+(repeat n
+  body...)
+```
+
+The indexed form binds a zero-based index in the loop body:
+
+```gene
+(repeat i in n
+  body...)
+```
+
+The index starts at `0` and advances through `n - 1`. The count expression is
+still evaluated once before the loop begins.
+
+`continue` skips the rest of the current body and advances to the next iteration.
+For `repeat`, this means the remaining count is still decremented before the
+next condition check or index increment. `break` exits the nearest enclosing
+loop. Both forms are valid in `for`, `while`, `loop`, and `repeat`. A loop
+exited with `break` still evaluates to `nil`. For stream inputs, `break` closes
+the active stream before control leaves the loop.
 
 ---
 

@@ -109,15 +109,117 @@ suite "loops — while":
     ck "(var s 99) (while false (set s 0)) s", "99"
   test "while evaluates to nil":
     ck "(while false 1)", "nil"
+  test "while supports break and continue":
+    ck "(var i 0) (var s 0) " &
+       "(while true " &
+       "  (set i (+ i 1)) " &
+       "  (if (= i 2) (then (continue))) " &
+       "  (if (> i 4) (then (break))) " &
+       "  (set s (+ s i))) " &
+       "[s i]",
+       "[8 5]"
+  test "loop supports break and continue":
+    ck "(var i 0) (var s 0) " &
+       "(loop " &
+       "  (set i (+ i 1)) " &
+       "  (if (= i 2) (then (continue))) " &
+       "  (if (> i 4) (then (break))) " &
+       "  (set s (+ s i))) " &
+       "[s i]",
+       "[8 5]"
+  test "repeat supports break and continue":
+    ck "(var i 0) (var s 0) " &
+       "(repeat 6 " &
+       "  (set i (+ i 1)) " &
+       "  (if (= i 2) (then (continue))) " &
+       "  (if (> i 4) (then (break))) " &
+       "  (set s (+ s i))) " &
+       "[s i]",
+       "[8 5]"
+  test "indexed repeat provides a zero-based index":
+    ck "(var s 0) " &
+       "(repeat i in 5 " &
+       "  (set s (+ s i))) " &
+       "s",
+       "10"
+  test "indexed repeat supports break and continue":
+    ck "(var s 0) " &
+       "(repeat i in 6 " &
+       "  (if (= i 2) (then (continue))) " &
+       "  (if (> i 4) (then (break))) " &
+       "  (set s (+ s i))) " &
+       "s",
+       "8"
+  test "repeat evaluates count once":
+    ck "(var n 0) (repeat (do (set n (+ n 1)) 3) nil) n", "1"
+    ck "(var n 0) (repeat i in (do (set n (+ n 1)) 3) nil) n", "1"
+  test "repeat non-positive count runs zero times":
+    ck "(var n 0) (repeat 0 (set n 1)) (repeat -1 (set n 2)) " &
+       "(repeat i in 0 (set n 3)) (repeat j in -1 (set n 4)) n",
+       "0"
+  test "loop and repeat validate shape":
+    expect GeneError: discard runStr("(loop)")
+    expect GeneError: discard runStr("(repeat)")
+    expect GeneError: discard runStr("(repeat [i] in 3 nil)")
 
 suite "loops — for":
   test "for over a list":
-    ck "(var s 0) (for x [1 2 3 4] (set s (+ s x))) s", "10"
+    ck "(var s 0) (for x in [1 2 3 4] (set s (+ s x))) s", "10"
   test "for with a destructuring pattern":
-    ck "(var s 0) (for [a b] [[1 2] [3 4]] (set s (+ s (* a b)))) s", "14"
+    ck "(var s 0) (for [a b] in [[1 2] [3 4]] (set s (+ s (* a b)))) s", "14"
   test "for over a map yields key/value pairs":
-    ck "(var pair nil) (for [k v] {^a 1} (set pair [k v])) pair", "[a 1]"
+    ck "(var pair nil) (for [k v] in {^a 1} (set pair [k v])) pair", "[a 1]"
+  test "for over a stream pulls items lazily":
+    ck "(var hits (cell 0)) " &
+       "(var source (map (to_stream [1 2 3]) " &
+       "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+       "(var first-hits 0) " &
+       "(for x in source " &
+       "  (if (= x 1) (set first-hits (hits ~ Cell/get)))) " &
+       "first-hits",
+       "1"
+  test "for closes stream on destructuring failure":
+    ck "(var hits (cell 0)) " &
+       "(var source (map (to_stream [1 2 3]) " &
+       "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+       "(try (for [a b] in source nil) catch (MatchError ^message m) nil) " &
+       "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+       "[1 false]"
+  test "for closes stream on body error":
+    ck "(var hits (cell 0)) " &
+       "(var source (map (to_stream [1 2 3]) " &
+       "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+       "(try (for x in source (/ 1 0)) catch {^message m} nil) " &
+       "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+       "[1 false]"
+  test "for supports break and continue":
+    ck "(var s 0) " &
+       "(for x in [1 2 3 4 5] " &
+       "  (if (= x 2) (then (continue))) " &
+       "  (if (> x 4) (then (break))) " &
+       "  (set s (+ s x))) " &
+       "s",
+       "8"
+  test "for break closes streams":
+    ck "(var hits (cell 0)) " &
+       "(var source (map (to_stream [1 2 3]) " &
+       "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+       "(for x in source (break)) " &
+       "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+       "[1 false]"
+  test "for over a string yields chars":
+    ck "(var out [nil nil]) (var i 0) " &
+       "(for ch in \"Aé\" " &
+       "  (set out (List/assoc out i ch)) " &
+       "  (set i (+ i 1))) " &
+       "out",
+       "['A' 'é']"
   test "for evaluates to nil":
-    ck "(for x [1 2 3] x)", "nil"
+    ck "(for x in [1 2 3] x)", "nil"
   test "for over nil iterates zero times":
-    ck "(var s 0) (for x nil (set s 1)) s", "0"
+    ck "(var s 0) (for x in nil (set s 1)) s", "0"
+  test "for requires in":
+    expect GeneError: discard runStr("(for x [1] x)")
+  test "break and continue require a loop":
+    expect GeneError: discard runStr("(break)")
+    expect GeneError: discard runStr("(continue)")
