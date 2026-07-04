@@ -1,0 +1,8 @@
+#!/usr/bin/env gene run
+
+(var fib (fn [n : Int] : Int
+  (if (< n 2)
+    n
+    (+ (fib (- n 1)) (fib (- n 2))))))
+
+(println (fib 24))

@@ -17,6 +17,7 @@ benchmarks/bench_core
 .bg-shell/
 .DS_Store
 Thumbs.db
+*.db
 *.swp
 *.swo
 *~
