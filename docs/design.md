@@ -887,6 +887,94 @@ Union types are normal types:
 
 A union is a subtype of `Any`; each alternative keeps its own runtime identity.
 
+### 7.2.1 Planned type additions
+
+Status: **Planned**, with initial `Range` runtime support implemented. These
+types are not part of the MVP type hierarchy above, but they are expected
+additions as the language grows toward practical web, database, and application
+code.
+
+#### `Range`
+
+`Range` is a small native value/object used by loops, stream conversion, and
+later slicing/index traversal.
+
+```gene
+(range 0 10)      # 0, 1, ..., 9
+(range 10 0 -1)   # 10, 9, ..., 1
+(range 0 10 2)    # 0, 2, 4, 6, 8
+(range 0 4 2 true) # 0, 2, 4
+```
+
+The default range should be half-open, `[start, stop)`, because that matches
+indexing and repeat-count use cases. A fourth boolean argument marks an
+inclusive range. A range has `start`, `stop`, `step`, and `inclusive?`
+semantics; zero step is invalid.
+
+#### Date and time values
+
+The date/time family is planned first as stdlib-backed nominal values rather
+than mandatory hot-path VM value kinds:
+
+```gene
+Date
+Time
+DateTime
+Timezone
+Duration
+```
+
+`Date`, `Time`, and `DateTime` support parsing, formatting, comparison, and
+SQLite-friendly ISO-8601 round trips. `Duration` is included with the family
+because date arithmetic is incomplete without an explicit duration type.
+
+Timezone support starts with `UTC` and fixed-offset zones. Full IANA timezone
+database support is deferred until the stdlib has a dependency policy for it.
+
+#### `Enum`, `EnumMember`, and `EnumValue`
+
+Enums are planned as a core language feature for sum types, `Option`, `Result`,
+tagged errors, and identity-aware variant patterns.
+
+```gene
+(enum Option [T]
+  none
+  (some T))
+
+(enum Result [T E]
+  (ok T)
+  (err E))
+```
+
+Enum members are qualified values such as `Option/some` and `Result/err`.
+Members act as constructors. Constructed variants produce `EnumValue` values
+that carry the member identity plus payload. Pattern matching should understand
+enum variants directly:
+
+```gene
+(match result
+  ((Result/ok value) value)
+  ((Result/err err) (fail err)))
+```
+
+Unit variants such as `Option/none` are singleton enum values, not plain
+symbols.
+
+#### Additional planned stdlib types
+
+The following are useful for the web/sqlite path and should start as stdlib
+types or stdlib APIs unless performance evidence justifies making them core VM
+value kinds:
+
+- `Json`: represented by ordinary Gene maps, lists, strings, numbers, booleans,
+  and `nil`, with parser/printer APIs.
+- `Url` / `Uri`: parsed URL values for web routing, request handling, and
+  clients.
+- `Uuid`: stable identifier type for database-backed applications.
+- `Decimal`: exact base-10 numeric value for money and database precision.
+- `File` / `Directory`: capability-scoped resource handles, not ambient global
+  filesystem authority.
+
 ### 7.3 Single nominal inheritance
 
 Gene supports single nominal inheritance only:

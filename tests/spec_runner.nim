@@ -1084,6 +1084,48 @@ suite "spec — pattern destructuring from design":
                "catch (e : TypeError) e/where)",
                "\"parameter 'x'\"")
 
+suite "spec — Range type":
+  test "range constructs immutable integer ranges":
+    check_eval("(range 1 4)", "(range 1 4)")
+    check_eval("[(= (range 0 3) (range 0 3)) " &
+               " (= (range 0 3) (range 0 4)) " &
+               " (= (hash (range 0 3)) (hash (range 0 3)))]",
+               "[true false true]")
+    expect GeneError:
+      discard run(compileSource("(range 0 10 0)"), newGlobalScope())
+
+  test "range exposes start stop step inclusive and size":
+    check_eval("(var r (range 2 8 2)) " &
+               "[(r ~ start) (r ~ stop) (r ~ step) " &
+               " (r ~ inclusive?) (r ~ size)]",
+               "[2 8 2 false 3]")
+    check_eval("(var r (range 0 4 2 true)) " &
+               "[(r ~ inclusive?) (r ~ size) r]",
+               "[true 3 (range 0 4 2 true)]")
+    check_eval("((range -9223372036854775808 9223372036854775807 1 true) ~ size)",
+               "18446744073709551616")
+
+  test "range streams lazily and for iterates ranges":
+    check_eval("(into (to_stream (range 0 5)) [])",
+               "[0 1 2 3 4]")
+    check_eval("(into (to_stream (range 5 0 -2)) [])",
+               "[5 3 1]")
+    check_eval("(into (to_stream (range 0 4 2 true)) [])",
+               "[0 2 4]")
+    check_eval("(var sum 0) " &
+               "(for x in (range 0 5) " &
+               "  (set sum (+ sum x))) " &
+               "sum",
+               "10")
+
+  test "range satisfies Range and typed Stream boundaries":
+    check_eval("(fn size-of [r : Range] (r ~ size)) " &
+               "(size-of (range 0 3))",
+               "3")
+    check_eval("(fn first-int [s : (Stream Int Never)] (s ~ Stream/next)) " &
+               "(first-int (to_stream (range 5 6)))",
+               "5")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &

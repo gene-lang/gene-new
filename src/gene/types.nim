@@ -77,6 +77,7 @@ type
     vkString    ## immutable UTF-8 string
     vkBytes     ## immutable byte string
     vkRegex     ## immutable compiled PCRE regular expression
+    vkRange     ## immutable integer range
     vkChar      ## one Unicode scalar value
     vkSymbol    ## interned simple symbol (Sym)
     vkList      ## pure body / list
@@ -347,6 +348,7 @@ type
     okBigInt
     okBytes
     okRegex
+    okRange
     okSet
     okHashMap
     okEnv
@@ -399,6 +401,12 @@ type
     compiled: CompiledRegex
     groupCount: int
     groupNames: Table[string, int] # capture-name -> zero-based group index
+
+  RangeData = ref object of GeneObjectData
+    start: int64
+    stop: int64
+    step: int64
+    inclusive: bool
 
   SetData = ref object of GeneObjectData
     items: seq[Value]
@@ -986,6 +994,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     discard
   of okRegex:
     discard
+  of okRange:
+    discard
   of okSet:
     for val in SetData(data).items:
       emit(val)
@@ -1128,6 +1138,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.pattern.setLen(0)
     d.flags.setLen(0)
     d.groupNames.clear()
+  of okRange:
+    discard
   of okSet:
     SetData(data).items.setLen(0)
   of okHashMap:
@@ -1578,6 +1590,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okBigInt: vkInt
     of okBytes: vkBytes
     of okRegex: vkRegex
+    of okRange: vkRange
     of okSet: vkSet
     of okHashMap: vkHashMap
     of okEnv: vkEnv
@@ -1675,6 +1688,23 @@ proc regexGroupNames*(v: Value): Table[string, int] =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okRegex:
     raise newException(FieldDefect, "value is not a Regex")
   RegexData(objData(v)).groupNames
+
+proc rangeData(v: Value): RangeData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okRange:
+    raise newException(FieldDefect, "value is not a Range")
+  RangeData(objData(v))
+
+proc rangeStart*(v: Value): int64 =
+  v.rangeData.start
+
+proc rangeStop*(v: Value): int64 =
+  v.rangeData.stop
+
+proc rangeStep*(v: Value): int64 =
+  v.rangeData.step
+
+proc rangeInclusive*(v: Value): bool =
+  v.rangeData.inclusive
 
 proc charVal*(v: Value): Rune {.inline.} =
   if v.tagOf != CHAR_TAG:
@@ -3360,6 +3390,13 @@ proc newSet*(items: sink seq[Value] = @[]): Value =
 proc newHashMap*(entries: sink seq[HashMapEntry] = @[]): Value =
   boxObject(HashMapData(objKind: okHashMap, entries: entries))
 
+proc newRange*(start, stop: int64, step: int64 = 1,
+               inclusive = false): Value =
+  if step == 0:
+    raise newException(GeneError, "range step must not be zero")
+  boxObject(RangeData(objKind: okRange, start: start, stop: stop,
+                      step: step, inclusive: inclusive))
+
 proc newNode*(head: Value,
               props: sink PropTable = initOrderedTable[string, Value](),
               body: sink seq[Value] = @[],
@@ -4196,7 +4233,9 @@ proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope): Valu
                        errType: errType, itemScope: itemScope, closed: false))
 
 proc newLazyStream*(source: Value, pull: StreamPullProc,
-                    callable: Value = NIL, remaining: int64 = -1): Value =
+                    callable: Value = NIL, remaining: int64 = -1,
+                    itemType: Value = NIL, errType: Value = NIL,
+                    itemScope: Scope = nil): Value =
   # The stream owns its callable strongly, like every other heap container
   # (channels, cells, actor state). Weakening the captured-scope edge here
   # dangles when the operand stack held the only strong reference to an
@@ -4204,7 +4243,8 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
   # back is a leak, not a crash, matching the container-wide tradeoff.
   let storedCallable = escapeWeakFunctions(callable)
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
-                       remaining: remaining, pull: pull, closed: false))
+                       remaining: remaining, pull: pull, itemType: itemType,
+                       errType: errType, itemScope: itemScope, closed: false))
 
 proc newGeneratorStream*(code: FunctionCode, scope: Scope,
                          pull: StreamPullProc): Value =
@@ -4387,7 +4427,7 @@ proc isTruthy*(v: Value): bool {.inline.} =
 
 proc isImmutable*(v: Value): bool =
   case v.kind
-  of vkBytes, vkRegex, vkSet, vkHashMap:
+  of vkBytes, vkRegex, vkRange, vkSet, vkHashMap:
     true
   of vkList: v.listImmutable
   of vkMap: v.mapImmutable

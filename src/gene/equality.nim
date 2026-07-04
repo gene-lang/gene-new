@@ -45,6 +45,9 @@ proc equal*(a, b: Value): bool =
   of vkString: a.strVal == b.strVal
   of vkBytes:  a.bytesVal == b.bytesVal
   of vkRegex:  a.regexPattern == b.regexPattern and a.regexFlags == b.regexFlags
+  of vkRange:
+    a.rangeStart == b.rangeStart and a.rangeStop == b.rangeStop and
+      a.rangeStep == b.rangeStep and a.rangeInclusive == b.rangeInclusive
   of vkChar:   int32(a.charVal) == int32(b.charVal)
   of vkSymbol: a.symVal == b.symVal
   of vkList:
@@ -89,7 +92,7 @@ proc same*(a, b: Value): bool =
   if a.kind != b.kind:
     return false
   case a.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkChar, vkSymbol:
     equal(a, b)
   of vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
@@ -112,6 +115,11 @@ proc hash*(v: Value): Hash =
   of vkRegex:
     h = h !& hash(v.regexPattern)
     h = h !& hash(v.regexFlags)
+  of vkRange:
+    h = h !& hash(v.rangeStart)
+    h = h !& hash(v.rangeStop)
+    h = h !& hash(v.rangeStep)
+    h = h !& hash(v.rangeInclusive)
   of vkChar:   h = h !& hash(int32(v.charVal))
   of vkSymbol: h = h !& hash(v.symVal)
   of vkList:
@@ -152,7 +160,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
     seen.incl v.bits
 
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,

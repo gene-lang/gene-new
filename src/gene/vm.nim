@@ -1826,6 +1826,40 @@ proc requireStream(name: string, value: Value) =
   if value.kind != vkStream:
     raise newException(GeneError, name & " expects a Stream")
 
+proc requireRange(name: string, value: Value) =
+  if value.kind != vkRange:
+    raise newException(GeneError, name & " expects a Range")
+
+proc rangeDone(value: Value, current: int64): bool =
+  let stop = value.rangeStop
+  let step = value.rangeStep
+  if value.rangeInclusive:
+    if step > 0: current > stop else: current < stop
+  else:
+    if step > 0: current >= stop else: current <= stop
+
+proc rangeCanAdvance(current, step: int64): bool =
+  if step > 0:
+    current <= high(int64) - step
+  else:
+    current >= low(int64) - step
+
+proc pullRangeStream(stream: Value): StreamPullResult {.nimcall.} =
+  let source = stream.streamSource
+  let current = stream.streamRemaining
+  if source.rangeDone(current):
+    return StreamPullResult(has: false)
+  result = StreamPullResult(has: true, item: newInt(current))
+  if current.rangeCanAdvance(source.rangeStep):
+    stream.setStreamRemaining(current + source.rangeStep)
+  else:
+    stream.closeStream()
+
+proc rangeStream(value: Value): Value =
+  requireRange("to_stream", value)
+  newLazyStream(value, pullRangeStream, remaining = value.rangeStart,
+                itemType = newSym("Int"), errType = newSym("Never"))
+
 proc checkedStreamItem(stream, item: Value, where: string): Value =
   let itemType = stream.streamItemType
   if itemType.kind != vkNil:
@@ -1929,10 +1963,105 @@ proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     raiseReaderError("lex-all", e.msg, "LexError", scope)
   newTypedStream(tokens, tokenType, newSym("Never"), scope)
 
+proc requireRangeArgCount(name: string, args: openArray[Value]) =
+  if args.len < 2 or args.len > 4:
+    raise newException(GeneError, name & " expects 2..4 arguments, got " & $args.len)
+
+proc biRange(args: openArray[Value]): Value {.nimcall.} =
+  requireRangeArgCount("range", args)
+  let start = requireInt64("range start", args[0])
+  let stop = requireInt64("range stop", args[1])
+  let step =
+    if args.len >= 3: requireInt64("range step", args[2])
+    else: 1'i64
+  let inclusive =
+    if args.len >= 4:
+      if args[3].kind != vkBool:
+        raise newException(GeneError, "range inclusive expects a Bool")
+      args[3].boolVal
+    else:
+      false
+  newRange(start, stop, step, inclusive)
+
+proc unsignedDistanceGreater(a, b: int64): uint64 =
+  ## Distance from b to a, where a >= b. Written to avoid signed overflow when
+  ## the range crosses zero or touches int64 bounds.
+  if b >= 0:
+    uint64(a - b)
+  elif a < 0:
+    uint64(a - b)
+  else:
+    uint64(a) + uint64(-(b + 1)) + 1'u64
+
+proc absStep(step: int64): uint64 =
+  if step > 0: uint64(step)
+  else: uint64(-(step + 1)) + 1'u64
+
+proc uintCountValue(count: uint64): Value =
+  if count <= uint64(high(int64)):
+    newInt(int64(count))
+  else:
+    newIntFromDecimal($count)
+
+proc inclusiveCountValue(dist, step: uint64): Value =
+  let q = dist div step
+  if q == high(uint64):
+    newIntFromDecimal("18446744073709551616")
+  else:
+    uintCountValue(q + 1'u64)
+
+proc rangeCountValue(value: Value): Value =
+  let start = value.rangeStart
+  let stop = value.rangeStop
+  let step = value.rangeStep
+  var dist: uint64
+  if step > 0:
+    if value.rangeInclusive:
+      if start > stop: return newInt(0)
+      dist = unsignedDistanceGreater(stop, start)
+      return inclusiveCountValue(dist, step.absStep)
+    if start >= stop: return newInt(0)
+    dist = unsignedDistanceGreater(stop, start)
+  else:
+    if value.rangeInclusive:
+      if start < stop: return newInt(0)
+      dist = unsignedDistanceGreater(start, stop)
+      return inclusiveCountValue(dist, step.absStep)
+    if start <= stop: return newInt(0)
+    dist = unsignedDistanceGreater(start, stop)
+  uintCountValue(((dist - 1'u64) div step.absStep) + 1'u64)
+
+proc biRangeStart(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Range/start", args)
+  requireRange("Range/start", args[0])
+  newInt(args[0].rangeStart)
+
+proc biRangeStop(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Range/stop", args)
+  requireRange("Range/stop", args[0])
+  newInt(args[0].rangeStop)
+
+proc biRangeStep(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Range/step", args)
+  requireRange("Range/step", args[0])
+  newInt(args[0].rangeStep)
+
+proc biRangeInclusive(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Range/inclusive?", args)
+  requireRange("Range/inclusive?", args[0])
+  newBool(args[0].rangeInclusive)
+
+proc biRangeSize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Range/size", args)
+  requireRange("Range/size", args[0])
+  rangeCountValue(args[0])
+
 proc biToStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_stream", args)
+  if args[0].kind == vkRange:
+    return rangeStream(args[0])
   if args[0].kind notin {vkList, vkSet}:
-    raise newException(GeneError, "to_stream expects a List or Set")
+    raise newException(GeneError, "to_stream expects a List, Set, or Range")
   var items: seq[Value]
   case args[0].kind
   of vkList:
@@ -2037,7 +2166,7 @@ proc freezeRejectName(value: Value): string =
 
 proc freezeValue(value: Value): Value =
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkChar, vkSymbol, vkType, vkProtocol, vkProtocolMessage:
     value
   of vkList:
@@ -2165,6 +2294,7 @@ proc declarationKind*(value: Value): string =
   of vkString: "Str"
   of vkBytes: "Bytes"
   of vkRegex: "Regex"
+  of vkRange: "Range"
   of vkChar: "Char"
   of vkSymbol: "Sym"
   of vkList: "List"
@@ -3805,6 +3935,14 @@ proc buildBuiltins(app: Application): Scope =
                     newNativeFn("regex/replace_all", biRegexReplaceAll))
   regexScope.define("split", newNativeFn("regex/split", biRegexSplit))
   result.define("regex", newNamespace("regex", regexScope))
+  result.define("range", newNativeFn("range", biRange))
+  let rangeScope = newScope(result)
+  rangeScope.define("start", newNativeFn("Range/start", biRangeStart))
+  rangeScope.define("stop", newNativeFn("Range/stop", biRangeStop))
+  rangeScope.define("step", newNativeFn("Range/step", biRangeStep))
+  rangeScope.define("inclusive?", newNativeFn("Range/inclusive?", biRangeInclusive))
+  rangeScope.define("size", newNativeFn("Range/size", biRangeSize))
+  result.define("Range", newNamespace("Range", rangeScope))
   result.define("Set", newNativeFn("Set", biSet))
   result.define("set-has?", newNativeFn("set-has?", biSetHas))
   result.define("set-size", newNativeFn("set-size", biSetSize))
@@ -4401,6 +4539,10 @@ proc forItems(coll: Value): seq[Value] =
   of vkStream:
     while coll.streamHasNext:
       result.add checkedStreamNext(coll, "for item")
+  of vkRange:
+    let stream = rangeStream(coll)
+    while stream.streamHasNext:
+      result.add checkedStreamNext(stream, "for item")
   of vkNil, vkVoid:
     discard
   else:
@@ -4431,6 +4573,8 @@ proc iteratorStream(coll: Value): Value =
     newStream(chars)
   of vkStream:
     coll
+  of vkRange:
+    rangeStream(coll)
   of vkNil, vkVoid:
     var empty: seq[Value]
     newStream(empty)
@@ -4928,6 +5072,10 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
     if binding.kind == vkVoid: NIL else: binding
+  of vkRange:
+    let rangeNs = builtinBinding(scope, "Range")
+    let binding = exportedBinding(rangeNs, name)
+    if binding.kind == vkVoid: NIL else: binding
   else:
     NIL
 
@@ -5070,7 +5218,7 @@ proc isSendableValue(value: Value, scope: Scope,
       return true
     seen.incl value.bits
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkChar, vkSymbol, vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
      vkType, vkProtocol, vkProtocolMessage:
     true
@@ -8612,8 +8760,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           scope.bindMatchedValues(binds, replaceExisting = true)
           stack.add target
         of opForEach:
-          let coll = stack.pop()
+          var coll = stack.pop()
           let fp = chunk.forLoops[inst[].intArg]
+          if coll.kind == vkRange:
+            coll = rangeStream(coll)
           if coll.kind == vkStream:
             var item = NIL
             try:
@@ -10164,6 +10314,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkString: newSym("Str")
   of vkBytes: newSym("Bytes")
   of vkRegex: newSym("Regex")
+  of vkRange: newSym("Range")
   of vkChar: newSym("Char")
   of vkSymbol: newSym("Sym")
   of vkList:
@@ -10608,6 +10759,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkBytes)
   of "Regex":
     (true, value.kind == vkRegex)
+  of "Range":
+    (true, value.kind == vkRange)
   of "Char":
     (true, value.kind == vkChar)
   of "Sym", "Symbol":

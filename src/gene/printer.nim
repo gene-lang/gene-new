@@ -107,6 +107,14 @@ proc print*(v: Value): string =
       sb.add print(it)
     sb.add ')'
     sb
+  of vkRange:
+    var sb = "(range " & $v.rangeStart & " " & $v.rangeStop
+    if v.rangeStep != 1 or v.rangeInclusive:
+      sb.add " " & $v.rangeStep
+    if v.rangeInclusive:
+      sb.add " true"
+    sb.add ")"
+    sb
   of vkHashMap:
     var sb = "{{"
     var first = true
