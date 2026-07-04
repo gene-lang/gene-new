@@ -203,7 +203,7 @@ name!        # "visible rewriting": macros (§11) and in-place mutation ops (§1
 x/user/name  # apply selector to x
 #[a b]       # shallow immutable list
 #{^a v}      # shallow immutable map / PropMap
-#(h ^p v x) # shallow immutable Gene/node value
+#(h ^p v x)  # shallow immutable Gene/node value
 ```
 
 Canonical forms:
@@ -273,7 +273,7 @@ Fs/ReadDir
 
 Context determines interpretation:
 
-- expression value position: `user/name` desugars to selector application, `(user ~ (select name))`;
+- expression value position: `user/name` desugars to selector application, `((select name) user)`;
 - leading slash expression: `/user/name` is a selector literal;
 - import namespace position: `std/stream` is a built-in or already-loaded namespace path;
 - type/member declaration contexts: `C/Int32`, `Stream/next`, and `Color/red` are qualified-name resolution, not runtime selector evaluation;
@@ -395,20 +395,39 @@ In type schemas, `T...` is a repetition marker rather than value spread:
 
 ### 2.5 Templates
 
-Backtick creates a template / quoted node:
+Backtick creates a template / quoted node. Quotation depth follows the usual
+quasiquote rule: each backtick raises depth, each `%` lowers it, and evaluation
+fires at depth zero.
 
 ```gene
 `(div "hello")
-`(div %name)
 ```
 
-Quotation depth follows the usual quasiquote rule: each backtick raises depth, each `%` lowers it, and evaluation fires at depth zero.
-
-Templates may capture lexical bindings. Forcing a template uses `eval`:
+A single backtick fires at depth zero, so its `%` holes resolve immediately from
+lexical scope:
 
 ```gene
-(var t `(div %name))
-(eval t)
+(var name "Gene")
+`(div %name)          # => (div "Gene")
+```
+
+A double backtick defers one level: the inner `%` holes stay unresolved and the
+result is a depth-one template you can store, pass, and force later.
+
+```gene
+(var t ``(div %name)) # t is the deferred template `(div %name)
+```
+
+Force a deferred template with `eval`, naming the environment its holes resolve
+against. `eval` always requires an explicit `^in` and never captures caller
+locals (§11.1), so the environment is stated: `this-mod` carries the current
+module's bindings, and `^bindings` supplies values that are not module-level
+(such as function locals).
+
+```gene
+(var name "Gene")
+(eval t ^in (env ^module this-mod))          # => (div "Gene")   ; module-level name
+(eval t ^in (env ^bindings {^name name}))    # => (div "Gene")   ; explicit value
 ```
 
 ### 2.6 Pipes
@@ -421,21 +440,38 @@ Templates may capture lexical bindings. Forcing a template uses `eval`:
 (xs filter p; map f) # => ((xs filter p) map f)
 ```
 
-The first segment is preserved as read. Pipe does not insert the previous value as an argument. For data-flow style pipelines, use explicit message sends with `~`:
+The first segment is preserved as read. A plain pipe folds the previous segment
+into head position; it does not thread it in as an argument. For a data-flow
+chain, compose pipes with `~` message sends (Section 3):
 
 ```gene
-(xs ~ filter; ~ map f; ~ take 10)
-# reader => (((xs ~ filter) ~ map f) ~ take 10)
-# when filter/map/take resolve to plain functions (Section 3), each send
-# evaluates like (take (map (filter xs) f) 10)
+(xs ~ filter p; ~ map f; ~ take 10)
+# reader keeps every send: (((xs ~ filter p) ~ map f) ~ take 10)
 ```
 
-A segment containing `_` is a slot form:
+Each `~` here is a receiver-first message send, **not** a reader rewrite to a
+flipped call `(f x)`. The reader preserves the send form and resolution happens
+at dispatch time. A `List`/`Stream` defines no `filter`/`map`/`take` message, so
+each name resolves through to the plain stdlib function and the chain then
+behaves like `(take (map (filter xs p) f) 10)`. Had the receiver's type defined
+`filter`, that message would dispatch instead and this reduction would not hold.
+
+A segment containing `_` is a slot form: the folded previous segment lands at
+`_` instead of head position.
 
 ```gene
-(x; parse; (|| _ default))
-# => (|| ((x) parse) default)
+(a; b _ c)                  # => (b (a) c)
+(x; parse; (|| _ default))  # => (|| ((x) parse) default)
 ```
+
+The previous segment is still wrapped as a node `(a)`, so a pipe threads a call,
+not a bare value: `(a; b _ c)` is `(b (a) c)`, not `(b a c)`.
+
+> **Future direction (non-MVP):** a real left-to-right data-flow pipeline
+> operator, spelled `->`, is a likely addition — e.g.
+> `(xs -> (filter /odd?) -> times5)`, where each stage receives the previous
+> stage's value. It is distinct from `;` (reader-only head-folding) and from `~`
+> (message send). `->` is reserved for it and unused today.
 
 ---
 
@@ -493,9 +529,15 @@ If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 MVP core special forms:
 
 ```text
-var set do if match for fn macro type protocol impl derive try fail panic
-quote quasiquote select eval mod ns import yield scope spawn await
+var set do if && || ! match for while fn macro type protocol impl derive
+try fail panic quote quasiquote select eval mod ns import yield scope
+supervisor spawn await
 ```
+
+`&&`, `||`, and `!` are boolean control flow (§9); `while` is the looping
+counterpart to `for`; `supervisor` owns a concurrency scope (§13.6). Like the
+rest, they are reserved in head position, so `(&& ...)` and `(while ...)`
+always use the special-form rule and cannot be shadowed by a binding.
 
 Core special forms are reserved in head position. They are not ordinary bindings that `Env` can shadow. A value named `if` may exist in data or as a qualified member, but `(if ...)` always uses the special-form rule. Clause heads such as `then`, `elif`, `else`, `when`, `catch`, and `ensure` are recognized only inside their owning special form.
 
