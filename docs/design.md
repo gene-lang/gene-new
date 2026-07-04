@@ -948,7 +948,7 @@ F32     # 32-bit IEEE float for typed buffers/native code
 Float   # alias for F64 in MVP
 ```
 
-`Int` has mathematical integer semantics. The VM may store small integers as NaN-boxed fixnums and promote to heap bignums on overflow. Typed native code may specialize `Fixnum`, `I64`, `F64`, and `F32`; using such fixed-width types creates range-checked boundaries.
+`Int` has mathematical integer semantics. The VM may store small integers as NaN-boxed fixnums and promote to heap bignums on overflow. Overflow of the fixnum range promotes to an exact bignum; `Int` arithmetic never wraps silently. Typed native code may specialize `Fixnum`, `I64`, `F64`, and `F32`; using such fixed-width types creates range-checked boundaries (a fixed-width result out of range raises rather than wrapping).
 
 FFI types such as `C/Int32`, `C/Long`, and `C/Size` are ABI types, not aliases for Gene `Int`. Passing a Gene `Int` to an FFI integer parameter performs an explicit range check and then marshals to the target ABI width.
 
@@ -1061,6 +1061,11 @@ Rules:
 - no match and no `else` raises `MatchError`.
 
 The same pattern engine is used by `var`, `for`, and `catch` destructuring.
+
+Pattern bindings are scoped to where the match runs. Names bound by `match`,
+`catch`, and `for` item destructuring are local to that branch or loop body and
+are not visible after it. `(var pattern value)` binds into the current lexical
+scope like an ordinary `var`.
 
 ```gene
 (var [x, y] point)
@@ -1570,7 +1575,14 @@ A task may be cancelled explicitly:
 (t ~ Task/cancel)
 ```
 
-Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate.
+Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate. Concretely:
+
+- cancellation is a control signal, not an `Error`; `try/catch` — including a
+  wildcard `catch _` — does not catch it, so it propagates through catch clauses;
+- `ensure` blocks always run during cancellation cleanup;
+- `await` on a cancelled task propagates the cancellation;
+- an actor observes cancellation after the current message completes or at its
+  next suspension/safepoint (§13.4), never mid-message.
 
 ### 13.2 Typed bounded channels
 
@@ -2439,7 +2451,7 @@ A foreign struct value is not automatically a normal Gene node. Libraries may pr
 
 FFI distinguishes three failure classes:
 
-1. **Gene-to-ABI mismatch** — fatal `TypeError`; the foreign function is not called.
+1. **Gene-to-ABI boundary mismatch** — a dynamic/`Any` value that fails an FFI parameter's boundary check raises a **recoverable** `TypeError` *before* the foreign function is called, consistent with the `Any`→typed boundary rule (§9). A fully typed wrapper that violates its own declared ABI contract internally is a **panic**, not a recoverable error.
 2. **Expected foreign failure** — the low-level binding returns its C result, status, or `errno`; an ordinary Gene wrapper translates it into a typed Gene error.
 3. **Native crash or memory corruption** — process-level failure; Gene cannot promise recovery.
 

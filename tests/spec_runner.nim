@@ -915,7 +915,7 @@ suite "spec — checked errors from design":
                "\"x\"")
 
 suite "spec — pattern destructuring from design":
-  test "match and catch bindings are branch-local":
+  test "match, catch, and for bindings are branch-local":
     expect GeneError:
       discard run(compileSource("(match [1 2] (when [a b] (+ a b))) a"),
                   newGlobalScope())
@@ -925,6 +925,8 @@ suite "spec — pattern destructuring from design":
                                 "(try (fail (Boom ^message \"x\")) " &
                                 "catch (Boom ^message m) m) m"),
                   newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(for x [1 2 3] x) x"), newGlobalScope())
   test "alternation alternatives bind the same names":
     check_eval("(match [2 7] (when (| [1 a] [2 a]) a))", "7")
     expect GeneError:
