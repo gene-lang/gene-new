@@ -606,6 +606,25 @@ suite "spec — hashable collections and bytes from design":
     check_eval("(try {{[1] : 2}} catch (TypeError ^expected e) e)",
                "\"HashStable\"")
 
+suite "spec — regular expressions from design":
+  test "Regex literals are raw and constructor strings escape normally":
+    check_eval("[#\"\\d+\" (Regex \"\\\\d+\") (Regex ^flags \"mi\" \"abc\")]",
+               "[#\"\\d+\" #\"\\d+\" #\"abc\"im]")
+
+  test "regex sends return Match values and streams":
+    check_eval("(var m (#\"(?<word>\\w+)-(\\d+)\" ~ match \"ab-12 zz\")) " &
+               "[m/text m/groups (Map/get m/named \"word\") m/start m/end]",
+               "[\"ab-12\" #[\"ab\" \"12\"] \"ab\" 0 5]")
+    check_eval("(var xs (into (#\"\\d+\" ~ find_all \"a12b3\") [])) " &
+               "[xs/0/text xs/1/text]",
+               "[\"12\" \"3\"]")
+
+  test "regex replacement templates and split use PCRE captures":
+    check_eval("(#\"(\\w+)=(?<n>\\d+)\" ~ replace_all \"a=1 b=22\" \"\\\\k<n>\")",
+               "\"1 22\"")
+    check_eval("(#\"\\s*,\\s*\" ~ split \"a, b,c\")",
+               "[\"a\" \"b\" \"c\"]")
+
 suite "spec — equality and identity from design":
   test "same question mark is scalar identity or heap identity":
     check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",

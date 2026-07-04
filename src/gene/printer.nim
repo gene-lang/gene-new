@@ -48,6 +48,16 @@ proc printBytes(data: string): string =
   for ch in data:
     result.add toHex(ord(ch), 2).toLowerAscii
 
+proc printRegex(pattern, flags: string): string =
+  result = "#\""
+  for ch in pattern:
+    if ch == '"':
+      result.add "\\\""
+    else:
+      result.add ch
+  result.add '"'
+  result.add flags
+
 proc printProps(sb: var string, props: PropTable, sigil: string) =
   for k, val in props:
     sb.add ' '
@@ -68,6 +78,7 @@ proc print*(v: Value): string =
   of vkFloat:  printFloat(v.floatVal)
   of vkString: escapeStr(v.strVal)
   of vkBytes:  printBytes(v.bytesVal)
+  of vkRegex:  printRegex(v.regexPattern, v.regexFlags)
   of vkChar:   "'" & escapeChar(v.charVal) & "'"
   of vkSymbol: v.symVal
   of vkList:

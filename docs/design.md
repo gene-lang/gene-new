@@ -1070,6 +1070,72 @@ including newlines:
 0#SGVs~ bG8=
 ```
 
+### 7.6 Regular expressions
+
+The universal `/pattern/` literal is unavailable — a leading `/` is a selector
+literal (§5) — so regex literals use a `#`-reader form, `#"pattern"`:
+
+```gene
+#"\d{4}-\d{2}"        # a Regex value, compiled at read time in native builds
+#"hello"i             # trailing flags: i (case), m (^$ multiline), s (dotall), x (verbose)
+#"""^\s*(\w+)\s*$"""  # triple-quoted so " needs no escaping
+```
+
+Regex literals are **raw**: they preserve backslash escapes literally (`\d`, `\w`,
+`\.`) and hand the pattern to the engine unchanged — unlike normal Gene strings,
+which reject unknown escapes such as `\d`. So the reader does **not** reuse string
+parsing; it scans only enough to terminate the literal: a closing `"` (with `\"`
+permitted so a pattern may contain a quote), or the `#"""…"""` triple-quoted form
+where nothing needs escaping.
+
+Regex literals produce immutable compiled `Regex` values directly. `Regex` is
+also a constructor function and type annotation; the explicit constructor takes
+an **ordinary** string, so escapes double: `(Regex "\\d+")` equals `#"\d+"`.
+Regex uses PCRE through Nim's `std/re` wrapper. `Regex` is an immutable, opaque
+value under `Any` (§7.2), compiled once, printing back as `#"..."`. Because
+strings are UTF-8, Unicode matching is the default.
+
+MVP surface:
+
+```gene
+#"\d+"
+#"""^\s*(\w+)\s*$"""
+(Regex "\\d+")
+(re ~ match s)            # => a Match, or void if no match
+(re ~ find_all s)         # => a (Stream Match Never), lazy (§6)
+(re ~ replace s tmpl)     # first match; tmpl backrefs \1, \k<name>
+(re ~ replace_all s tmpl) # every match
+(re ~ split s)            # => (List Str)
+```
+
+`Match` is a **typed node** (§7.1) with specified fields: `^text` (whole match),
+`^groups` (numbered captures, `(List (opt Str))`), `^named` (`(HashMap Str
+Str?)`, name→capture), and `^start`/`^end` (half-open byte offsets:
+`start <= i < end`). Unmatched optional captures are `nil`. It destructures with
+the ordinary pattern engine (§8).
+
+Flags are canonicalized in `i`/`m`/`s`/`x` order. Invalid or duplicate flags are
+read/constructor errors. `(Regex ^flags "im" "\\d+")` is equivalent to
+`#"\d+"im` after ordinary string escaping.
+
+Replacement templates recognize `\0` for the whole match, `\1` style numbered
+captures, `\k<name>` named captures, and `\\` for a literal backslash. Unknown
+replacement escapes are errors.
+
+**Deferred until the basic value/API lands** — both overcommit to capture-binding
+and template semantics before the core is proven:
+
+- **Regex as a `match` pattern** — `(when #"..." …)` binding named/numbered
+  captures branch-locally, with the failed-match and duplicate-group-name rules.
+- **`^to` rewrite rules** — a regex carrying its replacement template so
+  `(rule ~ apply s)` substitutes without a call-site template.
+
+Implementation note: the first implementation uses Nim's PCRE-backed `std/re`
+API in native builds. Wasm builds preserve the `Regex` value shape but report
+regex operations as unavailable until PCRE is linked into the wasm artifact.
+Named-capture extraction records the common PCRE group declaration forms
+`(?<name>...)`, `(?'name'...)`, and `(?P<name>...)`.
+
 ---
 
 ## 8. Pattern matching and destructuring

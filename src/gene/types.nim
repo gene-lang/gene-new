@@ -35,6 +35,12 @@
 
 import std/[locks, sets, strutils, sysatomics, tables, unicode]
 
+when not defined(geneWasm):
+  import std/re as nre
+  type CompiledRegex = nre.Regex
+else:
+  type CompiledRegex = ref object
+
 # Manual reference counting (below) relies on ARC/ORC move semantics and runs
 # =copy/=sink/=dup/=destroy over raw alloc0 objects holding GC-managed fields.
 # A --mm:refc build would mismanage those fields, so fail fast instead.
@@ -70,6 +76,7 @@ type
     vkFloat     ## F64 (design `Float` alias)
     vkString    ## immutable UTF-8 string
     vkBytes     ## immutable byte string
+    vkRegex     ## immutable compiled PCRE regular expression
     vkChar      ## one Unicode scalar value
     vkSymbol    ## interned simple symbol (Sym)
     vkList      ## pure body / list
@@ -339,6 +346,7 @@ type
     okModule
     okBigInt
     okBytes
+    okRegex
     okSet
     okHashMap
     okEnv
@@ -384,6 +392,13 @@ type
 
   BytesData = ref object of GeneObjectData
     data: string
+
+  RegexData = ref object of GeneObjectData
+    pattern: string
+    flags: string
+    compiled: CompiledRegex
+    groupCount: int
+    groupNames: Table[string, int] # capture-name -> zero-based group index
 
   SetData = ref object of GeneObjectData
     items: seq[Value]
@@ -969,6 +984,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     discard
   of okBytes:
     discard
+  of okRegex:
+    discard
   of okSet:
     for val in SetData(data).items:
       emit(val)
@@ -1106,6 +1123,11 @@ proc clearObjectEdges(data: GeneObjectData) =
     discard
   of okBytes:
     BytesData(data).data.setLen(0)
+  of okRegex:
+    let d = RegexData(data)
+    d.pattern.setLen(0)
+    d.flags.setLen(0)
+    d.groupNames.clear()
   of okSet:
     SetData(data).items.setLen(0)
   of okHashMap:
@@ -1555,6 +1577,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okModule: vkModule
     of okBigInt: vkInt
     of okBytes: vkBytes
+    of okRegex: vkRegex
     of okSet: vkSet
     of okHashMap: vkHashMap
     of okEnv: vkEnv
@@ -1627,6 +1650,31 @@ proc bytesVal*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okBytes:
     raise newException(FieldDefect, "value is not Bytes")
   BytesData(objData(v)).data
+
+proc regexPattern*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okRegex:
+    raise newException(FieldDefect, "value is not a Regex")
+  RegexData(objData(v)).pattern
+
+proc regexFlags*(v: Value): lent string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okRegex:
+    raise newException(FieldDefect, "value is not a Regex")
+  RegexData(objData(v)).flags
+
+proc regexCompiled*(v: Value): CompiledRegex =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okRegex:
+    raise newException(FieldDefect, "value is not a Regex")
+  RegexData(objData(v)).compiled
+
+proc regexGroupCount*(v: Value): int =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okRegex:
+    raise newException(FieldDefect, "value is not a Regex")
+  RegexData(objData(v)).groupCount
+
+proc regexGroupNames*(v: Value): Table[string, int] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okRegex:
+    raise newException(FieldDefect, "value is not a Regex")
+  RegexData(objData(v)).groupNames
 
 proc charVal*(v: Value): Rune {.inline.} =
   if v.tagOf != CHAR_TAG:
@@ -3150,6 +3198,116 @@ proc newStr*(v: sink string): Value =
 proc newBytes*(v: sink string): Value =
   boxObject(BytesData(objKind: okBytes, data: v))
 
+proc canonicalRegexFlags*(flags: string): string =
+  var seen: set[char]
+  for ch in flags:
+    if ch notin {'i', 'm', 's', 'x'}:
+      raise newException(GeneError, "invalid Regex flag: " & $ch)
+    if ch in seen:
+      raise newException(GeneError, "duplicate Regex flag: " & $ch)
+    seen.incl ch
+  for ch in ['i', 'm', 's', 'x']:
+    if ch in seen:
+      result.add ch
+
+when not defined(geneWasm):
+  proc regexFlagSet(flags: string): set[nre.RegexFlag] =
+    result = {nre.reStudy}
+    for ch in canonicalRegexFlags(flags):
+      case ch
+      of 'i': result.incl nre.reIgnoreCase
+      of 'm': result.incl nre.reMultiLine
+      of 's': result.incl nre.reDotAll
+      of 'x': result.incl nre.reExtended
+      else: discard
+
+proc regexCaptureInfo(pattern: string): tuple[count: int, names: Table[string, int]] =
+  result.names = initTable[string, int]()
+  var i = 0
+  var groupIndex = 0
+  var inClass = false
+  while i < pattern.len:
+    let ch = pattern[i]
+    if ch == '\\':
+      i += 2
+      continue
+    if ch == '[':
+      inClass = true
+      inc i
+      continue
+    if ch == ']' and inClass:
+      inClass = false
+      inc i
+      continue
+    if ch != '(' or inClass:
+      inc i
+      continue
+
+    if i + 1 < pattern.len and pattern[i + 1] == '?':
+      if i + 3 < pattern.len and pattern[i + 2] == '<' and
+          pattern[i + 3] notin {'=', '!'}:
+        var j = i + 3
+        while j < pattern.len and pattern[j] != '>':
+          inc j
+        if j < pattern.len:
+          let name = pattern[i + 3 ..< j]
+          if name.len > 0:
+            result.names[name] = groupIndex
+          inc groupIndex
+          i = j + 1
+          continue
+      elif i + 3 < pattern.len and pattern[i + 2] == '\'':
+        var j = i + 3
+        while j < pattern.len and pattern[j] != '\'':
+          inc j
+        if j < pattern.len:
+          let name = pattern[i + 3 ..< j]
+          if name.len > 0:
+            result.names[name] = groupIndex
+          inc groupIndex
+          i = j + 1
+          continue
+      elif i + 4 < pattern.len and pattern[i + 2] == 'P' and
+          pattern[i + 3] == '<':
+        var j = i + 4
+        while j < pattern.len and pattern[j] != '>':
+          inc j
+        if j < pattern.len:
+          let name = pattern[i + 4 ..< j]
+          if name.len > 0:
+            result.names[name] = groupIndex
+          inc groupIndex
+          i = j + 1
+          continue
+      else:
+        i += 2
+        continue
+
+    inc groupIndex
+    inc i
+  result.count = groupIndex
+
+proc newRegex*(pattern: string, flags = ""): Value =
+  let canonical = canonicalRegexFlags(flags)
+  let captureInfo = regexCaptureInfo(pattern)
+  when defined(geneWasm):
+    boxObject(RegexData(objKind: okRegex,
+                        pattern: pattern,
+                        flags: canonical,
+                        compiled: nil,
+                        groupCount: captureInfo.count,
+                        groupNames: captureInfo.names))
+  else:
+    try:
+      boxObject(RegexData(objKind: okRegex,
+                          pattern: pattern,
+                          flags: canonical,
+                          compiled: nre.re(pattern, regexFlagSet(canonical)),
+                          groupCount: captureInfo.count,
+                          groupNames: captureInfo.names))
+    except nre.RegexError as e:
+      raise newException(GeneError, "invalid Regex: " & e.msg)
+
 proc newChar*(r: Rune): Value {.inline.} =
   mkImm(CHAR_TAG, uint64(int32(r)) and 0xffffffff'u64)
 
@@ -4229,7 +4387,7 @@ proc isTruthy*(v: Value): bool {.inline.} =
 
 proc isImmutable*(v: Value): bool =
   case v.kind
-  of vkBytes, vkSet, vkHashMap:
+  of vkBytes, vkRegex, vkSet, vkHashMap:
     true
   of vkList: v.listImmutable
   of vkMap: v.mapImmutable

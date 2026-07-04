@@ -16,13 +16,14 @@ type
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # ~
     tkDotDotDot,             # ...
-    tkString, tkBytes, tkInt, tkFloat, tkSymbol, tkChar,
+    tkString, tkBytes, tkRegex, tkInt, tkFloat, tkSymbol, tkChar,
     tkComma, tkColon, tkEqual, tkSemi, tkSlash, tkPercent,
     tkBacktick, tkDollar, tkUnderscore
 
   Token* = object
     kind*: TokenKind
     lexeme*: string
+    flags*: string
     line*, col*: int
 
   Reader* = object
@@ -143,6 +144,7 @@ proc isBytesLexeme(lexeme: string): bool =
 proc hexValue(c: char): int
 proc nextChar(r: var Reader): char
 proc advance(r: var Reader)
+proc advanceBytes(r: var Reader, count: int)
 
 proc tryScanBytesLexeme(r: var Reader, lexeme: var string): bool =
   if r.pos + 2 >= r.src.len or r.src[r.pos] != '0' or
@@ -202,6 +204,52 @@ proc parseBytesLiteral(r: var Reader, lexeme: string): Value =
       r.raiseReadError("invalid base64 byte literal")
   else:
     r.raiseReadError("invalid byte literal")
+
+proc parseRegexLiteral(r: var Reader): tuple[pattern, flags: string] =
+  if r.nextChar() != '"':
+    r.raiseReadError("internal: regex literal must start with a quote")
+  r.advance() # consume opening quote
+  if r.src.continuesWith("\"\"", r.pos):
+    r.advance()
+    r.advance()
+    var closed = false
+    while r.pos < r.src.len:
+      if r.src.continuesWith("\"\"\"", r.pos):
+        r.advanceBytes(3)
+        closed = true
+        break
+      result.pattern.add r.nextChar()
+      r.advance()
+    if not closed:
+      r.raiseReadIncomplete("unterminated regex literal")
+  else:
+    var closed = false
+    while r.pos < r.src.len:
+      let c = r.nextChar()
+      if c == '\\':
+        result.pattern.add c
+        r.advance()
+        if r.pos >= r.src.len:
+          r.raiseReadIncomplete("unterminated regex literal")
+        result.pattern.add r.nextChar()
+        r.advance()
+      elif c == '"':
+        r.advance()
+        closed = true
+        break
+      else:
+        result.pattern.add c
+        r.advance()
+    if not closed:
+      r.raiseReadIncomplete("unterminated regex literal")
+
+  while r.pos < r.src.len and r.nextChar() in {'A'..'Z', 'a'..'z'}:
+    result.flags.add r.nextChar()
+    r.advance()
+  try:
+    discard newRegex(result.pattern, result.flags)
+  except GeneError as e:
+    r.raiseReadError(e.msg)
 
 proc nextChar(r: var Reader): char =
   if r.pos < r.src.len:
@@ -336,6 +384,11 @@ proc tokenize(r: var Reader) =
       of '[': r.advance(); r.tokens.add Token(kind: tkHashLBracket, lexeme: "#[", line: startLine, col: startCol)
       of '{': r.advance(); r.tokens.add Token(kind: tkHashLBrace, lexeme: "#{", line: startLine, col: startCol)
       of '_': r.advance(); r.tokens.add Token(kind: tkUnderscore, lexeme: "#_", line: startLine, col: startCol)
+      of '"':
+        let literal = r.parseRegexLiteral()
+        r.tokens.add Token(kind: tkRegex, lexeme: literal.pattern,
+                           flags: canonicalRegexFlags(literal.flags),
+                           line: startLine, col: startCol)
       of '<':
         # Block comment #< ... >#
         r.advance()
@@ -510,6 +563,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkDotDotDot: "dot-dot-dot"
   of tkString: "string"
   of tkBytes: "bytes"
+  of tkRegex: "regex"
   of tkInt: "int"
   of tkFloat: "float"
   of tkSymbol: "symbol"
@@ -554,7 +608,7 @@ proc next(r: var Reader): Token =
 proc parseForm(r: var Reader, inList = false): Value
 
 proc hasStableSourceIdentity(v: Value): bool =
-  v.kind in {vkBytes, vkList, vkMap, vkSet, vkHashMap, vkNode}
+  v.kind in {vkBytes, vkRegex, vkList, vkMap, vkSet, vkHashMap, vkNode}
 
 proc recordSourceLoc(r: var Reader, value: Value, tok: Token) =
   if value.hasStableSourceIdentity:
@@ -891,6 +945,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkFloat: finish newFloat(parseFloat(tok.lexeme))
   of tkString: finish newStr(tok.lexeme)
   of tkBytes: finish r.parseBytesLiteral(tok.lexeme)
+  of tkRegex: finish newRegex(tok.lexeme, tok.flags)
   of tkChar: finish newChar(runeAt(tok.lexeme, 0))
   of tkSymbol:
     case tok.lexeme

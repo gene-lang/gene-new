@@ -1,8 +1,11 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, locks, math, monotimes, net, os, osproc, sets,
-            strutils, tables, times, unicode]
+import std/[algorithm, dynlib, locks, math, monotimes, net, os, osproc,
+            sets, strutils, tables, times, unicode]
 import ./[compiler, diagnostics, equality, gir, printer, reader, types]
+
+when not defined(geneWasm):
+  import std/re as nre
 
 when compileOption("threads") and defined(gcAtomicArc):
   import std/cpuinfo
@@ -2034,8 +2037,8 @@ proc freezeRejectName(value: Value): string =
 
 proc freezeValue(value: Value): Value =
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol,
-     vkType, vkProtocol, vkProtocolMessage:
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+     vkChar, vkSymbol, vkType, vkProtocol, vkProtocolMessage:
     value
   of vkList:
     var items = newSeq[Value](value.listItems.len)
@@ -2161,6 +2164,7 @@ proc declarationKind*(value: Value): string =
   of vkFloat: "Float"
   of vkString: "Str"
   of vkBytes: "Bytes"
+  of vkRegex: "Regex"
   of vkChar: "Char"
   of vkSymbol: "Sym"
   of vkList: "List"
@@ -2749,6 +2753,244 @@ proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
     if idx >= 0: args[0].hashMapEntries[idx].val else: VOID
   else:
     VOID
+
+proc requireRegex(name: string, value: Value) =
+  if value.kind != vkRegex:
+    raise newException(GeneError, name & " expects a Regex")
+
+proc regexSlice(s: string, first, last: int): string =
+  if first < 0 or first >= s.len or last < first:
+    return ""
+  s[first .. min(last, s.high)]
+
+proc regexEndExclusive(first, last: int): int =
+  if last < first: first else: last + 1
+
+proc regexFindBounds(reVal: Value, s: string, start: int):
+    tuple[found: bool, first, last: int,
+          captures: seq[tuple[first, last: int]]] =
+  when defined(geneWasm):
+    raise newException(GeneError, "Regex operations are unavailable in wasm builds")
+  else:
+    let captureCount = reVal.regexGroupCount
+    result.captures = newSeq[tuple[first, last: int]](captureCount)
+    if start > s.len:
+      return (false, -1, 0, result.captures)
+    let bounds = nre.findBounds(s, reVal.regexCompiled, result.captures, start)
+    if bounds.first < 0:
+      return (false, -1, 0, result.captures)
+    (true, bounds.first, bounds.last, result.captures)
+
+proc regexMatchValue(reVal: Value, s: string, start: int,
+                     matchType: Value):
+    tuple[found: bool, value: Value, first, endExclusive: int] =
+  let found = regexFindBounds(reVal, s, start)
+  if not found.found:
+    return (false, VOID, -1, start)
+
+  var groups: seq[Value]
+  for capture in found.captures:
+    if capture.first < 0:
+      groups.add NIL
+    else:
+      groups.add newStr(regexSlice(s, capture.first, capture.last))
+
+  var namedEntries: seq[HashMapEntry]
+  for name, index in reVal.regexGroupNames:
+    if index >= 0 and index < groups.len:
+      namedEntries.add HashMapEntry(key: newStr(name), val: groups[index])
+
+  let endExclusive = regexEndExclusive(found.first, found.last)
+  var props = initOrderedTable[string, Value]()
+  props["text"] = newStr(regexSlice(s, found.first, found.last))
+  props["groups"] = newList(groups, immutable = true)
+  props["named"] = newHashMap(namedEntries)
+  props["start"] = newInt(found.first)
+  props["end"] = newInt(endExclusive)
+  (true, newNode(matchType, props = props, immutable = true),
+   found.first, endExclusive)
+
+proc regexReplacementText(name: string, reVal: Value, s, tmpl: string,
+                          first, last: int,
+                          captures: seq[tuple[first, last: int]]): string =
+  proc capture(index: int): string =
+    if index == 0:
+      return regexSlice(s, first, last)
+    let captureIndex = index - 1
+    if captureIndex < 0 or captureIndex >= captures.len:
+      raise newException(GeneError,
+        name & " replacement references missing capture: \\" & $index)
+    let bounds = captures[captureIndex]
+    if bounds.first < 0:
+      return ""
+    regexSlice(s, bounds.first, bounds.last)
+
+  var i = 0
+  while i < tmpl.len:
+    let ch = tmpl[i]
+    if ch != '\\':
+      result.add ch
+      inc i
+      continue
+    inc i
+    if i >= tmpl.len:
+      raise newException(GeneError, name & " replacement has trailing backslash")
+    case tmpl[i]
+    of '\\':
+      result.add '\\'
+      inc i
+    of '0'..'9':
+      var index = 0
+      while i < tmpl.len and tmpl[i] in {'0'..'9'}:
+        index = index * 10 + (ord(tmpl[i]) - ord('0'))
+        inc i
+      result.add capture(index)
+    of 'k':
+      inc i
+      if i >= tmpl.len or tmpl[i] != '<':
+        raise newException(GeneError,
+          name & " replacement named backref must use \\k<name>")
+      inc i
+      let nameStart = i
+      while i < tmpl.len and tmpl[i] != '>':
+        inc i
+      if i >= tmpl.len:
+        raise newException(GeneError,
+          name & " replacement named backref is missing '>'")
+      let captureName = tmpl[nameStart ..< i]
+      inc i
+      let names = reVal.regexGroupNames
+      if not names.hasKey(captureName):
+        raise newException(GeneError,
+          name & " replacement references unknown capture: " & captureName)
+      result.add capture(names[captureName] + 1)
+    else:
+      raise newException(GeneError,
+        name & " replacement has unsupported escape: \\" & tmpl[i])
+
+proc regexReplace(name: string, reVal: Value, s, tmpl: string,
+                  replaceAll: bool): string =
+  var start = 0
+  var prev = 0
+  while start <= s.len:
+    let found = regexFindBounds(reVal, s, start)
+    if not found.found:
+      break
+    result.add s[prev ..< found.first]
+    result.add regexReplacementText(name, reVal, s, tmpl,
+                                    found.first, found.last, found.captures)
+    let endExclusive = regexEndExclusive(found.first, found.last)
+    if not replaceAll:
+      prev = endExclusive
+      break
+    if endExclusive == found.first:
+      if found.first < s.len:
+        result.add s[found.first]
+        prev = found.first + 1
+        start = prev
+      else:
+        prev = found.first
+        start = s.len + 1
+    else:
+      prev = endExclusive
+      start = endExclusive
+  result.add s[prev ..< s.len]
+
+proc biRegex(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "Regex expects 1 pattern argument, got " & $args.len)
+  requireStr("Regex pattern", args[0])
+  var flags = ""
+  if call != nil:
+    for i, name in call[].namedNames:
+      if name != "flags":
+        raise newException(GeneError, "Regex got unexpected named argument: " & name)
+      if call[].namedValues[i].kind != vkString:
+        raise newException(GeneError, "Regex ^flags expects a Str")
+      flags = call[].namedValues[i].strVal
+  newRegex(args[0].strVal, flags)
+
+proc biRegexMatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "regex/match expects 2 arguments, got " & $args.len)
+  requireRegex("regex/match receiver", args[0])
+  requireStr("regex/match input", args[1])
+  let scope = if call == nil: nil else: call.dispatchScope
+  let matched = regexMatchValue(args[0], args[1].strVal, 0,
+                                builtInTypeHead(scope, "Match"))
+  if matched.found: matched.value else: VOID
+
+proc pullRegexFindAll(stream: Value): StreamPullResult {.nimcall.} =
+  let stateCell = stream.streamSource
+  if stateCell.kind != vkCell:
+    return StreamPullResult(has: false, item: NIL)
+  let state = stateCell.cellValue
+  if state.kind != vkList or state.listItems.len != 4:
+    return StreamPullResult(has: false, item: NIL)
+  let reVal = state.listItems[0]
+  let input = state.listItems[1]
+  let startVal = state.listItems[2]
+  let matchType = state.listItems[3]
+  if reVal.kind != vkRegex or input.kind != vkString or startVal.kind != vkInt:
+    return StreamPullResult(has: false, item: NIL)
+  let s = input.strVal
+  let start =
+    if startVal.intFitsInt64: int(startVal.intVal)
+    else: s.len + 1
+  if start > s.len:
+    return StreamPullResult(has: false, item: NIL)
+  let matched = regexMatchValue(reVal, s, start, matchType)
+  if not matched.found:
+    stateCell.setCellValue(newList(@[reVal, input, newInt(s.len + 1), matchType]))
+    return StreamPullResult(has: false, item: NIL)
+  let nextStart =
+    if matched.endExclusive > matched.first: matched.endExclusive
+    elif matched.first < s.len: matched.first + 1
+    else: s.len + 1
+  stateCell.setCellValue(newList(@[reVal, input, newInt(nextStart), matchType]))
+  StreamPullResult(has: true, item: matched.value)
+
+proc biRegexFindAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "regex/find_all expects 2 arguments, got " & $args.len)
+  requireRegex("regex/find_all receiver", args[0])
+  requireStr("regex/find_all input", args[1])
+  let scope = if call == nil: nil else: call.dispatchScope
+  let matchType = builtInTypeHead(scope, "Match")
+  let state = newCell(newList(@[args[0], args[1], newInt(0), matchType]))
+  newLazyStream(state, pullRegexFindAll)
+
+proc biRegexReplace(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "regex/replace expects 3 arguments, got " & $args.len)
+  requireRegex("regex/replace receiver", args[0])
+  requireStr("regex/replace input", args[1])
+  requireStr("regex/replace template", args[2])
+  newStr(regexReplace("regex/replace", args[0], args[1].strVal,
+                      args[2].strVal, replaceAll = false))
+
+proc biRegexReplaceAll(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "regex/replace_all expects 3 arguments, got " & $args.len)
+  requireRegex("regex/replace_all receiver", args[0])
+  requireStr("regex/replace_all input", args[1])
+  requireStr("regex/replace_all template", args[2])
+  newStr(regexReplace("regex/replace_all", args[0], args[1].strVal,
+                      args[2].strVal, replaceAll = true))
+
+proc biRegexSplit(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "regex/split expects 2 arguments, got " & $args.len)
+  requireRegex("regex/split receiver", args[0])
+  requireStr("regex/split input", args[1])
+  when defined(geneWasm):
+    raise newException(GeneError, "Regex operations are unavailable in wasm builds")
+  else:
+    var items: seq[Value]
+    for part in nre.split(args[1].strVal, args[0].regexCompiled):
+      items.add newStr(part)
+    newList(items)
 
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
@@ -3463,6 +3705,25 @@ proc buildBuiltins(app: Application): Scope =
                           ],
                           @[], result)
   result.define("Token", tokenType)
+  let matchType = newType("Match", NIL,
+                          @[
+                            TypeField(name: "text", optional: false,
+                                      typeExpr: newSym("Str"), scope: result),
+                            TypeField(name: "groups", optional: false,
+                                      typeExpr: newNode(newSym("List"),
+                                        body = @[newSym("Str?")]),
+                                      scope: result),
+                            TypeField(name: "named", optional: false,
+                                      typeExpr: newNode(newSym("HashMap"),
+                                        body = @[newSym("Str"), newSym("Str?")]),
+                                      scope: result),
+                            TypeField(name: "start", optional: false,
+                                      typeExpr: newSym("Int"), scope: result),
+                            TypeField(name: "end", optional: false,
+                                      typeExpr: newSym("Int"), scope: result)
+                          ],
+                          @[], result)
+  result.define("Match", matchType)
   let channelClosed = newType("ChannelClosed", NIL,
                               @[TypeField(name: "message", optional: false,
                                           typeExpr: newSym("Str"), scope: result)],
@@ -3533,6 +3794,17 @@ proc buildBuiltins(app: Application): Scope =
   result.define("key", newNativeFn("key", biSelectorKey))
   result.define("buffer", newNativeCallFn("buffer", biBuffer,
                                           acceptsNamed = false))
+  result.define("Regex", newNativeCallFn("Regex", biRegex))
+  let regexScope = newScope(result)
+  regexScope.define("match", newNativeCallFn("regex/match", biRegexMatch,
+                                             acceptsNamed = false))
+  regexScope.define("find_all", newNativeCallFn("regex/find_all", biRegexFindAll,
+                                                acceptsNamed = false))
+  regexScope.define("replace", newNativeFn("regex/replace", biRegexReplace))
+  regexScope.define("replace_all",
+                    newNativeFn("regex/replace_all", biRegexReplaceAll))
+  regexScope.define("split", newNativeFn("regex/split", biRegexSplit))
+  result.define("regex", newNamespace("regex", regexScope))
   result.define("Set", newNativeFn("Set", biSet))
   result.define("set-has?", newNativeFn("set-has?", biSetHas))
   result.define("set-size", newNativeFn("set-size", biSetSize))
@@ -4652,6 +4924,10 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
       builtinBinding(scope, name)
     else:
       NIL
+  of vkRegex:
+    let regexNs = builtinBinding(scope, "regex")
+    let binding = exportedBinding(regexNs, name)
+    if binding.kind == vkVoid: NIL else: binding
   else:
     NIL
 
@@ -4794,8 +5070,8 @@ proc isSendableValue(value: Value, scope: Scope,
       return true
     seen.incl value.bits
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol,
-     vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+     vkChar, vkSymbol, vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
      vkType, vkProtocol, vkProtocolMessage:
     true
   of vkFunction:
@@ -9887,6 +10163,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkFloat: newSym("Float")
   of vkString: newSym("Str")
   of vkBytes: newSym("Bytes")
+  of vkRegex: newSym("Regex")
   of vkChar: newSym("Char")
   of vkSymbol: newSym("Sym")
   of vkList:
@@ -10329,6 +10606,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkString)
   of "Bytes":
     (true, value.kind == vkBytes)
+  of "Regex":
+    (true, value.kind == vkRegex)
   of "Char":
     (true, value.kind == vkChar)
   of "Sym", "Symbol":

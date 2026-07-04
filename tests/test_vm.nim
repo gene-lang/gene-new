@@ -590,6 +590,25 @@ suite "vm — literals and self-evaluation":
     ck "(Set #[1])", "(Set #[1])"
   test "bytes literals are self-evaluating":
     ck "[0!01000001 0x4869 0#SGk=]", "[0x41 0x4869 0x4869]"
+  test "regex literals and constructor are self-evaluating":
+    ck "[#\"\\d+\" (Regex \"\\\\d+\") (Regex ^flags \"mi\" \"abc\")]",
+       "[#\"\\d+\" #\"\\d+\" #\"abc\"im]"
+    ck "((fn [r : Regex] true) #\"x\")", "true"
+  test "regex match returns a typed Match node":
+    ck "(var m (#\"(?<word>\\w+)-(\\d+)\" ~ match \"ab-12 zz\")) " &
+       "[m/text m/groups (Map/get m/named \"word\") m/start m/end]",
+       "[\"ab-12\" #[\"ab\" \"12\"] \"ab\" 0 5]"
+    ck "(#\"z+\" ~ match \"abc\")", "void"
+  test "regex find_all returns a stream":
+    ck "(var xs (into (#\"\\d+\" ~ find_all \"a12b3\") [])) " &
+       "[xs/0/text xs/0/start xs/0/end xs/1/text xs/1/start xs/1/end]",
+       "[\"12\" 1 3 \"3\" 4 5]"
+  test "regex replace and split":
+    ck "(#\"(\\w+)=(\\d+)\" ~ replace \"a=1 b=22\" \"\\\\2/\\\\1\")",
+       "\"1/a b=22\""
+    ck "(#\"(\\w+)=(?<n>\\d+)\" ~ replace_all \"a=1 b=22\" \"\\\\k<n>\")",
+       "\"1 22\""
+    ck "(#\"\\s*,\\s*\" ~ split \"a, b,c\")", "[\"a\" \"b\" \"c\"]"
   test "map and node storage drops void props":
     ck "{^a void ^b 1}", "{^b 1}"
     ck "(quote (x ^a void ^b 1 @m void @n 2))", "(x @n 2 ^b 1)"

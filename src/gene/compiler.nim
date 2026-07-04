@@ -1463,6 +1463,8 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
     (true, value.kind == vkHashMap)
   of "Bytes":
     (true, value.kind == vkBytes)
+  of "Regex":
+    (true, value.kind == vkRegex)
   of "Gene", "Node":
     (true, value.kind == vkNode)
   of "Selector":

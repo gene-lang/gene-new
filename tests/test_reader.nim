@@ -32,6 +32,12 @@ suite "reader — atoms and containers":
     check_read("0#SGk=", "0x4869")
     check_read("0!01001000~ 01101001", "0x4869")
     check_read("0x48~\n 69", "0x4869")
+  test "regex":
+    check_read("#\"\\d+\"im", "#\"\\d+\"im")
+    let quoted = read("#\"hello\\\"Gene\"")
+    check quoted.kind == vkRegex
+    check quoted.regexPattern == "hello\\\"Gene"
+    check_read("#\"\"\"^\\s*(\\w+)\\s*$\"\"\"", "#\"^\\s*(\\w+)\\s*$\"")
   test "general map":
     check_read("{{\"a\" : 1 2 : \"b\"}}", "{{\"a\" : 1 2 : \"b\"}}")
 
@@ -169,6 +175,10 @@ suite "reader — malformed input is rejected":
     expect ReadError: discard read("\"unterminated")
   test "unterminated triple-quoted string":
     expect ReadError: discard read("\"\"\"abc")
+  test "unterminated regex literal":
+    expect ReadError: discard read("#\"\\d+")
+  test "invalid regex flag":
+    expect ReadError: discard read("#\"\\d+\"q")
   test "unterminated interpolation":
     expect ReadError: discard read("$\"hello ${name\"")
   test "char literal with extra chars":
