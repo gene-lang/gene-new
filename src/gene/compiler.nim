@@ -10,6 +10,10 @@ type
 
   Compiler = object
     chunk: Chunk
+    sourceName: string
+    sourceLocs: Table[uint64, SourceLoc]
+    formLocs: seq[SourceLoc]
+    currentLoc: SourceLoc
     selfAvailable: bool
     seenModDecl: bool
     allowYield: bool
@@ -75,8 +79,9 @@ const MaxMacroExpansionDepth = 100
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           depth = 0,
           names: seq[string] = @[], flag = false): int =
-  c.chunk.emit Instruction(op: op, intArg: intArg, depth: depth,
-                           name: name, names: names, flag: flag)
+  c.chunk.emit(Instruction(op: op, intArg: intArg, depth: depth,
+                           name: name, names: names, flag: flag),
+               c.currentLoc)
 
 proc callOpForArity(argCount: int): OpCode =
   case argCount
@@ -88,6 +93,14 @@ proc callOpForArity(argCount: int): OpCode =
 proc emitPlainCall(c: var Compiler, argCount: int): int =
   let op = callOpForArity(argCount)
   c.emit(op, argCount)
+
+proc hasStableSourceIdentity(v: Value): bool =
+  v.kind in {vkList, vkMap, vkNode}
+
+proc sourceLocFor(c: Compiler, v: Value): SourceLoc =
+  if v.hasStableSourceIdentity and c.sourceLocs.hasKey(v.bits):
+    return c.sourceLocs[v.bits]
+  c.currentLoc
 
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
@@ -360,7 +373,9 @@ proc isPath(v: Value, segments: openArray[string]): bool =
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 
 proc childCompiler(c: Compiler): Compiler =
-  Compiler(chunk: newChunk(), selfAvailable: c.selfAvailable,
+  Compiler(chunk: newChunk(c.sourceName), sourceName: c.sourceName,
+           sourceLocs: c.sourceLocs, currentLoc: c.currentLoc,
+           selfAvailable: c.selfAvailable,
            ffiLibraryNames: c.ffiLibraryNames,
            macros: c.macros, hasMacros: c.hasMacros,
            macroExpansionDepth: c.macroExpansionDepth,
@@ -2016,7 +2031,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
           specs.positionalDefaults[i].optional:
         fastBindPositionalInt = false
         break
-  result = FunctionProto(name: name, typeParams: typeParams,
+  result = FunctionProto(name: name, sourceLoc: c.currentLoc,
+                         typeParams: typeParams,
                          params: specs.positional,
                          localNames: fnCompiler.localNames,
                          positionalSlots: positionalSlots,
@@ -3789,6 +3805,12 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   compileCall(c, node)
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
+  let savedLoc = c.currentLoc
+  let exprLoc = c.sourceLocFor(node)
+  if exprLoc.hasSourceLoc:
+    c.currentLoc = exprLoc
+  defer:
+    c.currentLoc = savedLoc
   case node.kind
   of vkSymbol:
     c.emitLoadBinding(node.symVal)
@@ -3813,9 +3835,18 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
     c.emitConst NIL
   else:
     for i in 0 ..< forms.len:
-      compileExpr(c, forms[i], allowModDecl = true)
-      if i < forms.high:
-        discard c.emit(opPop)
+      let savedLoc = c.currentLoc
+      if i < c.formLocs.len and c.formLocs[i].hasSourceLoc:
+        c.currentLoc = c.formLocs[i]
+      try:
+        compileExpr(c, forms[i], allowModDecl = true)
+        if i < forms.high:
+          discard c.emit(opPop)
+      except GeneError as e:
+        if not e.loc.hasSourceLoc:
+          e.loc = c.currentLoc
+        raise
+      c.currentLoc = savedLoc
   discard c.emit(opReturn)
   if useLocalSlots:
     c.chunk.localNames = c.localNames
@@ -3827,8 +3858,20 @@ proc compileForms*(forms: openArray[Value],
                    allowAmbientImports = true,
                    useLocalSlots = true): Chunk =
   var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports,
-                   ffiLibraryNames: initTable[string, bool]())
+                   ffiLibraryNames: initTable[string, bool](),
+                   sourceLocs: initTable[uint64, SourceLoc]())
   compileFormsInto(c, forms, useLocalSlots)
+
+proc compileSourceUnit*(unit: SourceUnit,
+                        allowAmbientImports = true,
+                        useLocalSlots = true): Chunk =
+  var c = Compiler(chunk: newChunk(unit.sourceName),
+                   sourceName: unit.sourceName,
+                   sourceLocs: unit.locs,
+                   formLocs: unit.formLocs,
+                   allowAmbientImports: allowAmbientImports,
+                   ffiLibraryNames: initTable[string, bool]())
+  compileFormsInto(c, unit.forms, useLocalSlots)
 
 proc compileFormsWithMacros*(forms: openArray[Value],
     importedMacros: Table[string, Table[string, MacroDef]]):
@@ -3839,8 +3882,25 @@ proc compileFormsWithMacros*(forms: openArray[Value],
   ## macros are usable but not re-exported.
   var c = Compiler(chunk: newChunk(), allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
+                   sourceLocs: initTable[uint64, SourceLoc](),
                    importedMacroSets: importedMacros)
   result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
+  if c.hasMacros:
+    for name, def in c.macros:
+      if name notin c.importedMacroNames:
+        result.macroExports[name] = def
+
+proc compileFormsWithMacros*(unit: SourceUnit,
+    importedMacros: Table[string, Table[string, MacroDef]]):
+    tuple[chunk: Chunk, macroExports: Table[string, MacroDef]] =
+  var c = Compiler(chunk: newChunk(unit.sourceName),
+                   sourceName: unit.sourceName,
+                   sourceLocs: unit.locs,
+                   formLocs: unit.formLocs,
+                   allowAmbientImports: true,
+                   ffiLibraryNames: initTable[string, bool](),
+                   importedMacroSets: importedMacros)
+  result.chunk = compileFormsInto(c, unit.forms, useLocalSlots = true)
   if c.hasMacros:
     for name, def in c.macros:
       if name notin c.importedMacroNames:
@@ -3856,10 +3916,12 @@ proc compileEvalForm*(form: Value): Chunk =
   let forms = @[form]
   compileForms(forms, allowAmbientImports = false)
 
-proc compileEvalSource*(src: string, useLocalSlots = true): Chunk =
+proc compileEvalSource*(src: string, useLocalSlots = true,
+                        sourceName = "<eval>"): Chunk =
   ## CLI/REPL eval receives source text but still uses eval authority rules.
-  compileForms(readAll(src), allowAmbientImports = false,
-               useLocalSlots = useLocalSlots)
+  compileSourceUnit(readAllWithLocs(src, sourceName),
+                    allowAmbientImports = false,
+                    useLocalSlots = useLocalSlots)
 
-proc compileSource*(src: string): Chunk =
-  compileForms(readAll(src))
+proc compileSource*(src: string, sourceName = ""): Chunk =
+  compileSourceUnit(readAllWithLocs(src, sourceName))

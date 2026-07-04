@@ -42,11 +42,18 @@ when not (defined(gcOrc) or defined(gcArc)):
   {.error: "gene/types requires --mm:orc or --mm:arc (see nim.cfg)".}
 
 type
+  SourceLoc* = object
+    ## Nim-side source location. `line` and `col` are 1-based; zero means
+    ## unknown. This intentionally stays out of `Value`.
+    sourceName*: string
+    line*, col*: int
+
   GeneError* = object of CatchableError
     ## Recoverable Gene error. `errVal` carries a `fail`ed Gene value (e.g. an
     ## error node); `hasErrVal` distinguishes that from a plain internal error.
     errVal*: Value
     hasErrVal*: bool
+    loc*: SourceLoc
   MatchError* = object of GeneError    ## pattern match / destructuring failure
   GenePanic* = object of CatchableError
     ## Unrecoverable failure (`panic`). Not caught by `try/catch`.
@@ -104,6 +111,9 @@ type
   BigIntValue = object
     sign: int8                 # -1, 0, or 1
     digits: seq[uint32]        # little-endian base-1e9 limbs
+
+proc hasSourceLoc*(loc: SourceLoc): bool {.inline.} =
+  loc.line > 0 and loc.col > 0
 
 const
   TAG_SHIFT = 48

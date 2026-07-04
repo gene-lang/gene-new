@@ -139,6 +139,14 @@ suite "reader — malformed input is rejected":
     expect ReadIncompleteError: discard read("{^a 1")
     expect ReadIncompleteError: discard read("\"unterminated")
     expect ReadIncompleteError: discard read("#_")
+  test "read errors carry source location":
+    try:
+      discard read("(a\n", "sample.gene")
+      check false
+    except ReadIncompleteError as e:
+      check e.sourceName == "sample.gene"
+      check e.line == 2
+      check e.col == 1
   test "unterminated block comment":
     expect ReadError: discard read("#< open")
   test "datum comment at EOF":

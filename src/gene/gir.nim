@@ -148,6 +148,7 @@ type
 
   FunctionProto* = ref object of FunctionCode
     name*: string
+    sourceLoc*: SourceLoc
     typeParams*: seq[string]
     localNames*: seq[string]
     positionalSlots*: seq[int]
@@ -326,8 +327,10 @@ type
     messages*: seq[ImplMessageProto]
 
   Chunk* = ref object
+    sourceName*: string
     constants*: seq[Value]
     instructions*: seq[Instruction]
+    instructionLocs*: seq[SourceLoc]
     owner* {.cursor.}: FunctionProto
     functions*: seq[FunctionProto]
     localNames*: seq[string]
@@ -351,8 +354,9 @@ type
     directProtocolCalls*: seq[DirectProtocolCallSpec]
     callSites*: Table[int, Value]   # opCall/opCallSplice index -> source node (design §3 `Call ^site`)
 
-proc newChunk*(): Chunk =
-  Chunk(constants: @[], instructions: @[], functions: @[], subchunks: @[],
+proc newChunk*(sourceName = ""): Chunk =
+  Chunk(sourceName: sourceName, constants: @[], instructions: @[],
+        instructionLocs: @[], functions: @[], subchunks: @[],
         imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
         typeProtos: @[], protocolProtos: @[], implProtos: @[],
@@ -438,9 +442,11 @@ proc addFunction*(chunk: Chunk, fn: FunctionProto): int =
   result = chunk.functions.len
   chunk.functions.add fn
 
-proc emit*(chunk: Chunk, inst: Instruction): int =
+proc emit*(chunk: Chunk, inst: Instruction,
+           loc = SourceLoc()): int =
   result = chunk.instructions.len
   chunk.instructions.add inst
+  chunk.instructionLocs.add loc
 
 proc patchJump*(chunk: Chunk, at, target: int) =
   chunk.instructions[at].intArg = target

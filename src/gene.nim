@@ -11,7 +11,8 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
-import gene/[compiler, gir, printer, reader, repl, repl_curses, types, vm]
+import gene/[compiler, diagnostics, gir, printer, reader, repl, repl_curses,
+             types, vm]
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -31,6 +32,9 @@ proc readSourceFile(path: string): string =
     stderr.writeLine "Error: file not found: " & path
     quit(1)
   readFile(path)
+
+proc readErrorLoc(e: ref ReadError): SourceLoc =
+  SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)
 
 proc replOnErrorEnabled(): bool =
   let value = getEnv("REPL_ON_ERROR").strip().toLowerAscii()
@@ -54,16 +58,16 @@ proc cmdEval(src: string) =
   let app = initModuleContext(getCurrentDir())
   let scope = newGlobalScope(app)
   try:
-    echo run(compileEvalSource(src), scope).print()
+    echo run(compileEvalSource(src, sourceName = "<eval>"), scope).print()
   except ReadError as e:
-    stderr.writeLine "Read error: " & e.msg
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(scope, app)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine "Error: " & e.msg
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     maybeReplOnError(scope, app)
     quit(1)
 
@@ -165,24 +169,24 @@ proc cmdRun(path: string, args: openArray[string] = []) =
           mainBinding.call(@[argsValue(args)])
       exitFromMain(scope, result)
   except ReadError as e:
-    stderr.writeLine "Read error: " & e.msg
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(replScope, app)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine "Error: " & e.msg
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     maybeReplOnError(replScope, app)
     quit(1)
 
 proc cmdParse(path: string) =
   let src = readSourceFile(path)
   try:
-    for f in readAll(src):
+    for f in readAll(src, normalizedPath(absolutePath(path))):
       echo f.print()
   except ReadError as e:
-    stderr.writeLine "Read error: " & e.msg
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
 
 proc cmdFmt(path: string) =
@@ -190,30 +194,32 @@ proc cmdFmt(path: string) =
 
 proc cmdCompile(path: string) =
   let src = readSourceFile(path)
+  let absPath = normalizedPath(absolutePath(path))
   try:
-    echo compileSource(src).disassemble()
+    echo compileSource(src, absPath).disassemble()
   except ReadError as e:
-    stderr.writeLine "Read error: " & e.msg
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine "Error: " & e.msg
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     quit(1)
 
 proc cmdCompileC(path: string) =
   let src = readSourceFile(path)
+  let absPath = normalizedPath(absolutePath(path))
   try:
-    echo compileSource(src).emitExperimentalC()
+    echo compileSource(src, absPath).emitExperimentalC()
   except ReadError as e:
-    stderr.writeLine "Read error: " & e.msg
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine "Error: " & e.msg
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     quit(1)
 
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
@@ -291,7 +297,7 @@ proc cmdDoc(path: string) =
   try:
     let absPath = normalizedPath(absolutePath(path))
     let app = newApplication(parentDir(absPath))
-    let chunk = compileSource(readSourceFile(absPath))
+    let chunk = compileSource(readSourceFile(absPath), absPath)
     let module = app.loadFileModule(absPath)
     echo "Module: " & module.moduleName
     echo "Path: " & module.modulePath
@@ -310,13 +316,13 @@ proc cmdDoc(path: string) =
         echo "Namespace " & item.path & ":"
         writeDocDeclarations(item.ns.nsScope)
   except ReadError as e:
-    stderr.writeLine "Read error: " & e.msg
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
   except GenePanic as e:
     stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
-    stderr.writeLine "Error: " & e.msg
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     quit(1)
 
 proc main() =

@@ -26,16 +26,55 @@ type
 
   Reader* = object
     src*: string
+    sourceName*: string
     pos*: int
     line*, col*: int
     tokens: seq[Token]
     tokIdx: int
+    locs: Table[uint64, SourceLoc]
 
   ReadError* = object of CatchableError
+    sourceName*: string
+    line*, col*: int
   ReadIncompleteError* = object of ReadError
 
-proc raiseReadIncomplete(message: string) {.noReturn.} =
-  raise newException(ReadIncompleteError, message)
+  SourceUnit* = object
+    sourceName*: string
+    forms*: seq[Value]
+    formLocs*: seq[SourceLoc]
+    locs*: Table[uint64, SourceLoc]
+
+proc sourceLoc(tok: Token, sourceName: string): SourceLoc =
+  SourceLoc(sourceName: sourceName, line: tok.line, col: tok.col)
+
+proc raiseReadErrorAt(sourceName: string, line, col: int,
+                      message: string) {.noReturn.} =
+  var e: ref ReadError
+  new(e)
+  e.msg = message
+  e.sourceName = sourceName
+  e.line = line
+  e.col = col
+  raise e
+
+proc raiseReadIncompleteAt(sourceName: string, line, col: int,
+                           message: string) {.noReturn.} =
+  var e: ref ReadIncompleteError
+  new(e)
+  e.msg = message
+  e.sourceName = sourceName
+  e.line = line
+  e.col = col
+  raise e
+
+proc raiseReadError(r: Reader, message: string) {.noReturn.} =
+  raiseReadErrorAt(r.sourceName, r.line, r.col, message)
+
+proc raiseReadErrorAt(r: Reader, tok: Token, message: string) {.noReturn.} =
+  raiseReadErrorAt(r.sourceName, tok.line, tok.col, message)
+
+proc raiseReadIncomplete(r: Reader, message: string) {.noReturn.} =
+  raiseReadIncompleteAt(r.sourceName, r.line, r.col, message)
 
 proc isIntLexeme(lexeme: string): bool =
   if lexeme.len == 0:
@@ -51,9 +90,10 @@ proc isIntLexeme(lexeme: string): bool =
     inc i
   true
 
-proc initReader(src: string): Reader =
-  Reader(src: src, line: 1, col: 1,
-         tokens: newSeqOfCap[Token](min(src.len + 1, 4096)))
+proc initReader(src: string, sourceName = ""): Reader =
+  Reader(src: src, sourceName: sourceName, line: 1, col: 1,
+         tokens: newSeqOfCap[Token](min(src.len + 1, 4096)),
+         locs: initTable[uint64, SourceLoc]())
 
 proc isSymbolChar(c: char): bool =
   c notin {'(', ')', '[', ']', '{', '}', ' ', '\t', '\n', '\r', ',', ';', '\"', '\'', '`', '#'}
@@ -91,14 +131,14 @@ proc parseFixedUnicodeEscape(r: var Reader, digits: int): Rune =
   var code = 0
   for _ in 0 ..< digits:
     if r.pos >= r.src.len:
-      raiseReadIncomplete("unterminated Unicode character escape")
+      r.raiseReadIncomplete("unterminated Unicode character escape")
     let value = hexValue(r.nextChar())
     if value < 0:
-      raise newException(ReadError, "invalid Unicode character escape")
+      r.raiseReadError("invalid Unicode character escape")
     code = code * 16 + value
     r.advance()
   if not isUnicodeScalar(code):
-    raise newException(ReadError, "Unicode character escape is not a scalar value")
+    r.raiseReadError("Unicode character escape is not a scalar value")
   Rune(int32(code))
 
 proc parseBracedUnicodeEscape(r: var Reader): Rune =
@@ -108,22 +148,22 @@ proc parseBracedUnicodeEscape(r: var Reader): Rune =
   while r.pos < r.src.len and r.nextChar() != '}':
     let value = hexValue(r.nextChar())
     if value < 0:
-      raise newException(ReadError, "invalid Unicode character escape")
+      r.raiseReadError("invalid Unicode character escape")
     code = code * 16 + value
     digits += 1
     if digits > 6:
-      raise newException(ReadError, "Unicode character escape is too large")
+      r.raiseReadError("Unicode character escape is too large")
     r.advance()
   if r.pos >= r.src.len or r.nextChar() != '}':
-    raiseReadIncomplete("unterminated Unicode character escape")
+    r.raiseReadIncomplete("unterminated Unicode character escape")
   r.advance() # consume }
   if digits == 0 or not isUnicodeScalar(code):
-    raise newException(ReadError, "Unicode character escape is not a scalar value")
+    r.raiseReadError("Unicode character escape is not a scalar value")
   Rune(int32(code))
 
 proc parseEscapeRune(r: var Reader, context: string): Rune =
   if r.pos >= r.src.len:
-    raiseReadIncomplete("unterminated " & context)
+    r.raiseReadIncomplete("unterminated " & context)
   let esc = r.nextChar()
   r.advance()
   case esc
@@ -142,7 +182,7 @@ proc parseEscapeRune(r: var Reader, context: string): Rune =
   of 'U':
     r.parseFixedUnicodeEscape(8)
   else:
-    raise newException(ReadError, "unknown character escape")
+    r.raiseReadError("unknown character escape")
 
 proc parseCharEscape(r: var Reader): Rune =
   r.parseEscapeRune("character literal")
@@ -150,9 +190,9 @@ proc parseCharEscape(r: var Reader): Rune =
 proc parseCharLiteral(r: var Reader): string =
   r.advance() # consume opening '
   if r.pos >= r.src.len:
-    raiseReadIncomplete("unterminated character literal")
+    r.raiseReadIncomplete("unterminated character literal")
   if r.nextChar() == '\'':
-    raise newException(ReadError, "empty character literal")
+    r.raiseReadError("empty character literal")
 
   let ch =
     if r.nextChar() == '\\':
@@ -160,7 +200,7 @@ proc parseCharLiteral(r: var Reader): string =
       r.parseCharEscape()
     else:
       if r.nextChar() in {'\n', '\r'}:
-        raise newException(ReadError, "unterminated character literal")
+        r.raiseReadError("unterminated character literal")
       let width = runeLenAt(r.src, r.pos)
       let decoded = runeAt(r.src, r.pos)
       r.advanceBytes(width)
@@ -168,8 +208,8 @@ proc parseCharLiteral(r: var Reader): string =
 
   if r.pos >= r.src.len or r.nextChar() != '\'':
     if r.pos >= r.src.len:
-      raiseReadIncomplete("unterminated character literal")
-    raise newException(ReadError, "character literal must contain one Unicode scalar value")
+      r.raiseReadIncomplete("unterminated character literal")
+    r.raiseReadError("character literal must contain one Unicode scalar value")
   r.advance()
   ch.toUTF8()
 
@@ -205,7 +245,7 @@ proc tokenize(r: var Reader) =
           else:
             r.advance()
         if depth > 0:
-          raiseReadIncomplete("unterminated block comment")
+          r.raiseReadIncomplete("unterminated block comment")
       else:
         # Line comment
         while r.pos < r.src.len and r.nextChar() != '\n':
@@ -273,7 +313,7 @@ proc tokenize(r: var Reader) =
           lexeme.add r.nextChar()
           r.advance()
         if not closed:
-          raiseReadIncomplete("unterminated triple-quoted string literal")
+          r.raiseReadIncomplete("unterminated triple-quoted string literal")
       else:
         var closed = false
         while r.pos < r.src.len:
@@ -289,7 +329,7 @@ proc tokenize(r: var Reader) =
             lexeme.add c2
             r.advance()
         if not closed:
-          raiseReadIncomplete("unterminated string literal")
+          r.raiseReadIncomplete("unterminated string literal")
 
       if isInterpolated:
         # Simple implementation: split by ${...}
@@ -360,11 +400,11 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkDollar: "dollar"
   of tkUnderscore: "underscore"
 
-proc lexAll*(src: string, includeEof = false): seq[Token] =
+proc lexAll*(src: string, includeEof = false, sourceName = ""): seq[Token] =
   ## Tokenize source into significant reader tokens. Whitespace and ordinary
   ## comments are spacing and are not returned; datum comments are returned as
   ## the `underscore` token because they affect the parser stream.
-  var r = initReader(src)
+  var r = initReader(src, sourceName)
   r.tokenize()
   result = r.tokens
   if not includeEof and result.len > 0 and result[^1].kind == tkEof:
@@ -389,6 +429,14 @@ proc next(r: var Reader): Token =
 
 proc parseForm(r: var Reader, inList = false): Value
 
+proc hasStableSourceIdentity(v: Value): bool =
+  v.kind in {vkList, vkMap, vkNode}
+
+proc recordSourceLoc(r: var Reader, value: Value, tok: Token) =
+  if value.hasStableSourceIdentity:
+    let loc = tok.sourceLoc(r.sourceName)
+    r.locs[value.bits] = loc
+
 proc skipDatumComments(r: var Reader) =
   ## Datum comments (`#_`) are spacing (design §2.2 `datum_comment`): each `#_`
   ## discards the following form and yields no AST node. Runs of `#_` stack,
@@ -397,9 +445,9 @@ proc skipDatumComments(r: var Reader) =
     discard r.next()
     let k = r.peekKind()
     if k == tkEof:
-      raiseReadIncomplete("#_ datum comment requires a following form")
+      r.raiseReadIncomplete("#_ datum comment requires a following form")
     if k in {tkRParen, tkRBracket, tkRBrace}:
-      raise newException(ReadError, "#_ datum comment requires a following form")
+      r.raiseReadError("#_ datum comment requires a following form")
     discard r.parseForm()
 
 proc parsePropKey(r: var Reader): string =
@@ -442,7 +490,7 @@ proc parseList(r: var Reader, closing: TokenKind, immutable = false): Value =
     if k == closing or k == tkEof: break
     items.add r.parseForm(inList = true)
   if r.peekKind() == tkEof:
-    raiseReadIncomplete("unexpected EOF: unclosed '['")
+    r.raiseReadIncomplete("unexpected EOF: unclosed '['")
   discard r.next() # consume closing
   result = newList(items, immutable)
 
@@ -593,7 +641,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         body.add form
 
   if r.peekKind() == tkEof:
-    raiseReadIncomplete("unexpected EOF: unclosed '('")
+    r.raiseReadIncomplete("unexpected EOF: unclosed '('")
   discard r.next()
 
   if inPipe:
@@ -620,13 +668,14 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
     items[key] = val
     if r.peekKind() == tkComma: discard r.next()
   if r.peekKind() == tkEof:
-    raiseReadIncomplete("unexpected EOF: unclosed '{'")
+    r.raiseReadIncomplete("unexpected EOF: unclosed '{'")
   discard r.next()
   result = newMap(items, immutable)
 
-proc read*(src: string): Value
+proc read*(src: string, sourceName = ""): Value
 
-proc parseInterpolatedString(lexeme: string): Value =
+proc parseInterpolatedString(lexeme, sourceName: string,
+                             line, col: int): Value =
   var body = newSeq[Value]()
   var i = 0
   var last = 0
@@ -641,9 +690,10 @@ proc parseInterpolatedString(lexeme: string): Value =
         elif lexeme[i] == '}': depth -= 1
         i += 1
       if depth > 0:
-        raiseReadIncomplete("unterminated interpolation '${...}'")
+        raiseReadIncompleteAt(sourceName, line, col,
+                              "unterminated interpolation '${...}'")
       let exprStr = lexeme[start ..< i-1]
-      body.add read(exprStr)
+      body.add read(exprStr, sourceName)
       last = i
     elif lexeme[i..^1].startsWith("$("):
       if i > last: body.add newStr(lexeme[last ..< i])
@@ -656,9 +706,10 @@ proc parseInterpolatedString(lexeme: string): Value =
         elif lexeme[i] == ')': depth -= 1
         i += 1
       if depth > 0:
-        raiseReadIncomplete("unterminated interpolation '$(...)'")
+        raiseReadIncompleteAt(sourceName, line, col,
+                              "unterminated interpolation '$(...)'")
       let exprStr = lexeme[start ..< i]
-      body.add read(exprStr)
+      body.add read(exprStr, sourceName)
       last = i
     else: i += 1
   if last < lexeme.len: body.add newStr(lexeme[last..^1])
@@ -667,72 +718,85 @@ proc parseInterpolatedString(lexeme: string): Value =
 proc parseForm(r: var Reader, inList = false): Value =
   r.skipDatumComments()
   let tok = r.next()
+  template finish(value: Value): untyped =
+    let parsed = value
+    r.recordSourceLoc(parsed, tok)
+    return parsed
   case tok.kind
-  of tkInt: return newIntFromDecimal(tok.lexeme)
-  of tkFloat: return newFloat(parseFloat(tok.lexeme))
-  of tkString: return newStr(tok.lexeme)
-  of tkChar: return newChar(runeAt(tok.lexeme, 0))
+  of tkInt: finish newIntFromDecimal(tok.lexeme)
+  of tkFloat: finish newFloat(parseFloat(tok.lexeme))
+  of tkString: finish newStr(tok.lexeme)
+  of tkChar: finish newChar(runeAt(tok.lexeme, 0))
   of tkSymbol:
     case tok.lexeme
-    of "true": return TRUE
-    of "false": return FALSE
-    of "nil": return NIL
-    of "void": return VOID
+    of "true": finish TRUE
+    of "false": finish FALSE
+    of "nil": finish NIL
+    of "void": finish VOID
     else:
       let lex = tok.lexeme
       if not inList:
         if lex.endsWith("..."):
-          return newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])
-        return desugarPath(lex)
-      else: return newSym(lex)
-  of tkLParen: return r.parseNode(tkRParen)
-  of tkLBracket: return r.parseList(tkRBracket)
-  of tkLBrace: return r.parseMap(tkRBrace)
-  of tkHashLParen: return r.parseNode(tkRParen, immutable = true)
-  of tkHashLBracket: return r.parseList(tkRBracket, immutable = true)
-  of tkHashLBrace: return r.parseMap(tkRBrace, immutable = true)
+          finish newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])
+        finish desugarPath(lex)
+      else: finish newSym(lex)
+  of tkLParen: finish r.parseNode(tkRParen)
+  of tkLBracket: finish r.parseList(tkRBracket)
+  of tkLBrace: finish r.parseMap(tkRBrace)
+  of tkHashLParen: finish r.parseNode(tkRParen, immutable = true)
+  of tkHashLBracket: finish r.parseList(tkRBracket, immutable = true)
+  of tkHashLBrace: finish r.parseMap(tkRBrace, immutable = true)
   of tkBacktick:
     let inner = r.parseForm(inList)
-    return newNode(newSym("quasiquote"), body = @[inner])
+    finish newNode(newSym("quasiquote"), body = @[inner])
   of tkPercent:
     # Inside a vector the flat token stream is preserved verbatim.
-    if inList: return newSym("%")
+    if inList: finish newSym("%")
     let inner = r.parseForm(inList = false)
-    return newNode(newSym("unquote"), body = @[inner])
-  of tkCaret: return newSym("^")
-  of tkCaretCaret: return newSym("^^")
-  of tkAt: return newSym("@")
-  of tkAtAt: return newSym("@@")
-  of tkColon: return newSym(":")
-  of tkEqual: return newSym("=")
-  of tkComma: return newSym(",")
-  of tkTilde: return newSym("~")
-  of tkDotDotDot: return newSym("...")
+    finish newNode(newSym("unquote"), body = @[inner])
+  of tkCaret: finish newSym("^")
+  of tkCaretCaret: finish newSym("^^")
+  of tkAt: finish newSym("@")
+  of tkAtAt: finish newSym("@@")
+  of tkColon: finish newSym(":")
+  of tkEqual: finish newSym("=")
+  of tkComma: finish newSym(",")
+  of tkTilde: finish newSym("~")
+  of tkDotDotDot: finish newSym("...")
   of tkDollar:
     let nextTok = r.peek()
     if nextTok.kind == tkString and nextTok.line == tok.line and
         nextTok.col == tok.col + 1:
       let s = r.next()
-      return parseInterpolatedString(s.lexeme)
-    return newSym("$")
+      finish parseInterpolatedString(s.lexeme, r.sourceName, tok.line, tok.col)
+    finish newSym("$")
   of tkRParen, tkRBracket, tkRBrace:
-    raise newException(ReadError, "unexpected closing delimiter '" & tok.lexeme & "'")
+    r.raiseReadErrorAt(tok, "unexpected closing delimiter '" & tok.lexeme & "'")
   of tkEof:
-    raiseReadIncomplete("unexpected end of input")
-  else: return NIL
+    r.raiseReadIncomplete("unexpected end of input")
+  else: finish NIL
 
-proc read*(src: string): Value =
-  var r = initReader(src)
+proc read*(src: string, sourceName = ""): Value =
+  var r = initReader(src, sourceName)
   r.tokenize()
   r.skipDatumComments()
   if r.peekKind() == tkEof: return NIL
   return r.parseForm(inList = false)
 
-proc readAll*(src: string): seq[Value] =
+proc readAllWithLocs*(src: string, sourceName = ""): SourceUnit =
   ## Read all top-level forms from src (program = { form }).
-  var r = initReader(src)
+  var r = initReader(src, sourceName)
   r.tokenize()
   while true:
     r.skipDatumComments()
     if r.peekKind() == tkEof: break
-    result.add r.parseForm(inList = false)
+    let before = r.peek()
+    let form = r.parseForm(inList = false)
+    result.forms.add form
+    result.formLocs.add before.sourceLoc(sourceName)
+  result.sourceName = sourceName
+  result.locs = r.locs
+
+proc readAll*(src: string, sourceName = ""): seq[Value] =
+  ## Read all top-level forms from src (program = { form }).
+  readAllWithLocs(src, sourceName).forms

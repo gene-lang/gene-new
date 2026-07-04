@@ -71,6 +71,14 @@ suite "cli — gene run":
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
+  test "main parameter boundary errors include source location":
+    let typedMain = writeCliProgram("typed_arg_main.gene",
+      "(fn main [args : (List Str)] nil)")
+    let ran = runGene(["run", typedMain, "x"])
+    check ran.exitCode == 1
+    check "parameter 'args' expected (List Str), got vkNode" in ran.output
+    check ("at " & normalizedPath(absolutePath(typedMain)) & ":1:1") in ran.output
+
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
     let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN -u CODEX_ACCESS_TOKEN " &
@@ -150,6 +158,12 @@ suite "cli — gene eval":
     let ran = runGene(["eval", "(import [x] from \"./missing\") x"])
     check ran.exitCode == 1
     check "eval cannot use import; add imports to Env" in ran.output
+
+  test "eval errors include source location":
+    let ran = runGene(["eval", "(missing)"])
+    check ran.exitCode == 1
+    check "undefined symbol: missing" in ran.output
+    check "at <eval>:1:1" in ran.output
 
 suite "cli — gene repl":
   setup:
@@ -326,6 +340,15 @@ suite "cli — gene parse/fmt/compile":
     let ran = runGene(["compile", "--target", "llvm", path])
     check ran.exitCode == 1
     check "unsupported compile target: llvm" in ran.output
+
+  test "file runtime errors include source location and snippet":
+    let path = writeCliProgram("located_runtime_error.gene",
+      "(var x 1)\n(+ x missing)\n")
+    let ran = runGene(["run", path])
+    check ran.exitCode == 1
+    check "undefined symbol: missing" in ran.output
+    check ("at " & normalizedPath(absolutePath(path)) & ":2:1") in ran.output
+    check "2 | (+ x missing)" in ran.output
 
 suite "cli — gene doc":
   setup:

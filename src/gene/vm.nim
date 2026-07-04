@@ -2,7 +2,7 @@
 
 import std/[algorithm, dynlib, locks, math, monotimes, net, os, osproc, sets,
             strutils, tables, times, unicode]
-import ./[compiler, equality, gir, printer, reader, types]
+import ./[compiler, diagnostics, equality, gir, printer, reader, types]
 
 when compileOption("threads") and defined(gcAtomicArc):
   import std/cpuinfo
@@ -5652,10 +5652,46 @@ proc runReplSession*(scope: Scope,
                      writeErr: ReplWrite,
                      options = defaultReplOptions()): int
 
-proc stackFrameValue(name, kind: string): Value =
+proc instructionLocAt(chunk: Chunk, index: int): SourceLoc =
+  if chunk != nil and index >= 0 and index < chunk.instructionLocs.len:
+    return chunk.instructionLocs[index]
+  SourceLoc()
+
+proc instructionLocBefore(chunk: Chunk, ip: int): SourceLoc =
+  instructionLocAt(chunk, ip - 1)
+
+proc withSourceLocProps(value: Value, loc: SourceLoc): Value =
+  if value.kind != vkNode or not loc.hasSourceLoc:
+    return value
+  var props = copyEntries(value.props)
+  if not props.hasKey("file") and loc.sourceName.len > 0:
+    props["file"] = newStr(loc.sourceName)
+  if not props.hasKey("line"):
+    props["line"] = newInt(int64(loc.line))
+  if not props.hasKey("col"):
+    props["col"] = newInt(int64(loc.col))
+  newNode(value.head, props = props,
+          body = copyItems(value.body),
+          meta = copyEntries(value.meta),
+          immutable = value.nodeImmutable)
+
+proc attachSourceLoc(e: ref GeneError, loc: SourceLoc) =
+  if e == nil or not loc.hasSourceLoc:
+    return
+  if not e.loc.hasSourceLoc:
+    e.loc = loc
+  if e.hasErrVal:
+    e.errVal = e.errVal.withSourceLocProps(loc)
+
+proc stackFrameValue(name, kind: string, loc = SourceLoc()): Value =
   var props = initOrderedTable[string, Value]()
   props["name"] = newStr(name)
   props["kind"] = newStr(kind)
+  if loc.hasSourceLoc:
+    if loc.sourceName.len > 0:
+      props["file"] = newStr(loc.sourceName)
+    props["line"] = newInt(int64(loc.line))
+    props["col"] = newInt(int64(loc.col))
   newNode(newSym("StackFrame"), props = props, immutable = true)
 
 proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
@@ -5674,15 +5710,17 @@ proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
                      meta = copyEntries(e.errVal.meta),
                      immutable = e.errVal.nodeImmutable)
 
-proc appendVmTrace(e: ref GeneError, curFnName: string,
+proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
                    frames: openArray[Frame]) =
   var traceFrames: seq[Value]
   if curFnName.len > 0:
-    traceFrames.add stackFrameValue(curFnName, "bytecode")
+    traceFrames.add stackFrameValue(curFnName, "bytecode", curLoc)
   if frames.len > 0:
     for i in countdown(frames.len - 1, 0):
       if frames[i].fnName.len > 0:
-        traceFrames.add stackFrameValue(frames[i].fnName, "bytecode")
+        traceFrames.add stackFrameValue(frames[i].fnName, "bytecode",
+                                        instructionLocBefore(frames[i].chunk,
+                                                             frames[i].ip))
   appendTraceFrames(e, traceFrames)
 
 proc appendNativeTrace(e: ref GeneError, calleeName: string,
@@ -8250,8 +8288,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # depth) a chance to catch, run ensure blocks, and translate ^errors
       # boundaries on the function frames crossed. A catch that fires resumes the
       # outer dispatch loop with its result; otherwise the error propagates out.
+      let errorLoc = instructionLocBefore(chunk, ip)
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
-      appendVmTrace(err, curFnName, frames)
+      attachSourceLoc(err, errorLoc)
+      appendVmTrace(err, curFnName, errorLoc, frames)
       releaseCurrentCallScope()
       if curFrameKind == fkTaskScopeBody:
         let owned = curOwnedScope
@@ -8457,7 +8497,8 @@ proc runReplSession*(scope: Scope,
       if pendingSource.len == 0: line
       else: pendingSource & "\n" & line
     try:
-      writeOut(run(compileEvalSource(source, useLocalSlots = false), scope).print() & "\n")
+      writeOut(run(compileEvalSource(source, useLocalSlots = false,
+                                     sourceName = "<repl>"), scope).print() & "\n")
       pendingSource = ""
       pendingError = ""
     except ReadIncompleteError as e:
@@ -8469,14 +8510,15 @@ proc runReplSession*(scope: Scope,
     except ReadError as e:
       pendingSource = ""
       pendingError = ""
-      writeErr("Read error: " & e.msg & "\n")
+      writeErr(formatDiagnostic("Read error", e.msg,
+        SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)) & "\n")
     except GenePanic as e:
       writeErr("Panic: " & e.msg & "\n")
       return 1
     except GeneError as e:
       pendingSource = ""
       pendingError = ""
-      writeErr("Error: " & e.msg & "\n")
+      writeErr(formatDiagnostic("Error", e.msg, e.loc) & "\n")
     if options.interactive:
       writeOut(options.prompt)
   if options.interactive:
@@ -15345,6 +15387,77 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     rt = instantiateTypeExpr(proto.returnType, typeBindings, proto.typeParams)
   (callScope, rt)
 
+proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
+                       proto: FunctionProto): Value =
+  let positional = callee.fnParams
+  let native = applyNativeCompiled(callee, proto, args, named)
+  if native.handled:
+    return native.value
+  if proto.simpleCall and named.len == 0:
+    if args.len != positional.len:
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
+        ".." & $positional.len &
+        " argument(s), got " & $args.len)
+    let callScope =
+      if proto.needsCallScope:
+        let created =
+          if proto.poolCallScope:
+            acquireSimpleCallScope(callee.fnScope, proto.localNames,
+              proto.callScopeNeedsSlotNames,
+              proto.callScopeNeedsSlotReset)
+          else:
+            let fresh = newScope(callee.fnScope)
+            fresh.prepareSlots(proto.localNames)
+            fresh
+        if args.len > 0:
+          created.bindSimpleCallSlots(proto, args)
+        created
+      else:
+        callee.fnScope
+    try:
+      return runPooled(proto.chunk, callScope,
+                       validateImplRequirements = proto.frameNeedsImplValidation)
+    finally:
+      if proto.poolCallScope:
+        releaseCallScope(callScope)
+  var callScope: Scope
+  var returnType: Value
+  if named.len == 0 and proto.canFastBindPositionalInt and
+      args.len == proto.params.len:
+    callScope = bindPositionalIntCallScope(callee.fnScope, proto, args)
+    returnType = proto.returnType
+  else:
+    let bound = bindCallScope(callee, proto, args, named)
+    callScope = bound.scope
+    returnType = bound.returnType
+  let frameReturnType = proto.checkedFrameReturnType(returnType)
+  if proto.isGenerator:
+    var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
+    if frameReturnType.kind != vkNil:
+      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+                                  frameReturnType, resultValue, callScope)
+    return resultValue
+  try:
+    var resultValue: Value
+    try:
+      resultValue = runPooled(proto.chunk, callScope,
+                              validateImplRequirements = proto.frameNeedsImplValidation)
+    except GeneError as e:
+      if not callee.fnChecksErrors:
+        raise
+      if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
+        raise
+      raise newException(GeneError,
+        "function '" & callee.fnName & "' raised an undeclared error")
+    if frameReturnType.kind != vkNil:
+      resultValue = adaptBoundary("return from '" & callee.fnName & "'",
+                                  frameReturnType, resultValue, callScope)
+    resultValue
+  finally:
+    if proto.poolCallScope:
+      releaseCallScope(callScope)
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
@@ -15378,78 +15491,15 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
   of vkFfiCallable:
     applyFfiCallable(callee, args, named)
   of vkFunction:
-    let positional = callee.fnParams
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
-    let native = applyNativeCompiled(callee, proto, args, named)
-    if native.handled:
-      return native.value
-    if proto.simpleCall and named.len == 0:
-      if args.len != positional.len:
-        raise newException(GeneError,
-          "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
-          ".." & $positional.len &
-          " argument(s), got " & $args.len)
-      let callScope =
-        if proto.needsCallScope:
-          let created =
-            if proto.poolCallScope:
-              acquireSimpleCallScope(callee.fnScope, proto.localNames,
-                proto.callScopeNeedsSlotNames,
-                proto.callScopeNeedsSlotReset)
-            else:
-              let fresh = newScope(callee.fnScope)
-              fresh.prepareSlots(proto.localNames)
-              fresh
-          if args.len > 0:
-            created.bindSimpleCallSlots(proto, args)
-          created
-        else:
-          callee.fnScope
-      try:
-        return runPooled(proto.chunk, callScope,
-                         validateImplRequirements = proto.frameNeedsImplValidation)
-      finally:
-        if proto.poolCallScope:
-          releaseCallScope(callScope)
-    var callScope: Scope
-    var returnType: Value
-    if named.len == 0 and proto.canFastBindPositionalInt and
-        args.len == proto.params.len:
-      callScope = bindPositionalIntCallScope(callee.fnScope, proto, args)
-      returnType = proto.returnType
-    else:
-      let bound = bindCallScope(callee, proto, args, named)
-      callScope = bound.scope
-      returnType = bound.returnType
-    let frameReturnType = proto.checkedFrameReturnType(returnType)
-    if proto.isGenerator:
-      var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
-      if frameReturnType.kind != vkNil:
-        resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                    frameReturnType, resultValue, callScope)
-      return resultValue
     try:
-      var resultValue: Value
-      try:
-        resultValue = runPooled(proto.chunk, callScope,
-                                validateImplRequirements = proto.frameNeedsImplValidation)
-      except GeneError as e:
-        if not callee.fnChecksErrors:
-          raise
-        if e.hasErrVal and errorAllowed(callee.fnErrorTypes, e.errVal):
-          raise
-        raise newException(GeneError,
-          "function '" & callee.fnName & "' raised an undeclared error")
-      if frameReturnType.kind != vkNil:
-        resultValue = adaptBoundary("return from '" & callee.fnName & "'",
-                                    frameReturnType, resultValue, callScope)
-      resultValue
-    finally:
-      if proto.poolCallScope:
-        releaseCallScope(callScope)
+      applyFunctionCall(callee, args, named, proto)
+    except GeneError as e:
+      attachSourceLoc(e, proto.sourceLoc)
+      raise
   of vkType:
     # Construct a typed instance: a node with the type as head and validated
     # props/body fields.
@@ -15583,9 +15633,9 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   let savedDir = app.currentModuleDir
   app.currentModuleDir = parentDir(absPath)
   try:
-    let forms = readAll(src)
+    let unit = readAllWithLocs(src, absPath)
     var importedMacros = initTable[string, Table[string, MacroDef]]()
-    for form in forms:
+    for form in unit.forms:
       let raw = importFromPath(form)
       if raw.len == 0 or importedMacros.hasKey(raw):
         continue
@@ -15594,7 +15644,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
       importedMacros[raw] =
         app.moduleMacros.getOrDefault(depPath,
                                       initTable[string, MacroDef]())
-    let compiled = compileFormsWithMacros(forms, importedMacros)
+    let compiled = compileFormsWithMacros(unit, importedMacros)
     app.moduleMacros[absPath] = compiled.macroExports
     discard run(compiled.chunk, modScope)
   finally:
