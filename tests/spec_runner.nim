@@ -2181,6 +2181,55 @@ suite "spec — macros across modules (design §11/§15)":
     expect GeneError:
       discard newApplication(dir).loadFileModule(dir / "clash2.gene")
 
+suite "spec — impl visibility across modules (design §10)":
+  proc implModuleDir(): string =
+    result = getTempDir() / "gene_spec_impl_modules"
+    removeDir(result)
+    createDir(result)
+    writeFile(result / "ilib.gene",
+      "(mod ilib)\n" &
+      "(protocol Greet (message greet [self] : Str))\n" &
+      "(type Cat ^props {^name Str})\n" &
+      "(impl Greet Cat (message greet [self] : Str $\"meow ${self/name}\"))\n")
+
+  proc implModuleVar(m: Value, name: string): string =
+    m.moduleRootNamespace.nsScope.vars[name].print()
+
+  test "importing a module makes its impls visible":
+    let dir = implModuleDir()
+    writeFile(dir / "use.gene",
+      "(import [Cat] from \"./ilib\")\n" &
+      "(var r ((Cat ^name \"Tom\") ~ greet))\n")
+    let app = newApplication(dir)
+    check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Tom\""
+
+  test "impls travel transitively through imports":
+    let dir = implModuleDir()
+    writeFile(dir / "mid.gene",
+      "(mod mid)\n" &
+      "(import [Cat] from \"./ilib\")\n" &
+      "(fn make_cat [n : Str] : Cat (Cat ^name n))\n")
+    writeFile(dir / "use.gene",
+      "(import [make_cat] from \"./mid\")\n" &
+      "(var r ((make_cat \"Felix\") ~ greet))\n")
+    let app = newApplication(dir)
+    check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Felix\""
+
+  test "an impl is global once its module is loaded (no import path needed)":
+    let dir = implModuleDir()
+    # `other` uses the Greet/Cat impl but never imports ilib.
+    writeFile(dir / "other.gene",
+      "(mod other)\n" &
+      "(fn use_cat [c] (c ~ greet))\n")
+    # loading ilib (via this import) registers the impl globally, so `other`
+    # dispatches it despite having no import path to ilib.
+    writeFile(dir / "use.gene",
+      "(import [Cat] from \"./ilib\")\n" &
+      "(import [use_cat] from \"./other\")\n" &
+      "(var r (use_cat (Cat ^name \"Zoe\")))\n")
+    let app = newApplication(dir)
+    check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Zoe\""
+
 suite "spec — stdlib namespaces from stdlib plan":
   test "std/stream, std/node, and std/parse resolve as namespace imports":
     check_eval("(import std/stream [to_stream map into]) " &

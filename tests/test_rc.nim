@@ -103,19 +103,17 @@ when defined(geneRcStats):
                           "  (var a (actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] 99))) " &
                           "  (a ~ actor/send 1))") == 0
-      check leakedManaged("(type Get ^props {^reply (ReplyTo Int)}) " &
-                          "(impl Send Get) " &
-                          "(var a : (ActorRef Get) " &
-                          "  (actor/spawn ^init (fn [] 1) " &
-                          "    ^handle (fn [ctx state msg] " &
-                          "      (match msg " &
-                          "        (when (Get ^reply reply) " &
-                          "          (reply ~ ReplyTo/send state) " &
-                          "          (actor/continue state)))))) " &
-                          "(await (a ~ actor/ask " &
-                          "  (fn [reply] (Get ^reply reply))))") == 0
+      # A case that defines `impl Send Get` moved to the global-retention test
+      # below: under design §10 a user impl registers on the shared application
+      # root and lives for the app lifetime, so it is intentionally not reclaimed.
 
-    test "protocol derive functions and generated impls are reclaimed":
+    test "impls are globally retained, not reclaimed with their scope (design §10)":
+      # A protocol impl registers on the shared application root and lives for the
+      # app's lifetime, so a program that defines one retains the impl and its
+      # receiver type. This is the MVP tradeoff for global impls — it accumulates
+      # in a long-running REPL/eval host — while everything else still reclaims.
+      check leakedManaged("(type Get ^props {^reply (ReplyTo Int)}) " &
+                          "(impl Send Get)") > 0                       # manual impl
       check leakedManaged("(protocol HasLabel " &
                           "  (message label [self] : Str) " &
                           "  (derive [t : Type, req] " &
@@ -124,7 +122,9 @@ when defined(geneRcStats):
                           "(type User ^props {^name Str} " &
                           "  ^impl [HasLabel] " &
                           "  ^derive [HasLabel]) " &
-                          "((User ^name \"Ada\") ~ label)") == 0
+                          "((User ^name \"Ada\") ~ label)") > 0        # generated impl
+      # Control: the same type without an impl reclaims fully.
+      check leakedManaged("(type User ^props {^name Str}) (User ^name \"Ada\")") == 0
 
     test "returned named functions keep their defining scope alive":
       var f = NIL

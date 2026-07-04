@@ -4382,8 +4382,15 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
           "duplicate visible impl " & protocol.protocolName &
           " for " & receiver.typeName)
     s = s.parent
-  scope.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
-                               messages: entries)
+  # Impls are global once their defining module is loaded (design §10): register
+  # on the chain root — the shared built-ins scope that every module scope chains
+  # to — so dispatch, which already walks to the root, finds the impl from any
+  # module without an import path to the impl's module.
+  var root = scope
+  while root.parent != nil:
+    root = root.parent
+  root.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
+                              messages: entries)
 
 proc sameImplMessages(a, b: ProtocolImpl): bool =
   if a.messages.len != b.messages.len:
@@ -5192,12 +5199,14 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     if seenScopes.contains(key):
       return
     seenScopes.incl key
+    var atBuiltins = false
     if current.application != nil:
       let app = Application(current.application)
       if app.builtins == current:
         if app.spawnBuiltinsPublished:
           return
         app.spawnBuiltinsPublished = true
+        atBuiltins = true
     for i in 0 ..< current.slots.len:
       if current.slotDefined(i):
         publishSpawnValue(current.slots[i], seenScopes, seenValues, seenChunks)
@@ -5211,12 +5220,16 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
       publishSpawnValue(binding.expr, seenScopes, seenValues, seenChunks)
       publishSpawnScope(binding.typeBindingScope, seenScopes, seenValues,
                         seenChunks)
-    for impl in current.impls:
-      publishSpawnValue(impl.protocol, seenScopes, seenValues, seenChunks)
-      publishSpawnValue(impl.receiver, seenScopes, seenValues, seenChunks)
-      for entry in impl.messages:
-        publishSpawnValue(entry.message, seenScopes, seenValues, seenChunks)
-        publishSpawnValue(entry.fn, seenScopes, seenValues, seenChunks)
+    # Impls on the global root (design §10) are app-wide and reached through the
+    # shared runtime, not the worker snapshot; publishing their fns would drag in
+    # the impl's defining-module scope. Skip them here.
+    if not atBuiltins:
+      for impl in current.impls:
+        publishSpawnValue(impl.protocol, seenScopes, seenValues, seenChunks)
+        publishSpawnValue(impl.receiver, seenScopes, seenValues, seenChunks)
+        for entry in impl.messages:
+          publishSpawnValue(entry.message, seenScopes, seenValues, seenChunks)
+          publishSpawnValue(entry.fn, seenScopes, seenValues, seenChunks)
     for value in current.requiredImplTypes:
       publishSpawnValue(value, seenScopes, seenValues, seenChunks)
     publishSpawnValue(current.supervisorEvents, seenScopes, seenValues,
