@@ -728,6 +728,8 @@ A stream is a stateful, pull-based, lazy cursor.
 ```
 
 `EndOfStream` is not an item. It is a standard read error from `peek`/`next`.
+`has_next` returns `false` at exhaustion; it may raise the stream's producer
+error `err`, but it does not raise `EndOfStream`.
 
 ```gene
 (protocol (Stream item err)
@@ -762,7 +764,15 @@ Rules:
 - falling off the end closes the stream;
 - no public `EOS` value is yielded;
 - `peek` may buffer one item;
-- `close` stops the generator and runs cleanup.
+- `close` is idempotent, drops buffered state, stops future pulls, and closes
+  the upstream stream if one exists.
+
+In the MVP, generator `close` stops future pulls by discarding the saved
+generator state. It does not yet resume/unwind the generator to run pending
+`ensure` cleanup; generator cleanup-on-close is reserved for the continuation
+model that preserves generator frames and handlers. Natural exhaustion of a
+bounded helper such as `take` does not close or consume the remaining upstream
+items. Explicitly closing the downstream helper does close upstream.
 
 Standard stream helpers are ordinary functions/stages:
 

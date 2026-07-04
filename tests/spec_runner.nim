@@ -1125,6 +1125,13 @@ suite "spec — streams from design":
                "catch (EndOfStream ^message m) m)",
                "\"end of stream\"")
 
+  test "has_next surfaces producer errors without EndOfStream":
+    check_eval("(try " &
+               "  (var s (map (to_stream [1]) (fn [x] (/ 1 0)))) " &
+               "  (s ~ Stream/has_next) " &
+               "catch {^message m} m)",
+               "\"division by zero\"")
+
   test "stream helpers map, filter, take, and materialize":
     check_eval("(var s (take " &
                "  (filter " &
@@ -1142,6 +1149,22 @@ suite "spec — streams from design":
                "(var pair (pairs ~ Stream/next)) " &
                "(fn key [x : Sym] x) (key pair/0)",
                "a")
+
+  test "closing downstream stream helpers closes upstream":
+    check_eval("(var source (to_stream [1 2])) " &
+               "(var s (map source (fn [x] x))) " &
+               "(s ~ Stream/close) " &
+               "(source ~ Stream/has_next)",
+               "false")
+    check_eval("(var hits (cell 0)) " &
+               "(var source (map (to_stream [1 2]) " &
+               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "(var s (take source 1)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/has_next) " &
+               " (hits ~ Cell/get) " &
+               " (source ~ Stream/has_next)]",
+               "[1 false 1 true]")
 
   test "lazy streams own inline callables beyond the defining frame":
     # Regression: the stream must hold its callable strongly. An inline
