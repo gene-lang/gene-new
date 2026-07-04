@@ -810,8 +810,12 @@ void : Void
 They are not bottom types. `nil` is explicit absence. `void` means missing, skipped, deleted, or no produced value. Optional values are explicit:
 
 ```gene
-(opt T) = (| T Nil)
+(opt T) = T? = (| T Nil)
 ```
+
+The `?` suffix is read as an ordinary symbol and interpreted as `(opt T)` only
+in type position (annotations, parameter/return types, prop schemas, `(List
+Int?)`), so predicate names like `empty?` in value position are unaffected.
 
 A typed list or map is not implicitly initialized to `nil`:
 

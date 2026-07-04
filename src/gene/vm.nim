@@ -10253,6 +10253,12 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   of vkSymbol:
     var resolved: Value
     let name = expr.symVal
+    # `T?` is sugar for `(opt T)` = `(| T Nil)`: nil, or the stripped type. The
+    # `?` suffix is only special in type position, so predicate names like
+    # `empty?` in value position are never affected.
+    if name.len > 1 and name[^1] == '?':
+      return value.kind == vkNil or
+             matchesTypeExpr(newSym(name[0 ..< name.len - 1]), value, scope)
     if name == "Callable":
       return value.valueImplementsCallable(scope)
     # Some built-ins are both annotations/namespaces and legal nominal names in

@@ -797,6 +797,19 @@ suite "spec — typed variable boundaries from design":
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
 
+  test "optional type sugar T? is (opt T) (design §7.2)":
+    check_eval("(var a : Int? nil) a", "nil")
+    check_eval("(var b : Int? 5) b", "5")
+    check_eval("(fn f [x : Str?] : Str? x) [(f nil) (f \"hi\")]",
+               "[nil \"hi\"]")
+    check_eval("(fn g [xs : (List Int?)] (size xs)) (g [1 nil 3])", "3")
+    check_eval("(type Box ^props {^v Int}) (fn h [b : Box?] : Box? b) (h nil)",
+               "nil")
+    check_eval("(try (var a : Int? \"bad\") a catch (TypeError ^expected e) e)",
+               "\"Int?\"")
+    # `?` is special only in type position; a `name?` predicate call is untouched.
+    check_eval("(fn done? [x] (= x 0)) [(done? 0) (done? 1)]", "[true false]")
+
   test "callable runtime values have explicit boundary types":
     check_eval("(fn keep-native [f : NativeFn] f) (keep-native +)",
                "(native-fn +)")

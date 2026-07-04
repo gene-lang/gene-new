@@ -1394,10 +1394,15 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
 proc macroMatchesTypeExpr(expr, value: Value): bool =
   case expr.kind
   of vkSymbol:
-    let builtin = macroMatchesBuiltinType(expr.symVal, value)
+    let name = expr.symVal
+    # `T?` is sugar for `(opt T)`; see matchesTypeExpr in vm.nim.
+    if name.len > 1 and name[^1] == '?':
+      return value.kind == vkNil or
+             macroMatchesTypeExpr(newSym(name[0 ..< name.len - 1]), value)
+    let builtin = macroMatchesBuiltinType(name, value)
     if builtin.known:
       return builtin.ok
-    raise newException(GeneError, "unknown macro type annotation: " & expr.symVal)
+    raise newException(GeneError, "unknown macro type annotation: " & name)
   of vkNode:
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
