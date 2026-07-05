@@ -289,9 +289,9 @@ suite "spec — typed native compilation prototype from design":
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneFfiAbiTypeInfo" in c
     check "_Static_assert(sizeof(int64_t) == 8, \"C/Int64 must be 8 bytes\");" in c
-    check "static const GeneFfiAbiTypeInfo gene_ffi_abi_types[] = {" in c
+    check "static const GeneFfiAbiTypeInfo gene_ffi_abi_types[] GENE_MAYBE_UNUSED = {" in c
     check "{\"C/Int64\", \"int64_t\", sizeof(int64_t), GENE_ALIGNOF(int64_t)}," in c
-    check "static const size_t gene_ffi_abi_types_count = 22;" in c
+    check "static const size_t gene_ffi_abi_types_count GENE_MAYBE_UNUSED = 22;" in c
     check "int64_t gene_native_add64(int64_t x, int64_t y)" in c
     check "double gene_native_scale(double x, double y)" in c
     check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) (add64 20 22)",
@@ -311,11 +311,11 @@ suite "spec — typed native compilation prototype from design":
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneNativeFrameInfo" in c
     check "typedef struct GeneAotModuleFunction" in c
-    check "static const GeneNativeFrameInfo gene_frame_add64 = {\"add64\", GENE_NATIVE_FRAME_TYPED};" in c
+    check "static const GeneNativeFrameInfo gene_frame_add64 GENE_MAYBE_UNUSED = {\"add64\", GENE_NATIVE_FRAME_TYPED};" in c
     check "(void)&gene_frame_add64;" in c
-    check "static const GeneAotModuleFunction gene_aot_module[] = {" in c
+    check "static const GeneAotModuleFunction gene_aot_module[] GENE_MAYBE_UNUSED = {" in c
     check "{\"add64\", \"gene_native_add64\", \"I64\", 2, &gene_frame_add64}," in c
-    check "static const size_t gene_aot_module_count = 2;" in c
+    check "static const size_t gene_aot_module_count GENE_MAYBE_UNUSED = 2;" in c
     check "int64_t gene_native_add64_twice(int64_t x, int64_t y)" in c
     check "return gene_native_add64(gene_native_add64(x, y), y);" in c
     check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
@@ -323,6 +323,29 @@ suite "spec — typed native compilation prototype from design":
                "  (add64 (add64 x y) y)) " &
                "(add64_twice 20 2)",
                "24")
+
+  test "fixed scalar AOT covers branching and direct recursion":
+    let chunk = compileSource(
+      "(fn clamp64 [x : I64 lo : I64 hi : I64] : I64 " &
+      "  (if (< x lo) lo (if (> x hi) hi x))) " &
+      "(fn fib64 [n : I64] : I64 " &
+      "  (if (< n 2) n (+ (fib64 (- n 1)) (fib64 (- n 2)))))")
+    check chunk.functions[0].aotExpr.kind != vkNil
+    check chunk.functions[1].aotExpr.kind != vkNil
+    check chunk.functions[0].aotFrameKind == afkTypedNative
+    check chunk.functions[1].aotFrameKind == afkTypedNative
+    let c = chunk.emitExperimentalC()
+    check "int64_t gene_native_clamp64(int64_t x, int64_t lo, int64_t hi)" in c
+    check "return ((x < lo) ? lo : ((x > hi) ? hi : x));" in c
+    check "int64_t gene_native_fib64(int64_t n)" in c
+    check "return ((n < 2) ? n : (gene_native_fib64((n - 1)) + gene_native_fib64((n - 2))));" in c
+    check_eval(
+      "(fn clamp64 [x : I64 lo : I64 hi : I64] : I64 " &
+      "  (if (< x lo) lo (if (> x hi) hi x))) " &
+      "(fn fib64 [n : I64] : I64 " &
+      "  (if (< n 2) n (+ (fib64 (- n 1)) (fib64 (- n 2))))) " &
+      "[(clamp64 -2 0 10) (clamp64 12 0 10) (fib64 10)]",
+      "[0 10 55]")
 
   test "task-frame lowering metadata is emitted for resumable functions":
     let chunk = compileSource("(fn wait [t : (Task Int Never)] : Int (await t)) " &
@@ -333,7 +356,7 @@ suite "spec — typed native compilation prototype from design":
     check "task-frame=generator" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneTaskFrameInfo" in c
-    check "static const GeneTaskFrameInfo gene_task_frames[] = {" in c
+    check "static const GeneTaskFrameInfo gene_task_frames[] GENE_MAYBE_UNUSED = {" in c
     check "{\"wait\", \"vm\", true}," in c
     check "{\"ints\", \"generator\", false}," in c
 
@@ -350,9 +373,9 @@ suite "spec — typed native compilation prototype from design":
     check "direct-protocol-calls:" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "direct-protocol to_name ToName/User" in c
-    check "static const GeneDirectProtocolCall gene_direct_protocol_calls[] = {" in c
+    check "static const GeneDirectProtocolCall gene_direct_protocol_calls[] GENE_MAYBE_UNUSED = {" in c
     check "{\"to_name\", \"ToName\", \"User\"}," in c
-    check "static const size_t gene_direct_protocol_calls_count = 1;" in c
+    check "static const size_t gene_direct_protocol_calls_count GENE_MAYBE_UNUSED = 1;" in c
     check_eval(source, "\"Ada\"")
     expect GeneError:
       discard compileSource("(to_name ^protocol ToName x)")
@@ -375,9 +398,9 @@ suite "spec — typed native compilation prototype from design":
     check "declared-library=true" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneFfiLibraryInfo" in c
-    check "static const GeneFfiLibraryInfo gene_ffi_libraries[] = {" in c
+    check "static const GeneFfiLibraryInfo gene_ffi_libraries[] GENE_MAYBE_UNUSED = {" in c
     check "{\"libc\", \"libc.so.6\", \"libSystem.B.dylib\", \"msvcrt.dll\"}," in c
-    check "static const size_t gene_ffi_libraries_count = 1;" in c
+    check "static const size_t gene_ffi_libraries_count GENE_MAYBE_UNUSED = 1;" in c
     check "{\"strlen\", \"libc\", true, \"strlen\", \"C\", \"C\", " &
       "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
     check_eval("(ffi/library libc ^linux \"libc.so.6\") libc", "libc")
@@ -411,10 +434,10 @@ suite "spec — typed native compilation prototype from design":
     check "const char *calling;" in c
     check "#define GENE_FFI_CDECL" in c
     check "#define GENE_FFI_STDCALL __stdcall" in c
-    check "static const GeneFfiFnInfo gene_ffi_fns[] = {" in c
+    check "static const GeneFfiFnInfo gene_ffi_fns[] GENE_MAYBE_UNUSED = {" in c
     check "{\"strlen\", \"libc\", false, \"strlen\", \"C\", \"cdecl\", " &
       "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
-    check "static const size_t gene_ffi_fns_count = 1;" in c
+    check "static const size_t gene_ffi_fns_count GENE_MAYBE_UNUSED = 1;" in c
     check "extern size_t GENE_FFI_CDECL strlen(const char * s);" in c
     check "GeneStatus gene_ffi_strlen" in c
     check "calling: cdecl" in c
@@ -454,7 +477,7 @@ suite "spec — typed native compilation prototype from design":
       "(ffi/fn make_owned ^symbol \"make_owned\" ^release \"destroy_owned\" " &
       "  [] : (C/OwnedPtr C/Char))"
     let c = compileSource(source).emitExperimentalC()
-    check "static const size_t gene_ffi_fns_count = 6;" in c
+    check "static const size_t gene_ffi_fns_count GENE_MAYBE_UNUSED = 6;" in c
     check "{\"make_owned\", \"\", false, \"make_owned\", \"C\", " &
       "\"C\", \"gene_ffi_make_owned\", \"destroy_owned\", 0, " &
       "\"(C/OwnedPtr C/Char)\"}," in c
@@ -537,7 +560,7 @@ suite "spec — typed native compilation prototype from design":
       "\"ffi/struct Timespec align mismatch\");" in c
     check "_Static_assert(offsetof(Timespec, tv_nsec) == 8, " &
       "\"ffi/struct Timespec.tv_nsec offset mismatch\");" in c
-    check "static const GeneFfiStructInfo gene_ffi_structs[] = {" in c
+    check "static const GeneFfiStructInfo gene_ffi_structs[] GENE_MAYBE_UNUSED = {" in c
     check "{\"Timespec\", \"C\", 16, 8, 2}," in c
     check "{\"Timespec\", \"tv_sec\", \"C/Long\", 0}," in c
     let ptrChunk = compileSource("(ffi/struct HandleBox " &
@@ -582,7 +605,7 @@ suite "spec — typed native compilation prototype from design":
       "\"ffi/union IntOrDouble size mismatch\");" in c
     check "_Static_assert(GENE_ALIGNOF(IntOrDouble) == 8, " &
       "\"ffi/union IntOrDouble align mismatch\");" in c
-    check "static const GeneFfiUnionInfo gene_ffi_unions[] = {" in c
+    check "static const GeneFfiUnionInfo gene_ffi_unions[] GENE_MAYBE_UNUSED = {" in c
     check "{\"IntOrDouble\", \"C\", 8, 8, 2}," in c
     check "{\"IntOrDouble\", \"i\", \"C/Int\"}," in c
     check_eval("(ffi/union IntOrDouble ^fields [[i C/Int]]) IntOrDouble",
@@ -613,7 +636,7 @@ suite "spec — typed native compilation prototype from design":
     check "ffi-signatures:" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneFfiSignatureInfo" in c
-    check "static const GeneFfiSignatureInfo gene_ffi_signatures[] = {" in c
+    check "static const GeneFfiSignatureInfo gene_ffi_signatures[] GENE_MAYBE_UNUSED = {" in c
     check "{\"Comparator\", \"callback\", \"C\", " &
       "\"lhs:(C/Ptr C/Void),rhs:(C/Ptr C/Void)\", \"C/Int\", false, false}," in c
     check "{\"RuntimeCall\", \"dynamic\", \"C\", \"value:Any\", " &
@@ -970,7 +993,7 @@ suite "spec — generic functions from design":
     check "monomorphizations:" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "identity<Int>" in c
-    check "static const GeneMonomorphizationSpec gene_monomorphizations[] = {" in c
+    check "static const GeneMonomorphizationSpec gene_monomorphizations[] GENE_MAYBE_UNUSED = {" in c
     check "{\"identity\", \"Int\"}," in c
     check_eval("(fn (identity item) [x : item] : item x) " &
                "(identity ^types [Int] 1)",

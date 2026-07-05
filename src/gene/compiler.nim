@@ -1950,8 +1950,24 @@ proc aotAvailableFunctions(functions: openArray[FunctionProto],
     if supported:
       result[fn.name] = fn.params.len
 
-proc isAotExpr(expr: Value, params: openArray[string], typeName: string,
-               available: Table[string, int]): bool =
+proc isAotValueExpr(expr: Value, params: openArray[string], typeName: string,
+                    available: Table[string, int]): bool
+
+proc isAotBoolExpr(expr: Value, params: openArray[string], typeName: string,
+                   available: Table[string, int]): bool =
+  if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
+      expr.head.kind != vkSymbol:
+    return false
+  let head = expr.head.symVal
+  if head notin ["<", ">", "<=", ">=", "="]:
+    return false
+  if expr.body.len != 2:
+    return false
+  expr.body[0].isAotValueExpr(params, typeName, available) and
+    expr.body[1].isAotValueExpr(params, typeName, available)
+
+proc isAotValueExpr(expr: Value, params: openArray[string], typeName: string,
+                    available: Table[string, int]): bool =
   case expr.kind
   of vkSymbol:
     expr.symVal in params
@@ -1966,18 +1982,25 @@ proc isAotExpr(expr: Value, params: openArray[string], typeName: string,
     if head in ["+", "-", "*"]:
       if expr.body.len != 2:
         return false
-      return isAotExpr(expr.body[0], params, typeName, available) and
-        isAotExpr(expr.body[1], params, typeName, available)
+      return expr.body[0].isAotValueExpr(params, typeName, available) and
+        expr.body[1].isAotValueExpr(params, typeName, available)
+    if head == "if":
+      if expr.body.len != 3:
+        return false
+      return expr.body[0].isAotBoolExpr(params, typeName, available) and
+        expr.body[1].isAotValueExpr(params, typeName, available) and
+        expr.body[2].isAotValueExpr(params, typeName, available)
     if available.hasKey(head) and available[head] == expr.body.len:
       for arg in expr.body:
-        if not isAotExpr(arg, params, typeName, available):
+        if not arg.isAotValueExpr(params, typeName, available):
           return false
       return true
     false
   else:
     false
 
-proc detectAotExpr(c: Compiler, specs: ParamSpecs, body: openArray[Value],
+proc detectAotExpr(c: Compiler, name: string, specs: ParamSpecs,
+                   body: openArray[Value],
                    bodyStart: int, returnType: Value,
                    typeParams: openArray[string],
                    checksErrors, sawYield: bool): Value =
@@ -1993,9 +2016,11 @@ proc detectAotExpr(c: Compiler, specs: ParamSpecs, body: openArray[Value],
   for t in specs.positionalTypes:
     if t.fixedAotType != typeName:
       return NIL
-  let available = aotAvailableFunctions(c.chunk.functions, typeName)
+  var available = aotAvailableFunctions(c.chunk.functions, typeName)
+  if name.len > 0:
+    available[name] = specs.positional.len
   let expr = body[bodyStart]
-  if expr.isAotExpr(specs.positional, typeName, available): expr else: NIL
+  if expr.isAotValueExpr(specs.positional, typeName, available): expr else: NIL
 
 proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
@@ -2099,7 +2124,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let native = specs.detectNativeCompileOp(body, start, returnType,
                                            typeParams, checksErrors,
                                            fnCompiler.sawYield)
-  let aotExpr = c.detectAotExpr(specs, body, start, returnType,
+  let aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
                                 typeParams, checksErrors, fnCompiler.sawYield)
   let aotFrameKind =
     if aotExpr.kind == vkNil: afkNone

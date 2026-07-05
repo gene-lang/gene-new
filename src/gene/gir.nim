@@ -1058,6 +1058,14 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
     if head in ["+", "-", "*"] and expr.body.len == 2:
       "(" & emitAotCExpr(expr.body[0], params, available) & " " & head & " " &
         emitAotCExpr(expr.body[1], params, available) & ")"
+    elif head in ["<", ">", "<=", ">=", "="] and expr.body.len == 2:
+      let cOp = if head == "=": "==" else: head
+      "(" & emitAotCExpr(expr.body[0], params, available) & " " & cOp & " " &
+        emitAotCExpr(expr.body[1], params, available) & ")"
+    elif head == "if" and expr.body.len == 3:
+      "(" & emitAotCExpr(expr.body[0], params, available) & " ? " &
+        emitAotCExpr(expr.body[1], params, available) & " : " &
+        emitAotCExpr(expr.body[2], params, available) & ")"
     elif available.hasKey(head):
       var args: seq[string]
       for arg in expr.body:
@@ -1363,13 +1371,14 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
                                       windows: library.windows)
   if ffiLibraryRows.len > 0:
     let manifestName = ffiLibraryManifestName(prefix)
-    lines.add "static const GeneFfiLibraryInfo " & manifestName & "[] = {"
+    lines.add "static const GeneFfiLibraryInfo " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in ffiLibraryRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
         cStringLiteral(row.linux) & ", " & cStringLiteral(row.macos) &
         ", " & cStringLiteral(row.windows) & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $ffiLibraryRows.len & ";"
     lines.add ""
   var ffiFnRows: seq[FfiFnCRow]
@@ -1390,7 +1399,8 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
     addFfiWrapper(lines, fn, i, prefix)
   if ffiFnRows.len > 0:
     let manifestName = ffiFnManifestName(prefix)
-    lines.add "static const GeneFfiFnInfo " & manifestName & "[] = {"
+    lines.add "static const GeneFfiFnInfo " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in ffiFnRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
         cStringLiteral(row.library) & ", " &
@@ -1401,7 +1411,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
         cStringLiteral(row.release) & ", " & $row.arity & ", " &
         cStringLiteral(row.resultType) & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $ffiFnRows.len & ";"
     lines.add ""
   var structRows: seq[FfiStructCRow]
@@ -1445,23 +1455,25 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
         offset: if field.hasOffset: field.offset else: -1)
   if structRows.len > 0:
     let manifestName = ffiStructManifestName(prefix)
-    lines.add "static const GeneFfiStructInfo " & manifestName & "[] = {"
+    lines.add "static const GeneFfiStructInfo " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in structRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
         cStringLiteral(row.layout) & ", " & $row.size & ", " & $row.align &
         ", " & $row.fieldCount & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $structRows.len & ";"
     let fieldManifestName = ffiStructFieldManifestName(prefix)
     lines.add "static const GeneFfiStructFieldInfo " & fieldManifestName &
-      "[] = {"
+      "[] GENE_MAYBE_UNUSED = {"
     for row in structFieldRows:
       lines.add "  {" & cStringLiteral(row.structName) & ", " &
         cStringLiteral(row.fieldName) & ", " & cStringLiteral(row.typeName) &
         ", " & $row.offset & "},"
     lines.add "};"
-    lines.add "static const size_t " & fieldManifestName & "_count = " &
+    lines.add "static const size_t " & fieldManifestName &
+      "_count GENE_MAYBE_UNUSED = " &
       $structFieldRows.len & ";"
     lines.add ""
   var unionRows: seq[FfiUnionCRow]
@@ -1498,23 +1510,25 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
         typeName: ffiTypeLabel(field.typeExpr))
   if unionRows.len > 0:
     let manifestName = ffiUnionManifestName(prefix)
-    lines.add "static const GeneFfiUnionInfo " & manifestName & "[] = {"
+    lines.add "static const GeneFfiUnionInfo " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in unionRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
         cStringLiteral(row.layout) & ", " & $row.size & ", " & $row.align &
         ", " & $row.fieldCount & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $unionRows.len & ";"
     let fieldManifestName = ffiUnionFieldManifestName(prefix)
     lines.add "static const GeneFfiUnionFieldInfo " & fieldManifestName &
-      "[] = {"
+      "[] GENE_MAYBE_UNUSED = {"
     for row in unionFieldRows:
       lines.add "  {" & cStringLiteral(row.unionName) & ", " &
         cStringLiteral(row.fieldName) & ", " & cStringLiteral(row.typeName) &
         "},"
     lines.add "};"
-    lines.add "static const size_t " & fieldManifestName & "_count = " &
+    lines.add "static const size_t " & fieldManifestName &
+      "_count GENE_MAYBE_UNUSED = " &
       $unionFieldRows.len & ";"
     lines.add ""
   var signatureRows: seq[FfiSignatureCRow]
@@ -1532,7 +1546,8 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
       runtimeConstructible: signature.runtimeConstructible)
   if signatureRows.len > 0:
     let manifestName = ffiSignatureManifestName(prefix)
-    lines.add "static const GeneFfiSignatureInfo " & manifestName & "[] = {"
+    lines.add "static const GeneFfiSignatureInfo " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in signatureRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
         cStringLiteral(row.kind) & ", " & cStringLiteral(row.abi) & ", " &
@@ -1540,7 +1555,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
         ", " & (if row.escaping: "true" else: "false") & ", " &
         (if row.runtimeConstructible: "true" else: "false") & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $signatureRows.len & ";"
     lines.add ""
   var monomorphRows: seq[MonomorphizationCRow]
@@ -1554,12 +1569,13 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
                                            typeArgs: args.join(","))
   if monomorphRows.len > 0:
     let manifestName = monomorphizationManifestName(prefix)
-    lines.add "static const GeneMonomorphizationSpec " & manifestName & "[] = {"
+    lines.add "static const GeneMonomorphizationSpec " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in monomorphRows:
       lines.add "  {" & cStringLiteral(row.functionName) & ", " &
         cStringLiteral(row.typeArgs) & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $monomorphRows.len & ";"
     lines.add ""
   var directRows: seq[DirectProtocolCRow]
@@ -1573,13 +1589,14 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
                                       receiverName: receiverName)
   if directRows.len > 0:
     let manifestName = directProtocolManifestName(prefix)
-    lines.add "static const GeneDirectProtocolCall " & manifestName & "[] = {"
+    lines.add "static const GeneDirectProtocolCall " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in directRows:
       lines.add "  {" & cStringLiteral(row.messageName) & ", " &
         cStringLiteral(row.protocolName) & ", " &
         cStringLiteral(row.receiverName) & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $directRows.len & ";"
     lines.add ""
   var taskFrameRows: seq[TaskFrameCRow]
@@ -1590,13 +1607,14 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
                                       canSuspend: fn.taskFrameKind == tfkVm)
   if taskFrameRows.len > 0:
     let manifestName = taskFrameManifestName(prefix)
-    lines.add "static const GeneTaskFrameInfo " & manifestName & "[] = {"
+    lines.add "static const GeneTaskFrameInfo " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for row in taskFrameRows:
       lines.add "  {" & cStringLiteral(row.functionName) & ", " &
         cStringLiteral(row.kind) & ", " &
         (if row.canSuspend: "true" else: "false") & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $taskFrameRows.len & ";"
     lines.add ""
   var moduleFns: seq[AotModuleFunction]
@@ -1614,11 +1632,16 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
       for j, param in fn.params:
         params.add cType & " " & cIdent(param, "arg" & $j)
       let paramList = if params.len == 0: "void" else: params.join(", ")
-      lines.add "static const GeneNativeFrameInfo " & frameName & " = {" &
+      lines.add "static const GeneNativeFrameInfo " & frameName &
+        " GENE_MAYBE_UNUSED = {" &
         cStringLiteral(fn.name) & ", " & frameFlags & "};"
       lines.add cType & " " & cName & "(" & paramList & ") {"
       lines.add "  (void)&" & frameName & ";"
-      lines.add "  return " & emitAotCExpr(fn.aotExpr, fn.params, available) & ";"
+      var fnAvailable = available
+      fnAvailable[fn.name] = AotCFunction(cName: cName,
+                                          paramCount: fn.params.len,
+                                          cType: cType)
+      lines.add "  return " & emitAotCExpr(fn.aotExpr, fn.params, fnAvailable) & ";"
       lines.add "}"
       lines.add ""
       available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len,
@@ -1630,13 +1653,14 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
     addCBackend(lines, fn.chunk, prefix & fn.name & "_", available)
   if moduleFns.len > 0:
     let manifestName = aotModuleManifestName(prefix)
-    lines.add "static const GeneAotModuleFunction " & manifestName & "[] = {"
+    lines.add "static const GeneAotModuleFunction " & manifestName &
+      "[] GENE_MAYBE_UNUSED = {"
     for fn in moduleFns:
       lines.add "  {" & cStringLiteral(fn.geneName) & ", " &
         cStringLiteral(fn.cName) & ", " & cStringLiteral(fn.typeName) & ", " &
         $fn.paramCount & ", &" & fn.frameName & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count = " &
+    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $moduleFns.len & ";"
     lines.add ""
   for i, sub in chunk.subchunks:
@@ -1774,6 +1798,13 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "#ifndef GENE_FFI_WRAPPER_UNIMPLEMENTED",
     "#define GENE_FFI_WRAPPER_UNIMPLEMENTED (-1)",
     "#endif",
+    "#ifndef GENE_MAYBE_UNUSED",
+    "#if defined(__GNUC__) || defined(__clang__)",
+    "#define GENE_MAYBE_UNUSED __attribute__((unused))",
+    "#else",
+    "#define GENE_MAYBE_UNUSED",
+    "#endif",
+    "#endif",
     "extern GeneStatus gene_ffi_check_arity(GeneContext *ctx, const GeneCall *call, size_t expected);",
     "extern GeneStatus gene_ffi_arg_int8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int8_t *out);",
     "extern GeneStatus gene_ffi_arg_uint8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint8_t *out);",
@@ -1832,7 +1863,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "_Static_assert(sizeof(uint32_t) == 4, \"C/UInt32 must be 4 bytes\");",
     "_Static_assert(sizeof(int64_t) == 8, \"C/Int64 must be 8 bytes\");",
     "_Static_assert(sizeof(uint64_t) == 8, \"C/UInt64 must be 8 bytes\");",
-    "static const GeneFfiAbiTypeInfo gene_ffi_abi_types[] = {",
+    "static const GeneFfiAbiTypeInfo gene_ffi_abi_types[] GENE_MAYBE_UNUSED = {",
     "  {\"C/Int8\", \"int8_t\", sizeof(int8_t), GENE_ALIGNOF(int8_t)},",
     "  {\"C/UInt8\", \"uint8_t\", sizeof(uint8_t), GENE_ALIGNOF(uint8_t)},",
     "  {\"C/Int16\", \"int16_t\", sizeof(int16_t), GENE_ALIGNOF(int16_t)},",
@@ -1856,7 +1887,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  {\"C/Bool\", \"bool\", sizeof(bool), GENE_ALIGNOF(bool)},",
     "  {\"C/CStr\", \"const char *\", sizeof(const char *), GENE_ALIGNOF(const char *)},",
     "};",
-    "static const size_t gene_ffi_abi_types_count = 22;",
+    "static const size_t gene_ffi_abi_types_count GENE_MAYBE_UNUSED = 22;",
     ""
   ]
   let headerLen = lines.len

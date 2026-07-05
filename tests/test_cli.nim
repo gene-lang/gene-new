@@ -328,7 +328,7 @@ suite "cli — gene parse/fmt/compile":
     check ran.exitCode == 0
     check "#include <stdint.h>" in ran.output
     check "int64_t gene_native_add64(int64_t x, int64_t y)" in ran.output
-    check "static const GeneAotModuleFunction gene_aot_module[] = {" in ran.output
+    check "static const GeneAotModuleFunction gene_aot_module[] GENE_MAYBE_UNUSED = {" in ran.output
     check "{\"add64\", \"gene_native_add64\", \"I64\", 2, &gene_frame_add64}," in ran.output
     check "extern size_t GENE_FFI_CDECL strlen(const char * s);" in ran.output
     check "GeneStatus gene_ffi_strlen" in ran.output

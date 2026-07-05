@@ -6,6 +6,7 @@ Run the recursive Fibonacci benchmark with:
 benchmarks/scripts/bench_fib       # defaults to fib(28)
 benchmarks/scripts/bench_fib 28
 benchmarks/scripts/bench_fib_typed 30
+benchmarks/scripts/bench_fib_aot_c 30
 ```
 
 Run the call burst benchmark with:
@@ -18,6 +19,11 @@ benchmarks/scripts/bench_call_burst 1000 100
 The current implementation has a bytecode VM but not the old native compiler
 mode, so `GENE_BENCH_MODE` currently supports only `vm`. The benchmark compiles
 the Gene source once and times VM execution.
+
+`bench_fib_aot_c` measures the experimental C backend separately. It emits C for
+a fixed-representation typed function, compiles that C with the host compiler,
+and times the resulting binary. This is useful as an AOT/JIT target signal; it
+does not exercise runtime VM dispatch into native code.
 
 ## Fibonacci
 

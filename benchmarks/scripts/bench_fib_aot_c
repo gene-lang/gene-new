@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage:
+#   benchmarks/scripts/bench_fib_aot_c [n]
+#
+# Defaults to fib(24), matching the historical native-code sample.
+# This measures the experimental C backend, not runtime VM dispatch.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
+N="${1:-24}"
+NIM_BIN="${NIM:-nim}"
+CC_BIN="${CC:-cc}"
+
+echo "=== Gene AOT-C Benchmark ==="
+echo "Date: $(date '+%Y-%m-%d %H:%M:%S %A')"
+echo "Git commit: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+echo "Nim version: $("$NIM_BIN" --version 2>&1 | head -n 1)"
+echo "C compiler: $("$CC_BIN" --version 2>&1 | head -n 1)"
+echo "Mode: experimental-aot-c"
+echo
+
+mkdir -p bin build/aot-c
+GENE_SRC="build/aot-c/fibonacci_aot.gene"
+GEN_C="build/aot-c/fibonacci_aot.c"
+BIN="bin/fibonacci_aot_c"
+
+cat >"$GENE_SRC" <<'GENE'
+(fn fib64 [n : I64] : I64
+  (if (< n 2)
+    n
+    (+ (fib64 (- n 1)) (fib64 (- n 2)))))
+GENE
+
+echo "Generating experimental C backend output..."
+"$NIM_BIN" c -r --path:src --hints:off src/gene.nim compile --target c "$GENE_SRC" >"$GEN_C"
+
+cat >>"$GEN_C" <<'C'
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static int64_t gene_bench_fib_number(int64_t n) {
+  int64_t a = 0;
+  int64_t b = 1;
+  for (int64_t i = 0; i < n; i++) {
+    int64_t next = a + b;
+    a = b;
+    b = next;
+  }
+  return a;
+}
+
+static int64_t gene_bench_fib_call_count(int64_t n) {
+  return 2 * gene_bench_fib_number(n + 1) - 1;
+}
+
+int main(int argc, char **argv) {
+  int64_t n = 24;
+  if (argc > 1) {
+    n = atoll(argv[1]);
+  }
+  clock_t started = clock();
+  int64_t result = gene_native_fib64(n);
+  double duration = (double)(clock() - started) / (double)CLOCKS_PER_SEC;
+  int64_t calls = gene_bench_fib_call_count(n);
+  double calls_per_second = duration > 0.0 ? (double)calls / duration : 0.0;
+
+  printf("Result: aot-c fib(%lld) = %lld\n", (long long)n, (long long)result);
+  printf("Time: %.6f seconds\n", duration);
+  printf("Mode: experimental-aot-c\n");
+  printf("Fib calls: %lld\n", (long long)calls);
+  printf("Performance: %.0f typed fib calls/second\n", calls_per_second);
+  return 0;
+}
+C
+
+echo "Compiling generated C..."
+"$CC_BIN" -std=c11 -O3 -Wall -Werror -o "$BIN" "$GEN_C"
+
+echo
+echo "Running benchmark..."
+"./$BIN" "$N"
