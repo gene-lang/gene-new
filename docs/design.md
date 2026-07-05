@@ -2177,22 +2177,84 @@ Rules:
 
 The program entry point runs as a root task, so `await` is meaningful without an `async fn` distinction. A function containing `await` is lowered to a resumable task frame as needed. Native compilation may initially route suspension through runtime helpers and later perform dedicated coroutine lowering.
 
+### 13.1.1 Cancellation contract
+
 A task may be cancelled explicitly:
 
 ```gene
 (t ~ Task/cancel)
 ```
 
-Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate. Concretely:
+Cancellation propagates as a single, well-defined control signal. The MVP
+rule set:
 
-- cancellation is a control signal, not an `Error`; `try/catch` — including a
-  wildcard `catch _` — does not catch it, so it propagates through catch clauses;
-- `ensure` blocks always run during cancellation cleanup;
-- `await` on a cancelled task propagates the cancellation;
-- an actor observes cancellation after the current message completes or at its
-  next suspension/safepoint (§13.4), never mid-message.
+- **Cancellation is a control signal, not an `Error`.** It has its own
+  representation in the runtime (separate from `Error`-implementing
+  values) and it does not satisfy `^errors [...]` types — code that
+  recovers domain errors with `try`/`catch` does not see it.
+- **`try`/`catch` does not catch cancellation**, including a wildcard
+  `catch _` form. The only way to observe or suppress cancellation
+  inside a task is via explicit cancellation-aware APIs — primarily
+  `Task/await_cancellable : (Task T E) -> (Task T E)` and a future
+  `Task/run_with_cancellation` lift. Today `(await task)` propagates
+  cancellation without exposing it. Cancellation propagates through
+  nested `try` blocks until either the `ensure` cleanup runs and
+  unwinding finishes, or an explicit cancellation-aware handler
+  intercepts it.
+- **`ensure` always runs**, during normal completion, error
+  propagation, AND cancellation. An `ensure` block observes whichever
+  path is leaving the active frame (the same way it does in
+  `try`/error unwinding).
+- **`await` on a cancelled task propagates the cancellation.** A
+  pending `await` resumes the awaiting task with the cancellation
+  reason, which then unwinds through the awaiting task's own
+  `try`/`catch` and `ensure` chain.
+- **A task may ignore cancellation, but only until the next
+  safepoint.** The runtime guarantees observation at suspension
+  points (`await`, channel ops, `Task/yield`, timer wait, async I/O
+  wait) and at explicit safepoints. A task that runs between
+  safepoints without suspending does not see cancellation mid-step.
+  After the next safepoint it sees the cancellation and unwinds; if
+  the cancellation is *delivered* and not merely *requested* (e.g. a
+  supervisor-level shutdown that demands an end to the task), the
+  runtime may also force-unwind past the task after a bounded number
+  of safepoints so a runaway that refuses to cooperate cannot pin a
+  scope forever.
+- **Cancellation and `catch _`.** A wildcard `catch _` in MVP catches
+  every `Error`-implementing value but not cancellation — exactly the
+  same as a typed catch clause. Code that needs to *see* cancellation
+  must use one of the cancellation-aware primitives above.
 
-### 13.2 Typed bounded channels
+#### Cancellation and actors
+
+For an actor, the same rule applies, with the contract narrowed to
+message boundaries:
+
+- An actor observes cancellation **after** the currently-executing
+  message handler completes (or if it suspends, at that suspension
+  point), never mid-message. A handler that yields via `await`,
+  channel ops, or `Task/yield` may pick up cancellation at that
+  suspension, but a synchronous handler that loops CPU-bound without
+  suspending runs to completion before the actor checks cancellation.
+- An actor that receives cancellation during message processing
+  unwinds the current handler with `ensure` cleanup, then either:
+  (a) accepts the cancellation and stops, or (b) re-enters its
+  handler loop depending on its supervisor's policy. Restart-policy
+  supervisors (§13.6) rebuild the handler with a fresh state on
+  restart, not via cancellation.
+- **`actor/ask` and one-shot `ReplyTo`:** the `Task` returned by
+  `actor/ask` reflects cancellation of the asker — cancelling the
+  asker's scope cancels the pending reply wait, with `ensure`
+  running on both sides. The `ReplyTo R` capability itself is
+  cancel-aware: if the actor's owner scope shuts down before the
+  handler completes, the reply slot closes and an `await pending`
+  on the asker side raises a `PendingReplyClosed` error or, if the
+  cancellation propagates as the dominant signal, propagates
+  cancellation instead. The MVP preferred rule: cancellation always
+  wins over `PendingReplyClosed` when both could fire, so the
+  caller sees the cancellation deterministically.
+
+---### 13.2 Typed bounded channels
 
 A channel transports values between tasks:
 

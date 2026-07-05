@@ -1820,6 +1820,26 @@ suite "spec — structured tasks from design":
                "(out ~ Cell/get)",
                "9")
 
+  test "explicit Task/cancel still runs the ensure cleanup":
+    check_eval("(var ch (channel ^capacity 1)) " &
+               "(var out (cell 0)) " &
+               "(scope " &
+               "  (var t (spawn (try (ch ~ Channel/recv) " &
+               "                   ensure (out ~ Cell/set 7)))) " &
+               "  (sleep 1) " &
+               "  (t ~ Task/cancel)) " &
+               "(sleep 1) " &
+               "(out ~ Cell/get)",
+               "7")
+
+  test "wildcard catch does not intercept task cancellation":
+    expect GeneCancel:
+      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+                                "  (var t (spawn (ch ~ Channel/recv))) " &
+                                "  (t ~ Task/cancel) " &
+                                "  (try (await t) catch _ \"caught\"))"),
+                  newGlobalScope())
+
   test "detached tasks outlive scope ownership":
     check_eval("(var out (cell 0)) " &
                "(scope " &
