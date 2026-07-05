@@ -279,3 +279,5 @@ proc print*(v: Value): string =
     "(protocol " & v.protocolName & ")"
   of vkProtocolMessage:
     "(message " & v.protocolMessageName & ")"
+  of vkEnumVariant:
+    v.enumVariantEnum.typeName & "/" & v.enumVariantName

@@ -594,6 +594,8 @@ proc collectPatternBindingNames(pat: Value, names: var seq[string],
     for _, valuePat in pat.mapEntries:
       collectPatternBindingNames(valuePat, names, seen)
   of vkNode:
+    if pat.head.isSymbol("path"):
+      return
     if pat.isTypedPattern:
       pat.requireTypedPatternShape()
       addPatternBinding(names, seen, pat.head.symVal)
@@ -668,7 +670,7 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
     of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
        opCallParentLocal1, opCallOuterLocal1, opSetOuterLocal, opDefineName,
        opDefineLocal, opSetModuleName, opMakeFn,
-       opMakeNamespace, opMakeType, opMakeProtocol, opMakeImpl, opImport,
+       opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol, opMakeImpl, opImport,
        opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
        opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
       return true
@@ -682,7 +684,7 @@ proc chunkCanPoolCallScope(chunk: Chunk): bool =
     return false
   for inst in chunk.instructions:
     case inst.op
-    of opMakeFn, opMakeEnv, opMakeNamespace, opMakeType, opMakeProtocol,
+    of opMakeFn, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
        opMakeImpl, opImport, opMatch, opMatchBind, opMatchBindReplace,
        opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
       return false
@@ -3826,6 +3828,126 @@ proc compileType(c: var Compiler, node: Value) =
                                            inlineImpls: inlineImpls)))
   c.emitDefineBinding(name)
 
+proc compileEnum(c: var Compiler, node: Value) =
+  let body = node.body
+  if body.len == 0 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "enum requires a name")
+  for key, _ in node.props:
+    if key != "backing":
+      raise newException(GeneError, "unknown enum prop: ^" & key)
+  let name = body[0].symVal
+  var typeParams: seq[string]
+  var start = 1
+  if start < body.len and body[start].kind == vkList:
+    for item in body[start].listItems:
+      if item.kind != vkSymbol:
+        raise newException(GeneError, "enum type parameters must be symbols")
+      typeParams.add item.symVal
+    inc start
+
+  var variantNodes: seq[Value]
+  var messageNodes: seq[Value]
+  var implNodes: seq[Value]
+  for i in start ..< body.len:
+    let item = body[i]
+    if item.kind == vkNode and item.head.isSymbol("message"):
+      messageNodes.add item
+    elif item.kind == vkNode and item.head.isSymbol("impl"):
+      implNodes.add item
+    else:
+      variantNodes.add item
+
+  var messages: seq[ImplMessageProto]
+  var seenMessages = initTable[string, bool]()
+  const reservedReflection = ["variants", "names", "name", "ordinal",
+                              "from_name", "from_ordinal", "backing",
+                              "from_backing"]
+  for item in messageNodes:
+    rejectReservedEffects(item)
+    let mp = implMessageProto(c, item)
+    if mp.protocolPath.len > 0:
+      raise newException(GeneError,
+        "enum type-direct message names must be simple: " &
+        mp.protocolPath.join("/") & "/" & mp.name)
+    if mp.name in reservedReflection:
+      raise newException(GeneError,
+        "enum message name is reserved for reflection: " & mp.name)
+    if seenMessages.hasKey(mp.name):
+      raise newException(GeneError, "duplicate enum message: " & mp.name)
+    seenMessages[mp.name] = true
+    messages.add mp
+
+  var inlineImpls: seq[InlineImplProto]
+  for item in implNodes:
+    if item.body.len == 0:
+      raise newException(GeneError, "inline impl requires a protocol")
+    var implMessages: seq[ImplMessageProto]
+    var seenImplMessages = initTable[string, bool]()
+    for j in 1 ..< item.body.len:
+      let msgNode = item.body[j]
+      if msgNode.kind != vkNode or not msgNode.head.isSymbol("message"):
+        raise newException(GeneError,
+          "inline impl body items must be message declarations " &
+          "(the enclosing enum is the receiver)")
+      let mp = implMessageProto(c, msgNode)
+      let key = mp.protocolPath.join("/") & "/" & mp.name
+      if seenImplMessages.hasKey(key):
+        raise newException(GeneError, "duplicate impl message: " & mp.name)
+      seenImplMessages[key] = true
+      implMessages.add mp
+    compileExpr(c, item.body[0])
+    inlineImpls.add InlineImplProto(messages: implMessages)
+
+  let hasBacking = node.props.hasKey("backing")
+  let backingType = if hasBacking: node.props["backing"] else: NIL
+  var variants: seq[EnumVariantProto]
+  var seenVariants = initTable[string, bool]()
+  for item in variantNodes:
+    var variantName: string
+    var payloadTypes: seq[Value]
+    var backing = NIL
+    var variantHasBacking = false
+    case item.kind
+    of vkSymbol:
+      variantName = item.symVal
+      if hasBacking:
+        raise newException(GeneError,
+          "enum variant '" & variantName & "' requires a backing value")
+    of vkNode:
+      if item.head.kind != vkSymbol:
+        raise newException(GeneError, "enum variant name must be a symbol")
+      if item.props.len != 0 or item.meta.len != 0:
+        raise newException(GeneError, "enum variant declarations do not accept props or meta")
+      variantName = item.head.symVal
+      if hasBacking:
+        if item.body.len != 1:
+          raise newException(GeneError,
+            "backed enum variant '" & variantName & "' requires one backing value")
+        backing = item.body[0]
+        variantHasBacking = true
+      else:
+        payloadTypes = item.body
+    else:
+      raise newException(GeneError, "enum variants must be symbols or tuple forms")
+    if seenVariants.hasKey(variantName):
+      raise newException(GeneError, "duplicate enum variant: " & variantName)
+    seenVariants[variantName] = true
+    variants.add EnumVariantProto(name: variantName,
+                                  payloadTypes: payloadTypes,
+                                  hasBacking: variantHasBacking,
+                                  backing: backing)
+  if variants.len == 0:
+    raise newException(GeneError, "enum requires at least one variant")
+
+  discard c.emit(opMakeEnum,
+                 c.chunk.addEnum(EnumProto(name: name,
+                                           typeParams: typeParams,
+                                           backingType: backingType,
+                                           variants: variants,
+                                           messages: messages,
+                                           inlineImpls: inlineImpls)))
+  c.emitDefineBinding(name)
+
 proc compileProtocol(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
@@ -4013,6 +4135,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "type":
       compileType(c, node)
+      return
+    of "enum":
+      compileEnum(c, node)
       return
     of "protocol":
       compileProtocol(c, node)

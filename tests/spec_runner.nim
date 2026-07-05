@@ -74,6 +74,75 @@ suite "spec — value spread from design":
     check_eval("[1 [2 3]... 4]", "[1 2 3 4]")
     check_eval("(var n (quote (pair 2 3))) [1 n... 4]", "[1 2 3 4]")
 
+suite "spec — enums from design":
+  test "unit variants are qualified singleton values with reflection":
+    check_eval("(enum Color red green blue) " &
+               "[Color/red Color/green (= Color/red Color/red) " &
+               " (same? Color/red Color/red) (Color/red ~ name) " &
+               " (Color/green ~ ordinal) (Color ~ names) (Color ~ variants) " &
+               " (Color ~ from_name (quote red)) (Color ~ from_name \"red\") " &
+               " (Color ~ from_ordinal 2)]",
+               "[Color/red Color/green true true red 1 [red green blue] " &
+               "[Color/red Color/green Color/blue] Color/red Color/red Color/blue]")
+
+  test "tuple variants construct payload values and match by tag":
+    check_eval("(enum Shape (circle Int) (rect Int Int)) " &
+               "(match (Shape/circle 5) " &
+               "  (when (Shape/circle r) r) " &
+               "  (when (Shape/rect w h) (* w h)))",
+               "5")
+    check_eval("(enum Result (ok Int) (err Str)) " &
+               "(match (Result/err \"bad\") " &
+               "  (when (Result/ok v) v) " &
+               "  (when (Result/err e) e))",
+               "\"bad\"")
+
+  test "enums are annotation types and generic arguments erase at runtime":
+    check_eval("(enum Color red green blue) " &
+               "(fn pick [c : Color] (c ~ name)) " &
+               "(pick Color/blue)",
+               "blue")
+    check_eval("(enum Option [T] none (some T)) " &
+               "[(Option/some 7) (Option/some \"x\") " &
+               " (match Option/none (when Option/none \"none\"))]",
+               "[(Option/some 7) (Option/some \"x\") \"none\"]")
+    check_eval("(enum Option [T] none (some T)) " &
+               "(fn unwrap [o : (Option Int)] " &
+               "  (match o (when (Option/some v) v) (when Option/none 0))) " &
+               "(unwrap (Option/some 9))",
+               "9")
+    check_eval("(enum Tree leaf (node Tree Tree)) " &
+               "(match (Tree/node Tree/leaf Tree/leaf) " &
+               "  (when (Tree/node left right) [left right]))",
+               "[Tree/leaf Tree/leaf]")
+
+  test "backed unit enums round-trip through backing values":
+    check_eval("(enum Status ^backing Str (active \"A\") (closed \"C\")) " &
+               "[(Status/active ~ backing) (Status ~ from_backing \"A\") " &
+               " (Status ~ from_backing \"missing\")]",
+               "[\"A\" Status/active void]")
+
+  test "enum messages and inline impls dispatch on variants":
+    check_eval("(enum Direction " &
+               "  north east south west " &
+               "  (message degrees [self] : Int (* (self ~ ordinal) 90))) " &
+               "(Direction/east ~ degrees)",
+               "90")
+    check_eval("(protocol Label (message label [self] : Str)) " &
+               "(enum Light " &
+               "  off on " &
+               "  (impl Label " &
+               "    (message label [self] : Str " &
+               "      (if (= self Light/on) \"on\" \"off\")))) " &
+               "(Light/on ~ label)",
+               "\"on\"")
+    check_eval("(protocol Code (message code [self] : Int)) " &
+               "(enum Status active closed) " &
+               "(impl Code Status " &
+               "  (message code [self] : Int (self ~ ordinal))) " &
+               "(Status/closed ~ code)",
+               "1")
+
 suite "spec — templates from design":
   test "quasiquote unquote builds generated nodes":
     check_eval("(var name \"Ada\") `(div %name)", "(div \"Ada\")")

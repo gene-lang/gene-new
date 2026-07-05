@@ -69,16 +69,26 @@
   (! (= t/done 0)))
 
 # -----------------------------------------------------------------------------
-# Filter views: every listing route accepts all | active | done.
+# Filter views: every listing route accepts all | active | done. The public URL
+# still uses stable strings; app code uses a backed enum internally.
 # -----------------------------------------------------------------------------
 
-(fn keep? [flt : Str]
-  (match flt
-    (when "active" (fn [t] (! (done? t))))
-    (when "done"   done?)
-    (else          (fn [t] true))))
+(enum TodoFilter ^backing Str
+  (all "all")
+  (active "active")
+  (done "done"))
 
-(fn todos_for [flt : Str] : (List Map)
+(fn parse_filter [value] : TodoFilter
+  (var flt (TodoFilter ~ from_backing (|| value "all")))
+  (if (= flt void) TodoFilter/all flt))
+
+(fn keep? [flt : TodoFilter]
+  (match flt
+    (when TodoFilter/active (fn [t] (! (done? t))))
+    (when TodoFilter/done   done?)
+    (when TodoFilter/all    (fn [t] true))))
+
+(fn todos_for [flt : TodoFilter] : (List Map)
   ((to_stream (list_todos)) ~ filter (keep? flt) ; ~ into []))
 
 # -----------------------------------------------------------------------------
@@ -88,7 +98,7 @@
 (fn todo_map [t] : Map
   {^id t/id ^text t/text ^done (done? t)})
 
-(fn todos_json [flt : Str] : Str
+(fn todos_json [flt : TodoFilter] : Str
   (stringify ((to_stream (todos_for flt)) ~ map todo_map ; ~ into [])))
 
 # -----------------------------------------------------------------------------
@@ -166,12 +176,13 @@
        (input ^type "hidden" ^name "id" ^value %id)
        (button ^title "delete" "✕"))))
 
-(fn filter_link [flt : Str, target : Str] : Node
+(fn filter_link [flt : TodoFilter, target : TodoFilter] : Node
   (var cls (if (= flt target) "filter on" "filter"))
-  (var href (if (= target "all") "/" $"/?filter=${target}"))
-  `(a ^class %cls ^href %href %target))
+  (var key (target ~ backing))
+  (var href (if (= target TodoFilter/all) "/" $"/?filter=${key}"))
+  `(a ^class %cls ^href %href %key))
 
-(fn page [flt : Str] : Str
+(fn page [flt : TodoFilter] : Str
   (var rows ((to_stream (todos_for flt)) ~ map todo_row ; ~ into []))
   (var all_items (list_todos))
   (var done_count (size ((to_stream all_items) ~ filter done? ; ~ into [])))
@@ -198,9 +209,9 @@
                 (div ^class "muted foot"
                   (span %counts)
                   (span ^class "filters"
-                    %(filter_link flt "all")
-                    %(filter_link flt "active")
-                    %(filter_link flt "done"))
+                    %(filter_link flt TodoFilter/all)
+                    %(filter_link flt TodoFilter/active)
+                    %(filter_link flt TodoFilter/done))
                   %clear
                   (a ^href "/api/todos" "JSON")))))))))
 
@@ -248,7 +259,7 @@
 (fn handle [req]
   (match [req/method req/path]
     (when ["GET" "/"]
-      (page (|| req/params/filter "all")))
+      (page (parse_filter req/params/filter)))
     (when ["POST" "/todos"]
       (with_text req (fn [text] (add_todo text) (redirect "/"))))
     (when ["POST" "/todos/toggle"]
@@ -259,17 +270,17 @@
       (clear_done)
       (redirect "/"))
     (when ["GET" "/api/todos"]
-      (json (todos_json (|| req/params/filter "all"))))
+      (json (todos_json (parse_filter req/params/filter))))
     (when ["POST" "/api/todos"]
       (with_text req (fn [text]
         (add_todo text)
         (Response ^status 201
                   ^headers {^content-type "application/json"}
-                  ^body (todos_json "all")))))
+                  ^body (todos_json TodoFilter/all)))))
     (when ["POST" "/api/todos/toggle"]
-      (with_id req (fn [id] (toggle_todo id) (json (todos_json "all")))))
+      (with_id req (fn [id] (toggle_todo id) (json (todos_json TodoFilter/all)))))
     (when ["POST" "/api/todos/delete"]
-      (with_id req (fn [id] (delete_todo id) (json (todos_json "all")))))
+      (with_id req (fn [id] (delete_todo id) (json (todos_json TodoFilter/all)))))
     (else
       (not_found "<h1>404</h1><p>No such route.</p>"))))
 

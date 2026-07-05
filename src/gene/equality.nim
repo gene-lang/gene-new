@@ -108,7 +108,8 @@ proc equal*(a, b: Value): bool =
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability, vkFfiLoad,
-     vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage:
+     vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage,
+     vkEnumVariant:
     # callable and opaque runtime values have identity equality
     a.bits == b.bits
 
@@ -126,7 +127,7 @@ proc same*(a, b: Value): bool =
      vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable, vkType, vkProtocol,
-     vkProtocolMessage:
+     vkProtocolMessage, vkEnumVariant:
     a.bits == b.bits
 
 proc hash*(v: Value): Hash =
@@ -205,7 +206,8 @@ proc hash*(v: Value): Hash =
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability, vkFfiLoad,
-     vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage:
+     vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage,
+     vkEnumVariant:
     h = h !& hash(v.bits)
   !$h
 
@@ -220,7 +222,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
-     vkProtocol, vkProtocolMessage:
+     vkProtocol, vkProtocolMessage, vkEnumVariant:
     true
   of vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
      vkFfiLoad, vkFfiLibrary, vkFfiCallable:

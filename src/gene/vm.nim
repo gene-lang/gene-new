@@ -2412,7 +2412,7 @@ proc freezeValue(value: Value): Value =
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
-     vkType, vkProtocol, vkProtocolMessage:
+     vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
     value
   of vkList:
     var items = newSeq[Value](value.listItems.len)
@@ -2577,6 +2577,7 @@ proc declarationKind*(value: Value): string =
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
+  of vkEnumVariant: "EnumVariant"
 
 proc exportedBinding(ns: Value, name: string): Value =
   if ns.kind != vkNamespace:
@@ -4649,6 +4650,8 @@ proc collectPatternBindings(pat: Value, names: var HashSet[string]) =
     for _, valuePat in pat.mapEntries:
       collectPatternBindings(valuePat, names)
   of vkNode:
+    if pat.head.isSymbol("path"):
+      return
     if pat.isTypedPattern:
       pat.requireTypedPatternShape()
       if pat.head.symVal != "_":
@@ -4682,6 +4685,35 @@ proc collectPatternBindings(pat: Value, names: var HashSet[string]) =
       collectPatternBindings(item, names)
   else:
     discard
+
+proc resolvePatternPath(path: Value, scope: Scope): Value =
+  if path.kind != vkNode or not path.head.isSymbol("path") or path.body.len == 0:
+    return NIL
+  if path.body[0].kind != vkSymbol:
+    return NIL
+  var current: Value
+  if scope == nil or not scope.lookupOptional(path.body[0].symVal, current):
+    return NIL
+  for i in 1 ..< path.body.len:
+    if path.body[i].kind != vkSymbol:
+      return NIL
+    let key = path.body[i].symVal
+    case current.kind
+    of vkType:
+      if current.isEnumType:
+        current = current.enumVariantDescriptor(key)
+      else:
+        let message = typeDirectMessage(current, key)
+        current = if message.kind == vkNil: VOID else: message
+    of vkNamespace:
+      current = current.exportedBinding(key)
+    of vkModule:
+      current = current.moduleRootNamespace.exportedBinding(key)
+    else:
+      return NIL
+    if current.kind == vkVoid:
+      return NIL
+  current
 
 proc matchSequence(pats, items: seq[Value], scope: Scope,
                    binds: var Table[string, Value]): bool =
@@ -4744,6 +4776,11 @@ proc tryMatch(pat, target: Value, scope: Scope,
       if not tryMatch(vpat, fieldVal, scope, binds): return false
     true
   of vkNode:
+    if pat.head.isSymbol("path"):
+      let resolved = resolvePatternPath(pat, scope)
+      if resolved.kind == vkNil:
+        raise newException(GeneError, "unknown pattern path: " & pat.print())
+      return equal(resolved, target)
     if pat.isTypedPattern:
       pat.requireTypedPatternShape()
       if not matchesTypeExpr(pat.body[1], target, scope):
@@ -4793,6 +4830,18 @@ proc tryMatch(pat, target: Value, scope: Scope,
         var throwaway = binds
         return not tryMatch(pat.body[0], target, scope, throwaway)
       else: discard
+    if pat.head.kind == vkNode and pat.head.head.isSymbol("path"):
+      let variant = resolvePatternPath(pat.head, scope)
+      if variant.kind != vkEnumVariant:
+        return false
+      if target.enumValueVariant.bits != variant.bits:
+        return false
+      let items =
+        if target.kind == vkNode and target.head.kind == vkEnumVariant:
+          target.body
+        else:
+          newSeq[Value]()
+      return matchSequence(pat.body, items, scope, binds)
     # General node-shape pattern `(Head ^k kp body...)`: head matched literally,
     # props open (mentioned keys required), body matched positionally.
     if target.kind != vkNode: return false
@@ -5306,6 +5355,10 @@ proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
 proc receiverType(value: Value): Value =
   if value.kind == vkNode and value.head.kind == vkType:
     value.head
+  elif value.kind == vkNode and value.head.kind == vkEnumVariant:
+    value.head.enumVariantEnum
+  elif value.kind == vkEnumVariant:
+    value.enumVariantEnum
   else:
     NIL
 
@@ -5338,7 +5391,7 @@ proc builtinBinding(scope: Scope, name: string): Value =
 
 proc isBuiltinCallable(value: Value): bool =
   value.kind in {vkFunction, vkNativeFn, vkFfiCallable, vkType,
-                 vkProtocolMessage} or
+                 vkProtocolMessage, vkEnumVariant} or
     (value.kind == vkNode and value.isSelector)
 
 proc valueImplementsCallable(value: Value, scope: Scope): bool =
@@ -5350,7 +5403,108 @@ proc valueImplementsCallable(value: Value, scope: Scope): bool =
   let protocol = builtinBinding(scope, "Callable")
   protocol.kind == vkProtocol and typeImplementsProtocol(scope, typ, protocol)
 
+proc requireEnumTypeReceiver(name: string, args: openArray[Value]): Value =
+  requireOne(name, args)
+  if not args[0].isEnumType:
+    raise newException(GeneError, name & " receiver must be an enum")
+  args[0]
+
+proc requireEnumVariantReceiver(name: string, args: openArray[Value]): Value =
+  requireOne(name, args)
+  let variant = args[0].enumValueVariant
+  if variant.kind != vkEnumVariant:
+    raise newException(GeneError, name & " receiver must be an enum variant")
+  variant
+
+proc biEnumVariants(args: openArray[Value]): Value =
+  let enumType = requireEnumTypeReceiver("Enum/variants", args)
+  var items: seq[Value]
+  for variant in enumType.enumVariants:
+    items.add variant
+  newList(items)
+
+proc biEnumNames(args: openArray[Value]): Value =
+  let enumType = requireEnumTypeReceiver("Enum/names", args)
+  var items: seq[Value]
+  for variant in enumType.enumVariants:
+    items.add newSym(variant.enumVariantName)
+  newList(items)
+
+proc biEnumName(args: openArray[Value]): Value =
+  let variant = requireEnumVariantReceiver("Enum/name", args)
+  newSym(variant.enumVariantName)
+
+proc biEnumOrdinal(args: openArray[Value]): Value =
+  let variant = requireEnumVariantReceiver("Enum/ordinal", args)
+  newInt(int64(variant.enumVariantOrdinal))
+
+proc biEnumFromName(args: openArray[Value]): Value =
+  if args.len != 2:
+    raise newException(GeneError, "Enum/from_name expects 2 arguments, got " & $args.len)
+  if not args[0].isEnumType:
+    raise newException(GeneError, "Enum/from_name receiver must be an enum")
+  let key =
+    case args[1].kind
+    of vkSymbol: args[1].symVal
+    of vkString: args[1].strVal
+    else:
+      return VOID
+  args[0].enumVariantDescriptor(key)
+
+proc biEnumFromOrdinal(args: openArray[Value]): Value =
+  if args.len != 2:
+    raise newException(GeneError, "Enum/from_ordinal expects 2 arguments, got " & $args.len)
+  if not args[0].isEnumType:
+    raise newException(GeneError, "Enum/from_ordinal receiver must be an enum")
+  if not args[1].intFitsInt64:
+    return VOID
+  let ordinal = args[1].intVal
+  if ordinal < 0 or ordinal > int64(high(int)):
+    return VOID
+  for variant in args[0].enumVariants:
+    if variant.enumVariantOrdinal == int(ordinal):
+      return variant
+  VOID
+
+proc biEnumBacking(args: openArray[Value]): Value =
+  let variant = requireEnumVariantReceiver("Enum/backing", args)
+  variant.enumVariantBacking
+
+proc biEnumFromBacking(args: openArray[Value]): Value =
+  if args.len != 2:
+    raise newException(GeneError, "Enum/from_backing expects 2 arguments, got " & $args.len)
+  if not args[0].isEnumType:
+    raise newException(GeneError, "Enum/from_backing receiver must be an enum")
+  for variant in args[0].enumVariants:
+    if variant.enumVariantHasBacking and equal(variant.enumVariantBacking, args[1]):
+      return variant
+  VOID
+
+proc enumReflectionMessage(name: string): Value =
+  case name
+  of "variants": newNativeFn("Enum/variants", biEnumVariants)
+  of "names": newNativeFn("Enum/names", biEnumNames)
+  of "name": newNativeFn("Enum/name", biEnumName)
+  of "ordinal": newNativeFn("Enum/ordinal", biEnumOrdinal)
+  of "from_name": newNativeFn("Enum/from_name", biEnumFromName)
+  of "from_ordinal": newNativeFn("Enum/from_ordinal", biEnumFromOrdinal)
+  of "backing": newNativeFn("Enum/backing", biEnumBacking)
+  of "from_backing": newNativeFn("Enum/from_backing", biEnumFromBacking)
+  else: NIL
+
 proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value =
+  if receiver.isEnumType:
+    let message = enumReflectionMessage(name)
+    if message.kind != vkNil:
+      return message
+  if receiver.enumValueVariant.kind == vkEnumVariant:
+    case name
+    of "name", "ordinal", "backing":
+      let message = enumReflectionMessage(name)
+      if message.kind != vkNil:
+        return message
+    else:
+      discard
   case receiver.kind
   of vkList:
     case name
@@ -5531,7 +5685,7 @@ proc isSendableValue(value: Value, scope: Scope,
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
-     vkType, vkProtocol, vkProtocolMessage:
+     vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
     true
   of vkFunction:
     functionCapturesSendable(value, scope, seen, mode)
@@ -5906,6 +6060,17 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
       publishSpawnScope(field.typeBodyFieldScope(nil), seenScopes, seenValues, seenChunks)
     for value in proto.deriveRequests:
       publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+    for message in proto.messages:
+      publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
+    for inline in proto.inlineImpls:
+      for message in inline.messages:
+        publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
+  for proto in chunk.enumProtos:
+    publishSpawnValue(proto.backingType, seenScopes, seenValues, seenChunks)
+    for variant in proto.variants:
+      for payloadType in variant.payloadTypes:
+        publishSpawnValue(payloadType, seenScopes, seenValues, seenChunks)
+      publishSpawnValue(variant.backing, seenScopes, seenValues, seenChunks)
     for message in proto.messages:
       publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     for inline in proto.inlineImpls:
@@ -7772,6 +7937,70 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           for i, protocol in derivedProtocols:
             applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
           stack.add typ
+        of opMakeEnum:
+          let proto = chunk.enumProtos[inst[].intArg]
+          var inlineProtocols = newSeq[Value](proto.inlineImpls.len)
+          var inlineErrorTypes = newSeq[seq[seq[Value]]](proto.inlineImpls.len)
+          if proto.inlineImpls.len > 0:
+            for i in countdown(proto.inlineImpls.len - 1, 0):
+              let protocolValue = stack.pop()
+              if protocolValue.kind != vkProtocol:
+                raise newException(GeneError, "impl target must be a protocol")
+              inlineProtocols[i] = protocolValue
+              let inlineMessages = proto.inlineImpls[i].messages
+              inlineErrorTypes[i] = newSeq[seq[Value]](inlineMessages.len)
+              for j in countdown(inlineMessages.len - 1, 0):
+                inlineErrorTypes[i][j] =
+                  stack.popCheckedErrorTypes(inlineMessages[j].fn.errorTypeCount,
+                                             scope)
+          var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
+          if proto.messages.len > 0:
+            for i in countdown(proto.messages.len - 1, 0):
+              messageErrorTypes[i] =
+                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
+          var messages = initTable[string, Value]()
+          for i, message in proto.messages:
+            let fn = newFunction(message.fn.name, message.fn.params, message.fn,
+                                 scope, message.fn.checksErrors,
+                                 messageErrorTypes[i])
+            messages[message.name] = functionForScopeStorage(fn, scope)
+          if proto.backingType.kind != vkNil:
+            var seenBacking: seq[Value]
+            for variant in proto.variants:
+              if variant.payloadTypes.len != 0:
+                raise newException(GeneError,
+                  "enum ^backing is rejected when variants carry payload")
+              if not variant.hasBacking:
+                raise newException(GeneError,
+                  "backed enum variant requires a backing value: " & variant.name)
+              discard adaptBoundary("backing for " & proto.name & "/" &
+                                    variant.name, proto.backingType,
+                                    variant.backing, scope)
+              for existing in seenBacking:
+                if equal(existing, variant.backing):
+                  raise newException(GeneError,
+                    "duplicate backing value for enum " & proto.name)
+              seenBacking.add variant.backing
+          var variants: seq[tuple[name: string, payloadTypes: seq[Value],
+                                  hasBacking: bool, backing: Value]]
+          for variant in proto.variants:
+            variants.add (variant.name, variant.payloadTypes,
+                          variant.hasBacking, variant.backing)
+          let enumType = newEnum(proto.name, proto.typeParams, variants,
+                                 proto.backingType, scope, messages)
+          for i, inline in proto.inlineImpls:
+            var entries: seq[ImplMessage]
+            for j, message in inline.messages:
+              let resolved = resolveImplMessage(scope, inlineProtocols[i],
+                                                message.protocolPath,
+                                                message.name)
+              let fn = newFunction(message.fn.name, message.fn.params,
+                                   message.fn, scope, message.fn.checksErrors,
+                                   inlineErrorTypes[i][j])
+              entries.add ImplMessage(message: resolved,
+                                      fn: functionForScopeStorage(fn, scope))
+            scope.registerImpl(inlineProtocols[i], enumType, entries)
+          stack.add enumType
         of opMakeProtocol:
           let proto = chunk.protocolProtos[inst[].intArg]
           var parents = newSeq[Value](proto.parentCount)
@@ -10664,6 +10893,8 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkNode:
     if value.head.kind == vkType:
       value.head
+    elif value.head.kind == vkEnumVariant:
+      value.head.enumVariantEnum
     elif value.isSelector:
       newSym("Selector")
     else:
@@ -10734,6 +10965,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
+  of vkEnumVariant: value.enumVariantEnum
 
 proc commonRuntimeTypeExpr(values: openArray[Value]): Value =
   if values.len == 0:
@@ -10773,6 +11005,8 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
     let closedExpr = closeTypeExpr(expr, scope)
     if closedExpr.bits != expr.bits:
       return matchesTypeExpr(closedExpr, value, scope)
+    if expr.head.kind == vkType:
+      return matchesTypeExpr(expr.head, value, scope)
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
       of "List":
@@ -10976,6 +11210,9 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   raise e
 
 proc isInstanceOfType(value, expected: Value): bool =
+  if expected.isEnumType:
+    let enumType = value.enumValueEnum
+    return enumType.kind == vkType and enumType.isSubtypeOf(expected)
   value.kind == vkNode and value.head.kind == vkType and
     value.head.isSubtypeOf(expected)
 
@@ -11374,6 +11611,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     let closedExpr = closeTypeExpr(expr, scope)
     if closedExpr.bits != expr.bits:
       return matchesTypeExpr(closedExpr, value, scope)
+    if expr.head.kind == vkType:
+      return value.isInstanceOfType(expr.head)
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
       of "path":
@@ -11659,10 +11898,18 @@ proc staticLookup(target, segment: Value): Value =
         else:
           VOID
     of vkType:
-      # Qualified type-direct message access, e.g. Box/get (docs/core.md §8);
-      # walks the ^is chain like send resolution does.
-      let message = typeDirectMessage(target, key)
-      if message.kind == vkNil: VOID else: message
+      if target.isEnumType:
+        let variant = target.enumVariantDescriptor(key)
+        if variant.kind != vkVoid:
+          variant
+        else:
+          let message = typeDirectMessage(target, key)
+          if message.kind == vkNil: VOID else: message
+      else:
+        # Qualified type-direct message access, e.g. Box/get (docs/core.md §8);
+        # walks the ^is chain like send resolution does.
+        let message = typeDirectMessage(target, key)
+        if message.kind == vkNil: VOID else: message
     else:
       VOID
   of vkNode:
@@ -16380,6 +16627,40 @@ proc applyUserCallable(callee: Value, args: openArray[Value], named: NamedArgs,
   var callArgs = [callee, envelope]
   applyCall(implFn, callArgs, NamedArgs(), dispatchScope)
 
+proc isEnumTypeParam(enumType, typeExpr: Value): bool =
+  if typeExpr.kind != vkSymbol or not enumType.isEnumType:
+    return false
+  for name in enumType.enumTypeParams:
+    if name == typeExpr.symVal:
+      return true
+  false
+
+proc constructEnumVariant(variant: Value, args: openArray[Value],
+                          named: NamedArgs): Value =
+  if named.len != 0:
+    raise newException(GeneError,
+      variant.enumVariantEnum.typeName & "/" & variant.enumVariantName &
+      " does not accept named arguments")
+  let payloadTypes = variant.enumVariantPayloadTypes
+  if args.len != payloadTypes.len:
+    raise newException(GeneError,
+      variant.enumVariantEnum.typeName & "/" & variant.enumVariantName &
+      " expects " & $payloadTypes.len & " payload item(s), got " & $args.len)
+  if payloadTypes.len == 0:
+    return variant
+  let enumType = variant.enumVariantEnum
+  let enumScope = enumType.typeScope
+  var body: seq[Value]
+  for i, payloadType in payloadTypes:
+    if enumType.isEnumTypeParam(payloadType):
+      body.add args[i]
+    else:
+      body.add adaptBoundary("payload " & $i & " for " &
+                             enumType.typeName & "/" &
+                             variant.enumVariantName,
+                             payloadType, args[i], enumScope)
+  newNode(variant, body = body)
+
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value] =
   ## Build a fully-bound call scope for a non-simple function call: arity check,
@@ -16635,6 +16916,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     callImpl(args, addr call)
   of vkFfiCallable:
     applyFfiCallable(callee, args, named)
+  of vkEnumVariant:
+    constructEnumVariant(callee, args, named)
   of vkFunction:
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
@@ -16646,6 +16929,9 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       attachSourceLoc(e, proto.sourceLoc)
       raise
   of vkType:
+    if callee.isEnumType:
+      raise newException(GeneError,
+        "enum " & callee.typeName & " is not directly constructible; use a variant")
     # Construct a typed instance: a node with the type as head and validated
     # props/body fields.
     let fields = callee.typeFields

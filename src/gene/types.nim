@@ -115,6 +115,7 @@ type
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
+    vkEnumVariant ## enum unit value or payload constructor descriptor
 
   ActorFailureStrategy* = enum
     afsStop
@@ -380,8 +381,10 @@ type
     okFfiLibrary
     okFfiCallable
     okType
+    okEnum
     okProtocol
     okProtocolMessage
+    okEnumVariant
 
   GeneObjectData* = ref object of RootObj
     objKind*: ObjKind
@@ -632,6 +635,23 @@ type
     derivedProtocols: seq[Value]
     deriveRequests: seq[Value]
     messages: Table[string, Value] # type-direct messages (docs/core.md §8)
+
+  EnumData = ref object of GeneObjectData
+    name: string
+    typeParams: seq[string]
+    backingType: Value
+    variants: seq[Value]
+    scope: Scope
+    weakScope: pointer
+    messages: Table[string, Value]
+
+  EnumVariantData = ref object of GeneObjectData
+    enumBits: uint64       # non-owning; the enum owns its variant descriptors
+    name: string
+    ordinal: int
+    payloadTypes: seq[Value]
+    backing: Value
+    hasBacking: bool
 
   TypeField* = object
     name*: string
@@ -1134,6 +1154,13 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
       emit(val)
     for _, val in d.messages:
       emit(val)
+  of okEnum:
+    let d = EnumData(data)
+    emit(d.backingType)
+    for val in d.variants:
+      emit(val)
+    for _, val in d.messages:
+      emit(val)
   of okProtocol:
     let d = ProtocolData(data)
     for _, val in d.messages:
@@ -1145,6 +1172,11 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
       emit(val)
   of okProtocolMessage:
     discard
+  of okEnumVariant:
+    let d = EnumVariantData(data)
+    for val in d.payloadTypes:
+      emit(val)
+    emit(d.backing)
 
 proc collectObjectGraph(data: GeneObjectData,
                         counts: var Table[uint64, int],
@@ -1275,6 +1307,14 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.derivedProtocols.setLen(0)
     d.deriveRequests.setLen(0)
     d.messages = initTable[string, Value]()
+  of okEnum:
+    let d = EnumData(data)
+    d.typeParams.setLen(0)
+    clearValueSlot(d.backingType)
+    d.variants.setLen(0)
+    d.scope = nil
+    d.weakScope = nil
+    d.messages = initTable[string, Value]()
   of okProtocol:
     let d = ProtocolData(data)
     d.messages = initOrderedTable[string, Value]()
@@ -1283,6 +1323,12 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.closure.setLen(0)
   of okProtocolMessage:
     ProtocolMessageData(data).protocolBits = 0
+  of okEnumVariant:
+    let d = EnumVariantData(data)
+    d.enumBits = 0
+    d.payloadTypes.setLen(0)
+    clearValueSlot(d.backing)
+    d.hasBacking = false
 
 proc tryCollectObjectCycle(seed: GeneObjectData) =
   if seed == nil or objectCycleCollecting or not tracksObjectCycles(seed):
@@ -1665,8 +1711,10 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okFfiLibrary: vkFfiLibrary
     of okFfiCallable: vkFfiCallable
     of okType: vkType
+    of okEnum: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
+    of okEnumVariant: vkEnumVariant
   else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
@@ -3087,31 +3135,44 @@ proc closeFfiLibrary*(v: Value) =
   data.handle = nil
   data.closed = true
 
-proc typeName*(v: Value): lent string =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+proc typeName*(v: Value): string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
-  TypeData(objData(v)).name
+  case objData(v).objKind
+  of okEnum: EnumData(objData(v)).name
+  else: TypeData(objData(v)).name
 
 proc typeParent*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
+  if objData(v).objKind == okEnum:
+    return NIL
   TypeData(objData(v)).parent
 
 proc typeFields*(v: Value): seq[TypeField] =
   ## Full field schema, parent fields first (inheritance is merged at newType).
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
+  if objData(v).objKind == okEnum:
+    return @[]
   TypeData(objData(v)).fields
 
 proc typeBodyFields*(v: Value): seq[TypeBodyField] =
   ## Full body schema, parent fields first (inheritance is merged at newType).
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
+  if objData(v).objKind == okEnum:
+    return @[]
   TypeData(objData(v)).bodyFields
 
 proc typeScope*(v: Value): Scope =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
+  if objData(v).objKind == okEnum:
+    let data = EnumData(objData(v))
+    if data.scope != nil:
+      return data.scope
+    return cast[Scope](data.weakScope)
   let data = TypeData(objData(v))
   if data.scope != nil:
     data.scope
@@ -3148,6 +3209,82 @@ proc typeDeriveRequests*(v: Value): lent seq[Value] =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     raise newException(FieldDefect, "value is not a Type")
   TypeData(objData(v)).deriveRequests
+
+proc isEnumType*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okEnum
+
+proc enumTypeParams*(v: Value): seq[string] =
+  if not v.isEnumType:
+    raise newException(FieldDefect, "value is not an Enum")
+  EnumData(objData(v)).typeParams
+
+proc enumBackingType*(v: Value): Value =
+  if not v.isEnumType:
+    raise newException(FieldDefect, "value is not an Enum")
+  EnumData(objData(v)).backingType
+
+proc enumVariants*(v: Value): seq[Value] =
+  if not v.isEnumType:
+    raise newException(FieldDefect, "value is not an Enum")
+  EnumData(objData(v)).variants
+
+proc enumVariantDescriptor*(enumType: Value, name: string): Value =
+  if not enumType.isEnumType:
+    return VOID
+  for variant in EnumData(objData(enumType)).variants:
+    if EnumVariantData(objData(variant)).name == name:
+      return variant
+  VOID
+
+proc isEnumVariant*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okEnumVariant
+
+proc enumVariantEnum*(v: Value): Value =
+  if not v.isEnumVariant:
+    raise newException(FieldDefect, "value is not an enum variant")
+  result.bits = EnumVariantData(objData(v)).enumBits
+  if (result.bits shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRetain(result.bits)
+
+proc enumVariantName*(v: Value): string =
+  if not v.isEnumVariant:
+    raise newException(FieldDefect, "value is not an enum variant")
+  EnumVariantData(objData(v)).name
+
+proc enumVariantOrdinal*(v: Value): int =
+  if not v.isEnumVariant:
+    raise newException(FieldDefect, "value is not an enum variant")
+  EnumVariantData(objData(v)).ordinal
+
+proc enumVariantPayloadTypes*(v: Value): seq[Value] =
+  if not v.isEnumVariant:
+    raise newException(FieldDefect, "value is not an enum variant")
+  EnumVariantData(objData(v)).payloadTypes
+
+proc enumVariantHasBacking*(v: Value): bool =
+  if not v.isEnumVariant:
+    raise newException(FieldDefect, "value is not an enum variant")
+  EnumVariantData(objData(v)).hasBacking
+
+proc enumVariantBacking*(v: Value): Value =
+  if not v.isEnumVariant:
+    raise newException(FieldDefect, "value is not an enum variant")
+  let data = EnumVariantData(objData(v))
+  if data.hasBacking: data.backing else: VOID
+
+proc enumValueVariant*(v: Value): Value =
+  if v.isEnumVariant:
+    return v
+  if v.kind == vkNode and v.head.isEnumVariant:
+    return v.head
+  NIL
+
+proc enumValueEnum*(v: Value): Value =
+  let variant = v.enumValueVariant
+  if variant.kind == vkEnumVariant:
+    variant.enumVariantEnum
+  else:
+    NIL
 
 proc protocolName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
@@ -4516,16 +4653,44 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
                      deriveRequests: deriveRequests,
                      messages: messages))
 
+proc newEnum*(name: string, typeParams: sink seq[string],
+              variants: openArray[tuple[name: string, payloadTypes: seq[Value],
+                                         hasBacking: bool, backing: Value]],
+              backingType: Value, scope: Scope,
+              messages: sink Table[string, Value] = initTable[string, Value]()): Value =
+  let data = EnumData(objKind: okEnum, name: name, typeParams: typeParams,
+                      backingType: backingType, weakScope: cast[pointer](scope),
+                      messages: messages)
+  result = boxObject(data)
+  for i, spec in variants:
+    let variant = boxObject(EnumVariantData(objKind: okEnumVariant,
+                                            enumBits: result.bits,
+                                            name: spec.name,
+                                            ordinal: i,
+                                            payloadTypes: spec.payloadTypes,
+                                            backing: spec.backing,
+                                            hasBacking: spec.hasBacking))
+    data.variants.add variant
+
 proc typeDirectMessage*(v: Value, name: string): Value =
   ## Type-direct message lookup, walking the ^is chain — most-derived type
   ## wins (docs/core.md §8). Returns NIL when no type in the chain defines
   ## `name`; stored messages are always functions, never NIL.
   var t = v
   while t.kind == vkType:
-    let data = TypeData(objData(t))
-    if data.messages.hasKey(name):
-      return data.messages[name]
-    t = data.parent
+    case objData(t).objKind
+    of okType:
+      let data = TypeData(objData(t))
+      if data.messages.hasKey(name):
+        return data.messages[name]
+      t = data.parent
+    of okEnum:
+      let data = EnumData(objData(t))
+      if data.messages.hasKey(name):
+        return data.messages[name]
+      t = NIL
+    else:
+      t = NIL
   NIL
 
 proc newProtocolMessage*(protocol: Value, name: string): Value =

@@ -36,6 +36,7 @@ type
     opMakeEnv
     opEval
     opMakeType
+    opMakeEnum
     opMakeProtocol
     opMakeImpl
     opImport
@@ -309,6 +310,20 @@ type
     messages*: seq[ImplMessageProto] # type-direct messages (docs/core.md §8)
     inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (docs/core.md §8)
 
+  EnumVariantProto* = object
+    name*: string
+    payloadTypes*: seq[Value]
+    hasBacking*: bool
+    backing*: Value
+
+  EnumProto* = ref object
+    name*: string
+    typeParams*: seq[string]
+    backingType*: Value
+    variants*: seq[EnumVariantProto]
+    messages*: seq[ImplMessageProto]
+    inlineImpls*: seq[InlineImplProto]
+
   ProtocolProto* = ref object
     name*: string
     messageNames*: seq[string]
@@ -347,6 +362,7 @@ type
     listBuilds*: seq[ListBuildProto]
     nodeBuilds*: seq[NodeBuildProto]
     typeProtos*: seq[TypeProto]
+    enumProtos*: seq[EnumProto]
     protocolProtos*: seq[ProtocolProto]
     implProtos*: seq[ImplProto]
     ffiLibraries*: seq[FfiLibraryProto]
@@ -363,7 +379,7 @@ proc newChunk*(sourceName = ""): Chunk =
         instructionLocs: @[], functions: @[], subchunks: @[],
         imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
-        typeProtos: @[], protocolProtos: @[], implProtos: @[],
+        typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],
         ffiLibraries: @[], ffiFns: @[], ffiStructs: @[], ffiUnions: @[],
         ffiSignatures: @[],
         monomorphizations: @[], directProtocolCalls: @[],
@@ -380,6 +396,10 @@ proc addNodeBuild*(chunk: Chunk, np: NodeBuildProto): int =
 proc addType*(chunk: Chunk, tp: TypeProto): int =
   result = chunk.typeProtos.len
   chunk.typeProtos.add tp
+
+proc addEnum*(chunk: Chunk, ep: EnumProto): int =
+  result = chunk.enumProtos.len
+  chunk.enumProtos.add ep
 
 proc addProtocol*(chunk: Chunk, pp: ProtocolProto): int =
   result = chunk.protocolProtos.len
@@ -551,6 +571,8 @@ proc formatInstruction(inst: Instruction): string =
       result.add " name=" & inst.name
   of opMakeType:
     result.add " type=" & $inst.intArg
+  of opMakeEnum:
+    result.add " enum=" & $inst.intArg
   of opMakeProtocol:
     result.add " protocol=" & $inst.intArg
   of opMakeImpl:

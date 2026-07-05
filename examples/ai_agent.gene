@@ -243,6 +243,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
     `protocol` and are implemented with `impl`.
 - Types/protocols:
   `(type T ^props {^name Str} (message label [self] self/name))`
+  `(enum Color red green blue)` and `(enum Result (ok Any) (err Str))`
   `(protocol P (message render [self : Self] : Str))`
   `(impl P T (message render [self] "..."))`
   Single data inheritance is `^is`; behavioral composition is `^inherit`.
@@ -258,6 +259,45 @@ Before changing Gene code, inspect nearby examples or docs if uncertain. After
 writing Gene code, verify with at least `bin/gene parse file.gene` or
 `bin/gene compile file.gene`; use `bin/gene run file.gene` when behavior matters.
 """)
+
+(enum ResponseItemKind
+  assistant_message
+  function_call
+  other_item)
+
+(enum ResponseContentKind
+  output_text
+  other_content)
+
+(enum SseEventKind
+  output_text_delta
+  output_item_done
+  output_text_done
+  completed
+  failed
+  incomplete
+  other_event)
+
+(fn response-item-kind [item] : ResponseItemKind
+  (match item/type
+    (when "message"       ResponseItemKind/assistant_message)
+    (when "function_call" ResponseItemKind/function_call)
+    (else                ResponseItemKind/other_item)))
+
+(fn response-content-kind [part] : ResponseContentKind
+  (match part/type
+    (when "output_text" ResponseContentKind/output_text)
+    (else              ResponseContentKind/other_content)))
+
+(fn sse-event-kind [event] : SseEventKind
+  (match event/type
+    (when "response.output_text.delta" SseEventKind/output_text_delta)
+    (when "response.output_item.done"  SseEventKind/output_item_done)
+    (when "response.output_text.done"  SseEventKind/output_text_done)
+    (when "response.completed"         SseEventKind/completed)
+    (when "response.failed"            SseEventKind/failed)
+    (when "response.incomplete"        SseEventKind/incomplete)
+    (else                              SseEventKind/other_event)))
 
 # Pull the assistant's text out of a Responses `output` list (message items ->
 # content parts of type output_text).
@@ -275,10 +315,10 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
       (var acc (cell ""))
       ((to_stream (response-output-items resp))
         ~ each (fn [item]
-            (if (= item/type "message")
+            (if (= (response-item-kind item) ResponseItemKind/assistant_message)
               ((to_stream item/content)
                 ~ each (fn [part]
-                    (if (= part/type "output_text")
+                    (if (= (response-content-kind part) ResponseContentKind/output_text)
                       (Cell/set acc $"${(Cell/get acc)}${part/text}")
                       nil))))))
       (Cell/get acc))))
@@ -286,7 +326,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # function_call items the model emitted this turn.
 (fn response-calls [resp]
   ((to_stream (response-output-items resp))
-    ~ filter (fn [item] (= item/type "function_call"))
+    ~ filter (fn [item] (= (response-item-kind item) ResponseItemKind/function_call))
     ; ~ into []))
 
 # Execute one function_call item, returning its function_call_output item.
@@ -341,21 +381,23 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     nil
     (try
       (var event (parse payload))
-      (if (= event/type "response.output_text.delta")
-        (do
+      (match (sse-event-kind event)
+        (when SseEventKind/output_text_delta
           (render-stream (redact event/delta))
           (Cell/set output-text $"${(Cell/get output-text)}${event/delta}"))
-        (if (= event/type "response.output_item.done")
+        (when SseEventKind/output_item_done
           (Cell/set output (append (Cell/get output) event/item))
-          (if (= event/type "response.output_text.done")
-            (Cell/set output-text event/text)
-            (if (= event/type "response.completed")
-              (Cell/set final event/response)
-              (if (= event/type "response.failed")
-                (Cell/set final event/response)
-                (if (= event/type "response.incomplete")
-                  (Cell/set final event/response)
-                  nil))))))
+          nil)
+        (when SseEventKind/output_text_done
+          (Cell/set output-text event/text))
+        (when SseEventKind/completed
+          (Cell/set final event/response))
+        (when SseEventKind/failed
+          (Cell/set final event/response))
+        (when SseEventKind/incomplete
+          (Cell/set final event/response))
+        (when SseEventKind/other_event
+          nil))
     catch (JsonError ^message _) nil)))
 
 (fn sse-handle-line [line : Str, output, output-text, final, render-stream]
