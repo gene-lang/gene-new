@@ -1058,6 +1058,32 @@ suite "spec — pattern destructuring from design":
     expect GeneError:
       discard run(compileSource("(for x in [1 2 3] x) x"), newGlobalScope())
 
+  test "var pattern bindings extend the enclosing scope per design §8.0.1":
+    check_eval("(var [x y] [10 20]) (+ x y)", "30")
+    check_eval("(var [a [b c]] [1 [2 3]]) [a b c]", "[1 2 3]")
+    check_eval("(var {^name n ^age a} {^name \"Ada\" ^age 36}) (+ a 0)",
+               "36")
+    check_eval("(var s 0) " &
+               "(match [1 2] " &
+               "  (when [a b] " &
+               "    (do (set s (+ a b)) nil)) " &
+               "  (else nil)) " &
+               "s",
+               "3")
+    check_eval("(var n 0) " &
+               "(for x in [1 2 3] " &
+               "  (do (set n (+ n x)) nil)) " &
+               "n",
+               "6")
+    check_eval("(var [a b] [1 2]) [a b]",
+               "[1 2]")
+    check_eval("(var [a b] [1 2]) " &
+               "(var [c d] [3 4]) " &
+               "[a b c d]",
+               "[1 2 3 4]")
+    expect MatchError:
+      discard run(compileSource("(var [a b] [1 2 3]) (+ a b)"),
+                  newGlobalScope())
   test "for iterates streams lazily and closes on pattern failure":
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &

@@ -1434,11 +1434,6 @@ Rules:
 
 The same pattern engine is used by `var`, `for`, and `catch` destructuring.
 
-Pattern bindings are scoped to where the match runs. Names bound by `match`,
-`catch`, and `for` item destructuring are local to that branch or loop body and
-are not visible after it. `(var pattern value)` binds into the current lexical
-scope like an ordinary `var`.
-
 ```gene
 (var [x, y] point)
 (var (Task ^id id ^title title) task)
@@ -1448,6 +1443,42 @@ scope like an ordinary `var`.
 ```
 
 If destructuring fails, Gene raises `MatchError`.
+
+### 8.0.1 Pattern binding scope
+
+Where a pattern introduces a name controls which lexical region the name
+lives in:
+
+| Form                         | Bindings live in                       |
+| ---------------------------- | -------------------------------------- |
+| `(match v (when p body...))`  | the matched branch body                |
+| `(try ... catch (p body...))` | the catch body                         |
+| `(for p in xs body...)`       | the loop body, fresh per iteration     |
+| `(var p v)`                  | the enclosing lexical scope            |
+
+`match`, `catch`, and `for` bindings are **branch-local**: they are not
+visible before the form, after it, or in any sibling branch. Reading such a
+name outside its branch is a compile-time undefined-symbol error. `(var
+pattern value)` binds like any other `var` and extends the current scope;
+its names are visible to subsequent expressions as ordinary locals.
+
+```gene
+(match x
+  (when [a b]
+    (+ a b)))
+
+a                            ; undefined — branch-local
+```
+
+```gene
+(var [a b] x)                ; a and b are now regular locals
+(+ a b)
+```
+
+Shadowing across the boundary is allowed when the inner form provides its
+own branch-local name. Because branch bodies are implicit `do` blocks, every
+name introduced by `match`/`catch`/`for` patterns sees a fresh scope and
+cannot leak into the surrounding code.
 
 ### 8.1 `for`
 
