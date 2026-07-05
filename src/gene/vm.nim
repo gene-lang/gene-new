@@ -87,6 +87,12 @@ type
     restoreSlot: int        # same-scope recur frame restores this local slot
     restoreValue: Value
 
+  TailTraceFrame = object
+    chunk: Chunk
+    ip: int
+    fnName: string
+    frameDepth: int
+
   TryHandler = object
     ## An active `try` region on the VM's handler stack. The try body runs as a
     ## Frame (so deep recursion through try-wrapped code stays on the heap); this
@@ -109,6 +115,7 @@ type
     stack: seq[Value]
     ip: int
     frames: seq[Frame]
+    tailTraceFrames: seq[TailTraceFrame]
     handlers: seq[TryHandler]
     validateImpls: bool
     returnType: Value
@@ -6942,16 +6949,27 @@ proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
                      immutable = e.errVal.nodeImmutable)
 
 proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
-                   frames: openArray[Frame]) =
+                   frames: openArray[Frame],
+                   tailTraceFrames: openArray[TailTraceFrame]) =
   var traceFrames: seq[Value]
   if curFnName.len > 0:
     traceFrames.add stackFrameValue(curFnName, "bytecode", curLoc)
-  if frames.len > 0:
-    for i in countdown(frames.len - 1, 0):
-      if frames[i].fnName.len > 0:
-        traceFrames.add stackFrameValue(frames[i].fnName, "bytecode",
-                                        instructionLocBefore(frames[i].chunk,
-                                                             frames[i].ip))
+  var tailIndex = tailTraceFrames.len - 1
+  template appendTailTracesAtDepth(depth: int) =
+    while tailIndex >= 0 and tailTraceFrames[tailIndex].frameDepth == depth:
+      let tail = tailTraceFrames[tailIndex]
+      if tail.fnName.len > 0:
+        traceFrames.add stackFrameValue(tail.fnName, "bytecode",
+                                        instructionLocBefore(tail.chunk,
+                                                             tail.ip))
+      dec tailIndex
+  appendTailTracesAtDepth(frames.len)
+  for i in countdown(frames.len - 1, 0):
+    if frames[i].fnName.len > 0:
+      traceFrames.add stackFrameValue(frames[i].fnName, "bytecode",
+                                      instructionLocBefore(frames[i].chunk,
+                                                           frames[i].ip))
+    appendTailTracesAtDepth(i)
   appendTraceFrames(e, traceFrames)
 
 proc appendNativeTrace(e: ref GeneError, calleeName: string,
@@ -7290,6 +7308,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curOwnedScope: Scope = nil
   var curNamespaceName = ""
   var handlers: seq[TryHandler] # active `try` regions, innermost last
+  var tailTraceFrames: seq[TailTraceFrame]
   var cancelAtSafepoint = injectCancel
   var remainingBudget = instructionBudget
 
@@ -7301,6 +7320,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     stack = move fiber.stack
     ip = fiber.ip
     frames = move fiber.frames
+    tailTraceFrames = move fiber.tailTraceFrames
     handlers = move fiber.handlers
     validateImplRequirements = fiber.validateImpls
     returnType = fiber.returnType
@@ -7484,6 +7504,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.namespaceName = curNamespaceName
     fiber.started = true
     fiber.frames = move frames
+    fiber.tailTraceFrames = move tailTraceFrames
     fiber.handlers = move handlers
     fiber.stack = move stack
 
@@ -7491,6 +7512,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if recycleScope:
       releaseCallScope(scope)
       recycleScope = false
+
+  proc scopeChainContains(start, target: Scope): bool {.inline.} =
+    var current = start
+    while current != nil:
+      if current == target:
+        return true
+      current = current.parent
+    false
+
+  template trimTailTraceFrames(returnDepth: int) =
+    while tailTraceFrames.len > 0 and
+        tailTraceFrames[^1].frameDepth >= returnDepth:
+      tailTraceFrames.setLen(tailTraceFrames.len - 1)
 
   template closeCurrentForStream() =
     if curForStream.kind == vkStream:
@@ -7575,6 +7609,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template finishFrameReturn(retValue: Value) =
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
+    trimTailTraceFrames(frames.len)
     releaseCurrentCallScope()
     if curFrameKind == fkNormal:
       if frames.len == 0:
@@ -7684,6 +7719,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       stack.add retValue
 
   template finishFastNormalReturn(retValue: Value) =
+    trimTailTraceFrames(frames.len)
     releaseCurrentCallScope()
     if frames.len == 0:
       stackArg = move stack
@@ -7815,6 +7851,44 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     stack.setLen(0)
     ip = 0
     evalBudget = scope.evalBudget
+    continue
+
+  template canReplaceCurrentTailCall(calleeScope: Scope): bool =
+    curFrameKind == fkNormal and not validateImplRequirements and
+      returnType.kind == vkNil and not curChecksErrors and
+      curEnsureBody == nil and curForItems.len == 0 and
+      curForStream.kind != vkStream and curOwnedScope == nil and
+      curPendingError == nil and curPendingPanic == nil and
+      curPendingCancel == nil and ip < chunk.instructions.len and
+      chunk.instructions[ip].op in {opReturn, opReturnBareInt} and
+      (not recycleScope or not scopeChainContains(calleeScope, scope))
+
+  template enterTailCallFrame(nextProto: FunctionProto, nextScope: Scope,
+                              nextRecycleScope: bool,
+                              nextValidateImpls: bool,
+                              nextReturnType: Value,
+                              nextReturnLabel: string,
+                              nextChecksErrors: bool,
+                              nextErrorTypes: seq[Value],
+                              nextFnName: string) =
+    if curFnName.len > 0:
+      tailTraceFrames.add TailTraceFrame(chunk: chunk, ip: ip,
+                                         fnName: curFnName,
+                                         frameDepth: frames.len)
+    releaseCurrentCallScope()
+    chunk = nextProto.chunk
+    scope = nextScope
+    recycleScope = nextRecycleScope
+    stack.setLen(0)
+    ip = 0
+    validateImplRequirements = nextValidateImpls
+    returnType = nextReturnType
+    returnLabel = nextReturnLabel
+    curChecksErrors = nextChecksErrors
+    curErrorTypes = nextErrorTypes
+    curFnName = nextFnName
+    curFrameKind = fkNormal
+    evalBudget = nextScope.evalBudget
     continue
 
   while true:
@@ -8427,6 +8501,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   else:
                     callee.fnScope
                 stack.setLen(argsStart)
+                if argsStart == 0 and canReplaceCurrentTailCall(callee.fnScope):
+                  enterTailCallFrame(proto, callScope, proto.poolCallScope,
+                    proto.frameNeedsImplValidation, NIL, "", false, @[],
+                    callee.fnName)
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
@@ -8731,6 +8809,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 else:
                   callee.fnScope
                 stack.setLen(calleeIndex)        # consume callee + args
+                if calleeIndex == 0 and canReplaceCurrentTailCall(callee.fnScope):
+                  enterTailCallFrame(proto, callScope, proto.poolCallScope,
+                    proto.frameNeedsImplValidation, NIL, "", false, @[],
+                    callee.fnName)
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
@@ -9729,7 +9811,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       let errorLoc = instructionLocBefore(chunk, ip)
       var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
       attachSourceLoc(err, errorLoc)
-      appendVmTrace(err, curFnName, errorLoc, frames)
+      appendVmTrace(err, curFnName, errorLoc, frames, tailTraceFrames)
+      trimTailTraceFrames(frames.len)
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
         closeCurrentForStream()

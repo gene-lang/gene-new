@@ -137,6 +137,19 @@ proc main() =
     let v = run(globalFourChunk, globalFourScope)
     checksum = checksum + v.intVal
 
+  let tailCallScope = newGlobalScope()
+  discard run(compileSource(
+    "(var id (fn [x] x)) " &
+    "(var wrap1 (fn [x] (id x))) " &
+    "(var wrap2 (fn [x] (wrap1 x))) " &
+    "(var wrap3 (fn [x] (wrap2 x))) " &
+    "(var wrap4 (fn [x] (wrap3 x)))"),
+    tailCallScope)
+  let tailCallChunk = compileSource("(wrap4 9)")
+  bench("vm.tail_call_chain.compiled_chunk", 500_000, i):
+    let v = run(tailCallChunk, tailCallScope)
+    checksum = checksum + v.intVal
+
   let tailRecurScope = newGlobalScope()
   discard run(compileSource(
     "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1)))))"),

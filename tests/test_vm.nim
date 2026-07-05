@@ -547,6 +547,16 @@ suite "gir — disassembly":
     check dump.contains("8: opReturn")
     ck src, "0"
 
+  test "runs simple tail-call wrappers":
+    let src =
+      "(var id (fn [x] x)) " &
+      "(var wrap (fn [x] (id x))) " &
+      "(wrap 9)"
+    let dump = compileSource(src).disassemble()
+    check dump.contains("opCallParentLocal1 slot=0 name=id argc=1")
+    check dump.contains("2: opReturn")
+    ck src, "9"
+
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
     check dump.contains("opCallLocal0 slot=0 name=call_once argc=0")
