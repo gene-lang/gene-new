@@ -5121,8 +5121,7 @@ proc frameNeedsImplValidation(proto: FunctionProto): bool {.inline.} =
 
 proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
                            arg: Value): Scope {.inline.} =
-  let paramMaySet =
-    proto.positionalSlotMaySet.len == 0 or proto.positionalSlotMaySet[0]
+  let paramMaySet = proto.positionalParamsMaySet
   result =
     if proto.poolCallScope:
       if paramMaySet:
@@ -5144,14 +5143,7 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
 proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
                                 args: openArray[Value],
                                 argsKnownBareInt = false): Scope {.inline.} =
-  var anyParamMaySet = false
-  if proto.positionalSlotMaySet.len != proto.params.len:
-    anyParamMaySet = true
-  else:
-    for maySet in proto.positionalSlotMaySet:
-      if maySet:
-        anyParamMaySet = true
-        break
+  let anyParamMaySet = proto.positionalParamsMaySet
   result =
     if proto.poolCallScope:
       if anyParamMaySet:

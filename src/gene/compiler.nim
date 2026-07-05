@@ -2088,8 +2088,11 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   discard fnCompiler.emit(if returnKnownBareInt: opReturnBareInt else: opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
   var positionalSlotMaySet: seq[bool]
+  var positionalParamsMaySet = false
   for slot in positionalSlots:
-    positionalSlotMaySet.add fnCompiler.chunk.chunkMaySetSlot(slot)
+    let maySet = fnCompiler.chunk.chunkMaySetSlot(slot)
+    positionalSlotMaySet.add maySet
+    positionalParamsMaySet = positionalParamsMaySet or maySet
 
   var hasParamTypes = false
   for t in specs.positionalTypes:
@@ -2177,6 +2180,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          localNames: fnCompiler.localNames,
                          positionalSlots: positionalSlots,
                          positionalSlotMaySet: positionalSlotMaySet,
+                         positionalParamsMaySet: positionalParamsMaySet,
                          namedSlots: namedSlots,
                          restSlot: restSlot,
                          requiredPositional: specs.requiredPositionalCount,

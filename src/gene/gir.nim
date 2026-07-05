@@ -158,6 +158,7 @@ type
     localNames*: seq[string]
     positionalSlots*: seq[int]
     positionalSlotMaySet*: seq[bool]
+    positionalParamsMaySet*: bool
     namedSlots*: seq[int]
     restSlot*: int
     params*: seq[string]
