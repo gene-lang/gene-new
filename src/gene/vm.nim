@@ -5240,6 +5240,62 @@ proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
     if declaredType.kind != vkNil:
       result.declareType(p.local, declaredType)
 
+proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
+                                calleeName: string,
+                                positional: openArray[Value],
+                                named: NamedArgs): Scope =
+  if positional.len != proto.params.len:
+    raise newException(GeneError,
+      "function '" & calleeName & "' expects " & $proto.requiredPositional & ".." &
+      $proto.params.len & " argument(s), got " & $positional.len)
+  for key in named.names:
+    var found = false
+    for p in proto.namedParams:
+      if p.arg == key:
+        found = true
+        break
+    if not found:
+      raise newException(GeneError,
+        "function '" & calleeName & "' got unexpected named argument: " & key)
+  for p in proto.namedParams:
+    if named.argIndex(p.arg) < 0:
+      raise newException(GeneError,
+        "function '" & calleeName & "' missing named argument: " & p.arg)
+
+  result =
+    if proto.poolCallScope:
+      acquireCallScope(parent, proto.localNames)
+    else:
+      let fresh = newScope(parent)
+      fresh.prepareSlots(proto.localNames)
+      fresh
+
+  for i in 0 ..< positional.len:
+    var value = positional[i]
+    var declaredType = NIL
+    if proto.hasParamTypes and i < proto.paramTypes.len and
+        proto.paramTypes[i].kind != vkNil:
+      declaredType = proto.paramTypes[i]
+      if not (declaredType.isBareIntType and value.kind == vkInt):
+        value = adaptBoundary("parameter '" & proto.params[i] & "'",
+                              declaredType, value, result)
+    result.defineFreshCallSlot(proto.positionalSlots[i], value)
+    if declaredType.kind != vkNil:
+      result.declareType(proto.params[i], declaredType)
+
+  for i, p in proto.namedParams:
+    let namedIndex = named.argIndex(p.arg)
+    var value = named.valueAt(namedIndex)
+    var declaredType = NIL
+    if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
+      declaredType = p.typeExpr
+      if not (declaredType.isBareIntType and value.kind == vkInt):
+        value = adaptBoundary("parameter '" & p.local & "'", declaredType,
+                              value, result)
+    result.defineFreshCallSlot(proto.namedSlots[i], value)
+    if declaredType.kind != vkNil:
+      result.declareType(p.local, declaredType)
+
 proc clearDefinedCallSlots(scope: Scope) {.inline.} =
   var bits = scope.slotDefinedBits
   var i = 0
@@ -16949,7 +17005,11 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         releaseCallScope(callScope)
   var callScope: Scope
   var returnType: Value
-  if named.len == 0 and proto.canFastBindPositionalInt and
+  if named.len > 0 and proto.canFastBindRequiredNamed:
+    callScope = bindRequiredNamedCallScope(callee.fnScope, proto, callee.fnName,
+                                           args, named)
+    returnType = proto.returnType
+  elif named.len == 0 and proto.canFastBindPositionalInt and
       args.len == proto.params.len:
     callScope = bindPositionalIntCallScope(callee.fnScope, proto, args)
     returnType = proto.returnType

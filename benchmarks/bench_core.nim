@@ -129,6 +129,17 @@ proc main() =
     let v = run(typedChunk, typedScope)
     checksum = checksum + v.intVal
 
+  let trampolineNamedScope = newGlobalScope()
+  let trampolineNamedFn =
+    run(compileSource("(fn [x ^scale] (+ x scale))"), trampolineNamedScope)
+  let trampolineArgs = @[newInt(6)]
+  let trampolineNames = @["scale"]
+  let trampolineValues = @[newInt(4)]
+  bench("vm.named_call.apply_trampoline", 500_000, i):
+    let v = call(trampolineNamedFn, trampolineArgs, trampolineNames,
+                 trampolineValues, trampolineNamedScope)
+    checksum = checksum + v.intVal
+
   let protocolScope = newGlobalScope()
   discard run(compileSource(
     "(protocol ToInt (message to_int [self] : Int)) " &
