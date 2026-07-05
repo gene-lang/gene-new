@@ -3291,6 +3291,15 @@ proc compileCall(c: var Compiler, node: Value) =
                                depth = node.body.len,
                                flag = argsKnownBareInt)] = node
       return
+    if not c.hasLexicalBinding(node.head.symVal):
+      var argsKnownBareInt = true
+      for arg in node.body:
+        argsKnownBareInt = argsKnownBareInt and c.exprKnownBareInt(arg)
+        compileExpr(c, arg)
+      c.chunk.callSites[c.emit(opCallNameN, name = node.head.symVal,
+                               depth = node.body.len,
+                               flag = argsKnownBareInt)] = node
+      return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]
     if types.kind != vkList:

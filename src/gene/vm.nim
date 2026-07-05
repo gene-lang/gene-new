@@ -5769,7 +5769,7 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opSetOuterLocal:
       if inst.depth > localDepth:
         return false
-    of opLoadName, opLoadNativeFast, opCallName0, opCallName1:
+    of opLoadName, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
       if not namedCaptureSendable(fnScope, visibleScope, inst.name, seen,
                                   ignoredNames, mode):
         return false
@@ -5927,7 +5927,7 @@ proc collectSpawnCaptures(chunk: Chunk, localDepth: int,
         opCallParentLocal1, opCallOuterLocal1:
       if inst.depth > localDepth:
         captures.addCaptureSlot(inst.depth - localDepth, inst.intArg, inst.name)
-    of opLoadName, opLoadNativeFast, opCallName0, opCallName1:
+    of opLoadName, opLoadNativeFast, opCallName0, opCallName1, opCallNameN:
       captures.addCaptureName(inst.name, ignoredNames)
     else:
       discard
@@ -8333,18 +8333,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
           stack.add value
-        of opCallName0, opCallName1, opCallLocal1, opCallLocalN, opCallParentLocal0,
-            opCallParentLocal1, opCallOuterLocal0, opCallOuterLocal1:
+        of opCallName0, opCallName1, opCallNameN, opCallLocal1, opCallLocalN,
+            opCallParentLocal0, opCallParentLocal1, opCallOuterLocal0,
+            opCallOuterLocal1:
           let argCount =
             if inst[].op in {opCallName0, opCallParentLocal0,
                              opCallOuterLocal0}: 0
-            elif inst[].op == opCallLocalN: inst[].depth
+            elif inst[].op in {opCallNameN, opCallLocalN}: inst[].depth
             else: 1
           if stack.len < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
           let argsStart = stack.len - argCount
           var callee =
-            if inst[].op == opCallName0 or inst[].op == opCallName1:
+            if inst[].op in {opCallName0, opCallName1, opCallNameN}:
               scope.lookup(inst[].name)
             elif inst[].op == opCallLocal1 or inst[].op == opCallLocalN:
               let slot = inst[].intArg

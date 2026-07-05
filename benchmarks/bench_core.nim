@@ -129,6 +129,14 @@ proc main() =
     let v = run(typedChunk, typedScope)
     checksum = checksum + v.intVal
 
+  let globalFourScope = newGlobalScope()
+  globalFourScope.define("sum4",
+    run(compileSource("(fn [a b c d] (+ (+ a b) (+ c d)))"), globalFourScope))
+  let globalFourChunk = compileSource("(sum4 1 2 3 4)")
+  bench("vm.global_four_arg_fn.compiled_chunk", 500_000, i):
+    let v = run(globalFourChunk, globalFourScope)
+    checksum = checksum + v.intVal
+
   let trampolineNamedScope = newGlobalScope()
   let trampolineNamedFn =
     run(compileSource("(fn [x ^scale] (+ x scale))"), trampolineNamedScope)

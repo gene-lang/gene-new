@@ -552,6 +552,8 @@ suite "gir — disassembly":
     let dump = compileSource(
       "(var call_four (fn [a b c d] nil)) (call_four 1 2 3 4)").disassemble()
     check dump.contains("opCallLocalN slot=0 name=call_four argc=4")
+    let globalDump = compileSource("(call_four 1 2 3 4)").disassemble()
+    check globalDump.contains("opCallNameN name=call_four argc=4")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":
