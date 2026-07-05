@@ -760,19 +760,86 @@ A function containing `yield` is a generator and returns a `Stream`.
 Rules:
 
 - each yielded value must type-check as the stream item type;
-- yielding `void` skips the item;
+- yielding `void` skips the item (an iteration produces no value; this is
+  not a way to leave the generator — see "Generator semantics" below);
 - falling off the end closes the stream;
 - no public `EOS` value is yielded;
 - `peek` may buffer one item;
 - `close` is idempotent, drops buffered state, stops future pulls, and closes
   the upstream stream if one exists.
 
-In the MVP, generator `close` stops future pulls by discarding the saved
-generator state. It does not yet resume/unwind the generator to run pending
-`ensure` cleanup; generator cleanup-on-close is reserved for the continuation
-model that preserves generator frames and handlers. Natural exhaustion of a
-bounded helper such as `take` does not close or consume the remaining upstream
-items. Explicitly closing the downstream helper does close upstream.
+### 6.1 Generator semantics
+
+Generators are **one-way yield-only** in MVP: a generator function yields
+items outward via `yield` and never receives values back. There is no
+generator-side counterpart that suspends on input. A function that
+needs a producer/consumer pair between two coroutines uses a callback,
+channel, or future — not symmetric yield.
+
+```gene
+(fn prefix [s : (Stream T Never), n : Int] : (Stream T Never)
+  (var taken 0)
+  (take s n))                   ; → (Stream T Never), pulls from s lazily
+
+(fn pump [s : (Stream T Never), out : (Channel T)]
+  (for x in s                    ; one-way: pull out of s
+    (send out x)))
+```
+
+`yield void` and an empty `return` are distinct:
+
+- `(yield <value>)` — emits the value as the next item. If the value is
+  `void`, this iteration produces no item; execution continues at the
+  next `yield` (or the end of the function).
+- `(return <value>)` — leaves the generator immediately. A subsequent
+  `next`/`peek` reads the return value (or `void`) and the stream is
+  closed. Returning early therefore consumes the rest of the generator
+  without producing further items.
+- `(yield)` with no value is a compile-time error — the generator item
+  type requires a value.
+
+`close` semantics:
+
+- `Stream/close` is idempotent. The first call drops buffered state,
+  discards generator frames, marks the stream closed, and propagates
+  the close to its upstream source (if any). Subsequent calls are
+  no-ops.
+- A bounded helper like `take` does not close its upstream on natural
+  exhaustion — remaining items stay available so a second consumer can
+  continue pulling. Explicitly closing the downstream helper **does**
+  close upstream.
+- `filter`, `map`, and other stream combinators all close their upstream
+  source when closed (directly or transitively) — see `Stream/close`
+  in the protocol above.
+- In the MVP, generator `close` stops future pulls by discarding the
+  saved generator state. It does **not** resume or unwind the
+  generator to run pending `ensure` blocks; generator `ensure` runs
+  only on normal fall-through. This is reserved for the continuation
+  model that preserves generator frames and handlers. Future versions
+  may switch to running `ensure` on close — when that lands, the
+  change should be transparent to streams that don't use `ensure`.
+
+Pull-side error model (`Stream T E`):
+
+- `has_next` may raise `E` (the producer error type), but **never**
+  raises `EndOfStream`. At exhaustion `has_next` returns `false`. A
+  consumer that wants to detect a producer error against an exhausted
+  stream pulls `next` once more and matches on `EndOfStream` vs `E`.
+- `peek` and `next` may raise either `EndOfStream` (signalling
+  exhaustion — present if buffered or produced by the upstream `E`
+  column) or `E`. After `peek`/`next` raises `EndOfStream`, `has_next`
+  returns `false` for any subsequent read.
+- A consumer that catches `E` and asks "is there more?" gets `false`
+  once the producer has finished or signalled exhaustion.
+
+These rules combine into a simple consumer idiom:
+
+```gene
+(while true
+  (match (try-ok (s ~ Stream/next))
+    (when (Ok v)   (yield-handler v))
+    (when (Err e)  (if (= e (EndOfStream)) (break) (handle e)))))
+```
 
 Standard stream helpers are ordinary functions/stages:
 
@@ -1200,7 +1267,18 @@ F32     # 32-bit IEEE float for typed buffers/native code
 Float   # alias for F64 in MVP
 ```
 
-`Int` has mathematical integer semantics. The VM may store small integers as NaN-boxed fixnums and promote to heap bignums on overflow. Overflow of the fixnum range promotes to an exact bignum; `Int` arithmetic never wraps silently. Typed native code may specialize `Fixnum`, `I64`, `F64`, and `F32`; using such fixed-width types creates range-checked boundaries (a fixed-width result out of range raises rather than wrapping).
+`Int` has mathematical integer semantics. The MVP VM implements this as a
+checked-I64 fast path with heap-bignum promotion on overflow (`intAdd` /
+`intSub` / `intMul` / `intDiv` in the runtime: when both operands fit in
+int64 and the result fits in int64, arithmetic stays as a NaN-boxed fixnum;
+otherwise the runtime promotes to a heap bignum). Overflow of the fixnum
+range **never wraps silently** — it either promotes to an exact heap bignum
+when promotion is implemented for the operation, or raises a recoverable
+error. The language-level contract is mathematical integer semantics; the
+MVP contract is "promote to bignum on overflow or raise." Silent wraparound
+is forbidden. Typed native code may specialize `Fixnum`, `I64`, `F64`, and
+`F32`; using such fixed-width types creates range-checked boundaries (a
+fixed-width result out of range raises rather than wrapping).
 
 FFI types such as `C/Int32`, `C/Long`, and `C/Size` are ABI types, not aliases for Gene `Int`. Passing a Gene `Int` to an FFI integer parameter performs an explicit range check and then marshals to the target ABI width.
 

@@ -1266,6 +1266,25 @@ suite "spec — pattern destructuring from design":
                "catch (e : TypeError) e/where)",
                "\"parameter 'x'\"")
 
+suite "spec — Int overflow contract per design §7.4":
+  test "small Int arithmetic stays in the int64 fixnum fast path":
+    check_eval("(+ 1 2)", "3")
+    check_eval("(- 10 4)", "6")
+    check_eval("(* 3 7)", "21")
+    check_eval("(+ 1 2 3 4 5)", "15")
+  test "int64 boundary arithmetic promotes to an exact bignum":
+    check_eval("(+ 9223372036854775807 1)", "9223372036854775808")
+    check_eval("(- (- 0 9223372036854775807) 1)", "-9223372036854775808")
+    check_eval("(* 9223372036854775807 9223372036854775807)",
+               "85070591730234615847396907784232501249")
+  test "Int arithmetic never wraps silently":
+    # Pin the contract: the result is the exact mathematical sum,
+    # not a wraparound into the int64 fast path.
+    check_eval("(+ 9223372036854775807 1)", "9223372036854775808")
+    check_eval("(* 2 4611686018427387904)", "9223372036854775808")
+    check_eval("(+ 9223372036854775807 9223372036854775807)",
+               "18446744073709551614")
+
 suite "spec — Range type":
   test "range constructs immutable integer ranges":
     check_eval("(range 1 4)", "(range 1 4)")
@@ -1567,6 +1586,48 @@ suite "spec — streams from design":
   test "yield is only valid inside functions":
     expect GeneError:
       discard compileSource("(yield 1)")
+
+  test "yield-void skips the item but does not leave the generator":
+    check_eval("(fn skip [] : (Stream Int Never) " &
+               "  (yield 1) " &
+               "  (yield void) " &
+               "  (yield 2)) " &
+               "(var s (skip)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next)]",
+               "[1 2 false]")
+
+  test "natural fall-through closes the generator with no item remaining":
+    check_eval("(fn two [] : (Stream Int Never) " &
+               "  (yield 1) " &
+               "  (yield 2)) " &
+               "(var s (two)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next)]",
+               "[1 2 false]")
+
+  test "Stream/close on a bounded helper closes upstream":
+    check_eval("(var upstream (to_stream [1 2 3 4 5])) " &
+               "(var taken (take upstream 2)) " &
+               "[(taken ~ Stream/next) " &
+               " (taken ~ Stream/next) " &
+               " (taken ~ Stream/has_next) " &
+               " (upstream ~ Stream/has_next) " &
+               " (do (taken ~ Stream/close) " &
+               "     (upstream ~ Stream/has_next))]",
+               "[1 2 false true false]")
+
+  test "has_next on an empty stream returns false without raising":
+    check_eval("(var s (to_stream [])) (s ~ Stream/has_next)", "false")
+
+  test "Stream/close is idempotent":
+    check_eval("(var s (to_stream [1])) " &
+               "  (do " &
+               "    (s ~ Stream/close) " &
+               "    (s ~ Stream/close))",
+               "nil")
 
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
