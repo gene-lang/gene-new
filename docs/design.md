@@ -1746,6 +1746,35 @@ Protocol inheritance (`^inherit`), type-direct messages, type/protocol
 inheritance interaction, and `~` message-resolution semantics are designed as
 an extension of this section in `docs/core.md`.
 
+### 10.1 Implementation visibility and imports
+
+The exact rule for when an impl is visible for protocol-coherence lookup:
+
+```text
+An impl activates the first time its defining module is loaded.
+An active impl is visible in every module, regardless of whether
+that module imports the defining module (global coherence).
+Any import form that loads the defining module — bulk, selected,
+or `^as` — activates its impls; impls are not name-selected and
+cannot be aliased or renamed.
+At most one impl per `(protocol, receiver)` pair may be active; a
+second is an ambiguity error raised when the conflicting module
+loads. A pair with no active impl is a missing-implementation
+error at the use site.
+Impls are not value bindings: they cannot be renamed, selectively
+imported, or re-exported. An import that binds no values still
+loads the module and so still activates its impls.
+```
+
+This fixes the answers to the import-visibility questions: a selected
+import and an `^as` import both load the defining module and so activate
+impls globally; impl visibility cannot be imported on its own — it rides
+on module load; and impls cannot be re-exported because they are not
+bindings. Coherence is therefore global, not per-import: the same
+`(protocol, receiver)` pair resolves the same way in every module.
+Future versions may tighten this with `^private`, explicit export lists,
+an orphan rule, or finer-grained impl-import controls.
+
 ---
 
 ## 11. Macros, templates, and compile-time code
@@ -2646,7 +2675,7 @@ MVP export model:
 all named namespace bindings are exported/importable by default
 ```
 
-This includes values, types, protocols, macros, and nested namespaces. Protocol implementation declarations are not ordinary named bindings and are not selected or aliased through `[name]` import lists. Importing a module or namespace may make its exported implementation declarations visible for protocol-coherence lookup, but implementation visibility is tracked by the compiler rather than by local value bindings. Future versions may add `^private`, explicit export lists, package-private visibility, re-export controls, and finer-grained implementation-import controls.
+This includes values, types, protocols, macros, and nested namespaces. Protocol implementation declarations are not ordinary named bindings and are not selected or aliased through `[name]` import lists. Implementation visibility is global and follows §10.1: any import form that loads the defining module — bulk, selected, or `^as` — activates its impls everywhere, and visibility is tracked by the compiler rather than by local value bindings. Future versions may add `^private`, explicit export lists, package-private visibility, re-export controls, and finer-grained implementation-import controls.
 
 Path interpretation for `from "path"`:
 
@@ -2654,7 +2683,7 @@ Path interpretation for `from "path"`:
 "x"     search-path/package-relative module path
 "./x"   relative to current module directory
 "../x"  parent-relative
-"/x"    absolute from application/package root
+"/x"    absolute from root
 ```
 
 Normalization rules:
