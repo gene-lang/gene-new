@@ -1200,7 +1200,18 @@ F32     # 32-bit IEEE float for typed buffers/native code
 Float   # alias for F64 in MVP
 ```
 
-`Int` has mathematical integer semantics. The VM may store small integers as NaN-boxed fixnums and promote to heap bignums on overflow. Overflow of the fixnum range promotes to an exact bignum; `Int` arithmetic never wraps silently. Typed native code may specialize `Fixnum`, `I64`, `F64`, and `F32`; using such fixed-width types creates range-checked boundaries (a fixed-width result out of range raises rather than wrapping).
+`Int` has mathematical integer semantics. The MVP VM implements this as a
+checked-I64 fast path with heap-bignum promotion on overflow (`intAdd` /
+`intSub` / `intMul` / `intDiv` in the runtime: when both operands fit in
+int64 and the result fits in int64, arithmetic stays as a NaN-boxed fixnum;
+otherwise the runtime promotes to a heap bignum). Overflow of the fixnum
+range **never wraps silently** — it either promotes to an exact heap bignum
+when promotion is implemented for the operation, or raises a recoverable
+error. The language-level contract is mathematical integer semantics; the
+MVP contract is "promote to bignum on overflow or raise." Silent wraparound
+is forbidden. Typed native code may specialize `Fixnum`, `I64`, `F64`, and
+`F32`; using such fixed-width types creates range-checked boundaries (a
+fixed-width result out of range raises rather than wrapping).
 
 FFI types such as `C/Int32`, `C/Long`, and `C/Size` are ABI types, not aliases for Gene `Int`. Passing a Gene `Int` to an FFI integer parameter performs an explicit range check and then marshals to the target ABI width.
 

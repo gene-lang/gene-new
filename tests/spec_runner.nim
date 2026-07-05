@@ -1266,6 +1266,25 @@ suite "spec — pattern destructuring from design":
                "catch (e : TypeError) e/where)",
                "\"parameter 'x'\"")
 
+suite "spec — Int overflow contract per design §7.4":
+  test "small Int arithmetic stays in the int64 fixnum fast path":
+    check_eval("(+ 1 2)", "3")
+    check_eval("(- 10 4)", "6")
+    check_eval("(* 3 7)", "21")
+    check_eval("(+ 1 2 3 4 5)", "15")
+  test "int64 boundary arithmetic promotes to an exact bignum":
+    check_eval("(+ 9223372036854775807 1)", "9223372036854775808")
+    check_eval("(- (- 0 9223372036854775807) 1)", "-9223372036854775808")
+    check_eval("(* 9223372036854775807 9223372036854775807)",
+               "85070591730234615847396907784232501249")
+  test "Int arithmetic never wraps silently":
+    # Pin the contract: the result is the exact mathematical sum,
+    # not a wraparound into the int64 fast path.
+    check_eval("(+ 9223372036854775807 1)", "9223372036854775808")
+    check_eval("(* 2 4611686018427387904)", "9223372036854775808")
+    check_eval("(+ 9223372036854775807 9223372036854775807)",
+               "18446744073709551614")
+
 suite "spec — Range type":
   test "range constructs immutable integer ranges":
     check_eval("(range 1 4)", "(range 1 4)")
