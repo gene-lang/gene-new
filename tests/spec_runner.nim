@@ -1153,12 +1153,28 @@ suite "spec — pattern destructuring from design":
       discard compileSource("(repeat [i] in 3 nil)")
 
   test "for iterates maps sets nodes and ranges per design §8.1":
-    check_eval("(into (to_pairs_stream {^a 1 ^b 2}) [])",
+    # Drive `for` itself (its iteratorStream path), not the to_stream helpers,
+    # accumulating each visited item so ordering is asserted.
+    check_eval("(var acc []) " &
+               "(for [k v] in {^a 1 ^b 2} (set acc [acc... [k v]])) " &
+               "acc",
                "[[a 1] [b 2]]")
-    check_eval("(into (to_pairs_stream {{\"x\" : 1 \"y\" : 2}}) [])",
+    check_eval("(var acc []) " &
+               "(for [k v] in {{\"x\" : 1 \"y\" : 2}} (set acc [acc... [k v]])) " &
+               "acc",
                "[[\"x\" 1] [\"y\" 2]]")
-    check_eval("(into (to_stream (Set 3 1 2)) [])",
+    check_eval("(var acc []) " &
+               "(for x in (Set 3 1 2) (set acc [acc... x])) " &
+               "acc",
                "[3 1 2]")
+    check_eval("(var acc []) " &
+               "(for x in (quote (foo 1 2 3)) (set acc [acc... x])) " &
+               "acc",
+               "[1 2 3]")
+    check_eval("(var acc []) " &
+               "(for x in (range 0 4 2 true) (set acc [acc... x])) " &
+               "acc",
+               "[0 2 4]")
     check_eval("[(for item in nil item) " &
                " (for item in void item) " &
                " (for item in [] item)]",

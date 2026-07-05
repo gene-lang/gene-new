@@ -1485,9 +1485,10 @@ The MVP iterable set is:
 - `Stream`: pulled lazily, one item per body iteration;
 - `nil` and `void`: empty iteration.
 
-`for` is implemented over an internal `iteratorStream`, so anything the standard
-`to_stream`/`iteratorStream` accepts can be iterated. A value whose kind is not
-in this set raises `for: cannot iterate <kind>`.
+`for` is implemented over an internal `iteratorStream` covering exactly the kinds
+above; it is a superset of the public `to_stream` (which accepts only `List`,
+`Set`, and `Range`). A value whose kind is not in this set raises
+`for: cannot iterate <kind>`.
 
 #### Return value and control flow
 
