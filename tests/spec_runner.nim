@@ -1152,6 +1152,31 @@ suite "spec — pattern destructuring from design":
     expect GeneError:
       discard compileSource("(repeat [i] in 3 nil)")
 
+  test "for iterates maps sets nodes and ranges per design §8.1":
+    check_eval("(into (to_pairs_stream {^a 1 ^b 2}) [])",
+               "[[a 1] [b 2]]")
+    check_eval("(into (to_pairs_stream {{\"x\" : 1 \"y\" : 2}}) [])",
+               "[[\"x\" 1] [\"y\" 2]]")
+    check_eval("(into (to_stream (Set 3 1 2)) [])",
+               "[3 1 2]")
+    check_eval("[(for item in nil item) " &
+               " (for item in void item) " &
+               " (for item in [] item)]",
+               "[nil nil nil]")
+    expect GeneError:
+      discard run(compileSource("(for x in 7 x)"),
+                  newGlobalScope())
+
+  test "for over streams returns nil and skips the body when empty":
+    check_eval("(var empty (to_stream [])) " &
+               "(var seen 0) " &
+               "(var done " &
+               "  (for _ in empty " &
+               "    (set seen (+ seen 1)) " &
+               "    \"miss\")) " &
+               "[seen done]",
+               "[0 nil]")
+
   test "alternation alternatives bind the same names":
     check_eval("(match [2 7] (when (| [1 a] [2 a]) a))", "7")
     expect GeneError:

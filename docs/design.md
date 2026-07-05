@@ -1451,7 +1451,7 @@ If destructuring fails, Gene raises `MatchError`.
 
 ### 8.1 `for`
 
-`for` iterates an iterable value, matches each item with a pattern, and evaluates
+`for` iterates an iterable value, binds each item with a pattern, and evaluates
 its body in a fresh loop-body scope for each item:
 
 ```gene
@@ -1459,28 +1459,60 @@ its body in a fresh loop-body scope for each item:
   body...)
 ```
 
-The MVP iterable set is:
-
-- `List`: each list item;
-- `Node`: each positional body item;
-- `Map`: `[key value]` pairs, with keys as `Sym`;
-- `Stream`: pulled lazily, one item per body iteration;
-- `Str`: Unicode scalar `Char` values;
-- `nil` and `void`: empty iteration.
-
-The loop evaluates to `nil`. If an item does not match `pattern`, `for` raises
-`MatchError`. For stream inputs, `for` closes the active stream on normal
-exhaustion and when an uncaught item-pattern/body error unwinds out of the loop.
-`break` and `continue` are loop-only special forms:
+The body is an implicit `do` (§8). The pattern engine is shared with `var`,
+`match`, and `catch` destructuring, so:
 
 ```gene
-(for item in items
-  (if (skip? item)
-    (then (continue)))
-  (if (done? item)
-    (then (break)))
-  (process item))
+(for [k, v] in pairs        ; list/PropMap destructuring
+  body...)
+
+(for (Task ^id id title) in tasks
+  body...)
 ```
+
+#### Iterable contract
+
+The MVP iterable set is:
+
+- `List`: each list item, in source order;
+- `Node`: each positional body item, in source order;
+- `Map`, `HashMap`: `[key value]` pair lists; map order is the iteration order
+  of the underlying entries;
+- `Set`: each set item, in set iteration order;
+- `Str`: Unicode scalar `Char` values, left to right;
+- `Range`: integer values from `start` toward `stop` per the range's
+  `step`/`inclusive?` (§7), yielded lazily;
+- `Stream`: pulled lazily, one item per body iteration;
+- `nil` and `void`: empty iteration.
+
+`for` is implemented over an internal `iteratorStream`, so anything the standard
+`to_stream`/`iteratorStream` accepts can be iterated. A value whose kind is not
+in this set raises `for: cannot iterate <kind>`.
+
+#### Return value and control flow
+
+- The loop evaluates to `nil`, including an empty input and after `break`.
+- An item that does not match `pattern` raises `MatchError` (with cleanup).
+- `continue` skips the rest of the current body and advances to the next item;
+  for `repeat` the remaining count still decrements before the next condition
+  check or index increment.
+- `break` exits the nearest enclosing loop.
+- Both `break` and `continue` are loop-only special forms; using either outside
+  `for`, `while`, `loop`, or `repeat` is a compile-time error.
+
+#### Stream lifecycle and errors
+
+A `for` over a `Stream`:
+
+- pulls one item at a time, lazily, on each iteration;
+- closes the active stream on normal exhaustion, on `break`, and when an
+  uncaught item-pattern or body error unwinds out of the loop;
+- propagates producer errors raised by `has_next`/`peek`/`next` directly out of
+  the loop; the stream is still closed as part of the unwind;
+- does not catch those errors itself — recover them with `try`/`catch`
+  (§9) around the `for`.
+
+`continue` does not close the stream; only iteration moves on.
 
 `while` evaluates its condition before each iteration. `loop` is an unconditional
 loop:
@@ -1508,12 +1540,7 @@ The indexed form binds a zero-based index in the loop body:
 The index starts at `0` and advances through `n - 1`. The count expression is
 still evaluated once before the loop begins.
 
-`continue` skips the rest of the current body and advances to the next iteration.
-For `repeat`, this means the remaining count is still decremented before the
-next condition check or index increment. `break` exits the nearest enclosing
-loop. Both forms are valid in `for`, `while`, `loop`, and `repeat`. A loop
-exited with `break` still evaluates to `nil`. For stream inputs, `break` closes
-the active stream before control leaves the loop.
+`for`, `while`, `loop`, and `repeat` share the `break`/`continue` rules above.
 
 ---
 
