@@ -4962,6 +4962,24 @@ proc releaseRunStack(stack: var seq[Value]) {.inline.} =
     runStackPool[runStackPoolLen] = move stack
     inc runStackPoolLen
 
+const MaxFrameStackPool = 64
+
+var frameStackPool {.threadvar.}: array[MaxFrameStackPool, seq[Frame]]
+var frameStackPoolLen {.threadvar.}: int
+
+proc acquireFrameStack(): seq[Frame] {.inline.} =
+  if frameStackPoolLen == 0:
+    return @[]
+  dec frameStackPoolLen
+  let index = frameStackPoolLen
+  result = move frameStackPool[index]
+
+proc releaseFrameStack(frames: var seq[Frame]) {.inline.} =
+  frames.setLen(0)
+  if frameStackPoolLen < MaxFrameStackPool:
+    frameStackPool[frameStackPoolLen] = move frames
+    inc frameStackPoolLen
+
 const MaxCallScopePool = 64
 
 var callScopePool {.threadvar.}: array[MaxCallScopePool, Scope]
@@ -7188,7 +7206,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curNamespaceName = fiber.namespaceName
     evalBudget = scope.evalBudget
   elif fiber != nil:
+    frames = acquireFrameStack()
     recycleScope = fiber.recycleScope
+  else:
+    frames = acquireFrameStack()
 
   template loadFrameRegs(f: Frame) =
     ## Restore the per-frame registers (everything except the operand stack, which
@@ -7441,6 +7462,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if frames.len == 0:
         stackArg = move stack
         ipArg = ip
+        releaseFrameStack(frames)
         return RunStop(kind: rskReturn, value: retValue)
       else:
         releaseRunStack(stack)
@@ -7534,6 +7556,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     elif frames.len == 0:
       stackArg = move stack
       ipArg = ip
+      releaseFrameStack(frames)
       return RunStop(kind: rskReturn, value: retValue)
     else:
       releaseRunStack(stack)
@@ -7547,6 +7570,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if frames.len == 0:
       stackArg = move stack
       ipArg = ip
+      releaseFrameStack(frames)
       return RunStop(kind: rskReturn, value: retValue)
     else:
       releaseRunStack(stack)
@@ -9492,6 +9516,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let yielded = escapeWeakFunctions(stack[^1])
           stackArg = move stack
           ipArg = ip
+          releaseFrameStack(frames)
           return RunStop(kind: rskYield, value: yielded)
         of opJumpIfFalse:
           if stack.len == 0:
@@ -9624,6 +9649,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
             releaseCurrentCallScope()
         elif frames.len == 0:
+          releaseFrameStack(frames)
           raise err
         else:
           releaseRunStack(stack)
@@ -9673,6 +9699,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       for f in frames:
         releaseFrameCallScope(f)
+      releaseFrameStack(frames)
       raise p
     except GeneCancel as c:
       # Cancellation is separate from recoverable Gene errors: catch clauses do
@@ -9712,6 +9739,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         continue
       for f in frames:
         releaseFrameCallScope(f)
+      releaseFrameStack(frames)
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
       raise c
