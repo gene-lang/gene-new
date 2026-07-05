@@ -1465,6 +1465,16 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
     (true, value.kind == vkBytes)
   of "Regex":
     (true, value.kind == vkRegex)
+  of "Date":
+    (true, value.kind == vkDate)
+  of "Time":
+    (true, value.kind == vkTime)
+  of "DateTime":
+    (true, value.kind == vkDateTime)
+  of "Timezone":
+    (true, value.kind == vkTimezone)
+  of "Duration":
+    (true, value.kind == vkDuration)
   of "Gene", "Node":
     (true, value.kind == vkNode)
   of "Selector":

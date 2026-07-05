@@ -1126,6 +1126,55 @@ suite "spec — Range type":
                "(first-int (to_stream (range 5 6)))",
                "5")
 
+suite "spec — Date/time type family":
+  test "date time and datetime literals print canonically":
+    check_read("2026-07-04", "2026-07-04")
+    check_read("09:30", "09:30")
+    check_read("09:30:15.123400", "09:30:15.1234")
+    check_read("2026-07-04T09:30", "2026-07-04T09:30")
+    check_read("2026-07-04T09:30Z", "2026-07-04T09:30:00Z")
+    check_read("2026-07-04T09:30:15.123456-04:00[America/New_York]",
+               "2026-07-04T09:30:15.123456-04:00[America/New_York]")
+    check_read("09:30[America/New_York]", "09:30:00[America/New_York]")
+    expect ReadError:
+      discard read("2026-07-04T09:30[America/New_York]")
+    expect ReadError:
+      discard read("2026-02-30")
+
+  test "constructors expose date time timezone and duration values":
+    check_eval("[(date 2026 7 4) (time 9 30 15 123400 -240 \"America/New_York\") " &
+               " (datetime 2026 7 4 9 30 15 123456 0 \"UTC\") " &
+               " (timezone \"UTC\") (duration 1500000)]",
+               "[2026-07-04 09:30:15.1234-04:00[America/New_York] " &
+               "2026-07-04T09:30:15.123456Z (timezone 0 \"UTC\") " &
+               "(duration 1500000)]")
+
+  test "date time family accessors and annotations work":
+    check_eval("(fn y [d : Date] (d ~ year)) (y 2026-07-04)", "2026")
+    check_eval("(var t 09:30:15.123456-04:00[America/New_York]) " &
+               "[(t ~ hour) (t ~ minute) (t ~ second) " &
+               " (t ~ microsecond) (t ~ offset) (t ~ timezone)]",
+               "[9 30 15 123456 -240 \"America/New_York\"]")
+    check_eval("(var dt 2026-07-04T09:30Z) " &
+               "[(dt ~ year) (dt ~ month) (dt ~ day) " &
+               " (dt ~ hour) (dt ~ minute) (dt ~ second) " &
+               " (dt ~ offset) (dt ~ timezone)]",
+               "[2026 7 4 9 30 0 0 \"UTC\"]")
+    check_eval("(var z (timezone \"+08:00\" \"Asia/Shanghai\")) " &
+               "[(z ~ offset) (z ~ name)]",
+               "[480 \"Asia/Shanghai\"]")
+    check_eval("(var d (duration 1500000)) " &
+               "[(d ~ microseconds) (d ~ milliseconds) (d ~ seconds)]",
+               "[1500000 1500.0 1.5]")
+    check_eval("(fn f [d : Duration] (d ~ seconds)) (f (duration 2000000))",
+               "2.0")
+
+  test "date time values are immutable and hash stable":
+    check_eval("[(= 2026-07-04 2026-07-04) " &
+               " (= 09:30 09:31) " &
+               " (= (hash 2026-07-04T09:30Z) (hash 2026-07-04T09:30Z))]",
+               "[true false true]")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &

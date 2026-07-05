@@ -58,6 +58,61 @@ proc printRegex(pattern, flags: string): string =
   result.add '"'
   result.add flags
 
+proc pad2(n: int): string =
+  if n < 10: "0" & $n else: $n
+
+proc pad4(n: int): string =
+  let s = $n
+  if s.len >= 4: s else: repeat("0", 4 - s.len) & s
+
+proc fractionalMicros(microsecond: int): string =
+  if microsecond == 0:
+    return ""
+  result = "." & align($microsecond, 6, '0')
+  while result.len > 1 and result[^1] == '0':
+    result.setLen(result.len - 1)
+
+proc formatOffset(offsetMinutes: int): string =
+  let sign = if offsetMinutes < 0: "-" else: "+"
+  let total = abs(offsetMinutes)
+  sign & pad2(total div 60) & ":" & pad2(total mod 60)
+
+proc formatTimezone(hasOffset: bool, offsetMinutes: int,
+                    timezoneName: string, allowNameOnly: bool): string =
+  if hasOffset:
+    if offsetMinutes == 0 and timezoneName == "UTC":
+      return "Z"
+    result = formatOffset(offsetMinutes)
+    if timezoneName.len > 0 and timezoneName != "UTC":
+      result.add "[" & timezoneName & "]"
+  elif allowNameOnly and timezoneName.len > 0:
+    result = "[" & timezoneName & "]"
+  else:
+    result = ""
+
+proc printDate(v: Value): string =
+  pad4(v.dateYear) & "-" & pad2(v.dateMonth) & "-" & pad2(v.dateDay)
+
+proc printTime(v: Value): string =
+  result = pad2(v.timeHour) & ":" & pad2(v.timeMinute)
+  let tz = formatTimezone(v.timeHasOffset, v.timeOffsetMinutes,
+                          v.timeTimezoneName, allowNameOnly = true)
+  if v.timeSecond != 0 or v.timeMicrosecond != 0 or tz.len > 0:
+    result.add ":" & pad2(v.timeSecond)
+  result.add fractionalMicros(v.timeMicrosecond)
+  result.add tz
+
+proc printDateTime(v: Value): string =
+  result = pad4(v.dateTimeYear) & "-" & pad2(v.dateTimeMonth) & "-" &
+           pad2(v.dateTimeDay) & "T" & pad2(v.dateTimeHour) & ":" &
+           pad2(v.dateTimeMinute)
+  let tz = formatTimezone(v.dateTimeHasOffset, v.dateTimeOffsetMinutes,
+                          v.dateTimeTimezoneName, allowNameOnly = false)
+  if v.dateTimeSecond != 0 or v.dateTimeMicrosecond != 0 or tz.len > 0:
+    result.add ":" & pad2(v.dateTimeSecond)
+  result.add fractionalMicros(v.dateTimeMicrosecond)
+  result.add tz
+
 proc printProps(sb: var string, props: PropTable, sigil: string) =
   for k, val in props:
     sb.add ' '
@@ -79,6 +134,21 @@ proc print*(v: Value): string =
   of vkString: escapeStr(v.strVal)
   of vkBytes:  printBytes(v.bytesVal)
   of vkRegex:  printRegex(v.regexPattern, v.regexFlags)
+  of vkDate:   printDate(v)
+  of vkTime:   printTime(v)
+  of vkDateTime: printDateTime(v)
+  of vkTimezone:
+    var sb = "(timezone"
+    if v.timezoneHasOffset:
+      sb.add " " & $v.timezoneOffsetMinutes
+      if v.timezoneName.len > 0:
+        sb.add " " & escapeStr(v.timezoneName)
+    else:
+      sb.add " " & escapeStr(v.timezoneName)
+    sb.add ")"
+    sb
+  of vkDuration:
+    "(duration " & $v.durationMicroseconds & ")"
   of vkChar:   "'" & escapeChar(v.charVal) & "'"
   of vkSymbol: v.symVal
   of vkList:

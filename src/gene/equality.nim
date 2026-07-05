@@ -48,6 +48,33 @@ proc equal*(a, b: Value): bool =
   of vkRange:
     a.rangeStart == b.rangeStart and a.rangeStop == b.rangeStop and
       a.rangeStep == b.rangeStep and a.rangeInclusive == b.rangeInclusive
+  of vkDate:
+    a.dateYear == b.dateYear and a.dateMonth == b.dateMonth and
+      a.dateDay == b.dateDay
+  of vkTime:
+    a.timeHour == b.timeHour and a.timeMinute == b.timeMinute and
+      a.timeSecond == b.timeSecond and
+      a.timeMicrosecond == b.timeMicrosecond and
+      a.timeHasOffset == b.timeHasOffset and
+      a.timeOffsetMinutes == b.timeOffsetMinutes and
+      a.timeTimezoneName == b.timeTimezoneName
+  of vkDateTime:
+    a.dateTimeYear == b.dateTimeYear and
+      a.dateTimeMonth == b.dateTimeMonth and
+      a.dateTimeDay == b.dateTimeDay and
+      a.dateTimeHour == b.dateTimeHour and
+      a.dateTimeMinute == b.dateTimeMinute and
+      a.dateTimeSecond == b.dateTimeSecond and
+      a.dateTimeMicrosecond == b.dateTimeMicrosecond and
+      a.dateTimeHasOffset == b.dateTimeHasOffset and
+      a.dateTimeOffsetMinutes == b.dateTimeOffsetMinutes and
+      a.dateTimeTimezoneName == b.dateTimeTimezoneName
+  of vkTimezone:
+    a.timezoneHasOffset == b.timezoneHasOffset and
+      a.timezoneOffsetMinutes == b.timezoneOffsetMinutes and
+      a.timezoneName == b.timezoneName
+  of vkDuration:
+    a.durationMicroseconds == b.durationMicroseconds
   of vkChar:   int32(a.charVal) == int32(b.charVal)
   of vkSymbol: a.symVal == b.symVal
   of vkList:
@@ -93,7 +120,7 @@ proc same*(a, b: Value): bool =
     return false
   case a.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
-     vkChar, vkSymbol:
+     vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol:
     equal(a, b)
   of vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
@@ -120,6 +147,35 @@ proc hash*(v: Value): Hash =
     h = h !& hash(v.rangeStop)
     h = h !& hash(v.rangeStep)
     h = h !& hash(v.rangeInclusive)
+  of vkDate:
+    h = h !& hash(v.dateYear)
+    h = h !& hash(v.dateMonth)
+    h = h !& hash(v.dateDay)
+  of vkTime:
+    h = h !& hash(v.timeHour)
+    h = h !& hash(v.timeMinute)
+    h = h !& hash(v.timeSecond)
+    h = h !& hash(v.timeMicrosecond)
+    h = h !& hash(v.timeHasOffset)
+    h = h !& hash(v.timeOffsetMinutes)
+    h = h !& hash(v.timeTimezoneName)
+  of vkDateTime:
+    h = h !& hash(v.dateTimeYear)
+    h = h !& hash(v.dateTimeMonth)
+    h = h !& hash(v.dateTimeDay)
+    h = h !& hash(v.dateTimeHour)
+    h = h !& hash(v.dateTimeMinute)
+    h = h !& hash(v.dateTimeSecond)
+    h = h !& hash(v.dateTimeMicrosecond)
+    h = h !& hash(v.dateTimeHasOffset)
+    h = h !& hash(v.dateTimeOffsetMinutes)
+    h = h !& hash(v.dateTimeTimezoneName)
+  of vkTimezone:
+    h = h !& hash(v.timezoneHasOffset)
+    h = h !& hash(v.timezoneOffsetMinutes)
+    h = h !& hash(v.timezoneName)
+  of vkDuration:
+    h = h !& hash(v.durationMicroseconds)
   of vkChar:   h = h !& hash(int32(v.charVal))
   of vkSymbol: h = h !& hash(v.symVal)
   of vkList:
@@ -161,7 +217,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
 
   case v.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
-     vkChar, vkSymbol,
+     vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
      vkProtocol, vkProtocolMessage:

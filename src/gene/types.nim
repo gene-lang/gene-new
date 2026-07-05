@@ -78,6 +78,11 @@ type
     vkBytes     ## immutable byte string
     vkRegex     ## immutable compiled PCRE regular expression
     vkRange     ## immutable integer range
+    vkDate      ## immutable calendar date
+    vkTime      ## immutable wall-clock time, optionally timezone annotated
+    vkDateTime  ## immutable date + time, optionally timezone annotated
+    vkTimezone  ## immutable fixed-offset or named timezone annotation
+    vkDuration  ## immutable signed duration, stored as microseconds
     vkChar      ## one Unicode scalar value
     vkSymbol    ## interned simple symbol (Sym)
     vkList      ## pure body / list
@@ -349,6 +354,11 @@ type
     okBytes
     okRegex
     okRange
+    okDate
+    okTime
+    okDateTime
+    okTimezone
+    okDuration
     okSet
     okHashMap
     okEnv
@@ -407,6 +417,40 @@ type
     stop: int64
     step: int64
     inclusive: bool
+
+  DateData = ref object of GeneObjectData
+    year: int16
+    month: int8
+    day: int8
+
+  TimeData = ref object of GeneObjectData
+    hour: int8
+    minute: int8
+    second: int8
+    microsecond: int32
+    hasOffset: bool
+    offsetMinutes: int16
+    timezoneName: string
+
+  DateTimeData = ref object of GeneObjectData
+    year: int16
+    month: int8
+    day: int8
+    hour: int8
+    minute: int8
+    second: int8
+    microsecond: int32
+    hasOffset: bool
+    offsetMinutes: int16
+    timezoneName: string
+
+  TimezoneData = ref object of GeneObjectData
+    hasOffset: bool
+    offsetMinutes: int16
+    name: string
+
+  DurationData = ref object of GeneObjectData
+    microseconds: int64
 
   SetData = ref object of GeneObjectData
     items: seq[Value]
@@ -996,6 +1040,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     discard
   of okRange:
     discard
+  of okDate, okTime, okDateTime, okTimezone, okDuration:
+    discard
   of okSet:
     for val in SetData(data).items:
       emit(val)
@@ -1139,6 +1185,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.flags.setLen(0)
     d.groupNames.clear()
   of okRange:
+    discard
+  of okDate, okTime, okDateTime, okTimezone, okDuration:
     discard
   of okSet:
     SetData(data).items.setLen(0)
@@ -1591,6 +1639,11 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okBytes: vkBytes
     of okRegex: vkRegex
     of okRange: vkRange
+    of okDate: vkDate
+    of okTime: vkTime
+    of okDateTime: vkDateTime
+    of okTimezone: vkTimezone
+    of okDuration: vkDuration
     of okSet: vkSet
     of okHashMap: vkHashMap
     of okEnv: vkEnv
@@ -1705,6 +1758,103 @@ proc rangeStep*(v: Value): int64 =
 
 proc rangeInclusive*(v: Value): bool =
   v.rangeData.inclusive
+
+proc dateData(v: Value): DateData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okDate:
+    raise newException(FieldDefect, "value is not a Date")
+  DateData(objData(v))
+
+proc dateYear*(v: Value): int =
+  int(v.dateData.year)
+
+proc dateMonth*(v: Value): int =
+  int(v.dateData.month)
+
+proc dateDay*(v: Value): int =
+  int(v.dateData.day)
+
+proc timeData(v: Value): TimeData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okTime:
+    raise newException(FieldDefect, "value is not a Time")
+  TimeData(objData(v))
+
+proc timeHour*(v: Value): int =
+  int(v.timeData.hour)
+
+proc timeMinute*(v: Value): int =
+  int(v.timeData.minute)
+
+proc timeSecond*(v: Value): int =
+  int(v.timeData.second)
+
+proc timeMicrosecond*(v: Value): int =
+  int(v.timeData.microsecond)
+
+proc timeHasOffset*(v: Value): bool =
+  v.timeData.hasOffset
+
+proc timeOffsetMinutes*(v: Value): int =
+  int(v.timeData.offsetMinutes)
+
+proc timeTimezoneName*(v: Value): lent string =
+  v.timeData.timezoneName
+
+proc dateTimeData(v: Value): DateTimeData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okDateTime:
+    raise newException(FieldDefect, "value is not a DateTime")
+  DateTimeData(objData(v))
+
+proc dateTimeYear*(v: Value): int =
+  int(v.dateTimeData.year)
+
+proc dateTimeMonth*(v: Value): int =
+  int(v.dateTimeData.month)
+
+proc dateTimeDay*(v: Value): int =
+  int(v.dateTimeData.day)
+
+proc dateTimeHour*(v: Value): int =
+  int(v.dateTimeData.hour)
+
+proc dateTimeMinute*(v: Value): int =
+  int(v.dateTimeData.minute)
+
+proc dateTimeSecond*(v: Value): int =
+  int(v.dateTimeData.second)
+
+proc dateTimeMicrosecond*(v: Value): int =
+  int(v.dateTimeData.microsecond)
+
+proc dateTimeHasOffset*(v: Value): bool =
+  v.dateTimeData.hasOffset
+
+proc dateTimeOffsetMinutes*(v: Value): int =
+  int(v.dateTimeData.offsetMinutes)
+
+proc dateTimeTimezoneName*(v: Value): lent string =
+  v.dateTimeData.timezoneName
+
+proc timezoneData(v: Value): TimezoneData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okTimezone:
+    raise newException(FieldDefect, "value is not a Timezone")
+  TimezoneData(objData(v))
+
+proc timezoneHasOffset*(v: Value): bool =
+  v.timezoneData.hasOffset
+
+proc timezoneOffsetMinutes*(v: Value): int =
+  int(v.timezoneData.offsetMinutes)
+
+proc timezoneName*(v: Value): lent string =
+  v.timezoneData.name
+
+proc durationData(v: Value): DurationData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okDuration:
+    raise newException(FieldDefect, "value is not a Duration")
+  DurationData(objData(v))
+
+proc durationMicroseconds*(v: Value): int64 =
+  v.durationData.microseconds
 
 proc charVal*(v: Value): Rune {.inline.} =
   if v.tagOf != CHAR_TAG:
@@ -3397,6 +3547,82 @@ proc newRange*(start, stop: int64, step: int64 = 1,
   boxObject(RangeData(objKind: okRange, start: start, stop: stop,
                       step: step, inclusive: inclusive))
 
+proc isLeapYear(year: int): bool {.inline.} =
+  (year mod 4 == 0 and year mod 100 != 0) or (year mod 400 == 0)
+
+proc daysInMonth(year, month: int): int =
+  case month
+  of 1, 3, 5, 7, 8, 10, 12: 31
+  of 4, 6, 9, 11: 30
+  of 2: (if isLeapYear(year): 29 else: 28)
+  else: 0
+
+proc requireDateParts(year, month, day: int) =
+  if year < 1 or year > 9999:
+    raise newException(GeneError, "date year must be in 1..9999")
+  if month < 1 or month > 12:
+    raise newException(GeneError, "date month must be in 1..12")
+  let maxDay = daysInMonth(year, month)
+  if day < 1 or day > maxDay:
+    raise newException(GeneError, "date day is out of range for month")
+
+proc requireTimeParts(hour, minute, second, microsecond: int) =
+  if hour < 0 or hour > 23:
+    raise newException(GeneError, "time hour must be in 0..23")
+  if minute < 0 or minute > 59:
+    raise newException(GeneError, "time minute must be in 0..59")
+  if second < 0 or second > 59:
+    raise newException(GeneError, "time second must be in 0..59")
+  if microsecond < 0 or microsecond > 999_999:
+    raise newException(GeneError, "time microsecond must be in 0..999999")
+
+proc requireOffsetMinutes(offsetMinutes: int) =
+  if offsetMinutes < -23 * 60 - 59 or offsetMinutes > 23 * 60 + 59:
+    raise newException(GeneError, "timezone offset must be within +/-23:59")
+
+proc newDate*(year, month, day: int): Value =
+  requireDateParts(year, month, day)
+  boxObject(DateData(objKind: okDate, year: int16(year), month: int8(month),
+                     day: int8(day)))
+
+proc newTime*(hour, minute: int, second = 0, microsecond = 0,
+              hasOffset = false, offsetMinutes = 0,
+              timezoneName = ""): Value =
+  requireTimeParts(hour, minute, second, microsecond)
+  if hasOffset:
+    requireOffsetMinutes(offsetMinutes)
+  boxObject(TimeData(objKind: okTime, hour: int8(hour),
+                     minute: int8(minute), second: int8(second),
+                     microsecond: int32(microsecond),
+                     hasOffset: hasOffset,
+                     offsetMinutes: int16(offsetMinutes),
+                     timezoneName: timezoneName))
+
+proc newDateTime*(year, month, day, hour, minute: int, second = 0,
+                  microsecond = 0, hasOffset = false, offsetMinutes = 0,
+                  timezoneName = ""): Value =
+  requireDateParts(year, month, day)
+  requireTimeParts(hour, minute, second, microsecond)
+  if hasOffset:
+    requireOffsetMinutes(offsetMinutes)
+  boxObject(DateTimeData(objKind: okDateTime, year: int16(year),
+                         month: int8(month), day: int8(day),
+                         hour: int8(hour), minute: int8(minute),
+                         second: int8(second),
+                         microsecond: int32(microsecond),
+                         hasOffset: hasOffset,
+                         offsetMinutes: int16(offsetMinutes),
+                         timezoneName: timezoneName))
+
+proc newTimezone*(hasOffset: bool, offsetMinutes = 0, name = ""): Value =
+  if hasOffset:
+    requireOffsetMinutes(offsetMinutes)
+  boxObject(TimezoneData(objKind: okTimezone, hasOffset: hasOffset,
+                         offsetMinutes: int16(offsetMinutes), name: name))
+
+proc newDuration*(microseconds: int64): Value =
+  boxObject(DurationData(objKind: okDuration, microseconds: microseconds))
+
 proc newNode*(head: Value,
               props: sink PropTable = initOrderedTable[string, Value](),
               body: sink seq[Value] = @[],
@@ -4427,7 +4653,8 @@ proc isTruthy*(v: Value): bool {.inline.} =
 
 proc isImmutable*(v: Value): bool =
   case v.kind
-  of vkBytes, vkRegex, vkRange, vkSet, vkHashMap:
+  of vkBytes, vkRegex, vkRange, vkDate, vkTime, vkDateTime, vkTimezone,
+     vkDuration, vkSet, vkHashMap:
     true
   of vkList: v.listImmutable
   of vkMap: v.mapImmutable

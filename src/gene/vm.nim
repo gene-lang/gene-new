@@ -1830,6 +1830,26 @@ proc requireRange(name: string, value: Value) =
   if value.kind != vkRange:
     raise newException(GeneError, name & " expects a Range")
 
+proc requireDate(name: string, value: Value) =
+  if value.kind != vkDate:
+    raise newException(GeneError, name & " expects a Date")
+
+proc requireTime(name: string, value: Value) =
+  if value.kind != vkTime:
+    raise newException(GeneError, name & " expects a Time")
+
+proc requireDateTime(name: string, value: Value) =
+  if value.kind != vkDateTime:
+    raise newException(GeneError, name & " expects a DateTime")
+
+proc requireTimezone(name: string, value: Value) =
+  if value.kind != vkTimezone:
+    raise newException(GeneError, name & " expects a Timezone")
+
+proc requireDuration(name: string, value: Value) =
+  if value.kind != vkDuration:
+    raise newException(GeneError, name & " expects a Duration")
+
 proc rangeDone(value: Value, current: int64): bool =
   let stop = value.rangeStop
   let step = value.rangeStep
@@ -2056,6 +2076,230 @@ proc biRangeSize(args: openArray[Value]): Value {.nimcall.} =
   requireRange("Range/size", args[0])
   rangeCountValue(args[0])
 
+proc intArg(name: string, value: Value): int =
+  let v = requireInt64(name, value)
+  if v < low(int) or v > high(int):
+    raise newException(GeneError, name & " expects an Int in native int range")
+  int(v)
+
+proc biDate(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "date expects 3 arguments, got " & $args.len)
+  newDate(intArg("date year", args[0]), intArg("date month", args[1]),
+          intArg("date day", args[2]))
+
+proc biTime(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 2 or args.len > 6:
+    raise newException(GeneError, "time expects 2..6 arguments, got " & $args.len)
+  let second = if args.len >= 3: intArg("time second", args[2]) else: 0
+  let microsecond =
+    if args.len >= 4: intArg("time microsecond", args[3]) else: 0
+  let hasOffset = args.len >= 5
+  let offset = if hasOffset: intArg("time offset", args[4]) else: 0
+  var name = ""
+  if args.len >= 6:
+    requireStr("time timezone", args[5])
+    name = args[5].strVal
+  newTime(intArg("time hour", args[0]), intArg("time minute", args[1]),
+          second, microsecond, hasOffset, offset, name)
+
+proc biDateTime(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 5 or args.len > 9:
+    raise newException(GeneError,
+      "datetime expects 5..9 arguments, got " & $args.len)
+  let second = if args.len >= 6: intArg("datetime second", args[5]) else: 0
+  let microsecond =
+    if args.len >= 7: intArg("datetime microsecond", args[6]) else: 0
+  let hasOffset = args.len >= 8
+  let offset = if hasOffset: intArg("datetime offset", args[7]) else: 0
+  var name = ""
+  if args.len >= 9:
+    requireStr("datetime timezone", args[8])
+    name = args[8].strVal
+  newDateTime(intArg("datetime year", args[0]), intArg("datetime month", args[1]),
+              intArg("datetime day", args[2]), intArg("datetime hour", args[3]),
+              intArg("datetime minute", args[4]), second, microsecond,
+              hasOffset, offset, name)
+
+proc parseOffsetString(name, s: string): int =
+  if s == "Z" or s == "UTC":
+    return 0
+  if s.len != 6 or s[0] notin {'+', '-'} or s[3] != ':':
+    raise newException(GeneError, name & " expects UTC, Z, or +/-HH:MM")
+  let sign = if s[0] == '-': -1 else: 1
+  if not (s[1] in {'0'..'9'} and s[2] in {'0'..'9'} and
+          s[4] in {'0'..'9'} and s[5] in {'0'..'9'}):
+    raise newException(GeneError, name & " expects UTC, Z, or +/-HH:MM")
+  let hour = (ord(s[1]) - ord('0')) * 10 + (ord(s[2]) - ord('0'))
+  let minute = (ord(s[4]) - ord('0')) * 10 + (ord(s[5]) - ord('0'))
+  if hour > 23 or minute > 59:
+    raise newException(GeneError, name & " invalid timezone offset")
+  sign * (hour * 60 + minute)
+
+proc biTimezone(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 1 or args.len > 2:
+    raise newException(GeneError,
+      "timezone expects 1..2 arguments, got " & $args.len)
+  if args[0].kind == vkString:
+    let s = args[0].strVal
+    if s == "UTC" or s == "Z" or
+        (s.len == 6 and s[0] in {'+', '-'} and s[3] == ':'):
+      let offset = parseOffsetString("timezone", s)
+      let name =
+        if args.len == 2:
+          requireStr("timezone name", args[1])
+          args[1].strVal
+        elif s == "UTC" or s == "Z":
+          "UTC"
+        else:
+          ""
+      return newTimezone(true, offset, name)
+    if args.len != 1:
+      raise newException(GeneError, "timezone name-only form expects 1 argument")
+    return newTimezone(false, 0, s)
+  let offset = intArg("timezone offset", args[0])
+  var name = ""
+  if args.len == 2:
+    requireStr("timezone name", args[1])
+    name = args[1].strVal
+  newTimezone(true, offset, name)
+
+proc biDuration(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("duration", args)
+  newDuration(requireInt64("duration microseconds", args[0]))
+
+proc biToday(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "today expects 0 arguments, got " & $args.len)
+  let dt = now()
+  newDate(dt.year, int(dt.month), dt.monthday)
+
+proc biNow(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "now expects 0 arguments, got " & $args.len)
+  let dt = now()
+  newDateTime(dt.year, int(dt.month), dt.monthday, dt.hour, dt.minute,
+              dt.second, dt.nanosecond div 1000, true, dt.utcOffset div 60,
+              "")
+
+proc biDateYear(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Date/year", args)
+  requireDate("Date/year", args[0])
+  newInt(args[0].dateYear)
+
+proc biDateMonth(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Date/month", args)
+  requireDate("Date/month", args[0])
+  newInt(args[0].dateMonth)
+
+proc biDateDay(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Date/day", args)
+  requireDate("Date/day", args[0])
+  newInt(args[0].dateDay)
+
+proc biTimeHour(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Time/hour", args)
+  requireTime("Time/hour", args[0])
+  newInt(args[0].timeHour)
+
+proc biTimeMinute(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Time/minute", args)
+  requireTime("Time/minute", args[0])
+  newInt(args[0].timeMinute)
+
+proc biTimeSecond(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Time/second", args)
+  requireTime("Time/second", args[0])
+  newInt(args[0].timeSecond)
+
+proc biTimeMicrosecond(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Time/microsecond", args)
+  requireTime("Time/microsecond", args[0])
+  newInt(args[0].timeMicrosecond)
+
+proc biTimeOffset(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Time/offset", args)
+  requireTime("Time/offset", args[0])
+  if not args[0].timeHasOffset: NIL else: newInt(args[0].timeOffsetMinutes)
+
+proc biTimeTimezone(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Time/timezone", args)
+  requireTime("Time/timezone", args[0])
+  if args[0].timeTimezoneName.len == 0: NIL else: newStr(args[0].timeTimezoneName)
+
+proc biDateTimeYear(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/year", args)
+  requireDateTime("DateTime/year", args[0])
+  newInt(args[0].dateTimeYear)
+
+proc biDateTimeMonth(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/month", args)
+  requireDateTime("DateTime/month", args[0])
+  newInt(args[0].dateTimeMonth)
+
+proc biDateTimeDay(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/day", args)
+  requireDateTime("DateTime/day", args[0])
+  newInt(args[0].dateTimeDay)
+
+proc biDateTimeHour(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/hour", args)
+  requireDateTime("DateTime/hour", args[0])
+  newInt(args[0].dateTimeHour)
+
+proc biDateTimeMinute(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/minute", args)
+  requireDateTime("DateTime/minute", args[0])
+  newInt(args[0].dateTimeMinute)
+
+proc biDateTimeSecond(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/second", args)
+  requireDateTime("DateTime/second", args[0])
+  newInt(args[0].dateTimeSecond)
+
+proc biDateTimeMicrosecond(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/microsecond", args)
+  requireDateTime("DateTime/microsecond", args[0])
+  newInt(args[0].dateTimeMicrosecond)
+
+proc biDateTimeOffset(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/offset", args)
+  requireDateTime("DateTime/offset", args[0])
+  if not args[0].dateTimeHasOffset: NIL else: newInt(args[0].dateTimeOffsetMinutes)
+
+proc biDateTimeTimezone(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("DateTime/timezone", args)
+  requireDateTime("DateTime/timezone", args[0])
+  if args[0].dateTimeTimezoneName.len == 0:
+    NIL
+  else:
+    newStr(args[0].dateTimeTimezoneName)
+
+proc biTimezoneOffset(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Timezone/offset", args)
+  requireTimezone("Timezone/offset", args[0])
+  if not args[0].timezoneHasOffset: NIL else: newInt(args[0].timezoneOffsetMinutes)
+
+proc biTimezoneName(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Timezone/name", args)
+  requireTimezone("Timezone/name", args[0])
+  if args[0].timezoneName.len == 0: NIL else: newStr(args[0].timezoneName)
+
+proc biDurationMicroseconds(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Duration/microseconds", args)
+  requireDuration("Duration/microseconds", args[0])
+  newInt(args[0].durationMicroseconds)
+
+proc biDurationMilliseconds(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Duration/milliseconds", args)
+  requireDuration("Duration/milliseconds", args[0])
+  newFloat(float64(args[0].durationMicroseconds) / 1_000.0)
+
+proc biDurationSeconds(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Duration/seconds", args)
+  requireDuration("Duration/seconds", args[0])
+  newFloat(float64(args[0].durationMicroseconds) / 1_000_000.0)
+
 proc biToStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_stream", args)
   if args[0].kind == vkRange:
@@ -2167,7 +2411,8 @@ proc freezeRejectName(value: Value): string =
 proc freezeValue(value: Value): Value =
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
-     vkChar, vkSymbol, vkType, vkProtocol, vkProtocolMessage:
+     vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
+     vkType, vkProtocol, vkProtocolMessage:
     value
   of vkList:
     var items = newSeq[Value](value.listItems.len)
@@ -2295,6 +2540,11 @@ proc declarationKind*(value: Value): string =
   of vkBytes: "Bytes"
   of vkRegex: "Regex"
   of vkRange: "Range"
+  of vkDate: "Date"
+  of vkTime: "Time"
+  of vkDateTime: "DateTime"
+  of vkTimezone: "Timezone"
+  of vkDuration: "Duration"
   of vkChar: "Char"
   of vkSymbol: "Sym"
   of vkList: "List"
@@ -3943,6 +4193,46 @@ proc buildBuiltins(app: Application): Scope =
   rangeScope.define("inclusive?", newNativeFn("Range/inclusive?", biRangeInclusive))
   rangeScope.define("size", newNativeFn("Range/size", biRangeSize))
   result.define("Range", newNamespace("Range", rangeScope))
+  result.define("date", newNativeFn("date", biDate))
+  result.define("time", newNativeFn("time", biTime))
+  result.define("datetime", newNativeFn("datetime", biDateTime))
+  result.define("timezone", newNativeFn("timezone", biTimezone))
+  result.define("duration", newNativeFn("duration", biDuration))
+  result.define("today", newNativeFn("today", biToday))
+  result.define("now", newNativeFn("now", biNow))
+  let dateScope = newScope(result)
+  dateScope.define("year", newNativeFn("Date/year", biDateYear))
+  dateScope.define("month", newNativeFn("Date/month", biDateMonth))
+  dateScope.define("day", newNativeFn("Date/day", biDateDay))
+  result.define("Date", newNamespace("Date", dateScope))
+  let timeScope = newScope(result)
+  timeScope.define("hour", newNativeFn("Time/hour", biTimeHour))
+  timeScope.define("minute", newNativeFn("Time/minute", biTimeMinute))
+  timeScope.define("second", newNativeFn("Time/second", biTimeSecond))
+  timeScope.define("microsecond", newNativeFn("Time/microsecond", biTimeMicrosecond))
+  timeScope.define("offset", newNativeFn("Time/offset", biTimeOffset))
+  timeScope.define("timezone", newNativeFn("Time/timezone", biTimeTimezone))
+  result.define("Time", newNamespace("Time", timeScope))
+  let dateTimeScope = newScope(result)
+  dateTimeScope.define("year", newNativeFn("DateTime/year", biDateTimeYear))
+  dateTimeScope.define("month", newNativeFn("DateTime/month", biDateTimeMonth))
+  dateTimeScope.define("day", newNativeFn("DateTime/day", biDateTimeDay))
+  dateTimeScope.define("hour", newNativeFn("DateTime/hour", biDateTimeHour))
+  dateTimeScope.define("minute", newNativeFn("DateTime/minute", biDateTimeMinute))
+  dateTimeScope.define("second", newNativeFn("DateTime/second", biDateTimeSecond))
+  dateTimeScope.define("microsecond", newNativeFn("DateTime/microsecond", biDateTimeMicrosecond))
+  dateTimeScope.define("offset", newNativeFn("DateTime/offset", biDateTimeOffset))
+  dateTimeScope.define("timezone", newNativeFn("DateTime/timezone", biDateTimeTimezone))
+  result.define("DateTime", newNamespace("DateTime", dateTimeScope))
+  let timezoneScope = newScope(result)
+  timezoneScope.define("offset", newNativeFn("Timezone/offset", biTimezoneOffset))
+  timezoneScope.define("name", newNativeFn("Timezone/name", biTimezoneName))
+  result.define("Timezone", newNamespace("Timezone", timezoneScope))
+  let durationScope = newScope(result)
+  durationScope.define("microseconds", newNativeFn("Duration/microseconds", biDurationMicroseconds))
+  durationScope.define("milliseconds", newNativeFn("Duration/milliseconds", biDurationMilliseconds))
+  durationScope.define("seconds", newNativeFn("Duration/seconds", biDurationSeconds))
+  result.define("Duration", newNamespace("Duration", durationScope))
   result.define("Set", newNativeFn("Set", biSet))
   result.define("set-has?", newNativeFn("set-has?", biSetHas))
   result.define("set-size", newNativeFn("set-size", biSetSize))
@@ -5076,6 +5366,26 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     let rangeNs = builtinBinding(scope, "Range")
     let binding = exportedBinding(rangeNs, name)
     if binding.kind == vkVoid: NIL else: binding
+  of vkDate:
+    let dateNs = builtinBinding(scope, "Date")
+    let binding = exportedBinding(dateNs, name)
+    if binding.kind == vkVoid: NIL else: binding
+  of vkTime:
+    let timeNs = builtinBinding(scope, "Time")
+    let binding = exportedBinding(timeNs, name)
+    if binding.kind == vkVoid: NIL else: binding
+  of vkDateTime:
+    let dateTimeNs = builtinBinding(scope, "DateTime")
+    let binding = exportedBinding(dateTimeNs, name)
+    if binding.kind == vkVoid: NIL else: binding
+  of vkTimezone:
+    let timezoneNs = builtinBinding(scope, "Timezone")
+    let binding = exportedBinding(timezoneNs, name)
+    if binding.kind == vkVoid: NIL else: binding
+  of vkDuration:
+    let durationNs = builtinBinding(scope, "Duration")
+    let binding = exportedBinding(durationNs, name)
+    if binding.kind == vkVoid: NIL else: binding
   else:
     NIL
 
@@ -5219,7 +5529,8 @@ proc isSendableValue(value: Value, scope: Scope,
     seen.incl value.bits
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
-     vkChar, vkSymbol, vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
+     vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
+     vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
      vkType, vkProtocol, vkProtocolMessage:
     true
   of vkFunction:
@@ -10315,6 +10626,11 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkBytes: newSym("Bytes")
   of vkRegex: newSym("Regex")
   of vkRange: newSym("Range")
+  of vkDate: newSym("Date")
+  of vkTime: newSym("Time")
+  of vkDateTime: newSym("DateTime")
+  of vkTimezone: newSym("Timezone")
+  of vkDuration: newSym("Duration")
   of vkChar: newSym("Char")
   of vkSymbol: newSym("Sym")
   of vkList:
@@ -10761,6 +11077,16 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkRegex)
   of "Range":
     (true, value.kind == vkRange)
+  of "Date":
+    (true, value.kind == vkDate)
+  of "Time":
+    (true, value.kind == vkTime)
+  of "DateTime":
+    (true, value.kind == vkDateTime)
+  of "Timezone":
+    (true, value.kind == vkTimezone)
+  of "Duration":
+    (true, value.kind == vkDuration)
   of "Char":
     (true, value.kind == vkChar)
   of "Sym", "Symbol":

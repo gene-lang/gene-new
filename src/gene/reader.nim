@@ -16,7 +16,8 @@ type
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # ~
     tkDotDotDot,             # ...
-    tkString, tkBytes, tkRegex, tkInt, tkFloat, tkSymbol, tkChar,
+    tkString, tkBytes, tkRegex, tkInt, tkFloat, tkDate, tkTime, tkDateTime,
+    tkSymbol, tkChar,
     tkComma, tkColon, tkEqual, tkSemi, tkSlash, tkPercent,
     tkBacktick, tkDollar, tkUnderscore
 
@@ -141,6 +142,12 @@ proc isBytesLexeme(lexeme: string): bool =
   else:
     false
 
+proc isDigit(c: char): bool {.inline.} =
+  c in {'0'..'9'}
+
+proc canEndTemporal(r: var Reader): bool =
+  r.pos >= r.src.len or not isSymbolChar(r.src[r.pos])
+
 proc hexValue(c: char): int
 proc nextChar(r: var Reader): char
 proc advance(r: var Reader)
@@ -170,6 +177,131 @@ proc tryScanBytesLexeme(r: var Reader, lexeme: var string): bool =
     else:
       break
   true
+
+proc scanNDigits(r: var Reader, lexeme: var string, count: int): bool =
+  if r.pos + count > r.src.len:
+    return false
+  for i in 0 ..< count:
+    if not isDigit(r.src[r.pos + i]):
+      return false
+  for _ in 0 ..< count:
+    lexeme.add r.nextChar()
+    r.advance()
+  true
+
+proc scanChar(r: var Reader, lexeme: var string, ch: char): bool =
+  if r.pos >= r.src.len or r.nextChar() != ch:
+    return false
+  lexeme.add ch
+  r.advance()
+  true
+
+proc scanFraction(r: var Reader, lexeme: var string): bool =
+  if r.pos >= r.src.len or r.nextChar() != '.':
+    return true
+  lexeme.add '.'
+  r.advance()
+  if r.pos >= r.src.len or not isDigit(r.nextChar()):
+    return false
+  while r.pos < r.src.len and isDigit(r.nextChar()):
+    lexeme.add r.nextChar()
+    r.advance()
+  true
+
+proc scanBracketedTimezone(r: var Reader, lexeme: var string): bool =
+  if r.pos >= r.src.len or r.nextChar() != '[':
+    return true
+  lexeme.add '['
+  r.advance()
+  var closed = false
+  while r.pos < r.src.len:
+    let c = r.nextChar()
+    lexeme.add c
+    r.advance()
+    if c == ']':
+      closed = true
+      break
+    if c in {'\n', '\r'}:
+      return false
+  closed
+
+proc scanTimezoneSuffix(r: var Reader, lexeme: var string): bool =
+  if r.pos >= r.src.len:
+    return true
+  let c = r.nextChar()
+  if c == 'Z':
+    lexeme.add c
+    r.advance()
+    return r.scanBracketedTimezone(lexeme)
+  if c == '+' or c == '-':
+    lexeme.add c
+    r.advance()
+    if not r.scanNDigits(lexeme, 2): return false
+    if not r.scanChar(lexeme, ':'): return false
+    if not r.scanNDigits(lexeme, 2): return false
+    return r.scanBracketedTimezone(lexeme)
+  if c == '[':
+    return r.scanBracketedTimezone(lexeme)
+  true
+
+proc scanTimeBody(r: var Reader, lexeme: var string): bool =
+  if not r.scanNDigits(lexeme, 2): return false
+  if not r.scanChar(lexeme, ':'): return false
+  if not r.scanNDigits(lexeme, 2): return false
+  if r.pos < r.src.len and r.nextChar() == ':':
+    lexeme.add ':'
+    r.advance()
+    if not r.scanNDigits(lexeme, 2): return false
+  if not r.scanFraction(lexeme): return false
+  r.scanTimezoneSuffix(lexeme)
+
+proc tryScanTemporalLexeme(r: var Reader, lexeme: var string,
+                           kind: var TokenKind): bool =
+  if r.pos >= r.src.len or not isDigit(r.nextChar()):
+    return false
+
+  let startPos = r.pos
+  let startLine = r.line
+  let startCol = r.col
+  template resetAndReturnFalse(): untyped =
+    r.pos = startPos
+    r.line = startLine
+    r.col = startCol
+    lexeme.setLen(0)
+    return false
+
+  if r.pos + 5 <= r.src.len and isDigit(r.src[r.pos]) and
+      isDigit(r.src[r.pos + 1]) and r.src[r.pos + 2] == ':' and
+      isDigit(r.src[r.pos + 3]) and isDigit(r.src[r.pos + 4]):
+    if not r.scanTimeBody(lexeme): resetAndReturnFalse()
+    if not r.canEndTemporal: resetAndReturnFalse()
+    kind = tkTime
+    return true
+
+  if r.pos + 10 <= r.src.len and
+      isDigit(r.src[r.pos]) and isDigit(r.src[r.pos + 1]) and
+      isDigit(r.src[r.pos + 2]) and isDigit(r.src[r.pos + 3]) and
+      r.src[r.pos + 4] == '-' and
+      isDigit(r.src[r.pos + 5]) and isDigit(r.src[r.pos + 6]) and
+      r.src[r.pos + 7] == '-' and
+      isDigit(r.src[r.pos + 8]) and isDigit(r.src[r.pos + 9]):
+    if not r.scanNDigits(lexeme, 4): resetAndReturnFalse()
+    if not r.scanChar(lexeme, '-'): resetAndReturnFalse()
+    if not r.scanNDigits(lexeme, 2): resetAndReturnFalse()
+    if not r.scanChar(lexeme, '-'): resetAndReturnFalse()
+    if not r.scanNDigits(lexeme, 2): resetAndReturnFalse()
+    if r.pos < r.src.len and r.nextChar() == 'T':
+      lexeme.add 'T'
+      r.advance()
+      if not r.scanTimeBody(lexeme): resetAndReturnFalse()
+      if not r.canEndTemporal: resetAndReturnFalse()
+      kind = tkDateTime
+      return true
+    if not r.canEndTemporal: resetAndReturnFalse()
+    kind = tkDate
+    return true
+
+  false
 
 proc parseBytesLiteral(r: var Reader, lexeme: string): Value =
   case lexeme[1]
@@ -204,6 +336,133 @@ proc parseBytesLiteral(r: var Reader, lexeme: string): Value =
       r.raiseReadError("invalid base64 byte literal")
   else:
     r.raiseReadError("invalid byte literal")
+
+proc parseDigits(lexeme: string, start, count: int): int =
+  for i in 0 ..< count:
+    result = result * 10 + (ord(lexeme[start + i]) - ord('0'))
+
+proc parseFractionMicros(lexeme: string, pos: var int): int =
+  if pos >= lexeme.len or lexeme[pos] != '.':
+    return 0
+  inc pos
+  let start = pos
+  while pos < lexeme.len and isDigit(lexeme[pos]):
+    inc pos
+  let digits = pos - start
+  if digits == 0:
+    raise newException(ValueError, "fraction requires at least one digit")
+  var micros = 0
+  let used = min(digits, 6)
+  for i in 0 ..< used:
+    micros = micros * 10 + (ord(lexeme[start + i]) - ord('0'))
+  for _ in used ..< 6:
+    micros *= 10
+  micros
+
+proc parseZoneName(lexeme: string, pos: var int): string =
+  if pos >= lexeme.len or lexeme[pos] != '[':
+    return ""
+  inc pos
+  let start = pos
+  while pos < lexeme.len and lexeme[pos] != ']':
+    inc pos
+  if pos >= lexeme.len:
+    raise newException(ValueError, "unterminated timezone name bracket")
+  result = lexeme[start ..< pos]
+  inc pos
+  if '/' notin result:
+    raise newException(ValueError,
+      "IANA timezone name must contain '/': " & result)
+
+proc parseTimezone(lexeme: string, pos: var int,
+                   allowNameOnly: bool): tuple[hasOffset: bool,
+                                               offsetMinutes: int,
+                                               timezoneName: string] =
+  if pos >= lexeme.len:
+    return (false, 0, "")
+  case lexeme[pos]
+  of 'Z':
+    inc pos
+    result = (true, 0, "UTC")
+    let zone = parseZoneName(lexeme, pos)
+    if zone.len > 0:
+      result.timezoneName = zone
+  of '+', '-':
+    let sign = if lexeme[pos] == '-': -1 else: 1
+    inc pos
+    if pos + 5 > lexeme.len or lexeme[pos + 2] != ':':
+      raise newException(ValueError, "invalid timezone offset")
+    let hour = parseDigits(lexeme, pos, 2)
+    pos += 3
+    let minute = parseDigits(lexeme, pos, 2)
+    pos += 2
+    if hour > 23 or minute > 59:
+      raise newException(ValueError, "invalid timezone offset")
+    result = (true, sign * (hour * 60 + minute), "")
+    result.timezoneName = parseZoneName(lexeme, pos)
+  of '[':
+    if not allowNameOnly:
+      raise newException(ValueError,
+        "DateTime literal requires offset or Z before [Zone/Name]")
+    result = (false, 0, parseZoneName(lexeme, pos))
+  else:
+    return (false, 0, "")
+
+proc expectEnd(lexeme: string, pos: int) =
+  if pos != lexeme.len:
+    raise newException(ValueError, "unexpected trailing characters")
+
+proc parseTemporalLiteral(r: var Reader, kind: TokenKind,
+                          lexeme: string): Value =
+  try:
+    case kind
+    of tkDate:
+      let year = parseDigits(lexeme, 0, 4)
+      let month = parseDigits(lexeme, 5, 2)
+      let day = parseDigits(lexeme, 8, 2)
+      result = newDate(year, month, day)
+    of tkTime:
+      var pos = 0
+      let hour = parseDigits(lexeme, pos, 2)
+      pos += 3
+      let minute = parseDigits(lexeme, pos, 2)
+      pos += 2
+      var second = 0
+      if pos < lexeme.len and lexeme[pos] == ':':
+        inc pos
+        second = parseDigits(lexeme, pos, 2)
+        pos += 2
+      let microsecond = parseFractionMicros(lexeme, pos)
+      let tz = parseTimezone(lexeme, pos, allowNameOnly = true)
+      expectEnd(lexeme, pos)
+      result = newTime(hour, minute, second, microsecond, tz.hasOffset,
+                       tz.offsetMinutes, tz.timezoneName)
+    of tkDateTime:
+      let year = parseDigits(lexeme, 0, 4)
+      let month = parseDigits(lexeme, 5, 2)
+      let day = parseDigits(lexeme, 8, 2)
+      var pos = 11
+      let hour = parseDigits(lexeme, pos, 2)
+      pos += 3
+      let minute = parseDigits(lexeme, pos, 2)
+      pos += 2
+      var second = 0
+      if pos < lexeme.len and lexeme[pos] == ':':
+        inc pos
+        second = parseDigits(lexeme, pos, 2)
+        pos += 2
+      let microsecond = parseFractionMicros(lexeme, pos)
+      let tz = parseTimezone(lexeme, pos, allowNameOnly = false)
+      expectEnd(lexeme, pos)
+      result = newDateTime(year, month, day, hour, minute, second,
+                           microsecond, tz.hasOffset, tz.offsetMinutes,
+                           tz.timezoneName)
+    else:
+      r.raiseReadError("internal: unsupported temporal token")
+  except GeneError as e:
+    r.raiseReadError(e.msg)
+  except ValueError as e:
+    r.raiseReadError(e.msg)
 
 proc parseRegexLiteral(r: var Reader): tuple[pattern, flags: string] =
   if r.nextChar() != '"':
@@ -518,6 +777,12 @@ proc tokenize(r: var Reader) =
       if r.tryScanBytesLexeme(bytesLexeme):
         r.tokens.add Token(kind: tkBytes, lexeme: bytesLexeme, line: startLine, col: startCol)
         continue
+      var temporalLexeme = ""
+      var temporalKind = tkDate
+      if r.tryScanTemporalLexeme(temporalLexeme, temporalKind):
+        r.tokens.add Token(kind: temporalKind, lexeme: temporalLexeme,
+                           line: startLine, col: startCol)
+        continue
 
       # Atoms: numbers, symbols
       let start = r.pos
@@ -566,6 +831,9 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkRegex: "regex"
   of tkInt: "int"
   of tkFloat: "float"
+  of tkDate: "date"
+  of tkTime: "time"
+  of tkDateTime: "datetime"
   of tkSymbol: "symbol"
   of tkChar: "char"
   of tkComma: "comma"
@@ -608,7 +876,8 @@ proc next(r: var Reader): Token =
 proc parseForm(r: var Reader, inList = false): Value
 
 proc hasStableSourceIdentity(v: Value): bool =
-  v.kind in {vkBytes, vkRegex, vkList, vkMap, vkSet, vkHashMap, vkNode}
+  v.kind in {vkBytes, vkRegex, vkDate, vkTime, vkDateTime, vkTimezone,
+             vkDuration, vkList, vkMap, vkSet, vkHashMap, vkNode}
 
 proc recordSourceLoc(r: var Reader, value: Value, tok: Token) =
   if value.hasStableSourceIdentity:
@@ -946,6 +1215,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkString: finish newStr(tok.lexeme)
   of tkBytes: finish r.parseBytesLiteral(tok.lexeme)
   of tkRegex: finish newRegex(tok.lexeme, tok.flags)
+  of tkDate, tkTime, tkDateTime: finish r.parseTemporalLiteral(tok.kind, tok.lexeme)
   of tkChar: finish newChar(runeAt(tok.lexeme, 0))
   of tkSymbol:
     case tok.lexeme

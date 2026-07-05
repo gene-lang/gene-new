@@ -215,7 +215,7 @@ Canonical forms:
 %x           => (unquote x)
 x...         => (... x)
 $"a ${x}"    => ($ "a " x)
-^due? T      => ^due (opt T)
+^due? T      => ^due (? T)
 (a; b c; d)  => (((a) b c) d)
 (x ~ f a)    # preserved as read; resolved receiver-first at compile/dispatch
              # time (docs/core.md §9) — not a reader rewrite to (f x a)
@@ -863,18 +863,23 @@ void : Void
 They are not bottom types. `nil` is explicit absence. `void` means missing, skipped, deleted, or no produced value. Optional values are explicit:
 
 ```gene
-(opt T) = T? = (| T Nil)
+T?          = (| T Nil)        # symbol suffix
+(? X)       = (| X Nil)        # prefix head, any type expression
+(? X Y ...) = (| X Y ... Nil)  # several alternatives, all made optional together
 ```
 
-The `?` suffix is read as an ordinary symbol and interpreted as `(opt T)` only
-in type position (annotations, parameter/return types, prop schemas, `(List
-Int?)`), so predicate names like `empty?` in value position are unaffected.
+`?` is the sole optionality operator: there is no `opt` keyword and no `Option`
+wrapper type — absence is the ordinary `nil`. As a symbol suffix (`Int?`,
+`User?`) it is read as an ordinary symbol and interpreted only in type position
+(annotations, parameter/return types, prop schemas), so predicate names like
+`empty?` in value position are unaffected. As a head (`(? (List Int))`) it works
+on any type — including compounds a suffix cannot reach.
 
 A typed list or map is not implicitly initialized to `nil`:
 
 ```gene
 (var xs : (List Int) [])          # empty list
-(var ys : (opt (List Int)) nil)   # absent list
+(var ys : (? (List Int)) nil)     # absent list
 ```
 
 A future static top type such as `Value` may be added later to distinguish “some statically known Gene value” from dynamic unchecked `Any`. It is not part of MVP.
@@ -889,10 +894,10 @@ A union is a subtype of `Any`; each alternative keeps its own runtime identity.
 
 ### 7.2.1 Planned type additions
 
-Status: **Planned**, with initial `Range` runtime support implemented. These
-types are not part of the MVP type hierarchy above, but they are expected
-additions as the language grows toward practical web, database, and application
-code.
+Status: **Partially implemented**. `Range` and the date/time family now have
+native runtime values. The remaining planned items in this subsection are not
+part of the MVP type hierarchy above, but they are expected additions as the
+language grows toward practical web, database, and application code.
 
 #### `Range`
 
@@ -913,8 +918,7 @@ semantics; zero step is invalid.
 
 #### Date and time values
 
-The date/time family is planned first as stdlib-backed nominal values rather
-than mandatory hot-path VM value kinds:
+The date/time family is implemented as small immutable native values:
 
 ```gene
 Date
@@ -924,41 +928,150 @@ Timezone
 Duration
 ```
 
-`Date`, `Time`, and `DateTime` support parsing, formatting, comparison, and
-SQLite-friendly ISO-8601 round trips. `Duration` is included with the family
-because date arithmetic is incomplete without an explicit duration type.
+`Date`, `Time`, and `DateTime` support reader literals and canonical printing
+for the old Gene ISO-like surface:
+
+```gene
+2026-07-04
+09:30
+09:30:15.123456
+2026-07-04T09:30
+2026-07-04T09:30Z
+2026-07-04T09:30:15.123456-04:00[America/New_York]
+09:30[America/New_York]
+```
+
+DateTime bracketed IANA names require a preceding `Z` or fixed offset, matching
+the old reader. Time literals may use a bracketed name without an offset.
+
+Constructors are available for generated code and host APIs:
+
+```gene
+(date 2026 7 4)
+(time 9 30 15 123456 -240 "America/New_York")
+(datetime 2026 7 4 9 30 15 123456 0 "UTC")
+(timezone "+08:00" "Asia/Shanghai")
+(duration 1500000) # microseconds
+```
+
+Accessor messages live on the corresponding type namespaces and may be sent
+unqualified through the receiver-message resolver:
+
+```gene
+(d ~ year)
+(d ~ Date/year)
+(t ~ Time/hour)
+(dt ~ DateTime/offset)
+(tz ~ Timezone/name)
+(dur ~ Duration/seconds)
+```
+
+`Duration` is included with the family because date arithmetic is incomplete
+without an explicit duration type. Duration is currently constructor/API based;
+the old Gene parser reserved number-with-unit support but did not implement
+duration literals, so unit suffix forms such as `5ms` or `1h30m` remain future
+syntax.
 
 Timezone support starts with `UTC` and fixed-offset zones. Full IANA timezone
 database support is deferred until the stdlib has a dependency policy for it.
+Comparison and SQLite-friendly round trips beyond canonical text are planned
+next steps.
 
-#### `Enum`, `EnumMember`, and `EnumValue`
+#### Enums (sum types)
 
-Enums are planned as a core language feature for sum types, `Option`, `Result`,
-tagged errors, and identity-aware variant patterns.
+Enums are a planned **core language feature** (not a stdlib type): a closed,
+named set of variants under one type. One `enum` form unifies simple
+enumerations (all variants carry no payload) and tagged sum types / ADTs
+(variants carry payloads) — states, message sets, `Option`/`Result`, JSON/AST
+nodes. `enum` is a declaration special form parallel to `type`.
 
 ```gene
-(enum Option [T]
+(enum Color                 # simple enum — all unit variants
+  red green blue)
+
+(enum Shape                 # tuple variants carry positional payloads
+  (circle Int)              # radius
+  (rect Int Int))           # w, h
+
+(enum Option [T]            # generic sum type (§7 basic generics)
   none
   (some T))
 
-(enum Result [T E]
-  (ok T)
-  (err E))
+(enum Status ^backing Str   # optional backing scalar for storage
+  (active "A") (closed "C"))
 ```
 
-Enum members are qualified values such as `Option/some` and `Result/err`.
-Members act as constructors. Constructed variants produce `EnumValue` values
-that carry the member identity plus payload. Pattern matching should understand
-enum variants directly:
+**Members and construction.** Each variant is a qualified member `Enum/variant`
+(§2.1). A unit variant *is* a value — an interned singleton (`Color/red`, so
+`same?` compares by identity). A payload variant is a constructor:
+`(Shape/circle 5)`, `(Option/some x)`. Every constructed value's runtime type is
+the enum itself (`Color`, `(Option Int)`); the variant is a discriminant tag
+*within* that type, not a separate type. Structural `=` compares tag plus
+payloads.
+
+**Enums are types.** `Enum` is a kind of `Type`, so an enum is usable everywhere
+a type is — annotations (`^c : Color`), generic application (`(Option Int)`),
+unions, and dispatch. An enum body may declare type-direct messages and inline
+`impl`s exactly like `type` (§10), and protocol impls may target it, so enums
+carry behavior and join the protocol system:
 
 ```gene
-(match result
-  ((Result/ok value) value)
-  ((Result/err err) (fail err)))
+(enum Direction
+  north east south west
+  (message degrees [self] : Int
+    (* (self ~ ordinal) 90)))   # north 0, east 90, south 180, west 270
 ```
 
-Unit variants such as `Option/none` are singleton enum values, not plain
-symbols.
+**Pattern matching.** Variants match with the ordinary engine (§8) via `when`;
+payloads bind positionally (named fields for struct variants, deferred):
+
+```gene
+(match r
+  (when (Result/ok v)  v)
+  (when (Result/err e) (fail e)))
+```
+
+When the scrutinee's static type is the enum, `match` is intended to be
+**exhaustiveness-checked** — a set of `when` clauses missing a variant, with no
+`else`, is a compile error naming the gap; this is the headline benefit of a
+closed variant set (static check deferred, see below). A dynamically-typed
+scrutinee falls back to a runtime `MatchError`.
+
+**Reflection and storage** (the web/sqlite path). Every variant has a stable
+0-based `ordinal` (declaration order) and a `name` (its symbol); the enum type
+exposes the variant set and reverse lookups for (de)serialization:
+
+```gene
+(Color ~ values)            # => [Color/red Color/green Color/blue]
+(Color/green ~ ordinal)     # => 1
+(Color ~ from_name "green") # => Color/green
+```
+
+An optional `^backing T` (unit variants only) gives each variant a stable scalar
+independent of declaration order — the natural DB-column representation:
+`(Status/active ~ backing)` is `"A"`, and `(Status ~ from_backing "A")` is
+`Status/active`.
+
+**Relationship to other forms.** A union `(| A B C)` (§7.2) is *open, structural,
+untagged* — "any of these existing types"; an enum is *closed, nominal, tagged*
+with named variants, constructors, and exhaustiveness. Optionality stays `nil` /
+`T?` / `(? X)`, not `Option`; recoverable errors stay `fail`/`try`/`catch` with
+`Error` (§9), not `Result`. `Option`/`Result` remain available as stdlib enums
+for code that prefers explicit tags or errors-as-values, but are not the default
+idiom.
+
+**Representation.** Unit variants are interned per enum and may be NaN-box-inlined
+as `(enum-id, ordinal)` with no allocation; payload variants are heap values
+holding the tag and payload, so zero-payload enums stay allocation-free on hot
+paths.
+
+**MVP vs deferred.** MVP: unit and tuple variants; qualified members; enums as
+types (annotations, generics, dispatch, methods, inline/target `impl`s);
+`when`-pattern binding; `ordinal`/`name`/`values`/`from_name`/`^backing`
+reflection. Deferred: **struct variants** (named payload fields,
+`(point ^x Int ^y Int)`); **static exhaustiveness checking** (until the gradual
+type checker can resolve the scrutinee's enum type — dynamic matches still
+`MatchError`); and versioning rules for adding a variant to a published enum.
 
 #### Additional planned stdlib types
 
