@@ -1587,6 +1587,48 @@ suite "spec — streams from design":
     expect GeneError:
       discard compileSource("(yield 1)")
 
+  test "yield-void skips the item but does not leave the generator":
+    check_eval("(fn skip [] : (Stream Int Never) " &
+               "  (yield 1) " &
+               "  (yield void) " &
+               "  (yield 2)) " &
+               "(var s (skip)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next)]",
+               "[1 2 false]")
+
+  test "natural fall-through closes the generator with no item remaining":
+    check_eval("(fn two [] : (Stream Int Never) " &
+               "  (yield 1) " &
+               "  (yield 2)) " &
+               "(var s (two)) " &
+               "[(s ~ Stream/next) " &
+               " (s ~ Stream/next) " &
+               " (s ~ Stream/has_next)]",
+               "[1 2 false]")
+
+  test "Stream/close on a bounded helper closes upstream":
+    check_eval("(var upstream (to_stream [1 2 3 4 5])) " &
+               "(var taken (take upstream 2)) " &
+               "[(taken ~ Stream/next) " &
+               " (taken ~ Stream/next) " &
+               " (taken ~ Stream/has_next) " &
+               " (upstream ~ Stream/has_next) " &
+               " (do (taken ~ Stream/close) " &
+               "     (upstream ~ Stream/has_next))]",
+               "[1 2 false true false]")
+
+  test "has_next on an empty stream returns false without raising":
+    check_eval("(var s (to_stream [])) (s ~ Stream/has_next)", "false")
+
+  test "Stream/close is idempotent":
+    check_eval("(var s (to_stream [1])) " &
+               "  (do " &
+               "    (s ~ Stream/close) " &
+               "    (s ~ Stream/close))",
+               "nil")
+
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
                "(var names users/%to_stream/name) " &
