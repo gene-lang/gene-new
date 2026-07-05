@@ -12019,10 +12019,11 @@ proc staticLookup(target, segment: Value): Value =
     let key = if segment.kind == vkSymbol: segment.symVal else: segment.strVal
     case target.kind
     of vkMap:
-      if target.mapEntries.hasKey(key): target.mapEntries[key] else: VOID
+      target.mapEntries.getOrDefault(key, VOID)
     of vkNode:
-      if target.props.hasKey(key):
-        target.props[key]
+      let prop = target.props.getOrDefault(key, VOID)
+      if prop.kind != vkVoid:
+        prop
       else:
         case key
         of "head": target.head
@@ -12113,6 +12114,13 @@ proc selectorMissingResult(selector: Value, segment: Value): Value =
     VOID
 
 proc applySelector(selector, target: Value): Value =
+  if selector.props.len == 0 and selector.body.len == 1:
+    let segment = selector.body[0]
+    case segment.kind
+    of vkInt, vkSymbol, vkString:
+      return staticLookup(target, segment)
+    else:
+      discard
   let strict = selector.selectorStrict
   result = target
   for segment in selector.body:
