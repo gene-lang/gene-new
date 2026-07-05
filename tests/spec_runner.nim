@@ -1058,6 +1058,55 @@ suite "spec — pattern destructuring from design":
     expect GeneError:
       discard run(compileSource("(for x in [1 2 3] x) x"), newGlobalScope())
 
+  test "var pattern bindings extend the enclosing scope per design §8.0.1":
+    check_eval("(var [x y] [10 20]) (+ x y)", "30")
+    check_eval("(var [a [b c]] [1 [2 3]]) [a b c]", "[1 2 3]")
+    check_eval("(var {^name n ^age a} {^name \"Ada\" ^age 36}) (+ a 0)",
+               "36")
+    check_eval("(var s 0) " &
+               "(match [1 2] " &
+               "  (when [a b] " &
+               "    (do (set s (+ a b)) nil)) " &
+               "  (else nil)) " &
+               "s",
+               "3")
+    check_eval("(var n 0) " &
+               "(for x in [1 2 3] " &
+               "  (do (set n (+ n x)) nil)) " &
+               "n",
+               "6")
+    check_eval("(var [a b] [1 2]) [a b]",
+               "[1 2]")
+    check_eval("(var [a b] [1 2]) " &
+               "(var [c d] [3 4]) " &
+               "[a b c d]",
+               "[1 2 3 4]")
+    expect MatchError:
+      discard run(compileSource("(var [a b] [1 2 3]) (+ a b)"),
+                  newGlobalScope())
+
+  test "match and catch bindings are branch-local at runtime per §8.0.1":
+    # Arm 1 binds `a`; arm 2 binds `map`. The body of arm 1 references
+    # `map`. Because each arm's slot table is fresh, `map` here resolves
+    # to the runtime global, not the sibling's pattern binding — the
+    # false positive the previous compile-time cross-check had was
+    # rejecting exactly this case.
+    check_eval("(match [1] " &
+               "  (when [a] map) " &
+               "  (when [map] map))",
+               "(native-fn map)")
+    # Arm 1 doesn't match `[9]` (2-tuple needed, 1-tuple given); arm 2
+    # matches and references `map`. Sibling-leak would surface as
+    # something else; runtime isolation gives us the global.
+    check_eval("(match [9] " &
+               "  (when [a b] \"first\") " &
+               "  (when [c] map))",
+               "(native-fn map)")
+    # Arm 1 matches `[1]` and returns the literal; arm 2 never runs.
+    check_eval("(match [1] " &
+               "  (when [a] \"first\") " &
+               "  (when [c] map))",
+               "\"first\"")
   test "for iterates streams lazily and closes on pattern failure":
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &

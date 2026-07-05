@@ -1434,11 +1434,6 @@ Rules:
 
 The same pattern engine is used by `var`, `for`, and `catch` destructuring.
 
-Pattern bindings are scoped to where the match runs. Names bound by `match`,
-`catch`, and `for` item destructuring are local to that branch or loop body and
-are not visible after it. `(var pattern value)` binds into the current lexical
-scope like an ordinary `var`.
-
 ```gene
 (var [x, y] point)
 (var (Task ^id id ^title title) task)
@@ -1448,6 +1443,44 @@ scope like an ordinary `var`.
 ```
 
 If destructuring fails, Gene raises `MatchError`.
+
+### 8.0.1 Pattern binding scope
+
+Where a pattern introduces a name controls which lexical region the name
+lives in:
+
+| Form                         | Bindings live in                       |
+| ---------------------------- | -------------------------------------- |
+| `(match v (when p body...))`  | the matched branch body                |
+| `(try ... catch (p body...))` | the catch body                         |
+| `(for p in xs body...)`       | the loop body, fresh per iteration     |
+| `(var p v)`                  | the enclosing lexical scope            |
+
+`match`, `catch`, and `for` bindings are **branch-local**: the runtime slot
+table for an arm is a fresh child of the enclosing scope, so a name bound by
+one arm is unreachable from a sibling arm and from anything after the form.
+`(var pattern value)` binds like any other `var` and extends the current
+scope; its names are visible to subsequent expressions as ordinary locals.
+
+```gene
+(match x
+  (when [a b]
+    (+ a b)))                  ; a, b live only inside this arm
+
+(var [a b] x)                  ; a, b are now regular locals
+(+ a b)                        ; resolves to the var, not the match
+```
+
+Compile-time enforcement of branch isolation is **partial**. Each arm's
+pattern names are reserved in a fresh local-slot table, so a same-arm
+reference resolves at compile time. A name that resolves to neither
+localSlots, parentSlots, nor a known compile-time binding falls through
+to a runtime lookup (an `opLoadName`). That lookup finds runtime globals,
+real but suspect names from earlier bindings, and runtime `var`-defined
+values alike; if nothing in the active scope chain matches, the runtime
+raises `undefined symbol: <name>`. Future work may tighten the
+compile-time side so genuinely-unbound references fail at compile time;
+the guarantee above is the runtime one and the one tests should rely on.
 
 ### 8.1 `for`
 
