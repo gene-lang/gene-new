@@ -983,7 +983,10 @@ Enums are a planned **core language feature** (not a stdlib type): a closed,
 named set of variants under one type. One `enum` form unifies simple
 enumerations (all variants carry no payload) and tagged sum types / ADTs
 (variants carry payloads) — states, message sets, `Option`/`Result`, JSON/AST
-nodes. `enum` is a declaration special form parallel to `type`.
+nodes. `enum` is a declaration special form parallel to `type`. The MVP gives
+tagged-value ergonomics, nominal boundaries, and runtime matching first;
+static exhaustiveness checking is the planned follow-on once the checker can
+reliably know the scrutinee's enum type.
 
 ```gene
 (enum Color                 # simple enum — all unit variants
@@ -997,6 +1000,10 @@ nodes. `enum` is a declaration special form parallel to `type`.
   none
   (some T))
 
+(enum Result [T E]
+  (ok T)
+  (err E))
+
 (enum Status ^backing Str   # optional backing scalar for storage
   (active "A") (closed "C"))
 ```
@@ -1004,10 +1011,13 @@ nodes. `enum` is a declaration special form parallel to `type`.
 **Members and construction.** Each variant is a qualified member `Enum/variant`
 (§2.1). A unit variant *is* a value — an interned singleton (`Color/red`, so
 `same?` compares by identity). A payload variant is a constructor:
-`(Shape/circle 5)`, `(Option/some x)`. Every constructed value's runtime type is
-the enum itself (`Color`, `(Option Int)`); the variant is a discriminant tag
-*within* that type, not a separate type. Structural `=` compares tag plus
-payloads.
+`(Shape/circle 5)`, `(Option/some x)`. A value's runtime enum identity is the
+enum itself (`Color`, `Option`); generic type arguments are erased at runtime
+and enforced by static/type-boundary checks. Thus `(Option Int)` is a static
+type expression over runtime enum `Option`, and the unit singleton `Option/none`
+is shared across instantiations. The variant is a discriminant tag *within* the
+enum, not a separate type. Structural `=` compares enum identity, variant
+identity, and payloads.
 
 **Enums are types.** `Enum` is a kind of `Type`, so an enum is usable everywhere
 a type is — annotations (`^c : Color`), generic application (`(Option Int)`),
@@ -1022,6 +1032,10 @@ carry behavior and join the protocol system:
     (* (self ~ ordinal) 90)))   # north 0, east 90, south 180, west 270
 ```
 
+This `Enum`/`Type` relationship lives at the meta-level of §7.1: `Color` is a
+runtime type value, like a declared `type`, while `Color/red` is a value whose
+receiver type is `Color`.
+
 **Pattern matching.** Variants match with the ordinary engine (§8) via `when`;
 payloads bind positionally (named fields for struct variants, deferred):
 
@@ -1035,22 +1049,46 @@ When the scrutinee's static type is the enum, `match` is intended to be
 **exhaustiveness-checked** — a set of `when` clauses missing a variant, with no
 `else`, is a compile error naming the gap; this is the headline benefit of a
 closed variant set (static check deferred, see below). A dynamically-typed
-scrutinee falls back to a runtime `MatchError`.
+scrutinee falls back to a runtime `MatchError`. A fully covered `match` with an
+`else` may become an unreachable-branch warning later; it is not part of MVP.
 
 **Reflection and storage** (the web/sqlite path). Every variant has a stable
-0-based `ordinal` (declaration order) and a `name` (its symbol); the enum type
-exposes the variant set and reverse lookups for (de)serialization:
+0-based `ordinal` (declaration order) and a `name` (a `Sym`). The enum type
+exposes the variant descriptor set and reverse lookups for (de)serialization:
 
 ```gene
-(Color ~ values)            # => [Color/red Color/green Color/blue]
-(Color/green ~ ordinal)     # => 1
-(Color ~ from_name "green") # => Color/green
+(Color ~ variants)           # => [Color/red Color/green Color/blue]
+(Color ~ names)              # => [red green blue]
+(Color/red ~ name)           # => red
+(Color/green ~ ordinal)      # => 1
+(Color ~ from_name `red)     # => Color/red  (symbol arg is quoted)
+(Color ~ from_name "red")    # Str accepted for codec convenience
 ```
 
-An optional `^backing T` (unit variants only) gives each variant a stable scalar
-independent of declaration order — the natural DB-column representation:
-`(Status/active ~ backing)` is `"A"`, and `(Status ~ from_backing "A")` is
-`Status/active`.
+For unit-only enums, `variants` returns the interned unit values. For mixed or
+payload enums, `variants` returns variant descriptors; a payload descriptor such
+as `Shape/circle` is a constructor, not an already-constructed enum value.
+`from_name` returns the same descriptor/member, so ``(Shape ~ from_name `circle)``
+returns the `Shape/circle` constructor descriptor. Unknown `from_name` and
+`from_ordinal` inputs return `void`; raising parse helpers can be added later.
+
+An optional `^backing T` gives unit enums a stable scalar independent of
+declaration order — the natural DB-column representation. `^backing` is rejected
+if any variant carries payload. Every variant must provide a unique backing
+value of type `T`, and backing values must be hash-stable:
+
+```gene
+(enum Status ^backing Str
+  (active "A")
+  (closed "C"))
+```
+
+`(Status/active ~ backing)` is `"A"`, `(Status ~ from_backing "A")` is
+`Status/active`, and unknown `from_backing` inputs return `void`.
+Auto-provided enum reflection names — `variants`, `names`, `name`, `ordinal`,
+`from_name`, `from_ordinal`, `backing`, and `from_backing` — are reserved on
+enum types/variants; declaring a type-direct message with one of those names is
+an error.
 
 **Relationship to other forms.** A union `(| A B C)` (§7.2) is *open, structural,
 untagged* — "any of these existing types"; an enum is *closed, nominal, tagged*
@@ -1061,17 +1099,19 @@ for code that prefers explicit tags or errors-as-values, but are not the default
 idiom.
 
 **Representation.** Unit variants are interned per enum and may be NaN-box-inlined
-as `(enum-id, ordinal)` with no allocation; payload variants are heap values
-holding the tag and payload, so zero-payload enums stay allocation-free on hot
-paths.
+as `(enum-id, ordinal)` with no allocation; because generic type arguments are
+erased, an inline unit variant carries only enum identity and ordinal. Payload
+variants are heap values holding the runtime enum identity, variant tag, and
+payload, so zero-payload enums stay allocation-free on hot paths.
 
 **MVP vs deferred.** MVP: unit and tuple variants; qualified members; enums as
 types (annotations, generics, dispatch, methods, inline/target `impl`s);
-`when`-pattern binding; `ordinal`/`name`/`values`/`from_name`/`^backing`
-reflection. Deferred: **struct variants** (named payload fields,
-`(point ^x Int ^y Int)`); **static exhaustiveness checking** (until the gradual
-type checker can resolve the scrutinee's enum type — dynamic matches still
-`MatchError`); and versioning rules for adding a variant to a published enum.
+recursive payload references to the enclosing enum; `when`-pattern binding;
+`ordinal`/`name`/`names`/`variants`/`from_name`/`from_ordinal` reflection.
+Deferred: **struct variants** (named payload fields, `(point ^x Int ^y Int)`);
+**static exhaustiveness checking** (until the gradual type checker can resolve
+the scrutinee's enum type — dynamic matches still `MatchError`); and versioning
+rules for adding a variant to a published enum.
 
 #### Additional planned stdlib types
 
@@ -1352,6 +1392,8 @@ name                 # bind new name
 literal              # match by =
 x : T                # bind x and require type/shape T
 (Task ^id id title)  # node/type shape
+Enum/variant         # enum unit variant, matches by identity
+(Enum/variant p...)  # enum tuple variant, matches tag then payloads
 [^first, rest...]    # list/body destructuring
 {^k v}               # PropMap destructuring
 (@ {^k v} p)         # meta pattern plus value pattern
@@ -1362,6 +1404,9 @@ p...                 # rest pattern
 ```
 
 Bare names bind. Use `%name` to compare to an existing lexical value.
+Qualified enum unit variants are values and match by identity. Qualified enum
+tuple-variant patterns first check the variant identity, then match payload
+positions left-to-right; payload arity must match the variant declaration.
 
 Patterns are open over props by default: unmentioned props are allowed. A prop pattern fails if the prop is missing/`void`; it matches if the prop is present with `nil`. Meta is ignored unless a pattern explicitly uses the `(@ meta-pattern value-pattern)` form.
 
