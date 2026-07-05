@@ -5076,8 +5076,18 @@ proc acquireSimpleCallScope(parent: Scope, names: seq[string],
       result.slotNames.setLen(0)
     result.slotMirror = false
 
+proc bindSingleSimpleCallSlot(scope: Scope, slot: int, value: Value) {.inline.} =
+  scope.slots[slot] = value
+  if slot < 64:
+    scope.slotDefinedBits = 1'u64 shl slot
+  else:
+    scope.markSlotDefined(slot)
+
 proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
                          args: openArray[Value]) {.inline.} =
+  if args.len == 1:
+    scope.bindSingleSimpleCallSlot(proto.positionalSlots[0], args[0])
+    return
   for i in 0 ..< args.len:
     scope.slots[proto.positionalSlots[i]] = args[i]
   if proto.positionalSlots.len <= 64:
@@ -5088,13 +5098,6 @@ proc bindSimpleCallSlots(scope: Scope, proto: FunctionProto,
   else:
     for i in 0 ..< args.len:
       scope.markSlotDefined(proto.positionalSlots[i])
-
-proc bindSingleSimpleCallSlot(scope: Scope, slot: int, value: Value) {.inline.} =
-  scope.slots[slot] = value
-  if slot < 64:
-    scope.slotDefinedBits = 1'u64 shl slot
-  else:
-    scope.markSlotDefined(slot)
 
 proc canFastBindUnaryInt(proto: FunctionProto): bool {.inline.} =
   proto.fastBindUnaryInt

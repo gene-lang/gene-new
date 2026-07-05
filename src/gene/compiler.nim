@@ -3270,8 +3270,10 @@ proc compileCall(c: var Compiler, node: Value) =
                                flag = argKnownBareInt)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
+      let argKnownBareInt = c.exprKnownBareInt(node.body[0])
       compileExpr(c, node.body[0])
-      c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal)] = node
+      c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal,
+                               flag = argKnownBareInt)] = node
       return
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len > 1 and
       not node.body.hasValueSpread:
