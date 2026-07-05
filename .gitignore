@@ -38,6 +38,7 @@ venv/
 target/
 vendor/
 *.log
+*.out
 coverage/
 .cache/
 tmp/
