@@ -136,6 +136,12 @@ suite "compiler — GIR emission":
     check not positional.fastBindUnaryInt
     check positional.fastBindPositionalInt
 
+    let named = compileSource("(fn [x ^scale] (+ x scale))").functions[0]
+    check named.fastBindRequiredNamed
+
+    let optionalNamed = compileSource("(fn [x ^scale = 1] (+ x scale))").functions[0]
+    check not optionalNamed.fastBindRequiredNamed
+
   test "records generic monomorphization requests":
     let chunk = compileSource("(fn (identity item) [x : item] : item x) " &
                               "(identity ^types [Int] 1)")

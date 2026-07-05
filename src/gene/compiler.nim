@@ -2154,6 +2154,23 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
           specs.positionalDefaults[i].optional:
         fastBindPositionalInt = false
         break
+  var fastBindRequiredNamed =
+    typeParams.len == 0 and not fnCompiler.sawYield and specs.rest.len == 0 and
+    specs.named.len > 0 and
+    specs.requiredPositionalCount == specs.positional.len and
+    specs.positionalDefaults.len == specs.positional.len and
+    positionalSlots.len == specs.positional.len and
+    namedSlots.len == specs.named.len
+  if fastBindRequiredNamed:
+    for i in 0 ..< specs.positional.len:
+      if positionalSlots[i] < 0 or specs.positionalDefaults[i].optional:
+        fastBindRequiredNamed = false
+        break
+  if fastBindRequiredNamed:
+    for i, p in specs.named:
+      if namedSlots[i] < 0 or p.defaultValue.optional:
+        fastBindRequiredNamed = false
+        break
   result = FunctionProto(name: name, sourceLoc: c.currentLoc,
                          typeParams: typeParams,
                          params: specs.positional,
@@ -2178,6 +2195,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          returnKnownBareInt: returnKnownBareInt,
                          fastBindUnaryInt: fastBindUnaryInt,
                          fastBindPositionalInt: fastBindPositionalInt,
+                         fastBindRequiredNamed: fastBindRequiredNamed,
                          isGenerator: fnCompiler.sawYield,
                          selfParentSlot: selfParentSlot,
                          nativeOp: native.op,

@@ -178,6 +178,7 @@ type
     returnKnownBareInt*: bool
     fastBindUnaryInt*: bool
     fastBindPositionalInt*: bool
+    fastBindRequiredNamed*: bool
     isGenerator*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
