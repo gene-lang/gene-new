@@ -47,6 +47,12 @@ type
     # they are not re-exported and not looked up as runtime bindings.
     importedMacroSets: Table[string, Table[string, MacroDef]]
     importedMacroNames: HashSet[string]
+    # Compile-time tracking for branch-scope isolation in `match`/`try` (§8.0.1,
+    # compileMatch/compileTry). When set, every name that falls through to
+    # `opLoadName` is recorded here so the caller can cross-check against
+    # sibling-branch pattern bindings.
+    trackUnresolvedNames: bool
+    unresolvedNames: HashSet[string]
 
   ParamSpecs = object
     positional: seq[string]
@@ -312,6 +318,8 @@ proc emitLoadBinding(c: var Compiler, name: string) =
       if fastKind != nfkNone:
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
       else:
+        if c.trackUnresolvedNames:
+          c.unresolvedNames.incl name
         discard c.emit(opLoadName, name = name)
 
 proc intFast2Op(kind: NativeFastKind): OpCode =
@@ -959,7 +967,8 @@ proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq
   raise newException(GeneError, "function name must be a symbol or (name type...)")
 
 proc compileSubBody(c: Compiler, forms: openArray[Value],
-                    pattern: Value = NIL, scoped = false): Chunk =
+                    pattern: Value = NIL, scoped = false,
+                    trackUnresolved = false): Chunk =
   var child = c.childCompiler()
   if scoped:
     child.enableLocalSlots()
@@ -970,11 +979,34 @@ proc compileSubBody(c: Compiler, forms: openArray[Value],
         child.selfAvailable = true
   elif patternBindsSelf(pattern):
     child.selfAvailable = true
+  if trackUnresolved:
+    child.trackUnresolvedNames = true
   compileBody(child, forms)            # empty -> nil
   discard child.emit(opReturn)
   if scoped:
     child.chunk.localNames = child.localNames
   child.chunk
+
+proc compileBranchBody(c: Compiler, forms: openArray[Value],
+                       pattern: Value): tuple[chunk: Chunk,
+                                               unresolved: HashSet[string]] =
+  ## Compile a `when`/`catch` arm body with compile-time branch-isolation
+  ## tracking (§8.0.1). Pattern bindings from siblings must not be visible
+  ## here; the caller cross-checks `unresolved` against sibling pattern
+  ## bindings after every arm has been collected.
+  var child = c.childCompiler()
+  child.enableLocalSlots()
+  child.parentSlots = c.parentFrames()
+  child.trackUnresolvedNames = true
+  for name in patternBindingNames(pattern):
+    discard child.reserveLocal(name)
+    if name == "self":
+      child.selfAvailable = true
+  compileBody(child, forms)
+  discard child.emit(opReturn)
+  child.chunk.localNames = child.localNames
+  result.chunk = child.chunk
+  result.unresolved = child.unresolvedNames
 
 proc isParamTerminator(s: string): bool =
   s.len == 0 or s in [",", "^", "^^"]
@@ -3404,6 +3436,8 @@ proc compileMatch(c: var Compiler, node: Value) =
     raise newException(GeneError, "match requires a value")
   compileExpr(c, body[0])
   let mp = MatchProto(clauses: @[], elseBody: nil)
+  var allBranchNames: seq[HashSet[string]] = @[]
+  var unresolvedPerBranch: seq[HashSet[string]] = @[]
   for i in 1 ..< body.len:
     let clause = body[i]
     if clause.kind != vkNode or clause.head.kind != vkSymbol:
@@ -3415,15 +3449,32 @@ proc compileMatch(c: var Compiler, node: Value) =
       var branchBody: seq[Value]
       for j in 1 ..< clause.body.len:
         branchBody.add clause.body[j]
-      mp.clauses.add MatchClause(pattern: clause.body[0],
-                                  body: c.compileSubBody(branchBody,
-                                                         clause.body[0],
-                                                         scoped = true))
+      let pattern = clause.body[0]
+      let resolved = c.compileBranchBody(branchBody, pattern)
+      var ownedNames = initHashSet[string]()
+      for n in patternBindingNames(pattern): ownedNames.incl n
+      allBranchNames.add ownedNames
+      unresolvedPerBranch.add resolved.unresolved
+      mp.clauses.add MatchClause(pattern: pattern, body: resolved.chunk)
     of "else":
       mp.elseBody = c.compileSubBody(clause.body, scoped = true)
+      allBranchNames.add initHashSet[string]()
+      unresolvedPerBranch.add initHashSet[string]()
       break
     else:
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
+  # Cross-check: a name resolved at runtime via opLoadName in one branch
+  # must not be a sibling's pattern binding (§8.0.1 branch isolation).
+  for i, names in allBranchNames:
+    var siblingNames = initHashSet[string]()
+    for j, other in allBranchNames:
+      if i == j: continue
+      for n in other: siblingNames.incl n
+    for n in unresolvedPerBranch[i]:
+      if n in siblingNames and n notin names:
+        raise newException(GeneError,
+          "name '" & n & "' is bound by a sibling match arm and is not " &
+          "visible in this branch's body")
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
 proc compileWhile(c: var Compiler, node: Value) =
@@ -3611,6 +3662,8 @@ proc compileTry(c: var Compiler, node: Value) =
     tryForms.add body[i]
     inc i
   let tp = TryProto(body: c.compileSubBody(tryForms))
+  var branchNames: seq[HashSet[string]] = @[]
+  var branchUnresolved: seq[HashSet[string]] = @[]
   while i < body.len and body[i].isSymbol("catch"):
     inc i
     if i >= body.len:
@@ -3621,9 +3674,22 @@ proc compileTry(c: var Compiler, node: Value) =
     while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
       recovery.add body[i]
       inc i
-    tp.catches.add CatchClause(pattern: pattern,
-                               body: c.compileSubBody(recovery, pattern,
-                                                      scoped = true))
+    let resolved = c.compileBranchBody(recovery, pattern)
+    var names = initHashSet[string]()
+    for n in patternBindingNames(pattern): names.incl n
+    branchNames.add names
+    branchUnresolved.add resolved.unresolved
+    tp.catches.add CatchClause(pattern: pattern, body: resolved.chunk)
+  for i2, names in branchNames:
+    var siblings = initHashSet[string]()
+    for j, other in branchNames:
+      if i2 == j: continue
+      for n in other: siblings.incl n
+    for n in branchUnresolved[i2]:
+      if n in siblings and n notin names:
+        raise newException(GeneError,
+          "name '" & n & "' is bound by a sibling catch arm and is not " &
+          "visible in this catch body")
   if i < body.len and body[i].isSymbol("ensure"):
     inc i
     var ensureForms: seq[Value]

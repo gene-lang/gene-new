@@ -1084,6 +1084,36 @@ suite "spec — pattern destructuring from design":
     expect MatchError:
       discard run(compileSource("(var [a b] [1 2 3]) (+ a b)"),
                   newGlobalScope())
+
+  test "match and catch sibling-branch names are branch-local per §8.0.1":
+    check_eval("(match [1 2] " &
+               "  (when [a b] a) " &
+               "  (when [c d] c))",
+               "1")
+    check_eval("(match [1 2] " &
+               "  (when [a b] (+ a b)) " &
+               "  (when [c d] (+ c d)))",
+               "3")
+    check_eval("(fn f [v] " &
+               "  (match v " &
+               "    (when [a b] [a b]) " &
+               "    (when [c] c))) " &
+               "(f [9 8])",
+               "[9 8]")
+    expect GeneError:
+      discard run(compileSource("(match [9] (when [a b] a) (when [c d] a))"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(match [1 2] (when [a b] a) (when [c d] a))"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource(
+        "(type Boom ^props {^message Str} ^impl [Error]) " &
+        "(impl Error Boom) " &
+        "(try (fail (Boom ^message \"x\")) " &
+        "catch (Boom ^message m) m " &
+        "catch (Other ^message n) m)"),
+        newGlobalScope())
   test "for iterates streams lazily and closes on pattern failure":
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &
