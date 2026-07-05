@@ -538,6 +538,15 @@ suite "gir — disassembly":
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=2")
     check dump.contains("opReturnIntAdd2 name=+")
 
+  test "runs same-scope tail recursion through recur ops":
+    let src =
+      "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1))))) " &
+      "(countdown 128)"
+    let dump = compileSource(src).disassemble()
+    check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=1")
+    check dump.contains("8: opReturn")
+    ck src, "0"
+
   test "prints direct local zero-arg calls":
     let dump = compileSource("(var call_once (fn [] nil)) (call_once)").disassemble()
     check dump.contains("opCallLocal0 slot=0 name=call_once argc=0")

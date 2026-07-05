@@ -137,6 +137,15 @@ proc main() =
     let v = run(globalFourChunk, globalFourScope)
     checksum = checksum + v.intVal
 
+  let tailRecurScope = newGlobalScope()
+  discard run(compileSource(
+    "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1)))))"),
+    tailRecurScope)
+  let tailRecurChunk = compileSource("(countdown 64)")
+  bench("vm.tail_recur_countdown.compiled_chunk", 200_000, i):
+    let v = run(tailRecurChunk, tailRecurScope)
+    checksum = checksum + v.intVal
+
   let trampolineNamedScope = newGlobalScope()
   let trampolineNamedFn =
     run(compileSource("(fn [x ^scale] (+ x scale))"), trampolineNamedScope)

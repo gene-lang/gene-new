@@ -7806,6 +7806,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     evalBudget = scope.evalBudget
     continue
 
+  template restartRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
+    let proto = chunk.owner
+    if not argKnownBareInt and proto.hasParamTypes and proto.paramTypes.len > 0 and
+        proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
+      raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
+    scope.slots[proto.positionalSlots[0]] = arg
+    stack.setLen(0)
+    ip = 0
+    evalBudget = scope.evalBudget
+    continue
+
   while true:
     try:
       if cancelAtSafepoint:
@@ -8585,7 +8596,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           ip += 2
           if inst[].op in {opRecur1LocalIntSubConstSameScope,
                            opRecur1LocalIntSubImmSameScope}:
-            enterRecur1SameScopeFrame(arg, argKnownBareInt)
+            if curFrameKind == fkNormal and not validateImplRequirements and
+                returnType.kind == vkNil and not curChecksErrors and
+                curEnsureBody == nil and curForItems.len == 0 and
+                curForStream.kind != vkStream and curOwnedScope == nil and
+                curPendingError == nil and curPendingPanic == nil and
+                curPendingCancel == nil and ip < chunk.instructions.len and
+                chunk.instructions[ip].op in {opReturn, opReturnBareInt}:
+              restartRecur1SameScopeFrame(arg, argKnownBareInt)
+            else:
+              enterRecur1SameScopeFrame(arg, argKnownBareInt)
           else:
             enterRecur1Frame(arg, argKnownBareInt)
         of opReturnLocalIfIntLtConst, opReturnLocalIfIntLtImm:
