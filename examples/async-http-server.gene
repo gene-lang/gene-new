@@ -54,7 +54,6 @@
 (import net/http [Server serve Response])
 (import str [starts_with? split join])
 (import json [stringify])
-(import url [parse_query])
 (import std/parse [parse_int ParseError])
 
 # Shared state — every request reads or writes one of these.
@@ -87,6 +86,10 @@
   (jobs ~ Cell/set
          (Map/assoc (jobs ~ Cell/get) id
                     {^state "running" ^ms ms})))
+
+(fn parse-job-ms [req]
+  (try (parse_int (|| req/params/ms "1000"))
+    catch (ParseError ^message _) 1000))
 
 # -----------------------------------------------------------------------------
 # Handler — match-based dispatch on method and path. Each branch returns
@@ -125,12 +128,7 @@
           (var id parts/2)
           (if (= m "POST")
             (do
-              (var ms
-                (try
-                  (do
-                    (var q (parse_query (|| req/query "")))
-                    (parse_int q/ms))
-                  catch (ParseError ^message _) 1000))
+              (var ms (parse-job-ms req))
               (register-job id ms)
               (reply-json 202 {^id id ^ms ms}))
             (do
@@ -139,7 +137,9 @@
               (if cell
                 (reply-json 200 cell)
                 (reply-json 404 {^error "no such job"})))))
-        (reply-json 404 {^error "unknown route"})))))
+        (reply-json 404 {^error "unknown route"}))
+    (else
+      (reply-json 404 {^error "unknown route"}))))
 
 (println "async HTTP server listening on http://127.0.0.1:8091")
 (println "    GET  /help                       for usage")
