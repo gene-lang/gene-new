@@ -1,0 +1,278 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene concurrency tour (docs/design.md §6, §13)
+#
+# Demonstrates the runtime foundation: structured tasks, typed bounded
+# channels, actors, and the cancellation/ensure contract. Each section is
+# a self-contained `let-demo` block — read top to bottom, or pick a
+# section and run it standalone.
+#
+#   bin/gene run examples/concurrency.gene
+#
+# Conventions:
+#   - (scope ...)         structured-concurrency root; waits for live children
+#   - (spawn expr)        evaluate expr in a child task, return (Task T E)
+#   - (await task)        suspend on the task; returns value or propagates Error
+#   - (Task/cancel task)  request cancellation; cooperative at next safepoint
+#   - (channel ^capacity N)
+#                        bounded, typed (Channel T)
+#   - (actor/spawn ^init init-fn ^handle handle-fn)
+#                        long-lived stateful actor (ActorRef T)
+#   - (send / recv / close / try-send / try-recv) on channel values
+#   - (cell x)            mutable identity-holding value (Cell)
+#
+# All concurrency primitives used here are MVP-stable and exercised by
+# tests/spec_runner.nim. The actor/types are also referenced via Send
+# trait bound to enforce message shape at the boundary.
+# =============================================================================
+
+(println "== gene concurrency tour ==")
+(println "")
+
+# -----------------------------------------------------------------------------
+# 1. scope + spawn + await — structured concurrency primitives
+#
+# `scope` owns tasks spawned directly inside it. `await` returns the result
+# of a single task or propagates its recoverable error. Closing a scope
+# normally waits for live children; closing because of an error cancels
+# them (their `ensure` blocks still run).
+# -----------------------------------------------------------------------------
+(println "1. scope / spawn / await")
+
+(println "   - two parallel computations joined by `await`")
+(scope
+  (var a (spawn (+ 1 2)))            # task A: 1 + 2
+  (var b (spawn (+ 3 4)))            # task B: 3 + 4
+  (println "     scope joining two tasks..."))
+
+# Each spawn returns a (Task T E) value. Awaiting both gives their sum.
+(var sum
+  (scope
+    (var a (spawn (+ 10 20)))
+    (var b (spawn (+ 30 40)))
+    (+ (await a) (await b))))
+(println "     sum of two task results:" sum)
+
+(println "   - await on a single short task")
+(var x (await (scope (var t (spawn 100)) t)))
+(println "     single-task await returns:" x)
+
+(println "")
+
+# -----------------------------------------------------------------------------
+# 2. typed bounded channels — typed producer/consumer pairs
+#
+# Channels are FIFO and typed `(Channel T)`. The capacity argument bounds
+# the mailbox: senders block once the buffer is full. Channels are Send-
+# typed; the runtime blocks non-Send payloads.
+# -----------------------------------------------------------------------------
+(println "2. typed bounded channels")
+
+(println "   - producer / consumer over a bounded channel")
+(scope
+  (var box (channel ^capacity 3))
+  (var produced (cell 0))
+  (var consumed (cell 0))
+
+  (spawn (do
+    (var i 0)
+    (while (< i 5)
+      (box ~ Channel/send (* i i))    # 0, 1, 4, 9, 16
+      (produced ~ Cell/set (+ (produced ~ Cell/get) 1))
+      (set i (+ i 1)))))
+
+  (spawn (do
+    (var s 0)
+    (var i 0)
+    (while (< i 5)
+      (set s (+ s (box ~ Channel/recv)))
+      (consumed ~ Cell/set (+ (consumed ~ Cell/get) 1))
+      (set i (+ i 1)))
+    (println "     sum over channel:" s)))
+
+  (sleep 5)                           # let producer drain + consumer finish
+  (println "     produced count:" (produced ~ Cell/get))
+  (println "     consumed count:" (consumed ~ Cell/get)))
+
+(println "   - Channel/close wakes blocked receivers with ChannelClosed")
+(scope
+  (var box (channel ^capacity 1))
+  (var done (cell false))
+
+  (spawn (do
+    (try (box ~ Channel/recv)
+      catch (ChannelClosed ^message m)
+        (do (done ~ Cell/set true) (println "     receiver saw:" m)))))
+
+  (sleep 1)                           # let receiver settle into recv
+  (box ~ Channel/close)
+  (sleep 1))                          # let the receiver catch and report
+
+(println "")
+
+# -----------------------------------------------------------------------------
+# 3. Cell and Send — sharing mutable state safely
+#
+# `Cell` is a single-writer / multi-reader mutable identity. Both channels
+# and actors require `Send` payloads; spawn-captured locals that mutate
+# must be Cells, not raw vars.
+# -----------------------------------------------------------------------------
+(println "3. Cell as a Send-shareable snapshot")
+
+(var hits (cell 0))
+(do
+  (scope
+    (spawn (do (hits ~ Cell/set 1) (sleep 0)))   # short-lived task: hits=1
+    (spawn (do (sleep 1) (hits ~ Cell/set 2)))   # delayed task: hits=2
+    (await (spawn (sleep 3))))                   # drain scope)
+  (println "   - final cell value (last writer wins):" (hits ~ Cell/get)))
+
+(println "")
+
+# -----------------------------------------------------------------------------
+# 4. cancellation contract — ensure runs, catch _ does not catch it
+#
+# Cancellation is a control signal, not an Error (§13.1.1). `try/catch`
+# with a wildcard `catch _` form does NOT catch it; only `ensure` runs
+# during the unwind. Cancellation is observed at safepoints (await,
+# channel ops, sleep).
+# -----------------------------------------------------------------------------
+(println "4. cancellation contract")
+
+(println "   - explicit (Task/cancel t) runs the spawned task's `ensure`")
+(var cleanup_count (cell 0))
+(scope
+  (var t
+    (spawn (try (sleep 60)
+            ensure (cleanup_count ~ Cell/set (+ (cleanup_count ~ Cell/get) 1)))))
+  (sleep 1)                             # let the task reach its suspension
+  (t ~ Task/cancel)                    # request cancellation
+  (sleep 1)                             # give ensure a chance to run
+  (println "     cleanup ran:" (cleanup_count ~ Cell/get)))
+
+(println "   - cancellation propagates past typed `catch` and `catch _`")
+(println "     (live demo: a `try/catch _ \"caught\"` does not catch cancel;")
+(println "      see tests/spec_runner.nim 'wildcard catch does not intercept")
+(println "      task cancellation' for the negative-case covered by tests.)")
+(println "     In a cancellation-aware API (a future Task/await_cancellable),")
+(println "     the receiving code would observe the signal directly; today's")
+(println "     MVP primitive `(await t)` propagates.)")
+
+(println "   - error exit cancels pending siblings but their `ensure` runs")
+(var cleanup2 (cell 0))
+(type Boom ^props {^message Str} ^impl [Error])
+(impl Error Boom)
+(do
+  (scope
+    (spawn (try (sleep 60)
+            ensure (cleanup2 ~ Cell/set (+ (cleanup2 ~ Cell/get) 1))))
+    (sleep 1)
+    (try (fail (Boom ^message "abandon"))
+      catch (Boom) nil))
+  (sleep 1)
+  (println "     sibling ensure ran:" (cleanup2 ~ Cell/get)))
+
+(println "")
+
+# -----------------------------------------------------------------------------
+# 5. actors — long-lived stateful components with sequential messaging
+#
+# An actor processes messages one at a time. State is held in a value
+# returned from `^init`; each message handler receives (ctx, state, msg)
+# and returns (actor/continue new-state) or (actor/stop) to terminate.
+# `actor/send` enqueues a message; `actor/ask` uses a one-shot ReplyTo
+# capability and returns a (Task Result err).
+# -----------------------------------------------------------------------------
+(println "5. actors")
+
+(fn counter-handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int)
+  (actor/continue (+ state msg)))
+
+(var counter : (ActorRef Int)
+  (actor/spawn ^init (fn [] 0) ^handle counter-handle))
+
+(println "   - sequential processing — ordering is preserved per-actor")
+(counter ~ actor/send 2)
+(counter ~ actor/send 5)
+(counter ~ actor/send 7)
+(var snap1 (counter ~ actor/snapshot))
+(println "     final state after 2 + 5 + 7:" snap1/state)
+
+(println "   - actor/ask with explicit ReplyTo capability")
+(type Counter ^props {^reply (ReplyTo Int)})
+(impl Send Counter)
+
+(fn ask-handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
+  (match msg
+    (when (Counter ^reply reply)
+      (reply ~ ReplyTo/send state)
+      (actor/continue state))))
+
+(var ask-counter : (ActorRef Counter)
+  (actor/spawn ^init (fn [] 41) ^handle ask-handle))
+
+(var reply-task
+  (ask-counter ~ actor/ask (fn [reply] (Counter ^reply reply))))
+(println "     actor/ask current state:" (await reply-task))
+
+(println "")
+
+# -----------------------------------------------------------------------------
+# 6. supervisor — restart strategy on recoverable handler errors
+#
+# A `supervisor` owns actors; when a handler raises an error, the
+# chosen strategy decides what happens next. `restart` rebuilds the
+# actor's state via `^migrate` (or `^init` if no migration is given),
+# preserving the live actor reference. Recovery events flow to the
+# `^events` channel.
+# -----------------------------------------------------------------------------
+(println "6. supervisor / restart")
+
+(var failure-events (channel ^capacity 4))
+
+(supervisor ^strategy restart ^events failure-events
+  (var counter
+    (actor/spawn ^init (fn [] 10)
+      ^handle (fn [ctx state msg]
+        (if (= msg 0)
+          (fail (Boom ^message "bad"))
+          (actor/continue (+ state msg))))))
+  (println "   - feed 1 + 5 + 0 (failure → restart)")
+  (spawn (counter ~ actor/send 1))
+  (spawn (counter ~ actor/send 5))
+  (spawn (counter ~ actor/send 0))
+  (sleep 1)
+  (var event (failure-events ~ Channel/recv))
+  (var snap (counter ~ actor/snapshot))
+  (println "     restarted state (now):" snap/state)
+  (println "     actor failure event received"))
+
+(println "")
+
+# -----------------------------------------------------------------------------
+# 7. supervisor / stop — terminate the actor on first failure
+#
+# Compare to `restart`: `^strategy stop` closes the actor on first
+# uncaught error and any further send raises ActorClosed.
+# -----------------------------------------------------------------------------
+(println "7. supervisor / stop")
+
+(supervisor ^strategy stop ^events failure-events
+  (var stoptest
+    (actor/spawn ^init (fn [] 0)
+      ^handle (fn [ctx state msg]
+        (if (= msg 0)
+          (fail (Boom ^message "bad"))
+          (actor/continue (+ state msg))))))
+  (var first-send
+    (try (do (stoptest ~ actor/send 0) "first-send")
+      catch (Boom ^message m) m))
+  (sleep 1)                                           # let failure propagate
+  (var post-failure
+    (try (do (stoptest ~ actor/send 99) "second-send")
+      catch (ActorClosed ^message m) m))
+  (println "   - first send (failure trapped):" first-send)
+  (println "   - post-failure send:" post-failure))
+
+(println "")
+(println "== done ==")
