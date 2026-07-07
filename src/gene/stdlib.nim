@@ -325,7 +325,12 @@ proc biStreamEach(args: openArray[Value]): Value {.nimcall.} =
 
 const httpMaxBodyBytes = 10 * 1024 * 1024
 const httpMaxHeaderLines = 128
+const httpMaxHeaderBytes = 32 * 1024
 const httpRecvTimeoutMs = 10_000
+const httpReadChunkBytes = 8 * 1024
+const httpDefaultRequestTimeoutMs = 30_000
+const httpDefaultMaxConnections = 1024
+const httpDefaultMaxInFlight = 256
 
 proc httpNamespaceBinding(scope: Scope, name: string): Value =
   let root =
@@ -361,7 +366,11 @@ proc httpStatusText(code: int): string =
   of 403: "Forbidden"
   of 404: "Not Found"
   of 405: "Method Not Allowed"
+  of 408: "Request Timeout"
+  of 413: "Payload Too Large"
   of 500: "Internal Server Error"
+  of 503: "Service Unavailable"
+  of 504: "Gateway Timeout"
   else: "Status " & $code
 
 proc newHttpResponseValue(scope: Scope, status: int, body: string,
@@ -375,36 +384,51 @@ proc newHttpResponseValue(scope: Scope, status: int, body: string,
   newNode(if head.kind == vkType: head else: newSym("Response"),
           props = props, body = @[newStr(body)])
 
-proc sendHttpResponse(client: Socket, status: int, body: string,
-                      headers: OrderedTable[string, string]) =
-  var payload = "HTTP/1.1 " & $status & " " & httpStatusText(status) & "\r\n"
+proc httpWirePayload(status: int, body: string,
+                     headers: OrderedTable[string, string]): string =
+  ## Serialize one HTTP/1.1 response. Always `connection: close` in this MVP.
+  result = "HTTP/1.1 " & $status & " " & httpStatusText(status) & "\r\n"
   var hasContentType = false
   for key, val in headers:
     if key.contains({'\r', '\n'}) or val.contains({'\r', '\n'}):
       continue   # never let handler data split the response
     if key.toLowerAscii() == "content-type":
       hasContentType = true
-    payload.add key & ": " & val & "\r\n"
+    result.add key & ": " & val & "\r\n"
   if not hasContentType:
-    payload.add "content-type: text/html; charset=utf-8\r\n"
-  payload.add "content-length: " & $body.len & "\r\n"
-  payload.add "connection: close\r\n\r\n"
-  payload.add body
-  client.send(payload)
+    result.add "content-type: text/html; charset=utf-8\r\n"
+  result.add "content-length: " & $body.len & "\r\n"
+  result.add "connection: close\r\n\r\n"
+  result.add body
 
-proc sendSimpleHttpResponse(client: Socket, status: int, body: string) =
-  sendHttpResponse(client, status, body,
-                   initOrderedTable[string, string]())
+proc simpleHttpWirePayload(status: int, body: string): string =
+  httpWirePayload(status, body, initOrderedTable[string, string]())
 
-proc parseHttpRequest(client: Socket, scope: Scope): Value =
-  ## Read one HTTP/1.1 request and build a Request node. Returns VOID when the
-  ## request is malformed (caller answers 400) or the connection is dead.
-  let requestLine = client.recvLine(timeout = httpRecvTimeoutMs)
-  if requestLine.len == 0 or requestLine == "\r\n":
-    return VOID
-  let lineParts = requestLine.split(' ')
+type
+  HttpParseStatus = enum
+    hpsNeedMore   # incomplete request; keep reading
+    hpsDone       # request parsed into a Request node
+    hpsBad        # malformed request; caller answers 400 and closes
+
+proc parseHttpRequestBuffer(buf: string, scope: Scope):
+    tuple[status: HttpParseStatus, value: Value] =
+  ## Incremental HTTP/1.1 request parser over a connection's accumulated
+  ## bytes. Same validation rules as the previous blocking socket parser:
+  ## bounded header lines/bytes, bounded content-length body, malformed
+  ## requests answer 400. Strict `\r\n` line endings (what real clients send).
+  let headerEnd = buf.find("\r\n\r\n")
+  if headerEnd < 0:
+    if buf.len > httpMaxHeaderBytes:
+      return (hpsBad, VOID)
+    return (hpsNeedMore, VOID)
+  if headerEnd > httpMaxHeaderBytes:
+    return (hpsBad, VOID)
+  let lines = buf[0 ..< headerEnd].split("\r\n")
+  if lines.len == 0 or lines.len - 1 > httpMaxHeaderLines:
+    return (hpsBad, VOID)
+  let lineParts = lines[0].split(' ')
   if lineParts.len != 3 or not lineParts[2].startsWith("HTTP/"):
-    return VOID
+    return (hpsBad, VOID)
   let httpMethod = lineParts[0]
   let target = lineParts[1]
   var path = target
@@ -415,17 +439,11 @@ proc parseHttpRequest(client: Socket, scope: Scope): Value =
     query = target[qMark + 1 .. ^1]
   var headers = initOrderedTable[string, Value]()
   var contentLength = 0
-  var headerLines = 0
-  while true:
-    inc headerLines
-    if headerLines > httpMaxHeaderLines:
-      return VOID
-    let line = client.recvLine(timeout = httpRecvTimeoutMs)
-    if line.len == 0 or line == "\r\n":
-      break
+  for i in 1 ..< lines.len:
+    let line = lines[i]
     let colon = line.find(':')
     if colon <= 0:
-      return VOID
+      return (hpsBad, VOID)
     let key = line[0 ..< colon].strip().toLowerAscii()
     let val = line[colon + 1 .. ^1].strip()
     headers[key] = newStr(val)
@@ -433,19 +451,18 @@ proc parseHttpRequest(client: Socket, scope: Scope): Value =
       try:
         contentLength = parseInt(val)
       except ValueError:
-        return VOID
+        return (hpsBad, VOID)
       if contentLength < 0 or contentLength > httpMaxBodyBytes:
-        return VOID
-  var body = ""
-  if contentLength > 0:
-    body = client.recv(contentLength, timeout = httpRecvTimeoutMs)
-    if body.len < contentLength:
-      return VOID
+        return (hpsBad, VOID)
+  let bodyStart = headerEnd + 4
+  if buf.len < bodyStart + contentLength:
+    return (hpsNeedMore, VOID)
+  let body = buf[bodyStart ..< bodyStart + contentLength]
   var params: OrderedTable[string, Value]
   try:
     params = parseQueryEntries(query, scope)
   except GeneError:
-    return VOID   # malformed percent escape in the query is the client's fault
+    return (hpsBad, VOID)   # malformed percent escape is the client's fault
   var props = initOrderedTable[string, Value]()
   props["method"] = newStr(httpMethod)
   props["path"] = newStr(path)
@@ -454,8 +471,8 @@ proc parseHttpRequest(client: Socket, scope: Scope): Value =
   props["headers"] = newMap(headers)
   props["body"] = newStr(body)
   let head = httpNamespaceBinding(scope, "Request")
-  newNode(if head.kind == vkType: head else: newSym("Request"),
-          props = props)
+  (hpsDone, newNode(if head.kind == vkType: head else: newSym("Request"),
+                    props = props))
 
 proc responseWireParts(resp: Value, scope: Scope):
     tuple[status: int, body: string, headers: OrderedTable[string, string]] =
@@ -483,6 +500,61 @@ proc responseWireParts(resp: Value, scope: Scope):
     requireStr("Response body item", item)
     result.body.add item.strVal
 
+type
+  HttpConnPhase = enum
+    hcpReading      # accumulating request bytes
+    hcpDispatched   # handler task in flight; response not yet started
+    hcpWriting      # flushing response bytes
+
+  HttpConn = ref object
+    sock: Socket
+    fd: int
+    phase: HttpConnPhase
+    buf: string             # accumulated request bytes
+    task: Value             # pending handler task; NIL after 504 orphaning
+    readDeadline: MonoTime  # header/body arrival deadline (slowloris guard)
+    taskDeadline: MonoTime  # handler completion deadline
+    hasTaskDeadline: bool
+    writeBuf: string
+    writePos: int
+
+proc dispatchHttpHandler(handler, request: Value, scope: Scope): Value =
+  ## Run the handler for one request, task-per-request style. A plain Gene
+  ## function becomes a scheduler fiber settling a pending Task (mirrors
+  ## makeActorFiber/spawnFiber), so a handler that awaits/sleeps parks without
+  ## stalling the server loop. Other callables (natives, generators) fall back
+  ## to an inline call wrapped in a completed Task.
+  if handler.kind == vkFunction and handler.fnCode != nil and
+      handler.fnCode of FunctionProto:
+    let proto = FunctionProto(handler.fnCode)
+    if not proto.isGenerator:
+      let bound = bindCallScope(handler, proto, [request], NamedArgs())
+      let task = newPendingTask()
+      enqueueRunnable(Fiber(chunk: proto.chunk, scope: bound.scope,
+                            recycleScope: proto.poolCallScope,
+                            task: task, actorOwner: NIL, started: false))
+      return task
+  newCompletedTask(applyCall(handler, [request], NamedArgs(), scope))
+
+proc httpTaskResponsePayload(task: Value, scope: Scope): string =
+  ## Wire payload for a settled handler task. Handler failures keep the old
+  ## blocking server's contract: stderr diagnostics plus a generic 500.
+  if task.taskHasPanic:
+    stderr.writeLine "http/serve handler panic: " & task.taskPanicMsg
+    return simpleHttpWirePayload(500, "Internal Server Error")
+  if task.taskCancelled:
+    stderr.writeLine "http/serve handler cancelled"
+    return simpleHttpWirePayload(500, "Internal Server Error")
+  if task.taskHasError:
+    stderr.writeLine "http/serve handler error: " & task.taskErrorMsg
+    return simpleHttpWirePayload(500, "Internal Server Error")
+  try:
+    let wire = responseWireParts(task.taskResult, scope)
+    httpWirePayload(wire.status, wire.body, wire.headers)
+  except GeneError as e:
+    stderr.writeLine "http/serve handler error: " & e.msg
+    simpleHttpWirePayload(500, "Internal Server Error")
+
 proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
@@ -502,60 +574,287 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   if port < 0 or port > 65535:
     raiseHttpError("Server port out of range: " & $port, scope)
   var maxRequests = -1
+  var maxConnections = httpDefaultMaxConnections
+  var maxInFlight = httpDefaultMaxInFlight
+  var requestTimeoutMs = httpDefaultRequestTimeoutMs
   if call != nil:
     for name in call[].namedNames:
-      if name != "max-requests":
+      if name notin ["max-requests", "max-connections", "max-in-flight",
+                     "request-timeout-ms"]:
         raise newException(GeneError,
           "http/serve got unexpected named argument: " & name)
-    let index = nativeNamedIndex(call, "max-requests")
-    if index >= 0:
-      maxRequests = int(requireInt64("http/serve max-requests",
-                                     call[].namedValues[index]))
-  var server = newSocket()
-  try:
-    server.setSockOpt(OptReuseAddr, true)
-    server.bindAddr(Port(port), host)
-    server.listen()
-  except OSError as e:
-    server.close()
-    raiseHttpError("http/serve failed to listen on " & host & ":" & $port &
-                   ": " & e.msg, scope)
-  var served = 0
-  try:
-    while maxRequests < 0 or served < maxRequests:
-      var client: Socket
+    template namedInt(name: string, target: var int) =
+      let index = nativeNamedIndex(call, name)
+      if index >= 0:
+        target = int(requireInt64("http/serve " & name,
+                                  call[].namedValues[index]))
+    namedInt("max-requests", maxRequests)
+    namedInt("max-connections", maxConnections)
+    namedInt("max-in-flight", maxInFlight)
+    namedInt("request-timeout-ms", requestTimeoutMs)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    let handler = args[1]
+    var server = newSocket()
+    try:
+      server.setSockOpt(OptReuseAddr, true)
+      server.bindAddr(Port(port), host)
+      server.listen()
+    except OSError as e:
+      server.close()
+      raiseHttpError("http/serve failed to listen on " & host & ":" & $port &
+                     ": " & e.msg, scope)
+
+    proc setNonBlocking(fd: cint) =
+      let flags = fcntl(fd, F_GETFL, 0)
+      if flags >= 0:
+        discard fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+
+    # Non-blocking listener: the event loop must never park in the kernel
+    # while handler fibers are runnable or timers are due.
+    setNonBlocking(server.getFd().cint)
+
+    let sendFlags: cint =
+      when defined(linux): MSG_NOSIGNAL.cint
+      else: 0
+    let listenerFd = server.getFd().int
+    var selector = newSelector[int]()
+    selector.registerHandle(server.getFd(), {Event.Read}, -1)
+    var conns = initTable[int, HttpConn]()
+    var served = 0
+    var inFlight = 0
+
+    proc unregisterConn(conn: HttpConn) =
       try:
-        server.accept(client)
-      except OSError:
-        break
-      try:
-        var requestValue = VOID
-        try:
-          requestValue = parseHttpRequest(client, scope)
-        except TimeoutError, OSError:
-          discard
-        if requestValue.kind == vkVoid:
-          sendSimpleHttpResponse(client, 400, "Bad Request")
-        else:
-          try:
-            var handlerArgs = [requestValue]
-            let resp = applyCall(args[1], handlerArgs, NamedArgs(), scope)
-            let wire = responseWireParts(resp, scope)
-            sendHttpResponse(client, wire.status, wire.body, wire.headers)
-          except GeneError as e:
-            stderr.writeLine "http/serve handler error: " & e.msg
-            sendSimpleHttpResponse(client, 500, "Internal Server Error")
-          except GenePanic as e:
-            stderr.writeLine "http/serve handler panic: " & e.msg
-            sendSimpleHttpResponse(client, 500, "Internal Server Error")
-      except OSError:
-        discard   # client went away mid-response; keep serving
-      finally:
-        client.close()
+        selector.unregister(conn.fd)
+      except OSError, IOSelectorsException:
+        discard
+      except CatchableError:
+        discard
+
+    proc closeConn(conn: HttpConn) =
+      unregisterConn(conn)
+      conns.del(conn.fd)
+      conn.sock.close()
+
+    proc finishServed(conn: HttpConn) =
+      ## A connection that produced a response (any status) consumes one
+      ## request slot, matching the old per-connection `served` counting.
       inc served
-  finally:
-    server.close()
-  NIL
+      closeConn(conn)
+
+    proc tryFlush(conn: HttpConn): bool =
+      ## Flush as much of the response as the socket accepts. True when the
+      ## payload is fully written or the connection is beyond saving.
+      while conn.writePos < conn.writeBuf.len:
+        let remaining = conn.writeBuf.len - conn.writePos
+        let n = send(SocketHandle(conn.fd),
+                     addr conn.writeBuf[conn.writePos],
+                     remaining.cint, sendFlags)
+        if n > 0:
+          conn.writePos += n
+        elif n < 0 and (errno == EAGAIN or errno == EWOULDBLOCK):
+          return false
+        elif n < 0 and errno == EINTR:
+          continue
+        else:
+          return true    # client went away mid-response; keep serving
+      true
+
+    proc startWrite(conn: HttpConn, payload: string) =
+      conn.writeBuf = payload
+      conn.writePos = 0
+      conn.phase = hcpWriting
+      conn.task = NIL
+      if tryFlush(conn):
+        finishServed(conn)
+      else:
+        try:
+          selector.updateHandle(conn.fd, {Event.Write})
+        except CatchableError:
+          finishServed(conn)
+
+    proc dispatchConn(conn: HttpConn, request: Value) =
+      if maxInFlight > 0 and inFlight >= maxInFlight:
+        startWrite(conn, simpleHttpWirePayload(503, "Service Unavailable"))
+        return
+      conn.phase = hcpDispatched
+      try:
+        selector.updateHandle(conn.fd, {})
+      except CatchableError:
+        closeConn(conn)
+        return
+      if requestTimeoutMs > 0:
+        conn.taskDeadline = timerDeadline(requestTimeoutMs)
+        conn.hasTaskDeadline = true
+      try:
+        conn.task = dispatchHttpHandler(handler, request, scope)
+        inc inFlight
+      except GeneError as e:
+        stderr.writeLine "http/serve handler error: " & e.msg
+        startWrite(conn, simpleHttpWirePayload(500, "Internal Server Error"))
+      except GenePanic as e:
+        stderr.writeLine "http/serve handler panic: " & e.msg
+        startWrite(conn, simpleHttpWirePayload(500, "Internal Server Error"))
+
+    proc handleReadable(conn: HttpConn) =
+      var chunk = newString(httpReadChunkBytes)
+      while true:
+        let n = recv(SocketHandle(conn.fd), addr chunk[0],
+                     httpReadChunkBytes.cint, 0)
+        if n > 0:
+          let start = conn.buf.len
+          conn.buf.setLen(start + n)
+          copyMem(addr conn.buf[start], addr chunk[0], n)
+          if n < httpReadChunkBytes:
+            break
+        elif n == 0:
+          closeConn(conn)      # EOF before a complete request
+          return
+        elif errno == EAGAIN or errno == EWOULDBLOCK:
+          break
+        elif errno == EINTR:
+          continue
+        else:
+          closeConn(conn)
+          return
+      let parsed = parseHttpRequestBuffer(conn.buf, scope)
+      case parsed.status
+      of hpsNeedMore:
+        discard
+      of hpsBad:
+        startWrite(conn, simpleHttpWirePayload(400, "Bad Request"))
+      of hpsDone:
+        dispatchConn(conn, parsed.value)
+
+    proc acceptClients() =
+      while true:
+        var client: Socket
+        try:
+          server.accept(client)
+        except OSError:
+          break    # EAGAIN ("no client yet") or fatal: stop this batch
+        if maxConnections > 0 and conns.len >= maxConnections:
+          client.close()    # shed load beyond the connection cap
+          continue
+        let fd = client.getFd().int
+        setNonBlocking(fd.cint)
+        when defined(macosx):
+          # Suppress SIGPIPE on writes to a half-closed socket (linux uses
+          # MSG_NOSIGNAL per send instead).
+          var noSigPipe: cint = 1
+          discard setsockopt(SocketHandle(fd), SOL_SOCKET, SO_NOSIGPIPE,
+                             addr noSigPipe, SockLen(sizeof(noSigPipe)))
+        let conn = HttpConn(sock: client, fd: fd, phase: hcpReading,
+                            task: NIL,
+                            readDeadline: timerDeadline(httpRecvTimeoutMs))
+        conns[fd] = conn
+        try:
+          selector.registerHandle(SocketHandle(fd), {Event.Read}, 0)
+        except CatchableError:
+          conns.del(fd)
+          client.close()
+
+    proc selectTimeoutMs(): int =
+      ## Sleep in the kernel only as long as nothing else needs the loop:
+      ## runnable fibers => 0; otherwise bounded by the nearest scheduler
+      ## timer and the nearest connection deadline.
+      if hasRunnableFiber():
+        return 0
+      var timeout = 50
+      let now = getMonoTime()
+      template clampTo(deadline: MonoTime) =
+        let ms = (deadline - now).inMilliseconds
+        timeout = min(timeout, max(int(ms), 0))
+      let nextTimer = nextTimerDeadline()
+      if nextTimer.has:
+        clampTo(nextTimer.deadline)
+      for conn in conns.values:
+        case conn.phase
+        of hcpReading: clampTo(conn.readDeadline)
+        of hcpDispatched:
+          if conn.hasTaskDeadline: clampTo(conn.taskDeadline)
+        of hcpWriting: discard
+      timeout
+
+    proc pumpScheduler() =
+      ## Run ready fibers without letting schedulerRunOne sleep on timers —
+      ## socket readiness must stay responsive while handlers are parked.
+      discard wakeExpiredTimers()
+      var budget = 128
+      while budget > 0 and hasRunnableFiber():
+        discard schedulerRunOne()
+        dec budget
+
+    proc harvest() =
+      ## Settle finished handler tasks into responses; time out overdue ones.
+      let now = getMonoTime()
+      var settled: seq[HttpConn]
+      var expiredReads: seq[HttpConn]
+      for conn in conns.values:
+        case conn.phase
+        of hcpDispatched:
+          if conn.task.kind == vkTask and conn.task.taskDone:
+            settled.add conn
+          elif conn.hasTaskDeadline and now > conn.taskDeadline:
+            settled.add conn
+        of hcpReading:
+          if now > conn.readDeadline:
+            expiredReads.add conn
+        of hcpWriting:
+          discard
+      for conn in settled:
+        dec inFlight
+        if conn.task.kind == vkTask and conn.task.taskDone:
+          startWrite(conn, httpTaskResponsePayload(conn.task, scope))
+        else:
+          # Orphan the still-running task; its fiber settles into a task no
+          # one reads. The client gets a definitive timeout answer.
+          startWrite(conn, simpleHttpWirePayload(504, "Gateway Timeout"))
+      for conn in expiredReads:
+        startWrite(conn, simpleHttpWirePayload(408, "Request Timeout"))
+
+    try:
+      withScopedScheduler(scope):
+        while maxRequests < 0 or served < maxRequests:
+          let events = selector.select(selectTimeoutMs())
+          for ev in events:
+            if ev.fd == listenerFd:
+              if Event.Read in ev.events:
+                acceptClients()
+              continue
+            if ev.fd notin conns:
+              continue    # closed earlier in this same event batch
+            let conn = conns[ev.fd]
+            if Event.Error in ev.events:
+              closeConn(conn)
+              continue
+            case conn.phase
+            of hcpReading:
+              if Event.Read in ev.events:
+                handleReadable(conn)
+            of hcpWriting:
+              if Event.Write in ev.events:
+                if tryFlush(conn):
+                  finishServed(conn)
+            of hcpDispatched:
+              discard    # not watching; response path re-arms the fd
+          pumpScheduler()
+          harvest()
+    finally:
+      var leftover: seq[HttpConn]
+      for conn in conns.values:
+        leftover.add conn
+      for conn in leftover:
+        closeConn(conn)
+      try:
+        selector.close()
+      except CatchableError:
+        discard
+      server.close()
+    NIL
+  else:
+    raiseHttpError("http/serve requires a native posix build", scope)
+    NIL
 
 proc biHttpText(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("http/text", args)

@@ -15,6 +15,10 @@ when defined(posix):
 else:
   import std/streams
 
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  # Readiness-driven event loop for the stdlib net/http server (stdlib.nim).
+  import std/selectors
+
 when sizeof(csize_t) == sizeof(clong):
   type GeneCPtrDiff = clong
 else:
@@ -319,6 +323,12 @@ proc cancelScheduledTask(task: Value): bool
 # Run one runnable fiber to its next park/completion; false if none are runnable.
 # Lets a blocking root-level channel op cooperatively pump the scheduler.
 proc schedulerRunOne(skipWorkerSafe = false): bool
+# Non-sleeping scheduler probes for the net/http event loop (stdlib.nim): it
+# must pump ready fibers and honor timer deadlines without ever letting
+# schedulerRunOne sleep past socket readiness.
+proc hasRunnableFiber(): bool
+proc wakeExpiredTimers(now = getMonoTime()): bool
+proc nextTimerDeadline(): tuple[has: bool, deadline: MonoTime]
 proc schedulerRunOneUntil(deadline: MonoTime, skipWorkerSafe = false): bool
 proc beginSchedulerWorkerLease(): SchedulerWorkerLease
 proc endSchedulerWorkerLease(lease: SchedulerWorkerLease)

@@ -10,3 +10,4 @@ include test_types
 include test_protocols
 include test_native_api
 include test_cli
+include test_http_server

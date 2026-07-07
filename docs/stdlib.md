@@ -189,8 +189,10 @@ Acceptance:
 
 ### `net/http`
 
-The first server can be blocking and single-process. The API should still be
-capability-shaped so a better backend can replace it.
+The server is single-process and cooperative: a non-blocking event loop on the
+scheduler thread with task-per-request handler fibers (originally a blocking
+accept loop; upgraded per `docs/proposals/async-http-server.md` Phase 1). The
+API stays capability-shaped so richer backends can replace it.
 
 Types:
 
@@ -219,6 +221,25 @@ Types:
 Functions:
 
 - `serve : Server, Fn -> Nil ^errors [HttpError]`
+
+`serve` runs a readiness-driven event loop with **task-per-request dispatch**
+(the first slice of `docs/proposals/async-http-server.md`): each parsed
+request runs the handler as a scheduler fiber settling a pending `Task`, so a
+handler that `sleep`s/`await`s parks without stalling other connections.
+Non-fiber callables fall back to an inline call. Connections are
+`connection: close`; request parsing is incremental over non-blocking sockets.
+
+Named arguments to `serve` (all optional):
+
+- `^max-requests Int` — serve N connections then return (tests/embedding);
+- `^max-connections Int` — accept cap; excess connections are shed (default 1024);
+- `^max-in-flight Int` — concurrent dispatched handlers; excess answers
+  `503 Service Unavailable` (default 256);
+- `^request-timeout-ms Int` — overdue handlers answer `504 Gateway Timeout`
+  and the still-running task is orphaned (default 30000).
+
+Stalled request reads answer `408 Request Timeout`; malformed requests and
+oversized headers answer `400 Bad Request` as before.
 - `Response : ^status Int, Str -> Response`
 - `text : Str -> Response`
 - `html : Str -> Response`
