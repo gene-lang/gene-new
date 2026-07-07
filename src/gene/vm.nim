@@ -1368,6 +1368,24 @@ proc raiseActorClosed(scope: Scope) =
   e.hasErrVal = true
   raise e
 
+proc raiseReplyAlreadySent(scope: Scope) =
+  ## ReplyTo is single-use (design §13.5); a second send is the programming
+  ## error named ReplyAlreadySent (async-http-server proposal §18.2).
+  const message = "reply has already been sent"
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  var head = newSym("ReplyAlreadySent")
+  var sentType: Value
+  if scope != nil and scope.lookupOptional("ReplyAlreadySent", sentType) and
+      sentType.kind == vkType:
+    head = sentType
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
 proc actorErrorValue(scope: Scope, message: string): Value =
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr(message)
@@ -1618,14 +1636,14 @@ proc biReplyToSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     raise newException(GeneError,
       "ReplyTo/send expects 2 arguments, got " & $args.len)
   requireReplyTo("ReplyTo/send", args[0])
-  if args[0].replyToSent:
-    raise newException(GeneError, "reply has already been sent")
   let scope = actorDispatchScope(call)
+  if args[0].replyToSent:
+    raiseReplyAlreadySent(scope)
   let sent = args[0].trySendReplyTo(checkedReplyValue(args[0], args[1],
                                                       "ReplyTo/send value",
                                                       scope))
   if not sent.sent:
-    raise newException(GeneError, "reply has already been sent")
+    raiseReplyAlreadySent(scope)
   if sent.task.kind == vkTask:
     wakeTaskWaiters(sent.task)
   NIL
@@ -4219,6 +4237,9 @@ proc buildBuiltins(app: Application): Scope =
                                 receiver: actorError)
   let actorClosed = newType("ActorClosed", actorError, @[], @[], result)
   result.define("ActorClosed", actorClosed)
+  let replyAlreadySent = newType("ReplyAlreadySent", actorError, @[], @[],
+                                 result)
+  result.define("ReplyAlreadySent", replyAlreadySent)
   let actorFailure = newType("ActorFailure", NIL,
                              @[
                                TypeField(name: "actor", optional: false,

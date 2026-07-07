@@ -2177,6 +2177,38 @@ suite "spec — actors from design":
                "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
                "(await (counter ~ actor/ask (fn [reply] (Get ^reply reply))))",
                "41")
+
+  test "a second send on a ReplyTo raises ReplyAlreadySent":
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
+               "(var out (cell nil)) " &
+               "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
+               "  (var (Get ^reply reply) msg) " &
+               "  (reply ~ ReplyTo/send state) " &
+               "  (try (reply ~ ReplyTo/send state) " &
+               "   catch (ReplyAlreadySent ^message m) (out ~ Cell/set m)) " &
+               "  (actor/continue state)) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 7) ^handle handle)) " &
+               "(var got (await (counter ~ actor/ask (fn [reply] (Get ^reply reply))))) " &
+               "[got (sleep 1) (out ~ Cell/get)]",
+               "[7 nil \"reply has already been sent\"]")
+    # ReplyAlreadySent is a subtype of ActorError, so a broad handler-level
+    # catch also sees it.
+    check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
+               "(impl Send Get) " &
+               "(var out (cell nil)) " &
+               "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
+               "  (var (Get ^reply reply) msg) " &
+               "  (reply ~ ReplyTo/send state) " &
+               "  (try (reply ~ ReplyTo/send state) " &
+               "   catch (ActorError ^message m) (out ~ Cell/set m)) " &
+               "  (actor/continue state)) " &
+               "(var counter : (ActorRef Get) " &
+               "  (actor/spawn ^init (fn [] 7) ^handle handle)) " &
+               "(await (counter ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+               "[(sleep 1) (out ~ Cell/get)]",
+               "[nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send Get) " &
                "(scope " &

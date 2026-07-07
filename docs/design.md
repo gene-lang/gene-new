@@ -2629,6 +2629,10 @@ Request/reply uses an explicit one-shot reply capability:
 
 `actor/ask` returns `(Task R ActorError)`. `ReplyTo R` requires `Send R`; it is sendable, single-use, and may carry timeout/cancellation state. Ask is convenience over normal messages; it does not make actors synchronously callable.
 
+Single-use is enforced: a second `ReplyTo/send` on the same reply raises the
+recoverable error `ReplyAlreadySent` (a subtype of `ActorError`). This is a
+programming error in the replying handler, not a delivery condition.
+
 ### 13.6 Lifetime, scopes, and supervision
 
 Actors are owned by a task scope or supervisor, not merely by the reachability of an `ActorRef`. Actor references are garbage-collected handles; dropping the last reference does not substitute for orderly shutdown.
