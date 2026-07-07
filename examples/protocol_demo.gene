@@ -30,7 +30,7 @@
 (protocol Describable
   (message describe [self : Self] : Str))
 
-(impl Describable Animal
+(impl Describable for Animal
   (message describe [self] : Str $"a creature named ${self/name}"))
 
 # -----------------------------------------------------------------------------
@@ -47,9 +47,9 @@
 # -----------------------------------------------------------------------------
 # ^impl [Comparable] requires a visible impl by scope completion; the inline
 # `impl Ord` block satisfies it structurally (§3.5) — no separate
-# `impl Comparable Dog` is needed. Inline impls take no receiver: the
+# `impl Comparable for Dog` is needed. Inline impls take no receiver: the
 # enclosing type is the receiver (§8), so this is identical to writing
-# `(impl Ord Dog ...)` after the declaration.
+# `(impl Ord for Dog ...)` after the declaration.
 # -----------------------------------------------------------------------------
 
 (type Dog ^is Animal ^props {^breed Str ^weight Int} ^impl [Comparable]
@@ -76,7 +76,7 @@
 (protocol Summary ^inherit [Sized Scored]
   (message blurb [self : Self] : Str))
 
-(impl Summary Dog
+(impl Summary for Dog
   (message Sized/size_of [self] : Int self/weight)
   (message Scored/size_of [self] : Int (* self/weight 2))
   (message blurb [self] : Str

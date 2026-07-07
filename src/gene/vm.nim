@@ -8299,7 +8299,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
                             derivedProtocols, proto.deriveRequests,
                             proto.bodyFields, messages, ctorFn)
-          # Inline impls register exactly like standalone (impl P T ...) forms
+          # Inline impls register exactly like standalone (impl P for T ...) forms
           # written after the type declaration (docs/core.md §8), before
           # ^derive runs so manual-vs-generated conflicts surface normally.
           for i, inline in proto.inlineImpls:

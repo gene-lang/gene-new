@@ -174,7 +174,7 @@ proc main() =
   discard run(compileSource(
     "(protocol ToInt (message to_int [self] : Int)) " &
     "(type Box ^props {^x Int}) " &
-    "(impl ToInt Box (message to_int [self] : Int self/x)) " &
+    "(impl ToInt for Box (message to_int [self] : Int self/x)) " &
     "(var box (Box ^x 10))"), protocolScope)
   # Message names are not lexical bindings (docs/core.md §1); the hot
   # dispatch path is now the send form, resolved receiver-first (§9.1).

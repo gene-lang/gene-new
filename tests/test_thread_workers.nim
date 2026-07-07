@@ -253,7 +253,7 @@ suite "threaded scheduler workers":
     withGeneWorkers:
       let pending = run(compileSource(
         "(type Get ^props {^reply (ReplyTo Int)}) " &
-        "(impl Send Get) " &
+        "(impl Send for Get) " &
         "(var a (actor/spawn ^init (fn [] 41) " &
         "  ^handle (fn [ctx state msg] " &
         "    (var (Get ^reply reply) msg) " &
@@ -275,7 +275,7 @@ suite "threaded scheduler workers":
     withGeneWorkers:
       check run(compileSource(
         "(type Put ^props {^value Int}) " &
-        "(impl Send Put) " &
+        "(impl Send for Put) " &
         "(var seen (atomic-cell 0)) " &
         "(var a (actor/spawn ^init (fn [] 0) " &
         "  ^handle (fn [ctx state msg] " &
@@ -633,7 +633,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "8":
       ck "(scope " &
          "  (type Boom ^props {^message Str} ^impl [Error]) " &
-         "  (impl Error Boom) " &
+         "  (impl Error for Boom) " &
          "  (var t (spawn (fail (Boom ^message \"worker\")))) " &
          "  (var i 0) " &
          "  (while (< i 200000) (set i (+ i 1))) " &
@@ -654,7 +654,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "8":
       ck "(scope " &
          "  (type Get ^props {^reply (ReplyTo Int)}) " &
-         "  (impl Send Get) " &
+         "  (impl Send for Get) " &
          "  (var reply_cell (atomic-cell nil)) " &
          "  (var success (atomic-cell 0)) " &
          "  (var gate (channel ^capacity 1)) " &
@@ -755,7 +755,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "1":
       let task = run(compileSource(
         "(type Get ^props {^reply (ReplyTo Int)}) " &
-        "(impl Send Get) " &
+        "(impl Send for Get) " &
         "(var gate (channel ^capacity 1)) " &
         "(var a (actor/spawn ^init (fn [] 0) " &
         "  ^handle (fn [ctx state msg] " &
@@ -775,7 +775,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "1":
       ck "(scope " &
          "  (type Get ^props {^reply (ReplyTo Int)}) " &
-         "  (impl Send Get) " &
+         "  (impl Send for Get) " &
          "  (var gate (channel ^capacity 1)) " &
          "  (var a (actor/spawn ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &

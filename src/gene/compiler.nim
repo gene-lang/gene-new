@@ -3933,8 +3933,8 @@ proc compileType(c: var Compiler, node: Value) =
       let msgNode = item.body[j]
       if msgNode.kind != vkNode or not msgNode.head.isSymbol("message"):
         raise newException(GeneError,
-          "inline impl body items must be message declarations " &
-          "(the enclosing type is the receiver)")
+          "inline impl body items must be message declarations — no `for`, " &
+          "no receiver: the enclosing type is the receiver")
       let mp = implMessageProto(c, msgNode)
       let key = mp.protocolPath.join("/") & "/" & mp.name
       if seenImplMessages.hasKey(key):
@@ -4056,8 +4056,8 @@ proc compileEnum(c: var Compiler, node: Value) =
       let msgNode = item.body[j]
       if msgNode.kind != vkNode or not msgNode.head.isSymbol("message"):
         raise newException(GeneError,
-          "inline impl body items must be message declarations " &
-          "(the enclosing enum is the receiver)")
+          "inline impl body items must be message declarations — no `for`, " &
+          "no receiver: the enclosing enum is the receiver")
       let mp = implMessageProto(c, msgNode)
       let key = mp.protocolPath.join("/") & "/" & mp.name
       if seenImplMessages.hasKey(key):
@@ -4161,14 +4161,18 @@ proc compileProtocol(c: var Compiler, node: Value) =
   c.emitDefineBinding(name)
 
 proc compileImpl(c: var Compiler, node: Value) =
+  ## (impl Protocol for Receiver (message ...) ...) — the `for` keyword
+  ## separates the protocol from the receiver type.
   let body = node.body
-  if body.len < 2:
-    raise newException(GeneError, "impl requires a protocol and receiver type")
+  if body.len < 3 or not body[1].isSymbol("for"):
+    raise newException(GeneError,
+      "impl requires a protocol and receiver type: " &
+      "(impl Protocol for Receiver ...)")
   compileExpr(c, body[0])
-  compileExpr(c, body[1])
+  compileExpr(c, body[2])
   var messages: seq[ImplMessageProto]
   var seen = initTable[string, bool]()
-  for i in 2 ..< body.len:
+  for i in 3 ..< body.len:
     let mp = implMessageProto(c, body[i])
     let key = mp.protocolPath.join("/") & "/" & mp.name
     if seen.hasKey(key):

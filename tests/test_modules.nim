@@ -137,7 +137,7 @@ suite "modules — file imports":
     writeModule("json_ext.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson User (message to_json [self] : Str self/name))")
+      "(impl ToJson for User (message to_json [self] : Str self/name))")
     check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(import from \"./json_ext\" ^as ext) " &
@@ -151,7 +151,7 @@ suite "modules — file imports":
     writeModule("json_ext.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson User (message to_json [self] : Str self/name))")
+      "(impl ToJson for User (message to_json [self] : Str self/name))")
     check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(import from \"./json_ext\" ^as ext1) " &
@@ -166,11 +166,11 @@ suite "modules — file imports":
     writeModule("json_ext_a.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson User (message to_json [self] : Str self/name))")
+      "(impl ToJson for User (message to_json [self] : Str self/name))")
     writeModule("json_ext_b.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson User (message to_json [self] : Str \"other\"))")
+      "(impl ToJson for User (message to_json [self] : Str \"other\"))")
     expect GeneError:
       discard runProgram("(import [ToJson] from \"./json\") " &
         "(import [User] from \"./model\") " &
@@ -222,7 +222,7 @@ suite "modules — built-in identity and scope hygiene":
     # against its own built-in `Error`. These must be the same protocol value.
     writeModule("erra.gene",
       "(type Boom ^props {^message Str} ^impl [Error]) " &
-      "(impl Error Boom) " &
+      "(impl Error for Boom) " &
       "(fn boom ^errors [Boom] [] (fail (Boom ^message \"x\")))")
     check runProgram("(import [Boom, boom] from \"./erra\") " &
       "(fn f ^errors [Boom] [] (boom)) " &
@@ -266,7 +266,7 @@ suite "modules — namespace-path imports and mod":
     check run(compileSource(
       "(protocol Show (message show [self] : Str)) " &
       "(type T ^props {}) " &
-      "(ns ext (impl Show T (message show [self] : Str \"ok\"))) " &
+      "(ns ext (impl Show for T (message show [self] : Str \"ok\"))) " &
       "(import ext ^as imported) " &
       "((T) ~ show)"),
       newGlobalScope()).print() == "\"ok\""
@@ -308,6 +308,6 @@ suite "modules — Env imports":
     writeModule("showlib.gene",
       "(protocol Show (message show [self] : Str)) " &
       "(type T ^props {}) " &
-      "(impl Show T (message show [self] : Str \"ok\"))")
+      "(impl Show for T (message show [self] : Str \"ok\"))")
     check runProgram("(var e (env ^imports [\"./showlib\"])) " &
       "(eval (quote ((T) ~ show)) ^in e)").print() == "\"ok\""

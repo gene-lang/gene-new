@@ -21,7 +21,7 @@ as follow-on patches.
 (protocol ToHtml
   (message to_html [self : Self] : Node))
 
-(impl ToHtml MenuItem
+(impl ToHtml for MenuItem
   (message to_html [self] : Node
     `(tr (td %self/name))))
 ```
@@ -46,7 +46,7 @@ as follow-on patches.
   two cleanly separate operations, and removes the duplicate-binding
   collision that same-named messages across protocols would otherwise cause
   in a shared scope.
-- `^impl [P]` on a type requires a visible `impl P T` covering `P`'s full
+- `^impl [P]` on a type requires a visible `impl P for T` covering `P`'s full
   message set.
 - `^derive [P]` triggers `P`'s protocol-local `derive` form, generating an
   `impl` in a compiler-owned overlay.
@@ -78,11 +78,11 @@ Gene has two independent inheritance axes, and both are needed:
 
 ```gene
 (type Animal ^props {^name Str})
-(impl Comparable Animal (message compare [self other] ...))
+(impl Comparable for Animal (message compare [self other] ...))
 
 (type Dog ^is Animal ^props {^breed Str})
 
-(d ~ compare)  # resolves through impl Comparable Animal — no impl Comparable Dog needed
+(d ~ compare)  # resolves through impl Comparable for Animal — no impl Comparable for Dog needed
 ```
 
 This was already implemented and tested before protocol inheritance existed
@@ -91,8 +91,8 @@ This was already implemented and tested before protocol inheritance existed
 originally set out to close, and turned out not to be a gap.
 
 **Correction from an earlier draft of this document: overlap is an ambiguity
-error, not most-specific-wins.** If both `impl Comparable Animal` and `impl
-Comparable Dog` are visible, dispatching `compare` on a `Dog` raises an
+error, not most-specific-wins.** If both `impl Comparable for Animal` and `impl
+Comparable for Dog` are visible, dispatching `compare` on a `Dog` raises an
 ambiguity error rather than silently preferring `Dog`'s impl (see
 `tests/test_protocols.nim`, "overlapping parent and child impls are ambiguous
 at use"). An earlier draft of this section recommended most-specific-wins by
@@ -155,8 +155,8 @@ When `C ^inherit [A B]`, `C`'s message closure is the union of `A`, `B`, and
 [A B]`, `B ^inherit [A]`), `A`'s messages appear once — reachability through
 two paths does not duplicate them.
 
-`impl C T` must provide (directly, or via §3.6/§5) every message in `C`'s
-transitive closure. Missing one is a compile error: `"impl C T is missing
+`impl C for T` must provide (directly, or via §3.6/§5) every message in `C`'s
+transitive closure. Missing one is a compile error: `"impl C for T is missing
 message A/do_a"`.
 
 ### 3.3 Same-name messages across independent parents
@@ -217,12 +217,12 @@ on the simple name.
 (print-a t)   # t : T, and T implements C, which inherits A
 ```
 
-Writing `impl C T` is the only declaration needed; it implies `T` satisfies
+Writing `impl C for T` is the only declaration needed; it implies `T` satisfies
 every ancestor of `C` (here, `A`). No separate `^impl [A]` annotation is
 required — the subtype relationship is derived automatically from the impl
 graph. `^impl [C]` on a type declaration remains a compiler-checked
-requirement that an `impl C T` exists, but is not itself the source of truth
-for what `T` implements; a lone `^impl [C]` and an `impl C T` elsewhere both
+requirement that an `impl C for T` exists, but is not itself the source of truth
+for what `T` implements; a lone `^impl [C]` and an `impl C for T` elsewhere both
 register `T → {A, B, C}` in the same way. This composes with the `^is`-walk
 rule in §2.1: `T`'s ancestors' impls contribute to the same registration.
 
@@ -235,18 +235,18 @@ per the OQ-A recommendation to defer partial impl composition. Until OQ-A is
 revisited, treat everything below as design intent only.
 
 ```gene
-(impl A T (message do_a [self] "from A impl"))
-(impl B T (message do_b [self] ...))  # omits A/do_a — rejected today
+(impl A for T (message do_a [self] "from A impl"))
+(impl B for T (message do_b [self] ...))  # omits A/do_a — rejected today
 ```
 
-If `impl A T` is already visible when `impl B T` is compiled, `impl B T` may
+If `impl A for T` is already visible when `impl B for T` is compiled, `impl B for T` may
 omit messages already satisfied by that visible ancestor impl. The compiler
-checks that `{messages in impl B T body} ∪ {messages satisfied by in-scope
+checks that `{messages in impl B for T body} ∪ {messages satisfied by in-scope
 ancestor impls}` covers `B`'s full transitive closure; otherwise it is a
 missing-message error.
 
 Two separately visible impls providing the *same* `(protocol, type)` pair
-(e.g. both `impl A T` and `impl B T` defining `A/do_a`) is an ordinary
+(e.g. both `impl A for T` and `impl B for T` defining `A/do_a`) is an ordinary
 duplicate-impl ambiguity error at the use site of `A/do_a` on `T` — the
 existing coherence rule applies unchanged, it does not get a new rule for
 inheritance.
@@ -265,7 +265,7 @@ name, an `impl` body must qualify those message definitions:
 (protocol B (message do_x [self : Self] : Str))
 (protocol C ^inherit [A B])
 
-(impl C T
+(impl C for T
   (message A/do_x [self] "A behavior")
   (message B/do_x [self] "B behavior"))
 ```
@@ -308,14 +308,14 @@ open questions.
 
 ## 4. Dispatch table design
 
-With inheritance, looking up `B/do_b` on `T` must consider `impl C T` where
-`C`'s closure includes `B`, not only a direct `impl B T` — and, per §2.1,
+With inheritance, looking up `B/do_b` on `T` must consider `impl C for T` where
+`C`'s closure includes `B`, not only a direct `impl B for T` — and, per §2.1,
 must also consider impls visible on `T`'s `^is` ancestors.
 
 **Message closure flattening is eager, at protocol-construction time.** `C`'s
 qualified message set is computed once when `C` is constructed (merging each
 parent's already-flattened closure, deduped by qualified identity — see
-§3.2/§3.3), so `impl C T`'s completeness check and every downstream lookup
+§3.2/§3.3), so `impl C for T`'s completeness check and every downstream lookup
 by qualified message already sees the full transitive closure with zero
 per-call cost.
 
@@ -335,7 +335,7 @@ VM. In practice: `resolveProtocolMessage`/`hasVisibleImpl` in `src/gene/vm.nim`
 already walked `T`'s `^is` chain at dispatch time for type inheritance before
 this document existed, so a from-scratch "flatten every ancestor pair at
 registration" scheme for protocols would have been the odd one out rather
-than consistent with the codebase. `impl C T` is registered once, under `C`
+than consistent with the codebase. `impl C for T` is registered once, under `C`
 only; checking whether it also satisfies an ancestor protocol `A` walks `C`'s
 (typically shallow) `^inherit` chain via `protocolIsOrInherits` at the match
 site. Measured on `vm.protocol_message.compiled_chunk`
@@ -345,7 +345,7 @@ regression in practice, so the theoretical O(depth) walk was not worth a
 larger registration-time restructuring for this MVP slice.
 
 ```text
-impl C T registered once, under protocol C
+impl C for T registered once, under protocol C
 lookup(A, T)  → same(C, A)? no  → walk C.parents → same(B, A)? no → walk further → found
 lookup(C, T)  → same(C, C)? yes → done
 ```
@@ -364,12 +364,12 @@ time, unchanged.
 ```
 
 A message may carry a default implementation in its own protocol body. If
-`impl B T` doesn't provide `do_b`, the default is used.
+`impl B for T` doesn't provide `do_b`, the default is used.
 
 **Design call: implement defaults as a dispatch-table fallback, not as
 derive-style codegen.** A default body is generic over `Self` — it never
 needs a per-type copy or knowledge of `T`'s shape. At the same registration
-step described in §4, if `impl B T` doesn't explicitly provide a defaulted
+step described in §4, if `impl B for T` doesn't explicitly provide a defaulted
 message, register that `(protocol, type)` dispatch entry pointing at the
 **one shared default closure** rather than synthesizing a per-type `impl`
 node in the overlay.
@@ -401,12 +401,12 @@ implements Node") is the existing example this generalizes. See §9.2.
 (protocol A
   (message do_a [self : Self] : Any)
   (derive [t req]
-    `(impl A %t (message do_a [self] (to-str self/name)))))
+    `(impl A for %t (message do_a [self] (to-str self/name)))))
 
 (protocol B ^inherit [A]
   (message do_b [self : Self] : Any)
   (derive [t req]
-    `(impl B %t (message do_b [self] (to-str self/value)))))
+    `(impl B for %t (message do_b [self] (to-str self/value)))))
 
 (type T ^props {^name Str ^value Int} ^derive [B])
 ```
@@ -535,14 +535,14 @@ enclosing type:
 ```
 
 This is pure placement sugar: it is semantically identical to writing
-`(impl A T (message do_a [self] ...))` immediately after the type
+`(impl A for T (message do_a [self] ...))` immediately after the type
 declaration, in the same scope. Everything about standalone impls carries
 over unchanged:
 
 - the impl must cover the protocol's full transitive closure (§3.2), with
   the same qualified-name rules for same-named closure messages (§3.6.1);
 - it registers as an ordinary visible impl — an inline `impl A` plus a
-  separate `impl A T` elsewhere is the usual duplicate-impl error, and an
+  separate `impl A for T` elsewhere is the usual duplicate-impl error, and an
   inline impl plus a `^derive`-generated impl for the same protocol
   conflicts the same way a manual one does;
 - it satisfies a `^impl [A]` requirement on the same type (listing both is
@@ -555,7 +555,7 @@ standalone impl. The two body-item kinds compose freely in one type body:
 `(message …)` items are private receiver-owned behavior, `(impl P …)` items
 are public contract implementations, grouped at the declaration site.
 
-Writing a receiver inside an inline impl is an error (`(impl A T …)` inside
+Writing a receiver inside an inline impl is an error (`(impl A for T …)` inside
 `(type T …)` — the receiver is always the enclosing type).
 
 ### Error forms
@@ -706,7 +706,7 @@ type information through the runtime even though their node head is the
 scalar itself"). So:
 
 ```gene
-(impl ToHtml Nil
+(impl ToHtml for Nil
   (message to_html [self] : Node
     `(span "—")))
 ```
@@ -719,7 +719,7 @@ protocol's message set.
 
 **Optional types need no union-impl mechanism.** For `(opt T) = (| T Nil)`,
 dispatch happens on the concrete runtime value at the call site: if the
-value is `nil`, `impl P Nil` runs; if it is a `T`, `impl P T` runs. No
+value is `nil`, `impl P for Nil` runs; if it is a `T`, `impl P for T` runs. No
 separate `impl P (| T Nil)` form is needed or should be added — a union is
 not itself a nominal dispatch target.
 
@@ -759,7 +759,7 @@ implemented and stable, and sit at implementation-order item 13; base
   access (`Box/get`) and sends, walking `^is` with most-derived-wins
 - §8 inline protocol impls — `(impl P (message ...) ...)` in a type body
   registers as an ordinary visible impl with the enclosing type as receiver,
-  identical to a standalone `(impl P T ...)` after the declaration (same
+  identical to a standalone `(impl P for T ...)` after the declaration (same
   closure coverage, qualification, duplicate, and `^impl`-satisfaction
   rules; `(impl Send)` works for markers)
 - §9.1 — receiver-first sends: the reader preserves `(x ~ f a)` nodes
@@ -787,7 +787,7 @@ implemented and stable, and sit at implementation-order item 13; base
 - §9.1's compile-time resolution for statically-known receiver types, the
   shadowing lint (OQ-F), and inline caches for dynamic sends — all sends
   currently resolve dynamically at the call site
-- §10 — checked empirically (`./bin/gene eval '(protocol P (message m [self] : Str "x")) (impl P Nil (message m [self] : Str "n")) (m nil)'`) and it does **not** work yet: `Nil`/`Bool`/`Int`/etc. are recognized only as special-case strings inside the gradual type-boundary checker (`matchesBuiltinType` in `src/gene/vm.nim`), not as bound `vkType` values, so `Nil` isn't a resolvable symbol in impl-receiver position at all — "undefined symbol: Nil". Separately, protocol dispatch (`receiverType` in `src/gene/vm.nim`) currently requires a `vkNode` value with a `vkType` head; a bare scalar like the `nil` literal (`vkNil`) has no such head, so it couldn't dispatch through a protocol message even if `Nil` resolved to a type value. This is a larger, pre-existing gap in scalar/singleton dispatch, not specific to inheritance — out of scope for this slice.
+- §10 — checked empirically (`./bin/gene eval '(protocol P (message m [self] : Str "x")) (impl P for Nil (message m [self] : Str "n")) (m nil)'`) and it does **not** work yet: `Nil`/`Bool`/`Int`/etc. are recognized only as special-case strings inside the gradual type-boundary checker (`matchesBuiltinType` in `src/gene/vm.nim`), not as bound `vkType` values, so `Nil` isn't a resolvable symbol in impl-receiver position at all — "undefined symbol: Nil". Separately, protocol dispatch (`receiverType` in `src/gene/vm.nim`) currently requires a `vkNode` value with a `vkType` head; a bare scalar like the `nil` literal (`vkNil`) has no such head, so it couldn't dispatch through a protocol message even if `Nil` resolved to a type value. This is a larger, pre-existing gap in scalar/singleton dispatch, not specific to inheritance — out of scope for this slice.
 
 ---
 
@@ -795,7 +795,7 @@ implemented and stable, and sit at implementation-order item 13; base
 
 | # | Question | Recommendation |
 |---|---|---|
-| OQ-A | Is partial impl composition (§3.6 — `impl B T` omitting messages covered by a separately visible `impl A T`) worth its coherence-checker complexity for the first slice? | Defer. Require `impl B T` to restate its full transitive closure in the first cut; revisit once dispatch-table flattening (§4) is proven in production. This is the single highest-risk item in the design, and it's separable from everything else. |
+| OQ-A | Is partial impl composition (§3.6 — `impl B for T` omitting messages covered by a separately visible `impl A for T`) worth its coherence-checker complexity for the first slice? | Defer. Require `impl B for T` to restate its full transitive closure in the first cut; revisit once dispatch-table flattening (§4) is proven in production. This is the single highest-risk item in the design, and it's separable from everything else. |
 | OQ-B | Should default message bodies (§5), and the fully-defaulted-protocol relaxation they enable (§9.2), ship in the same slice as base inheritance? | No. Ship after §4 is stable. Coupling a second new completeness-checking path (defaults) to the first one (inheritance flattening) makes it harder to isolate bugs in either. Once added, implement as a dispatch-fallback (§5), not via the derive/overlay path. |
 | OQ-C | Generic protocol inheritance (§3.8): exact type-parameter match only, or allow specialization (`^inherit [(Container Int)]` under a still-generic child)? | Exact match only for MVP. Specialization introduces associated-type-like complexity that doesn't have a clear need yet; revisit if a concrete use case appears. |
 | OQ-D | Should the compiler warn or error on a redundant `^impl [A B]` when `B`'s closure already implies `A`? | Warn, not error. Redundant but harmless; a lint ("`A` is already implied by `B`") is enough. |

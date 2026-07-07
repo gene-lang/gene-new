@@ -69,7 +69,7 @@
 # Domain error: raised by GET /job/:id for unknown ids, mapped to a 404 by the
 # ^on-error mapper below instead of the generic 500.
 (type JobNotFound ^props {^id Str} ^impl [Error])
-(impl Error JobNotFound)
+(impl Error for JobNotFound)
 
 # Bind the listener eagerly (capability-shaped surface): the returned Server
 # value carries the runtime handle, so handlers can call (status server) and

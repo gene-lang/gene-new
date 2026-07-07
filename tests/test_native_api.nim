@@ -82,7 +82,7 @@ suite "native api — roots and trampoline":
   test "geneCall preserves call-site metadata for Callable values":
     let scope = newGlobalScope()
     let callee = run(compileSource("(type Probe) " &
-                                   "(impl Callable Probe " &
+                                   "(impl Callable for Probe " &
                                    "  (message apply [self call] call/site)) " &
                                    "(Probe)"),
                      scope)
@@ -94,7 +94,7 @@ suite "native api — roots and trampoline":
   test "geneCall reports recoverable errors and panics without exposing exceptions":
     let scope = newGlobalScope()
     discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
-                              "(impl Error Boom)"),
+                              "(impl Error for Boom)"),
                 scope)
     let failer = run(compileSource("(fn [] (fail (Boom ^message \"bad\")))"),
                      scope)
@@ -298,7 +298,7 @@ suite "native api — roots and trampoline":
     check called.value.print() == "42"
 
     discard run(compileSource("(type Bad ^props {^message Str} ^impl [Error]) " &
-                              "(impl Error Bad)"),
+                              "(impl Error for Bad)"),
                 scope)
     let failer = run(compileSource("(fn [] (fail (Bad ^message \"callback\")))"),
                      scope)

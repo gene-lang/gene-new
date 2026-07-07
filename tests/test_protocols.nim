@@ -24,38 +24,38 @@ suite "protocols — declarations and dispatch":
   test "message sends dispatch on the receiver nominal type":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &
-       "(impl ToName User (message to_name [self] : Str self/name)) " &
+       "(impl ToName for User (message to_name [self] : Str self/name)) " &
        "((User ^name \"Ada\") ~ to_name)",
        "\"Ada\""
 
   test "qualified message sends work through the protocol value":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &
-       "(impl ToName User (message to_name [self] : Str self/name)) " &
+       "(impl ToName for User (message to_name [self] : Str self/name)) " &
        "((User ^name \"Ada\") ~ ToName/to_name)",
        "\"Ada\""
 
   test "user-defined Callable values receive a Call envelope":
     ck "(type AddN ^props {^n Int}) " &
-       "(impl Callable AddN " &
+       "(impl Callable for AddN " &
        "  (message apply [self call] (+ self/n (call ~ /0)))) " &
        "((AddN ^n 5) 7)",
        "12"
     ck "(type PickNamed ^props {}) " &
-       "(impl Callable PickNamed " &
+       "(impl Callable for PickNamed " &
        "  (message apply [self call] call/named/name)) " &
        "((PickNamed) ^name \"Ada\")",
        "\"Ada\""
 
   test "the Call envelope carries the source call site":
     ck "(type Probe ^props {}) " &
-       "(impl Callable Probe (message apply [self call] call/site)) " &
+       "(impl Callable for Probe (message apply [self call] call/site)) " &
        "(var p (Probe)) (p 7 8)",
        "(p 7 8)"
 
   test "Callable boundaries accept values with visible impls":
     ck "(type AddN ^props {^n Int}) " &
-       "(impl Callable AddN " &
+       "(impl Callable for AddN " &
        "  (message apply [self call] (+ self/n (call ~ /0)))) " &
        "(fn invoke [f : Callable] (f 2)) " &
        "(invoke (AddN ^n 3))",
@@ -63,12 +63,12 @@ suite "protocols — declarations and dispatch":
 
   test "ToStr customizes display conversion":
     ck "(type User ^props {^name Str}) " &
-       "(impl ToStr User (message to-str [self] : Str self/name)) " &
+       "(impl ToStr for User (message to-str [self] : Str self/name)) " &
        "(var user (User ^name \"Ada\")) " &
        "[(to-str user) ($ \"hello \" user) $\"hi ${user}\"]",
        "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
     ck "(type Bad ^props {}) " &
-       "(impl ToStr Bad (message to-str [self] 1)) " &
+       "(impl ToStr for Bad (message to-str [self] 1)) " &
        "(try (to-str (Bad)) catch (TypeError ^where w) w)",
        "\"ToStr/to-str\""
 
@@ -76,7 +76,7 @@ suite "protocols — declarations and dispatch":
     ck "(ns model " &
        "  (protocol ToName (message to_name [self] : Str)) " &
        "  (type User ^props {^name Str}) " &
-       "  (impl ToName User (message to_name [self] : Str self/name))) " &
+       "  (impl ToName for User (message to_name [self] : Str self/name))) " &
        "((model/User ^name \"Ada\") ~ model/ToName/to_name)",
        "\"Ada\""
 
@@ -84,7 +84,7 @@ suite "protocols — declarations and dispatch":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type Animal ^props {^name Str}) " &
        "(type Dog ^is Animal ^props {^breed Str}) " &
-       "(impl ToName Animal (message to_name [self] : Str self/name)) " &
+       "(impl ToName for Animal (message to_name [self] : Str self/name)) " &
        "((Dog ^name \"Rex\" ^breed \"Lab\") ~ to_name)",
        "\"Rex\""
 
@@ -93,20 +93,20 @@ suite "protocols — declarations and dispatch":
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type Animal ^props {^name Str}) " &
                      "(type Dog ^is Animal ^props {^breed Str}) " &
-                     "(impl ToName Animal (message to_name [self] : Str self/name)) " &
-                     "(impl ToName Dog (message to_name [self] : Str self/breed)) " &
+                     "(impl ToName for Animal (message to_name [self] : Str self/name)) " &
+                     "(impl ToName for Dog (message to_name [self] : Str self/breed)) " &
                      "((Dog ^name \"Rex\" ^breed \"Lab\") ~ ToName/to_name)")
 
   test "type ^impl requirements are checked after forward impls":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str} ^impl [ToName]) " &
-       "(impl ToName User (message to_name [self] : Str self/name)) " &
+       "(impl ToName for User (message to_name [self] : Str self/name)) " &
        "((User ^name \"Ada\") ~ to_name)",
        "\"Ada\""
 
   test "types can require manual Send impls":
     ck "(type Token ^props {^id Int} ^impl [Send]) " &
-       "(impl Send Token) " &
+       "(impl Send for Token) " &
        "(var t (Token ^id 7)) t/id",
        "7"
 
@@ -157,7 +157,7 @@ suite "protocols — declarations and dispatch":
     ck "(protocol HasLabel " &
        "  (message label [self] : Str) " &
        "  (derive [t : Type, req] " &
-       "    `(impl HasLabel %t " &
+       "    `(impl HasLabel for %t " &
        "       (message label [self] : Str self/name)))) " &
        "(type User ^props {^name Str} ^impl [HasLabel] ^derive [HasLabel]) " &
        "((User ^name \"Ada\") ~ label)",
@@ -167,7 +167,7 @@ suite "protocols — declarations and dispatch":
     ck "(protocol HasLabel " &
        "  (message label [self] : Str) " &
        "  (derive [t : Type, req] " &
-       "    `(impl HasLabel %t " &
+       "    `(impl HasLabel for %t " &
        "       (message label [self] : Str %req/label)))) " &
        "(type User ^props {^name Str} ^derive [(HasLabel ^label \"generated\")]) " &
        "((User ^name \"Ada\") ~ label)",
@@ -181,13 +181,13 @@ suite "protocols — declarations and dispatch":
     expect GeneError:
       discard runStr("(protocol Other) " &
                      "(protocol HasLabel " &
-                     "  (derive [t : Type, req] `(impl Other %t))) " &
+                     "  (derive [t : Type, req] `(impl Other for %t))) " &
                      "(type User ^props {^name Str} ^derive [HasLabel])")
 
   test "message implementation return annotations are checked":
     ck "(try (protocol ToName (message to_name [self] : Str)) " &
        "(type User ^props {^name Str}) " &
-       "(impl ToName User (message to_name [self] : Str 1)) " &
+       "(impl ToName for User (message to_name [self] : Str 1)) " &
        "((User ^name \"Ada\") ~ to_name) " &
        "catch (TypeError ^where w) w)",
        "\"return from 'to_name'\""
@@ -202,18 +202,18 @@ suite "protocols — declarations and dispatch":
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type User ^props {^name Str}) " &
-                     "(impl ToName User (message to_name [self] : Str self/name)) " &
-                     "(impl ToName User (message to_name [self] : Str self/name))")
+                     "(impl ToName for User (message to_name [self] : Str self/name)) " &
+                     "(impl ToName for User (message to_name [self] : Str self/name))")
 
   test "impls must cover exactly the protocol messages":
     expect GeneError:
       discard runStr("(protocol P (message a [self]) (message b [self])) " &
                      "(type T ^props {}) " &
-                     "(impl P T (message a [self] 1))")
+                     "(impl P for T (message a [self] 1))")
     expect GeneError:
       discard runStr("(protocol P (message a [self])) " &
                      "(type T ^props {}) " &
-                     "(impl P T (message a [self] 1) (message b [self] 2))")
+                     "(impl P for T (message a [self] 1) (message b [self] 2))")
 
   test "deep recursion through a protocol message uses heap frames":
     # Message dispatch resolves to the receiver's impl at the call site and pushes
@@ -221,7 +221,7 @@ suite "protocols — declarations and dispatch":
     # through a method therefore no longer grows the Nim stack.
     ck "(protocol Count (message down [self n])) " &
        "(type Counter ^props {}) " &
-       "(impl Count Counter " &
+       "(impl Count for Counter " &
        "  (message down [self n] " &
        "    (if (= n 0) 0 (+ 1 (self ~ down (- n 1)))))) " &
        "((Counter) ~ down 200000)",
@@ -232,7 +232,7 @@ suite "protocols — ^inherit and qualified message identity":
     ck "(protocol A (message do_a [self] : Str)) " &
        "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl B T " &
+       "(impl B for T " &
        "  (message do_a [self] : Str \"a\") " &
        "  (message do_b [self] : Str \"b\")) " &
        "(var t (T)) " &
@@ -244,7 +244,7 @@ suite "protocols — ^inherit and qualified message identity":
        "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
        "(protocol C ^inherit [A B] (message do_c [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl C T " &
+       "(impl C for T " &
        "  (message do_a [self] : Str \"a\") " &
        "  (message do_b [self] : Str \"b\") " &
        "  (message do_c [self] : Str \"c\")) " &
@@ -257,7 +257,7 @@ suite "protocols — ^inherit and qualified message identity":
        "(protocol Y (message do_y [self] : Str)) " &
        "(protocol Z ^inherit [X Y] (message do_z [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl Z T " &
+       "(impl Z for T " &
        "  (message do_x [self] : Str \"x\") " &
        "  (message do_y [self] : Str \"y\") " &
        "  (message do_z [self] : Str \"z\")) " &
@@ -270,7 +270,7 @@ suite "protocols — ^inherit and qualified message identity":
       discard runStr("(protocol A (message do_a [self] : Str)) " &
                      "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
                      "(type T ^props {}) " &
-                     "(impl B T (message do_b [self] : Str \"b\"))")
+                     "(impl B for T (message do_b [self] : Str \"b\"))")
 
   test "same-name messages across independent parents coexist":
     # docs/core.md §3.3: X/clash and Y/clash are distinct messages; the impl
@@ -280,7 +280,7 @@ suite "protocols — ^inherit and qualified message identity":
        "(protocol Y (message clash [self] : Str)) " &
        "(protocol Z ^inherit [X Y] (message do_z [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl Z T " &
+       "(impl Z for T " &
        "  (message X/clash [self] : Str \"x-behavior\") " &
        "  (message Y/clash [self] : Str \"y-behavior\") " &
        "  (message do_z [self] : Str \"z\")) " &
@@ -292,7 +292,7 @@ suite "protocols — ^inherit and qualified message identity":
                      "(protocol Y (message clash [self] : Str)) " &
                      "(protocol Z ^inherit [X Y]) " &
                      "(type T ^props {}) " &
-                     "(impl Z T " &
+                     "(impl Z for T " &
                      "  (message X/clash [self] : Str \"x\") " &
                      "  (message Y/clash [self] : Str \"y\")) " &
                      "((T) ~ clash)")
@@ -303,7 +303,7 @@ suite "protocols — ^inherit and qualified message identity":
                      "(protocol Y (message clash [self] : Str)) " &
                      "(protocol Z ^inherit [X Y]) " &
                      "(type T ^props {}) " &
-                     "(impl Z T " &
+                     "(impl Z for T " &
                      "  (message clash [self] : Str \"which one?\") " &
                      "  (message Y/clash [self] : Str \"y\"))")
 
@@ -313,7 +313,7 @@ suite "protocols — ^inherit and qualified message identity":
     ck "(protocol A (message do_a [self] : Str)) " &
        "(protocol B ^inherit [A] (message do_a [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl B T " &
+       "(impl B for T " &
        "  (message A/do_a [self] : Str \"from-A\") " &
        "  (message B/do_a [self] : Str \"from-B\")) " &
        "(var t (T)) " &
@@ -323,13 +323,13 @@ suite "protocols — ^inherit and qualified message identity":
       discard runStr("(protocol A (message do_a [self] : Str)) " &
                      "(protocol B ^inherit [A] (message do_a [self] : Str)) " &
                      "(type T ^props {}) " &
-                     "(impl B T (message B/do_a [self] : Str \"only-B\"))")
+                     "(impl B for T (message B/do_a [self] : Str \"only-B\"))")
 
   test "a child-protocol spelling reaches an unambiguous inherited message":
     ck "(protocol A (message do_a [self] : Str)) " &
        "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl B T " &
+       "(impl B for T " &
        "  (message do_a [self] : Str \"a\") " &
        "  (message do_b [self] : Str \"b\")) " &
        "((T) ~ B/do_a)",
@@ -344,7 +344,7 @@ suite "protocols — ^inherit and qualified message identity":
     ck "(protocol A (message do_a [self] : Str)) " &
        "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
        "(type T ^props {} ^impl [A]) " &
-       "(impl B T " &
+       "(impl B for T " &
        "  (message do_a [self] : Str \"a\") " &
        "  (message do_b [self] : Str \"b\")) " &
        "((T) ~ do_a)",
@@ -355,8 +355,8 @@ suite "protocols — ^inherit and qualified message identity":
       discard runStr("(protocol A (message do_a [self] : Str)) " &
                      "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
                      "(type T ^props {}) " &
-                     "(impl A T (message do_a [self] : Str \"a-direct\")) " &
-                     "(impl B T " &
+                     "(impl A for T (message do_a [self] : Str \"a-direct\")) " &
+                     "(impl B for T " &
                      "  (message do_a [self] : Str \"a-via-b\") " &
                      "  (message do_b [self] : Str \"b\")) " &
                      "((T) ~ A/do_a)")
@@ -390,7 +390,7 @@ suite "types — type-direct messages and sends":
   test "protocol impls win over shadowing lexical bindings at send sites":
     ck "(protocol P (message pm [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl P T (message pm [self] : Str \"via-impl\")) " &
+       "(impl P for T (message pm [self] : Str \"via-impl\")) " &
        "(fn probe [pm] ((T) ~ pm)) " &
        "(probe (fn [x] \"shadow\"))",
        "\"via-impl\""
@@ -482,14 +482,14 @@ suite "types — inline protocol impls":
     expect GeneError:
       discard runStr("(protocol A (message do_a [self] : Str)) " &
                      "(type T ^props {} " &
-                     "  (impl A T (message do_a [self] : Str \"x\")))")
+                     "  (impl A for T (message do_a [self] : Str \"x\")))")
 
   test "inline plus standalone impls of one protocol are duplicates":
     expect GeneError:
       discard runStr("(protocol A (message do_a [self] : Str)) " &
                      "(type T ^props {} " &
                      "  (impl A (message do_a [self] : Str \"inline\"))) " &
-                     "(impl A T (message do_a [self] : Str \"standalone\"))")
+                     "(impl A for T (message do_a [self] : Str \"standalone\"))")
 
   test "inline impl targets must be protocols":
     expect GeneError:
@@ -501,7 +501,7 @@ suite "protocols — namespace-qualified declaration paths":
     ck "(ns p (protocol A (message do_a [self] : Str))) " &
        "(protocol B ^inherit [p/A] (message do_b [self] : Str)) " &
        "(type T ^props {}) " &
-       "(impl B T " &
+       "(impl B for T " &
        "  (message do_a [self] : Str \"a\") " &
        "  (message do_b [self] : Str \"b\")) " &
        "(var t (T)) " &
@@ -511,7 +511,7 @@ suite "protocols — namespace-qualified declaration paths":
   test "^impl accepts namespace-qualified protocols":
     ck "(ns p (protocol A (message do_a [self] : Str))) " &
        "(type T ^props {} ^impl [p/A]) " &
-       "(impl p/A T (message do_a [self] : Str \"ok\")) " &
+       "(impl p/A for T (message do_a [self] : Str \"ok\")) " &
        "((T) ~ do_a)",
        "\"ok\""
 
@@ -521,7 +521,7 @@ suite "protocols — namespace-qualified declaration paths":
        "  (protocol Y (message clash [self] : Str))) " &
        "(protocol Z ^inherit [p/X p/Y]) " &
        "(type T ^props {}) " &
-       "(impl Z T " &
+       "(impl Z for T " &
        "  (message p/X/clash [self] : Str \"x\") " &
        "  (message p/Y/clash [self] : Str \"y\")) " &
        "(var t (T)) " &
@@ -536,7 +536,7 @@ suite "protocols — namespace-qualified declaration paths":
        "  (protocol HasLabel " &
        "    (message label [self] : Str) " &
        "    (derive [t req] " &
-       "      `(impl HasLabel %t (message label [self] : Str self/name))))) " &
+       "      `(impl HasLabel for %t (message label [self] : Str self/name))))) " &
        "(type U ^props {^name Str} ^derive [p/HasLabel]) " &
        "((U ^name \"Ada\") ~ label)",
        "\"Ada\""

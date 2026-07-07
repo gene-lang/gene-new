@@ -882,7 +882,7 @@ suite "vm — special forms":
 
   test "await propagates recoverable task errors":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(scope (var t (spawn (fail (Boom ^message \"x\")))) " &
        "  (try (await t) catch (Boom ^message m) m))",
        "\"x\""
@@ -1567,7 +1567,7 @@ suite "vm — channels":
        "(try (ch ~ Channel/send f) catch (TypeError ^expected e) e)",
        "\"Send\""
     ck "(type Msg ^props {^x Int} ^impl [Send]) " &
-       "(impl Send Msg) " &
+       "(impl Send for Msg) " &
        "(var ch (channel)) " &
        "(ch ~ Channel/send (Msg ^x 7)) " &
        "(var msg (ch ~ Channel/recv)) " &
@@ -1873,7 +1873,7 @@ suite "vm — cooperative scheduler":
        "(out ~ Cell/get)", "0"
   test "task scope error exit cancels pending child tasks":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var ch (channel ^capacity 1)) " &
        "(var out (cell 0)) " &
        "(try " &
@@ -1886,7 +1886,7 @@ suite "vm — cooperative scheduler":
        "(out ~ Cell/get)", "0"
   test "task scope error exit waits for child cancellation cleanup":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var ch (channel ^capacity 1)) " &
        "(var out (cell 0)) " &
        "(try " &
@@ -1925,7 +1925,7 @@ suite "vm — cooperative scheduler":
 
   test "detached tasks are not cancelled on scope error exit":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var out (cell 0)) " &
        "(try " &
        "  (scope " &
@@ -1961,7 +1961,7 @@ suite "vm — cooperative scheduler":
        "(out ~ Cell/get)", "42"
   test "actor ask returns a pending task instead of driving synchronously":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(var ch (channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
        "  (var got (ch ~ Channel/recv)) " &
@@ -1975,7 +1975,7 @@ suite "vm — cooperative scheduler":
        "(await pending)", "42"
   test "actor ask awaited inside a fiber parks until the reply is sent":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(scope " &
        "  (var a (actor/spawn ^init (fn [] 41) " &
        "    ^handle (fn [ctx state msg] " &
@@ -1988,7 +1988,7 @@ suite "vm — cooperative scheduler":
 
   test "actor ask timeout fails pending request and ignores late reply":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(var ch (channel ^capacity 1)) " &
        "(var out (cell 0)) " &
        "(fn handle [ctx state msg] " &
@@ -2005,7 +2005,7 @@ suite "vm — cooperative scheduler":
        "[\"actor/ask timed out\" nil 7]"
     ck "(scope " &
        "  (type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(var saved (cell nil)) " &
        "(var ch (channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
@@ -2027,9 +2027,9 @@ suite "vm — cooperative scheduler":
   test "a cancelled actor ask task is not completed by a late reply":
     expect GeneCancel:
       discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
-                     "(impl Send Get) " &
+                     "(impl Send for Get) " &
                      "(type Tick ^impl [Send]) " &
-                     "(impl Send Tick) " &
+                     "(impl Send for Tick) " &
                      "(var ch (channel ^capacity 1)) " &
                      "(fn handle [ctx state msg] " &
                      "  (match msg " &
@@ -2046,7 +2046,7 @@ suite "vm — cooperative scheduler":
                      "(await pending)")
     ck "(scope " &
        "  (type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(var saved (cell nil)) " &
        "(var ch (channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
@@ -2068,7 +2068,7 @@ suite "vm — cooperative scheduler":
   test "closing an owned actor cancels a scheduled ask reply":
     expect GeneCancel:
       discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
-                     "(impl Send Get) " &
+                     "(impl Send for Get) " &
                      "(var pending nil) " &
                      "(scope " &
                      "  (var a (actor/spawn ^init (fn [] 41) " &
@@ -2202,7 +2202,7 @@ suite "vm — actors":
 
   test "actor ask returns a task with a one-shot reply":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(fn handle [ctx state msg] : (ActorStep Int) " &
        "  (match msg " &
        "    (when (Get ^reply reply) " &
@@ -2213,7 +2213,7 @@ suite "vm — actors":
        "(await (a ~ actor/ask (fn [reply] (Get ^reply reply))))",
        "41"
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(scope " &
        "  (var a : (ActorRef Get) " &
        "    (actor/spawn ^init (fn [] 41) " &
@@ -2230,7 +2230,7 @@ suite "vm — actors":
 
   test "actor ask enforces ReplyTo result type and reports missing replies":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(var a : (ActorRef Get) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
@@ -2242,7 +2242,7 @@ suite "vm — actors":
        "catch (TypeError ^where w) w)",
        "\"ReplyTo/send value\""
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(var a : (ActorRef Get) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
@@ -2257,7 +2257,7 @@ suite "vm — actors":
        "(a ~ actor/try-send 1)",
        "false"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var a nil) " &
        "(try " &
        "  (scope " &
@@ -2275,7 +2275,7 @@ suite "vm — actors":
        "(a ~ actor/try-send 1)",
        "false"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var seen (cell 0)) " &
        "(supervisor ^strategy restart " &
        "  (var a (actor/spawn ^init (fn [] 10) " &
@@ -2290,7 +2290,7 @@ suite "vm — actors":
        "  (seen ~ Cell/get))",
        "10"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events (channel ^capacity 4)) " &
        "(var seen (cell 0)) " &
        "(supervisor ^strategy restart ^events events " &
@@ -2318,7 +2318,7 @@ suite "vm — actors":
        "       [failed m p s]))])",
        "[10 [1 \"bad\" false restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events (channel ^capacity 1)) " &
        "(var dead (channel ^capacity 2)) " &
        "(events ~ Channel/send \"busy\") " &
@@ -2338,7 +2338,7 @@ suite "vm — actors":
        "       [failed m s]))])",
        "[\"busy\" [1 \"bad\" restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events (channel ^capacity 1)) " &
        "(var dead (channel ^capacity 1)) " &
        "(events ~ Channel/send \"busy\") " &
@@ -2360,7 +2360,7 @@ suite "vm — actors":
        "       [failed m s]))])",
        "[\"busy\" \"dead-busy\" [4 \"bad\" restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events (channel ^capacity 1)) " &
        "(events ~ Channel/send \"busy\") " &
        "(supervisor ^strategy restart ^events events " &
@@ -2378,7 +2378,7 @@ suite "vm — actors":
        "       [failed m s]))])",
        "[\"busy\" [3 \"bad\" restart]]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events (channel ^capacity 1)) " &
        "(var dead (channel ^capacity 1)) " &
        "(events ~ Channel/close) " &
@@ -2396,7 +2396,7 @@ suite "vm — actors":
        "      [failed m s])))",
        "[2 \"bad\" restart]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events : (Channel Int) (channel ^capacity 1)) " &
        "(var dead (channel ^capacity 1)) " &
        "(supervisor ^strategy restart ^events events ^dead-letter dead " &
@@ -2413,7 +2413,7 @@ suite "vm — actors":
        "      [failed m s])))",
        "[6 \"bad\" restart]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var events (channel ^capacity 1)) " &
        "(var dead (channel ^capacity 1)) " &
        "(events ~ Channel/close) " &
@@ -2433,7 +2433,7 @@ suite "vm — actors":
        "  (seen ~ Cell/get))",
        "10"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var a nil) " &
        "[(try " &
        "   (supervisor ^strategy escalate " &
@@ -2445,9 +2445,9 @@ suite "vm — actors":
        " (a ~ actor/try-send 2)]",
        "[\"bad\" false]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(type Get ^props {^reply (ReplyTo Int)}) " &
-       "(impl Send Get) " &
+       "(impl Send for Get) " &
        "(try " &
        "  (supervisor ^strategy escalate " &
        "    (var a (actor/spawn ^init (fn [] 0) " &
@@ -2459,7 +2459,7 @@ suite "vm — actors":
        "  catch (Boom ^message m) m)",
        "\"bad\""
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(var parent-events (channel ^capacity 2)) " &
        "(var outcome " &
        "  (try " &
@@ -2480,7 +2480,7 @@ suite "vm — actors":
        "[\"bad\" [7 \"bad\" escalate]]"
     expect GenePanic:
       discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
-                     "(impl Send Get) " &
+                     "(impl Send for Get) " &
                      "(supervisor ^strategy stop " &
                      "  (var a (actor/spawn ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &
@@ -2490,9 +2490,9 @@ suite "vm — actors":
                      "  \"after\")")
     expect GeneCancel:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
-                     "(impl Error Boom) " &
+                     "(impl Error for Boom) " &
                      "(type Get ^props {^reply (ReplyTo Int)}) " &
-                     "(impl Send Get) " &
+                     "(impl Send for Get) " &
                      "(supervisor ^strategy stop " &
                      "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &

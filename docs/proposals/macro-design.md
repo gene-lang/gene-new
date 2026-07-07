@@ -107,7 +107,7 @@ A macro transforms syntax before normal compilation continues.
   (message label [self] : Str)
 
   (derive [t : Type, req]
-    `(impl HasLabel %t
+    `(impl HasLabel for %t
        (message label [self] : Str
          (to-str self/name)))))
 ```
@@ -541,7 +541,7 @@ The introduced `tmp` is hygienically fresh in MVP.
   (message label [self] : Str)
 
   (derive [t : Type, req]
-    `(impl HasLabel %t
+    `(impl HasLabel for %t
        (message label [self] : Str
          (to-str self/name)))))
 ```

@@ -300,7 +300,7 @@ suite "net/http server e2e":
     let p = startHttpServer("pool.gene", """
 (import net/http [Server serve text actor-pool supervisor-policy RequestMsg])
 (type Boom ^props {^message Str} ^impl [Error])
-(impl Error Boom)
+(impl Error for Boom)
 (var failures (channel ^capacity 8))
 (fn worker-init [] 0)
 (fn worker-handle [ctx state msg]

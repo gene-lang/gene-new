@@ -34,7 +34,7 @@
   # Protocol-local derivation. A type may request this with ^derive [HasLabel].
   # The generated impl expects the target type to have a ^name prop.
   (derive [t : Type, req]
-    `(impl HasLabel %t
+    `(impl HasLabel for %t
        (message label [self] : Str
          (to-str self/name)))))
 
@@ -105,7 +105,7 @@
        (h2 %code)
        (p %msg))))
 
-(impl ToHtml MenuItem
+(impl ToHtml for MenuItem
   (message to_html [self] : Node
     `(tr
        (td %(self ~ label))

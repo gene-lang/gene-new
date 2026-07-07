@@ -245,7 +245,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   `(type T ^props {^name Str} (message label [self] self/name))`
   `(enum Color red green blue)` and `(enum Result (ok Any) (err Str))`
   `(protocol P (message render [self : Self] : Str))`
-  `(impl P T (message render [self] "..."))`
+  `(impl P for T (message render [self] "..."))`
   Single data inheritance is `^is`; behavioral composition is `^inherit`.
 - Streams are pull-based and skip `void`. Common shape:
   `((to_stream xs) ~ map (fn [x] ...) ; ~ filter pred ; ~ into [])`.

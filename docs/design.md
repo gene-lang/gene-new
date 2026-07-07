@@ -1857,7 +1857,7 @@ Recoverable errors are typed nodes whose type implements the marker protocol `Er
   ^props {^line Int ^message Str}
   ^impl [Error])
 
-(impl Error ParseError)
+(impl Error for ParseError)
 ```
 
 Every type listed in `^errors [...]` must implement `Error`. `fail` raises only `Error` values. `catch` patterns match error values.
@@ -1899,7 +1899,7 @@ ensure
 (protocol ToHtml
   (message to_html [self : Self] : Node))
 
-(impl ToHtml MenuItem
+(impl ToHtml for MenuItem
   (message to_html [self] : Node
     `(tr (td %self/name))))
 ```
@@ -1920,7 +1920,7 @@ A type can require manual implementations:
   ^impl [ToHtml])
 ```
 
-The compiler checks that an `impl ToHtml MenuItem` exists.
+The compiler checks that an `impl ToHtml for MenuItem` exists.
 
 An implementation may also be written inline in the type body, with the
 receiver implied (`docs/core.md §8`):
@@ -1958,7 +1958,7 @@ Protocol-local derive:
   (message label [self : Self] : Str)
 
   (derive [t : Type, req]
-    `(impl HasLabel %t
+    `(impl HasLabel for %t
        (message label [self] : Str
          (to-str self/name)))))
 ```
@@ -2023,7 +2023,7 @@ Manual delegation is just an ordinary `impl`:
 (type LoggedDb
   ^props {^inner Db ^log Logger})
 
-(impl Query LoggedDb
+(impl Query for LoggedDb
   (message query [self sql]
     (self/log ~ Logger/info $"query: ${sql}")
     (self/inner ~ query sql)))
@@ -2155,7 +2155,7 @@ Protocol-local `derive` remains a controlled compile-time declaration generator.
   (message label [self : Self] : Str)
 
   (derive [t : Type, req]
-    `(impl HasLabel %t
+    `(impl HasLabel for %t
        (message label [self] : Str
          (to-str self/name)))))
 ```

@@ -161,7 +161,7 @@
 (println "   - error exit cancels pending siblings but their `ensure` runs")
 (var cleanup2 (cell 0))
 (type Boom ^props {^message Str} ^impl [Error])
-(impl Error Boom)
+(impl Error for Boom)
 (do
   (scope
     (spawn (try (sleep 60)
@@ -200,7 +200,7 @@
 
 (println "   - actor/ask with explicit ReplyTo capability")
 (type Counter ^props {^reply (ReplyTo Int)})
-(impl Send Counter)
+(impl Send for Counter)
 
 (fn ask-handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
   (match msg

@@ -103,7 +103,7 @@ when defined(geneRcStats):
                           "  (var a (actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] 99))) " &
                           "  (a ~ actor/send 1))") == 0
-      # A case that defines `impl Send Get` moved to the global-retention test
+      # A case that defines `impl Send for Get` moved to the global-retention test
       # below: under design §10 a user impl registers on the shared application
       # root and lives for the app lifetime, so it is intentionally not reclaimed.
 
@@ -113,11 +113,11 @@ when defined(geneRcStats):
       # receiver type. This is the MVP tradeoff for global impls — it accumulates
       # in a long-running REPL/eval host — while everything else still reclaims.
       check leakedManaged("(type Get ^props {^reply (ReplyTo Int)}) " &
-                          "(impl Send Get)") > 0                       # manual impl
+                          "(impl Send for Get)") > 0                       # manual impl
       check leakedManaged("(protocol HasLabel " &
                           "  (message label [self] : Str) " &
                           "  (derive [t : Type, req] " &
-                          "    `(impl HasLabel %t " &
+                          "    `(impl HasLabel for %t " &
                           "       (message label [self] : Str self/name)))) " &
                           "(type User ^props {^name Str} " &
                           "  ^impl [HasLabel] " &

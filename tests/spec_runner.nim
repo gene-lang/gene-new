@@ -138,7 +138,7 @@ suite "spec — enums from design":
                "\"on\"")
     check_eval("(protocol Code (message code [self] : Int)) " &
                "(enum Status active closed) " &
-               "(impl Code Status " &
+               "(impl Code for Status " &
                "  (message code [self] : Int (self ~ ordinal))) " &
                "(Status/closed ~ code)",
                "1")
@@ -418,7 +418,7 @@ suite "spec — typed native compilation prototype from design":
   test "direct protocol calls record selected impl dependencies":
     let source = "(protocol ToName (message to_name [self] : Str)) " &
                  "(type User ^props {^name Str}) " &
-                 "(impl ToName User (message to_name [self] : Str self/name)) " &
+                 "(impl ToName for User (message to_name [self] : Str self/name)) " &
                  "(to_name ^protocol ToName ^receiver User (User ^name \"Ada\"))"
     let chunk = compileSource(source)
     check chunk.directProtocolCalls.len == 1
@@ -729,7 +729,7 @@ suite "spec — strings from design":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
     check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")
     check_eval("(type User ^props {^name Str}) " &
-               "(impl ToStr User (message to-str [self] : Str self/name)) " &
+               "(impl ToStr for User (message to-str [self] : Str self/name)) " &
                "(var user (User ^name \"Ada\")) " &
                "$\"hello ${user}\"",
                "\"hello Ada\"")
@@ -981,7 +981,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "ctor declares checked errors":
     check_eval("(type ValidationError ^props {^message Str} ^impl [Error]) " &
-               "(impl Error ValidationError) " &
+               "(impl Error for ValidationError) " &
                "(type Port ^props {^value Int} " &
                "  (ctor [n : Int] ^errors [ValidationError] " &
                "    (if (&& (>= n 0) (<= n 65535)) " &
@@ -1104,14 +1104,14 @@ suite "spec — typed variable boundaries from design":
     check_eval("(fn keep-callable [f : Callable] f) (keep-callable +)",
                "(native-fn +)")
     check_eval("(type AddN ^props {^n Int}) " &
-               "(impl Callable AddN " &
+               "(impl Callable for AddN " &
                "  (message apply [self call] (+ self/n (call ~ /0)))) " &
                "(fn invoke [f : Callable] (f 2)) " &
                "(invoke (AddN ^n 3))",
                "5")
     # The Call envelope exposes the source call site (design §3 `^site? Node`).
     check_eval("(type Probe ^props {}) " &
-               "(impl Callable Probe (message apply [self call] call/site)) " &
+               "(impl Callable for Probe (message apply [self call] call/site)) " &
                "(var p (Probe)) (p 1 2)",
                "(p 1 2)")
 
@@ -1160,7 +1160,7 @@ suite "spec — static effects from design":
                             "  (message run ^effects [fs] [self]))")
     expect GeneError:
       discard compileSource("(protocol Run (message run [self])) " &
-                            "(impl Run Job " &
+                            "(impl Run for Job " &
                             "  (message run ^effects [fs] [self] 1))")
 
 suite "spec — short-circuit operators from design":
@@ -1187,7 +1187,7 @@ suite "spec — checked errors from design":
   test "Never contributes no errors and rows deduplicate":
     check_eval("(fn quiet ^errors [Never] [] 1) (quiet)", "1")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(fn raise-boom ^errors [Never Boom Boom] [] " &
                "  (fail (Boom ^message \"x\"))) " &
                "(try (raise-boom) catch (Boom ^message m) m)",
@@ -1200,7 +1200,7 @@ suite "spec — pattern destructuring from design":
                   newGlobalScope())
     expect GeneError:
       discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
-                                "(impl Error Boom) " &
+                                "(impl Error for Boom) " &
                                 "(try (fail (Boom ^message \"x\")) " &
                                 "catch (Boom ^message m) m) m"),
                   newGlobalScope())
@@ -1530,7 +1530,7 @@ suite "spec — protocol derive from design":
     check_eval("(protocol HasLabel " &
                "  (message label [self] : Str) " &
                "  (derive [t : Type, req] " &
-               "    `(impl HasLabel %t " &
+               "    `(impl HasLabel for %t " &
                "       (message label [self] : Str self/name)))) " &
                "(type MenuItem ^props {^name Str} ^derive [HasLabel]) " &
                "((MenuItem ^name \"Soup\") ~ label)",
@@ -1540,7 +1540,7 @@ suite "spec — protocol derive from design":
     expect GeneError:
       discard run(compileSource("(protocol Other) " &
                                 "(protocol HasLabel " &
-                                "  (derive [t : Type, req] `(impl Other %t))) " &
+                                "  (derive [t : Type, req] `(impl Other for %t))) " &
                                 "(type MenuItem ^props {^name Str} " &
                                 "  ^derive [HasLabel])"),
                   newGlobalScope())
@@ -1921,7 +1921,7 @@ suite "spec — structured tasks from design":
 
   test "await propagates recoverable task errors":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(scope " &
                "  (var t (spawn (fail (Boom ^message \"boom\")))) " &
                "  (try (await t) catch (Boom ^message m) m))",
@@ -1950,7 +1950,7 @@ suite "spec — structured tasks from design":
 
   test "scope error exit cancels pending child tasks":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var ch (channel ^capacity 1)) " &
                "(var out (cell 0)) " &
                "(try " &
@@ -1965,7 +1965,7 @@ suite "spec — structured tasks from design":
 
   test "scope error exit waits for child cancellation cleanup":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var ch (channel ^capacity 1)) " &
                "(var out (cell 0)) " &
                "(try " &
@@ -2021,9 +2021,9 @@ suite "spec — structured tasks from design":
                "  (use (spawn \"bad\")))",
                "\"await task result\"")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(type Other ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Other) " &
+               "(impl Error for Other) " &
                "(scope " &
                "  (fn use [t : (Task Int Boom)] " &
                "    (try (await t) catch (TypeError ^where w) w)) " &
@@ -2176,7 +2176,7 @@ suite "spec — actors from design":
 
   test "actor ask uses an explicit one-shot ReplyTo capability":
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (match msg " &
                "    (when (Get ^reply reply) " &
@@ -2189,7 +2189,7 @@ suite "spec — actors from design":
 
   test "a second send on a ReplyTo raises ReplyAlreadySent":
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var out (cell nil)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var (Get ^reply reply) msg) " &
@@ -2205,7 +2205,7 @@ suite "spec — actors from design":
     # ReplyAlreadySent is a subtype of ActorError, so a broad handler-level
     # catch also sees it.
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var out (cell nil)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var (Get ^reply reply) msg) " &
@@ -2219,7 +2219,7 @@ suite "spec — actors from design":
                "[(sleep 1) (out ~ Cell/get)]",
                "[nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(scope " &
                "  (var counter : (ActorRef Get) " &
                "    (actor/spawn ^init (fn [] 41) " &
@@ -2234,7 +2234,7 @@ suite "spec — actors from design":
                "       catch (TypeError ^expected e) e))",
                "\"Int\"")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var got (ch ~ Channel/recv)) " &
@@ -2249,7 +2249,7 @@ suite "spec — actors from design":
                "(await pending)",
                "42")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var ch (channel ^capacity 1)) " &
                "(var out (cell 0)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
@@ -2267,7 +2267,7 @@ suite "spec — actors from design":
                "[\"actor/ask timed out\" nil 7]")
     check_eval("(scope " &
                "  (type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var saved (cell nil)) " &
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx state msg] " &
@@ -2287,7 +2287,7 @@ suite "spec — actors from design":
                "[err first-late second-late])",
                "[\"actor/ask timed out\" nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
@@ -2302,7 +2302,7 @@ suite "spec — actors from design":
   test "scope shutdown cancels pending actor asks":
     expect GeneCancel:
       discard run(compileSource("(type Get ^props {^reply (ReplyTo Int)}) " &
-                                "(impl Send Get) " &
+                                "(impl Send for Get) " &
                                 "(var pending nil) " &
                                 "(scope " &
                                 "  (var a (actor/spawn ^init (fn [] 41) " &
@@ -2318,7 +2318,7 @@ suite "spec — actors from design":
                   newGlobalScope())
     check_eval("(scope " &
                "  (type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(var saved (cell nil)) " &
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx state msg] " &
@@ -2339,9 +2339,9 @@ suite "spec — actors from design":
                "[nil \"reply has already been sent\"]")
     expect GeneCancel:
       discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
-                                "(impl Error Boom) " &
+                                "(impl Error for Boom) " &
                                 "(type Get ^props {^reply (ReplyTo Int)}) " &
-                                "(impl Send Get) " &
+                                "(impl Send for Get) " &
                                 "(supervisor ^strategy stop " &
                                 "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                                 "    ^handle (fn [ctx state msg] " &
@@ -2367,7 +2367,7 @@ suite "spec — actors from design":
 
   test "restart budget stops the actor when max-restarts is exhausted":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 60000 " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (fail (Boom ^message \"boom\"))))) " &
@@ -2379,7 +2379,7 @@ suite "spec — actors from design":
 
   test "restart budget window resets after within-ms":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var seen (cell 0)) " &
                "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 50 " &
                "  (var a (actor/spawn ^init (fn [] 10) " &
@@ -2396,7 +2396,7 @@ suite "spec — actors from design":
 
   test "supervisor owns actors and restarts after recoverable handler errors":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var seen (cell 0)) " &
                "(supervisor ^strategy restart " &
                "  (var a (actor/spawn ^init (fn [] 10) " &
@@ -2411,7 +2411,7 @@ suite "spec — actors from design":
                "  (seen ~ Cell/get))",
                "10")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var events (channel ^capacity 4)) " &
                "(var seen (cell 0)) " &
                "(supervisor ^strategy restart ^events events " &
@@ -2439,7 +2439,7 @@ suite "spec — actors from design":
                "       [failed m p s]))])",
                "[10 [1 \"bad\" false restart]]")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 2)) " &
                "(events ~ Channel/send \"busy\") " &
@@ -2459,7 +2459,7 @@ suite "spec — actors from design":
                "       [failed m s]))])",
                "[\"busy\" [1 \"bad\" restart]]")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
                "(events ~ Channel/send \"busy\") " &
@@ -2481,7 +2481,7 @@ suite "spec — actors from design":
                "       [failed m s]))])",
                "[\"busy\" \"dead-busy\" [4 \"bad\" restart]]")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
                "(events ~ Channel/close) " &
@@ -2499,7 +2499,7 @@ suite "spec — actors from design":
                "      [failed m s])))",
                "[2 \"bad\" restart]")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var events : (Channel Int) (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
                "(supervisor ^strategy restart ^events events ^dead-letter dead " &
@@ -2516,7 +2516,7 @@ suite "spec — actors from design":
                "      [failed m s])))",
                "[6 \"bad\" restart]")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
                "(events ~ Channel/close) " &
@@ -2541,9 +2541,9 @@ suite "spec — actors from design":
                "(a ~ actor/try-send 1)",
                "false")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(type Get ^props {^reply (ReplyTo Int)}) " &
-               "(impl Send Get) " &
+               "(impl Send for Get) " &
                "(try " &
                "  (supervisor ^strategy escalate " &
                "    (var a (actor/spawn ^init (fn [] 0) " &
@@ -2555,7 +2555,7 @@ suite "spec — actors from design":
                "  catch (Boom ^message m) m)",
                "\"bad\"")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
-               "(impl Error Boom) " &
+               "(impl Error for Boom) " &
                "(var parent-events (channel ^capacity 2)) " &
                "(var outcome " &
                "  (try " &
@@ -2576,7 +2576,7 @@ suite "spec — actors from design":
                "[\"bad\" [7 \"bad\" escalate]]")
     expect GenePanic:
       discard run(compileSource("(type Get ^props {^reply (ReplyTo Int)}) " &
-                                "(impl Send Get) " &
+                                "(impl Send for Get) " &
                                 "(supervisor ^strategy stop " &
                                 "  (var a (actor/spawn ^init (fn [] 0) " &
                                 "    ^handle (fn [ctx state msg] " &
@@ -2822,7 +2822,7 @@ suite "spec — impl visibility across modules (design §10)":
       "(mod ilib)\n" &
       "(protocol Greet (message greet [self] : Str))\n" &
       "(type Cat ^props {^name Str})\n" &
-      "(impl Greet Cat (message greet [self] : Str $\"meow ${self/name}\"))\n")
+      "(impl Greet for Cat (message greet [self] : Str $\"meow ${self/name}\"))\n")
 
   proc implModuleVar(m: Value, name: string): string =
     m.moduleRootNamespace.nsScope.vars[name].print()

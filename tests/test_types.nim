@@ -1953,9 +1953,9 @@ suite "types — function boundaries":
        "  (use (spawn \"bad\")))",
        "\"await task result\""
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Boom) " &
+       "(impl Error for Boom) " &
        "(type Other ^props {^message Str} ^impl [Error]) " &
-       "(impl Error Other) " &
+       "(impl Error for Other) " &
        "(scope " &
        "  (fn use [t : (Task Int Boom)] " &
        "    (try (await t) catch (TypeError ^where w) w)) " &
