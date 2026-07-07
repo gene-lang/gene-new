@@ -197,3 +197,38 @@ suite "net/http server e2e":
     defer: s.close()
     s.send("GET / HTTP/1.1\r\nx-pad: " & repeat('a', 40 * 1024) & "\r\n\r\n")
     check statusLine(readAllHttp(s)) == "HTTP/1.1 400 Bad Request"
+
+  test "declared body beyond max-body-bytes answers 413":
+    let p = startHttpServer("bigbody.gene", """
+(import net/http [Server serve text])
+(fn handle [req] (text "unreachable"))
+(serve (Server ^host "127.0.0.1" ^port 8189) handle
+  ^max-requests 1 ^max-body-bytes 16)
+""")
+    defer: (p.terminate(); p.close())
+    let s = httpConnect(8189)
+    defer: s.close()
+    let body = repeat('x', 64)
+    s.send("POST / HTTP/1.1\r\nhost: t\r\ncontent-length: " & $body.len &
+           "\r\n\r\n" & body)
+    check statusLine(readAllHttp(s)) == "HTTP/1.1 413 Payload Too Large"
+
+  test "custom overload-response answers admission overflow":
+    let p = startHttpServer("busy-custom.gene", """
+(import net/http [Server serve text])
+(fn handle [req]
+  (sleep 900)
+  (text "done"))
+(serve (Server ^host "127.0.0.1" ^port 8190) handle
+  ^max-requests 2 ^max-in-flight 1
+  ^overload-response (text 503 "busy"))
+""")
+    defer: (p.terminate(); p.close())
+    let slow = httpConnect(8190)
+    defer: slow.close()
+    slow.send("GET /a HTTP/1.1\r\nhost: t\r\n\r\n")
+    sleep(150)   # ensure the first request is dispatched
+    let overflow = httpGet(8190, "/b")
+    check statusLine(overflow) == "HTTP/1.1 503 Service Unavailable"
+    check bodyOf(overflow) == "busy"
+    check bodyOf(readAllHttp(slow)) == "done"

@@ -233,10 +233,27 @@ Named arguments to `serve` (all optional):
 
 - `^max-requests Int` — serve N connections then return (tests/embedding);
 - `^max-connections Int` — accept cap; excess connections are shed (default 1024);
-- `^max-in-flight Int` — concurrent dispatched handlers; excess answers
-  `503 Service Unavailable` (default 256);
+- `^max-in-flight Int` — concurrent dispatched handlers; excess answers the
+  overload response (default 256);
+- `^max-body-bytes Int` — declared request bodies beyond this answer
+  `413 Payload Too Large`; negative disables the cap (default 10485760);
 - `^request-timeout-ms Int` — overdue handlers answer `504 Gateway Timeout`
-  and the still-running task is orphaned (default 30000).
+  and the still-running task is orphaned (default 30000);
+- `^drain-timeout-ms Int` — graceful-stop drain window for in-flight
+  requests after `(stop server)` (default 5000);
+- `^overload-response Response` — what admission-limit rejections answer
+  instead of the default `503 Service Unavailable` (rendered once at serve
+  start, e.g. `(text 503 "busy")`);
+- `^handler Fn` — the handler as a named argument instead of positional;
+- `^routes List` — route table of `(route ^method ^path ^handler)` nodes or
+  `[method path handler]` lists; unmatched requests answer 404 (mutually
+  exclusive with a handler);
+- `^on-error Fn` — maps a handler's recoverable error value to a `Response`
+  (panics and cancellations stay generic 500s);
+- `^dispatch task-per-request | (actor-pool ...)` — dispatch mode;
+  `(actor-pool ^workers N ^mailbox N ^init fn ^handle fn)` runs requests as
+  `RequestMsg` values on a fixed worker-actor pool; full mailboxes answer the
+  overload response.
 
 Stalled request reads answer `408 Request Timeout`; malformed requests and
 oversized headers answer `400 Bad Request` as before.

@@ -100,8 +100,9 @@ type
     hpsNeedMore   # incomplete request; keep reading
     hpsDone       # request parsed into a Request node
     hpsBad        # malformed request; caller answers 400 and closes
+    hpsTooLarge   # declared body exceeds the limit; caller answers 413
 
-proc parseHttpRequestBuffer(buf: string, scope: Scope):
+proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
     tuple[status: HttpParseStatus, value: Value] =
   ## Incremental HTTP/1.1 request parser over a connection's accumulated
   ## bytes. Same validation rules as the previous blocking socket parser:
@@ -143,8 +144,10 @@ proc parseHttpRequestBuffer(buf: string, scope: Scope):
         contentLength = parseInt(val)
       except ValueError:
         return (hpsBad, VOID)
-      if contentLength < 0 or contentLength > httpMaxBodyBytes:
+      if contentLength < 0:
         return (hpsBad, VOID)
+      if maxBodyBytes >= 0 and contentLength > maxBodyBytes:
+        return (hpsTooLarge, VOID)   # 413 per async-http-server proposal §9
   let bodyStart = headerEnd + 4
   if buf.len < bodyStart + contentLength:
     return (hpsNeedMore, VOID)
@@ -607,17 +610,20 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   var maxRequests = -1
   var maxConnections = httpDefaultMaxConnections
   var maxInFlight = httpDefaultMaxInFlight
+  var maxBodyBytes = httpMaxBodyBytes
   var requestTimeoutMs = httpDefaultRequestTimeoutMs
   var drainTimeoutMs = httpDefaultDrainTimeoutMs
   var handler = if args.len == 2: args[1] else: NIL
   var routes: Value = NIL
   var onError: Value = NIL
   var dispatchConfig: Value = NIL
+  var overloadResponse: Value = NIL
   if call != nil:
     for name in call[].namedNames:
       if name notin ["max-requests", "max-connections", "max-in-flight",
-                     "request-timeout-ms", "drain-timeout-ms", "handler",
-                     "routes", "on-error", "dispatch"]:
+                     "max-body-bytes", "request-timeout-ms",
+                     "drain-timeout-ms", "handler", "routes", "on-error",
+                     "dispatch", "overload-response"]:
         raise newException(GeneError,
           "http/serve got unexpected named argument: " & name)
     template namedInt(name: string, target: var int) =
@@ -634,12 +640,14 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     namedInt("max-requests", maxRequests)
     namedInt("max-connections", maxConnections)
     namedInt("max-in-flight", maxInFlight)
+    namedInt("max-body-bytes", maxBodyBytes)
     namedInt("request-timeout-ms", requestTimeoutMs)
     namedInt("drain-timeout-ms", drainTimeoutMs)
     namedVal("handler", handler)
     namedVal("routes", routes)
     namedVal("on-error", onError)
     namedVal("dispatch", dispatchConfig)
+    namedVal("overload-response", overloadResponse)
   var poolConfig: Value = NIL
   if dispatchConfig.kind != vkNil:
     if dispatchConfig.kind == vkNode and
@@ -665,6 +673,13 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   elif handler.kind == vkNil and poolConfig.kind == vkNil:
     raiseHttpError("http/serve requires a handler, ^routes, or an " &
                    "actor-pool ^dispatch", scope)
+  # ^overload-response customizes what 503 paths answer (proposal §9). Render
+  # the wire bytes once up front: overload handling must stay allocation-light
+  # and a bad response value should fail serve, not the overloaded request.
+  var overloadWire = simpleHttpWirePayload(503, "Service Unavailable")
+  if overloadResponse.kind != vkNil:
+    let wire = responseWireParts(overloadResponse, scope)
+    overloadWire = httpWirePayload(wire.status, wire.body, wire.headers)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     # Resolve the server runtime: reuse a listen-created listener, or bind
     # here. Either way the runtime is registered while serving so handlers
@@ -754,12 +769,17 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
     proc respondCounted(conn: HttpConn, status: int, body: string) =
       case status
-      of 400: inc rt.badRequests
+      of 400, 413: inc rt.badRequests
       of 408, 504: inc rt.timeouts
       of 503: inc rt.overloadedRequests
       of 500: inc rt.failedRequests
       else: discard
       startWrite(conn, simpleHttpWirePayload(status, body))
+
+    proc respondOverloaded(conn: HttpConn) =
+      ## Admission-limit answer: the (possibly customized) overload response.
+      inc rt.overloadedRequests
+      startWrite(conn, overloadWire)
 
     proc httpTaskResponsePayload(conn: HttpConn): string =
       ## Wire payload for a settled handler task. Failed tasks go through the
@@ -800,7 +820,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
     proc dispatchConn(conn: HttpConn, request: Value) =
       if maxInFlight > 0 and rt.inFlight >= maxInFlight:
-        respondCounted(conn, 503, "Service Unavailable")
+        respondOverloaded(conn)
         return
       var routed = handler
       if usingRoutes:
@@ -823,7 +843,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         if pool != nil:
           let (task, overloaded) = dispatchHttpToPool(pool, request, scope)
           if overloaded:
-            respondCounted(conn, 503, "Service Unavailable")
+            respondOverloaded(conn)
             return
           conn.task = task
         else:
@@ -858,12 +878,14 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         else:
           closeConn(conn)
           return
-      let parsed = parseHttpRequestBuffer(conn.buf, scope)
+      let parsed = parseHttpRequestBuffer(conn.buf, maxBodyBytes, scope)
       case parsed.status
       of hpsNeedMore:
         discard
       of hpsBad:
         respondCounted(conn, 400, "Bad Request")
+      of hpsTooLarge:
+        respondCounted(conn, 413, "Payload Too Large")
       of hpsDone:
         dispatchConn(conn, parsed.value)
 
