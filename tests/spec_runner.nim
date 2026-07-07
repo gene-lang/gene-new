@@ -961,13 +961,13 @@ suite "spec — nominal types from design":
     expect GeneError:
       discard compileSource("(type Packed ^sealed true ^props {})")
 
-suite "spec — constructors from design (§7.1.1)":
+suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
                "  (ctor [x : F64, y : F64] " &
                "    (self ~ Node/set-prop! `x x) " &
                "    (self ~ Node/set-prop! `y y))) " &
-               "(var p (Point 10.0 20.0)) [p/x p/y]",
+               "(var p (new Point 10.0 20.0)) [p/x p/y]",
                "[10.0 20.0]")
 
   test "ctor uses function-style argument matching with named defaults":
@@ -976,7 +976,7 @@ suite "spec — constructors from design (§7.1.1)":
                "    (self ~ Node/set-prop! `name name) " &
                "    (self ~ Node/set-prop! `age age) " &
                "    (self ~ Node/set-prop! `active active))) " &
-               "(var u (User \"Ada\" ^age 37)) [u/name u/age u/active]",
+               "(var u (new User \"Ada\" ^age 37)) [u/name u/age u/active]",
                "[\"Ada\" 37 true]")
 
   test "ctor declares checked errors":
@@ -987,30 +987,49 @@ suite "spec — constructors from design (§7.1.1)":
                "    (if (&& (>= n 0) (<= n 65535)) " &
                "      (self ~ Node/set-prop! `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
-               "(var ok (Port 8080)) " &
-               "[(try (Port 99999) catch (ValidationError ^message m) m) " &
+               "(var ok (new Port 8080)) " &
+               "[(try (new Port 99999) catch (ValidationError ^message m) m) " &
                " ok/value]",
                "[\"invalid port\" 8080]")
 
-  test "construction validates the completed instance against the schema":
+  test "new validates the completed instance against the schema":
     check_eval("(type Bad ^props {^v Int} (ctor [] nil)) " &
-               "(try (Bad) catch * \"required field unset\")",
+               "(try (new Bad) catch * \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
                "  (ctor [] (self ~ Node/set-prop! `a 1) " &
                "           (self ~ Node/set-prop! `zzz 9))) " &
-               "(try (Sneaky) catch * \"unknown field\")",
+               "(try (new Sneaky) catch * \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
                "  (ctor [] (self ~ Node/set-prop! `a \"nope\"))) " &
-               "(try (Typed) catch (TypeError ^where w) w)",
+               "(try (new Typed) catch (TypeError ^where w) w)",
                "\"field 'a' for Typed\"")
 
-  test "a ctor blocks default schema construction":
+  test "(T ...) is direct data construction and never runs the ctor":
     check_eval("(type Port2 ^props {^value Int} " &
+               "  (ctor [n : Int] (self ~ Node/set-prop! `value (* n 2)))) " &
+               "(var direct (Port2 ^value 8080)) " &
+               "(var made (new Port2 8080)) " &
+               "[direct/value made/value]",
+               "[8080 16160]")
+
+  test "direct construction still schema-validates on a ctor type":
+    check_eval("(type Port3 ^props {^value Int} " &
                "  (ctor [n : Int] (self ~ Node/set-prop! `value n))) " &
-               "(try (Port2 ^value 8080) catch * \"no bypass\")",
-               "\"no bypass\"")
+               "(try (Port3 ^value \"nope\") catch (TypeError ^where w) w)",
+               "\"field 'value' for Port3\"")
+    check_eval("(type Port4 ^props {^value Int} " &
+               "  (ctor [n : Int] (self ~ Node/set-prop! `value n))) " &
+               "(try (Port4) catch * \"missing field\")",
+               "\"missing field\"")
+
+  test "new without a ctor falls back to direct schema mapping":
+    check_eval("(type Plain ^props {^name Str ^age Int}) " &
+               "(var p (new Plain ^name \"Ada\" ^age 37)) [p/name p/age]",
+               "[\"Ada\" 37]")
+    check_eval("(try (new 5) catch * \"not a type\")",
+               "\"not a type\"")
 
   test "child ctor covers inherited schema; parent ctor is not chained":
     check_eval("(type Animal ^props {^name Str}) " &
@@ -1018,7 +1037,7 @@ suite "spec — constructors from design (§7.1.1)":
                "  (ctor [name : Str, breed : Str] " &
                "    (self ~ Node/set-prop! `name name) " &
                "    (self ~ Node/set-prop! `breed breed))) " &
-               "(var d (Dog \"Rex\" \"Lab\")) [d/name d/breed]",
+               "(var d (new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
                "[\"Rex\" \"Lab\"]")
 
   test "ctor fills body fields through mutable node APIs":
@@ -1026,10 +1045,10 @@ suite "spec — constructors from design (§7.1.1)":
                "  (ctor [a : Int, b : Int] " &
                "    (self ~ Node/push-body! a) " &
                "    (self ~ Node/push-body! b))) " &
-               "(var pr (Pair 1 2)) [pr/0 pr/1]",
+               "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
-               "(try (Solo) catch * \"body count\")",
+               "(try (new Solo) catch * \"body count\")",
                "\"body count\"")
 
   test "a type defines at most one ctor":

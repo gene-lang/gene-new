@@ -17,7 +17,7 @@ This draft reflects the current direction:
 - runtime capability values, but **no static `^effects` system in MVP**;
 - protocol-local derivation through `^impl`, `^derive`, and protocol `derive` forms;
 - `fn!` runtime fexprs for Env-aware syntax calls, and `macro` for limited compile-time templates;
-- type constructors through `ctor`, with a pre-created `self` instance;
+- direct type construction for canonical data, plus `new`/`ctor` for constructor logic with a pre-created `self` instance;
 - basic generics and gradual typed boundaries;
 - a stable native extension ABI and typed C FFI designed early;
 - explicit `Env`/`eval` support for generated code;
@@ -909,9 +909,30 @@ Whitespace, comments, and discarded forms can produce `void`, which stream stage
 
 Construction stamps the value's head with the type value. Construction schemas are closed by default unless the type explicitly permits rest props.
 
-### 7.1.1 Constructors
+### 7.1.1 Direct construction, `new`, and `ctor`
 
-A type may define one constructor with `ctor`:
+Gene separates **direct data construction** from **constructor invocation**.
+
+Direct construction uses the type value as the call head:
+
+```gene
+(User ^name "Ada" ^age 37)
+(Point ^x 10.0 ^y 20.0)
+```
+
+`(T ...)` is the canonical typed-data form. It maps named arguments to props,
+positional arguments to body fields, normalizes `void`, checks required fields,
+rejects unknown fields, validates field/body types, stamps the head with the
+type, and returns the new instance. It **does not** call `ctor`, even when the
+type defines one.
+
+This is intentional. Gene values must be printable/serializable back into Gene
+data without replaying arbitrary constructor code, side effects, normalization
+logic, network calls, clock reads, or validation policies. The printer should
+prefer direct construction for typed instances, because it represents the value
+that exists, not the process that originally produced it.
+
+A type may additionally define one constructor with `ctor`:
 
 ```gene
 (type Point
@@ -922,24 +943,31 @@ A type may define one constructor with `ctor`:
     (self ~ Node/set-prop! `y y)))
 ```
 
-Calling a type uses the type value's `Callable` implementation:
+Constructor invocation uses `new`:
 
 ```gene
-(Point 10.0 20.0)
+(var p (new Point 10.0 20.0))
 ```
 
-If a type defines a `ctor`, the construction sequence is:
+`new` is the explicit operation for running constructor logic. If the type has
+no `ctor`, `(new T ...)` falls back to the same schema mapping as `(T ...)`. If
+the type has a `ctor`, the construction sequence is:
 
 ```text
-allocate a new instance with the type as head
+evaluate the type expression to a Type
+→ allocate a new in-progress instance with that type as head
 → bind that in-progress instance as lexical `self`
-→ argument-match the original call against the ctor parameter vector
+→ argument-match the arguments after the type expression against the ctor parameter vector
 → execute the ctor body
 → validate the completed instance against the type schema
 → return `self`
 ```
 
-There is no `init` special form. The constructor mutates the pre-created `self` instance using explicit mutable node/type APIs such as `Node/set-prop!`, `Node/set-body!`, `Node/push-body!`, or future field-specific setters. The ctor body result is ignored; construction returns the validated `self` instance unless the ctor raises a recoverable error or panics.
+There is no `init` special form. The constructor mutates the pre-created `self`
+instance using explicit mutable node/type APIs such as `Node/set-prop!`,
+`Node/set-body!`, `Node/push-body!`, or future field-specific setters. The ctor
+body result is ignored; construction returns the validated `self` instance unless
+the ctor raises a recoverable error or panics.
 
 A constructor uses normal function-style argument matching:
 
@@ -951,6 +979,9 @@ A constructor uses normal function-style argument matching:
     (self ~ Node/set-prop! `name name)
     (self ~ Node/set-prop! `age age)
     (self ~ Node/set-prop! `active active)))
+
+(new User "Ada" ^age 37)
+(User ^name "Ada" ^age 37 ^active true) # direct data construction
 ```
 
 Constructors may declare checked errors:
@@ -964,22 +995,28 @@ Constructors may declare checked errors:
     (if (&& (>= n 0) (<= n 65535))
       (self ~ Node/set-prop! `value n)
       (fail (ValidationError ^message "invalid port")))))
+
+(new Port 8080)
+(Port ^value 8080) # direct data construction; no ctor code runs
 ```
 
-If no `ctor` is defined, Gene uses the default schema constructor. It maps named arguments to props, positional arguments to body fields, normalizes `void`, checks required fields, rejects unknown fields, validates field/body types, stamps the head with the type, and returns the new instance:
+The distinction is semantic, not just syntactic:
 
-```gene
-(type User
-  ^props {^name Str ^age Int})
-
-(User ^name "Ada" ^age 37) # default construction
+```text
+(T ...)      canonical typed data construction; replay-safe; no ctor side effects
+(new T ...)  constructor invocation; runs ctor when present; may normalize/fail/effect
 ```
 
-If a `ctor` exists, there is no public bypass through default construction. That lets the ctor enforce normalization and invariants. Trusted compiler-generated code may eventually use an internal raw-construction path, but it is not a source-level feature.
+Therefore a `ctor` is an ergonomic and validation entry point, not the only way
+to materialize a value of that type. If a library needs stronger invariants, it
+should combine `ctor` with future visibility/opaque-field controls, a validation
+protocol, or trusted deserialization policy. Schema validation always runs for
+both direct construction and `new`, but semantic invariants encoded only in
+`ctor` are not automatically enforced by direct construction.
 
-Blocking default construction also blocks naive data round-trips. A printed instance of a ctor type is a data node such as `(Point ^x 10.0 ^y 20.0)`, but re-reading and evaluating that node calls the ctor, whose parameter vector may not accept the printed prop shape. Reconstructing instances from printed or serialized data therefore goes through the type's public constructor or an explicit deserialization API. The future trusted raw-construction path is the intended hook for deserializers that must bypass a ctor; it stays out of source-level reach.
-
-Single inheritance affects schema, not constructor chaining. A child inherits parent fields and must leave `self` valid for the full inherited schema, but the parent constructor is not called automatically:
+Single inheritance affects schema, not constructor chaining. A child inherits
+parent fields and must leave `self` valid for the full inherited schema, but the
+parent constructor is not called automatically:
 
 ```gene
 (type Animal
@@ -994,9 +1031,10 @@ Single inheritance affects schema, not constructor chaining. A child inherits pa
     (self ~ Node/set-prop! `breed breed)))
 ```
 
-This is a known MVP invariant hole: a parent `ctor` guards direct construction of the parent type only. A subtype's ctor writes inherited fields directly, so semantic invariants the parent ctor enforces beyond what the schema expresses are not automatically enforced for subtype instances. A type whose ctor invariants must hold for every instance should encode the invariant in its schema, expose a validating helper that child ctors are expected to call, or avoid being inherited from. Parent-constructor chaining — an explicit way for a child ctor to run the parent ctor against `self` — is post-MVP (§7.3).
-
-A partially constructed `self` is not `Send` and should not escape to actors, channels, native roots, globals, or long-lived closures before construction validates. The MVP runtime may reject obvious escapes; future implementations may enforce this more precisely with a construction-state marker.
+A partially constructed `self` is not `Send` and should not escape to actors,
+channels, native roots, globals, or long-lived closures before construction
+validates. The MVP runtime may reject obvious escapes; future implementations
+may enforce this more precisely with a construction-state marker.
 
 ### 7.2 MVP type hierarchy
 
@@ -1079,7 +1117,6 @@ Union types are normal types:
 ```
 
 A union is a subtype of `Any`; each alternative keeps its own runtime identity.
-
 ### 7.2.1 Planned type additions
 
 Status: **Partially implemented**. `Range` and the date/time family now have
@@ -3620,7 +3657,7 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 8. Streams and generators: `(Stream T E)`, `yield`, `next`/`peek`/`has_next`, declaration streams, and parser stream shape.
 9. Cooperative task runtime: `(Task T E)`, `scope`, `spawn`, `await`, cancellation, timers, safepoints, and async-I/O suspension hooks.
 10. Pattern/destructuring engine: `match`, `var`, `for`, and `catch`.
-11. Basic nominal types, single inheritance, construction stamping, `ctor` with pre-created `self`, basic generics, numeric hierarchy, gradual boundary checks, and conditional `Send` checking.
+11. Basic nominal types, single inheritance, direct construction stamping, `new`/`ctor` with pre-created `self`, basic generics, numeric hierarchy, gradual boundary checks, and conditional `Send` checking.
 12. Bounded typed channels with suspension, close semantics, and backpressure.
 13. Protocols/messages, `Error` and `Send` marker protocols, and visible-implementation coherence.
 14. Typed actors: `ActorRef M`, bounded mailboxes, sequential handlers, request/reply, scope ownership, and basic supervision.
@@ -3647,7 +3684,7 @@ The design is close enough to start implementation once the following MVP cuts a
 1. **Reader grammar freeze:** implement the reader from the EBNF in Section 2.2, including slash paths, qualified names, `%`, `#[]`, `#{}`, `#()`, comments, strings, interpolation, spread, and pipe folding.
 2. **Core value model:** implement `Any`, `Never`, `Nil`, `Void`, scalar heads, mutable versus shallow-immutable containers, equality, hashing, and deterministic printing.
 3. **Application/module model:** implement `Application` creation, package-root placeholder, file/eval modules, root namespaces, `ns`, namespace imports, `from` module paths, path normalization, module cache behavior, top-level execution, and `main` invocation.
-4. **Minimal type checker:** support nominal types, single inheritance, constructors, basic generics, unions, `T?` / `(? T)`, gradual typed-boundary checks, and recoverable boundary `TypeError`.
+4. **Minimal type checker:** support nominal types, single inheritance, direct construction, `new`/`ctor`, basic generics, unions, `T?` / `(? T)`, gradual typed-boundary checks, and recoverable boundary `TypeError`.
 5. **Callable evaluator:** implement callable-first evaluation, syntax-callable dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `SyntaxCallable`, `Fn`, `Fn!`, `NativeFn`, and `~` message sends.
 6. **Selectors:** implement selector literals, static and dynamic `%` stages, `void` propagation, strict/default options, list/map/node/module/namespace lookup, and functional update paths.
 7. **Streams and parser pipeline:** implement `(Stream T E)`, `yield`, `peek`, `next`, `has_next`, `close`, `Never` error normalization, declaration streams, and stream-shaped reader/parser output.
@@ -3688,7 +3725,7 @@ Deferred until after the first implementation slice:
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
 - `~` is the message-send operator: `(x ~ f a)` resolves `f` receiver-first (type-direct messages, then protocol impls, then lexical fallback); `(x ~ X/f a)` resolves `X/f` lexically. Message names are not bound in the enclosing scope. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope.
-- Type construction calls a `ctor` when present. A pre-created in-progress instance is bound as `self`; the ctor mutates it explicitly, then schema validation returns the completed `self`. Without `ctor`, construction uses default schema mapping.
+- `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
 - `fn!` defines runtime fexprs / syntax callables that receive raw syntax and `caller-env`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.

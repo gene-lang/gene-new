@@ -769,6 +769,10 @@ proc rejectEvaluatedSyntaxCall(callee: Value) {.noreturn.} =
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value
+proc constructTypedInstance(callee: Value, args: openArray[Value],
+                            named: NamedArgs): Value
+proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
+                       dispatchScope: Scope = nil, site: Value = NIL): Value
 proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
@@ -4067,6 +4071,33 @@ proc runReplSessionForEnv*(env: Value,
 
 include ./stdlib
 
+proc biNew(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (new T args... ^named...) — explicit constructor invocation (design
+  ## §7.1.1). Runs the type's ctor when one is defined: pre-created `self`,
+  ## function-style argument matching, then schema validation. Without a
+  ## ctor, falls back to the same direct schema mapping as `(T ...)`.
+  if args.len < 1:
+    raise newException(GeneError, "new expects a Type argument")
+  let callee = args[0]
+  if callee.kind != vkType:
+    raise newException(GeneError,
+      "new expects a Type as its first argument, got " & $callee.kind)
+  if callee.isEnumType:
+    raise newException(GeneError,
+      "enum " & callee.typeName & " is not directly constructible; use a variant")
+  var named = NamedArgs()
+  var dispatchScope: Scope = nil
+  var site = NIL
+  if call != nil:
+    named = NamedArgs(names: call[].namedNames, values: call[].namedValues)
+    dispatchScope = call[].dispatchScope
+    site = call[].site
+  if callee.typeCtor.kind != vkNil:
+    constructWithCtor(callee, args.toOpenArray(1, args.len - 1), named,
+                      dispatchScope, site)
+  else:
+    constructTypedInstance(callee, args.toOpenArray(1, args.len - 1), named)
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -4230,6 +4261,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("props", newNativeFn("props", biProps))
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
+  result.define("new", newNativeCallFn("new", biNew))
   result.define("to-str", newNativeCallFn("to-str", biToStr,
                                           acceptsNamed = false))
   result.define("chars", newNativeFn("chars", biChars))
@@ -17382,6 +17414,91 @@ proc validateConstructedInstance(typ, instance: Value) =
         "body field " & $i & " for " & typeName, restType.typeExpr,
         instance.body[i], fieldScope))
 
+proc constructTypedInstance(callee: Value, args: openArray[Value],
+                            named: NamedArgs): Value =
+  ## Direct typed-data construction (design §7.1.1): map named arguments to
+  ## props and positional arguments to body fields, validate against the full
+  ## schema, stamp the head with the type. Never runs a ctor — `(T ...)` is
+  ## the canonical replay-safe data form.
+  let fields = callee.typeFields
+  let bodyFields = callee.typeBodyFields
+  if args.len != 0 and bodyFields.len == 0:
+    raise newException(GeneError,
+      "constructing " & callee.typeName & " takes named fields only")
+  var body: seq[Value]
+  var restBody = -1
+  for i, f in bodyFields:
+    if f.rest:
+      restBody = i
+      break
+  if restBody < 0:
+    if args.len != bodyFields.len:
+      raise newException(GeneError,
+        "constructing " & callee.typeName & " expects " &
+        $bodyFields.len & " body item(s), got " & $args.len)
+    for i, f in bodyFields:
+      let fieldScope = f.typeBodyFieldScope(callee.typeScope)
+      body.add adaptBoundary("body field " & $i & " for " &
+                             callee.typeName, f.typeExpr, args[i],
+                             fieldScope)
+  else:
+    if args.len < restBody:
+      raise newException(GeneError,
+        "constructing " & callee.typeName & " expects at least " &
+        $restBody & " body item(s), got " & $args.len)
+    for i in 0 ..< restBody:
+      let f = bodyFields[i]
+      let fieldScope = f.typeBodyFieldScope(callee.typeScope)
+      body.add adaptBoundary("body field " & $i & " for " &
+                             callee.typeName, f.typeExpr, args[i],
+                             fieldScope)
+    let restType = bodyFields[restBody]
+    let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
+    for i in restBody ..< args.len:
+      body.add adaptBoundary("body field " & $i & " for " &
+                             callee.typeName, restType.typeExpr, args[i],
+                             fieldScope)
+  var props = initOrderedTable[string, Value]()
+  for f in fields:
+    if named.hasArg(f.name):
+      let value = named.getArg(f.name)
+      if value.kind == vkVoid:
+        if not f.optional:
+          raise newException(GeneError,
+            "missing required field '" & f.name & "' for " & callee.typeName)
+      else:
+        let fieldScope = f.typeFieldScope(callee.typeScope)
+        props[f.name] = adaptBoundary("field '" & f.name & "' for " &
+                                      callee.typeName, f.typeExpr, value,
+                                      fieldScope)
+    elif not f.optional:
+      raise newException(GeneError,
+        "missing required field '" & f.name & "' for " & callee.typeName)
+  for key in named.names:
+    var known = false
+    for f in fields:
+      if f.name == key:
+        known = true
+        break
+    if not known:
+      raise newException(GeneError, callee.typeName & " has no field '" & key & "'")
+  newNode(callee, props = props, body = body)
+
+proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
+                       dispatchScope: Scope = nil, site: Value = NIL): Value =
+  ## Ctor construction (design §7.1.1): pre-create the instance with the type
+  ## as head, run the ctor with it bound as `self` (the implicit leading
+  ## parameter), then validate the completed instance against the full
+  ## inherited schema. The ctor body result is ignored.
+  let instance = newNode(callee)
+  var ctorArgs = newSeqOfCap[Value](args.len + 1)
+  ctorArgs.add instance
+  for a in args:
+    ctorArgs.add a
+  discard applyCall(callee.typeCtor, ctorArgs, named, dispatchScope, site)
+  validateConstructedInstance(callee, instance)
+  instance
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
@@ -17432,86 +17549,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if callee.isEnumType:
       raise newException(GeneError,
         "enum " & callee.typeName & " is not directly constructible; use a variant")
-    let ctorFn = callee.typeCtor
-    if ctorFn.kind != vkNil:
-      # Ctor construction (design §7.1.1): pre-create the instance with the
-      # type as head, run the ctor with it bound as `self` (the implicit
-      # leading parameter), then validate the completed instance against the
-      # full inherited schema. The ctor body result is ignored; there is no
-      # public bypass through default construction.
-      let instance = newNode(callee)
-      var ctorArgs = newSeqOfCap[Value](args.len + 1)
-      ctorArgs.add instance
-      for a in args:
-        ctorArgs.add a
-      discard applyCall(ctorFn, ctorArgs, named, dispatchScope, site)
-      validateConstructedInstance(callee, instance)
-      return instance
-    # Construct a typed instance: a node with the type as head and validated
-    # props/body fields.
-    let fields = callee.typeFields
-    let bodyFields = callee.typeBodyFields
-    if args.len != 0 and bodyFields.len == 0:
-      raise newException(GeneError,
-        "constructing " & callee.typeName & " takes named fields only")
-    var body: seq[Value]
-    var restBody = -1
-    for i, f in bodyFields:
-      if f.rest:
-        restBody = i
-        break
-    if restBody < 0:
-      if args.len != bodyFields.len:
-        raise newException(GeneError,
-          "constructing " & callee.typeName & " expects " &
-          $bodyFields.len & " body item(s), got " & $args.len)
-      for i, f in bodyFields:
-        let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-        body.add adaptBoundary("body field " & $i & " for " &
-                               callee.typeName, f.typeExpr, args[i],
-                               fieldScope)
-    else:
-      if args.len < restBody:
-        raise newException(GeneError,
-          "constructing " & callee.typeName & " expects at least " &
-          $restBody & " body item(s), got " & $args.len)
-      for i in 0 ..< restBody:
-        let f = bodyFields[i]
-        let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-        body.add adaptBoundary("body field " & $i & " for " &
-                               callee.typeName, f.typeExpr, args[i],
-                               fieldScope)
-      let restType = bodyFields[restBody]
-      let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
-      for i in restBody ..< args.len:
-        body.add adaptBoundary("body field " & $i & " for " &
-                               callee.typeName, restType.typeExpr, args[i],
-                               fieldScope)
-    var props = initOrderedTable[string, Value]()
-    for f in fields:
-      if named.hasArg(f.name):
-        let value = named.getArg(f.name)
-        if value.kind == vkVoid:
-          if not f.optional:
-            raise newException(GeneError,
-              "missing required field '" & f.name & "' for " & callee.typeName)
-        else:
-          let fieldScope = f.typeFieldScope(callee.typeScope)
-          props[f.name] = adaptBoundary("field '" & f.name & "' for " &
-                                        callee.typeName, f.typeExpr, value,
-                                        fieldScope)
-      elif not f.optional:
-        raise newException(GeneError,
-          "missing required field '" & f.name & "' for " & callee.typeName)
-    for key in named.names:
-      var known = false
-      for f in fields:
-        if f.name == key:
-          known = true
-          break
-      if not known:
-        raise newException(GeneError, callee.typeName & " has no field '" & key & "'")
-    newNode(callee, props = props, body = body)
+    # Direct typed-data construction: `(T ...)` never calls a ctor, even when
+    # the type defines one (design §7.1.1). Constructor logic runs through
+    # `new` only.
+    constructTypedInstance(callee, args, named)
   of vkProtocolMessage:
     if args.len == 0:
       raise newException(GeneError,
