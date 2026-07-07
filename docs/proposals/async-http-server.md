@@ -8,7 +8,9 @@ raises `ReplyAlreadySent`), mailbox overload → overload response,
 `^supervision (supervisor-policy ^strategy ^max-restarts ^within-ms ^events
 ^dead-letter)` with restart rate limiting (§18.5); plus Phase 3 slices
 (`^routes` table with `:param` path captures into `req/params`, `^on-error`
-mapper). See `src/gene/http_server.nim` and `docs/stdlib.md`.  
+mapper, `^access-log`/`^error-log`/`^redact-headers` §17). Remaining:
+meta-based route discovery (§8), Phase 4 WebSocket, Phase 5 hardening. See
+`src/gene/http_server.nim` and `docs/stdlib.md`.  
 **Scope:** native async HTTP and WebSocket server for Gene applications  
 **Primary namespace:** `net/http`  
 **Goal:** support high-concurrency native HTTP I/O while keeping Gene request handlers simple, synchronous when possible, and isolated through tasks and actors.

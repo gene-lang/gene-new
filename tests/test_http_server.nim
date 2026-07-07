@@ -213,6 +213,44 @@ suite "net/http server e2e":
            "\r\n\r\n" & body)
     check statusLine(readAllHttp(s)) == "HTTP/1.1 413 Payload Too Large"
 
+  test "access-log records responses with redacted headers; error-log records failures":
+    let p = startHttpServer("logs.gene", """
+(import net/http [Server serve text])
+(var access-entries (cell nil))
+(var error-entries (cell nil))
+(fn on-access [rec] (access-entries ~ Cell/set rec))
+(fn on-error-log [rec] (error-entries ~ Cell/set rec))
+(fn handle [req]
+  (if (= req/path "/boom")
+    (nonexistent-fn)
+    (do
+      (var last (access-entries ~ Cell/get))
+      (var last-err (error-entries ~ Cell/get))
+      (if (= last nil)
+        (text "no-log")
+        (text ($ "logged:" last/method ":" last/path ":" last/status
+                 ":auth=" last/headers/authorization
+                 ":err=" (if (= last-err nil) "none" last-err/message)))))))
+(serve (Server ^host "127.0.0.1" ^port 8193) handle
+  ^max-requests 3
+  ^access-log on-access
+  ^error-log on-error-log)
+""")
+    defer: (p.terminate(); p.close())
+    # Request 1 carries a secret header; request 2 reads its access record.
+    block:
+      let s = httpConnect(8193)
+      defer: s.close()
+      s.send("GET /hello HTTP/1.1\r\nhost: t\r\n" &
+             "authorization: Bearer secret123\r\n\r\n")
+      check statusLine(readAllHttp(s)) == "HTTP/1.1 200 OK"
+    check bodyOf(httpGet(8193, "/report")) ==
+      "logged:GET:/hello:200:auth=[redacted]:err=none"
+    # A failing handler reaches the error log (visible to a later request
+    # inside the same server process via the cells above).
+    check statusLine(httpGet(8193, "/boom")) ==
+      "HTTP/1.1 500 Internal Server Error"
+
   test "route table matches :param patterns into req/params":
     let p = startHttpServer("routes.gene", """
 (import net/http [Server serve text route])

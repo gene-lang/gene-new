@@ -263,7 +263,17 @@ Named arguments to `serve` (all optional):
   Strategy `restart` (default) rebuilds worker state with ^init under the
   restart budget; `stop` closes the failing worker. Worker failures emit
   `ActorFailure` values to `^events`/`^dead-letter` channels without
-  blocking the failure path.
+  blocking the failure path;
+- `^access-log Fn` — called once per chosen response with an
+  `(AccessLog ^method ^path ^status ^ms ^headers)` record; header values
+  named by `^redact-headers` are replaced with `"[redacted]"` (defaults:
+  authorization, cookie, set-cookie). A failing log fn goes to stderr and
+  never breaks serving;
+- `^error-log Fn` — called on handler errors/panics with an
+  `(ErrorLog ^method ^path ^message ^panic)` record, before any ^on-error
+  mapping; same never-break-serving contract;
+- `^redact-headers List` — header names (case-insensitive) whose values
+  never reach access-log records.
 
 Stalled request reads answer `408 Request Timeout`; malformed requests and
 oversized headers answer `400 Bad Request` as before.

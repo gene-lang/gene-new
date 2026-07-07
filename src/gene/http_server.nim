@@ -730,6 +730,10 @@ type
     hasTaskDeadline: bool
     writeBuf: string
     writePos: int
+    started: MonoTime       # accept time, for access-log latency
+    reqMethod: string       # parsed request line, for logging ("" until
+    reqPath: string         #   a request parses)
+    reqHeaders: Value       # parsed headers map, for redacted logging
 
 proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (serve server handler) / (serve server ^handler h) /
@@ -755,12 +759,16 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   var dispatchConfig: Value = NIL
   var overloadResponse: Value = NIL
   var supervisionPolicy: Value = NIL
+  var accessLog: Value = NIL
+  var errorLog: Value = NIL
+  var redactHeaders: Value = NIL
   if call != nil:
     for name in call[].namedNames:
       if name notin ["max-requests", "max-connections", "max-in-flight",
                      "max-body-bytes", "request-timeout-ms",
                      "drain-timeout-ms", "handler", "routes", "on-error",
-                     "dispatch", "overload-response", "supervision"]:
+                     "dispatch", "overload-response", "supervision",
+                     "access-log", "error-log", "redact-headers"]:
         raise newException(GeneError,
           "http/serve got unexpected named argument: " & name)
     template namedInt(name: string, target: var int) =
@@ -786,6 +794,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     namedVal("dispatch", dispatchConfig)
     namedVal("overload-response", overloadResponse)
     namedVal("supervision", supervisionPolicy)
+    namedVal("access-log", accessLog)
+    namedVal("error-log", errorLog)
+    namedVal("redact-headers", redactHeaders)
   var poolConfig: Value = NIL
   if dispatchConfig.kind != vkNil:
     if dispatchConfig.kind == vkNode and
@@ -824,9 +835,21 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   # the wire bytes once up front: overload handling must stay allocation-light
   # and a bad response value should fail serve, not the overloaded request.
   var overloadWire = simpleHttpWirePayload(503, "Service Unavailable")
+  var overloadStatus = 503
   if overloadResponse.kind != vkNil:
     let wire = responseWireParts(overloadResponse, scope)
+    overloadStatus = wire.status
     overloadWire = httpWirePayload(wire.status, wire.body, wire.headers)
+  # §17 logging: ^redact-headers names whose values never reach access-log
+  # records. Defaults per the proposal.
+  var redactedHeaderNames = @["authorization", "cookie", "set-cookie"]
+  if redactHeaders.kind != vkNil:
+    if redactHeaders.kind != vkList:
+      raiseHttpError("http/serve ^redact-headers expects a List of Str", scope)
+    redactedHeaderNames = @[]
+    for item in redactHeaders.listItems:
+      requireStr("http/serve redact-headers entry", item)
+      redactedHeaderNames.add item.strVal.toLowerAscii()
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     # Resolve the server runtime: reuse a listen-created listener, or bind
     # here. Either way the runtime is registered while serving so handlers
@@ -882,6 +905,51 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       inc served
       closeConn(conn)
 
+    proc logAccess(conn: HttpConn, status: int) =
+      ## §17 access log: one AccessLog record per chosen response. Runs the
+      ## log fn inline on the loop; a failing log fn goes to stderr and never
+      ## breaks serving.
+      if accessLog.kind == vkNil:
+        return
+      var props = initOrderedTable[string, Value]()
+      props["method"] = newStr(conn.reqMethod)
+      props["path"] = newStr(conn.reqPath)
+      props["status"] = newInt(status)
+      props["ms"] = newInt(int((getMonoTime() - conn.started).inMilliseconds))
+      if conn.reqHeaders.kind == vkMap:
+        var redacted = initOrderedTable[string, Value]()
+        for key, val in conn.reqHeaders.mapEntries:
+          if key in redactedHeaderNames:
+            redacted[key] = newStr("[redacted]")
+          else:
+            redacted[key] = val
+        props["headers"] = newMap(redacted)
+      let record = newNode(newSym("AccessLog"), props = props)
+      try:
+        discard applyCall(accessLog, [record], NamedArgs(), scope)
+      except GeneError as e:
+        stderr.writeLine "http/serve access-log error: " & e.msg
+      except GenePanic as e:
+        stderr.writeLine "http/serve access-log panic: " & e.msg
+
+    proc logError(conn: HttpConn, message: string, panic: bool) =
+      ## §17 error log: handler errors/panics as ErrorLog records; same
+      ## never-break-serving contract as the access log.
+      if errorLog.kind == vkNil:
+        return
+      var props = initOrderedTable[string, Value]()
+      props["method"] = newStr(conn.reqMethod)
+      props["path"] = newStr(conn.reqPath)
+      props["message"] = newStr(message)
+      props["panic"] = newBool(panic)
+      let record = newNode(newSym("ErrorLog"), props = props)
+      try:
+        discard applyCall(errorLog, [record], NamedArgs(), scope)
+      except GeneError as e:
+        stderr.writeLine "http/serve error-log error: " & e.msg
+      except GenePanic as e:
+        stderr.writeLine "http/serve error-log panic: " & e.msg
+
     proc tryFlush(conn: HttpConn): bool =
       ## Flush as much of the response as the socket accepts. True when the
       ## payload is fully written or the connection is beyond saving.
@@ -921,49 +989,57 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       of 503: inc rt.overloadedRequests
       of 500: inc rt.failedRequests
       else: discard
+      logAccess(conn, status)
       startWrite(conn, simpleHttpWirePayload(status, body))
 
     proc respondOverloaded(conn: HttpConn) =
       ## Admission-limit answer: the (possibly customized) overload response.
       inc rt.overloadedRequests
+      logAccess(conn, overloadStatus)
       startWrite(conn, overloadWire)
 
-    proc httpTaskResponsePayload(conn: HttpConn): string =
+    proc httpTaskResponsePayload(conn: HttpConn):
+        tuple[payload: string, status: int] =
       ## Wire payload for a settled handler task. Failed tasks go through the
       ## ^on-error mapper when one is configured; panics and cancellation stay
       ## generic 500s (stderr diagnostics preserved from the old server).
       let task = conn.task
       if task.taskHasPanic:
         stderr.writeLine "http/serve handler panic: " & task.taskPanicMsg
+        logError(conn, task.taskPanicMsg, panic = true)
         inc rt.failedRequests
-        return simpleHttpWirePayload(500, "Internal Server Error")
+        return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
       if task.taskCancelled:
         stderr.writeLine "http/serve handler cancelled"
+        logError(conn, "handler cancelled", panic = false)
         inc rt.failedRequests
-        return simpleHttpWirePayload(500, "Internal Server Error")
+        return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
       if task.taskHasError:
+        logError(conn, task.taskErrorMsg, panic = false)
         if onError.kind != vkNil:
           try:
             let mapped = applyCall(onError, [httpErrorFallbackNode(task)],
                                    NamedArgs(), scope)
             let wire = responseWireParts(mapped, scope)
             inc rt.completedRequests
-            return httpWirePayload(wire.status, wire.body, wire.headers)
+            return (httpWirePayload(wire.status, wire.body, wire.headers),
+                    wire.status)
           except GeneError as e:
             stderr.writeLine "http/serve on-error mapper error: " & e.msg
           except GenePanic as e:
             stderr.writeLine "http/serve on-error mapper panic: " & e.msg
         stderr.writeLine "http/serve handler error: " & task.taskErrorMsg
         inc rt.failedRequests
-        return simpleHttpWirePayload(500, "Internal Server Error")
+        return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
       try:
         let wire = responseWireParts(task.taskResult, scope)
         inc rt.completedRequests
-        httpWirePayload(wire.status, wire.body, wire.headers)
+        (httpWirePayload(wire.status, wire.body, wire.headers), wire.status)
       except GeneError as e:
         stderr.writeLine "http/serve handler error: " & e.msg
+        logError(conn, e.msg, panic = false)
         inc rt.failedRequests
-        simpleHttpWirePayload(500, "Internal Server Error")
+        (simpleHttpWirePayload(500, "Internal Server Error"), 500)
 
     proc dispatchConn(conn: HttpConn, request: Value) =
       if maxInFlight > 0 and rt.inFlight >= maxInFlight:
@@ -974,6 +1050,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         let match = httpMatchRoute(routeEntries, request)
         if not match.found:
           inc rt.completedRequests
+          logAccess(conn, 404)
           startWrite(conn, simpleHttpWirePayload(404, "Not Found"))
           return
         routed = match.handler
@@ -1045,6 +1122,10 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       of hpsTooLarge:
         respondCounted(conn, 413, "Payload Too Large")
       of hpsDone:
+        let reqProps = parsed.value.props
+        conn.reqMethod = reqProps["method"].strVal
+        conn.reqPath = reqProps["path"].strVal
+        conn.reqHeaders = reqProps["headers"]
         dispatchConn(conn, parsed.value)
 
     proc acceptClients() =
@@ -1067,7 +1148,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           discard setsockopt(SocketHandle(fd), SOL_SOCKET, SO_NOSIGPIPE,
                              addr noSigPipe, SockLen(sizeof(noSigPipe)))
         let conn = HttpConn(sock: client, fd: fd, phase: hcpReading,
-                            task: NIL,
+                            task: NIL, started: getMonoTime(),
+                            reqHeaders: NIL,
                             readDeadline: timerDeadline(httpRecvTimeoutMs))
         conns[fd] = conn
         rt.activeConnections = conns.len
@@ -1132,7 +1214,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       for conn in settled:
         dec rt.inFlight
         if conn.task.kind == vkTask and conn.task.taskDone:
-          startWrite(conn, httpTaskResponsePayload(conn))
+          let response = httpTaskResponsePayload(conn)
+          logAccess(conn, response.status)
+          startWrite(conn, response.payload)
         else:
           # Orphan the still-running task; its fiber settles into a task no
           # one reads. The client gets a definitive timeout answer.
