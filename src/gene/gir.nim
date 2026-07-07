@@ -194,6 +194,8 @@ type
     taskFrameKind*: TaskFrameKind
     checksErrors*: bool
     errorTypeCount*: int
+    declMetaKeys*: seq[string]   # @key value meta on the (fn ...) node,
+    declMetaValues*: seq[Value]  #   surfaced on Module/declarations records
     chunk*: Chunk
 
   ImportSelection* = object

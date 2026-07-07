@@ -2667,7 +2667,15 @@ proc namespaceDeclarationNodes(ns: Value): seq[Value] =
     props["name"] = newStr(name)
     props["kind"] = newStr(declarationKind(value))
     props["value"] = value
-    result.add newNode(newSym("Declaration"), props = props)
+    # Declaration meta (@route ... on the source form) becomes real node
+    # meta on the record, so decl/%meta/route works (proposal §8).
+    var declMeta = initOrderedTable[string, Value]()
+    if value.kind == vkFunction and value.fnCode != nil and
+        value.fnCode of FunctionProto:
+      let proto = FunctionProto(value.fnCode)
+      for i, key in proto.declMetaKeys:
+        declMeta[key] = proto.declMetaValues[i]
+    result.add newNode(newSym("Declaration"), props = props, meta = declMeta)
 
 proc biDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireOne("declarations", args)

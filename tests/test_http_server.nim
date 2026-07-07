@@ -213,6 +213,32 @@ suite "net/http server e2e":
            "\r\n\r\n" & body)
     check statusLine(readAllHttp(s)) == "HTTP/1.1 413 Payload Too Large"
 
+  test "meta-based route discovery serves @route-annotated handlers":
+    let p = startHttpServer("discover.gene", """
+(import net/http [Server serve text route])
+(fn home [req]
+  @route (route ^method "GET" ^path "/")
+  (text "home-discovered"))
+(fn job [req]
+  @route (route ^method "GET" ^path "/job/:id")
+  (text ($ "job-" req/params/id)))
+(fn not-a-route [x] x)
+(fn routed? [d]
+  (not (= d/%meta/route void)))
+(fn route-entry [d]
+  (var r d/%meta/route)
+  (route ^method r/method ^path r/path ^handler d/value))
+(var routes
+  ((map (filter (this-mod ~ Module/declarations) routed?) route-entry)
+   ~ into []))
+(serve (Server ^host "127.0.0.1" ^port 8194)
+  ^max-requests 2
+  ^routes routes)
+""")
+    defer: (p.terminate(); p.close())
+    check bodyOf(httpGet(8194, "/")) == "home-discovered"
+    check bodyOf(httpGet(8194, "/job/j7")) == "job-j7"
+
   test "access-log records responses with redacted headers; error-log records failures":
     let p = startHttpServer("logs.gene", """
 (import net/http [Server serve text])

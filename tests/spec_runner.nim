@@ -1836,6 +1836,15 @@ suite "spec — streams from design":
                " (names ~ Stream/has_next)]",
                "[\"a\" \"b\" false]")
 
+  test "declaration records expose source @meta through %meta":
+    check_eval("(ns m (fn home [] @doc \"hi\" 1) (var x 2)) " &
+               "(var d ((filter m/%declarations (fn [d] (= d/name \"home\"))) " &
+               "        ~ Stream/next)) " &
+               "(var v ((filter m/%declarations (fn [d] (= d/name \"x\"))) " &
+               "        ~ Stream/next)) " &
+               "[d/%meta/doc d/kind (= v/%meta/doc void)]",
+               "[\"hi\" \"Fn\" true]")
+
   test "this-mod exposes the current module declaration stream":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "spec")

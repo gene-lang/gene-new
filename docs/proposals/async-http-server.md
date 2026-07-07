@@ -6,11 +6,13 @@ dispatch, bounded admission (`^max-connections`, `^max-in-flight`,
 status metrics; actor-pool dispatch with native-created `ReplyTo` (double send
 raises `ReplyAlreadySent`), mailbox overload → overload response,
 `^supervision (supervisor-policy ^strategy ^max-restarts ^within-ms ^events
-^dead-letter)` with restart rate limiting (§18.5); plus Phase 3 slices
+^dead-letter)` with restart rate limiting (§18.5); Phase 3 complete
 (`^routes` table with `:param` path captures into `req/params`, `^on-error`
-mapper, `^access-log`/`^error-log`/`^redact-headers` §17). Remaining:
-meta-based route discovery (§8), Phase 4 WebSocket, Phase 5 hardening. See
-`src/gene/http_server.nim` and `docs/stdlib.md`.  
+mapper, `^access-log`/`^error-log`/`^redact-headers` §17, meta-based route
+discovery §8 — declaration records carry source `@meta` as node meta and a
+`^value` prop, so the §8 pattern works as user code with `d/value` instead of
+the Namespace/lookup dance). Remaining: Phase 4 WebSocket, Phase 5 hardening.
+See `src/gene/http_server.nim` and `docs/stdlib.md`.  
 **Scope:** native async HTTP and WebSocket server for Gene applications  
 **Primary namespace:** `net/http`  
 **Goal:** support high-concurrency native HTTP I/O while keeping Gene request handlers simple, synchronous when possible, and isolated through tasks and actors.
@@ -508,11 +510,11 @@ Notes:
 - node meta is reached through the `%meta` selector stage (or the `(meta x)`
   projection); a bare `decl/meta` segment is a static lookup of a *prop named*
   `meta` and always misses (design §5);
-- a declaration node carries no bound value. For `(fn home ...)` the
-  declaration's name is its first body item (`decl/0`), and the bound function
-  value is resolved through `Module/root_namespace` + `Namespace/lookup`
-  (design §15.7). A `%value` convenience stage on declaration nodes may be
-  proposed later, but resolution through the namespace is the MVP mechanism.
+- **as implemented** (design §15.7): declaration records are
+  `(Declaration ^name Str ^kind Str ^value Any)` nodes carrying the source
+  form's `@meta` as node meta — so the handler is simply `decl/value` and the
+  route data is `decl/%meta/route`; no `Namespace/lookup` resolution step is
+  needed.
 
 This uses existing module introspection and selectors rather than a separate query subsystem.
 

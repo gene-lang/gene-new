@@ -3100,6 +3100,13 @@ Users can filter/map declarations with normal stream functions:
   ; ~ into {})
 ```
 
+Declaration records are nodes shaped
+`(Declaration ^name Str ^kind Str ^value Any)` — `^value` is the bound value
+itself. Meta attached to the source declaration form (`@route ...`, `@doc ...`
+on a named `fn`) becomes node meta on the record, so `decl/%meta/route` reads
+it and declarations without that meta answer `void`. This is the hook for
+meta-driven discovery such as route tables built from `@route` annotations.
+
 Namespaces should expose reflection helpers such as:
 
 ```gene

@@ -2383,6 +2383,11 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
                                  typeParams = typeParams,
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
+  # Declaration meta (@route ..., @doc ...) rides the proto as raw data so
+  # Module/declarations records can expose it (proposal §8 route discovery).
+  for key, val in node.meta:
+    proto.declMetaKeys.add key
+    proto.declMetaValues.add val
   c.recordLocalFunctionSig(name, proto)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
