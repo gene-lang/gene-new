@@ -503,10 +503,38 @@ proc biHttpSupervisorPolicy(args: openArray[Value], call: ptr NativeCall): Value
   newNode(newSym("SupervisorPolicy"), props = props)
 
 type
+  HttpRouteSegment = object
+    isParam: bool
+    text: string             # literal segment text, or the capture name
+
   HttpRouteEntry = object
     methodS: string          # "*" matches any method
     path: string
+    segments: seq[HttpRouteSegment]
+    hasParams: bool          # ":name" segments present; else exact match
     handler: Value
+
+proc httpCompileRoutePath(path: string): tuple[segments: seq[HttpRouteSegment],
+                                               hasParams: bool] =
+  ## Split a route path into segments; ":name" segments capture into
+  ## req/params (proposal §6.1 route params). "/job/:id" has segments
+  ## ["job", :id].
+  for raw in path.split('/'):
+    if raw.len == 0:
+      continue   # leading slash / double slashes collapse
+    if raw[0] == ':' and raw.len > 1:
+      result.segments.add HttpRouteSegment(isParam: true, text: raw[1 .. ^1])
+      result.hasParams = true
+    else:
+      result.segments.add HttpRouteSegment(isParam: false, text: raw)
+
+proc httpAddRouteEntry(entries: var seq[HttpRouteEntry],
+                       methodS, path: string, handler: Value) =
+  let compiled = httpCompileRoutePath(path)
+  entries.add HttpRouteEntry(methodS: methodS, path: path,
+                             segments: compiled.segments,
+                             hasParams: compiled.hasParams,
+                             handler: handler)
 
 proc httpParseRouteEntries(routes: Value, scope: Scope): seq[HttpRouteEntry] =
   if routes.kind != vkList:
@@ -521,30 +549,53 @@ proc httpParseRouteEntries(routes: Value, scope: Scope): seq[HttpRouteEntry] =
         else:
           "*"
       requireStr("route path", entry.props["path"])
-      result.add HttpRouteEntry(methodS: m,
-                                path: entry.props["path"].strVal,
-                                handler: entry.props["handler"])
+      httpAddRouteEntry(result, m, entry.props["path"].strVal,
+                        entry.props["handler"])
     elif entry.kind == vkList and entry.listItems.len == 3:
       requireStr("route method", entry.listItems[0])
       requireStr("route path", entry.listItems[1])
-      result.add HttpRouteEntry(methodS: entry.listItems[0].strVal,
-                                path: entry.listItems[1].strVal,
-                                handler: entry.listItems[2])
+      httpAddRouteEntry(result, entry.listItems[0].strVal,
+                        entry.listItems[1].strVal, entry.listItems[2])
     else:
       raiseHttpError("route entries must be (route ^method ^path ^handler) " &
                      "nodes or [method path handler] lists", scope)
 
-proc httpMatchRoute(entries: seq[HttpRouteEntry],
-                    request: Value): tuple[found: bool, handler: Value] =
-  ## Exact path match; method "*" is a wildcard. Path patterns are deferred.
+proc httpMatchRoute(entries: seq[HttpRouteEntry], request: Value):
+    tuple[found: bool, handler: Value,
+          params: seq[tuple[name, value: string]]] =
+  ## First matching route wins; method "*" is a wildcard. Paths without
+  ## ":name" segments match exactly; pattern paths match per segment and
+  ## capture ":name" values for req/params.
   let props = request.props
   let methodS = props["method"].strVal
   let path = props["path"].strVal
+  var pathSegments: seq[string]
+  var split = false
   for entry in entries:
-    if entry.path == path and (entry.methodS == "*" or
-        entry.methodS == methodS):
-      return (true, entry.handler)
-  (false, NIL)
+    if entry.methodS != "*" and entry.methodS != methodS:
+      continue
+    if not entry.hasParams:
+      if entry.path == path:
+        return (true, entry.handler, @[])
+      continue
+    if not split:
+      for raw in path.split('/'):
+        if raw.len != 0:
+          pathSegments.add raw
+      split = true
+    if pathSegments.len != entry.segments.len:
+      continue
+    var ok = true
+    var captured: seq[tuple[name, value: string]]
+    for i, segment in entry.segments:
+      if segment.isParam:
+        captured.add (segment.text, pathSegments[i])
+      elif segment.text != pathSegments[i]:
+        ok = false
+        break
+    if ok:
+      return (true, entry.handler, captured)
+  (false, NIL, @[])
 
 # --- request dispatch --------------------------------------------------------
 
@@ -926,6 +977,17 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           startWrite(conn, simpleHttpWirePayload(404, "Not Found"))
           return
         routed = match.handler
+        if match.params.len != 0:
+          # ":name" captures join query params in req/params; a path capture
+          # wins over a same-named query key.
+          var merged = initOrderedTable[string, Value]()
+          let existing = request.props["params"]
+          if existing.kind == vkMap:
+            for key, val in existing.mapEntries:
+              merged[key] = val
+          for (name, value) in match.params:
+            merged[name] = newStr(value)
+          request.setNodeProp("params", newMap(merged))
       conn.phase = hcpDispatched
       try:
         selector.updateHandle(conn.fd, {})

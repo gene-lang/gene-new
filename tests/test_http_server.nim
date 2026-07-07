@@ -213,6 +213,25 @@ suite "net/http server e2e":
            "\r\n\r\n" & body)
     check statusLine(readAllHttp(s)) == "HTTP/1.1 413 Payload Too Large"
 
+  test "route table matches :param patterns into req/params":
+    let p = startHttpServer("routes.gene", """
+(import net/http [Server serve text route])
+(fn job-handler [req]
+  (text ($ "job:" req/params/id ":verbose=" req/params/verbose)))
+(fn home [req] (text "home"))
+(serve (Server ^host "127.0.0.1" ^port 8192)
+  ^max-requests 3
+  ^routes [
+    (route ^method "GET" ^path "/" ^handler home)
+    (route ^method "GET" ^path "/job/:id" ^handler job-handler)
+  ])
+""")
+    defer: (p.terminate(); p.close())
+    check bodyOf(httpGet(8192, "/")) == "home"
+    # ":id" captures the segment; query params still populate req/params.
+    check bodyOf(httpGet(8192, "/job/j-42?verbose=1")) == "job:j-42:verbose=1"
+    check statusLine(httpGet(8192, "/nope")) == "HTTP/1.1 404 Not Found"
+
   test "actor-pool ^supervision restarts workers and emits failure events":
     let p = startHttpServer("pool.gene", """
 (import net/http [Server serve text actor-pool supervisor-policy RequestMsg])

@@ -247,7 +247,9 @@ Named arguments to `serve` (all optional):
 - `^handler Fn` — the handler as a named argument instead of positional;
 - `^routes List` — route table of `(route ^method ^path ^handler)` nodes or
   `[method path handler]` lists; unmatched requests answer 404 (mutually
-  exclusive with a handler);
+  exclusive with a handler). Paths may contain `:name` segments — `/job/:id`
+  captures the segment into `req/params` (a path capture wins over a
+  same-named query key); first matching route wins;
 - `^on-error Fn` — maps a handler's recoverable error value to a `Response`
   (panics and cancellations stay generic 500s);
 - `^dispatch task-per-request | (actor-pool ...)` — dispatch mode;
