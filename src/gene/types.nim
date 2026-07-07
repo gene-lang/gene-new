@@ -335,6 +335,7 @@ type
     scope: Scope             # strong capture for escaping closures
     weakScope: pointer       # non-owning Scope used for scope-owned bindings
     checksErrors: bool
+    syntaxFn: bool           # fn! syntax callable / fexpr (design §3/§11.1)
     errorTypes: seq[Value]
 
   GeneNativeFn = object
@@ -635,6 +636,7 @@ type
     derivedProtocols: seq[Value]
     deriveRequests: seq[Value]
     messages: Table[string, Value] # type-direct messages (docs/core.md §8)
+    ctorFn: Value         # (ctor ...) function value, or NIL (design §7.1.1)
 
   EnumData = ref object of GeneObjectData
     name: string
@@ -1154,6 +1156,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
       emit(val)
     for _, val in d.messages:
       emit(val)
+    emit(d.ctorFn)
   of okEnum:
     let d = EnumData(data)
     emit(d.backingType)
@@ -1999,10 +2002,42 @@ proc setNodeProp*(v: Value, key: string, value: Value) =
   else:
     p.props[key] = value
 
+proc setNodeBody*(v: Value, items: sink seq[Value]) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  p.body = items
+
+proc pushNodeBody*(v: Value, item: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  p.body.add item
+
+proc setNodeBodyItem*(v: Value, index: int, item: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  if index < 0 or index >= p.body.len:
+    raise newException(GeneError, "node body index out of range: " & $index)
+  p.body[index] = item
+
 proc fnName*(v: Value): lent string =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).name
+
+proc isSyntaxFn*(v: Value): bool {.inline.} =
+  ## True for fn! syntax callables (design §3/§11.1); false for every other
+  ## value, including ordinary functions.
+  v.tagOf == FUNCTION_TAG and
+    cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).syntaxFn
 
 proc fnParams*(v: Value): lent seq[string] =
   if v.tagOf != FUNCTION_TAG:
@@ -3165,6 +3200,15 @@ proc typeBodyFields*(v: Value): seq[TypeBodyField] =
     return @[]
   TypeData(objData(v)).bodyFields
 
+proc typeCtor*(v: Value): Value =
+  ## The type's own (ctor ...) function value, or NIL. Constructors are not
+  ## inherited (design §7.1.1).
+  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
+    raise newException(FieldDefect, "value is not a Type")
+  if objData(v).objKind == okEnum:
+    return NIL
+  TypeData(objData(v)).ctorFn
+
 proc typeScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
@@ -3777,7 +3821,8 @@ proc newNode*(head: Value,
 proc newFunction*(name: string, params: sink seq[string],
                   code: FunctionCode, scope: Scope,
                   checksErrors = false,
-                  errorTypes: sink seq[Value] = @[]): Value =
+                  errorTypes: sink seq[Value] = @[],
+                  syntaxFn = false): Value =
   let p = createObj(GeneFunction)
   p.refCount = 1
   p.name = name
@@ -3785,6 +3830,7 @@ proc newFunction*(name: string, params: sink seq[string],
   p.code = code
   p.scope = scope
   p.checksErrors = checksErrors
+  p.syntaxFn = syntaxFn
   p.errorTypes = errorTypes
   boxPtr(FUNCTION_TAG, p)
 
@@ -3800,6 +3846,7 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
   else:
     p.scope = scope
   p.checksErrors = src.checksErrors
+  p.syntaxFn = src.syntaxFn
   p.errorTypes = src.errorTypes
   boxPtr(FUNCTION_TAG, p)
 
@@ -4620,7 +4667,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               derivedProtocols: sink seq[Value] = @[],
               deriveRequests: sink seq[Value] = @[],
               ownBodyFields: seq[TypeBodyField] = @[],
-              messages: sink Table[string, Value] = initTable[string, Value]()): Value =
+              messages: sink Table[string, Value] = initTable[string, Value](),
+              ctorFn: Value = NIL): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -4651,7 +4699,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
                      requiredProtocols: requiredProtocols,
                      derivedProtocols: derivedProtocols,
                      deriveRequests: deriveRequests,
-                     messages: messages))
+                     messages: messages,
+                     ctorFn: ctorFn))
 
 proc newEnum*(name: string, typeParams: sink seq[string],
               variants: openArray[tuple[name: string, payloadTypes: seq[Value],

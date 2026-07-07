@@ -265,6 +265,55 @@ suite "spec — macros from design":
                "(fn helper [n] 99) [(recursive! 3) (helper 3)]",
                "[0 99]")
 
+suite "spec — fn! runtime fexprs from design (§3/§11.1)":
+  test "fn! receives raw syntax and evaluates through caller-env":
+    check_eval("(fn! unless! [cond, body...] " &
+               "  (if (! (eval cond ^in caller-env)) " &
+               "    (eval `(do %body...) ^in caller-env) " &
+               "    nil)) " &
+               "(var x 10) " &
+               "[(unless! (> x 5) \"small\") (unless! (< x 5) \"not-small\")]",
+               "[nil \"not-small\"]")
+
+  test "fn! call arguments are not evaluated":
+    check_eval("(var hit (cell 0)) " &
+               "(fn! ignore! [e] nil) " &
+               "(ignore! (hit ~ Cell/set 9)) " &
+               "(hit ~ Cell/get)",
+               "0")
+
+  test "syntax-call carries the raw envelope including site":
+    check_eval("(fn! probe! [a b] syntax-call) " &
+               "(probe! foo (bar 1))",
+               "((type SyntaxCall) ^named {} ^site (probe! foo (bar 1)) " &
+               "foo (bar 1))")
+
+  test "fn! values are first-class: aliases and expression heads":
+    check_eval("(fn! quote-it! [e] e) (var q quote-it!) (q (+ 1 2))",
+               "(+ 1 2)")
+    check_eval("(fn! quote-it! [e] e) ((do quote-it!) (+ 1 2))",
+               "(+ 1 2)")
+
+  test "Fn! is a sibling of Fn, not a subtype":
+    check_eval("(fn! q! [e] e) (fn keep [f : Fn!] \"ok\") (keep q!)",
+               "\"ok\"")
+    check_eval("(fn! q! [e] e) " &
+               "(try (fn keep [f : Fn] f) (keep q!) " &
+               "catch (TypeError ^expected e) e)",
+               "\"Fn\"")
+    check_eval("(fn! q! [e] e) " &
+               "(try (fn keep [f : Callable] f) (keep q!) " &
+               "catch (TypeError ^expected e) e)",
+               "\"Callable\"")
+
+  test "fn! rejects argument-evaluating call sites instead of mis-evaluating":
+    check_eval("(fn! q! [e] e) (fn hof [f] (f 1)) " &
+               "(try (hof q!) catch * \"rejected\")",
+               "\"rejected\"")
+
+  test "fn! prints as a fn! value":
+    check_eval("(fn! q! [e] e) q!", "(fn! q!)")
+
 suite "spec — typed native compilation prototype from design":
   test "simple typed Int arithmetic can use a native direct op":
     let chunk = compileSource("(fn add [x : Int y : Int] : Int (+ x y))")
@@ -905,6 +954,81 @@ suite "spec — nominal types from design":
   test "type layout promises are reserved":
     expect GeneError:
       discard compileSource("(type Packed ^sealed true ^props {})")
+
+suite "spec — constructors from design (§7.1.1)":
+  test "ctor mutates pre-created self and returns the validated instance":
+    check_eval("(type Point ^props {^x F64 ^y F64} " &
+               "  (ctor [x : F64, y : F64] " &
+               "    (self ~ Node/set-prop! `x x) " &
+               "    (self ~ Node/set-prop! `y y))) " &
+               "(var p (Point 10.0 20.0)) [p/x p/y]",
+               "[10.0 20.0]")
+
+  test "ctor uses function-style argument matching with named defaults":
+    check_eval("(type User ^props {^name Str ^age Int ^active Bool} " &
+               "  (ctor [name : Str, ^age : Int = 0, ^active : Bool = true] " &
+               "    (self ~ Node/set-prop! `name name) " &
+               "    (self ~ Node/set-prop! `age age) " &
+               "    (self ~ Node/set-prop! `active active))) " &
+               "(var u (User \"Ada\" ^age 37)) [u/name u/age u/active]",
+               "[\"Ada\" 37 true]")
+
+  test "ctor declares checked errors":
+    check_eval("(type ValidationError ^props {^message Str} ^impl [Error]) " &
+               "(impl Error ValidationError) " &
+               "(type Port ^props {^value Int} " &
+               "  (ctor [n : Int] ^errors [ValidationError] " &
+               "    (if (&& (>= n 0) (<= n 65535)) " &
+               "      (self ~ Node/set-prop! `value n) " &
+               "      (fail (ValidationError ^message \"invalid port\"))))) " &
+               "(var ok (Port 8080)) " &
+               "[(try (Port 99999) catch (ValidationError ^message m) m) " &
+               " ok/value]",
+               "[\"invalid port\" 8080]")
+
+  test "construction validates the completed instance against the schema":
+    check_eval("(type Bad ^props {^v Int} (ctor [] nil)) " &
+               "(try (Bad) catch * \"required field unset\")",
+               "\"required field unset\"")
+    check_eval("(type Sneaky ^props {^a Int} " &
+               "  (ctor [] (self ~ Node/set-prop! `a 1) " &
+               "           (self ~ Node/set-prop! `zzz 9))) " &
+               "(try (Sneaky) catch * \"unknown field\")",
+               "\"unknown field\"")
+    check_eval("(type Typed ^props {^a Int} " &
+               "  (ctor [] (self ~ Node/set-prop! `a \"nope\"))) " &
+               "(try (Typed) catch (TypeError ^where w) w)",
+               "\"field 'a' for Typed\"")
+
+  test "a ctor blocks default schema construction":
+    check_eval("(type Port2 ^props {^value Int} " &
+               "  (ctor [n : Int] (self ~ Node/set-prop! `value n))) " &
+               "(try (Port2 ^value 8080) catch * \"no bypass\")",
+               "\"no bypass\"")
+
+  test "child ctor covers inherited schema; parent ctor is not chained":
+    check_eval("(type Animal ^props {^name Str}) " &
+               "(type Dog ^is Animal ^props {^breed Str} " &
+               "  (ctor [name : Str, breed : Str] " &
+               "    (self ~ Node/set-prop! `name name) " &
+               "    (self ~ Node/set-prop! `breed breed))) " &
+               "(var d (Dog \"Rex\" \"Lab\")) [d/name d/breed]",
+               "[\"Rex\" \"Lab\"]")
+
+  test "ctor fills body fields through mutable node APIs":
+    check_eval("(type Pair ^body [Int Int] " &
+               "  (ctor [a : Int, b : Int] " &
+               "    (self ~ Node/push-body! a) " &
+               "    (self ~ Node/push-body! b))) " &
+               "(var pr (Pair 1 2)) [pr/0 pr/1]",
+               "[1 2]")
+    check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
+               "(try (Solo) catch * \"body count\")",
+               "\"body count\"")
+
+  test "a type defines at most one ctor":
+    expect GeneError:
+      discard compileSource("(type T ^props {} (ctor [] nil) (ctor [] nil))")
 
 suite "spec — typed variable boundaries from design":
   test "var annotations check gradual boundaries":
@@ -2572,6 +2696,27 @@ suite "spec — macros across modules (design §11/§15)":
       "(var triple! 5)\n")
     expect GeneError:
       discard newApplication(dir).loadFileModule(dir / "clash2.gene")
+
+suite "spec — fn! across modules (design §11.1/§15)":
+  # fn! values import as ordinary runtime bindings; the exported name set
+  # travels to the importer's compiler so call sites keep raw syntax.
+  test "imported fn! names keep syntax-call sites":
+    let dir = getTempDir() / "gene_spec_fnbang_modules"
+    removeDir(dir)
+    createDir(dir)
+    writeFile(dir / "flib.gene",
+      "(mod flib)\n" &
+      "(fn! unless! [cond, body...]\n" &
+      "  (if (! (eval cond ^in caller-env))\n" &
+      "    (eval `(do %body...) ^in caller-env)\n" &
+      "    nil))\n")
+    writeFile(dir / "fuse.gene",
+      "(import [unless!] from \"./flib\")\n" &
+      "(var x 1)\n" &
+      "(var a (unless! (> x 5) \"ok\"))\n")
+    let app = newApplication(dir)
+    let m = app.loadFileModule(dir / "fuse.gene")
+    check m.moduleRootNamespace.nsScope.vars["a"].print() == "\"ok\""
 
 suite "spec — impl visibility across modules (design §10)":
   proc implModuleDir(): string =

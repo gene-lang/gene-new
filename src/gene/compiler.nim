@@ -47,6 +47,14 @@ type
     # they are not re-exported and not looked up as runtime bindings.
     importedMacroSets: Table[string, Table[string, MacroDef]]
     importedMacroNames: HashSet[string]
+    # Names statically known to hold fn! syntax callables (design §3/§11.1).
+    # Call sites with these heads compile to opSyntaxCall so props/body stay
+    # raw syntax. Rebinding a name removes it (shadowing is ordinary binding).
+    # Unlike macros, fn! values stay runtime bindings; imports carry only the
+    # name set so the importer's call sites keep raw syntax.
+    syntaxFnNames: Table[string, bool]
+    importedSyntaxFnSets: Table[string, seq[string]]
+    importedSyntaxFnNames: HashSet[string]
 
   ParamSpecs = object
     positional: seq[string]
@@ -125,6 +133,9 @@ proc reserveLocal(c: var Compiler, name: string): int =
   if c.hasMacros and c.macros.hasKey(name):
     raise newException(GeneError,
       "binding '" & name & "' conflicts with a macro of the same name")
+  # A rebound name is an ordinary binding again; fn! call-site tracking must
+  # not survive shadowing (design §11.1). fn! definitions re-add themselves.
+  c.syntaxFnNames.del(name)
   if not c.useLocalSlots:
     return -1
   if c.localSlots.hasKey(name):
@@ -412,7 +423,10 @@ proc childCompiler(c: Compiler): Compiler =
            macroExpansionDepth: c.macroExpansionDepth,
            allowAmbientImports: c.allowAmbientImports,
            importedMacroSets: c.importedMacroSets,
-           importedMacroNames: c.importedMacroNames)
+           importedMacroNames: c.importedMacroNames,
+           syntaxFnNames: c.syntaxFnNames,
+           importedSyntaxFnSets: c.importedSyntaxFnSets,
+           importedSyntaxFnNames: c.importedSyntaxFnNames)
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   inc c.gensym
@@ -1281,7 +1295,7 @@ proc introducedBinderName(node: Value): string =
   of "var", "type", "protocol", "ns", "macro":
     if node.body[0].kind == vkSymbol:
       return node.body[0].symVal
-  of "fn":
+  of "fn", "fn!":
     if node.body.len >= 2 and node.body[1].kind == vkList:
       if node.body[0].kind == vkSymbol:
         return node.body[0].symVal
@@ -2322,6 +2336,14 @@ proc compileVar(c: var Compiler, node: Value) =
       c.emitDeclareType(body[0].symVal, body[2])
     if body[0].symVal == "self":
       c.selfAvailable = true
+    # Direct aliases of fn! values keep syntax-call sites (design §11.1):
+    # (var g unless!) or (var g (fn! [..] ..)).
+    if body.len > valueIndex and
+        ((body[valueIndex].kind == vkSymbol and
+          c.syntaxFnNames.hasKey(body[valueIndex].symVal)) or
+         (body[valueIndex].kind == vkNode and
+          body[valueIndex].head.isSymbol("fn!"))):
+      c.syntaxFnNames[body[0].symVal] = true
   else:
     if c.useLocalSlots:
       for name in patternBindingNames(body[0]):
@@ -2365,6 +2387,48 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
     c.emitDefineBinding(name)
+
+proc compileFnBang(c: var Compiler, node: Value) =
+  ## (fn! name [params] body...) — runtime fexpr / syntax callable (design
+  ## §3/§11.1). Parameters bind raw syntax nodes; `caller-env` and
+  ## `syntax-call` arrive as implicit leading parameters at syntax-call time,
+  ## so the body resolves them like ordinary locals.
+  let body = node.body
+  var idx = 0
+  var name = ""
+  var definesName = false
+  if body.len > 0 and body[0].kind == vkSymbol:
+    name = body[0].symVal
+    definesName = true
+    idx = 1
+  if idx >= body.len or body[idx].kind != vkList:
+    raise newException(GeneError, "fn! requires a parameter vector")
+  if definesName:
+    if c.useLocalSlots:
+      discard c.reserveLocal(name)
+    # Registered before the body compiles so recursive syntax calls resolve
+    # (childCompiler copies the table).
+    c.syntaxFnNames[name] = true
+  let errorRow = compileErrorRow(c, node)
+  var params = @[newSym("caller-env"), newSym("syntax-call")]
+  for item in body[idx].listItems:
+    params.add item
+  let proto = buildFunctionProto(c, name, newList(params), body, idx + 1,
+                                 checksErrors = errorRow.checks,
+                                 errorTypeCount = errorRow.count)
+  proto.isSyntaxFn = true
+  # Syntax calls carry raw nodes and always bind through the general call
+  # scope; the fused fast-bind paths assume evaluated arguments.
+  proto.simpleCall = false
+  proto.needsCallScope = true
+  proto.poolCallScope = false
+  proto.fastBindUnaryInt = false
+  proto.fastBindPositionalInt = false
+  proto.fastBindRequiredNamed = false
+  discard c.emit(opMakeFn, c.chunk.addFunction(proto))
+  if definesName:
+    c.emitDefineBinding(name)
+    c.syntaxFnNames[name] = true
 
 proc importSelections(sel: Value): seq[ImportSelection] =
   ## Parse a single name `add` or a `[add, sub : minus]` selection list. The
@@ -2842,6 +2906,15 @@ proc compileImport(c: var Compiler, node: Value) =
       discard c.reserveLocal(spec.alias)
     for sel in spec.selections:
       discard c.reserveLocal(sel.local)
+  # Cross-module fn! names (design §3/§11.1): the values import as ordinary
+  # runtime bindings above; the name set keeps the importer's call sites on
+  # the syntax-call path. Registered after reserveLocal, which clears names.
+  if spec.fromModule and c.importedSyntaxFnSets.hasKey(spec.modulePath):
+    let exported = c.importedSyntaxFnSets[spec.modulePath]
+    for sel in spec.selections:
+      if sel.name in exported:
+        c.syntaxFnNames[sel.local] = true
+        c.importedSyntaxFnNames.incl sel.local
   discard c.emit(opImport, c.chunk.addImport(spec))
 
 proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
@@ -3233,6 +3306,14 @@ proc compileCall(c: var Compiler, node: Value) =
       args.add node.body[i]
     compileCall(c, newNode(node.body[1], node.props, args, node.meta))
     return
+  if c.syntaxFnNames.len > 0 and node.head.kind == vkSymbol and
+      c.syntaxFnNames.hasKey(node.head.symVal):
+    # Known fn! callee (design §3 step 4): props/body stay raw syntax nodes;
+    # no argument evaluation happens.
+    compileExpr(c, node.head)
+    c.emitConst node
+    c.chunk.callSites[c.emit(opSyntaxCall)] = node
+    return
   if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
     let direct = c.lexicalCallSlot0(node.head.symVal)
     if direct.slot >= 0:
@@ -3326,6 +3407,11 @@ proc compileCall(c: var Compiler, node: Value) =
                            body = @[node.props["protocol"], node.head]))
   else:
     compileExpr(c, node.head)
+  # Generic evaluated-head path (design §3): the callee value may turn out to
+  # be a fn!, so guard before evaluating props/body. On the syntax branch the
+  # VM performs the syntax call from the raw node and jumps past the plain
+  # call sequence.
+  let syntaxGuardAt = c.emit(opSyntaxGuard, 0, depth = c.chunk.addConst(node))
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:
@@ -3345,6 +3431,7 @@ proc compileCall(c: var Compiler, node: Value) =
       else:
         c.emit(opCall, node.body.len, names = names)
     c.chunk.callSites[callIndex] = node
+  c.patchJump(syntaxGuardAt)
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
@@ -3788,15 +3875,37 @@ proc compileType(c: var Compiler, node: Value) =
   let name = body[0].symVal
   var messageNodes: seq[Value]
   var implNodes: seq[Value]
+  var ctorNode = NIL
   for i in 1 ..< body.len:
     let item = body[i]
     if item.kind == vkNode and item.head.isSymbol("message"):
       messageNodes.add item
     elif item.kind == vkNode and item.head.isSymbol("impl"):
       implNodes.add item
+    elif item.kind == vkNode and item.head.isSymbol("ctor"):
+      if ctorNode.kind != vkNil:
+        raise newException(GeneError, "type " & name & " defines more than one ctor")
+      ctorNode = item
     else:
       raise newException(GeneError,
-        "type body items must be message or impl declarations")
+        "type body items must be ctor, message, or impl declarations")
+  # The ctor compiles first so its ^errors row sits deepest on the stack;
+  # opMakeType pops it after the message error rows (design §7.1.1).
+  var ctorFn: FunctionProto
+  if ctorNode.kind != vkNil:
+    rejectReservedEffects(ctorNode)
+    if ctorNode.body.len == 0 or ctorNode.body[0].kind != vkList:
+      raise newException(GeneError, "ctor requires a parameter vector")
+    let errorRow = compileErrorRow(c, ctorNode)
+    # `self` is the pre-created in-progress instance (design §7.1.1); it binds
+    # like a message receiver, as an implicit leading parameter.
+    var ctorParams = @[newSym("self")]
+    for item in ctorNode.body[0].listItems:
+      ctorParams.add item
+    ctorFn = buildFunctionProto(c, name & "/ctor", newList(ctorParams),
+                                ctorNode.body, 1,
+                                checksErrors = errorRow.checks,
+                                errorTypeCount = errorRow.count)
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
   for item in messageNodes:
@@ -3883,7 +3992,8 @@ proc compileType(c: var Compiler, node: Value) =
                                            deriveProtocolCount: deriveProtocolCount,
                                            deriveRequests: deriveRequests,
                                            messages: messages,
-                                           inlineImpls: inlineImpls)))
+                                           inlineImpls: inlineImpls,
+                                           ctorFn: ctorFn)))
   c.emitDefineBinding(name)
 
 proc compileEnum(c: var Compiler, node: Value) =
@@ -4116,6 +4226,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "fn":
       compileFn(c, node)
       return
+    of "fn!":
+      compileFnBang(c, node)
+      return
     of "macro":
       compileMacro(c, node)
       return
@@ -4284,37 +4397,51 @@ proc compileSourceUnit*(unit: SourceUnit,
   compileFormsInto(c, unit.forms, useLocalSlots)
 
 proc compileFormsWithMacros*(forms: openArray[Value],
-    importedMacros: Table[string, Table[string, MacroDef]]):
-    tuple[chunk: Chunk, macroExports: Table[string, MacroDef]] =
+    importedMacros: Table[string, Table[string, MacroDef]],
+    importedSyntaxFns = initTable[string, seq[string]]()):
+    tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
+          syntaxFnExports: seq[string]] =
   ## Module-loader entry point (design §11/§15): compile a source unit with the
   ## macro exports of its `from "path"` dependencies available (keyed by the
   ## raw path string), and return this unit's own macro definitions — imported
-  ## macros are usable but not re-exported.
+  ## macros are usable but not re-exported. fn! names travel the same way so
+  ## importers keep syntax-call sites (design §3/§11.1); the fn! values remain
+  ## ordinary runtime bindings.
   var c = Compiler(chunk: newChunk(), allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
                    sourceLocs: initTable[uint64, SourceLoc](),
-                   importedMacroSets: importedMacros)
+                   importedMacroSets: importedMacros,
+                   importedSyntaxFnSets: importedSyntaxFns)
   result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
   if c.hasMacros:
     for name, def in c.macros:
       if name notin c.importedMacroNames:
         result.macroExports[name] = def
+  for name in c.syntaxFnNames.keys:
+    if name notin c.importedSyntaxFnNames:
+      result.syntaxFnExports.add name
 
 proc compileFormsWithMacros*(unit: SourceUnit,
-    importedMacros: Table[string, Table[string, MacroDef]]):
-    tuple[chunk: Chunk, macroExports: Table[string, MacroDef]] =
+    importedMacros: Table[string, Table[string, MacroDef]],
+    importedSyntaxFns = initTable[string, seq[string]]()):
+    tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
+          syntaxFnExports: seq[string]] =
   var c = Compiler(chunk: newChunk(unit.sourceName),
                    sourceName: unit.sourceName,
                    sourceLocs: unit.locs,
                    formLocs: unit.formLocs,
                    allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
-                   importedMacroSets: importedMacros)
+                   importedMacroSets: importedMacros,
+                   importedSyntaxFnSets: importedSyntaxFns)
   result.chunk = compileFormsInto(c, unit.forms, useLocalSlots = true)
   if c.hasMacros:
     for name, def in c.macros:
       if name notin c.importedMacroNames:
         result.macroExports[name] = def
+  for name in c.syntaxFnNames.keys:
+    if name notin c.importedSyntaxFnNames:
+      result.syntaxFnExports.add name
 
 proc compileForm*(form: Value): Chunk =
   let forms = @[form]

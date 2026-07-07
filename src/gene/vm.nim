@@ -233,6 +233,10 @@ type
     # module compiles; consumed by importing modules' compilers so `(import
     # [m!] from "path")` expands at the importer's compile time (design §11).
     moduleMacros: Table[string, Table[string, MacroDef]]
+    # fn! exports per loaded module (abs path -> names). The values import as
+    # ordinary runtime bindings; the importer's compiler needs the name set so
+    # call sites keep raw syntax (design §3/§11.1).
+    moduleSyntaxFns: Table[string, seq[string]]
     currentModuleDir: string
     packageRoot: string
 
@@ -755,8 +759,17 @@ proc getArg(named: NamedArgs, name: string): Value =
     if key == name: return named.valueAt(i)
   raise newException(GeneError, "missing named argument: " & name)
 
+proc rejectEvaluatedSyntaxCall(callee: Value) {.noreturn.} =
+  ## Safety net (design §3): a fn! must never observe pre-evaluated arguments.
+  ## Call sites that bind arguments before resolving the callee reject fn!
+  ## values instead of silently mis-evaluating.
+  raise newException(GeneError,
+    "fn! '" & callee.fnName & "' reached a call site with pre-evaluated " &
+    "arguments; call it by its fn!-visible name or through an expression head")
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value
+proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
                          named: NamedArgs): tuple[handled: bool, value: Value]
@@ -2402,7 +2415,7 @@ proc thawEntries(entries: PropTable): PropTable =
 
 proc freezeRejectName(value: Value): string =
   case value.kind
-  of vkFunction: "Fn"
+  of vkFunction: (if value.isSyntaxFn: "Fn!" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
   of vkModule: "Module"
@@ -2570,7 +2583,7 @@ proc declarationKind*(value: Value): string =
   of vkSet: "Set"
   of vkHashMap: "HashMap"
   of vkNode: "Node"
-  of vkFunction: "Fn"
+  of vkFunction: (if value.isSyntaxFn: "Fn!" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
   of vkModule: "Module"
@@ -3399,6 +3412,24 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setNodeProp(keySegment("Node/set-prop!", args[1]), args[2])
   args[2]
 
+proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "Node/set-body! expects 2 arguments, got " & $args.len)
+  requireNode("Node/set-body!", args[0])
+  if args[1].kind != vkList:
+    raise newException(GeneError, "Node/set-body! expects a List")
+  args[0].setNodeBody(args[1].listItems)
+  args[1]
+
+proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "Node/push-body! expects 2 arguments, got " & $args.len)
+  requireNode("Node/push-body!", args[0])
+  args[0].pushNodeBody(args[1])
+  args[1]
+
 proc requireBuffer(name: string, value: Value) =
   if value.kind != vkBuffer:
     raise newException(GeneError, name & " expects a Buffer")
@@ -4060,6 +4091,24 @@ proc buildBuiltins(app: Application): Scope =
                                          scope: result)
                          ])
   result.define("Call", callType)
+  # SyntaxCall mirrors Call for fn! syntax calls (design §3): raw prop/body
+  # syntax nodes instead of evaluated arguments.
+  let syntaxCallType = newType("SyntaxCall", NIL,
+                               @[
+                                 TypeField(name: "named", optional: false,
+                                           typeExpr: newSym("PropMap"),
+                                           scope: result),
+                                 TypeField(name: "site", optional: true,
+                                           typeExpr: newSym("Node"),
+                                           scope: result)
+                               ],
+                               @[], result, @[], @[],
+                               @[
+                                 TypeBodyField(rest: true,
+                                               typeExpr: newSym("Any"),
+                                               scope: result)
+                               ])
+  result.define("SyntaxCall", syntaxCallType)
   let callableProtocol = newProtocol("Callable", ["apply"])
   result.define("Callable", callableProtocol)
   let toStrProtocol = newProtocol("ToStr", ["to-str"])
@@ -4270,6 +4319,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Map", newNamespace("Map", mapScope))
   let nodeScope = newScope(result)
   nodeScope.define("set-prop!", newNativeFn("Node/set-prop!", biNodeSetPropBang))
+  nodeScope.define("set-body!", newNativeFn("Node/set-body!", biNodeSetBodyBang))
+  nodeScope.define("push-body!",
+                   newNativeFn("Node/push-body!", biNodePushBodyBang))
   result.define("Node", newNamespace("Node", nodeScope))
   let bufferScope = newScope(result)
   bufferScope.define("len", newNativeFn("Buffer/len", biBufferLen))
@@ -5544,8 +5596,10 @@ proc builtinBinding(scope: Scope, name: string): Value =
   root.lookup(name)
 
 proc isBuiltinCallable(value: Value): bool =
-  value.kind in {vkFunction, vkNativeFn, vkFfiCallable, vkType,
-                 vkProtocolMessage, vkEnumVariant} or
+  # fn! values implement SyntaxCallable, not Callable (design §3).
+  (value.kind == vkFunction and not value.isSyntaxFn) or
+    value.kind in {vkNativeFn, vkFfiCallable, vkType,
+                   vkProtocolMessage, vkEnumVariant} or
     (value.kind == vkNode and value.isSelector)
 
 proc valueImplementsCallable(value: Value, scope: Scope): bool =
@@ -8066,7 +8120,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
           stack.add newFunction(proto.name, proto.params, proto, scope,
-                                proto.checksErrors, errorTypes)
+                                proto.checksErrors, errorTypes,
+                                syntaxFn = proto.isSyntaxFn)
         of opMakeEnv:
           let policy = stack.pop()
           let capabilities = stack.pop()
@@ -8152,9 +8207,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                  scope, message.fn.checksErrors,
                                  messageErrorTypes[i])
             messages[message.name] = functionForScopeStorage(fn, scope)
+          # The ctor error row compiles before the message rows, so it pops last.
+          var ctorFn = NIL
+          if proto.ctorFn != nil:
+            let ctorErrorTypes =
+              stack.popCheckedErrorTypes(proto.ctorFn.errorTypeCount, scope)
+            let fn = newFunction(proto.ctorFn.name, proto.ctorFn.params,
+                                 proto.ctorFn, scope, proto.ctorFn.checksErrors,
+                                 ctorErrorTypes)
+            ctorFn = functionForScopeStorage(fn, scope)
           let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
                             derivedProtocols, proto.deriveRequests,
-                            proto.bodyFields, messages)
+                            proto.bodyFields, messages, ctorFn)
           # Inline impls register exactly like standalone (impl P T ...) forms
           # written after the type declaration (docs/core.md §8), before
           # ^derive runs so manual-vs-generated conflicts surface normally.
@@ -8389,6 +8453,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 evalBudget = callScope.evalBudget
                 continue
               elif not proto.isGenerator:
+                if callee.isSyntaxFn:
+                  rejectEvaluatedSyntaxCall(callee)
                 let bound = bindCallScope(callee, proto, [], NamedArgs())
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
@@ -8575,6 +8641,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 evalBudget = callScope.evalBudget
                 continue
               elif not proto.isGenerator:
+                if callee.isSyntaxFn:
+                  rejectEvaluatedSyntaxCall(callee)
                 var boundScope: Scope
                 var boundReturnType: Value
                 var usedUnaryIntFast = false
@@ -8843,6 +8911,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 # General call (named / defaults / rest / typed / generic / ^errors):
                 # bind via the shared helper, then push a frame carrying the return
                 # type to adapt and the callee's error boundary to translate on throw.
+                if callee.isSyntaxFn:
+                  rejectEvaluatedSyntaxCall(callee)
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount > 0 and proto.canFastBindRequiredNamed:
@@ -8994,6 +9064,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 evalBudget = callScope.evalBudget
                 continue
               elif not fnProto.isGenerator:
+                if callee.isSyntaxFn:
+                  rejectEvaluatedSyntaxCall(callee)
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount == 0 and fnProto.canFastBindPositionalInt and
@@ -9784,6 +9856,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack[top] = if stack[top].isTruthy: FALSE else: TRUE
         of opJump:
           ip = inst[].intArg
+        of opSyntaxCall:
+          # Stack: [.. callee, raw call node] (design §3 step 4).
+          if stack.len < 2:
+            raise newException(GeneError, "VM stack underflow in syntax call")
+          let callNode = stack.pop()
+          let callee = stack.pop()
+          stack.add applySyntaxCall(callee, callNode, scope)
+        of opSyntaxGuard:
+          # Generic evaluated-head call site (design §3): if the callee on top
+          # is a fn!, perform the syntax call from the const raw node and jump
+          # past the ordinary argument-evaluation + call sequence.
+          if stack.len == 0:
+            raise newException(GeneError, "VM stack underflow in syntax guard")
+          if stack[stack.len - 1].isSyntaxFn:
+            let callee = stack.pop()
+            stack.add applySyntaxCall(callee, chunk.constants[inst[].depth],
+                                      scope)
+            ip = inst[].intArg
         of opReturn:
           frameReturn(if stack.len > 0: stack.pop() else: NIL)
         of opReturnBareInt:
@@ -11165,7 +11255,7 @@ proc runtimeTypeExpr(value: Value): Value =
       newSym("Selector")
     else:
       newSym("Node")
-  of vkFunction: newSym("Fn")
+  of vkFunction: newSym(if value.isSyntaxFn: "Fn!" else: "Fn")
   of vkNativeFn: newSym("NativeFn")
   of vkNamespace: newSym("Namespace")
   of vkModule: newSym("Module")
@@ -11649,14 +11739,19 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   of "Gene", "Node":
     (true, value.kind == vkNode)
   of "Fn", "Function":
-    (true, value.kind == vkFunction)
+    # Fn! is a sibling of Fn, not a subtype (design §3/§7.2): a fn! value
+    # never satisfies an Fn-typed boundary.
+    (true, value.kind == vkFunction and not value.isSyntaxFn)
+  of "Fn!":
+    (true, value.isSyntaxFn)
   of "NativeFn":
     (true, value.kind == vkNativeFn)
   of "Selector":
     (true, value.kind == vkNode and value.isSelector)
   of "Callable":
-    (true, value.kind in {vkFunction, vkNativeFn, vkFfiCallable, vkType,
-                          vkProtocolMessage} or
+    # fn! values implement SyntaxCallable, not Callable (design §3).
+    (true, (value.kind == vkFunction and not value.isSyntaxFn) or
+      value.kind in {vkNativeFn, vkFfiCallable, vkType, vkProtocolMessage} or
       (value.kind == vkNode and value.isSelector))
   of "Type":
     (true, value.kind == vkType)
@@ -17162,6 +17257,131 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if proto.poolCallScope:
       releaseCallScope(callScope)
 
+proc snapshotCallerEnv(scope: Scope): Value =
+  ## The caller's visible lexical bindings as an Env (design §11.1):
+  ## `caller-env` inside a fn! body. A binding snapshot is a read-only view
+  ## for name resolution — code evaluated `^in caller-env` cannot create or
+  ## rebind caller bindings — while mutable values reachable through it stay
+  ## live. Builtins are excluded here; Env materialization re-adds them.
+  var chain: seq[Scope]
+  let builtins = builtinsScope()
+  var s = scope
+  while s != nil and s != builtins:
+    chain.add s
+    s = s.parent
+  var bindings = initTable[string, Value]()
+  for i in countdown(chain.high, 0):  # outermost first, so inner shadows
+    let sc = chain[i]
+    for index, slotName in sc.slotNames:
+      if slotName.len > 0 and sc.slotDefined(index):
+        bindings[slotName] = sc.slots[index]
+    for key, value in sc.vars:
+      bindings[key] = value
+  newEnv(bindings, bindingScope = scope)
+
+proc syntaxCallEnvelope(scope: Scope, node: Value): Value =
+  ## SyntaxCall envelope (design §3): the raw prop/body syntax nodes of the
+  ## call plus the site, mirroring the ordinary Call envelope shape.
+  var props = initOrderedTable[string, Value]()
+  var named = initOrderedTable[string, Value]()
+  for key, value in node.props:
+    named[key] = value
+  props["named"] = newMap(named)
+  props["site"] = node
+  var body = newSeq[Value](node.body.len)
+  for i, item in node.body:
+    body[i] = item
+  newNode(builtinBinding(scope, "SyntaxCall"), props = props, body = body)
+
+proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value =
+  ## Apply a fn! (design §3 step 4): the callee receives the unevaluated
+  ## prop/body syntax nodes and the caller environment. `caller-env` and
+  ## `syntax-call` bind as implicit leading parameters.
+  if not callee.isSyntaxFn:
+    raise newException(GeneError,
+      "syntax call site expects a fn! value, got " & $callee.kind)
+  let code = callee.fnCode
+  if code == nil or not (code of FunctionProto):
+    raise newException(GeneError, "fn! has no VM code")
+  let proto = FunctionProto(code)
+  var args = newSeqOfCap[Value](callNode.body.len + 2)
+  args.add snapshotCallerEnv(callerScope)
+  args.add syntaxCallEnvelope(callerScope, callNode)
+  for item in callNode.body:
+    args.add item
+  var named = NamedArgs()
+  for key, value in callNode.props:
+    named.names.add key
+    named.values.add value
+  try:
+    applyFunctionCall(callee, args, named, proto)
+  except GeneError as e:
+    attachSourceLoc(e, proto.sourceLoc)
+    raise
+
+proc validateConstructedInstance(typ, instance: Value) =
+  ## Schema validation after a ctor body runs (design §7.1.1): required fields
+  ## present, unknown fields rejected, field/body types checked against the
+  ## full inherited schema with boundary adaptation written back in place.
+  let typeName = typ.typeName
+  let fields = typ.typeFields
+  let fallbackScope = typ.typeScope
+  for f in fields:
+    if instance.props.hasKey(f.name):
+      let fieldScope = f.typeFieldScope(fallbackScope)
+      let adapted = adaptBoundary("field '" & f.name & "' for " & typeName,
+                                  f.typeExpr, instance.props[f.name],
+                                  fieldScope)
+      instance.setNodeProp(f.name, adapted)
+    elif not f.optional:
+      raise newException(GeneError,
+        "ctor for " & typeName & " left required field '" & f.name & "' unset")
+  var propNames: seq[string]
+  for key, _ in instance.props:
+    propNames.add key
+  for key in propNames:
+    var known = false
+    for f in fields:
+      if f.name == key:
+        known = true
+        break
+    if not known:
+      raise newException(GeneError, typeName & " has no field '" & key & "'")
+  let bodyFields = typ.typeBodyFields
+  let bodyLen = instance.body.len
+  var restBody = -1
+  for i, f in bodyFields:
+    if f.rest:
+      restBody = i
+      break
+  if restBody < 0:
+    if bodyLen != bodyFields.len:
+      raise newException(GeneError,
+        "ctor for " & typeName & " must leave " & $bodyFields.len &
+        " body item(s), got " & $bodyLen)
+    for i, f in bodyFields:
+      let fieldScope = f.typeBodyFieldScope(fallbackScope)
+      instance.setNodeBodyItem(i, adaptBoundary(
+        "body field " & $i & " for " & typeName, f.typeExpr,
+        instance.body[i], fieldScope))
+  else:
+    if bodyLen < restBody:
+      raise newException(GeneError,
+        "ctor for " & typeName & " must leave at least " & $restBody &
+        " body item(s), got " & $bodyLen)
+    for i in 0 ..< restBody:
+      let f = bodyFields[i]
+      let fieldScope = f.typeBodyFieldScope(fallbackScope)
+      instance.setNodeBodyItem(i, adaptBoundary(
+        "body field " & $i & " for " & typeName, f.typeExpr,
+        instance.body[i], fieldScope))
+    let restType = bodyFields[restBody]
+    let fieldScope = restType.typeBodyFieldScope(fallbackScope)
+    for i in restBody ..< bodyLen:
+      instance.setNodeBodyItem(i, adaptBoundary(
+        "body field " & $i & " for " & typeName, restType.typeExpr,
+        instance.body[i], fieldScope))
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =
   case callee.kind
@@ -17197,6 +17417,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
   of vkEnumVariant:
     constructEnumVariant(callee, args, named)
   of vkFunction:
+    if callee.isSyntaxFn:
+      rejectEvaluatedSyntaxCall(callee)
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
@@ -17210,6 +17432,21 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if callee.isEnumType:
       raise newException(GeneError,
         "enum " & callee.typeName & " is not directly constructible; use a variant")
+    let ctorFn = callee.typeCtor
+    if ctorFn.kind != vkNil:
+      # Ctor construction (design §7.1.1): pre-create the instance with the
+      # type as head, run the ctor with it bound as `self` (the implicit
+      # leading parameter), then validate the completed instance against the
+      # full inherited schema. The ctor body result is ignored; there is no
+      # public bypass through default construction.
+      let instance = newNode(callee)
+      var ctorArgs = newSeqOfCap[Value](args.len + 1)
+      ctorArgs.add instance
+      for a in args:
+        ctorArgs.add a
+      discard applyCall(ctorFn, ctorArgs, named, dispatchScope, site)
+      validateConstructedInstance(callee, instance)
+      return instance
     # Construct a typed instance: a node with the type as head and validated
     # props/body fields.
     let fields = callee.typeFields
@@ -17344,6 +17581,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   try:
     let unit = readAllWithLocs(src, absPath)
     var importedMacros = initTable[string, Table[string, MacroDef]]()
+    var importedSyntaxFns = initTable[string, seq[string]]()
     for form in unit.forms:
       let raw = importFromPath(form)
       if raw.len == 0 or importedMacros.hasKey(raw):
@@ -17353,8 +17591,11 @@ proc loadModuleValue(app: Application, absPath: string): Value =
       importedMacros[raw] =
         app.moduleMacros.getOrDefault(depPath,
                                       initTable[string, MacroDef]())
-    let compiled = compileFormsWithMacros(unit, importedMacros)
+      importedSyntaxFns[raw] = app.moduleSyntaxFns.getOrDefault(depPath, @[])
+    let compiled = compileFormsWithMacros(unit, importedMacros,
+                                          importedSyntaxFns)
     app.moduleMacros[absPath] = compiled.macroExports
+    app.moduleSyntaxFns[absPath] = compiled.syntaxFnExports
     discard run(compiled.chunk, modScope)
   finally:
     app.currentModuleDir = savedDir

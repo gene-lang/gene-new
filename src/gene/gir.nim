@@ -109,6 +109,8 @@ type
     opReturnBareInt
     opCheckType
     opDeclareType
+    opSyntaxCall  # pop raw call node + fn! callee, apply the syntax call (design §3/§11.1)
+    opSyntaxGuard # if the callee on top is a fn!, syntax-call the const node and jump
 
   Instruction* = object
     op*: OpCode
@@ -182,6 +184,7 @@ type
     fastBindPositionalInt*: bool
     fastBindRequiredNamed*: bool
     isGenerator*: bool
+    isSyntaxFn*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
     nativeParamIndex*: int
@@ -312,6 +315,7 @@ type
     deriveRequests*: seq[Value]
     messages*: seq[ImplMessageProto] # type-direct messages (docs/core.md §8)
     inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (docs/core.md §8)
+    ctorFn*: FunctionProto       # (ctor ...) body item, or nil (design §7.1.1)
 
   EnumVariantProto* = object
     name*: string
@@ -673,6 +677,10 @@ proc formatInstruction(inst: Instruction): string =
     discard
   of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJump:
     result.add " target=" & $inst.intArg
+  of opSyntaxCall:
+    discard
+  of opSyntaxGuard:
+    result.add " target=" & $inst.intArg & " const=" & $inst.depth
   of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
      opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield, opReturn,
      opReturnBareInt:

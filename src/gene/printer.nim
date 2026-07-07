@@ -208,7 +208,10 @@ proc print*(v: Value): string =
     sb
   # Callables are runtime values, not literals; rendered for display only.
   of vkFunction:
-    if v.fnName.len > 0: "(fn " & v.fnName & ")" else: "(fn)"
+    if v.isSyntaxFn:
+      (if v.fnName.len > 0: "(fn! " & v.fnName & ")" else: "(fn!)")
+    else:
+      (if v.fnName.len > 0: "(fn " & v.fnName & ")" else: "(fn)")
   of vkNativeFn:
     "(native-fn " & v.nativeFnName & ")"
   of vkNamespace:
