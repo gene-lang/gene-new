@@ -503,7 +503,7 @@ Syntax calls use a `SyntaxCall` envelope:
   ^body  [Node...])
 
 (protocol SyntaxCallable
-  (message apply_syntax [callee : Self, call : SyntaxCall, caller_env : Env] : Any))
+  (message apply_syntax [callee : Self, call : SyntaxCall, caller-env : Env] : Any))
 ```
 
 `Fn`, `Type`, `Selector`, protocol messages, native functions, and user-defined callable values implement `Callable`. `Fn!` values created by `fn!` implement `SyntaxCallable`.
@@ -519,6 +519,16 @@ To evaluate `(h ^p v c1 c2)`:
 7. Otherwise it is a call error.
 
 This makes fexprs (`fn!`) a runtime feature, not a compile-time macro feature. A `fn!` can implement control flow, laziness, DSL evaluation, and explicit `eval` under a caller or sandbox `Env`, while ordinary `fn` remains simple and optimizable.
+
+Syntax callability is a runtime property of the callee value, so it has an explicit compilation cost model:
+
+- A call site whose callee is statically known not to implement `SyntaxCallable` — a special form, an expanded macro, a resolved `fn`/native binding, or a callee whose static type excludes `Fn!` — compiles to a direct call. No dispatch check is emitted and the argument syntax nodes are not retained.
+- Every other call site compiles to a generic path: evaluate the head, check the callee for `SyntaxCallable`, then either hand over the retained syntax nodes or evaluate the arguments normally. In the MVP interpreter this is cheap because modules are persisted node trees — the argument nodes are alive regardless — so the added cost is one callee check before argument evaluation.
+- `Fn!` is a sibling of `Fn` in the type hierarchy (§7.2), not a subtype. A `fn!` value does not satisfy an `Fn [...] ...`-typed parameter; passing one across that boundary is a recoverable `TypeError`. Typed regions compiled AOT therefore never hit the syntax path through function-typed values; an `Any`-typed callee keeps the generic path.
+
+The generic-path check is the price of first-class fexprs. Code that must compile to direct calls should type its callees.
+
+MVP approximation: call sites whose head is a statically tracked fn! name (definitions, direct `var` aliases, and `from "path"` imports) compile to the syntax path, and expression heads compile to the guarded generic path. The remaining arg-first fused call sites (for example a fn! flowing into an untyped function parameter that is then called) reject fn! callees with a recoverable error instead of silently evaluating arguments; full generic-path coverage for those sites is future work.
 
 Normal calls are callable-first:
 
@@ -967,6 +977,8 @@ If no `ctor` is defined, Gene uses the default schema constructor. It maps named
 
 If a `ctor` exists, there is no public bypass through default construction. That lets the ctor enforce normalization and invariants. Trusted compiler-generated code may eventually use an internal raw-construction path, but it is not a source-level feature.
 
+Blocking default construction also blocks naive data round-trips. A printed instance of a ctor type is a data node such as `(Point ^x 10.0 ^y 20.0)`, but re-reading and evaluating that node calls the ctor, whose parameter vector may not accept the printed prop shape. Reconstructing instances from printed or serialized data therefore goes through the type's public constructor or an explicit deserialization API. The future trusted raw-construction path is the intended hook for deserializers that must bypass a ctor; it stays out of source-level reach.
+
 Single inheritance affects schema, not constructor chaining. A child inherits parent fields and must leave `self` valid for the full inherited schema, but the parent constructor is not called automatically:
 
 ```gene
@@ -981,6 +993,8 @@ Single inheritance affects schema, not constructor chaining. A child inherits pa
     (self ~ Node/set-prop! `name name)
     (self ~ Node/set-prop! `breed breed)))
 ```
+
+This is a known MVP invariant hole: a parent `ctor` guards direct construction of the parent type only. A subtype's ctor writes inherited fields directly, so semantic invariants the parent ctor enforces beyond what the schema expresses are not automatically enforced for subtype instances. A type whose ctor invariants must hold for every instance should encode the invariant in its schema, expose a validating helper that child ctors are expected to call, or avoid being inherited from. Parent-constructor chaining — an explicit way for a child ctor to run the parent ctor against `self` — is post-MVP (§7.3).
 
 A partially constructed `self` is not `Send` and should not escape to actors, channels, native roots, globals, or long-lived closures before construction validates. The MVP runtime may reject obvious escapes; future implementations may enforce this more precisely with a construction-state marker.
 
@@ -1535,7 +1549,7 @@ MVP surface:
 ```
 
 `Match` is a **typed node** (§7.1) with specified fields: `^text` (whole match),
-`^groups` (numbered captures, `(List (opt Str))`), `^named` (`(HashMap Str
+`^groups` (numbered captures, `(List Str?)`), `^named` (`(HashMap Str
 Str?)`, name→capture), and `^start`/`^end` (half-open byte offsets:
 `start <= i < end`). Unmatched optional captures are `nil`. It destructures with
 the ordinary pattern engine (§8).
@@ -1990,7 +2004,7 @@ A future derive helper may generate forwarding impls:
   ^derive [(Delegate ^protocol Reader ^to /source)])
 ```
 
-Such a helper would expand to a normal `impl Reader BufferedReader` whose messages forward to `self/source`. This keeps delegation homoiconic, selector-based, and compatible with the existing protocol/derive system. Delegation is not an MVP special form.
+Such a helper would expand to a normal `impl Reader BufferedReader` whose messages forward to `self/source`. This keeps delegation homoiconic, selector-based, and compatible with the existing protocol/derive system. Delegation is not an MVP special form, and the `Delegate` helper is post-MVP: it generates an `impl` for a protocol other than its own, which requires lifting the §11.4 own-protocol derive restriction first.
 
 ## 11. Fexprs, macro templates, and compile-time code
 
@@ -2024,7 +2038,15 @@ syntax-call SyntaxCall  # the full raw call envelope, including props/site
 
 The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly, usually with `caller-env` or a restricted child environment.
 
-`fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and `caller-env`.
+Like macros, names bound to `fn!` values should keep the `!` suffix by convention (`unless!`); this is not enforced.
+
+`caller-env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling a `fn!` implicitly grants the callee a view of the caller's full evaluation environment:
+
+- `caller-env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
+- `caller-env` is a read-only view for name resolution. Code evaluated `^in caller-env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
+- Because calling an unknown value may hand it your environment, security-sensitive code should treat syntax calls deliberately: type callees to exclude `Fn!`, pass a restricted child or purpose-built `Env` when evaluating untrusted syntax, and rely on evaluation policies (§11.5), which travel with the environment `eval` actually receives.
+
+`fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and `caller-env`. The compilation cost model for this dispatch is specified in §3.
 
 Use `fn!` for:
 
@@ -3603,7 +3625,7 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 13. Protocols/messages, `Error` and `Send` marker protocols, and visible-implementation coherence.
 14. Typed actors: `ActorRef M`, bounded mailboxes, sequential handlers, request/reply, scope ownership, and basic supervision.
 15. `fn!` runtime fexprs, templates/quasiquote expansion, and hygienic template macros.
-16. Protocol-local `derive` experiment and derive-based delegation helper experiments.
+16. Protocol-local `derive` experiment.
 17. `try/catch/ensure` checked errors and cancellation propagation.
 18. `eval node ^in env`: normal compiler pipeline, isolated overlays, `CompileError`, captured overlay lifetime, policy enforcement, and CLI/REPL environments.
 19. Formatter/docs: deterministic printing, module docs, namespace docs, declaration streams, and import normalization reporting.
@@ -3630,7 +3652,7 @@ The design is close enough to start implementation once the following MVP cuts a
 6. **Selectors:** implement selector literals, static and dynamic `%` stages, `void` propagation, strict/default options, list/map/node/module/namespace lookup, and functional update paths.
 7. **Streams and parser pipeline:** implement `(Stream T E)`, `yield`, `peek`, `next`, `has_next`, `close`, `Never` error normalization, declaration streams, and stream-shaped reader/parser output.
 8. **Errors:** implement `Error` marker protocol, `fail`, `panic`, `try/catch/ensure`, `CompileError`, `MatchError`, `TypeError`, and checked/dynamic `^errors` rules.
-9. **Protocols:** implement protocol declarations, messages, visible-implementation coherence, ambiguity errors, `^impl`, basic `^derive` plumbing, and manual delegation through forwarding impls.
+9. **Protocols:** implement protocol declarations, messages, visible-implementation coherence, ambiguity errors, `^impl`, and basic `^derive` plumbing. Manual delegation is ordinary forwarding impls and needs no dedicated support; the derive-based delegation helper is deferred.
 10. **Env and eval:** implement first-class GC-managed `Env`, explicit `eval node ^in env`, isolated overlays, compile-time/runtime capability separation, and overlay lifetime rules.
 11. **Concurrency foundation:** implement structured tasks, cancellation, bounded channels, `Send`, `Cell`, `AtomicCell`, then typed actors with sequential mailboxes.
 12. **Native foundation:** implement opaque `GeneValue`, root handles, `NativeFn`, native registration, and the VM trampoline before broader C FFI or native compilation.
