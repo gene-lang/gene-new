@@ -1,12 +1,14 @@
 # Gene Async HTTP Server Design
 
-**Status:** Phase 1 (§21) implemented — event-loop serve, task-per-request
+**Status:** Phases 1–2 (§21) implemented — event-loop serve, task-per-request
 dispatch, bounded admission (`^max-connections`, `^max-in-flight`,
 `^max-body-bytes` → 413, `^request-timeout-ms` → 504, `^overload-response`),
-status metrics; plus early slices of Phase 2 (actor-pool dispatch with
-native-created `ReplyTo`, mailbox overload → overload response) and Phase 3
-(`^routes` exact-match table, `^on-error` mapper). See `src/gene/http_server.nim`
-and `docs/stdlib.md`.  
+status metrics; actor-pool dispatch with native-created `ReplyTo` (double send
+raises `ReplyAlreadySent`), mailbox overload → overload response,
+`^supervision (supervisor-policy ^strategy ^max-restarts ^within-ms ^events
+^dead-letter)` with restart rate limiting (§18.5); plus early Phase 3 slices
+(`^routes` exact-match table, `^on-error` mapper). See
+`src/gene/http_server.nim` and `docs/stdlib.md`.  
 **Scope:** native async HTTP and WebSocket server for Gene applications  
 **Primary namespace:** `net/http`  
 **Goal:** support high-concurrency native HTTP I/O while keeping Gene request handlers simple, synchronous when possible, and isolated through tasks and actors.

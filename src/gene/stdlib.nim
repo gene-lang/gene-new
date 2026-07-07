@@ -2164,6 +2164,9 @@ proc registerStdlibNamespaces(root: Scope) =
   httpScope.define("route", newNativeCallFn("http/route", biHttpRoute))
   httpScope.define("actor-pool", newNativeCallFn("http/actor-pool",
                                                  biHttpActorPool))
+  httpScope.define("supervisor-policy",
+                   newNativeCallFn("http/supervisor-policy",
+                                   biHttpSupervisorPolicy))
   httpScope.define("bytes", newNativeCallFn("http/bytes", biHttpBytes,
                                             acceptsNamed = false))
   httpScope.define("text", newNativeCallFn("http/text", biHttpText,

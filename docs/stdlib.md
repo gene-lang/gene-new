@@ -253,7 +253,15 @@ Named arguments to `serve` (all optional):
 - `^dispatch task-per-request | (actor-pool ...)` — dispatch mode;
   `(actor-pool ^workers N ^mailbox N ^init fn ^handle fn)` runs requests as
   `RequestMsg` values on a fixed worker-actor pool; full mailboxes answer the
-  overload response.
+  overload response (note: a bare symbol evaluates as a lookup, so quote the
+  mode — `` ^dispatch `task-per-request ``);
+- `^supervision (supervisor-policy ...)` — worker-pool supervision
+  (actor-pool dispatch only): `` (supervisor-policy ^strategy `restart
+  ^max-restarts 10 ^within-ms 60000 ^events chan ^dead-letter chan) ``.
+  Strategy `restart` (default) rebuilds worker state with ^init under the
+  restart budget; `stop` closes the failing worker. Worker failures emit
+  `ActorFailure` values to `^events`/`^dead-letter` channels without
+  blocking the failure path.
 
 Stalled request reads answer `408 Request Timeout`; malformed requests and
 oversized headers answer `400 Bad Request` as before.

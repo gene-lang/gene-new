@@ -446,6 +446,62 @@ proc biHttpActorPool(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   props["handle"] = handleFn
   newNode(newSym("ActorPool"), props = props)
 
+proc biHttpSupervisorPolicy(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (supervisor-policy ^strategy `restart ^max-restarts 10 ^within-ms 60000
+  ##  ^events failures ^dead-letter dead) — worker-pool supervision
+  ## configuration for serve's ^supervision (proposal §12). The server owns
+  ## the supervision; this value only carries the policy.
+  if args.len != 0:
+    raise newException(GeneError,
+      "http/supervisor-policy expects named arguments only")
+  var strategy = "restart"
+  var maxRestarts = 0
+  var withinMs = 0
+  var events = NIL
+  var deadLetter = NIL
+  if call != nil:
+    for name in call[].namedNames:
+      if name notin ["strategy", "max-restarts", "within-ms", "events",
+                     "dead-letter"]:
+        raise newException(GeneError,
+          "http/supervisor-policy got unexpected named argument: " & name)
+    let sIndex = nativeNamedIndex(call, "strategy")
+    if sIndex >= 0:
+      let sVal = call[].namedValues[sIndex]
+      if sVal.kind == vkSymbol:
+        strategy = sVal.symVal
+      elif sVal.kind == vkString:
+        strategy = sVal.strVal
+      else:
+        raise newException(GeneError,
+          "http/supervisor-policy ^strategy must be a name")
+    let mIndex = nativeNamedIndex(call, "max-restarts")
+    if mIndex >= 0:
+      maxRestarts = int(requireInt64("http/supervisor-policy max-restarts",
+                                     call[].namedValues[mIndex]))
+    let wIndex = nativeNamedIndex(call, "within-ms")
+    if wIndex >= 0:
+      withinMs = int(requireInt64("http/supervisor-policy within-ms",
+                                  call[].namedValues[wIndex]))
+    let eIndex = nativeNamedIndex(call, "events")
+    if eIndex >= 0:
+      events = call[].namedValues[eIndex]
+      requireChannel("http/supervisor-policy ^events", events)
+    let dIndex = nativeNamedIndex(call, "dead-letter")
+    if dIndex >= 0:
+      deadLetter = call[].namedValues[dIndex]
+      requireChannel("http/supervisor-policy ^dead-letter", deadLetter)
+  if strategy notin ["restart", "stop"]:
+    raise newException(GeneError,
+      "http/supervisor-policy ^strategy must be restart or stop")
+  var props = initOrderedTable[string, Value]()
+  props["strategy"] = newStr(strategy)
+  props["max-restarts"] = newInt(maxRestarts)
+  props["within-ms"] = newInt(withinMs)
+  props["events"] = events
+  props["dead-letter"] = deadLetter
+  newNode(newSym("SupervisorPolicy"), props = props)
+
 type
   HttpRouteEntry = object
     methodS: string          # "*" matches any method
@@ -527,7 +583,10 @@ proc dispatchHttpToPool(pool: HttpActorPool, request: Value,
   ## scheduler thread (actorFiberWorkerSafe), so unsendable messages simply
   ## stay on the cooperative lane.
   let task = newPendingTask()
-  let reply = newReplyTo(task = task)
+  # relaxedSend: Response values carry (mutable) header maps, so the reply
+  # skips Send validation on this native single-producer edge — same
+  # rationale as the request direction below.
+  let reply = newReplyTo(task = task, relaxedSend = true)
   var props = initOrderedTable[string, Value]()
   props["req"] = request
   props["reply"] = reply
@@ -543,21 +602,47 @@ proc dispatchHttpToPool(pool: HttpActorPool, request: Value,
       return (task, false)
   (NIL, true)
 
-proc httpSpawnPool(config: Value, scope: Scope): HttpActorPool =
-  ## Spawn the worker actors for an actor-pool dispatch config. Workers use
-  ## restart supervision: a failed handler produces a failure event path via
-  ## the actor runtime and the worker state is rebuilt with ^init.
+proc httpSpawnPool(config, policy: Value, scope: Scope): HttpActorPool =
+  ## Spawn the worker actors for an actor-pool dispatch config. Workers
+  ## default to restart supervision: a failed handler produces a failure
+  ## event path via the actor runtime and the worker state is rebuilt with
+  ## ^init. A ^supervision (supervisor-policy ...) value overrides the
+  ## strategy and adds restart budget and failure-event/dead-letter channels
+  ## (proposal §12).
   let props = config.props
   let workers = int(requireInt64("actor-pool workers", props["workers"]))
   let mailbox = int(requireInt64("actor-pool mailbox", props["mailbox"]))
   let initFn = props["init"]
   let handleFn = props["handle"]
+  var failureStrategy = afsRestart
+  var maxRestarts = 0
+  var withinMs = 0
+  var events = NIL
+  var deadLetters = NIL
+  if policy.kind != vkNil:
+    let p = policy.props
+    if p.hasKey("strategy") and p["strategy"].strVal == "stop":
+      failureStrategy = afsStop
+    if p.hasKey("max-restarts"):
+      maxRestarts = int(p["max-restarts"].intVal)
+    if p.hasKey("within-ms"):
+      withinMs = int(p["within-ms"].intVal)
+    if p.hasKey("events"):
+      events = p["events"]
+    if p.hasKey("dead-letter"):
+      deadLetters = p["dead-letter"]
+  let restartInit =
+    if failureStrategy == afsRestart: initFn else: NIL
   result = HttpActorPool()
   for _ in 0 ..< workers:
     let state = applyCall(initFn, [], NamedArgs(), scope)
     result.workers.add newActorRef(mailbox, state, handleFn, NIL,
-                                   restartInit = initFn,
-                                   failureStrategy = afsRestart)
+                                   restartInit = restartInit,
+                                   failureStrategy = failureStrategy,
+                                   failureEvents = events,
+                                   failureDeadLetters = deadLetters,
+                                   maxRestarts = maxRestarts,
+                                   restartWindowMs = withinMs)
 
 proc closeHttpPool(pool: HttpActorPool) =
   if pool == nil:
@@ -618,12 +703,13 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   var onError: Value = NIL
   var dispatchConfig: Value = NIL
   var overloadResponse: Value = NIL
+  var supervisionPolicy: Value = NIL
   if call != nil:
     for name in call[].namedNames:
       if name notin ["max-requests", "max-connections", "max-in-flight",
                      "max-body-bytes", "request-timeout-ms",
                      "drain-timeout-ms", "handler", "routes", "on-error",
-                     "dispatch", "overload-response"]:
+                     "dispatch", "overload-response", "supervision"]:
         raise newException(GeneError,
           "http/serve got unexpected named argument: " & name)
     template namedInt(name: string, target: var int) =
@@ -648,6 +734,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     namedVal("on-error", onError)
     namedVal("dispatch", dispatchConfig)
     namedVal("overload-response", overloadResponse)
+    namedVal("supervision", supervisionPolicy)
   var poolConfig: Value = NIL
   if dispatchConfig.kind != vkNil:
     if dispatchConfig.kind == vkNode and
@@ -673,6 +760,15 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   elif handler.kind == vkNil and poolConfig.kind == vkNil:
     raiseHttpError("http/serve requires a handler, ^routes, or an " &
                    "actor-pool ^dispatch", scope)
+  if supervisionPolicy.kind != vkNil:
+    if poolConfig.kind == vkNil:
+      raiseHttpError("http/serve ^supervision requires an actor-pool " &
+                     "^dispatch; task-per-request failures go through " &
+                     "^on-error", scope)
+    if supervisionPolicy.kind != vkNode or
+        not supervisionPolicy.props.hasKey("strategy"):
+      raiseHttpError("http/serve ^supervision expects a " &
+                     "(supervisor-policy ...) value", scope)
   # ^overload-response customizes what 503 paths answer (proposal §9). Render
   # the wire bytes once up front: overload handling must stay allocation-light
   # and a bad response value should fail serve, not the overloaded request.
@@ -700,7 +796,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     rt.serving = true
     var pool: HttpActorPool = nil
     if poolConfig.kind != vkNil:
-      pool = httpSpawnPool(poolConfig, scope)
+      pool = httpSpawnPool(poolConfig, supervisionPolicy, scope)
       rt.workers = pool.workers.len
 
     let server = rt.listener

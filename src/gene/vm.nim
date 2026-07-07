@@ -1635,6 +1635,12 @@ proc checkedReplyValue(reply, value: Value, where: string,
   result =
     if resultType.kind == vkNil: value
     else: adaptBoundary(where, resultType, value, resultScope)
+  if reply.replyToRelaxedSend:
+    # Native single-producer reply edge (net/http pool): the server loop is
+    # the only consumer and stays on the scheduler thread, so the Send
+    # boundary is intentionally not enforced here — mirrors the request
+    # direction in dispatchHttpToPool.
+    return
   if not isSendableValue(result, fallbackScope):
     raiseTypeError(where, "Send", result, fallbackScope)
   markSharedValue(result)

@@ -213,6 +213,40 @@ suite "net/http server e2e":
            "\r\n\r\n" & body)
     check statusLine(readAllHttp(s)) == "HTTP/1.1 413 Payload Too Large"
 
+  test "actor-pool ^supervision restarts workers and emits failure events":
+    let p = startHttpServer("pool.gene", """
+(import net/http [Server serve text actor-pool supervisor-policy RequestMsg])
+(type Boom ^props {^message Str} ^impl [Error])
+(impl Error Boom)
+(var failures (channel ^capacity 8))
+(fn worker-init [] 0)
+(fn worker-handle [ctx state msg]
+  (var (RequestMsg ^req req ^reply reply) msg)
+  (if (= req/path "/boom")
+    (fail (Boom ^message "worker boom"))
+    (do
+      (var ev (failures ~ Channel/try-recv))
+      (if (= ev void)
+        (reply ~ ReplyTo/send (text "no-failures"))
+        (reply ~ ReplyTo/send (text ($ "saw:" ev/message))))
+      (actor/continue state))))
+(serve (Server ^host "127.0.0.1" ^port 8191)
+  ^max-requests 2
+  ^dispatch (actor-pool ^workers 1 ^mailbox 4
+             ^init worker-init ^handle worker-handle)
+  ^supervision (supervisor-policy ^strategy `restart
+                ^max-restarts 5 ^within-ms 60000
+                ^events failures))
+""")
+    defer: (p.terminate(); p.close())
+    # Worker failure answers 500 and emits an ActorFailure to ^events; the
+    # restarted worker serves the follow-up request and reads the event.
+    check statusLine(httpGet(8191, "/boom")) ==
+      "HTTP/1.1 500 Internal Server Error"
+    let follow = httpGet(8191, "/check")
+    check statusLine(follow) == "HTTP/1.1 200 OK"
+    check bodyOf(follow).startsWith("saw:")
+
   test "custom overload-response answers admission overflow":
     let p = startHttpServer("busy-custom.gene", """
 (import net/http [Server serve text])

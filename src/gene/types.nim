@@ -585,6 +585,8 @@ type
     resultType: Value
     resultScope: Scope
     task: Value
+    relaxedSend: bool   # native single-producer edge; skip Send boundary
+                        # validation on the reply value (net/http pool)
 
   CPtrData = ref object of GeneObjectData
     address: pointer
@@ -3012,6 +3014,11 @@ proc replyToResultScope*(v: Value): Scope =
   withReplyToLock(data):
     result = data.resultScope
 
+proc replyToRelaxedSend*(v: Value): bool =
+  let data = replyToData(v)
+  withReplyToLock(data):
+    result = data.relaxedSend
+
 proc replyToTask*(v: Value): Value =
   let data = replyToData(v)
   withReplyToLock(data):
@@ -4511,12 +4518,13 @@ proc newActorStop*(): Value =
                           continueActor: false))
 
 proc newReplyTo*(resultType = NIL, resultScope: Scope = nil,
-                 task = NIL): Value =
+                 task = NIL, relaxedSend = false): Value =
   let data = ReplyToData(objKind: okReplyTo,
                          result: NIL,
                          resultType: resultType,
                          resultScope: resultScope,
-                         task: task)
+                         task: task,
+                         relaxedSend: relaxedSend)
   initLock(data.lock)
   boxObject(data)
 
