@@ -355,6 +355,7 @@ proc pumpUntilDone(task: Value)
 # wakeActorSenders wakes a fiber parked on a previously-full mailbox.
 proc scheduleActor(actor: Value, scope: Scope)
 proc driveActor(actor: Value)
+proc closeActorAndCancelMailbox(actor: Value)
 proc wakeActorSenders(actor: Value)
 proc cancelOwnedActor(actor: Value)
 

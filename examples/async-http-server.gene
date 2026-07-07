@@ -1,40 +1,46 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene HTTP server: concurrent state across requests (docs/design.md §13,
-# stdlib.net/http)
+# Gene HTTP server: async request offload pattern (docs/design.md §13, stdlib.net/http)
 #
 #   bin/gene run examples/async-http-server.gene
 #
 # Endpoints
 # ---------
-#   GET  /help         usage
-#   GET  /hits         monotonic request counter (json)
-#   GET  /now          the counter (text/plain)
-#   POST /echo         echoes the request body back as the response body
-#   POST /counter      increments `counter` by the integer in the body
-#   POST /job/<id>?ms=<n>  sketch of async work: registers an id in
-#                            the job registry
-#   GET  /job/<id>     read job state from the registry
+#   GET  /help             usage
+#   GET  /hits             monotonic request counter (json)
+#   GET  /now              request counter (text/plain)
+#   GET  /jobs             full job registry snapshot
+#   GET  /job/<id>         read job state from the registry
+#   POST /job?ms=<n>       launch anonymous async job (generated id)
+#   POST /job/<id>?ms=<n>  launch named async job
+#   POST /counter           increments `counter` by the integer in the body
+#   POST /echo             echoes the request body back as the response body
+#   GET  /sleep?ms=<n>     blocking handler used as a baseline benchmark
 #
 # What this example exercises
 # ---------------------------
-#  * **Concurrent state across requests** — multiple clients hit the
-#    server concurrently. Every handler reads `counter` via Cell/get
-#    and writes via Cell/set; a Cell gives each request a consistent
-#    view of the shared counter without locks. The Cell's map and
-#    runtime GC keep values alive across handler exits.
+#  * concurrent state across requests using `Cell` (`counter`) and
+#    `AtomicCell` (`job-counter`, `jobs`, `running-jobs`, `completed-jobs`).
+#    Request handling in `http/serve` is single-threaded in this MVP; the
+#    async demo works by spawning background worker tasks from handlers so the
+#    request path itself returns quickly.
 #
-#  * **Async + concurrent pattern (sketch)** — POST /job/<id>?ms=<n>
-#    would, with a `serve-concurrent` runtime addition, hand the
-#    accepted connection off to a worker that lets the scheduler run
-#    other tasks. The example shows the (spawn ...) idiom and shared
-#    registry so the architecture is documented; in current MVP the
-#    synchronous accept loop in `serve` doesn't yield to the
-#    scheduler between accepts, so a spawned background task may not
-#    actually finish before subsequent requests land. The future
-#    `serve-concurrent` change will close that gap; the example
-#    documents the intent and remains useful for state-management
-#    today.
+#  * `spawn` + `sleep`: slow work is pushed into detached tasks so request
+#    handlers return quickly. That is the async/offload pattern you can build
+#    background workers around.
+#
+# Apache Bench proof
+# -----------------
+# 1) Baseline (single-threaded request lane in http/serve for blocking work):
+#    ab -n 40 -c 20 'http://127.0.0.1:8091/sleep?ms=1000'
+#    Expect around 40 seconds, since each request sleeps in the request handler.
+#
+# 2) Offloaded async work:
+#    printf '' > /tmp/gene-async-body
+#    ab -n 40 -c 20 -l -p /tmp/gene-async-body \
+#      -T application/x-www-form-urlencoded 'http://127.0.0.1:8091/job?ms=1000'
+#    Expect total wall time close to ~1s for 1000ms tasks, since each request
+#    returns after queueing the background task.
 #
 # Build + run
 # -----------
@@ -43,12 +49,15 @@
 #
 # curl around (each tab can send these in parallel)
 #   GET  /help
-#   GET  /hits                          (returns {"hits":N})
-#   GET  /now                            (plain-text counter)
-#   POST /echo       --data 'hello'      (returns the body)
-#   POST /counter    --data '5'          (returns {"hits":N+5})
-#   POST /job/foo?ms=2000               (returns 202 {"id":"foo",...})
-#   GET  /job/foo                        (returns {"state":"running",...})
+#   GET  /hits                               (returns {"hits":N})
+#   GET  /now                                (plain-text counter)
+#   GET  /jobs                               (all job states)
+#   GET  /job/<id>                           (one job state)
+#   GET  /sleep?ms=1000                      (always sleeps in handler)
+#   POST /job?ms=1000                       (queued background job, generated id)
+#   POST /job/foo?ms=1000                   (queued background job with explicit id)
+#   POST /echo --data 'hello'               (returns the body)
+#   POST /counter --data '5'                (returns {"hits":N+5})
 # =============================================================================
 
 (import net/http [Server serve Response])
@@ -58,12 +67,14 @@
 
 # Shared state — every request reads or writes one of these.
 #
-#   jobs     : Map id -> {state, ms}. Used by /job/* to sketch the
-#             async pattern.
-#   counter  : monotonic request counter. Demonstrates cross-request
-#             shared state without locks.
-(var jobs    (cell {}))
+#   counter    : monotonic request counter.
+#   job-counter: monotonic job id generator for POST /job.
+#   jobs       : Map id -> {id, state, ms}. Used by /job* endpoints.
+(var jobs    (atomic-cell {}))
+(var jobs-running (atomic-cell 0))
+(var jobs-completed (atomic-cell 0))
 (var counter (cell 0))
+(var job-counter (atomic-cell 0))
 
 (fn reply-json [status body]
   (Response ^status status
@@ -78,18 +89,58 @@
 (fn note-hit []
   (counter ~ Cell/set (+ (counter ~ Cell/get) 1)))
 
-# POST /job/<id>?ms=<m>  adds a "running" job at id <id> and, in MVP,
-# would also schedule the spawned task that flips state to "done".
-# The register call is the part that always runs; the spawn completion
-# requires the future serve-concurrent runtime enhancement.
-(fn register-job [id ms]
-  (jobs ~ Cell/set
-         (Map/assoc (jobs ~ Cell/get) id
-                    {^state "running" ^ms ms})))
+(fn new-job-id []
+  (var next (job-counter ~ AtomicCell/load))
+  (while true
+    (do
+      (if (not (job-counter ~ AtomicCell/compare-exchange next (+ next 1)))
+        (set next (job-counter ~ AtomicCell/load))
+        (break))))
+  (join ["job-" (stringify next)] ""))
 
-(fn parse-job-ms [req]
-  (try (parse_int (|| req/params/ms "1000"))
-    catch (ParseError ^message _) 1000))
+(fn atomic-inc [cell]
+  (var done false)
+  (var next (cell ~ AtomicCell/load))
+  (while (not done)
+    (do
+      (if (cell ~ AtomicCell/compare-exchange next (+ next 1))
+        (set done true)
+        (set next (cell ~ AtomicCell/load)))))
+  )
+
+(fn atomic-dec [cell]
+  (var done false)
+  (var next (cell ~ AtomicCell/load))
+  (while (not done)
+    (do
+      (if (cell ~ AtomicCell/compare-exchange next (- next 1))
+        (set done true)
+        (set next (cell ~ AtomicCell/load)))))
+  )
+
+(fn set-job-state [id state ms]
+  (var done false)
+  (while (not done)
+    (do
+      (var reg (jobs ~ AtomicCell/load))
+      (var next (Map/assoc reg id {^id id ^state state ^ms ms}))
+      (set done (jobs ~ AtomicCell/compare-exchange reg next)))))
+
+(fn parse-job-ms [req default]
+  (var parsed
+    (try (parse_int (|| req/params/ms (stringify default)))
+      catch (ParseError ^message _) default))
+  (if (< parsed 0) 0 parsed))
+
+(fn run-job [id ms]
+  (set-job-state id "running" ms)
+  (atomic-inc jobs-running)
+  (spawn (do
+    (sleep ms)
+    (set-job-state id "done" ms)
+    (atomic-inc jobs-completed)
+    (atomic-dec jobs-running)))
+  (reply-json 202 {^id id ^ms ms ^state "running"}))
 
 # -----------------------------------------------------------------------------
 # Handler — match-based dispatch on method and path. Each branch returns
@@ -104,14 +155,22 @@
         (join ["GET  /help               this list"
                "GET  /hits               request counter (json)"
                "GET  /now                request counter (text)"
+               "GET  /jobs               list all jobs"
+               "GET  /sleep?ms=n         sleep inside handler for baseline"
                "POST /echo               echo body back to me"
                "POST /counter            increment counter by body-int"
+               "POST /job                launch async job (generated id)"
                "POST /job/<id>?ms=n      sketch of async work"
                "GET  /job/<id>           read job state"]
              "\n")))
     (when [_ "/hits"] (reply-json 200 {^hits (counter ~ Cell/get)}))
     (when [_ "/now"]
       (reply-text 200 (stringify (counter ~ Cell/get))))
+    (when [_ "/jobs"]
+      (reply-json 200
+        {^running (jobs-running ~ AtomicCell/load)
+         ^completed (jobs-completed ~ AtomicCell/load)
+         ^jobs (jobs ~ AtomicCell/load)}))
     (when [_ "/echo"]
       (reply-text 200 (|| req/body "")))
     (when [_ "/counter"]
@@ -121,30 +180,48 @@
             catch (ParseError ^message _) 0))
         (counter ~ Cell/set (+ (counter ~ Cell/get) delta))
         (reply-json 200 {^hits (counter ~ Cell/get)})))
+    (when [_ "/sleep"]
+      (do
+        (var ms (parse-job-ms req 1000))
+        (sleep ms)
+        (reply-json 200 {^sleep-ms ms ^state "done"})))
     (when [m p]
-      (if (starts_with? p "/job/")
-        (do
-          (var parts (split p "/"))
-          (var id parts/2)
-          (if (= m "POST")
-            (do
-              (var ms (parse-job-ms req))
-              (register-job id ms)
-              (reply-json 202 {^id id ^ms ms}))
-            (do
-              (var reg (jobs ~ Cell/get))
-              (var cell (Map/get reg id))
-              (if cell
-                (reply-json 200 cell)
-                (reply-json 404 {^error "no such job"})))))
-        (reply-json 404 {^error "unknown route"}))
+      (if (= p "/job")
+        (if (= m "POST")
+          (do
+            (var id (new-job-id))
+            (run-job id (parse-job-ms req 1000)))
+          (reply-json 405 {^error "POST /job to launch a new job"}))
+        (if (starts_with? p "/job/")
+          (do
+            (var parts (split p "/"))
+            (if (< (size parts) 3)
+              (reply-json 404 {^error "missing job id"})
+              (do
+                (var id parts/2)
+                (if (= id "")
+                  (reply-json 404 {^error "missing job id"})
+                (if (= m "GET")
+                  (do
+                    (var reg (jobs ~ AtomicCell/load))
+                    (var cell (Map/get reg id))
+                    (if cell
+                      (reply-json 200 cell)
+                        (reply-json 404 {^error "no such job"})))
+                    (if (= m "POST")
+                      (run-job id (parse-job-ms req 1000))
+                      (reply-json 405 {^error "method not supported"})))))))
+          (reply-json 404 {^error "unknown route"}))))
     (else
       (reply-json 404 {^error "unknown route"}))))
 
 (println "async HTTP server listening on http://127.0.0.1:8091")
 (println "    GET  /help                       for usage")
 (println "    GET  /hits                       request counter (json)")
-(println "    POST /echo  --data 'hello'       echo body back")
-(println "    POST /counter --data '5'         add 5 to counter")
-(println "    POST /job/foo?ms=2000            async-pattern sketch")
+(println "    GET  /jobs                       list all jobs")
+(println "    GET  /sleep?ms=1000              blocking sleep endpoint")
+(println "    POST /job?ms=1000                launch async job")
+(println "    POST /job/foo?ms=1000            launch named async job")
+(println "    POST /echo  --data 'hello'        echo body back")
+(println "    POST /counter --data '5'          add 5 to counter")
 (serve (Server ^host "127.0.0.1" ^port 8091) handle)
