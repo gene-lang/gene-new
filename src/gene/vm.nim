@@ -464,6 +464,14 @@ proc actorOwnerFailureStrategy(scope: Scope): ActorFailureStrategy =
     s = s.parent
   afsStop
 
+proc actorOwnerRestartLimits(scope: Scope): tuple[maxRestarts, windowMs: int] =
+  var s = scope
+  while s != nil:
+    if s.ownsActors:
+      return (s.actorMaxRestarts, s.actorRestartWindowMs)
+    s = s.parent
+  (0, 0)
+
 proc actorOwnerFailureEvents(scope: Scope): Value =
   var s = scope
   while s != nil:
@@ -1681,11 +1689,16 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
       scope.parentActorOwnerFailureDeadLetters()
   let restartInit =
     if failureStrategy == afsRestart: initFn else: NIL
+  var restartLimits: tuple[maxRestarts, windowMs: int] = (0, 0)
+  if scope != nil and failureStrategy == afsRestart:
+    restartLimits = scope.actorOwnerRestartLimits()
   let state = applyCall(initFn, [], NamedArgs(), scope)
   result = newActorRef(actorMailboxArg(call), state, handler, closedMessageType,
                        restartInit, failureStrategy, failureEvents,
                        failureDeadLetters, parentFailureEvents,
-                       parentFailureDeadLetters)
+                       parentFailureDeadLetters,
+                       maxRestarts = restartLimits.maxRestarts,
+                       restartWindowMs = restartLimits.windowMs)
   if scope != nil:
     scope.registerOwnedActor(result)
 
@@ -9795,11 +9808,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSupervisor:
           var hasEvents = false
           var hasDeadLetters = false
-          for sinkName in inst[].names:
-            if sinkName == "events":
-              hasEvents = true
-            elif sinkName == "dead-letter":
-              hasDeadLetters = true
+          var hasMaxRestarts = false
+          var hasWithinMs = false
+          for optionName in inst[].names:
+            case optionName
+            of "events": hasEvents = true
+            of "dead-letter": hasDeadLetters = true
+            of "max-restarts": hasMaxRestarts = true
+            of "within-ms": hasWithinMs = true
+            else: discard
+          # Options were compiled events → dead-letter → max-restarts →
+          # within-ms; pop in reverse.
+          let withinMs =
+            if hasWithinMs:
+              int(requireInt64("supervisor ^within-ms", stack.pop()))
+            else:
+              0
+          let maxRestarts =
+            if hasMaxRestarts:
+              int(requireInt64("supervisor ^max-restarts", stack.pop()))
+            else:
+              0
           let deadLetterSink =
             if hasDeadLetters:
               let sink = stack.pop()
@@ -9819,6 +9848,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           supervisorScope.actorFailureStrategy = supervisorStrategy(inst[].name)
           supervisorScope.supervisorEvents = eventSink
           supervisorScope.supervisorDeadLetters = deadLetterSink
+          supervisorScope.actorMaxRestarts = maxRestarts
+          supervisorScope.actorRestartWindowMs = withinMs
           pushFrame()
           enterFrame(chunk.subchunks[inst[].intArg], supervisorScope,
                      validateImplRequirements, fkSupervisorBody)
@@ -10611,6 +10642,13 @@ proc runFiber(f: Fiber) =
       case actor.actorFailureStrategy
       of afsRestart:
         if actor.actorRestartInit.kind == vkNil:
+          closeActorAndCancelMailbox(actor)
+          if not askSettled:
+            raise
+          return
+        if not actorConsumeRestartBudget(actor):
+          # ^max-restarts within ^within-ms exhausted (§18.5): stop instead
+          # of thrashing through restarts.
           closeActorAndCancelMailbox(actor)
           if not askSettled:
             raise

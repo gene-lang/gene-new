@@ -33,7 +33,8 @@
 ## fibers running against isolated captured-scope snapshots while unsafe
 ## shared-scope work stays on the cooperative root lane.
 
-import std/[locks, sets, strutils, sysatomics, tables, unicode]
+import std/[locks, monotimes, sets, strutils, sysatomics, tables, times,
+            unicode]
 
 when not defined(geneWasm):
   import std/re as nre
@@ -299,6 +300,8 @@ type
     actorFailureStrategy*: ActorFailureStrategy
     supervisorEvents*: Value
     supervisorDeadLetters*: Value
+    actorMaxRestarts*: int      # supervisor ^max-restarts; <= 0 unlimited
+    actorRestartWindowMs*: int  # supervisor ^within-ms; <= 0 lifetime
     ownedActors*: seq[Value]
 
   ## Runtime call metadata for envelope-aware native functions. Positional
@@ -563,6 +566,10 @@ type
     failureDeadLetters: Value
     parentFailureEvents: Value
     parentFailureDeadLetters: Value
+    maxRestarts: int          # restart budget; <= 0 means unlimited (§18.5)
+    restartWindowMs: int      # budget window; <= 0 means lifetime budget
+    restartCount: int
+    restartWindowStart: MonoTime
 
   ActorContextData = ref object of GeneObjectData
     actor: Value
@@ -2350,6 +2357,7 @@ proc newActorData(capacity: int, state, restartInit, handler,
                   failureEvents, failureDeadLetters: Value,
                   parentFailureEvents: Value = NIL,
                   parentFailureDeadLetters: Value = NIL,
+                  maxRestarts = 0, restartWindowMs = 0,
                   lifecycle = ActorLifecycle()): ActorData =
   result = ActorData(objKind: okActorRef,
                      lifecycle: lifecycle,
@@ -2362,7 +2370,9 @@ proc newActorData(capacity: int, state, restartInit, handler,
                      failureEvents: failureEvents,
                      failureDeadLetters: failureDeadLetters,
                      parentFailureEvents: parentFailureEvents,
-                     parentFailureDeadLetters: parentFailureDeadLetters)
+                     parentFailureDeadLetters: parentFailureDeadLetters,
+                     maxRestarts: maxRestarts,
+                     restartWindowMs: restartWindowMs)
   initLock(result.lock)
 
 proc skipStreamVoids(data: StreamData) =
@@ -2754,6 +2764,27 @@ proc actorRestartInit*(v: Value): Value =
   let data = actorData(v)
   withActorLock(data):
     result = data.restartInit
+
+proc actorConsumeRestartBudget*(v: Value): bool =
+  ## Take one restart permission under the actor's ^max-restarts/^within-ms
+  ## policy (async-http-server proposal §18.5). False means the budget is
+  ## exhausted and the actor must stop instead of restarting. Failure-path
+  ## only; never called on message hot paths.
+  let data = actorData(v)
+  withActorLock(data):
+    if data.maxRestarts <= 0:
+      return true
+    let now = getMonoTime()
+    if data.restartWindowMs > 0 and
+        (data.restartCount == 0 or
+         (now - data.restartWindowStart).inMilliseconds >=
+           data.restartWindowMs):
+      data.restartWindowStart = now
+      data.restartCount = 0
+    if data.restartCount >= data.maxRestarts:
+      return false
+    inc data.restartCount
+    result = true
 
 proc actorMessageType*(v: Value): Value =
   let data = actorData(v)
@@ -4442,7 +4473,8 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                   failureEvents: Value = NIL,
                   failureDeadLetters: Value = NIL,
                   parentFailureEvents: Value = NIL,
-                  parentFailureDeadLetters: Value = NIL): Value =
+                  parentFailureDeadLetters: Value = NIL,
+                  maxRestarts = 0, restartWindowMs = 0): Value =
   let storedRestartInit =
     if restartInit.kind == vkFunction:
       functionForScopeStorage(restartInit, restartInit.fnScope)
@@ -4462,7 +4494,9 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                          failureEvents = failureEvents,
                          failureDeadLetters = failureDeadLetters,
                          parentFailureEvents = parentFailureEvents,
-                         parentFailureDeadLetters = parentFailureDeadLetters))
+                         parentFailureDeadLetters = parentFailureDeadLetters,
+                         maxRestarts = maxRestarts,
+                         restartWindowMs = restartWindowMs))
 
 proc newActorContext*(actor: Value): Value =
   boxObject(ActorContextData(objKind: okActorContext, actor: actor))

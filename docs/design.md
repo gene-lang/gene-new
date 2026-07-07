@@ -2666,6 +2666,14 @@ MVP supervision strategies:
 - `stop`: terminate the actor and close its mailbox;
 - `escalate`: report failure to the parent supervisor.
 
+`restart` supervisors accept a restart budget: `^max-restarts N` stops the
+actor instead of restarting once N restarts have been consumed, and
+`^within-ms W` makes that budget a sliding window — the count resets when W
+milliseconds pass since the window opened. Omitted or non-positive values mean
+an unlimited budget; `^max-restarts` alone bounds restarts over the actor's
+lifetime. Stopping on an exhausted budget behaves exactly like the `stop`
+strategy for the failing message.
+
 A recoverable error escaping an actor handler stops that actor and produces a failure event for its supervisor. A panic also terminates the actor/task and is escalated. Native memory corruption or an unsafe foreign crash remains process-fatal.
 
 MVP supervisors may be given `^events failure-channel`. The runtime emits

@@ -3728,7 +3728,8 @@ proc compileTaskScope(c: var Compiler, node: Value) =
 
 proc compileSupervisor(c: var Compiler, node: Value) =
   for key in node.props.keys:
-    if key notin ["strategy", "events", "dead-letter"]:
+    if key notin ["strategy", "events", "dead-letter", "max-restarts",
+                  "within-ms"]:
       raise newException(GeneError,
         "supervisor got unexpected named argument: " & key)
   if not node.props.hasKey("strategy"):
@@ -3740,20 +3741,15 @@ proc compileSupervisor(c: var Compiler, node: Value) =
   if strategy notin ["restart", "stop", "escalate"]:
     raise newException(GeneError,
       "unsupported supervisor strategy: " & strategy)
-  let hasEvents = node.props.hasKey("events")
-  if hasEvents:
-    compileExpr(c, node.props["events"])
-  let hasDeadLetter = node.props.hasKey("dead-letter")
-  if hasDeadLetter:
-    compileExpr(c, node.props["dead-letter"])
-  var sinkNames: seq[string]
-  if hasEvents:
-    sinkNames.add "events"
-  if hasDeadLetter:
-    sinkNames.add "dead-letter"
+  # Options are compiled in a fixed order; opSupervisor pops them in reverse.
+  var optionNames: seq[string]
+  for option in ["events", "dead-letter", "max-restarts", "within-ms"]:
+    if node.props.hasKey(option):
+      compileExpr(c, node.props[option])
+      optionNames.add option
   let body = c.compileSubBody(node.body, scoped = true)
   discard c.emit(opSupervisor, c.chunk.addSubchunk(body), name = strategy,
-                 names = sinkNames)
+                 names = optionNames)
 
 proc compileSpawn(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:

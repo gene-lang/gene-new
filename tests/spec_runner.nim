@@ -2356,6 +2356,35 @@ suite "spec — actors from design":
                "  (a ~ actor/try-send 1))",
                "false")
 
+  test "restart budget stops the actor when max-restarts is exhausted":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 60000 " &
+               "  (var a (actor/spawn ^init (fn [] 0) " &
+               "    ^handle (fn [ctx state msg] (fail (Boom ^message \"boom\"))))) " &
+               "  (a ~ actor/send 1) " &   # restart consumes the budget
+               "  (var second (try (a ~ actor/send 2) catch (Boom ^message m) m)) " &
+               "  (var third (try (a ~ actor/send 3) catch (ActorClosed ^message m) m)) " &
+               "  [second third])",
+               "[\"boom\" \"actor is closed\"]")
+
+  test "restart budget window resets after within-ms":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error Boom) " &
+               "(var seen (cell 0)) " &
+               "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 50 " &
+               "  (var a (actor/spawn ^init (fn [] 10) " &
+               "    ^handle (fn [ctx state msg] " &
+               "      (if (= msg 1) " &
+               "        (fail (Boom ^message \"bad\")) " &
+               "        (do (seen ~ Cell/set state) (actor/continue state)))))) " &
+               "  (a ~ actor/send 1) " &
+               "  (sleep 80) " &          # window expires; budget refills
+               "  (a ~ actor/send 1) " &
+               "  (a ~ actor/send 5) " &
+               "  (seen ~ Cell/get))",
+               "10")
+
   test "supervisor owns actors and restarts after recoverable handler errors":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error Boom) " &
