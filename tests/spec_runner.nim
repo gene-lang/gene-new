@@ -171,6 +171,12 @@ suite "spec — macros from design":
                "[(ignore! (set hit 1)) hit]",
                "[7 0]")
 
+  test "MVP macros are template macros: exactly one body expression":
+    expect GeneError:
+      discard run(compileSource("(macro two! [x] (var t 1) `(+ %x %t)) " &
+                                "(two! 1)"),
+                  newGlobalScope())
+
   test "macro call props bind named syntax parameters":
     check_eval("(macro scaled! [value ^by n] `(+ %value %n)) " &
                "(scaled! ^by 3 7)",
