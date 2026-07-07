@@ -16,6 +16,8 @@ This draft reflects the current direction:
 - typed recoverable errors with `^errors` and `try/catch/ensure`;
 - runtime capability values, but **no static `^effects` system in MVP**;
 - protocol-local derivation through `^impl`, `^derive`, and protocol `derive` forms;
+- `fn!` runtime fexprs for Env-aware syntax calls, and `macro` for limited compile-time templates;
+- type constructors through `ctor`, with a pre-created `self` instance;
 - basic generics and gradual typed boundaries;
 - a stable native extension ABI and typed C FFI designed early;
 - explicit `Env`/`eval` support for generated code;
@@ -37,7 +39,7 @@ Core consequences:
 - types are nodes, usually instances of `Type`;
 - patterns are nodes with binders and holes;
 - selectors are first-class callable values;
-- macros and protocol-local derivation operate on nodes;
+- runtime fexprs, macro templates, and protocol-local derivation operate on nodes;
 - modules are persisted node trees with root namespaces;
 - applications create the runtime/module graph and execute an entry module;
 - concurrent state is isolated through structured tasks, typed channels, and actors.
@@ -196,7 +198,7 @@ x...         # spread/gather
 x : T        # annotation
 ^due? T      # optional prop schema
 _            # wildcard / ignore
-name!        # "visible rewriting": macros (§11) and in-place mutation ops (§12)
+name!        # convention for visible syntax behavior (`fn!`, `macro`) and mutation ops (§11/§12)
 (a; b; c)    # pipe: pure reader head-folding
 (x ~ f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
@@ -321,7 +323,7 @@ prop_key       = "^^", symbol | "^", symbol, [ "?" ] ;
 meta_key       = "@@", symbol | "@", symbol ;
 
 quasiquote     = "`", form ;
-unquote        = "%", ( symbol | node ) ;
+unquote        = "%", spread_form ;
 
 path_form      = selector_literal | access_or_qualified_path ;
 selector_literal = "/", path_segment, { "/", path_segment } ;
@@ -477,7 +479,12 @@ not a bare value: `(a; b _ c)` is `(b (a) c)`, not `(b a c)`.
 
 ## 3. Evaluation and callability
 
-Callability is extensible.
+Gene has two callability protocols:
+
+1. ordinary value callability, where arguments are evaluated before the callee receives them;
+2. syntax callability (`fn!` / fexprs), where the callee receives raw syntax nodes plus the caller environment and decides what to evaluate.
+
+Ordinary calls use a `Call` envelope:
 
 ```gene
 (type Call
@@ -488,16 +495,30 @@ Callability is extensible.
   (message apply [callee : Self, call : Call] : Any))
 ```
 
-`Fn`, `Type`, `Selector`, protocol messages, native functions, and user-defined callable values implement `Callable`.
+Syntax calls use a `SyntaxCall` envelope:
+
+```gene
+(type SyntaxCall
+  ^props {^named PropMap ^site? Node}
+  ^body  [Node...])
+
+(protocol SyntaxCallable
+  (message apply_syntax [callee : Self, call : SyntaxCall, caller_env : Env] : Any))
+```
+
+`Fn`, `Type`, `Selector`, protocol messages, native functions, and user-defined callable values implement `Callable`. `Fn!` values created by `fn!` implement `SyntaxCallable`.
 
 To evaluate `(h ^p v c1 c2)`:
 
 1. If `h` names a special form, use that special-form rule.
-2. If `h` names a macro, expand at compile time.
+2. If `h` names a compile-time `macro`, expand it before runtime evaluation.
 3. Otherwise evaluate `h` to a callee.
-4. Evaluate props/body into a `Call` envelope.
-5. If the callee implements `Callable`, call `apply`.
-6. Otherwise it is a call error.
+4. If the callee implements `SyntaxCallable`, build a `SyntaxCall` from the **unevaluated** prop/body syntax nodes and call `apply_syntax` with the caller `Env`. Ordinary argument evaluation does not happen.
+5. Otherwise evaluate props/body into a `Call` envelope.
+6. If the callee implements `Callable`, call `apply`.
+7. Otherwise it is a call error.
+
+This makes fexprs (`fn!`) a runtime feature, not a compile-time macro feature. A `fn!` can implement control flow, laziness, DSL evaluation, and explicit `eval` under a caller or sandbox `Env`, while ordinary `fn` remains simple and optimizable.
 
 Normal calls are callable-first:
 
@@ -529,8 +550,8 @@ If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 MVP core special forms:
 
 ```text
-var set do if && || ! match for while loop repeat break continue fn macro type
-protocol impl derive try fail panic quote quasiquote select eval mod ns
+var set do if && || ! match for while loop repeat break continue fn fn! macro type
+ctor protocol impl derive try fail panic quote quasiquote select eval mod ns
 import yield scope supervisor spawn await
 ```
 
@@ -878,6 +899,91 @@ Whitespace, comments, and discarded forms can produce `void`, which stream stage
 
 Construction stamps the value's head with the type value. Construction schemas are closed by default unless the type explicitly permits rest props.
 
+### 7.1.1 Constructors
+
+A type may define one constructor with `ctor`:
+
+```gene
+(type Point
+  ^props {^x F64 ^y F64}
+
+  (ctor [x : F64, y : F64]
+    (self ~ Node/set-prop! `x x)
+    (self ~ Node/set-prop! `y y)))
+```
+
+Calling a type uses the type value's `Callable` implementation:
+
+```gene
+(Point 10.0 20.0)
+```
+
+If a type defines a `ctor`, the construction sequence is:
+
+```text
+allocate a new instance with the type as head
+→ bind that in-progress instance as lexical `self`
+→ argument-match the original call against the ctor parameter vector
+→ execute the ctor body
+→ validate the completed instance against the type schema
+→ return `self`
+```
+
+There is no `init` special form. The constructor mutates the pre-created `self` instance using explicit mutable node/type APIs such as `Node/set-prop!`, `Node/set-body!`, `Node/push-body!`, or future field-specific setters. The ctor body result is ignored; construction returns the validated `self` instance unless the ctor raises a recoverable error or panics.
+
+A constructor uses normal function-style argument matching:
+
+```gene
+(type User
+  ^props {^name Str ^age Int ^active Bool}
+
+  (ctor [name : Str, ^age : Int = 0, ^active : Bool = true]
+    (self ~ Node/set-prop! `name name)
+    (self ~ Node/set-prop! `age age)
+    (self ~ Node/set-prop! `active active)))
+```
+
+Constructors may declare checked errors:
+
+```gene
+(type Port
+  ^props {^value Int}
+
+  (ctor [n : Int]
+    ^errors [ValidationError]
+    (if (&& (>= n 0) (<= n 65535))
+      (self ~ Node/set-prop! `value n)
+      (fail (ValidationError ^message "invalid port")))))
+```
+
+If no `ctor` is defined, Gene uses the default schema constructor. It maps named arguments to props, positional arguments to body fields, normalizes `void`, checks required fields, rejects unknown fields, validates field/body types, stamps the head with the type, and returns the new instance:
+
+```gene
+(type User
+  ^props {^name Str ^age Int})
+
+(User ^name "Ada" ^age 37) # default construction
+```
+
+If a `ctor` exists, there is no public bypass through default construction. That lets the ctor enforce normalization and invariants. Trusted compiler-generated code may eventually use an internal raw-construction path, but it is not a source-level feature.
+
+Single inheritance affects schema, not constructor chaining. A child inherits parent fields and must leave `self` valid for the full inherited schema, but the parent constructor is not called automatically:
+
+```gene
+(type Animal
+  ^props {^name Str})
+
+(type Dog
+  ^is Animal
+  ^props {^breed Str}
+
+  (ctor [name : Str, breed : Str]
+    (self ~ Node/set-prop! `name name)
+    (self ~ Node/set-prop! `breed breed)))
+```
+
+A partially constructed `self` is not `Send` and should not escape to actors, channels, native roots, globals, or long-lived closures before construction validates. The MVP runtime may reject obvious escapes; future implementations may enforce this more precisely with a construction-state marker.
+
 ### 7.2 MVP type hierarchy
 
 MVP uses a small nominal type hierarchy:
@@ -908,6 +1014,7 @@ Any
 ├── Map
 ├── Gene
 ├── Fn
+├── Fn!      # runtime syntax callable / fexpr
 ├── Env
 ├── Task
 ├── Channel
@@ -1253,7 +1360,7 @@ Invalid examples:
   ^props {}) # invalid if Animal/name is required
 ```
 
-Field narrowing, abstract parent types, final/sealed inheritance, layout inheritance, constructor inheritance, and schema-evolution adapters are post-MVP.
+Field narrowing, abstract parent types, final/sealed inheritance, layout inheritance, parent-constructor chaining, inherited constructors, and schema-evolution adapters are post-MVP.
 
 ### 7.4 Numeric model
 
@@ -1855,11 +1962,84 @@ an orphan rule, or finer-grained impl-import controls.
 
 ---
 
-## 11. Macros, templates, and compile-time code
+### 10.2 Delegation
 
-Macros are compile-time functions from syntax nodes to syntax nodes. The `!` suffix marks visible rewriting; it is a naming convention, not an enforced rule — `(macro twice [x] ...)` is legal, but stdlib and examples should keep the `!`.
+Delegation is composition-based behavior reuse: an outer value implements a protocol by forwarding one or more messages to an inner value selected by a path.
 
-A name means the same thing in head position and value position. Macro names therefore share the single name space with bindings: defining or importing a macro whose name matches a visible binding is an error, binding (including function parameters) a name that matches a visible macro is an error, and using a macro name in value position is an error ("call it in head position") — macros are compile-time rewriters, not runtime values. This is stricter than the special-form rule (a value named `if` may exist); macros reserve their name outright within their visibility region.
+Manual delegation is just an ordinary `impl`:
+
+```gene
+(type LoggedDb
+  ^props {^inner Db ^log Logger})
+
+(impl Query LoggedDb
+  (message query [self sql]
+    (self/log ~ Logger/info $"query: ${sql}")
+    (self/inner ~ query sql)))
+```
+
+This is preferred over broad inheritance for wrappers, adapters, caches, logging, authorization, and resource decorators. Inheritance answers “is a”; delegation answers “has a value that does this behavior.”
+
+Delegation should remain explicit. Gene should not use dynamic “method missing” forwarding as a core feature because it hides which protocols a type implements and makes type checking, docs, native compilation, and coherence harder.
+
+A future derive helper may generate forwarding impls:
+
+```gene
+(type BufferedReader
+  ^props {^source Reader ^buffer Buffer}
+  ^derive [(Delegate ^protocol Reader ^to /source)])
+```
+
+Such a helper would expand to a normal `impl Reader BufferedReader` whose messages forward to `self/source`. This keeps delegation homoiconic, selector-based, and compatible with the existing protocol/derive system. Delegation is not an MVP special form.
+
+## 11. Fexprs, macro templates, and compile-time code
+
+Gene separates runtime syntax behavior from compile-time rewriting.
+
+```text
+fn!    runtime fexpr / syntax callable / Env-aware DSL tool
+macro  compile-time template expansion
+derive protocol-local compile-time declaration generation
+```
+
+This split avoids making full Lisp-style macros the default abstraction while still preserving the pieces Gene needs for DSLs, homoiconic code, derivation, and AOT/sealed builds.
+
+### 11.1 `fn!`: runtime fexprs
+
+`fn!` defines a runtime syntax callable. It receives unevaluated syntax nodes and the caller `Env`, then decides what to evaluate.
+
+```gene
+(fn! unless! [cond, body...]
+  (if (! (eval cond ^in caller-env))
+    (eval `(do %body...) ^in caller-env)
+    nil))
+```
+
+A `fn!` value implements `SyntaxCallable` (§3). Its parameter vector matches the raw syntax nodes in the call envelope. Inside a `fn!` body, the implementation provides read-only bindings:
+
+```text
+caller-env  Env         # the caller's evaluation environment
+syntax-call SyntaxCall  # the full raw call envelope, including props/site
+```
+
+The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly, usually with `caller-env` or a restricted child environment.
+
+`fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and `caller-env`.
+
+Use `fn!` for:
+
+- custom control flow;
+- lazy arguments;
+- runtime DSLs;
+- test/configuration languages;
+- explicit `Env`-bounded evaluation;
+- syntax utilities that do not need to create module declarations before type checking.
+
+Because `fn!` runs at runtime, its generated/evaluated code may be checked later than normal code. JIT/eval caching may recover performance, but it does not give the same early declaration graph, tooling, or AOT visibility as compile-time expansion.
+
+### 11.2 `macro`: compile-time templates
+
+`macro` defines a compile-time template expander. A macro receives syntax nodes and returns syntax nodes before name resolution, type checking, native compilation, and ordinary runtime evaluation.
 
 ```gene
 (macro when! [cond, body...]
@@ -1868,21 +2048,64 @@ A name means the same thing in head position and value position. Macro names the
      (else nil)))
 ```
 
-Macros are module exports like any other binding, selected through `from "path"` import lists and honoring selection aliases:
+The `!` suffix marks visible rewriting by convention. It is not enforced: `(macro twice [x] ...)` is legal, but stdlib and examples should keep `!` for visible expansion.
+
+MVP macros are **template macros**, not arbitrary compile-time functions. A macro body contains exactly one syntax-producing expression, normally a quasiquote/template. General compile-time function macros with arbitrary compile-time evaluation are future work.
+
+Macro call arguments are syntax nodes. Macro parameters may destructure those syntax nodes with patterns. Macro parameter annotations, defaults, named parameters, and rest parameters operate on syntax values, not evaluated runtime values. `%` at a macro call site is not a special macro-argument convention; `%` remains the normal unquote/escape operator inside template-like contexts.
+
+A name means the same thing in head position and value position. Macro names therefore share the single namespace with runtime bindings:
+
+- defining or importing a macro whose name matches a visible binding is an error;
+- binding a name, including a function parameter, that matches a visible macro is an error;
+- using a macro name in value position is an error: “call it in head position.”
+
+Macros are compile-time rewriters, not runtime values. This is stricter than special forms: a value named `if` may exist in data or qualified positions, but a macro name reserves its name within its visibility region.
+
+Macros are module exports selected through top-level `from "path"` import lists and honor selection aliases:
 
 ```gene
 (import [when! : unless-not!] from "./control")
 ```
 
-Because expansion happens while the importer compiles, a top-level `from "path"` import pre-loads its module before the importing module's own top level runs. Imported macros are usable but are not re-exported by the importing module; importing a macro whose local name collides with a visible macro or binding is an error (single-name-space rule above). Namespace-path imports (`import std/stream [...]`) do not carry macros, and imports inside nested scopes resolve at runtime only, so macros must be imported at the top level.
+Because expansion happens while the importer compiles, a top-level `from "path"` import pre-loads its module before the importing module's own top level runs. Imported macros are usable but are not re-exported by the importing module. Namespace-path imports such as `(import std/stream [...])` do not carry macros in MVP. Imports inside nested scopes resolve at runtime only, so macros must be imported at top level.
 
-Macro call arguments are syntax nodes. Macro parameters may destructure those syntax nodes with patterns, but a macro definition does not mandate which arguments are syntax and which are values. If a macro needs a compile-time value, the macro body explicitly evaluates or resolves the received syntax in a compile-time environment. `%` at a macro call site is not a special macro-argument convention; `%` remains the normal unquote/escape operator inside template-like contexts.
+Use `macro` for:
 
-Macros are hygienic by default. Symbols introduced by a macro expansion carry a fresh expansion mark, so introduced binders do not accidentally capture call-site names and call-site names do not accidentally capture introduced helper names. Intentional capture must be explicit, either by unquoting a caller-provided symbol or by using a future low-level hygiene escape. A `gensym`/fresh-symbol API may be exposed for macros that need explicit generated names.
+- small compile-time surface rewrites;
+- syntax templates that should type-check as ordinary expanded code;
+- AOT/sealed-build-visible code generation;
+- tooling-visible transformations.
 
-Protocol-local `derive` uses the same template/quasiquote mechanism. Therefore the MVP implementation order must include template expansion before the derive experiment.
+Prefer `fn!` when the transformation is really a runtime DSL or depends on runtime `Env` authority.
 
-### 11.1 `Env` and dynamic evaluation
+### 11.3 Hygiene
+
+Macros are hygienic by default. The target semantic model is expansion marks: symbols introduced by a macro carry fresh expansion identity, so introduced binders do not accidentally capture call-site names and call-site names do not accidentally capture introduced helper names.
+
+MVP implementation may approximate this with generated fresh names for recognized template-introduced binders such as `var`, `fn`, `type`, `protocol`, `ns`, and `macro`. Full mark-set hygiene, explicit capture APIs, macro-generated imports, and hygiene for every binding context are future work.
+
+Intentional capture must be explicit, either by unquoting a caller-provided symbol or by a future low-level hygiene escape. A `gensym`/fresh-symbol API may be exposed for macros that need explicit generated names.
+
+### 11.4 Protocol-local `derive`
+
+Protocol-local `derive` remains a controlled compile-time declaration generator. It receives a target `Type` value and a request node, then returns declarations, usually an `impl` for that same protocol:
+
+```gene
+(protocol HasLabel
+  (message label [self : Self] : Str)
+
+  (derive [t : Type, req]
+    `(impl HasLabel %t
+       (message label [self] : Str
+         (to-str self/name)))))
+```
+
+`derive` is not a general fexpr. It runs in the compiler's derivation phase and is allowed to add declarations to a compiler-owned overlay. Source modules are not mutated.
+
+MVP restriction: protocol-local `derive` may generate `impl` declarations for its own protocol. Broader declaration generation is future work.
+
+### 11.5 `Env` and dynamic evaluation
 
 `Env` is the first-class name-resolution environment passed to `eval`. A binding is one name/value entry inside an `Env`. `GeneContext` remains an internal VM/FFI execution state containing thread, stack, allocator, GC, and error-state information.
 
@@ -1963,7 +2186,7 @@ A convenience `eval-string` function may compose parsing and evaluation, but it 
 ```text
 validate node
 → collect declarations
-→ expand macros/templates
+→ expand macro templates
 → run protocol-local derivation
 → resolve names and visible impls
 → type-check typed regions
@@ -2271,8 +2494,8 @@ Example message types:
 
 (type Stop)
 
-(type CounterMsg
-  ^is (| Increment Get Stop))
+# ActorRef may use a union message type directly:
+# (ActorRef (| Increment Get Stop))
 ```
 
 An actor is created with an initialization function and a handler:
@@ -2291,7 +2514,7 @@ A handler processes one message and returns an actor step:
 
 ```gene
 (fn counter-handler
-  [ctx : (ActorContext CounterMsg), state : Int, msg : CounterMsg]
+  [ctx : (ActorContext (| Increment Get Stop)), state : Int, msg : (| Increment Get Stop)]
   : (ActorStep Int)
 
   (match msg
@@ -3375,12 +3598,12 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 8. Streams and generators: `(Stream T E)`, `yield`, `next`/`peek`/`has_next`, declaration streams, and parser stream shape.
 9. Cooperative task runtime: `(Task T E)`, `scope`, `spawn`, `await`, cancellation, timers, safepoints, and async-I/O suspension hooks.
 10. Pattern/destructuring engine: `match`, `var`, `for`, and `catch`.
-11. Basic nominal types, single inheritance, construction stamping, basic generics, numeric hierarchy, gradual boundary checks, and conditional `Send` checking.
+11. Basic nominal types, single inheritance, construction stamping, `ctor` with pre-created `self`, basic generics, numeric hierarchy, gradual boundary checks, and conditional `Send` checking.
 12. Bounded typed channels with suspension, close semantics, and backpressure.
 13. Protocols/messages, `Error` and `Send` marker protocols, and visible-implementation coherence.
 14. Typed actors: `ActorRef M`, bounded mailboxes, sequential handlers, request/reply, scope ownership, and basic supervision.
-15. Templates/quasiquote expansion and hygienic macros.
-16. Protocol-local `derive` experiment.
+15. `fn!` runtime fexprs, templates/quasiquote expansion, and hygienic template macros.
+16. Protocol-local `derive` experiment and derive-based delegation helper experiments.
 17. `try/catch/ensure` checked errors and cancellation propagation.
 18. `eval node ^in env`: normal compiler pipeline, isolated overlays, `CompileError`, captured overlay lifetime, policy enforcement, and CLI/REPL environments.
 19. Formatter/docs: deterministic printing, module docs, namespace docs, declaration streams, and import normalization reporting.
@@ -3402,12 +3625,12 @@ The design is close enough to start implementation once the following MVP cuts a
 1. **Reader grammar freeze:** implement the reader from the EBNF in Section 2.2, including slash paths, qualified names, `%`, `#[]`, `#{}`, `#()`, comments, strings, interpolation, spread, and pipe folding.
 2. **Core value model:** implement `Any`, `Never`, `Nil`, `Void`, scalar heads, mutable versus shallow-immutable containers, equality, hashing, and deterministic printing.
 3. **Application/module model:** implement `Application` creation, package-root placeholder, file/eval modules, root namespaces, `ns`, namespace imports, `from` module paths, path normalization, module cache behavior, top-level execution, and `main` invocation.
-4. **Minimal type checker:** support nominal types, single inheritance, basic generics, unions, `(opt T)`, gradual typed-boundary checks, and recoverable boundary `TypeError`.
-5. **Callable evaluator:** implement callable-first evaluation, special forms, lexical bindings, `Call`, `Callable`, `Fn`, `NativeFn`, and `~` sugar.
+4. **Minimal type checker:** support nominal types, single inheritance, constructors, basic generics, unions, `T?` / `(? T)`, gradual typed-boundary checks, and recoverable boundary `TypeError`.
+5. **Callable evaluator:** implement callable-first evaluation, syntax-callable dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `SyntaxCallable`, `Fn`, `Fn!`, `NativeFn`, and `~` message sends.
 6. **Selectors:** implement selector literals, static and dynamic `%` stages, `void` propagation, strict/default options, list/map/node/module/namespace lookup, and functional update paths.
 7. **Streams and parser pipeline:** implement `(Stream T E)`, `yield`, `peek`, `next`, `has_next`, `close`, `Never` error normalization, declaration streams, and stream-shaped reader/parser output.
 8. **Errors:** implement `Error` marker protocol, `fail`, `panic`, `try/catch/ensure`, `CompileError`, `MatchError`, `TypeError`, and checked/dynamic `^errors` rules.
-9. **Protocols:** implement protocol declarations, messages, visible-implementation coherence, ambiguity errors, `^impl`, and basic `^derive` plumbing.
+9. **Protocols:** implement protocol declarations, messages, visible-implementation coherence, ambiguity errors, `^impl`, basic `^derive` plumbing, and manual delegation through forwarding impls.
 10. **Env and eval:** implement first-class GC-managed `Env`, explicit `eval node ^in env`, isolated overlays, compile-time/runtime capability separation, and overlay lifetime rules.
 11. **Concurrency foundation:** implement structured tasks, cancellation, bounded channels, `Send`, `Cell`, `AtomicCell`, then typed actors with sequential mailboxes.
 12. **Native foundation:** implement opaque `GeneValue`, root handles, `NativeFn`, native registration, and the VM trampoline before broader C FFI or native compilation.
@@ -3432,7 +3655,7 @@ Deferred until after the first implementation slice:
 - A module has a root namespace. Nested namespaces use `ns`. Imports can read from built-in namespace paths or from normalized module path strings using `from "path"`; package dependency management is deferred.
 - `Any` is the MVP top gradual type. A separate static root such as `Value` is deferred.
 - `Never` is the bottom type and has no runtime values. `Nil` and `Void` are singleton types under `Any`, not bottom types.
-- `nil` is explicit absence, not the default uninitialized value for typed lists, maps, or variables. Use `(opt T)` when `nil` is allowed.
+- `nil` is explicit absence, not the default uninitialized value for typed lists, maps, or variables. Use `T?` or `(? T)` when `nil` is allowed.
 - `^is` supports single nominal inheritance only. Children inherit and preserve parent schema in MVP; multiple behaviors use protocols.
 - Plain lists, maps, and nodes may be mutable; `#[]`, `#{}`, and `#()` create shallow immutable values. Strings are immutable.
 - `Cell T` is local/non-thread-safe mutable state; `AtomicCell T` is the explicit linearizable shared-memory escape hatch.
@@ -3443,6 +3666,9 @@ Deferred until after the first implementation slice:
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
 - `~` is the message-send operator: `(x ~ f a)` resolves `f` receiver-first (type-direct messages, then protocol impls, then lexical fallback); `(x ~ X/f a)` resolves `X/f` lexically. Message names are not bound in the enclosing scope. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope.
+- Type construction calls a `ctor` when present. A pre-created in-progress instance is bound as `self`; the ctor mutates it explicitly, then schema validation returns the completed `self`. Without `ctor`, construction uses default schema mapping.
+- `fn!` defines runtime fexprs / syntax callables that receive raw syntax and `caller-env`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
+- Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.
 - Generic constraints are deferred until needed for generic derived implementations.
 - Raw strings and binary literals are useful but not MVP.
