@@ -336,7 +336,12 @@ adds a short `─` separator before each user turn in the scrollback, uses
 `read-input` persistently across prompts to avoid terminal-mode flicker, and
 calls `close-input` before handing control to `/sh`, `/repl`, EOF, or process
 exit. `close-input` restores echo/cbreak/keypad/cursor state before leaving
-ncurses. A full `curses` namespace and scrollable transcript TUI can still
+ncurses. Inside those subsessions Ctrl-C stops the running command/eval or
+clears a partially typed line instead of killing the agent: the interactive
+repl installs a SIGINT handler that arms a VM interrupt (surfaced as a
+catchable "interrupted" error), and `/sh` traps INT in the shell loop while
+`os/exec-stdio` ignores it in the parent, system(3)-style. Interrupting an
+in-flight model response is still milestone 7. A full `curses` namespace and scrollable transcript TUI can still
 remain a later milestone.
 
 ## 8. Capabilities and the launcher (§8)
