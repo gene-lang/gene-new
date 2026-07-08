@@ -736,6 +736,287 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         discard sigaction(SIGINT, oldInt, nil)
     process.close()
 
+# --- os/exec-async + os/exec-stream-async: subprocess on a dedicated thread ---
+#
+# The synchronous exec natives block the scheduler thread, freezing every
+# fiber (and the net/http event loop) for the duration of the child — the
+# §12.9 gap-1 problem in docs/ai-agent.md. These variants run the child on a
+# dedicated OS thread and settle an external Task, following the proven
+# foreign-thread pattern (tests/test_native_api_threads.nim, the aio worker's
+# runAsyncIoRequest): every value crossing threads is markSharedValue'd so its
+# refcount is atomic, handoff goes through the lock-protected channel/task
+# paths, and the worker never runs Gene code.
+
+when compileOption("threads"):
+  type OsExecAsyncCtx = ref object
+    name: string          # native name, for error messages
+    cmd: string
+    procArgs: seq[string]
+    workdir: string
+    timeoutMs: int
+    maxBytes: int
+    task: Value           # external Task; marked shared by the spawner
+    lineChan: Value       # NIL, or a Channel receiving stdout lines
+    scope: Scope          # resolves the spawner's scheduler for wakes
+
+  var osExecAsyncLock: Lock
+  var osExecAsyncThreads: seq[ref Thread[OsExecAsyncCtx]]
+  initLock(osExecAsyncLock)
+
+  proc reapOsExecAsyncThreads() =
+    ## Join finished exec threads so handles don't accumulate. Runs on the
+    ## scheduler thread before each spawn; threads still running are left.
+    withLock osExecAsyncLock:
+      var i = 0
+      while i < osExecAsyncThreads.len:
+        if osExecAsyncThreads[i][].running:
+          inc i
+        else:
+          joinThread(osExecAsyncThreads[i][])
+          osExecAsyncThreads.delete(i)
+
+  proc osExecAsyncWorker(ctx: OsExecAsyncCtx) {.thread.} =
+    {.cast(gcsafe).}:
+      defer:
+        endExternalNativeOp()
+      var outText = ""
+      var errText = ""
+      var outTruncated = false
+      var errTruncated = false
+      var timedOut = false
+      var lineBuf = ""
+      var exitCode = 0
+      var chanGone = ctx.lineChan.kind == vkNil
+      let deadline =
+        if ctx.timeoutMs >= 0:
+          getMonoTime() + initDuration(milliseconds = ctx.timeoutMs)
+        else:
+          getMonoTime()
+
+      proc appendCapped(into: var string, truncated: var bool, chunk: string) =
+        if into.len >= ctx.maxBytes:
+          if chunk.len > 0:
+            truncated = true
+          return
+        if into.len + chunk.len <= ctx.maxBytes:
+          into.add chunk
+        else:
+          truncated = true
+          into.add chunk.substr(0, ctx.maxBytes - into.len - 1)
+
+      proc sendLine(line: string) =
+        ## Push one stdout line with bounded backpressure: retry while the
+        ## channel is full, give up (but keep capturing) once it is closed or
+        ## the exec deadline passes. newStr here is safe: the channel send
+        ## path marks the value shared before it becomes visible cross-thread.
+        if chanGone:
+          return
+        while true:
+          try:
+            if nativeChannelTrySend(ctx.lineChan, newStr(line), ctx.scope):
+              return
+          except CatchableError:
+            chanGone = true
+            return
+          if ctx.lineChan.channelClosed:
+            chanGone = true
+            return
+          if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
+            return
+          os.sleep(1)
+
+      proc handleStdoutChunk(chunk: string) =
+        appendCapped(outText, outTruncated, chunk)
+        if chanGone:
+          return
+        for ch in chunk:
+          if ch == '\n':
+            if lineBuf.len > 0 and lineBuf[^1] == '\r':
+              lineBuf.setLen(lineBuf.len - 1)
+            sendLine(lineBuf)
+            lineBuf.setLen(0)
+          else:
+            lineBuf.add ch
+
+      proc closeLineChan() =
+        if ctx.lineChan.kind != vkNil:
+          closeChannel(ctx.lineChan)
+          wakeAllChannelWaiters(ctx.lineChan, wakeSenders = false)
+          wakeAllChannelWaiters(ctx.lineChan, wakeSenders = true)
+
+      proc settle(value: Value) =
+        markSharedValue(value)
+        withScopedScheduler(ctx.scope):
+          closeLineChan()
+          if tryCompleteTask(ctx.task, value):
+            wakeTaskWaiters(ctx.task)
+
+      proc settleFail(message: string) =
+        withScopedScheduler(ctx.scope):
+          closeLineChan()
+          if tryFailTask(ctx.task, message):
+            wakeTaskWaiters(ctx.task)
+
+      var process: Process
+      try:
+        process = startProcess(ctx.cmd, workingDir = ctx.workdir,
+                               args = ctx.procArgs, options = {poUsePath})
+      except CatchableError as e:
+        settleFail(ctx.name & " could not start '" & ctx.cmd & "': " & e.msg)
+        return
+      try:
+        try:
+          when defined(posix):
+            let outFd = process.outputHandle.cint
+            let errFd = process.errorHandle.cint
+            discard fcntl(outFd, F_SETFL,
+                          fcntl(outFd, F_GETFL, 0) or O_NONBLOCK)
+            discard fcntl(errFd, F_SETFL,
+                          fcntl(errFd, F_GETFL, 0) or O_NONBLOCK)
+            var buf: array[4096, char]
+            proc drainAvailable(fd: cint, isOut: bool) =
+              while true:
+                let n = read(fd, addr buf[0], buf.len)
+                if n > 0:
+                  var chunk = newString(n)
+                  copyMem(addr chunk[0], addr buf[0], n)
+                  if isOut:
+                    handleStdoutChunk(chunk)
+                  else:
+                    appendCapped(errText, errTruncated, chunk)
+                else:
+                  break
+            while process.running:
+              drainAvailable(outFd, true)
+              drainAvailable(errFd, false)
+              if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
+                timedOut = true
+                process.terminate()
+                break
+              os.sleep(osExecPollMs)
+            exitCode = if timedOut: (discard process.waitForExit(); -1)
+                       else: process.waitForExit()
+            drainAvailable(outFd, true)
+            drainAvailable(errFd, false)
+          else:
+            exitCode = process.waitForExit(
+              if ctx.timeoutMs >= 0: ctx.timeoutMs else: -1)
+            if process.running:
+              timedOut = true
+              process.terminate()
+              exitCode = -1
+            handleStdoutChunk(process.outputStream.readAll())
+            appendCapped(errText, errTruncated, process.errorStream.readAll())
+          if lineBuf.len > 0:
+            sendLine(lineBuf)
+            lineBuf.setLen(0)
+          var props = initOrderedTable[string, Value]()
+          props["status"] = newInt(exitCode)
+          props["stdout"] = newStr(outText)
+          props["stderr"] = newStr(errText)
+          props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
+          props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+          props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
+          props["timed-out"] = if timedOut: TRUE else: FALSE
+          settle(newMap(props))
+        except CatchableError as e:
+          settleFail(ctx.name & " failed: " & e.msg)
+      finally:
+        try:
+          process.close()
+        except CatchableError:
+          discard
+
+proc biOsExecAsyncImpl(name: string, wantChan: bool,
+                       args: openArray[Value],
+                       call: ptr NativeCall): Value =
+  if args.len != 1:
+    raise newException(GeneError,
+      name & " expects the Os/Exec capability plus named arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireOsExec(name, args[0], scope)
+  var cmd = ""
+  var cmdSet = false
+  var procArgs: seq[string]
+  var timeoutMs = -1
+  var maxBytes = osExecDefaultOutputCap
+  var workdir = ""
+  var lineChan = NIL
+  if call != nil:
+    for i, argName in call[].namedNames:
+      let v = call[].namedValues[i]
+      case argName
+      of "cmd":
+        requireStr(name & " ^cmd", v)
+        cmd = v.strVal
+        cmdSet = true
+      of "args":
+        if v.kind != vkList:
+          raiseOsError(name & " ^args must be a List of Str", scope)
+        for item in v.listItems:
+          requireStr(name & " ^args item", item)
+          procArgs.add item.strVal
+      of "timeout-ms":
+        timeoutMs = int(requireInt64(name & " ^timeout-ms", v))
+      of "max-bytes":
+        maxBytes = int(requireInt64(name & " ^max-bytes", v))
+      of "dir":
+        requireStr(name & " ^dir", v)
+        workdir = v.strVal
+      of "stdout-chan":
+        if not wantChan:
+          raiseOsError(name & " got unexpected named argument: stdout-chan",
+                       scope)
+        requireChannel(name & " ^stdout-chan", v)
+        lineChan = v
+      else:
+        raiseOsError(name & " got unexpected named argument: " & argName,
+                     scope)
+  if not cmdSet or cmd.len == 0:
+    raiseOsError(name & " requires a non-empty ^cmd", scope)
+  if maxBytes <= 0:
+    maxBytes = osExecDefaultOutputCap
+  if wantChan and lineChan.kind == vkNil:
+    raiseOsError(name & " requires ^stdout-chan (a Channel of stdout lines)",
+                 scope)
+  when compileOption("threads"):
+    if scope == nil or scope.application == nil:
+      raiseOsError(name & " requires a scheduler scope", scope)
+    let task = newExternalTask()
+    markSharedValue(task)
+    if lineChan.kind != vkNil:
+      markSharedValue(lineChan)
+    let ctx = OsExecAsyncCtx(name: name, cmd: cmd, procArgs: procArgs,
+                             workdir: workdir, timeoutMs: timeoutMs,
+                             maxBytes: maxBytes, task: task,
+                             lineChan: lineChan, scope: scope)
+    reapOsExecAsyncThreads()
+    var tr: ref Thread[OsExecAsyncCtx]
+    new(tr)
+    beginExternalNativeOp()
+    try:
+      createThread(tr[], osExecAsyncWorker, ctx)
+    except CatchableError as e:
+      endExternalNativeOp()
+      raiseOsError(name & " could not start a worker thread: " & e.msg, scope)
+    withLock osExecAsyncLock:
+      osExecAsyncThreads.add tr
+    task
+  else:
+    raiseOsError(name & " requires a threaded runtime build", scope)
+    NIL
+
+proc biOsExecAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## os/exec contract, but returns a Task settled off-thread: the scheduler
+  ## keeps running fibers while the child executes. Await for the result map.
+  biOsExecAsyncImpl("os/exec-async", false, args, call)
+
+proc biOsExecStreamAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## os/exec-async plus live stdout lines: each complete line (CR stripped) is
+  ## sent to ^stdout-chan as it arrives; the channel is closed when the child
+  ## exits, then the Task settles with the captured result map.
+  biOsExecAsyncImpl("os/exec-stream-async", true, args, call)
+
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/stdin-tty? takes no arguments")
@@ -2296,6 +2577,9 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
   osScope.define("exec-stream", newNativeCallFn("os/exec-stream", biOsExecStream))
   osScope.define("exec-stdio", newNativeCallFn("os/exec-stdio", biOsExecStdio))
+  osScope.define("exec-async", newNativeCallFn("os/exec-async", biOsExecAsync))
+  osScope.define("exec-stream-async",
+                 newNativeCallFn("os/exec-stream-async", biOsExecStreamAsync))
   osScope.define("stdin-tty?", newNativeFn("os/stdin-tty?", biOsStdinTty))
   osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
   osScope.define("read-input", newNativeCallFn("os/read-input", biOsReadInput))

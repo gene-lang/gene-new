@@ -357,6 +357,24 @@ proc enqueueRunnable(f: Fiber)
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
 
+when compileOption("threads"):
+  import std/atomics
+
+  # In-flight native operations running on dedicated OS threads that will
+  # settle a Task or feed a Channel (os/exec-*-async, future libcurl client).
+  # Root-level blocking waits consult this before declaring deadlock: an
+  # external thread can still unblock them, so they poll instead of raising.
+  var externalNativeOps: Atomic[int]
+
+  proc beginExternalNativeOp() =
+    discard externalNativeOps.fetchAdd(1, moRelease)
+
+  proc endExternalNativeOp() =
+    discard externalNativeOps.fetchSub(1, moRelease)
+
+  proc externalNativeOpsPending(): bool =
+    externalNativeOps.load(moAcquire) > 0
+
 # Schedule a task's own fiber to observe a cancellation request. Awaiters are
 # woken when that fiber finishes cleanup and settles the task as cancelled.
 proc cancelScheduledTask(task: Value): bool
@@ -1365,6 +1383,12 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         let retry = args[0].channelRecvState()
         if retry.closed or not retry.empty:
           continue
+        when compileOption("threads"):
+          # A dedicated-thread native op (os/exec-stream-async) may still feed
+          # or close this channel; poll instead of raising.
+          if externalNativeOpsPending():
+            os.sleep(1)
+            continue
         raise newException(GeneError, "Channel/recv would suspend on an empty channel")
       continue
     let popped = args[0].tryPopChannel()
@@ -11292,6 +11316,12 @@ proc pumpUntilDone(task: Value) =
             break
           if task.taskExternalPending:
             continue
+      when compileOption("threads"):
+        # A dedicated-thread native op (os/exec-*-async) can still settle this
+        # task or wake a fiber that will; poll instead of declaring deadlock.
+        if task.taskExternalPending or externalNativeOpsPending():
+          os.sleep(1)
+          continue
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
 

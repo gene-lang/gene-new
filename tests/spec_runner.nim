@@ -3046,6 +3046,46 @@ suite "spec — os and json from ai-agent plan":
                "(exec-stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
                "7")
 
+  test "os/exec-async settles a task off-thread with the exec result map":
+    check_eval("(import os [exec-async Exec]) " &
+               "(var r (await (exec-async Exec ^cmd \"echo\" ^args [\"hi\"]))) " &
+               "[r/status r/timed-out]",
+               "[0 false]")
+    check_eval("(import os [exec-async Exec]) " &
+               "(var r (await (exec-async Exec ^cmd \"sleep\" ^args [\"5\"] " &
+               "                          ^timeout-ms 150))) " &
+               "r/timed-out",
+               "true")
+
+  test "os/exec-stream-async feeds stdout lines through a channel then closes it":
+    check_eval("(import os [exec-stream-async Exec]) " &
+               "(import std/stream [to_stream into]) " &
+               "(var ch (channel ^capacity 8)) " &
+               "(var t (exec-stream-async Exec ^cmd \"printf\" " &
+               "         ^args [\"a\\nb\\n\"] ^stdout-chan ch)) " &
+               "(var seen (cell [])) (var line nil) " &
+               "(try (loop (set line (ch ~ Channel/recv)) " &
+               "  (seen ~ Cell/set ((to_stream [line]) ~ into (seen ~ Cell/get)))) " &
+               "catch (ChannelClosed) nil) " &
+               "(var r (await t)) " &
+               "[(seen ~ Cell/get) r/stdout r/status]",
+               "[[\"a\" \"b\"] \"a\\nb\\n\" 0]")
+
+  test "scheduler stays live while an async exec child runs":
+    # The whole point of the async variants (docs/ai-agent.md §12.9 gap 1):
+    # fibers must make progress during a subprocess. The snapshot is taken
+    # right after the await — a blocking exec would leave it at 0.
+    check_eval("(import os [exec-async Exec]) " &
+               "(var ticks (cell 0)) " &
+               "(var during (cell 0)) " &
+               "(scope " &
+               "  (spawn (repeat 5 (do (sleep 20) " &
+               "    (ticks ~ Cell/set (+ (ticks ~ Cell/get) 1))))) " &
+               "  (var r (await (exec-async Exec ^cmd \"sleep\" ^args [\"0.3\"]))) " &
+               "  (during ~ Cell/set (ticks ~ Cell/get))) " &
+               "(during ~ Cell/get)",
+               "5")
+
   test "Fs sync helpers read, write, and list under capabilities":
     let dir = getTempDir() / "gene-ai-agent-fs-spec"
     if dirExists(dir):
