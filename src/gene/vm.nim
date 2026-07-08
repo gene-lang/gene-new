@@ -73,12 +73,14 @@ type
   ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
   ## function calls push one of these instead of recursing through Nim, so a call
   ## chain lives on the heap — the foundation for suspendable/resumable tasks
-  ## (design §13/§17). Each frame owns its operand stack and instruction pointer.
+  ## (design §13/§17). Frames share one operand stack: each records where its
+  ## region starts (stackBase) and returns truncate back to it.
   Frame = object
     chunk: Chunk
     scope: Scope
     recycleScope: bool
-    stack: seq[Value]
+    stackBase: int          # this frame's region of the shared operand stack
+                            # starts here; values below belong to callers
     ip: int
     validateImpls: bool
     returnType: Value       # instantiated return-type to adapt on return, or NIL
@@ -107,6 +109,8 @@ type
     scope: Scope            # enclosing scope, for catch matching and ensure
     framesLen: int          # frames.len at try entry; the handler fires when an
                             # unwinding error pops back to this depth
+    stackLen: int           # shared-operand-stack length at try entry; unwinding
+                            # truncates back to it before running catch clauses
 
   Fiber = ref object
     ## A suspendable Gene task: the full runLoop continuation captured on the heap.
@@ -117,7 +121,8 @@ type
     chunk: Chunk
     scope: Scope
     recycleScope: bool
-    stack: seq[Value]
+    stack: seq[Value]       # the whole shared operand stack at suspend
+    stackBase: int          # current frame's base within it
     ip: int
     frames: seq[Frame]
     tailTraceFrames: seq[TailTraceFrame]
@@ -7463,6 +7468,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var scope = scopeArg
   var recycleScope = false
   var stack = move stackArg
+  # The operand stack is shared across frames: each frame's region starts at
+  # its recorded base. The outermost frame owns [0..]; pushing a call records
+  # the caller's base in its Frame and the callee continues at stack.len.
+  var curStackBase = 0
   var ip = ipArg
   var validateImplRequirements = validateArg
   var evalBudget = scope.evalBudget
@@ -7502,6 +7511,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope = fiber.scope
     recycleScope = fiber.recycleScope
     stack = move fiber.stack
+    curStackBase = fiber.stackBase
     ip = fiber.ip
     frames = move fiber.frames
     tailTraceFrames = move fiber.tailTraceFrames
@@ -7543,6 +7553,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = move f.chunk
     scope = move f.scope
     recycleScope = f.recycleScope
+    curStackBase = f.stackBase
     ip = f.ip
     validateImplRequirements = f.validateImpls
     returnType = move f.returnType
@@ -7606,7 +7617,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     # refcount traffic.
     frames.add Frame(chunk: move chunk, scope: move scope,
                      recycleScope: recycleScope,
-                     stack: move stack, ip: ip,
+                     stackBase: curStackBase, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: move returnType,
                      returnLabel: move returnLabel,
@@ -7618,7 +7629,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   template pushFrameFastNormal() =
     frames.add Frame(chunk: move chunk, scope: move scope,
                      recycleScope: recycleScope,
-                     stack: move stack, ip: ip,
+                     stackBase: curStackBase, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: move returnType,
                      returnLabel: move returnLabel,
@@ -7643,7 +7654,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope = nextScope
     recycleScope = false
     scope.prepareChunkScope(chunk)
-    stack = acquireRunStack(gVmPools)
+    curStackBase = stack.len
     ip = 0
     validateImplRequirements = nextValidate
     returnType = NIL
@@ -7700,6 +7711,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.tailTraceFrames = move tailTraceFrames
     fiber.handlers = move handlers
     fiber.stack = move stack
+    fiber.stackBase = curStackBase
 
   template releaseCurrentCallScope() =
     if recycleScope:
@@ -7745,7 +7757,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         loopScope.bindMatchedValues(binds, replaceExisting = false)
         chunk = curForBody
         scope = loopScope
-        stack = acquireRunStack(gVmPools)
+        curStackBase = stack.len
         ip = 0
         validateImplRequirements = true
         returnType = NIL
@@ -7759,7 +7771,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curForStream.closeStream()
         curForStream = NIL
         var owner = frames.pop()
-        stack = move owner.stack
+        stack.setLen(curStackBase)
         loadFrameRegs(owner)
         stack.add NIL
     elif curForIndex < curForItems.len:
@@ -7774,7 +7786,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       loopScope.bindMatchedValues(binds, replaceExisting = false)
       chunk = curForBody
       scope = loopScope
-      stack = acquireRunStack(gVmPools)
+      curStackBase = stack.len
       ip = 0
       validateImplRequirements = true
       returnType = NIL
@@ -7786,7 +7798,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       evalBudget = scope.evalBudget
     else:
       var owner = frames.pop()
-      stack = move owner.stack
+      stack.setLen(curStackBase)
       loadFrameRegs(owner)
       stack.add NIL
 
@@ -7795,7 +7807,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curForStream.closeStream()
       curForStream = NIL
     var owner = frames.pop()
-    stack = move owner.stack
+    stack.setLen(curStackBase)
     loadFrameRegs(owner)
     stack.add NIL
 
@@ -7811,14 +7823,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         releaseFrameStack(gVmPools, frames)
         return RunStop(kind: rskReturn, value: retValue)
       else:
-        releaseRunStack(gVmPools, stack)
+        stack.setLen(curStackBase)
         # Restore from the frame in place (moves), then shrink — skips the
         # struct move a frames.pop() into a local would do.
         let callerIndex = frames.len - 1
         template caller: untyped = frames[callerIndex]
         if caller.restoreSlot >= 0 and caller.kind == fkNormal and caller.extra == nil:
           caller.scope.slots[caller.restoreSlot] = caller.restoreValue
-          stack = move caller.stack
+          curStackBase = caller.stackBase
           ip = caller.ip
           if caller.recycleScope or caller.validateImpls or
               caller.returnType.kind != vkNil or caller.returnLabel.len != 0:
@@ -7827,7 +7839,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             returnType = move caller.returnType
             returnLabel = move caller.returnLabel
         else:
-          stack = move caller.stack
           loadFrameRegs(caller)
         frames.setLen(callerIndex)
         stack.add retValue
@@ -7838,14 +7849,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     elif curFrameKind == fkEnsureCancelBody:
       raise curPendingCancel
     elif curFrameKind == fkEnsureValueBody:
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       let preserved = curEnsureValue
       var owner = frames.pop()
-      stack = move owner.stack
+      stack.setLen(curStackBase)
       loadFrameRegs(owner)
       stack.add preserved
     elif curFrameKind == fkForBody:
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       advanceForLoop()
     elif curFrameKind == fkTaskScopeBody:
       let owned = curOwnedScope
@@ -7854,26 +7865,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         owned.waitOwnedTasks()
       finally:
         owned.closeOwnedActors()
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       var owner = frames.pop()
-      stack = move owner.stack
+      stack.setLen(curStackBase)
       loadFrameRegs(owner)
       stack.add retValue
     elif curFrameKind == fkSupervisorBody:
       let owned = curOwnedScope
       curFrameKind = fkNormal
       owned.closeOwnedActors()
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       var owner = frames.pop()
-      stack = move owner.stack
+      stack.setLen(curStackBase)
       loadFrameRegs(owner)
       stack.add retValue
     elif curFrameKind == fkNamespaceBody:
       let nsScope = curOwnedScope
       let nsName = curNamespaceName
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       var owner = frames.pop()
-      stack = move owner.stack
+      stack.setLen(curStackBase)
       loadFrameRegs(owner)
       let ns = newNamespace(nsName, nsScope)
       scope.define(nsName, ns)
@@ -7881,18 +7892,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     elif curFrameKind == fkTryBody:
       # The try body succeeded: drop its handler, run ensure, then hand its value
       # back to the enclosing frame (the owner pushed by opTry).
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       let h = handlers.pop()
       if h.tp.ensureBody != nil:
         enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureValueBody)
         curEnsureValue = retValue
       else:
         var owner = frames.pop()
-        stack = move owner.stack
+        stack.setLen(curStackBase)
         loadFrameRegs(owner)
         stack.add retValue
     elif curFrameKind == fkCatchBody:
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       if curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
@@ -7900,7 +7911,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curEnsureValue = retValue
       else:
         var owner = frames.pop()
-        stack = move owner.stack
+        stack.setLen(curStackBase)
         loadFrameRegs(owner)
         stack.add retValue
     elif frames.len == 0:
@@ -7909,9 +7920,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       releaseFrameStack(gVmPools, frames)
       return RunStop(kind: rskReturn, value: retValue)
     else:
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       var caller = frames.pop()
-      stack = move caller.stack
       loadFrameRegs(caller)
       stack.add retValue
 
@@ -7924,13 +7934,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       releaseFrameStack(gVmPools, frames)
       return RunStop(kind: rskReturn, value: retValue)
     else:
-      releaseRunStack(gVmPools, stack)
+      stack.setLen(curStackBase)
       # In-place restore + shrink; see finishFrameReturn.
       let callerIndex = frames.len - 1
       template caller: untyped = frames[callerIndex]
       if caller.restoreSlot >= 0 and caller.kind == fkNormal and caller.extra == nil:
         caller.scope.slots[caller.restoreSlot] = caller.restoreValue
-        stack = move caller.stack
+        curStackBase = caller.stackBase
         ip = caller.ip
         if caller.recycleScope or caller.validateImpls or
             caller.returnType.kind != vkNil or caller.returnLabel.len != 0:
@@ -7939,7 +7949,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           returnType = move caller.returnType
           returnLabel = move caller.returnLabel
       else:
-        stack = move caller.stack
         loadFrameRegs(caller)
       frames.setLen(callerIndex)
       stack.add retValue
@@ -7990,7 +7999,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = proto.chunk
     scope = callScope
     recycleScope = true
-    stack = acquireRunStack(gVmPools)
+    curStackBase = stack.len
     ip = 0
     validateImplRequirements = false
     returnType =
@@ -8018,7 +8027,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     let slot = proto.positionalSlots[0]
     let previous = scope.slots[slot]
     frames.add Frame(chunk: chunk, scope: scope, recycleScope: recycleScope,
-                     stack: move stack, ip: ip,
+                     stackBase: curStackBase, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: returnType, returnLabel: returnLabel,
                      checksErrors: curChecksErrors,
@@ -8026,7 +8035,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      kind: fkNormal, extra: nil,
                      restoreSlot: slot, restoreValue: previous)
     scope.slots[slot] = arg
-    stack = acquireRunStack(gVmPools)
+    curStackBase = stack.len
     ip = 0
     validateImplRequirements = false
     returnType =
@@ -8048,7 +8057,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
       raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
     scope.slots[proto.positionalSlots[0]] = arg
-    stack.setLen(0)
+    stack.setLen(curStackBase)
     ip = 0
     evalBudget = scope.evalBudget
     continue
@@ -8079,7 +8088,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = nextProto.chunk
     scope = nextScope
     recycleScope = nextRecycleScope
-    stack.setLen(0)
+    stack.setLen(curStackBase)
     ip = 0
     validateImplRequirements = nextValidateImpls
     returnType = nextReturnType
@@ -8578,7 +8587,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -8601,7 +8610,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = bound.scope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = frameReturnType
@@ -8723,7 +8732,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -8744,7 +8753,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -8766,7 +8775,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -8813,7 +8822,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = boundScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = boundReturnType
@@ -9033,7 +9042,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -9084,7 +9093,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = boundScope
                 recycleScope = proto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = frameReturnType
@@ -9189,7 +9198,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = fnProto.chunk
                 scope = callScope
                 recycleScope = fnProto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = fnProto.frameNeedsImplValidation
                 returnType = NIL
@@ -9223,7 +9232,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = fnProto.chunk
                 scope = boundScope
                 recycleScope = fnProto.poolCallScope
-                stack = acquireRunStack(gVmPools)
+                curStackBase = stack.len
                 ip = 0
                 validateImplRequirements = fnProto.frameNeedsImplValidation
                 returnType = frameReturnType
@@ -9836,13 +9845,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opLoopBreak:
           if curFrameKind != fkForBody:
             raise newException(GeneError, "break is only valid inside a loop")
-          releaseRunStack(gVmPools, stack)
+          stack.setLen(curStackBase)
           breakForLoop()
           continue
         of opLoopContinue:
           if curFrameKind != fkForBody:
             raise newException(GeneError, "continue is only valid inside a loop")
-          releaseRunStack(gVmPools, stack)
+          stack.setLen(curStackBase)
           advanceForLoop()
           continue
         of opTry:
@@ -9858,7 +9867,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           scope = frames[^1].scope
           handlers.add TryHandler(tp: tp, scope: scope, framesLen: frames.len)
           chunk = tp.body                 # shares the enclosing scope
-          stack = acquireRunStack(gVmPools)
+          curStackBase = stack.len
           ip = 0
           validateImplRequirements = false
           returnType = NIL
@@ -10094,7 +10103,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        releaseRunStack(gVmPools, stack)
+        stack.setLen(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsureErrorBody)
         curPendingError = err
         continue
@@ -10104,7 +10113,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # while catch/ensure bodies run as ordinary VM frames, so they can park
           # and resume like the original try body.
           let h = handlers.pop()
-          releaseRunStack(gVmPools, stack)        # discard the try body's operand stack
+          stack.setLen(curStackBase)        # discard the try body's operand stack
           let ownerValidate = frames[^1].validateImpls
           let errVal =
             if err.hasErrVal: err.errVal
@@ -10133,7 +10142,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             # No catch matched: keep unwinding the (possibly re-labelled) error.
             var f = frames.pop()
-            stack = move f.stack
+            stack.setLen(curStackBase)
             loadFrameRegs(f)
             closeCurrentForStream()
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
@@ -10142,9 +10151,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           releaseFrameStack(gVmPools, frames)
           raise err
         else:
-          releaseRunStack(gVmPools, stack)
+          stack.setLen(curStackBase)    # drop the failing frame's region
           var f = frames.pop()
-          stack = move f.stack
           loadFrameRegs(f)
           closeCurrentForStream()
           err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
@@ -10172,7 +10180,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        releaseRunStack(gVmPools, stack)
+        stack.setLen(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsurePanicBody)
         curPendingPanic = p
         continue
@@ -10180,7 +10188,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
-          releaseRunStack(gVmPools, stack)
+          stack.setLen(curStackBase)
           enterFrame(h.tp.ensureBody, h.scope, false, fkEnsurePanicBody)
           curPendingPanic = p
           cleanupStarted = true
@@ -10212,7 +10220,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        releaseRunStack(gVmPools, stack)
+        stack.setLen(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsureCancelBody)
         curPendingCancel = c
         continue
@@ -10220,7 +10228,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
-          releaseRunStack(gVmPools, stack)
+          stack.setLen(curStackBase)
           enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureCancelBody)
           curPendingCancel = c
           cleanupStarted = true
