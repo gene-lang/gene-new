@@ -4,13 +4,15 @@
 #
 #   * Talks to Codex's ChatGPT-account Responses backend, streaming.
 #   * Transport is `curl` shelled out through os/exec-stream.
-#   * Tools: read_file / write_file / edit_file / list_dir / run_shell, each run
-#     under the §8.5 safety contract (workspace-root confinement, path
-#     normalization, timeout + output caps, secret redaction).
+#   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
+#     with a minimal personal-use guard: `rm -rf` is denied, paths stay inside
+#     the workspace, timeouts + output caps apply, the token is redacted from
+#     displayed output. Full §8.5 hardening is deferred (docs/ai-agent.md).
 #   * Ncurses-backed prompt on TTY; paste and Shift+Enter/Alt+Enter keep newlines.
 #
 # Run live:   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
-# Auto-approve tools: GENE_AGENT_APPROVE_ALL=1 (or legacy GENE_AGENT_YOLO=1)
+# Tools auto-approve by default (single-user agent); set GENE_AGENT_APPROVE_ALL=0
+# to be prompted before writes and shell commands.
 # Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
 #             tool-call round trip — needs no network)
@@ -39,11 +41,12 @@
 (var base    (get-env Env "OPENAI_BASE_URL" "https://chatgpt.com/backend-api/codex"))
 (var model   (get-env Env "OPENAI_MODEL" "gpt-5.4-mini"))
 (var workspace-root ".")
-(var yolo (get-env Env "GENE_AGENT_YOLO" "0"))
-(var approve-all (get-env Env "GENE_AGENT_APPROVE_ALL" yolo))
+(var approve-all (get-env Env "GENE_AGENT_APPROVE_ALL" "1"))
 
 # -----------------------------------------------------------------------------
-# §8.5 safety contract.
+# Minimal personal-use safety. The full §8.5 contract (realpath confinement,
+# approval-by-default, redaction of tool output sent to the model) is deferred
+# hardening — see docs/ai-agent.md.
 # -----------------------------------------------------------------------------
 
 (fn replace-all [s : Str, from : Str, to : Str] : Str
@@ -67,9 +70,7 @@
 
 (fn denied-command? [cmd : Str]
   (|| (contains? cmd "rm -rf")
-      (contains? cmd "curl ")
-      (contains? cmd "wget ")
-      (contains? cmd "nc ")))
+      (contains? cmd "rm -fr")))
 
 (fn flag-enabled? [value : Str]
   (var v (lower (trim value)))

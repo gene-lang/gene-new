@@ -7,10 +7,12 @@ namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
 timeout + output caps, `exec-stream` with stdout callbacks, `read-line`,
 `read-input`/`refresh-input`/`close-input`), `Fs/read-text`/`Fs/write-text`/
 `Fs/list-dir`, the `json` namespace (`parse`/`stringify`/`JsonError`), and the
-agent itself — a streaming Responses-API loop over a `curl` subprocess, the
-§8.5 safety contract (workspace-root path confinement, timeout/output caps with
-truncation flags, approval policy, secret redaction), and tool use
-(`read_file`, `write_file`, `list_dir`, `run_shell`, `grep`), plus an offline
+agent itself — a streaming Responses-API loop over a `curl` subprocess, a
+minimal single-user safety policy (§8.5: `rm -rf` denial, simple path check,
+timeout/output caps with truncation flags, display-side secret redaction;
+tools auto-approve by default), and tool use
+(`read_file`, `write_file`, `edit_file`, `list_dir`, `run_shell`, `grep`),
+plus an offline
 demo transport so the loop runs (and is verified) with no network or key. Not
 yet built: the native libcurl client (§4 option 1, milestone 5), the full
 scrollback TUI (§7, milestone 6), and capability injection via `gene run` flags
@@ -357,11 +359,18 @@ the *granting* mechanism changes.
 
 ### 8.5 Tool safety contract
 
+**Current posture (2026-07-08): the agent is a single-user personal tool, so
+the shipped policy is deliberately minimal** — deny `rm -rf` in `run_shell`,
+reject absolute/`..` paths in file tools, enforce timeouts and output caps,
+and redact the token from displayed output. Tools auto-approve by default;
+set `GENE_AGENT_APPROVE_ALL=0` to be prompted before writes and shell
+commands. The full contract below is the hardening spec for any shared or
+hostile-input deployment, deferred to milestone 7.
+
 Capability-gating says *whether* a tool may touch the filesystem or shell; it
 says nothing about *what* the model is allowed to do with that access. Because a
 coding agent executes model-chosen file writes and shell commands, the following
-is part of the agent's operational contract, not a later hardening nicety, and
-must be in place **before** `run_shell` or `write_file` ship (milestone 4):
+is the full operational contract for a shared deployment:
 
 - **Workspace-root confinement.** Every file tool resolves its path argument
   against a configured workspace root and rejects anything that escapes it. The
@@ -387,9 +396,14 @@ must be in place **before** `run_shell` or `write_file` ship (milestone 4):
   `Fs/*` precisely so a run can grant file+env without shell, or read-only
   files. The default launcher grants the minimum the requested toolset needs.
 
-These are enumerated here so the implementation treats them as acceptance
-criteria for the tool milestone, with spec tests for the escape/timeout/redaction
-cases — the same defensive-test posture as the `net/http` request-parser caps.
+These are enumerated here so the hardening milestone treats them as acceptance
+criteria, with spec tests for the escape/timeout/redaction cases — the same
+defensive-test posture as the `net/http` request-parser caps. Known gaps in the
+current minimal build, in rough priority order for milestone 7: tool output is
+not redacted before being sent back to the model (one-line fix: wrap
+`run-tool-call`'s output in `redact`), `safe-path` does not realpath so a
+symlink inside the workspace can point outside it, and the `run_shell`
+deny-list is a naive substring match.
 
 ## 9. Agent loop (pseudo-Gene sketch)
 
@@ -474,26 +488,30 @@ curses) are isolated behind working milestones.
    transport (a recorded Responses body) so CI needs no network or key. Model
    the response decoder around Responses output *items* from the start, so the
    later streaming client slots in without reshaping the agent.
-4. **Tool use + safety contract.** `read_file`/`write_file`/`list_dir`/
-   `run_shell` as `function_call` handlers, the tool schema list, and the
-   dispatch loop — **shipped together with §8.5** (workspace-root confinement,
-   path normalization, timeout/output caps, approval hook, secret redaction).
-   Verified against a scripted model-response fixture plus escape/timeout/
-   redaction spec tests.
+4. **Tool use + minimal safety.** `read_file`/`write_file`/`edit_file`/
+   `list_dir`/`run_shell`/`grep` as `function_call` handlers, the tool schema
+   list, and the dispatch loop — shipped with the minimal single-user policy
+   (§8.5 current posture: `rm -rf` denial, simple path check, timeout/output
+   caps, display-side redaction, auto-approve). Verified against a scripted
+   model-response fixture; the full §8.5 contract and its escape/redaction
+   spec tests move to milestone 7.
 5. **`net/http-client` (libcurl namespace)**: replace the `curl` subprocess with
    the native client; keep streaming via the channel path in §4 and add real
    cancellation rather than killing a child process.
 6. **`curses` namespace + TUI**: scrollable transcript, status line, input line,
    Ctrl-C interrupt; `with-screen` cleanup; swap the line UI for the full
    screen.
-7. **Hardening**: capability injection via `gene run` flags (§8), broader policy
-   config, and interrupt/cancel wired through `Task/cancel`.
+7. **Hardening**: the full §8.5 contract (realpath confinement, approval
+   policy default-on, redaction of tool output sent to the model, escape/
+   redaction spec tests), capability injection via `gene run` flags (§8),
+   broader policy config, and interrupt/cancel wired through `Task/cancel`.
 
 Milestones 1–4 make the agent genuinely usable (real API, real tools, real
 safety). The new runtime surface they require is: the `os` namespace
 (`get-env`/`env?`/`exec`/`exec-stream`/`read-line`/`read-input`/`refresh-input`/`close-input`
 with `Os/Env`+`Os/Exec`), the `Fs/read-text` and `Fs/list-dir` sync helpers,
-and the `json` namespace — plus the §8.5 safety layer in Gene. Crucially,
+and the `json` namespace — plus the minimal §8.5 safety layer in Gene.
+Crucially,
 **no TLS, full curses namespace, or OS-level sandbox build-out is required
 first** — that is what makes this the sharp MVP. The prompt may use ncurses and
 subprocess SSE streaming, but the full TUI (6) and native HTTP client (5) are
