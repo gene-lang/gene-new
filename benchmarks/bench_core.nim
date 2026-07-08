@@ -159,6 +159,34 @@ proc main() =
     let v = run(tailRecurChunk, tailRecurScope)
     checksum = checksum + v.intVal
 
+  # Sustained untyped calls through the generic frame path: an in-function
+  # loop (plain slot scope, like real code) calling a 1-arg untyped fn from
+  # the parent scope 1000 times per run. Covers scope-pool acquire/release,
+  # frame push/pop, and run-stack recycling per call.
+  let callLoopScope = newGlobalScope()
+  discard run(compileSource(
+    "(var f1 (fn [x] x)) " &
+    "(var drive (fn [] " &
+    "  (var i 0) (var acc 0) " &
+    "  (while (< i 1000) " &
+    "    (do (set acc (+ acc (f1 1))) (set i (+ i 1)))) " &
+    "  acc))"), callLoopScope)
+  let callLoopChunk = compileSource("(drive)")
+  bench("vm.untyped_call_loop.compiled_chunk", 2_000, i):
+    let v = run(callLoopChunk, callLoopScope)
+    checksum = checksum + v.intVal
+
+  # Untyped self-recursion (the fused recur path): fib(18) = 2584,
+  # ~8360 calls per run. The typical call-heavy workload shape.
+  let fibScope = newGlobalScope()
+  discard run(compileSource(
+    "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))"),
+    fibScope)
+  let fibChunk = compileSource("(fib 18)")
+  bench("vm.fib_untyped.compiled_chunk", 500, i):
+    let v = run(fibChunk, fibScope)
+    checksum = checksum + v.intVal
+
   let trampolineNamedScope = newGlobalScope()
   let trampolineNamedFn =
     run(compileSource("(fn [x ^scale] (+ x scale))"), trampolineNamedScope)
