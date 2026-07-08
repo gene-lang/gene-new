@@ -2,7 +2,10 @@
 # =============================================================================
 # Gene AI coding agent — MVP (docs/ai-agent.md milestones 1-4).
 #
-#   * Talks to Codex's ChatGPT-account Responses backend, streaming.
+#   * Talks to Codex's ChatGPT-account Responses backend by default, or to any
+#     OpenAI-compatible Chat Completions endpoint (MiniMax, DeepSeek, vLLM,
+#     api.openai.com, ...) configured entirely from the environment. Streaming
+#     in both modes.
 #   * Transport is `curl` shelled out through os/exec-stream.
 #   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
 #     with a minimal personal-use guard: `rm -rf` is denied, paths stay inside
@@ -10,15 +13,21 @@
 #     displayed output. Full §8.5 hardening is deferred (docs/ai-agent.md).
 #   * Ncurses-backed prompt on TTY; paste and Shift+Enter/Alt+Enter keep newlines.
 #
-# Run live:   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
+# Run live (Codex Responses backend, the default):
+#   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
+# Run live against any OpenAI-compatible chat-completions endpoint, e.g. MiniMax:
+#   OPENAI_BASE_URL=https://api.minimax.io/v1 OPENAI_MODEL=MiniMax-M2 \
+#   OPENAI_API_KEY=... gene run examples/ai_agent.gene
+# Wire shape is OPENAI_API=responses|chat; it defaults to responses for the
+# Codex backend and chat for any custom OPENAI_BASE_URL.
 # Tools auto-approve by default (single-user agent); set GENE_AGENT_APPROVE_ALL=0
 # to be prompted before writes and shell commands.
 # Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
 #             tool-call round trip — needs no network)
 #
-# Auth is a Codex/ChatGPT OAuth bearer token from `OPENAI_AUTH_TOKEN` or
-# `CODEX_ACCESS_TOKEN`, sent to chatgpt.com/backend-api/codex.
+# Auth is a bearer token from `OPENAI_AUTH_TOKEN`, `OPENAI_API_KEY`, or
+# `CODEX_ACCESS_TOKEN` (checked in that order).
 # =============================================================================
 
 (mod ai-agent
@@ -37,9 +46,18 @@
 
 (var auth-token (env? Env "OPENAI_AUTH_TOKEN"))
 (if (= auth-token nil)
+  (set auth-token (env? Env "OPENAI_API_KEY")))
+(if (= auth-token nil)
   (set auth-token (env? Env "CODEX_ACCESS_TOKEN")))
-(var base    (get-env Env "OPENAI_BASE_URL" "https://chatgpt.com/backend-api/codex"))
+(var codex-base "https://chatgpt.com/backend-api/codex")
+(var base    (get-env Env "OPENAI_BASE_URL" codex-base))
 (var model   (get-env Env "OPENAI_MODEL" "gpt-5.4-mini"))
+# Wire shape: the Codex backend speaks the Responses API; generic
+# OpenAI-compatible endpoints (MiniMax, DeepSeek, vLLM, ...) speak Chat
+# Completions. Default follows the backend; override with
+# OPENAI_API=responses|chat.
+(var api-flavor
+  (get-env Env "OPENAI_API" (if (= base codex-base) "responses" "chat")))
 (var workspace-root ".")
 (var approve-all (get-env Env "GENE_AGENT_APPROVE_ALL" "1"))
 
@@ -309,6 +327,16 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
       ((to_stream resp/output) ~ into [])
     catch * [])))
 
+# Joined output_text parts of one assistant message item.
+(fn message-item-text [item] : Str
+  (var acc (cell ""))
+  ((to_stream item/content)
+    ~ each (fn [part]
+        (if (= (response-content-kind part) ResponseContentKind/output_text)
+          (Cell/set acc $"${(Cell/get acc)}${part/text}")
+          nil)))
+  (Cell/get acc))
+
 (fn response-text [resp] : Str
   (if (! (= resp/output_text void))
     resp/output_text
@@ -317,11 +345,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
       ((to_stream (response-output-items resp))
         ~ each (fn [item]
             (if (= (response-item-kind item) ResponseItemKind/assistant_message)
-              ((to_stream item/content)
-                ~ each (fn [part]
-                    (if (= (response-content-kind part) ResponseContentKind/output_text)
-                      (Cell/set acc $"${(Cell/get acc)}${part/text}")
-                      nil))))))
+              (Cell/set acc $"${(Cell/get acc)}${(message-item-text item)}")
+              nil)))
       (Cell/get acc))))
 
 # function_call items the model emitted this turn.
@@ -359,11 +384,24 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (var code (if (= resp/error/code void) "" $" (${resp/error/code})"))
   $"OpenAI API error ${status}: ${message}${code}")
 
+# Strip one leading "data: " prefix. Rejoin the remaining pieces so a payload
+# that itself contains "data: " (e.g. a streamed code snippet) survives intact.
 (fn sse-data-payload [line : Str]
   (if (starts_with? line "data: ")
     (do
       (var parts (split line "data: "))
-      parts/1)
+      (var i (cell 0))
+      (var acc (cell ""))
+      ((to_stream parts)
+        ~ each (fn [p]
+            (var n (Cell/get i))
+            (Cell/set i (+ n 1))
+            (if (= n 0)
+              nil
+              (if (= n 1)
+                (Cell/set acc p)
+                (Cell/set acc $"${(Cell/get acc)}data: ${p}")))))
+      (Cell/get acc))
     nil))
 
 (fn ignore-stream-delta [text]
@@ -418,19 +456,23 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
         (sse-handle-line line output output-text final ignore-stream-delta)))
   (sse-build-response output output-text final))
 
-(fn live-transport [body : Str, render-stream]
+(fn responses-live-transport [body : Str, render-stream]
   (var output (cell []))
   (var output-text (cell ""))
   (var final (cell nil))
   (var saw-sse (cell false))
+  (var curl-args ["-sS" "-N" "-X" "POST" $"${base}/responses"
+                  "-H" $"Authorization: Bearer ${auth-token}"
+                  "-H" "Content-Type: application/json"
+                  "-H" "Accept: text/event-stream"])
+  (if (= base codex-base)
+    (set curl-args (append-all curl-args
+      ["-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
+       "-H" "originator: codex_cli_rs"]))
+    nil)
+  (set curl-args (append-all curl-args ["-d" body]))
   (var r (exec-stream Exec ^cmd "curl"
-               ^args ["-sS" "-N" "-X" "POST" $"${base}/responses"
-                      "-H" $"Authorization: Bearer ${auth-token}"
-                      "-H" "Content-Type: application/json"
-                      "-H" "Accept: text/event-stream"
-                      "-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
-                      "-H" "originator: codex_cli_rs"
-                      "-d" body]
+               ^args curl-args
                ^timeout-ms 60000 ^max-bytes 4000000
                ^stdout-line (fn [line]
                  (if (|| (starts_with? line "event:")
@@ -458,14 +500,216 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
             resp)
           {^agent_error (redact (api-error-text resp))})))))
 
+# -----------------------------------------------------------------------------
+# Chat Completions wire shape, for OpenAI-compatible endpoints (MiniMax,
+# DeepSeek, vLLM, api.openai.com, ...). Internally the agent still works on
+# Responses-style items; this layer converts on the way out (items -> messages)
+# and normalizes on the way in (choices/deltas -> items), so run-turn and the
+# tool loop are shared between both flavors.
+# -----------------------------------------------------------------------------
+
+(fn present? [v]
+  (! (|| (= v void) (= v nil))))
+
+# Responses tool schemas are flat; chat nests them under ^function.
+(var chat-tool-schemas
+  ((to_stream tool-schemas)
+    ~ map (fn [t] {^type "function"
+                   ^function {^name t/name
+                              ^description t/description
+                              ^parameters t/parameters}})
+    ; ~ into []))
+
+# Convert the item transcript into chat messages. A run of assistant text /
+# function_call items becomes ONE assistant message (content + tool_calls), so
+# every role:"tool" message follows the assistant message that requested it —
+# the ordering chat endpoints validate.
+(fn items-to-chat-messages [items]
+  (var msgs (cell []))
+  (var pending-text (cell nil))
+  (var pending-calls (cell []))
+  (fn flush-assistant []
+    (if (|| (present? (Cell/get pending-text))
+            (! (empty? (Cell/get pending-calls))))
+      (do
+        (var m {^role "assistant" ^content (Cell/get pending-text)})
+        (if (empty? (Cell/get pending-calls))
+          nil
+          (m ~ Map/put! "tool_calls" (Cell/get pending-calls)))
+        (Cell/set msgs (append (Cell/get msgs) m))
+        (Cell/set pending-text nil)
+        (Cell/set pending-calls []))
+      nil))
+  (for item in items
+    (if (= item/type void)
+      (do
+        (flush-assistant)
+        (Cell/set msgs (append (Cell/get msgs) item)))
+      (match item/type
+        (when "message"
+          (var sofar (if (present? (Cell/get pending-text)) (Cell/get pending-text) ""))
+          (Cell/set pending-text $"${sofar}${(message-item-text item)}"))
+        (when "function_call"
+          (Cell/set pending-calls (append (Cell/get pending-calls)
+            {^id item/call_id ^type "function"
+             ^function {^name item/name ^arguments item/arguments}})))
+        (when "function_call_output"
+          (flush-assistant)
+          (Cell/set msgs (append (Cell/get msgs)
+            {^role "tool" ^tool_call_id item/call_id ^content item/output})))
+        (else nil))))
+  (flush-assistant)
+  (Cell/get msgs))
+
+(fn chat-api-error [resp]
+  (if (present? resp/error)
+    (api-error-text resp)
+    # MiniMax-style envelope: base_resp/status_code != 0 signals an error.
+    (if (&& (present? resp/base_resp/status_code)
+            (! (= resp/base_resp/status_code 0)))
+      $"API error ${resp/base_resp/status_code}: ${resp/base_resp/status_msg}"
+      nil)))
+
+# Streamed tool calls arrive as fragments keyed by ^index: the first carries
+# id/name, the rest append argument text. Accumulate into mutable maps.
+(fn chat-note-call-frag [calls-map, max-cell, frag]
+  (var idx (if (present? frag/index) frag/index 0))
+  (var key $"${idx}")
+  (var entry (calls-map ~ Map/get key))
+  (if (= entry void)
+    (do
+      (set entry {^id "" ^name "" ^arguments ""})
+      (calls-map ~ Map/put! key entry)
+      (if (< (Cell/get max-cell) (+ idx 1))
+        (Cell/set max-cell (+ idx 1))
+        nil))
+    nil)
+  (if (present? frag/id)
+    (entry ~ Map/put! "id" frag/id)
+    nil)
+  (if (present? frag/function/name)
+    (entry ~ Map/put! "name" $"${entry/name}${frag/function/name}")
+    nil)
+  (if (present? frag/function/arguments)
+    (entry ~ Map/put! "arguments" $"${entry/arguments}${frag/function/arguments}")
+    nil))
+
+(fn chat-call-items [calls-map, max-cell]
+  (var items (cell []))
+  (repeat i in (Cell/get max-cell)
+    (var entry (calls-map ~ Map/get $"${i}"))
+    (if (= entry void)
+      nil
+      (Cell/set items (append (Cell/get items)
+        {^type "function_call" ^name entry/name
+         ^call_id entry/id ^arguments entry/arguments}))))
+  (Cell/get items))
+
+(fn chat-build-response [text-cell, calls-map, max-cell]
+  (var items (cell (chat-call-items calls-map max-cell)))
+  (if (= (Cell/get text-cell) "")
+    nil
+    (Cell/set items
+      ((to_stream (Cell/get items))
+        ~ into [{^type "message" ^role "assistant"
+                 ^content [{^type "output_text" ^text (Cell/get text-cell)}]}])))
+  {^output (Cell/get items) ^output_text (Cell/get text-cell)})
+
+(fn chat-handle-payload [payload : Str, text-cell, calls-map, max-cell, err-cell, render-stream]
+  (if (= payload "[DONE]")
+    nil
+    (try
+      (var chunk (parse payload))
+      (var errtext (chat-api-error chunk))
+      (if (present? errtext)
+        (Cell/set err-cell errtext)
+        (do
+          (var delta chunk/choices/0/delta)
+          (if (present? delta/content)
+            (do
+              (render-stream (redact delta/content))
+              (Cell/set text-cell $"${(Cell/get text-cell)}${delta/content}"))
+            nil)
+          (if (present? delta/tool_calls)
+            ((to_stream delta/tool_calls)
+              ~ each (fn [frag] (chat-note-call-frag calls-map max-cell frag)))
+            nil)))
+    catch (JsonError ^message _) nil)))
+
+# Non-streaming (or error) chat body: normalize choices/0/message into items.
+(fn chat-response-from-json [resp]
+  (var errtext (chat-api-error resp))
+  (if (present? errtext)
+    {^agent_error (redact errtext)}
+    (do
+      (var message resp/choices/0/message)
+      (var text (if (present? message/content) message/content ""))
+      (var items (cell []))
+      (if (= text "")
+        nil
+        (Cell/set items (append (Cell/get items)
+          {^type "message" ^role "assistant"
+           ^content [{^type "output_text" ^text text}]})))
+      (if (present? message/tool_calls)
+        ((to_stream message/tool_calls)
+          ~ each (fn [tc]
+              (Cell/set items (append (Cell/get items)
+                {^type "function_call" ^name tc/function/name
+                 ^call_id tc/id ^arguments tc/function/arguments}))))
+        nil)
+      {^output (Cell/get items) ^output_text text})))
+
+(fn chat-live-transport [body : Str, render-stream]
+  (var text (cell ""))
+  (var calls {})
+  (var callmax (cell 0))
+  (var err (cell nil))
+  (var saw-sse (cell false))
+  (var r (exec-stream Exec ^cmd "curl"
+               ^args ["-sS" "-N" "-X" "POST" $"${base}/chat/completions"
+                      "-H" $"Authorization: Bearer ${auth-token}"
+                      "-H" "Content-Type: application/json"
+                      "-H" "Accept: text/event-stream"
+                      "-d" body]
+               ^timeout-ms 120000 ^max-bytes 4000000
+               ^stdout-line (fn [line]
+                 (if (|| (starts_with? line "event:")
+                         (starts_with? line "data:"))
+                   (Cell/set saw-sse true)
+                   nil)
+                 (var payload (sse-data-payload line))
+                 (if (|| (= payload nil) (= payload void))
+                   nil
+                   (chat-handle-payload payload text calls callmax err render-stream)))))
+  (if (! (= r/status 0))
+    {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
+    (if (present? (Cell/get err))
+      {^agent_error (redact (Cell/get err))}
+      (if (Cell/get saw-sse)
+        (chat-build-response text calls callmax)
+        (try
+          (chat-response-from-json (parse r/stdout))
+        catch (JsonError ^message m)
+          {^agent_error (redact $"API returned invalid JSON: ${m}")})))))
+
+(var live-transport
+  (if (= api-flavor "chat") chat-live-transport responses-live-transport))
+
 (fn call-model [transport, input-items, render-stream]
-  (var body (stringify {^model model
-                        ^store false
-                        ^stream true
-                        ^input input-items
-                        ^tools tool-schemas
-                        ^tool_choice "auto"
-                        ^parallel_tool_calls true}))
+  (var body
+    (if (= api-flavor "chat")
+      (stringify {^model model
+                  ^messages (items-to-chat-messages input-items)
+                  ^tools chat-tool-schemas
+                  ^tool_choice "auto"
+                  ^stream true})
+      (stringify {^model model
+                  ^store false
+                  ^stream true
+                  ^input input-items
+                  ^tools tool-schemas
+                  ^tool_choice "auto"
+                  ^parallel_tool_calls true})))
   (transport body render-stream))
 
 (var max-tool-turns 12)
@@ -532,7 +776,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # -----------------------------------------------------------------------------
 
 (fn run-demo []
-  (println "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set — running the offline demo.")
+  (println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set — running the offline demo.")
   (println "user> what's in this directory?")
   (var items [(system-item gene-system-prompt)
               (user-item "what's in this directory?")])
@@ -540,13 +784,13 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     (fn [text] (println $"agent> ${text}"))
     ignore-stream-delta
     max-tool-turns)
-  (println "Demo complete. Set OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN to talk to Codex."))
+  (println "Demo complete. Set OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN to go live."))
 
 (fn run-one-shot [task : Str]
   (println $"Gene AI agent - model ${model}")
   (println $"user> ${task}")
   (if (= auth-token nil)
-    (println "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set - using offline demo transport.")
+    (println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set - using offline demo transport.")
     nil)
   (var streaming (cell false))
   (var transport (if (= auth-token nil) (demo-transport-for) live-transport))

@@ -1,4 +1,4 @@
-import std/[os, osproc, strutils, unittest]
+import std/[monotimes, net, os, osproc, strutils, times, unittest]
 import gene/[repl, vm]
 
 let cliDir = getTempDir() / "gene_cli_tests"
@@ -81,10 +81,12 @@ suite "cli — gene run":
 
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
-    let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN -u CODEX_ACCESS_TOKEN " &
+    let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+                        "-u CODEX_ACCESS_TOKEN " &
                         shellQuote(geneExe) & " run examples/ai_agent.gene")
     check ran.exitCode == 0
-    check "No OPENAI_AUTH_TOKEN or CODEX_ACCESS_TOKEN set" in ran.output
+    check "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set" in
+      ran.output
     check "agent>   · tool list_dir" in ran.output
     check "Demo complete" in ran.output
 
@@ -129,6 +131,107 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "gpt-5.4-mini" in ran.output
     check "gene> \nyou>" in ran.output
+
+  test "ai agent talks to an openai-compatible chat endpoint":
+    ## End-to-end over loopback: a fake /chat/completions endpoint streams a
+    ## tool_call in SSE fragments, then validates that the agent's second
+    ## request carries the round trip in chat shape (assistant tool_calls +
+    ## role:"tool" reply) before answering.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_chat_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join])
+(import std/stream [to_stream map each into])
+
+(var hits (cell 0))
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(var turn1
+  [{^choices [{^index 0
+               ^delta {^role "assistant"
+                       ^tool_calls [{^index 0 ^id "call_fake_1" ^type "function"
+                                     ^function {^name "list_dir" ^arguments ""}}]}}]}
+   {^choices [{^index 0
+               ^delta {^tool_calls [{^index 0
+                                     ^function {^arguments "{\"path\":\".\"}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+
+(fn turn2-verdict [body-text]
+  (var req (parse body-text))
+  (var saw-assistant-call (cell false))
+  (var saw-tool-reply (cell false))
+  ((to_stream req/messages)
+    ~ each (fn [m]
+        (if (&& (= m/role "assistant")
+                (= m/tool_calls/0/id "call_fake_1")
+                (= m/tool_calls/0/function/name "list_dir"))
+          (Cell/set saw-assistant-call true)
+          nil)
+        (if (&& (= m/role "tool")
+                (= m/tool_call_id "call_fake_1"))
+          (Cell/set saw-tool-reply true)
+          nil)))
+  (if (! (= req/model "fake-chat"))
+    "roundtrip-bad: model"
+    (if (! (= req/tools/0/function/name "read_file"))
+      "roundtrip-bad: tools"
+      (if (! (Cell/get saw-assistant-call))
+        "roundtrip-bad: assistant tool_calls"
+        (if (! (Cell/get saw-tool-reply))
+          "roundtrip-bad: tool reply"
+          "roundtrip-ok")))))
+
+(fn turn2-chunks [body-text]
+  [{^choices [{^index 0 ^delta {^content "verdict: "}}]}
+   {^choices [{^index 0 ^delta {^content (turn2-verdict body-text)}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (var chunks (if (= (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body chunks)))
+
+(serve (Server ^host "127.0.0.1" ^port 8987) handle ^max-requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8987), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let ran = execCmdEx("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                        "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
+                        "OPENAI_BASE_URL=http://127.0.0.1:8987/v1 " &
+                        "OPENAI_MODEL=fake-chat " &
+                        shellQuote(geneExe) &
+                        " run examples/ai_agent.gene 'what is here?'")
+    check ran.exitCode == 0
+    check "tool list_dir" in ran.output
+    check "verdict: roundtrip-ok" in ran.output
 
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")

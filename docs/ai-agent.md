@@ -19,11 +19,34 @@ scrollback TUI (§7, milestone 6), and capability injection via `gene run` flags
 (milestone 7).
 
 This document specifies a Claude-Code-like AI coding agent written in Gene: a
-terminal program that holds a conversation with OpenAI's hosted API
-(`api.openai.com`), lets the model call local tools (read/write files, run
-shell commands, search), and renders the session in a full-screen terminal UI
-built on a native `curses` binding. The API auth token is read from an
-environment variable; nothing is hard-coded.
+terminal program that holds a conversation with a hosted model API, lets the
+model call local tools (read/write files, run shell commands, search), and
+renders the session in a full-screen terminal UI built on a native `curses`
+binding. The API auth token is read from an environment variable; nothing is
+hard-coded.
+
+**Backends (implemented).** The agent speaks two wire shapes, both entirely
+env-configured:
+
+- **Responses API** (default) against the Codex/ChatGPT backend
+  (`https://chatgpt.com/backend-api/codex`), auth via `OPENAI_AUTH_TOKEN` or
+  `CODEX_ACCESS_TOKEN`;
+- **Chat Completions** against any OpenAI-compatible endpoint — MiniMax,
+  DeepSeek, vLLM, `api.openai.com`, etc.:
+
+  ```bash
+  OPENAI_BASE_URL=https://api.minimax.io/v1 OPENAI_MODEL=MiniMax-M2 \
+  OPENAI_API_KEY=... gene run examples/ai_agent.gene
+  ```
+
+`OPENAI_API=responses|chat` picks the shape explicitly; it defaults to
+`responses` for the Codex backend and `chat` for any custom `OPENAI_BASE_URL`.
+Internally the agent always works on Responses-style items; the chat layer
+converts items to messages on the way out and normalizes `choices`/`delta`
+chunks (including fragmented streamed `tool_calls`) back into items, so the
+turn/tool loop is shared. A loopback fake endpoint in `tests/test_cli.nim`
+verifies the chat round trip end-to-end, including the assistant
+`tool_calls` → `role:"tool"` message ordering.
 
 **API surface: target the Responses API, not Chat Completions.** OpenAI now
 recommends the Responses API (`POST /v1/responses`) for new agent-style
@@ -32,7 +55,8 @@ older surface. Responses is built around typed output *items* (message items,
 `function_call` items, reasoning items) and first-class tool/function calls,
 which maps far more cleanly onto this agent's tool loop than digging tool calls
 out of `choices[].message.tool_calls`. Model the client around Responses items;
-treat Chat Completions only as a fallback shape if a deployment requires it.
+Chat Completions is the compatibility shape for third-party endpoints, and is
+implemented as an adapter over the same item vocabulary (see Backends above).
 (Migration guide: https://platform.openai.com/docs/guides/migrate-to-responses.)
 
 **Final target is a single self-contained binary** (native TLS client, native
@@ -125,8 +149,10 @@ fine for simple 0–3 arg C functions but is not the vehicle here.
 
 ## 3. Environment variables (§3)
 
-The agent reads `OPENAI_AUTH_TOKEN` (required), and optionally `OPENAI_BASE_URL`
-(default `https://api.openai.com`) and `OPENAI_MODEL`.
+The agent reads a bearer token from `OPENAI_AUTH_TOKEN`, `OPENAI_API_KEY`, or
+`CODEX_ACCESS_TOKEN` (in that order), and optionally `OPENAI_BASE_URL`
+(default: the Codex backend), `OPENAI_MODEL`, and `OPENAI_API`
+(`responses`|`chat` wire shape; defaults by backend as described above).
 
 Before this work there was no OS-environment access at the Gene surface. The
 `Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
@@ -529,9 +555,11 @@ expressed as a capability value.
 ## 11. Non-goals (for the first version)
 
 - Windows terminal support (curses assumes a Unix TTY);
-- provider abstraction — this targets the OpenAI Responses API shape;
-  a `Chat` protocol over multiple providers/surfaces can follow the `Db`
-  protocol precedent later;
+- a full provider abstraction — the agent speaks the OpenAI Responses shape
+  and the OpenAI-compatible Chat Completions shape (which covers MiniMax,
+  DeepSeek, vLLM, and most hosted/self-hosted gateways); a first-class `Chat`
+  protocol over non-OpenAI wire formats (e.g. Anthropic's) can follow the
+  `Db` protocol precedent later;
 - persistent session storage — the transcript lives in memory (the `db/sqlite`
   backend is available if persistence is wanted later);
 - **OS/process-level** sandboxing of `run_shell` (containers, seccomp, chroot)
