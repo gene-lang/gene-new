@@ -17145,16 +17145,25 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
   ## generators or ^errors — those stay with the caller.
   let positional = callee.fnParams
   let requiredPositional = proto.requiredPositionalCount()
+  # fn! binds caller-env and syntax-call as implicit leading parameters;
+  # arity diagnostics must count only the user-visible syntax parameters.
+  let implicit = if proto.isSyntaxFn: 2 else: 0
+  template arityHead(): string =
+    (if proto.isSyntaxFn: "fn! '" else: "function '") & callee.fnName &
+    "' expects "
+  template arityUnit(): string =
+    (if proto.isSyntaxFn: " syntax argument(s), got "
+     else: " argument(s), got ")
   if proto.restParam.len == 0:
     if args.len < requiredPositional or args.len > positional.len:
       raise newException(GeneError,
-        "function '" & callee.fnName & "' expects " & $requiredPositional &
-        ".." & $positional.len &
-        " argument(s), got " & $args.len)
+        arityHead() & $max(0, requiredPositional - implicit) &
+        ".." & $max(0, positional.len - implicit) &
+        arityUnit() & $max(0, args.len - implicit))
   elif args.len < positional.len:
     raise newException(GeneError,
-      "function '" & callee.fnName & "' expects at least " & $positional.len &
-      " argument(s), got " & $args.len)
+      arityHead() & "at least " & $max(0, positional.len - implicit) &
+      arityUnit() & $max(0, args.len - implicit))
   for key in named.names:
     var found = false
     for p in proto.namedParams:

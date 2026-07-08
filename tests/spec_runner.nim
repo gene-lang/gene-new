@@ -271,6 +271,14 @@ suite "spec — macros from design":
                "(fn helper [n] 99) [(recursive! 3) (helper 3)]",
                "[0 99]")
 
+  test "template macros avoid introduced pattern-binder capture":
+    # docs/proposals/macro-design.md §12.5: binders introduced by a template's
+    # match pattern are hygienically fresh, like var/fn binders.
+    check_eval("(macro first-of! [x] " &
+               "  `(match %x (when [tmp] tmp))) " &
+               "(var tmp 100) [(first-of! [1]) tmp]",
+               "[1 100]")
+
 suite "spec — fn! runtime fexprs from design (§3/§11.1)":
   test "fn! receives raw syntax and evaluates through caller-env":
     check_eval("(fn! unless! [cond, body...] " &
@@ -319,6 +327,12 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
 
   test "fn! prints as a fn! value":
     check_eval("(fn! q! [e] e) q!", "(fn! q!)")
+
+  test "fn! arity errors count only syntax parameters":
+    # caller-env and syntax-call bind as implicit leading parameters but must
+    # not surface in arity diagnostics.
+    check_eval("(fn! q! [e] e) (try (q!) catch (Error ^message m) m)",
+               "\"fn! 'q!' expects 1..1 syntax argument(s), got 0\"")
 
 suite "spec — typed native compilation prototype from design":
   test "simple typed Int arithmetic can use a native direct op":

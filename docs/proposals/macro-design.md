@@ -1,6 +1,13 @@
 # Gene Macro and Fexpr Design
 
-**Status:** focused design note  
+**Status:** Phases 1–2 (§11) implemented and spec-locked (`tests/spec_runner.nim`:
+"spec — macros from design", "spec — fn! runtime fexprs from design", and the
+cross-module suites). Phase 3 derive ships with normal type checking and
+manual-vs-generated coherence, but without the declaration overlay or
+provenance meta. `docs/design.md` (§2, §3, §11, §11.1, §15) is the
+authoritative surface; §4.2 and §5.2–§5.4 below have been revised to match the
+shipped semantics — notably static fn! call-site tracking with guarded
+expression heads, and a read-only `caller-env`.  
 **Scope:** user-defined syntax extension, runtime fexprs, and compile-time templates  
 **Decision:** use `fn!` for fexprs and `macro` for compile-time templates.
 
@@ -77,7 +84,7 @@ Gene spelling:
 Example:
 
 ```gene
-(fn! when [cond, body...]
+(fn! when! [cond, body...]
   (if (eval cond ^in caller-env)
     (eval `(do %body...) ^in caller-env)
     nil))
@@ -90,7 +97,7 @@ The exact name of the caller environment binding is specified below.
 A macro is a compile-time template expander:
 
 ```gene
-(macro when [cond, body...]
+(macro when! [cond, body...]
   `(if %cond
      (then %body...)
      (else nil)))
@@ -152,6 +159,22 @@ Evaluation is:
 
 This means only the callee position is evaluated normally. Argument evaluation is controlled by the fexpr.
 
+**As implemented (design §3, MVP approximation):** the dispatch above is not a
+per-call runtime check on every call site. Call sites whose head is a
+statically tracked fn! name (definitions, direct `var` aliases, and
+`from "path"` imports) compile to the syntax path directly; expression heads
+(`((do f!) ...)`, a value fetched from a map, etc.) compile to a guarded
+generic path that checks the evaluated callee before touching the arguments.
+The remaining arg-first fused call sites — for example a fn! flowing into an
+untyped function parameter that is then called — **reject** fn! callees with a
+recoverable error instead of silently evaluating arguments. Full generic
+coverage for those sites is future work.
+
+Relatedly, `Fn!` is a sibling of `Fn` in the type hierarchy, not a subtype: a
+fn! value does not satisfy an `Fn`-typed (or `Callable`-typed) parameter, so
+typed regions compiled AOT never hit the syntax path through function-typed
+values (design §3).
+
 ---
 
 ## 5. `fn!`: fexprs / syntax callables
@@ -170,6 +193,9 @@ Anonymous form:
   body...)
 ```
 
+By the `name!` convention (design §2), names bound to fn! values keep the `!`
+suffix; this is not enforced.
+
 A `fn!` defines a runtime value implementing `SyntaxCallable`.
 
 ```gene
@@ -177,6 +203,11 @@ A `fn!` defines a runtime value implementing `SyntaxCallable`.
   (message apply_syntax
     [self : Self, call : SyntaxCall, env : Env] : Any))
 ```
+
+`SyntaxCallable` is the conceptual dispatch model, not a user-implementable
+protocol: in the MVP only values created by `fn!` implement it, and there is
+no `SyntaxCallable` protocol value to write an `impl` for (unlike `Callable`,
+which user types can implement).
 
 Conceptual `SyntaxCall`:
 
@@ -197,12 +228,18 @@ Inside a `fn!`, Gene provides a lexical binding:
 caller-env : Env
 ```
 
-`caller-env` is the caller’s evaluation environment. It is explicit and can be passed to `eval`.
+`caller-env` is a **read-only view** of the caller's evaluation environment
+(design §11.1). It resolves the caller's lexical bindings, imports, module
+namespace, and core built-ins, and it can be passed to `eval`. Code evaluated
+`^in caller-env` cannot create, rebind, or `set` bindings in the caller's
+scope — declarations made by an evaluated unit live in that unit's own
+overlay. Mutable values reachable through caller bindings (`Cell`, buffers,
+actors) can still be mutated; the view is read-only, not deep-frozen.
 
 Example:
 
 ```gene
-(fn! unless [cond, body...]
+(fn! unless! [cond, body...]
   (if (not (eval cond ^in caller-env))
     (eval `(do %body...) ^in caller-env)
     nil))
@@ -213,23 +250,27 @@ Example:
 `fn!` parameters match syntax nodes, not evaluated values.
 
 ```gene
-(fn! ignore [x]
+(fn! ignore! [x]
   nil)
 
-(ignore (panic "not evaluated")) # returns nil
+(ignore! (panic "not evaluated")) # returns nil
 ```
 
-Parameter matching may use the normal pattern/destructuring syntax over syntax nodes:
+**Not yet implemented:** destructuring patterns in fn! parameter vectors.
+`macro` parameters destructure syntax patterns today, but `fn` and `fn!`
+parameters bind whole values only — the intended future form
 
 ```gene
-(fn! second [[_, value]]
+(fn! second! [[_, value]]
   (eval value ^in caller-env))
 ```
+
+does not compile yet; destructure inside the body with `var`/`match` instead.
 
 Named syntax parameters are allowed:
 
 ```gene
-(fn! with-timeout [expr, ^ms timeout]
+(fn! with-timeout! [expr, ^ms timeout]
   ...)
 ```
 
@@ -242,13 +283,26 @@ Unlike `macro`, `fn!` produces an ordinary runtime value.
 It can be:
 
 ```gene
-(var w when)
+(var w when!)
 (w cond body...)
 ```
 
-It can be passed to functions, stored in maps, exported from modules, imported through ordinary imports, and used dynamically.
+It can be passed to functions, stored in maps, exported from modules, and
+imported through ordinary imports.
 
 This is a key difference from `macro`.
+
+**MVP calling restriction (design §3):** holding a fn! value anywhere is fine,
+but *invoking* one only works through a statically tracked name, an expression
+head, or a `from "path"`-imported name. A fn! that arrives through a function
+parameter and is then called — even a parameter typed `: Fn!` — is rejected
+with a recoverable error rather than mis-evaluating its arguments:
+
+```gene
+(fn! q! [e] e)
+(fn hof [f] (f 1))
+(hof q!)   # error: fn! 'q!' reached a call site with pre-evaluated arguments
+```
 
 ### 5.5 Authority
 
@@ -275,14 +329,14 @@ A `fn!` returns an ordinary runtime value.
 If it evaluates syntax, the result is the result of `eval`:
 
 ```gene
-(fn! do1 [x]
+(fn! do1! [x]
   (eval x ^in caller-env))
 ```
 
 If it builds data, it may return data directly:
 
 ```gene
-(fn! quote-node [x]
+(fn! quote-node! [x]
   x)
 ```
 
@@ -297,7 +351,7 @@ If it builds data, it may return data directly:
 A macro receives syntax nodes and returns syntax that is compiled in place.
 
 ```gene
-(macro when [cond, body...]
+(macro when! [cond, body...]
   `(if %cond
      (then %body...)
      (else nil)))
@@ -323,7 +377,7 @@ A macro body contains exactly one syntax-producing expression.
 Usually that expression is a template/quasiquote.
 
 ```gene
-(macro twice [x]
+(macro twice! [x]
   `(do %x %x))
 ```
 
@@ -334,14 +388,14 @@ Macro parameters receive syntax nodes.
 They may destructure syntax nodes with patterns:
 
 ```gene
-(macro second [[_, value]]
+(macro second! [[_, value]]
   `%value)
 ```
 
 Named macro parameters are syntax nodes:
 
 ```gene
-(macro tagged [value, ^tag t]
+(macro tagged! [value, ^tag t]
   `(quote (%t %value)))
 ```
 
@@ -361,8 +415,8 @@ A macro name occupies the same visible name space as bindings:
 Example:
 
 ```gene
-(macro when [cond, body...] ...)
-when # error: macro cannot be used as a value
+(macro when! [cond, body...] ...)
+when! # error: macro cannot be used as a value
 ```
 
 This differs from `fn!`, which creates a normal runtime value.
@@ -372,7 +426,7 @@ This differs from `fn!`, which creates a normal runtime value.
 Macros are module exports, but only for compile-time use.
 
 ```gene
-(import [when : unless-not] from "./control")
+(import [when! : unless-not!] from "./control")
 ```
 
 Rules:
@@ -397,13 +451,13 @@ When a template introduces a binder in a recognized binding form, the compiler r
 Example:
 
 ```gene
-(macro local [x]
+(macro local! [x]
   `(do
      (var tmp 1)
      (+ tmp %x)))
 
 (var tmp 100)
-[(local 2) tmp] # => [3 100]
+[(local! 2) tmp] # => [3 100]
 ```
 
 The introduced `tmp` inside the expansion does not capture or overwrite the caller’s `tmp`.
@@ -429,7 +483,7 @@ A macro captures caller names only by unquoting caller-provided syntax.
 Example:
 
 ```gene
-(macro bind-user-name [name]
+(macro bind-user-name! [name]
   `(var %name "Alice"))
 ```
 
@@ -472,10 +526,10 @@ Use `derive` when:
 
 ## 8. Examples
 
-### 8.1 Fexpr `when`
+### 8.1 Fexpr `when!`
 
 ```gene
-(fn! when [cond, body...]
+(fn! when! [cond, body...]
   (if (eval cond ^in caller-env)
     (eval `(do %body...) ^in caller-env)
     nil))
@@ -484,24 +538,24 @@ Use `derive` when:
 Usage:
 
 ```gene
-(when (> x 0)
+(when! (> x 0)
   (println "positive")
   x)
 ```
 
-### 8.2 Fexpr `assert`
+### 8.2 Fexpr `assert!`
 
 ```gene
-(fn! assert [cond, ^message msg = "assertion failed"]
+(fn! assert! [cond, ^message msg = "assertion failed"]
   (if (eval cond ^in caller-env)
     true
     (panic msg)))
 ```
 
-### 8.3 Fexpr `with-resource`
+### 8.3 Fexpr `with-resource!`
 
 ```gene
-(fn! with-resource [binding, body...]
+(fn! with-resource! [binding, body...]
   (match binding
     (when [name init]
       (var value (eval init ^in caller-env))
@@ -512,10 +566,10 @@ Usage:
         (value ~ Closeable/close)))))
 ```
 
-### 8.4 Template macro `unless`
+### 8.4 Template macro `unless!`
 
 ```gene
-(macro unless [cond, body...]
+(macro unless! [cond, body...]
   `(if (not %cond)
      (then %body...)
      (else nil)))
@@ -526,7 +580,7 @@ The generated `if` is type-checked and compiled as if it appeared in the source.
 ### 8.5 Template macro introducing a local
 
 ```gene
-(macro with-temp [value, body...]
+(macro with-temp! [value, body...]
   `(do
      (var tmp %value)
      %body...))
@@ -614,45 +668,55 @@ That is why `macro` remains useful even if `fn!` is the preferred DSL mechanism.
 
 ## 11. Implementation plan
 
-### Phase 1: MVP template macros
+### Phase 1: MVP template macros — implemented
 
-Already close to current implementation:
+Spec-locked in `tests/spec_runner.nim` ("spec — macros from design",
+"spec — macros across modules"):
 
 ```text
 - `(macro name [params...] template-expr)`;
 - syntax-node arguments;
-- syntax-pattern parameter matching;
-- rest and named syntax parameters;
+- syntax-pattern parameter matching (incl. typed patterns);
+- rest and named syntax parameters, syntax defaults;
 - template/quasiquote expansion;
-- fresh-name hygiene for recognized introduced binders;
-- top-level `from "path"` macro imports;
-- macro/value namespace conflict checks.
+- fresh-name hygiene for recognized introduced binders (var, fn, and
+  pattern binders such as match);
+- top-level `from "path"` macro imports, aliases, no re-export;
+- macro/value namespace conflict checks ("one name means one thing").
 ```
 
-### Phase 2: `fn!` fexprs
+### Phase 2: `fn!` fexprs — implemented
 
-Add:
+Spec-locked in `tests/spec_runner.nim` ("spec — fn! runtime fexprs from
+design", "spec — fn! across modules"), with the §4.2/§5.2/§5.4 MVP notes:
 
 ```text
-- `SyntaxCallable` protocol;
-- `SyntaxCall` value;
-- `fn!` definition form;
-- caller-env binding;
-- call dispatch that evaluates only the callee first;
-- explicit eval through `caller-env`;
-- tests for lazy args, named syntax args, Env authority, and dynamic fexpr values.
+- `SyntaxCall` value (^named, ^site, raw body nodes);
+- `fn!` definition form, named and anonymous;
+- read-only caller-env binding (plus syntax-call), as implicit leading
+  parameters;
+- static call-site tracking + guarded expression heads; fused sites
+  reject fn! callees (SyntaxCallable stays conceptual — see §5.1);
+- explicit eval through `caller-env` and `Env/extend` sandboxes;
+- tests for lazy args, named syntax args, Env authority, and fn! value
+  aliasing/rejection.
 ```
 
-### Phase 3: compile-time derive and declaration overlays
+Not yet implemented: destructuring patterns in fn! parameter vectors (§5.3).
 
-Add or harden:
+### Phase 3: compile-time derive and declaration overlays — partial
+
+Shipped: protocol-local `derive`, normal type checking of generated impls,
+and visible-implementation coherence (manual-vs-generated duplicates are
+errors). Generated impls register directly rather than in a compiler-owned
+overlay, and carry no provenance meta:
 
 ```text
-- protocol-local `derive`;
-- generated declaration overlay;
-- provenance meta;
-- normal type checking of generated impls;
-- visible-implementation coherence.
+- protocol-local `derive`;                      # implemented
+- normal type checking of generated impls;      # implemented
+- visible-implementation coherence;             # implemented
+- generated declaration overlay;                # not implemented
+- provenance meta.                              # not implemented
 ```
 
 ### Phase 4: future full compile-time functions
@@ -672,97 +736,100 @@ Optional later:
 
 ## 12. Required tests
 
+All of the behaviors below are covered by `tests/spec_runner.nim` (the macro,
+fn!, and cross-module suites); this section is kept as the readable inventory.
+
 ### 12.1 `fn!`
 
 ```gene
 (var hit 0)
-(fn! ignore [x] nil)
-[(ignore (set hit 1)) hit] # => [nil 0]
+(fn! ignore! [x] nil)
+[(ignore! (set hit 1)) hit] # => [nil 0]
 ```
 
 ```gene
-(fn! eval1 [x]
+(fn! eval1! [x]
   (eval x ^in caller-env))
 
-(eval1 (+ 1 2)) # => 3
+(eval1! (+ 1 2)) # => 3
 ```
 
 ```gene
 (var x 10)
-(fn! quote-syntax [x] x)
-(quote-syntax (+ x 1)) # => (+ x 1)
+(fn! quote-syntax! [x] x)
+(quote-syntax! (+ x 1)) # => (+ x 1)
 ```
 
 ### 12.2 Macro templates
 
 ```gene
-(macro when [cond, body...]
+(macro when! [cond, body...]
   `(if %cond (then %body...) (else nil)))
 
-[(when true 1) (when false 2)] # => [1 nil]
+[(when! true 1) (when! false 2)] # => [1 nil]
 ```
 
 ### 12.3 Macro/value separation
 
 ```gene
-(macro m [] 1)
-m # error: macro cannot be used as value
+(macro m! [] 1)
+m! # error: macro cannot be used as value
 ```
 
 ```gene
-(macro m [] 1)
-(var m 2) # error
+(macro m! [] 1)
+(var m! 2) # error
 ```
 
 ### 12.4 Imported macros
 
 ```gene
 # control.gene
-(macro when [cond, body...]
+(macro when! [cond, body...]
   `(if %cond (then %body...) (else nil)))
 
 # app.gene
-(import [when] from "./control")
-(when true 1)
+(import [when!] from "./control")
+(when! true 1)
 ```
 
 Alias:
 
 ```gene
-(import [when : if-true] from "./control")
-(if-true true 1)
+(import [when! : if-true!] from "./control")
+(if-true! true 1)
 ```
 
 Not re-exported by default:
 
 ```gene
 # middle.gene
-(import [when] from "./control")
+(import [when!] from "./control")
 
 # app.gene
-(import [when] from "./middle") # error unless middle defines/re-exports it explicitly
+(import [when!] from "./middle") # error unless middle defines/re-exports it explicitly
 ```
 
 ### 12.5 Hygiene
 
 ```gene
-(macro local [x]
+(macro local! [x]
   `(do (var tmp 1) (+ tmp %x)))
 
 (var tmp 100)
-[(local 2) tmp] # => [3 100]
+[(local! 2) tmp] # => [3 100]
 ```
 
 Pattern-binder hygiene should also be tested:
 
 ```gene
-(macro m [x]
+(macro m! [x]
   `(match %x
      (when [tmp]
        tmp)))
 
 (var tmp 100)
-[(m [1]) tmp] # => [1 100]
+[(m! [1]) tmp] # => [1 100]
 ```
 
 ---
