@@ -15,6 +15,7 @@ type
     opLoadNativeFast
     opLoadLocal
     opLoadLocalFast
+    opLoadArg      # scopeless calls: push stack[curStackBase + intArg]
     opLoadOuterLocal
     opDefineName
     opDefineLocal
@@ -197,6 +198,9 @@ type
     declMetaKeys*: seq[string]   # @key value meta on the (fn ...) node,
     declMetaValues*: seq[Value]  #   surfaced on Module/declarations records
     chunk*: Chunk
+    scopelessChunk*: Chunk       # opLoadArg rewrite of chunk for leaf
+                                 # param-only bodies, or nil (see
+                                 # deriveScopelessChunk)
 
   ImportSelection* = object
     name*: string         # exported name in the source
@@ -534,7 +538,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " const=" & $inst.intArg
   of opLoadName, opLoadNativeFast, opDefineName, opSetName:
     result.add " name=" & inst.name
-  of opLoadLocal, opLoadLocalFast, opDefineLocal, opSetLocal:
+  of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opSetLocal:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
@@ -1910,3 +1914,54 @@ proc emitExperimentalC*(chunk: Chunk): string =
   if lines.len == headerLen:
     lines.add "/* no fixed-representation native functions or FFI wrappers */"
   lines.join("\n")
+
+const scopelessOps = {
+  opNoop, opPushConst, opPop, opNot,
+  opLoadLocal, opLoadLocalFast,
+  opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+  opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2,
+  opIntLt2, opIntGt2, opIntLe2, opIntGe2,
+  opIntAddConst, opIntSubConst, opIntMulConst,
+  opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
+  opIntFast2, opIntFastConst, opNativeFast2, opNativeFastConst,
+  opReturn, opReturnBareInt}
+
+proc deriveScopelessChunk*(proto: FunctionProto) =
+  ## Scopeless calling convention: a leaf, param-only, untyped body can run
+  ## with the CALLER's scope register — arguments stay on the shared operand
+  ## stack and opLoadArg reads them at base+index — so the call needs no scope
+  ## acquire/bind/release at all. The original chunk stays intact for every
+  ## scope-based entry point (applyCall, actors, fibers, protocol dispatch);
+  ## only the VM's direct-call fast path uses scopelessChunk, so a call path
+  ## without the integration degrades to the classic convention instead of
+  ## misreading the stack.
+  if proto.isGenerator or proto.isSyntaxFn or proto.checksErrors or
+      not proto.simpleCall or proto.restParam.len != 0 or
+      proto.namedParams.len != 0 or proto.typeParams.len != 0 or
+      proto.hasParamTypes or proto.hasReturnType or
+      proto.requiredPositional != proto.params.len or
+      proto.localNames.len != proto.params.len:
+    return
+  for i, slot in proto.positionalSlots:
+    if slot != i:
+      return
+  let chunk = proto.chunk
+  if chunk == nil or chunk.functions.len != 0 or chunk.subchunks.len != 0:
+    return
+  for inst in chunk.instructions:
+    if inst.op notin scopelessOps:
+      return
+    if inst.op in {opLoadLocal, opLoadLocalFast} and
+        (inst.intArg < 0 or inst.intArg >= proto.params.len):
+      return
+  var rewritten = chunk.instructions
+  for i in 0 ..< rewritten.len:
+    if rewritten[i].op in {opLoadLocal, opLoadLocalFast}:
+      rewritten[i].op = opLoadArg
+  let alt = newChunk(chunk.sourceName)
+  alt.constants = chunk.constants
+  alt.instructions = move rewritten
+  alt.instructionLocs = chunk.instructionLocs
+  alt.localNames = chunk.localNames
+  alt.owner = proto
+  proto.scopelessChunk = alt

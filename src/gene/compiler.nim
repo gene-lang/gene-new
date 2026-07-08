@@ -2226,6 +2226,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          errorTypeCount: errorTypeCount,
                          chunk: fnCompiler.chunk)
   result.chunk.owner = result
+  deriveScopelessChunk(result)
 
 proc compileIf(c: var Compiler, node: Value) =
   let body = node.body

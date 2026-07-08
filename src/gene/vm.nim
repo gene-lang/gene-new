@@ -8140,6 +8140,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             stack.add scope.loadSlot(slot, inst[].name)
         of opLoadLocalFast:
           stack.add scope.slots[inst[].intArg]
+        of opLoadArg:
+          # Scopeless calls: arguments live on the shared operand stack at the
+          # frame's base (they were never popped into a scope).
+          stack.add stack[curStackBase + inst[].intArg]
         of opLoadOuterLocal:
           let slot = inst[].intArg
           let outer =
@@ -8565,6 +8569,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 if native.handled:
                   stack.add native.value
                   continue
+              if proto.scopelessChunk != nil and proto.params.len == 0:
+                # Scopeless 0-arg call (see the direct-call site).
+                pushCallFrame()
+                scope = frames[^1].scope
+                chunk = proto.scopelessChunk
+                recycleScope = false
+                curStackBase = stack.len
+                ip = 0
+                validateImplRequirements = false
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                continue
               if proto.simpleCall:
                 if proto.params.len != 0:
                   raise newException(GeneError,
@@ -8699,6 +8719,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   stack.setLen(argsStart)
                   stack.add native.value
                   continue
+              if proto.scopelessChunk != nil and argCount == proto.params.len:
+                # Scopeless call: the args already on the shared stack become
+                # the callee's frame region (opLoadArg reads them at
+                # base+index) and the callee keeps the CALLER's scope register
+                # — its body never resolves names, so the scope only feeds
+                # native-fast fallbacks (scope.application). No scope is
+                # acquired, bound, or released; the normal return truncation
+                # to curStackBase discards the args.
+                pushCallFrame()
+                scope = frames[^1].scope
+                chunk = proto.scopelessChunk
+                recycleScope = false
+                curStackBase = argsStart
+                ip = 0
+                validateImplRequirements = false
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                continue
               if proto.simpleCall:
                 let positionalLen = proto.params.len
                 if positionalLen != argCount:
@@ -9008,6 +9050,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   stack.setLen(calleeIndex)
                   stack.add native.value
                   continue
+              if namedCount == 0 and proto.scopelessChunk != nil and
+                  argCount == proto.params.len:
+                # Scopeless call (see the direct-call site): shift the args
+                # down over the callee so they sit at the frame base, then
+                # enter without any scope acquire/bind/release.
+                for i in calleeIndex ..< stack.len - 1:
+                  stack[i] = stack[i + 1]
+                stack.setLen(stack.len - 1)
+                pushCallFrame()
+                scope = frames[^1].scope
+                chunk = proto.scopelessChunk
+                recycleScope = false
+                curStackBase = calleeIndex
+                ip = 0
+                validateImplRequirements = false
+                returnType = NIL
+                returnLabel = ""
+                curChecksErrors = false
+                curErrorTypes = @[]
+                curFnName = callee.fnName
+                curFrameKind = fkNormal
+                continue
               if namedCount == 0 and proto.simpleCall:
                 # Hottest path: arity + positional slots only.
                 let positionalLen = proto.params.len
