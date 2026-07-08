@@ -1,6 +1,8 @@
 # Gene AI Agent — Design
 
-Status: **milestones 1–4 implemented; subprocess streaming prompt shipped; 5–7 planned.** Date: 2026-07-03.
+Status: **milestones 1–4 implemented; subprocess streaming prompt shipped;
+OpenAI-compatible chat endpoints shipped; 5–7 planned; §12 gateway/multi-surface
+architecture designed (milestones 8–13, planned).** Date: 2026-07-08.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -92,6 +94,12 @@ Behavior, mirroring a coding agent:
   interrupt an in-flight response;
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
   registered in a map, and the transcript is a list — homoiconic and testable.
+
+The single-process CLI above is the **embedded bootstrap** of a larger shape:
+§12 extends the same session/turn/tool machinery into a Hermes-style personal
+**gateway** — one long-running process that owns every conversation, with the
+terminal TUI, a browser web UI, and chat channels (Telegram, Slack) as thin
+surfaces onto it.
 
 ## 2. Capability gap analysis
 
@@ -537,6 +545,29 @@ curses) are isolated behind working milestones.
    redaction spec tests), capability injection via `gene run` flags (§8),
    broader policy config, and interrupt/cancel wired through `Task/cancel`.
 
+Gateway / multi-surface milestones (§12; each independently shippable):
+
+8. **Async subprocess + gateway skeleton.** `os/exec-*-async` on the worker
+   lane (§12.9 gap 1 — load-bearing), session actors, the HTTP+JSON gateway
+   API with cursor long-poll, and a minimal embedded web page. The CLI agent
+   keeps working unchanged in embedded mode.
+9. **Telegram channel.** `getUpdates` long-poll adapter over the async
+   subprocess transport, chat-id allowlist, per-chat sessions, throttled
+   `editMessageText` streaming.
+10. **Web UI + async approvals.** Approval-request events rendered as buttons,
+    multi-session switcher, transcript streaming via long-poll deltas.
+11. **Persistence.** Sessions/events in sqlite via the existing `db/sqlite`
+    backend; gateway restart restores transcripts.
+12. **TUI as gateway client.** The full §7 curses TUI speaking the gateway API
+    (nodelay `wgetch` polling so background events render while typing).
+13. **Slack channel.** Events API + `crypto/hmac-sha256` (§12.9 gap 4), or
+    Socket Mode once a WebSocket client exists (after milestone 5).
+
+Milestones 5 (native libcurl client) and 7 (hardening) remain enablers that can
+interleave: 5 sharpens cancellation and removes the curl dependency everywhere,
+and 7's approval/redaction work is a prerequisite for exposing any surface
+beyond localhost.
+
 Milestones 1–4 make the agent genuinely usable (real API, real tools, real
 safety). The new runtime surface they require is: the `os` namespace
 (`get-env`/`env?`/`exec`/`exec-stream`/`read-line`/`read-input`/`refresh-input`/`close-input`
@@ -560,9 +591,175 @@ expressed as a capability value.
   DeepSeek, vLLM, and most hosted/self-hosted gateways); a first-class `Chat`
   protocol over non-OpenAI wire formats (e.g. Anthropic's) can follow the
   `Db` protocol precedent later;
-- persistent session storage — the transcript lives in memory (the `db/sqlite`
-  backend is available if persistence is wanted later);
+- multi-user or multi-tenant operation — the gateway (§12) stays a
+  **single-user** tool: one bearer token, one workspace owner, allowlisted
+  chat ids; no accounts, roles, or per-user isolation;
 - **OS/process-level** sandboxing of `run_shell` (containers, seccomp, chroot)
   beyond the `Os/Exec` capability gate, the §8.5 in-agent safety contract
   (workspace confinement, approval policy, redaction), and output/time caps;
 - TLS certificate pinning and proxy configuration.
+
+## 12. Hermes-style multi-surface architecture (gateway, TUI, web, channels)
+
+One long-running **gateway** process owns every conversation; surfaces are
+thin views onto it. The terminal agent of §1 becomes one surface among four,
+and a session started in the terminal can be continued from the phone.
+
+```
+                       ┌───────────────────────────────┐
+  ┌──────────┐  HTTP   │            gateway            │
+  │ TUI      │◄───────►│                               │   curl (async)
+  ├──────────┤  +JSON  │  session actors (one per      │◄───────────────► model
+  │ Web UI   │◄───────►│  conversation): transcript,   │   Responses/chat APIs
+  ├──────────┤ cursor  │  turn loop, tools, policy,    │
+  │ Telegram │◄──long──│  approvals                    │   curl (async, long-poll)
+  ├──────────┤  poll   │                               │◄───────────────► api.telegram.org
+  │ Slack    │◄───────►│  event log per session,       │
+  └──────────┘         │  sqlite persistence (m11)     │
+                       └───────────────────────────────┘
+```
+
+Design rules, in the spirit of the rest of this doc: every piece reuses a
+pattern already proven in this repo, every new host power is a capability
+value, and each milestone is independently shippable and testable over
+loopback with fake endpoints (the §10-milestone-4 / chat-endpoint test
+posture).
+
+### 12.1 The gateway process and session actors
+
+The gateway is ordinary Gene: `gene run examples/agent_gateway.gene`. Each
+conversation is a **session actor** (`actor/spawn`, design.md §13) owning:
+
+- the transcript as a list of Responses-style items (the §5/§9 vocabulary the
+  chat adapter already normalizes to — surfaces never see wire formats);
+- a monotonically versioned **event log** (12.3) derived from the turn loop;
+- model config (base/model/flavor per session, defaulted from env as today);
+- the tool table + §8.5 policy, and at most one pending approval (12.6).
+
+Actors give per-session ordering for free (one turn at a time per session)
+while the scheduler runs sessions concurrently — the same task-per-request
+model the `net/http` server already uses, with `http/actor-pool` as the
+in-repo precedent for routing requests into actors via `RequestMsg`/reply.
+
+### 12.2 Gateway API (HTTP + JSON)
+
+Served by the existing `net/http` server, bound to `127.0.0.1` by default,
+authenticated by a single static bearer token (`GENE_GATEWAY_TOKEN`) checked
+on every request — single-user posture (§11), no accounts.
+
+| Route | Meaning |
+|---|---|
+| `POST /api/sessions` | create session → `{^id ...}` |
+| `GET  /api/sessions` | list sessions (id, title, surface, last-event) |
+| `POST /api/sessions/:id/messages` | append a user turn; returns immediately |
+| `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N, or park until one arrives |
+| `POST /api/sessions/:id/approvals/:aid` | `{^decision "allow"\|"deny"}` |
+| `POST /api/sessions/:id/cancel` | cancel the in-flight turn (`Task/cancel`, m7) |
+| `GET  /` | the web UI page (12.5) |
+
+Long-poll is the bootstrap streaming mechanism because the `net/http` server
+sends complete `Response` bodies — a handler parked on `Channel/recv` waiting
+for the next event does not stall other requests (proven by the
+handler-parked-in-`sleep` e2e test), so cursor long-poll works **today**;
+chunked/SSE response streaming is gap 2 in 12.9.
+
+### 12.3 Event log
+
+Each session appends typed events; surfaces render them and remember only a
+cursor. Events are maps (JSON-friendly, like everything else here):
+
+```gene
+{^v 41 ^type "text_delta"        ^text "..."}          ; coalesced ~100ms
+{^v 42 ^type "turn_done"         ^text "full reply"}
+{^v 43 ^type "tool_call"         ^name "run_shell" ^detail "make test"}
+{^v 44 ^type "approval_request"  ^id "ap_7" ^tool "write_file" ^detail "..."}
+{^v 45 ^type "approval_resolved" ^id "ap_7" ^decision "allow"}
+{^v 46 ^type "error"             ^text "..."}
+```
+
+Deltas are coalesced server-side (~100 ms batches) so chat surfaces that edit
+messages (12.6/12.7) and long-poll clients see bounded event rates. All text
+passes the §8.5 `redact` before entering the log — tokens live only in the
+gateway process; surfaces can only ever receive redacted text.
+
+### 12.4 TUI surface
+
+The current CLI keeps working unchanged as **embedded mode** (no gateway).
+Milestone 12 turns the §7 curses TUI into a gateway client: send via
+`POST messages`, render via the events long-poll. Live background updates
+while the user types require non-blocking input — `nodelay`/`timeout`
+`wgetch` polling from a Gene task, exactly as §7 already plans; until then a
+client TUI renders events only between keystrokes/turns, which matches
+today's behavior.
+
+### 12.5 Web UI
+
+A single static page served by the gateway (`html` helpers;
+`examples/todo_app.gene` is the in-repo precedent for a self-contained web
+app): vanilla JS, `fetch` to post messages, a long-poll loop for events,
+approval requests rendered as allow/deny buttons posting to 12.2. No build
+step, no framework, no external assets — the page is a string in the Gene
+source. Session switcher reads `GET /api/sessions`.
+
+### 12.6 Telegram channel
+
+The cheapest remote surface, and deliberately the first (milestone 9): it
+needs **outbound HTTPS only**, which the curl transport already provides.
+
+- an adapter task long-polls `getUpdates` (`timeout=50`, offset cursor) via
+  the async subprocess primitive (12.9 gap 1);
+- updates route to sessions keyed by `chat.id`; unknown chat ids are dropped
+  unless listed in `TELEGRAM_ALLOWED_CHAT_IDS` (single-user posture);
+- replies stream by `sendMessage` + throttled `editMessageText` (≤1 edit/s,
+  riding the 12.3 coalesced deltas), final text on `turn_done`;
+- approvals render as a message with an id; the user replies
+  `/approve ap_7` (inline keyboards can come later);
+- config: `TELEGRAM_BOT_TOKEN`; no inbound port, no webhook, no TLS server.
+
+### 12.7 Slack channel
+
+Two integration modes, both requiring runtime work — hence last (m13):
+
+1. **Socket Mode** (preferred; outbound-only like Telegram): needs a
+   WebSocket client over TLS — blocked on the native net client (§4 m5).
+2. **Events API**: inbound webhooks to the gateway → needs public HTTPS
+   exposure (tunnel) + request signing (`X-Slack-Signature`,
+   HMAC-SHA256) → needs a small `crypto` namespace (12.9 gap 4), plus the
+   3-second-ack/retry discipline.
+
+Outbound (`chat.postMessage`, throttled `chat.update` for streaming) works
+over curl today. Sessions key by `(channel, thread_ts)` so each Slack thread
+is a conversation.
+
+### 12.8 Approvals across surfaces
+
+§8.5's approval hook generalizes from a blocking stdin prompt to an
+**asynchronous approval event**: the session emits `approval_request`, parks
+the turn on a reply channel with a deadline (default deny on timeout), and
+the owning surface renders it natively — y/N in the TUI, buttons on the web,
+`/approve` in chat. The single-user default posture is unchanged
+(`GENE_AGENT_APPROVE_ALL=1` ⇒ no approval events at all); this machinery is
+what makes prompts *possible* on surfaces that have no stdin.
+
+### 12.9 Runtime gaps, in priority order
+
+| # | Gap | Blocks | Bootstrap workaround | Proper fix |
+|---|---|---|---|---|
+| 1 | **Async subprocess** — `os/exec`/`exec-stream` block the scheduler thread, so one model call would freeze every session and the HTTP listener | everything in §12 | none — this lands first (m8) | `os/exec-async`/`exec-stream-async` on the worker lane: run the child + drain on a worker, deliver chunks through the rooted-channel path, exactly the `Fs/*-async` / §4-callback pattern |
+| 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
+| 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | after m5 (libcurl / native TLS) |
+| 4 | `crypto/hmac-sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
+| 5 | Non-blocking TUI input | live TUI updates while typing | render between turns | `nodelay` `wgetch` (§7) |
+
+Gap 1 is the single load-bearing piece: it converts the agent from "one
+blocking conversation" to "N concurrent sessions" and is prerequisite to
+every surface. It is pure runtime work with an existing in-repo template.
+
+### 12.10 Testing posture
+
+Same as milestones 1–4: every surface must be drivable over loopback with no
+network or real accounts. The fake `/chat/completions` endpoint (test_cli)
+already proves the model side; milestone 8 adds a fake-surface test (create
+session → post message → long-poll events → assert transcript), milestone 9 a
+fake Telegram API server (canned `getUpdates` + captured `sendMessage`), and
+the pty harness pattern from the Ctrl-C work covers the TUI client.
