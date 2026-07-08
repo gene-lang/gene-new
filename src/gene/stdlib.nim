@@ -71,8 +71,11 @@ static void gene_curses_restore_termios(void) {
 }
 static void gene_curses_restore_display(void) {
   if (isatty(STDOUT_FILENO)) {
-    const char *seq = "\033[?2004l\033[?1l\033>\033[0m\033[?25h\033[r\r";
-    write(STDOUT_FILENO, seq, sizeof("\033[?2004l\033[?1l\033>\033[0m\033[?25h\033[r\r") - 1);
+    /* DECSTBM (\033[r) homes the cursor as a side effect, so wrap it in
+       DECSC/DECRC (\0337/\0338); otherwise output after close-input lands at
+       the top of the screen and overwrites existing content. */
+    const char *seq = "\033[?2004l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338";
+    write(STDOUT_FILENO, seq, sizeof("\033[?2004l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338") - 1);
   }
 }
 static void gene_curses_restore_for_exit(void) {
