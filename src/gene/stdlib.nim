@@ -720,9 +720,20 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
                            options = {poUsePath, poParentStreams})
   except OSError as e:
     raiseOsError("os/exec-stdio could not start '" & cmd & "': " & e.msg, scope)
+  # system(3) semantics: the child owns the terminal, so Ctrl-C must reach the
+  # child (and whatever it runs), not kill this process while it waits.
+  when defined(posix):
+    var ignoreInt, oldInt: Sigaction
+    ignoreInt.sa_handler = SIG_IGN
+    discard sigemptyset(ignoreInt.sa_mask)
+    ignoreInt.sa_flags = 0
+    let intIgnored = sigaction(SIGINT, ignoreInt, oldInt) == 0
   try:
     newInt(process.waitForExit())
   finally:
+    when defined(posix):
+      if intIgnored:
+        discard sigaction(SIGINT, oldInt, nil)
     process.close()
 
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =

@@ -31,6 +31,37 @@ type
     interactive*: bool
     prompt*: string
 
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  import std/volatile
+
+  # Interactive-repl SIGINT support. The handler is installed only for the
+  # duration of an interactive runReplSession; outside that window these
+  # globals stay false and the dispatch-loop check never fires.
+  const
+    replPhaseIdle = 0'i32
+    replPhaseReading = 1'i32
+    replPhaseEvaluating = 2'i32
+  var gVmInterrupt: bool          # armed by SIGINT while a repl eval runs
+  var gReplSigPhase: int32 = replPhaseIdle
+  var gReplPromptBuf: array[64, char]
+  var gReplPromptLen = 0
+
+  proc replSigintHandler(sig: cint) {.noconv.} =
+    case volatileLoad(addr gReplSigPhase)
+    of replPhaseReading:
+      # The tty's ISIG already flushed the partially-typed line; give visual
+      # feedback with a fresh prompt. Only async-signal-safe write() here.
+      var nl = '\n'
+      discard posix.write(STDOUT_FILENO, addr nl, 1)
+      if gReplPromptLen > 0:
+        discard posix.write(STDOUT_FILENO, addr gReplPromptBuf[0],
+                            gReplPromptLen)
+    of replPhaseEvaluating:
+      volatileStore(addr gVmInterrupt, true)
+    else:
+      discard
+
+type
   RunStopKind = enum
     rskReturn
     rskYield
@@ -7446,6 +7477,13 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
     raise newException(GeneError, "derive must return a declaration node or list")
 
 proc consumeEvalStep(budget: EvalBudget) =
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    # Repl Ctrl-C rides the budget path: it only runs for budgeted scopes
+    # (interactive repl installs one), so plain program dispatch never pays
+    # for the volatile load.
+    if volatileLoad(addr gVmInterrupt):
+      volatileStore(addr gVmInterrupt, false)
+      raise newException(GeneError, "interrupted")
   var current = budget
   while current != nil:
     if current.remaining <= 0:
@@ -10353,50 +10391,99 @@ proc runReplSession*(scope: Scope,
   var pendingSource = ""
   var pendingError = ""
   let continuationPrompt = "....> "
-  if options.interactive:
-    writeOut(options.prompt)
-  while readLine(line):
-    let trimmed = line.strip()
-    if pendingSource.len == 0 and trimmed.len == 0:
-      if options.interactive:
-        writeOut(options.prompt)
-      continue
-    if pendingSource.len == 0 and trimmed in [":quit", ":exit", "quit", "exit"]:
-      return 0
-    let source =
-      if pendingSource.len == 0: line
-      else: pendingSource & "\n" & line
-    try:
-      writeOut(run(compileEvalSource(source, useLocalSlots = false,
-                                     sourceName = "<repl>"), scope).print() & "\n")
-      pendingSource = ""
-      pendingError = ""
-    except ReadIncompleteError as e:
-      pendingSource = source
-      pendingError = e.msg
-      if options.interactive:
-        writeOut(continuationPrompt)
-      continue
-    except ReadError as e:
-      pendingSource = ""
-      pendingError = ""
-      writeErr(formatDiagnostic("Read error", e.msg,
-        SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)) & "\n")
-    except GenePanic as e:
-      writeErr("Panic: " & e.msg & "\n")
-      return 1
-    except GeneError as e:
-      pendingSource = ""
-      pendingError = ""
-      writeErr(formatDiagnostic("Error", e.msg, e.loc) & "\n")
+
+  # Interactive sessions handle SIGINT themselves: while reading, the tty's
+  # ISIG flush already discarded the partial line and the handler redraws the
+  # prompt; while evaluating, the handler arms the VM interrupt flag so the
+  # dispatch loop raises a catchable "interrupted" error. SA_RESTART keeps the
+  # blocking readLine transparent to the signal.
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    var oldSigint: Sigaction
+    var sigintInstalled = false
+    var installedBudget = false
+    if options.interactive:
+      gReplPromptLen = min(options.prompt.len, gReplPromptBuf.len)
+      for i in 0 ..< gReplPromptLen:
+        gReplPromptBuf[i] = options.prompt[i]
+      var act: Sigaction
+      act.sa_handler = replSigintHandler
+      discard sigemptyset(act.sa_mask)
+      act.sa_flags = SA_RESTART
+      sigintInstalled = sigaction(SIGINT, act, oldSigint) == 0
+      if sigintInstalled and scope.evalBudget == nil:
+        # The interrupt flag is polled on the budgeted-dispatch path only, so
+        # give the session an effectively unlimited budget to activate it.
+        scope.evalBudget = EvalBudget(remaining: high(int64))
+        installedBudget = true
+
+  template readOneLine(dest: var string): bool =
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      if sigintInstalled:
+        volatileStore(addr gReplSigPhase, replPhaseReading)
+      let ok = readLine(dest)
+      if sigintInstalled:
+        volatileStore(addr gReplSigPhase, replPhaseEvaluating)
+      ok
+    else:
+      readLine(dest)
+
+  try:
     if options.interactive:
       writeOut(options.prompt)
-  if options.interactive:
-    writeOut("\n")
-  if pendingSource.len > 0:
-    let msg = if pendingError.len == 0: "unexpected end of input" else: pendingError
-    writeErr("Read error: " & msg & "\n")
-  0
+    while readOneLine(line):
+      let trimmed = line.strip()
+      if pendingSource.len == 0 and trimmed.len == 0:
+        if options.interactive:
+          writeOut(options.prompt)
+        continue
+      if pendingSource.len == 0 and trimmed in [":quit", ":exit", "quit", "exit"]:
+        return 0
+      let source =
+        if pendingSource.len == 0: line
+        else: pendingSource & "\n" & line
+      try:
+        when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+          # Drop any interrupt that landed after the previous eval finished so
+          # it cannot spuriously abort this line.
+          volatileStore(addr gVmInterrupt, false)
+        writeOut(run(compileEvalSource(source, useLocalSlots = false,
+                                       sourceName = "<repl>"), scope).print() & "\n")
+        pendingSource = ""
+        pendingError = ""
+      except ReadIncompleteError as e:
+        pendingSource = source
+        pendingError = e.msg
+        if options.interactive:
+          writeOut(continuationPrompt)
+        continue
+      except ReadError as e:
+        pendingSource = ""
+        pendingError = ""
+        writeErr(formatDiagnostic("Read error", e.msg,
+          SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)) & "\n")
+      except GenePanic as e:
+        writeErr("Panic: " & e.msg & "\n")
+        return 1
+      except GeneError as e:
+        pendingSource = ""
+        pendingError = ""
+        writeErr(formatDiagnostic("Error", e.msg, e.loc) & "\n")
+      if options.interactive:
+        writeOut(options.prompt)
+    if options.interactive:
+      writeOut("\n")
+    if pendingSource.len > 0:
+      let msg = if pendingError.len == 0: "unexpected end of input" else: pendingError
+      writeErr("Read error: " & msg & "\n")
+    0
+  finally:
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      if installedBudget:
+        scope.evalBudget = nil
+      if sigintInstalled:
+        discard sigaction(SIGINT, oldSigint, nil)
+        volatileStore(addr gReplSigPhase, replPhaseIdle)
+        volatileStore(addr gVmInterrupt, false)
 
 proc runReplSessionForEnv*(env: Value,
                            readLine: ReplReadLine,

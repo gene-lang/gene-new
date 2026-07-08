@@ -654,10 +654,13 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn run-shell-session []
   (close-user-input)
   (var shell (get-env Env "SHELL" "sh"))
-  (println $"Entering shell (${shell}). Type exit/quit or Ctrl-D to return.")
+  (println $"Entering shell (${shell}). Ctrl-C stops the running command or clears the line; exit/quit or Ctrl-D returns.")
   (if (stdin-tty?)
     (do
-      (var script "while true; do printf 'sh> '; IFS= read -r line || break; case \"$line\" in exit|quit) break;; *) eval \"$line\";; esac; done")
+      # Ctrl-C: the trap marks the interrupt, so a failed read reprompts
+      # (cleared line) instead of exiting; a running command just dies and the
+      # loop continues. EOF (read fails without the mark) exits the session.
+      (var script "intr=0; trap 'intr=1; printf \"\\n\"' INT; while true; do printf 'sh> '; intr=0; IFS= read -r line; rc=$?; if [ $rc -ne 0 ]; then if [ $intr -eq 1 ]; then continue; fi; break; fi; case \"$line\" in exit|quit) break;; *) eval \"$line\";; esac; done")
       (exec-stdio Exec ^cmd shell ^args ["-c" script] ^dir workspace-root)
       (println "")
       nil)
@@ -690,7 +693,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                 ^tools tools
                 ^tool-schemas tool-schemas})
   (var repl-env (env ^bindings {^session session}))
-  (println "Entering Gene REPL. session is available. Type exit/quit or Ctrl-D to return.")
+  (println "Entering Gene REPL. session is available. Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run-repl-session repl-env ^interactive true)
   nil)
 
