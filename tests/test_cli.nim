@@ -233,6 +233,129 @@ suite "cli — gene run":
     check "tool list_dir" in ran.output
     check "verdict: roundtrip-ok" in ran.output
 
+  test "agent gateway runs concurrent sessions over the async transport":
+    ## Milestone 8 e2e (docs/ai-agent.md §12): a slow fake chat endpoint
+    ## (900ms per response) serves two gateway sessions. Both turns must
+    ## complete in well under 2x the endpoint latency — proof that model
+    ## calls ride dedicated threads and sessions do not block each other.
+    ## Also covers bearer auth and the versioned-event long-poll contract.
+    buildGeneCli()
+    let endpoint = writeCliProgram("slow_chat_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [stringify])
+(import str [join])
+(import std/stream [to_stream map into])
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(fn handle [req]
+  (sleep 900)
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body
+              [{^choices [{^index 0 ^delta {^content "slow "}}]}
+               {^choices [{^index 0 ^delta {^content "answer"}}]}
+               {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])))
+
+(serve (Server ^host "127.0.0.1" ^port 8988) handle ^max-requests 2)
+""")
+    let endpointProc = startProcess(geneExe, args = ["run", endpoint],
+                                    options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if endpointProc.running:
+        endpointProc.terminate()
+      endpointProc.close()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "CODEX_ACCESS_TOKEN", "-u", "OPENAI_API_KEY",
+              "-u", "OPENAI_API",
+              "OPENAI_AUTH_TOKEN=dummy",
+              "OPENAI_BASE_URL=http://127.0.0.1:8988/v1",
+              "OPENAI_MODEL=fake-chat",
+              "GENE_GATEWAY_PORT=8989",
+              "GENE_GATEWAY_TOKEN=gw-secret",
+              geneExe, "run", "examples/agent_gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running:
+        gatewayProc.terminate()
+      gatewayProc.close()
+    for port in [8988, 8989]:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(port), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+
+    proc gwCurl(call: string): string =
+      let ran = execCmdEx("curl -sS -H 'Authorization: Bearer gw-secret' " &
+                          call)
+      check ran.exitCode == 0
+      ran.output
+
+    # Auth is enforced.
+    let denied = execCmdEx(
+      "curl -s -o /dev/null -w '%{http_code}' " &
+      "-X POST http://127.0.0.1:8989/api/sessions")
+    check denied.output.strip() == "401"
+
+    # Two sessions, one message each, posted back to back.
+    check "\"id\":\"s1\"" in gwCurl("-X POST http://127.0.0.1:8989/api/sessions")
+    check "\"id\":\"s2\"" in gwCurl("-X POST http://127.0.0.1:8989/api/sessions")
+    let t0 = getMonoTime()
+    check "\"ok\":true" in gwCurl(
+      "-X POST -H 'content-type: application/json' -d '{\"text\":\"go\"}' " &
+      "http://127.0.0.1:8989/api/sessions/s1/messages")
+    check "\"ok\":true" in gwCurl(
+      "-X POST -H 'content-type: application/json' -d '{\"text\":\"go\"}' " &
+      "http://127.0.0.1:8989/api/sessions/s2/messages")
+
+    # Long-poll each session until its turn completes.
+    proc waitTurnDone(sid: string): string =
+      var cursor = 0
+      let deadline = getMonoTime() + initDuration(seconds = 15)
+      while getMonoTime() < deadline:
+        let body = gwCurl("'http://127.0.0.1:8989/api/sessions/" & sid &
+                          "/events?cursor=" & $cursor & "'")
+        result.add body
+        if "turn_done" in result:
+          return
+        for piece in body.split("\"v\":"):
+          let numEnd = piece.find(',')
+          if numEnd > 0:
+            try:
+              cursor = max(cursor, parseInt(piece[0 ..< numEnd]))
+            except ValueError:
+              discard
+      checkpoint "timed out waiting for turn_done: " & result
+      check false
+
+    let s1Events = waitTurnDone("s1")
+    let s2Events = waitTurnDone("s2")
+    let elapsedMs = (getMonoTime() - t0).inMilliseconds
+
+    # Streaming deltas arrived as events for both sessions.
+    check "text_delta" in s1Events
+    check "slow " in s1Events
+    check "answer" in s2Events
+    # Concurrency: serial turns would take >= 1800ms against a 900ms
+    # endpoint; parallel sessions finish in roughly one latency.
+    check elapsedMs < 1700
+
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")
     let ran = runGene(["run", badMain])

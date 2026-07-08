@@ -33,7 +33,7 @@
 (mod ai-agent
   @doc "a terminal coding agent over the OpenAI Responses API")
 
-(import os [get-env env? exec exec-stream exec-stdio stdin-tty? read-line read-input refresh-input close-input Env Exec OsError])
+(import os [get-env env? exec exec-async exec-stream-async exec-stdio stdin-tty? read-line read-input refresh-input close-input Env Exec OsError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower trim])
 (import std/stream [to_stream map filter into each])
@@ -153,18 +153,19 @@
     "denied by command policy"
     (if (approve? "run_shell" args/command)
       (do
-        (var r (exec Exec ^cmd "sh" ^args ["-c" args/command] ^dir workspace-root
-                     ^timeout-ms 10000 ^max-bytes 65536))
+        (var r (await (exec-async Exec ^cmd "sh" ^args ["-c" args/command]
+                          ^dir workspace-root
+                          ^timeout-ms 10000 ^max-bytes 65536)))
         (var tail (if r/timed-out "\n[timed out]" ""))
         $"${r/stdout}${r/stderr}${tail}")
       "denied by user policy")))
 
 (fn tool-grep [args]
   (var p (if (= args/path void) "." args/path))
-  (var r (exec Exec ^cmd "grep"
-               ^args ["-rn" args/pattern (safe-path p)]
-               ^dir workspace-root
-               ^timeout-ms 10000 ^max-bytes 65536))
+  (var r (await (exec-async Exec ^cmd "grep"
+                    ^args ["-rn" args/pattern (safe-path p)]
+                    ^dir workspace-root
+                    ^timeout-ms 10000 ^max-bytes 65536)))
   (var tail (if r/timed-out "\n[timed out]" ""))
   $"${r/stdout}${r/stderr}${tail}")
 
@@ -373,7 +374,23 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # -----------------------------------------------------------------------------
 # Transport. Live mode shells out to curl; demo mode uses a scripted closure.
 # Both take a request-body string and return a parsed Responses map.
+# curl runs on a dedicated thread (os/exec-stream-async) with stdout lines
+# drained from a channel, so the scheduler — other sessions, the gateway's
+# HTTP loop — stays live during a model call (docs/ai-agent.md §12.9 gap 1).
 # -----------------------------------------------------------------------------
+
+(fn exec-curl-lines [curl-args, timeout-ms, on-line]
+  (var ch (channel ^capacity 256))
+  (var t (exec-stream-async Exec ^cmd "curl" ^args curl-args
+                            ^timeout-ms timeout-ms ^max-bytes 4000000
+                            ^stdout-chan ch))
+  (var line nil)
+  (try
+    (loop
+      (set line (ch ~ Channel/recv))
+      (on-line line))
+  catch (ChannelClosed) nil)
+  (await t))
 
 (fn api-error-text [resp]
   (var status (if (= resp/status void) "?" resp/status))
@@ -471,10 +488,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
        "-H" "originator: codex_cli_rs"]))
     nil)
   (set curl-args (append-all curl-args ["-d" body]))
-  (var r (exec-stream Exec ^cmd "curl"
-               ^args curl-args
-               ^timeout-ms 60000 ^max-bytes 4000000
-               ^stdout-line (fn [line]
+  (var r (exec-curl-lines curl-args 60000
+               (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
                    (Cell/set saw-sse true)
@@ -665,14 +680,14 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (var callmax (cell 0))
   (var err (cell nil))
   (var saw-sse (cell false))
-  (var r (exec-stream Exec ^cmd "curl"
-               ^args ["-sS" "-N" "-X" "POST" $"${base}/chat/completions"
-                      "-H" $"Authorization: Bearer ${auth-token}"
-                      "-H" "Content-Type: application/json"
-                      "-H" "Accept: text/event-stream"
-                      "-d" body]
-               ^timeout-ms 120000 ^max-bytes 4000000
-               ^stdout-line (fn [line]
+  (var r (exec-curl-lines
+               ["-sS" "-N" "-X" "POST" $"${base}/chat/completions"
+                "-H" $"Authorization: Bearer ${auth-token}"
+                "-H" "Content-Type: application/json"
+                "-H" "Accept: text/event-stream"
+                "-d" body]
+               120000
+               (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
                    (Cell/set saw-sse true)

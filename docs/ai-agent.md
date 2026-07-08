@@ -1,8 +1,9 @@
 # Gene AI Agent — Design
 
 Status: **milestones 1–4 implemented; subprocess streaming prompt shipped;
-OpenAI-compatible chat endpoints shipped; 5–7 planned; §12 gateway/multi-surface
-architecture designed (milestones 8–13, planned).** Date: 2026-07-08.
+OpenAI-compatible chat endpoints shipped; milestone 8 shipped (async
+subprocess + gateway skeleton, `examples/agent_gateway.gene`); 5–7 and 9–13
+planned.** Date: 2026-07-08.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -547,10 +548,14 @@ curses) are isolated behind working milestones.
 
 Gateway / multi-surface milestones (§12; each independently shippable):
 
-8. **Async subprocess + gateway skeleton.** `os/exec-*-async` on the worker
-   lane (§12.9 gap 1 — load-bearing), session actors, the HTTP+JSON gateway
-   API with cursor long-poll, and a minimal embedded web page. The CLI agent
-   keeps working unchanged in embedded mode.
+8. **Async subprocess + gateway skeleton — implemented.** `os/exec-async` and
+   `os/exec-stream-async` run the child on a dedicated OS thread (§12.9 gap 1
+   closed); `examples/agent_gateway.gene` ships session actors, the HTTP+JSON
+   API with cursor long-poll, bearer auth, and an embedded web chat page. The
+   agent's transports and `run_shell`/`grep` tools now ride the async
+   primitives, so the CLI keeps identical behavior while the gateway runs
+   sessions concurrently (verified: two 900 ms model calls complete in ~one
+   latency in the test_cli e2e).
 9. **Telegram channel.** `getUpdates` long-poll adapter over the async
    subprocess transport, chat-id allowlist, per-chat sessions, throttled
    `editMessageText` streaming.
@@ -627,7 +632,9 @@ posture).
 
 ### 12.1 The gateway process and session actors
 
-The gateway is ordinary Gene: `gene run examples/agent_gateway.gene`. Each
+The gateway is ordinary Gene: `gene run examples/agent_gateway.gene`
+(**shipped, milestone 8** — sessions, HTTP API, long-poll, auth, web page;
+Telegram/Slack adapters and persistence still follow the plan below). Each
 conversation is a **session actor** (`actor/spawn`, design.md §13) owning:
 
 - the transcript as a list of Responses-style items (the §5/§9 vocabulary the
@@ -745,21 +752,24 @@ what makes prompts *possible* on surfaces that have no stdin.
 
 | # | Gap | Blocks | Bootstrap workaround | Proper fix |
 |---|---|---|---|---|
-| 1 | **Async subprocess** — `os/exec`/`exec-stream` block the scheduler thread, so one model call would freeze every session and the HTTP listener | everything in §12 | none — this lands first (m8) | `os/exec-async`/`exec-stream-async` on the worker lane: run the child + drain on a worker, deliver chunks through the rooted-channel path, exactly the `Fs/*-async` / §4-callback pattern |
+| 1 | ~~**Async subprocess**~~ — **closed (m8)**: `os/exec-async`/`exec-stream-async` run the child on a dedicated OS thread; stdout lines cross via `nativeChannelTrySend` (values marked shared → atomic rc), the Task settles via `tryCompleteTask`+`wakeTaskWaiters`, and root-level `await`/`Channel/recv` poll instead of declaring deadlock while external native ops are in flight | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
 | 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | after m5 (libcurl / native TLS) |
 | 4 | `crypto/hmac-sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
 | 5 | Non-blocking TUI input | live TUI updates while typing | render between turns | `nodelay` `wgetch` (§7) |
 
-Gap 1 is the single load-bearing piece: it converts the agent from "one
-blocking conversation" to "N concurrent sessions" and is prerequisite to
-every surface. It is pure runtime work with an existing in-repo template.
+Gap 1 was the single load-bearing piece: it converts the agent from "one
+blocking conversation" to "N concurrent sessions" and was prerequisite to
+every surface. It shipped with milestone 8; the remaining gaps all have
+workable bootstraps.
 
 ### 12.10 Testing posture
 
 Same as milestones 1–4: every surface must be drivable over loopback with no
 network or real accounts. The fake `/chat/completions` endpoint (test_cli)
-already proves the model side; milestone 8 adds a fake-surface test (create
-session → post message → long-poll events → assert transcript), milestone 9 a
-fake Telegram API server (canned `getUpdates` + captured `sendMessage`), and
-the pty harness pattern from the Ctrl-C work covers the TUI client.
+proves the model side; milestone 8 shipped its e2e (a 900 ms fake endpoint
+serves two gateway sessions — create → post → long-poll — asserting streamed
+`text_delta` events, bearer auth, and that both turns finish in ~one endpoint
+latency, i.e. sessions really run concurrently). Milestone 9 adds a fake
+Telegram API server (canned `getUpdates` + captured `sendMessage`), and the
+pty harness pattern from the Ctrl-C work covers the TUI client.

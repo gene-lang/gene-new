@@ -1,0 +1,252 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene agent gateway — milestone 8 of docs/ai-agent.md §12.
+#
+# One long-running process that owns every conversation. Sessions are actors
+# (mailbox = per-session turn ordering; the scheduler runs sessions
+# concurrently because model calls and tools ride os/exec-*-async on
+# dedicated threads). Surfaces are thin HTTP+JSON clients:
+#
+#   POST /api/sessions                     -> {"id": "s1"}
+#   GET  /api/sessions                     -> {"sessions": [...]}
+#   POST /api/sessions/:id/messages        {"text": "..."} -> 202
+#   GET  /api/sessions/:id/events?cursor=N -> long-poll {"events": [...], "cursor": M}
+#   GET  /                                 -> embedded web chat page
+#
+# Config: GENE_GATEWAY_HOST (default 127.0.0.1), GENE_GATEWAY_PORT (8090),
+# GENE_GATEWAY_TOKEN (optional bearer token; open when unset — bind localhost).
+# Model/backend config is shared with examples/ai_agent.gene (OPENAI_* env);
+# with no model token, sessions run the offline demo transport.
+# =============================================================================
+
+(mod agent-gateway
+  @doc "multi-session gateway over the ai_agent turn loop (§12 milestone 8)")
+
+(import os [get-env Env])
+(import json [parse stringify JsonError])
+(import str [split])
+(import std/stream [to_stream filter each into])
+(import std/parse [parse_int])
+(import net/http [Server serve Response])
+(import [gene-system-prompt system-item user-item run-turn live-transport
+         demo-transport-for max-tool-turns append model auth-token]
+        from "./ai_agent")
+
+(var gw-host (get-env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
+(var gw-port (parse_int (get-env Env "GENE_GATEWAY_PORT" "8090")))
+(var gw-token (get-env Env "GENE_GATEWAY_TOKEN" ""))
+
+# -----------------------------------------------------------------------------
+# Sessions. Each is an actor whose handler runs one user turn; the mailbox
+# gives per-session ordering, the scheduler gives cross-session concurrency.
+# Events are a versioned log (§12.3) that long-poll clients read by cursor.
+# -----------------------------------------------------------------------------
+
+(var sessions {})
+(var session-seq (cell 0))
+
+(fn make-session [id]
+  (var events (cell []))
+  (var next-v (cell 0))
+  (var items (cell [(system-item gene-system-prompt)]))
+  (fn push-event [type : Str, text : Str]
+    (next-v ~ Cell/set (+ (next-v ~ Cell/get) 1))
+    (events ~ Cell/set
+      (append (events ~ Cell/get)
+              {^v (next-v ~ Cell/get) ^type type ^text text})))
+  (var transport (if (= auth-token nil) (demo-transport-for) live-transport))
+  (var turn-actor
+    (actor/spawn ^init (fn [] 0)
+      ^handle (fn [ctx, state, text]
+        (push-event "user" text)
+        (items ~ Cell/set
+          (run-turn transport
+                    (append (items ~ Cell/get) (user-item text))
+                    (fn [t] (if (= t "") nil (push-event "text" t)))
+                    (fn [d] (if (= d "") nil (push-event "text_delta" d)))
+                    max-tool-turns))
+        (push-event "turn_done" "")
+        (actor/continue state))))
+  {^id id ^actor turn-actor ^events events ^next-v next-v})
+
+(fn events-after [s, cursor : Int]
+  ((to_stream (s/events ~ Cell/get))
+    ~ filter (fn [e] (> e/v cursor))
+    ; ~ into []))
+
+(fn max-event-v [evs, fallback : Int] : Int
+  (var m (cell fallback))
+  ((to_stream evs)
+    ~ each (fn [e] (if (> e/v (m ~ Cell/get)) (m ~ Cell/set e/v) nil)))
+  (m ~ Cell/get))
+
+# -----------------------------------------------------------------------------
+# HTTP API.
+# -----------------------------------------------------------------------------
+
+(fn json-response [status : Int, value]
+  (Response ^status status
+            ^headers {^content-type "application/json"}
+            ^body (stringify value)))
+
+(fn authorized? [req]
+  (if (= gw-token "")
+    true
+    (do
+      (var h req/headers/authorization)
+      (if (= h void)
+        false
+        (= h $"Bearer ${gw-token}")))))
+
+(fn create-session []
+  (session-seq ~ Cell/set (+ (session-seq ~ Cell/get) 1))
+  (var id $"s${(session-seq ~ Cell/get)}")
+  (sessions ~ Map/put! id (make-session id))
+  (json-response 200 {^id id}))
+
+(fn list-sessions []
+  (var out (cell []))
+  (sessions/%to_pairs_stream
+    ~ each (fn [pair]
+        (var [k, s] pair)
+        (out ~ Cell/set
+          (append (out ~ Cell/get)
+                  {^id k ^events (s/next-v ~ Cell/get)}))))
+  (json-response 200 {^sessions (out ~ Cell/get)}))
+
+(fn post-message [id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (= s void)
+    (json-response 404 {^error "no such session"})
+    (try
+      (var body (parse req/body))
+      (if (|| (= body/text void) (= body/text nil) (= body/text ""))
+        (json-response 400 {^error "missing text"})
+        (do
+          (s/actor ~ actor/send body/text)
+          (json-response 202 {^ok true})))
+    catch (JsonError ^message m)
+      (json-response 400 {^error m}))))
+
+# Long-poll: return events after ^cursor as soon as any exist, waiting up to
+# ~20s. A handler parked in sleep does not stall other requests (task-per-
+# request dispatch), so this works without streaming responses (§12.9 gap 2).
+(fn get-events [id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (= s void)
+    (json-response 404 {^error "no such session"})
+    (do
+      (var cursor 0)
+      (if (= req/params/cursor void)
+        nil
+        (try
+          (set cursor (parse_int req/params/cursor))
+        catch * nil))
+      (var out (cell (events-after s cursor)))
+      (var waited (cell 0))
+      (while (&& (empty? (out ~ Cell/get)) (< (waited ~ Cell/get) 200))
+        (sleep 100)
+        (waited ~ Cell/set (+ (waited ~ Cell/get) 1))
+        (out ~ Cell/set (events-after s cursor)))
+      (var evs (out ~ Cell/get))
+      (json-response 200 {^events evs
+                          ^cursor (max-event-v evs cursor)}))))
+
+(var web-page """<!doctype html>
+<meta charset="utf-8">
+<title>Gene Agent Gateway</title>
+<style>
+body { font-family: ui-monospace, monospace; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+#log { white-space: pre-wrap; border: 1px solid #8884; padding: 1rem; min-height: 16rem; }
+.user { color: #06c; } .text { color: inherit; } .muted { color: #888; }
+form { display: flex; gap: .5rem; margin-top: .75rem; }
+input { flex: 1; font: inherit; padding: .4rem; }
+</style>
+<h1>Gene Agent Gateway</h1>
+<div id="log" class="muted">connecting...</div>
+<form id="f"><input id="t" autofocus placeholder="message..."><button>send</button></form>
+<script>
+var tok = localStorage.gwToken || new URLSearchParams(location.search).get('token') || '';
+if (tok) localStorage.gwToken = tok;
+function hdrs(json) {
+  var h = {};
+  if (json) h['content-type'] = 'application/json';
+  if (tok) h['authorization'] = 'Bearer ' + tok;
+  return h;
+}
+var log = document.getElementById('log');
+var sid = null, cursor = 0, streaming = false;
+function show(cls, text) {
+  if (log.classList.contains('muted')) { log.textContent = ''; log.classList.remove('muted'); }
+  var span = document.createElement('span');
+  span.className = cls;
+  span.textContent = text;
+  log.appendChild(span);
+  log.scrollTop = log.scrollHeight;
+}
+function render(ev) {
+  if (ev.type === 'user') { if (streaming) { show('text', '\n'); streaming = false; } show('user', 'you> ' + ev.text + '\n'); }
+  else if (ev.type === 'text_delta') { if (!streaming) { show('text', 'agent> '); streaming = true; } show('text', ev.text); }
+  else if (ev.type === 'text') { if (streaming) { show('text', '\n'); streaming = false; } show('text', 'agent> ' + ev.text + '\n'); }
+  else if (ev.type === 'turn_done') { if (streaming) { show('text', '\n'); streaming = false; } }
+}
+function poll() {
+  fetch('/api/sessions/' + sid + '/events?cursor=' + cursor, { headers: hdrs(false) })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      (d.events || []).forEach(render);
+      if (d.cursor > cursor) cursor = d.cursor;
+      poll();
+    })
+    .catch(function () { setTimeout(poll, 1000); });
+}
+fetch('/api/sessions', { method: 'POST', headers: hdrs(false) })
+  .then(function (r) { return r.json(); })
+  .then(function (d) { sid = d.id; show('muted', 'session ' + sid + '\n'); poll(); });
+document.getElementById('f').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var t = document.getElementById('t');
+  if (!t.value || !sid) return;
+  fetch('/api/sessions/' + sid + '/messages',
+        { method: 'POST', headers: hdrs(true), body: JSON.stringify({ text: t.value }) });
+  t.value = '';
+});
+</script>
+""")
+
+(fn route [req]
+  (var parts (split req/path "/"))
+  (if (= req/path "/")
+    (Response ^status 200
+              ^headers {^content-type "text/html; charset=utf-8"}
+              ^body web-page)
+    (if (= req/path "/api/sessions")
+      (if (= req/method "POST")
+        (create-session)
+        (list-sessions))
+      (if (&& (>= parts/~size 5)
+              (= parts/1 "api")
+              (= parts/2 "sessions"))
+        (match parts/4
+          (when "messages"
+            (if (= req/method "POST")
+              (post-message parts/3 req)
+              (json-response 405 {^error "method not allowed"})))
+          (when "events" (get-events parts/3 req))
+          (else (json-response 404 {^error "not found"})))
+        (json-response 404 {^error "not found"})))))
+
+(fn handle [req]
+  (if (authorized? req)
+    (route req)
+    (json-response 401 {^error "unauthorized"})))
+
+(fn main [args]
+  (println $"Gene agent gateway - http://${gw-host}:${gw-port} (model ${model})")
+  (if (= auth-token nil)
+    (println "No model API token set - sessions use the offline demo transport.")
+    nil)
+  (if (= gw-token "")
+    (println "GENE_GATEWAY_TOKEN unset - API is open; keep the bind on localhost.")
+    nil)
+  (serve (Server ^host gw-host ^port gw-port) handle))
