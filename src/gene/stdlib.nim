@@ -1888,6 +1888,8 @@ type SerdePolicyLimits = object
 type SerdeWriter = object
   sb: string
   scope: Scope
+  app: Application                  # nil unless allowRefs (origin resolution)
+  allowRefs: bool                   # serde/write emits refs; write-data errors
   path: seq[string]
   onPath: HashSet[uint64]           # container identities on the current path
   symCache: Table[string, bool]     # symbol text -> re-reads verbatim
@@ -1895,6 +1897,8 @@ type SerdeWriter = object
 
 type SerdeReader = object
   scope: Scope
+  app: Application                  # nil unless resolveRefs
+  resolveRefs: bool                 # serde/read resolves refs; read-data errors
   limits: SerdePolicyLimits
   nodes: int
   symbols: HashSet[string]
@@ -1955,7 +1959,120 @@ proc serdePropKeyUsable(w: var SerdeWriter, k: string): bool =
   w.keyCache[k] = ok
   ok
 
+proc serdeEmitStrLit(w: var SerdeWriter, s: string) =
+  w.sb.add print(newStr(s))
+
+# --- origin index (stage 3): definition value -> (module, internal path) -----
+
+proc serdeModuleRelPath(app: Application, absPath: string): string =
+  ## Package-root-relative module identity without extension, '/'-separated.
+  ## Matches what resolveModulePath accepts as a bare path, so refs resolve the
+  ## same on any machine.
+  let root = normalizedPath(absolutePath(app.packageRoot))
+  var rel = absPath
+  let prefix = (if root.len > 0 and root[^1] == DirSep: root else: root & $DirSep)
+  if absPath.startsWith(prefix):
+    rel = absPath[prefix.len .. ^1]
+  if rel.endsWith(".gene"):
+    rel = rel[0 ..< rel.len - ".gene".len]
+  when DirSep != '/':
+    rel = rel.replace($DirSep, "/")
+  rel
+
+proc serdeRecordOrigin(app: Application, v: Value, module, path: string) =
+  ## First name wins for a given value, so a stable path is chosen across
+  ## re-scans and alias bindings.
+  if not app.serdeOrigins.hasKey(v.bits):
+    app.serdeOrigins[v.bits] = (module: module, path: path)
+
+proc serdeIndexScope(app: Application, scope: Scope, module: string,
+                     prefix: string, visited: var HashSet[pointer])
+
+proc serdeIndexBinding(app: Application, name: string, val: Value,
+                       module, prefix: string, visited: var HashSet[pointer]) =
+  let internal = if prefix.len == 0: name else: prefix & "/" & name
+  case val.kind
+  of vkType:
+    serdeRecordOrigin(app, val, module, internal)
+    if val.isEnumType:
+      for variant in val.enumVariants:
+        serdeRecordOrigin(app, variant, module,
+                          internal & "/" & variant.enumVariantName)
+  of vkProtocol, vkFunction, vkNativeFn:
+    serdeRecordOrigin(app, val, module, internal)
+  of vkNamespace:
+    serdeRecordOrigin(app, val, module, internal)
+    serdeIndexScope(app, val.nsScope, module, internal, visited)
+  else:
+    discard
+
+proc serdeIndexScope(app: Application, scope: Scope, module: string,
+                     prefix: string, visited: var HashSet[pointer]) =
+  if scope == nil:
+    return
+  let key = cast[pointer](scope)
+  if key in visited:
+    return
+  visited.incl key
+  for name, val in scope.vars:
+    serdeIndexBinding(app, name, val, module, prefix, visited)
+  for i in 0 ..< scope.slots.len:
+    if i < scope.slotNames.len and scope.slotDefined(i):
+      serdeIndexBinding(app, scope.slotNames[i], scope.slots[i],
+                        module, prefix, visited)
+
+proc serdeEnsureOrigins(app: Application) =
+  ## Build the reverse index lazily: builtins once, plus any module cached
+  ## since the last call. Cheap re-scan (skips already-indexed modules).
+  if app == nil:
+    return
+  var visited = initHashSet[pointer]()
+  if not app.serdeOriginBuiltinsDone:
+    serdeIndexScope(app, app.builtinsScope(), "", "", visited)
+    app.serdeOriginBuiltinsDone = true
+  for absPath, modVal in app.moduleCache:
+    if absPath in app.serdeOriginModules:
+      continue
+    app.serdeOriginModules.incl absPath
+    if modVal.kind == vkModule:
+      let rootNs = modVal.moduleRootNamespace
+      if rootNs.kind == vkNamespace:
+        serdeIndexScope(app, rootNs.nsScope,
+                        serdeModuleRelPath(app, absPath), "", visited)
+
+proc serdeOriginOf(w: var SerdeWriter, v: Value):
+    tuple[found: bool, module, path: string] =
+  if w.app == nil:
+    return (false, "", "")
+  serdeEnsureOrigins(w.app)
+  if w.app.serdeOrigins.hasKey(v.bits):
+    let o = w.app.serdeOrigins[v.bits]
+    (true, o.module, o.path)
+  else:
+    (false, "", "")
+
 proc serdeEmit(w: var SerdeWriter, v: Value)
+
+proc serdeEmitRef(w: var SerdeWriter, tag, module, path: string) =
+  w.sb.add "(" & tag
+  if module.len > 0:
+    w.sb.add " ^module "
+    serdeEmitStrLit(w, module)
+  w.sb.add " ^path "
+  serdeEmitStrLit(w, path)
+  w.sb.add ')'
+
+proc serdeEmitDefRef(w: var SerdeWriter, v: Value, tag, kindLabel: string) =
+  if not w.allowRefs:
+    raiseSerdeError(w.scope,
+      kindLabel & " values are not data (use serde/write to emit a reference)",
+      w.path)
+  let o = serdeOriginOf(w, v)
+  if not o.found:
+    raiseSerdeError(w.scope,
+      kindLabel & " has no module origin and cannot be referenced " &
+      "(defined at runtime, in a function body, or anonymously)", w.path)
+  serdeEmitRef(w, tag, o.module, o.path)
 
 proc serdeEnterContainer(w: var SerdeWriter, v: Value) =
   if v.bits in w.onPath:
@@ -1964,9 +2081,6 @@ proc serdeEnterContainer(w: var SerdeWriter, v: Value) =
 
 proc serdeLeaveContainer(w: var SerdeWriter, v: Value) =
   w.onPath.excl v.bits
-
-proc serdeEmitStrLit(w: var SerdeWriter, s: string) =
-  w.sb.add print(newStr(s))
 
 proc serdeEmitMapBody(w: var SerdeWriter, entries: PropTable) =
   ## Emit `^k v` pairs; caller guarantees every key is usable.
@@ -2143,6 +2257,30 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
         discard w.path.pop()
       w.sb.add ')'
     serdeLeaveContainer(w, v)
+  of vkType:
+    if v.isEnumType:
+      serdeEmitDefRef(w, v, "serde-enum-ref", "enum")
+    else:
+      serdeEmitDefRef(w, v, "serde-type-ref", "type")
+  of vkProtocol:
+    serdeEmitDefRef(w, v, "serde-protocol-ref", "protocol")
+  of vkEnumVariant:
+    serdeEmitDefRef(w, v, "serde-variant-ref", "enum variant")
+  of vkNamespace:
+    serdeEmitDefRef(w, v, "serde-ns-ref", "namespace")
+  of vkNativeFn:
+    serdeEmitDefRef(w, v, "serde-fn-ref", "native function")
+  of vkFunction:
+    if w.allowRefs and serdeOriginOf(w, v).found:
+      serdeEmitDefRef(w, v, "serde-fn-ref", "function")
+    elif w.allowRefs:
+      raiseSerdeError(w.scope,
+        "functions with captured scope do not serialize (only module-level " &
+        "named functions can be referenced)", w.path)
+    else:
+      raiseSerdeError(w.scope,
+        "functions are not data (use serde/write to reference a module-level " &
+        "function)", w.path)
   of vkCell, vkAtomicCell:
     raiseSerdeError(w.scope,
       "cells do not serialize (identity equality; serialize the contents " &
@@ -2151,15 +2289,20 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     raiseSerdeError(w.scope,
       "capability values never serialize (authority does not round-trip " &
       "through data)", w.path)
-  of vkFunction:
-    raiseSerdeError(w.scope,
-      "functions with captured scope do not serialize", w.path)
   else:
     raiseSerdeError(w.scope,
       $v.kind & " values do not serialize (process-bound)", w.path)
 
 proc serdeWriteDataText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope)
+  w.sb.add "(serde-v1 "
+  serdeEmit(w, v)
+  w.sb.add ')'
+  w.sb
+
+proc serdeWriteFullText(v: Value, scope: Scope): string =
+  var w = SerdeWriter(scope: scope, allowRefs: true,
+                      app: application(scope))
   w.sb.add "(serde-v1 "
   serdeEmit(w, v)
   w.sb.add ')'
@@ -2215,8 +2358,140 @@ proc serdeBodyLen(r: var SerdeReader, v: Value, tag: string, n: int) =
     raiseSerdeError(r.scope, tag & " expects exactly " & $n &
                     " children and no props", r.path)
 
+# --- reference resolution (stage 3): (module, path) -> definition value ------
+
+proc serdeRefCoords(r: var SerdeReader, v: Value, tag: string):
+    tuple[module, path: string] =
+  ## Extract ^module (optional) + ^path (required) from a ref node. Any other
+  ## prop — notably the reserved ^package/^version — is an error, so old
+  ## readers reject payloads that start using them (design §5).
+  if v.body.len > 0 or v.meta.len > 0:
+    raiseSerdeError(r.scope, tag & " takes only ^module/^path props", r.path)
+  var module = ""
+  var path = ""
+  var havePath = false
+  for k, val in v.props:
+    case k
+    of "module":
+      if val.kind != vkString:
+        raiseSerdeError(r.scope, tag & " ^module must be a Str", r.path)
+      module = val.strVal
+    of "path":
+      if val.kind != vkString:
+        raiseSerdeError(r.scope, tag & " ^path must be a Str", r.path)
+      path = val.strVal
+      havePath = true
+    else:
+      raiseSerdeError(r.scope,
+        tag & " has unsupported ref feature ^" & k &
+        " (^package/^version are reserved for a later version)", r.path)
+  if not havePath or path.len == 0:
+    raiseSerdeError(r.scope, tag & " requires a non-empty ^path", r.path)
+  (module, path)
+
+proc serdeScopeLookupOwn(scope: Scope, name: string):
+    tuple[found: bool, value: Value] =
+  ## Look up a name in a scope's OWN bindings only (never parents), so module
+  ## resolution cannot leak into builtins and vice versa.
+  if scope == nil:
+    return (false, NIL)
+  if scope.vars.hasKey(name):
+    return (true, scope.vars.getOrDefault(name))
+  for i in 0 ..< scope.slots.len:
+    if i < scope.slotNames.len and scope.slotDefined(i) and
+        scope.slotNames[i] == name:
+      return (true, scope.slots[i])
+  (false, NIL)
+
+proc serdeResolveModuleScope(r: var SerdeReader, module: string): Scope =
+  ## The scope to resolve a ref path against. Builtins for module=="". For a
+  ## named module, the module must already be loaded — resolution NEVER loads
+  ## it (loading executes top-level code; design §6). Missing -> unresolved.
+  if module.len == 0:
+    return r.app.builtinsScope()
+  var absPath: string
+  try:
+    absPath = r.app.resolveModulePath(module)
+  except CatchableError as e:
+    raiseSerdeError(r.scope, "cannot resolve module '" & module & "': " &
+                    e.msg, r.path)
+  if not r.app.moduleCache.hasKey(absPath):
+    var props = initOrderedTable[string, Value]()
+    props["message"] = newStr("at " & serdePathText(r.path) &
+      ": module not loaded: " & module &
+      " (import it before deserializing references to it)")
+    props["path"] = newStr(serdePathText(r.path))
+    props["unresolved"] = newStr(module)
+    var e: ref GeneError
+    new(e)
+    e.msg = "serde: module not loaded: " & module
+    e.errVal = newNode(builtInTypeHead(r.scope, "SerdeError"), props = props)
+    e.hasErrVal = true
+    raise e
+  let modVal = r.app.moduleCache.getOrDefault(absPath)
+  if modVal.kind != vkModule:
+    raiseSerdeError(r.scope, "module '" & module & "' is not a module", r.path)
+  let rootNs = modVal.moduleRootNamespace
+  if rootNs.kind != vkNamespace:
+    raiseSerdeError(r.scope, "module '" & module & "' has no root namespace",
+                    r.path)
+  rootNs.nsScope
+
+proc serdeLookupRefPath(r: var SerdeReader, startScope: Scope,
+                        module, path: string): Value =
+  let segs = path.split('/')
+  var lookupIn = serdeScopeLookupOwn(startScope, segs[0])
+  if not lookupIn.found:
+    raiseSerdeError(r.scope, "unresolved reference: '" & path &
+      "' in " & (if module.len == 0: "builtins" else: module), r.path)
+  var cur = lookupIn.value
+  for i in 1 ..< segs.len:
+    let seg = segs[i]
+    if cur.kind == vkNamespace:
+      let nxt = serdeScopeLookupOwn(cur.nsScope, seg)
+      if not nxt.found:
+        raiseSerdeError(r.scope, "unresolved reference: '" & path & "'", r.path)
+      cur = nxt.value
+    elif cur.kind == vkType and cur.isEnumType and i == segs.len - 1:
+      let variant = enumVariantDescriptor(cur, seg)
+      if variant.kind == vkVoid:
+        raiseSerdeError(r.scope, "unresolved enum variant: '" & path & "'",
+                        r.path)
+      cur = variant
+    else:
+      raiseSerdeError(r.scope, "unresolved reference: '" & path &
+        "' (cannot descend into " & $cur.kind & ")", r.path)
+  cur
+
+proc serdeResolveRef(r: var SerdeReader, v: Value, tag: string): Value =
+  if not r.resolveRefs:
+    raiseSerdeError(r.scope,
+      tag & " requires serde/read (serde/read-data accepts pure data only)",
+      r.path)
+  let coords = serdeRefCoords(r, v, tag)
+  let startScope = serdeResolveModuleScope(r, coords.module)
+  let resolved = serdeLookupRefPath(r, startScope, coords.module, coords.path)
+  let ok =
+    case tag
+    of "serde-type-ref": resolved.kind == vkType and not resolved.isEnumType
+    of "serde-enum-ref": resolved.kind == vkType and resolved.isEnumType
+    of "serde-protocol-ref": resolved.kind == vkProtocol
+    of "serde-variant-ref": resolved.kind == vkEnumVariant
+    of "serde-ns-ref": resolved.kind == vkNamespace
+    of "serde-fn-ref": resolved.kind in {vkFunction, vkNativeFn}
+    else: false
+  if not ok:
+    raiseSerdeError(r.scope, tag & " resolved to a " & $resolved.kind &
+      ", not the expected kind, at '" & coords.path & "'", r.path)
+  resolved
+
 proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
                         depth: int): Value =
+  case tag
+  of "serde-type-ref", "serde-enum-ref", "serde-protocol-ref",
+     "serde-variant-ref", "serde-ns-ref", "serde-fn-ref":
+    return serdeResolveRef(r, v, tag)
+  else: discard
   case tag
   of "serde-float":
     serdeBodyLen(r, v, tag, 1)
@@ -2407,23 +2682,9 @@ proc biSerdeDataP(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   except GeneError:
     FALSE
 
-proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 1:
-    raise newException(GeneError,
-      "serde/read-data expects a Str plus optional ^policy")
-  requireStr("serde/read-data", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
-  var policy = NIL
-  if call != nil:
-    for i, name in call[].namedNames:
-      case name
-      of "policy":
-        policy = call[].namedValues[i]
-      else:
-        raiseSerdeError(scope,
-          "serde/read-data got unexpected named argument: " & name)
+proc serdeReadEnvelope(name, text: string, scope: Scope, policy: Value,
+                       resolveRefs: bool): Value =
   let limits = serdeLimitsFrom(policy, scope)
-  let text = args[0].strVal
   if text.len > limits.maxBytes:
     raiseSerdeError(scope, "payload exceeds max-bytes (" &
                     $limits.maxBytes & ")")
@@ -2445,8 +2706,51 @@ proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       envelope.meta.len > 0:
     raiseSerdeError(scope,
       "serde-v1 envelope expects exactly one payload form")
-  var r = SerdeReader(scope: scope, limits: limits)
+  var r = SerdeReader(scope: scope, limits: limits,
+                      resolveRefs: resolveRefs,
+                      app: (if resolveRefs: application(scope) else: nil))
   serdeDecode(r, envelope.body[0], 0)
+
+proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError,
+      "serde/read-data expects a Str plus optional ^policy")
+  requireStr("serde/read-data", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  var policy = NIL
+  if call != nil:
+    for i, name in call[].namedNames:
+      case name
+      of "policy":
+        policy = call[].namedValues[i]
+      else:
+        raiseSerdeError(scope,
+          "serde/read-data got unexpected named argument: " & name)
+  serdeReadEnvelope("serde/read-data", args[0].strVal, scope, policy,
+                    resolveRefs = false)
+
+proc biSerdeWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("serde/write", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  newStr(serdeWriteFullText(args[0], scope))
+
+proc biSerdeRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError,
+      "serde/read expects a Str plus optional ^policy")
+  requireStr("serde/read", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  var policy = NIL
+  if call != nil:
+    for i, name in call[].namedNames:
+      case name
+      of "policy":
+        policy = call[].namedValues[i]
+      else:
+        raiseSerdeError(scope,
+          "serde/read got unexpected named argument: " & name)
+  serdeReadEnvelope("serde/read", args[0].strVal, scope, policy,
+                    resolveRefs = true)
 
 
 # --- db backends: sqlite and postgres behind the shared Db protocol ---
@@ -3256,6 +3560,10 @@ proc registerStdlibNamespaces(root: Scope) =
                     acceptsNamed = false))
   serdeScope.define("read-data",
     newNativeCallFn("serde/read-data", biSerdeReadData))
+  serdeScope.define("write",
+    newNativeCallFn("serde/write", biSerdeWrite, acceptsNamed = false))
+  serdeScope.define("read",
+    newNativeCallFn("serde/read", biSerdeRead))
   serdeScope.define("data?",
     newNativeCallFn("serde/data?", biSerdeDataP, acceptsNamed = false))
   serdeScope.define("SerdeError", serdeError)

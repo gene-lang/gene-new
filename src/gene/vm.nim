@@ -276,6 +276,13 @@ type
     moduleSyntaxFns: Table[string, seq[string]]
     currentModuleDir: string
     packageRoot: string
+    # serde stage 3+ reverse origin index: definition value bits ->
+    # (module rel-path, internal path). Built lazily on first serde/write that
+    # needs a ref, so module load pays nothing when serde is unused. Read never
+    # touches it (it resolves directly against builtins + moduleCache).
+    serdeOrigins: Table[uint64, tuple[module, path: string]]
+    serdeOriginBuiltinsDone: bool
+    serdeOriginModules: HashSet[string]
 
 # Current threaded scheduler queues are lock-protected seqs shared with worker
 # threads. Reserve enough room up front so worker parking/enqueue paths do not
@@ -305,6 +312,7 @@ proc schedulerForScope(scope: Scope): SchedulerState
 proc application*(scope: Scope): Application
 proc builtinsScope*(app: Application): Scope
 proc builtinsScope*(): Scope
+proc resolveModulePath*(app: Application, rawPath: string): string
 
 type
   SuspendError = object of CatchableError

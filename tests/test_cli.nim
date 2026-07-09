@@ -789,6 +789,53 @@ suite "cli — gene parse/fmt/compile":
     check ("at " & normalizedPath(absolutePath(path)) & ":2:1") in ran.output
     check "2 | (+ x missing)" in ran.output
 
+  test "serde references round-trip across module boundaries":
+    ## Stage 3 (docs/proposals/serialization.md §5/§6): type/enum/variant/
+    ## protocol/fn refs to an imported module round-trip by identity, and
+    ## serde/read resolves against loaded modules WITHOUT executing a module
+    ## that only appears in a reference (no-code-execution property).
+    discard writeCliProgram("serde_geometry.gene", """
+(mod serde-geometry)
+(type Point ^props {^x Int ^y Int})
+(enum Shape circle square triangle)
+(protocol Drawable (message draw [self : Self] : Str))
+(fn area [p : Point] : Int (* p/x p/y))
+""")
+    discard writeCliProgram("serde_sidefx.gene", """
+(mod serde-sidefx)
+(println "SIDEFX-RAN")
+(type Widget ^props {^n Int})
+""")
+    let prog = writeCliProgram("serde_refs.gene", """
+(import serde [write read SerdeError])
+(import str [contains? join])
+(import [Point Shape Drawable area] from "./serde_geometry")
+(fn check [label ok] (println (join [label (if ok "ok" "FAIL")] " ")))
+(check "type" (= Point (read (write Point))))
+(check "enum" (= Shape (read (write Shape))))
+(check "variant" (= Shape/circle (read (write Shape/circle))))
+(check "protocol" (= Drawable (read (write Drawable))))
+(var a2 (read (write area)))
+(check "fn" (= 12 (a2 (Point ^x 3 ^y 4))))
+(var t (write Point))
+(check "ref-shape" (&& (contains? t "serde-type-ref") (contains? t "Point")))
+# resolving a ref to an un-imported module must not load/run it
+(check "no-exec"
+  (try (do (read "(serde-v1 (serde-type-ref ^module \"serde-sidefx\" ^path \"Widget\"))") false)
+       catch (SerdeError ^message m) (contains? m "not loaded")))
+""")
+    let ran = runGene(["run", prog])
+    check ran.exitCode == 0
+    check "type ok" in ran.output
+    check "enum ok" in ran.output
+    check "variant ok" in ran.output
+    check "protocol ok" in ran.output
+    check "fn ok" in ran.output
+    check "ref-shape ok" in ran.output
+    check "no-exec ok" in ran.output
+    check "FAIL" notin ran.output
+    check "SIDEFX-RAN" notin ran.output
+
 suite "cli — gene doc":
   setup:
     createDir(cliDir)

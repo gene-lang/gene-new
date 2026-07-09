@@ -3271,6 +3271,60 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "catch (SerdeError ^message _) \"bad-range\")",
                "\"bad-range\"")
 
+suite "spec — serde references (stage 3)":
+  test "builtin function references round-trip by identity":
+    check_eval("(import serde [write read]) " &
+               "(= str/join (read (write str/join)))",
+               "true")
+    check_eval("(import serde [write read]) " &
+               "(var f (read (write str/join))) (f [\"a\" \"b\"] \"-\")",
+               "\"a-b\"")
+
+  test "builtin references carry a path but no module":
+    check_eval("(import serde [write]) " &
+               "(import str [contains?]) " &
+               "(var t (write str/join)) " &
+               "[(contains? t \"serde-fn-ref\") (contains? t \"str/join\") " &
+               " (contains? t \"^module\")]",
+               "[true true false]")
+
+  test "write-data refuses references":
+    check_eval("(import serde [write-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (write-data str/join) " &
+               "catch (SerdeError ^message m) (contains? m \"not data\"))",
+               "true")
+
+  test "read-data refuses reference tags":
+    check_eval("(import serde [write read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data (write str/join)) " &
+               "catch (SerdeError ^message m) (contains? m \"serde/read\"))",
+               "true")
+
+  test "unresolved module reference errors without loading":
+    check_eval("(import serde [read SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read \"(serde-v1 (serde-type-ref ^module \\\"no/such\\\" " &
+               "^path \\\"X\\\"))\") " &
+               "catch (SerdeError ^message m) (contains? m \"not loaded\"))",
+               "true")
+
+  test "reserved ref props are rejected":
+    check_eval("(import serde [read SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read \"(serde-v1 (serde-type-ref ^package \\\"p\\\" " &
+               "^path \\\"X\\\"))\") " &
+               "catch (SerdeError ^message m) (contains? m \"reserved\"))",
+               "true")
+
+  test "a reference resolving to the wrong kind errors":
+    check_eval("(import serde [read SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read \"(serde-v1 (serde-type-ref ^path \\\"str/join\\\"))\") " &
+               "catch (SerdeError ^message m) (contains? m \"not the expected kind\"))",
+               "true")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))
