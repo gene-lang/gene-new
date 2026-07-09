@@ -2,8 +2,9 @@
 
 Status: **milestones 1–4 implemented; subprocess streaming prompt shipped;
 OpenAI-compatible chat endpoints shipped; milestone 8 shipped (async
-subprocess + gateway skeleton, `examples/agent_gateway.gene`); 5–7 and 9–13
-planned.** Date: 2026-07-08.
+subprocess + gateway skeleton) and milestone 9 shipped (Telegram channel),
+both in `examples/agent_gateway.gene`; 5–7 and 10–13 planned.**
+Date: 2026-07-08.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -556,9 +557,13 @@ Gateway / multi-surface milestones (§12; each independently shippable):
    primitives, so the CLI keeps identical behavior while the gateway runs
    sessions concurrently (verified: two 900 ms model calls complete in ~one
    latency in the test_cli e2e).
-9. **Telegram channel.** `getUpdates` long-poll adapter over the async
-   subprocess transport, chat-id allowlist, per-chat sessions, throttled
-   `editMessageText` streaming.
+9. **Telegram channel — implemented.** `getUpdates` long-poll adapter task
+   over `os/exec-async`, chat-id allowlist (`TELEGRAM_ALLOWED_CHAT_IDS`),
+   per-chat sessions (`tg-<chat-id>`), streamed replies via `sendMessage` +
+   size-throttled `editMessageText`. Outbound events cross to a dedicated
+   sender fiber through a channel as JSON strings (channel items must be
+   Send-safe). Verified against a fake Bot API over loopback in test_cli
+   (allowed chat answered through the full turn, unlisted chat dropped).
 10. **Web UI + async approvals.** Approval-request events rendered as buttons,
     multi-session switcher, transcript streaming via long-poll deltas.
 11. **Persistence.** Sessions/events in sqlite via the existing `db/sqlite`
@@ -708,20 +713,31 @@ approval requests rendered as allow/deny buttons posting to 12.2. No build
 step, no framework, no external assets — the page is a string in the Gene
 source. Session switcher reads `GET /api/sessions`.
 
-### 12.6 Telegram channel
+### 12.6 Telegram channel (implemented, milestone 9)
 
-The cheapest remote surface, and deliberately the first (milestone 9): it
-needs **outbound HTTPS only**, which the curl transport already provides.
+The cheapest remote surface, and deliberately the first: it needs **outbound
+HTTPS only**, which the curl transport already provides. As shipped in
+`examples/agent_gateway.gene`:
 
 - an adapter task long-polls `getUpdates` (`timeout=50`, offset cursor) via
-  the async subprocess primitive (12.9 gap 1);
-- updates route to sessions keyed by `chat.id`; unknown chat ids are dropped
-  unless listed in `TELEGRAM_ALLOWED_CHAT_IDS` (single-user posture);
-- replies stream by `sendMessage` + throttled `editMessageText` (≤1 edit/s,
-  riding the 12.3 coalesced deltas), final text on `turn_done`;
-- approvals render as a message with an id; the user replies
-  `/approve ap_7` (inline keyboards can come later);
-- config: `TELEGRAM_BOT_TOKEN`; no inbound port, no webhook, no TLS server.
+  `os/exec-async`;
+- updates route to sessions keyed by `chat.id` (`tg-<chat-id>`, also visible
+  to the HTTP API and web UI); unknown chat ids are dropped unless listed in
+  `TELEGRAM_ALLOWED_CHAT_IDS` (single-user posture; `*` allows all);
+- replies stream by `sendMessage` + `editMessageText` throttled by size
+  (one edit per ~200 new characters), final edit on `turn_done`;
+- session events reach Telegram through an **outbound queue**: the session's
+  on-event hook does a non-blocking `Channel/try-send` of the event as a
+  JSON string (channel items must be Send-safe, i.e. immutable), and a
+  dedicated sender fiber drains the queue and talks to the Bot API — so a
+  slow Telegram call never stalls a turn, and the hook never suspends inside
+  a native render callback;
+- config: `TELEGRAM_BOT_TOKEN`, optional `TELEGRAM_API_BASE` (points at the
+  fake Bot API in tests); no inbound port, no webhook, no TLS server.
+
+Still pending from the original sketch: approval requests as Telegram
+messages (`/approve ap_7`) — arrives with the async-approvals milestone
+(m10).
 
 ### 12.7 Slack channel
 

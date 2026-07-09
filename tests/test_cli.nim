@@ -356,6 +356,130 @@ suite "cli — gene run":
     # endpoint; parallel sessions finish in roughly one latency.
     check elapsedMs < 1700
 
+  test "agent gateway bridges telegram chats through the bot api":
+    ## Milestone 9 e2e (docs/ai-agent.md §12.6) over loopback: a fake Telegram
+    ## Bot API serves one canned getUpdates batch — a message from allowed
+    ## chat 42 and one from unlisted chat 99 — and records sendMessage /
+    ## editMessageText calls. The gateway (offline demo transport) must route
+    ## chat 42 into a session, run the turn, and mirror the tool trace and
+    ## final answer back via sendMessage; chat 99 must produce nothing.
+    buildGeneCli()
+    let botApi = writeCliProgram("fake_telegram_api.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [contains?])
+(import std/stream [to_stream into])
+
+(var served-updates (cell false))
+(var outbox (cell []))
+(var next-mid (cell 100))
+
+(fn append-out [entry]
+  (outbox ~ Cell/set ((to_stream [entry]) ~ into (outbox ~ Cell/get))))
+
+(fn json-response [value]
+  (Response ^status 200
+            ^headers {^content-type "application/json"}
+            ^body (stringify value)))
+
+(fn handle [req]
+  (if (contains? req/path "/getUpdates")
+    (if (served-updates ~ Cell/get)
+      (do
+        (sleep 400)
+        (json-response {^ok true ^result []}))
+      (do
+        (served-updates ~ Cell/set true)
+        (json-response
+          {^ok true
+           ^result [{^update_id 1
+                     ^message {^message_id 10
+                               ^chat {^id 42}
+                               ^text "what is in this directory?"}}
+                    {^update_id 2
+                     ^message {^message_id 11
+                               ^chat {^id 99}
+                               ^text "let me in"}}]})))
+    (if (contains? req/path "/sendMessage")
+      (do
+        (var payload (parse req/body))
+        (next-mid ~ Cell/set (+ (next-mid ~ Cell/get) 1))
+        (append-out {^method "sendMessage" ^chat_id payload/chat_id
+                     ^text payload/text ^message_id (next-mid ~ Cell/get)})
+        (json-response {^ok true
+                        ^result {^message_id (next-mid ~ Cell/get)}}))
+      (if (contains? req/path "/editMessageText")
+        (do
+          (var payload (parse req/body))
+          (append-out {^method "editMessageText" ^chat_id payload/chat_id
+                       ^message_id payload/message_id ^text payload/text})
+          (json-response {^ok true ^result true}))
+        (if (= req/path "/outbox")
+          (json-response {^outbox (outbox ~ Cell/get)})
+          (json-response {^ok false ^description "unknown method"}))))))
+
+(serve (Server ^host "127.0.0.1" ^port 8994) handle)
+""")
+    let botProc = startProcess(geneExe, args = ["run", botApi],
+                               options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if botProc.running:
+        botProc.terminate()
+      botProc.close()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
+              "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL",
+              "GENE_GATEWAY_PORT=8995",
+              "TELEGRAM_BOT_TOKEN=test-token",
+              "TELEGRAM_API_BASE=http://127.0.0.1:8994",
+              "TELEGRAM_ALLOWED_CHAT_IDS=42",
+              geneExe, "run", "examples/agent_gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running:
+        gatewayProc.terminate()
+      gatewayProc.close()
+    for port in [8994, 8995]:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(port), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+
+    # Poll the recorded outbox until the final answer lands.
+    var outbox = ""
+    block waitOutbox:
+      let deadline = getMonoTime() + initDuration(seconds = 20)
+      while getMonoTime() < deadline:
+        let ran = execCmdEx("curl -sS --max-time 5 http://127.0.0.1:8994/outbox")
+        if ran.exitCode == 0:
+          outbox = ran.output
+          if "list_dir tool" in outbox:
+            break waitOutbox
+        sleep(250)
+      checkpoint "telegram outbox never received the answer: " & outbox
+      check false
+
+    check "\"chat_id\":42" in outbox
+    check "tool list_dir" in outbox
+    check "I listed the workspace via the list_dir tool." in outbox
+    # The unlisted chat never got a message.
+    check "\"chat_id\":99" notin outbox
+    # The turn also shows up in the gateway session log under tg-42.
+    let events = execCmdEx(
+      "curl -sS --max-time 5 " &
+      "'http://127.0.0.1:8995/api/sessions/tg-42/events?cursor=0'")
+    check events.exitCode == 0
+    check "turn_done" in events.output
+
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")
     let ran = runGene(["run", badMain])
