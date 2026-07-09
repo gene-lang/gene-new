@@ -2052,6 +2052,7 @@ proc serdeOriginOf(w: var SerdeWriter, v: Value):
     (false, "", "")
 
 proc serdeEmit(w: var SerdeWriter, v: Value)
+proc serdeEmitInst(w: var SerdeWriter, v: Value)
 
 proc serdeEmitRef(w: var SerdeWriter, tag, module, path: string) =
   w.sb.add "(" & tag
@@ -2215,6 +2216,10 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     serdeLeaveContainer(w, v)
   of vkNode:
     serdeEnterContainer(w, v)
+    if v.head.kind == vkType or v.head.kind == vkEnumVariant:
+      serdeEmitInst(w, v)
+      serdeLeaveContainer(w, v)
+      return
     if serdeNodeNeedsEscape(w, v):
       # (serde-data-node <immutable> <head> <props-map> <meta-map> <child>*)
       w.sb.add "(serde-data-node "
@@ -2292,6 +2297,30 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
   else:
     raiseSerdeError(w.scope,
       $v.kind & " values do not serialize (process-bound)", w.path)
+
+proc serdeEmitInst(w: var SerdeWriter, v: Value) =
+  ## A typed instance: (serde-inst <head-ref> <props-serde-map> [body...]).
+  ## Read-back uses direct typed-data construction (never ctor), so the head
+  ## must be a resolvable type or enum variant.
+  if not w.allowRefs:
+    raiseSerdeError(w.scope,
+      "typed instances are not data (use serde/write)", w.path)
+  if v.head.kind == vkEnumVariant and v.props.len > 0:
+    raiseSerdeError(w.scope,
+      "enum-variant value unexpectedly carries props", w.path)
+  w.sb.add "(serde-inst "
+  w.path.add "type"
+  serdeEmit(w, v.head)              # emits serde-type-ref / serde-variant-ref
+  discard w.path.pop()
+  w.sb.add ' '
+  serdeEmitEscapedMap(w, v.props, false)
+  w.sb.add " ["
+  for i, it in v.body:
+    if i > 0: w.sb.add ' '
+    w.path.add $i
+    serdeEmit(w, it)
+    discard w.path.pop()
+  w.sb.add "])"
 
 proc serdeWriteDataText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope)
@@ -2601,6 +2630,60 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       meta[k] = val
     newNode(head, props = props, body = children, meta = meta,
             immutable = v.body[0].boolVal)
+  of "serde-inst":
+    if not r.resolveRefs:
+      raiseSerdeError(r.scope,
+        "serde-inst requires serde/read (serde/read-data accepts pure data " &
+        "only)", r.path)
+    for k, val in v.props:
+      if k == "schema-version":
+        if val.kind != vkInt:
+          raiseSerdeError(r.scope,
+            "serde-inst ^schema-version must be an Int", r.path)
+      else:
+        raiseSerdeError(r.scope,
+          "serde-inst has unsupported prop ^" & k, r.path)
+    if v.meta.len > 0:
+      raiseSerdeError(r.scope, "serde-inst takes no meta", r.path)
+    if v.body.len != 3:
+      raiseSerdeError(r.scope,
+        "serde-inst expects (head-ref props body)", r.path)
+    r.path.add "type"
+    let head = serdeDecode(r, v.body[0], depth + 1)
+    discard r.path.pop()
+    r.path.add "props"
+    let propsVal = serdeDecode(r, v.body[1], depth + 1)
+    discard r.path.pop()
+    r.path.add "body"
+    let bodyVal = serdeDecode(r, v.body[2], depth + 1)
+    discard r.path.pop()
+    if propsVal.kind != vkMap:
+      raiseSerdeError(r.scope, "serde-inst props must decode to a map", r.path)
+    if bodyVal.kind != vkList:
+      raiseSerdeError(r.scope, "serde-inst body must decode to a list", r.path)
+    if head.kind == vkType:
+      var na: NamedArgs
+      for k, val in propsVal.mapEntries:
+        na.names.add k
+        na.values.add val
+      try:
+        constructTypedInstance(head, bodyVal.listItems, na)
+      except GeneError as e:
+        raiseSerdeError(r.scope, "serde-inst construct: " & e.msg, r.path)
+        NIL
+    elif head.kind == vkEnumVariant:
+      if propsVal.mapEntries.len > 0:
+        raiseSerdeError(r.scope,
+          "enum-variant instance must have no props", r.path)
+      try:
+        applyCall(head, bodyVal.listItems, NamedArgs())
+      except GeneError as e:
+        raiseSerdeError(r.scope, "serde-inst variant: " & e.msg, r.path)
+        NIL
+    else:
+      raiseSerdeError(r.scope, "serde-inst head resolved to a " &
+        $head.kind & ", not a type or variant", r.path)
+      NIL
   else:
     raiseSerdeError(r.scope, "unknown serde control tag: " & tag, r.path)
     NIL

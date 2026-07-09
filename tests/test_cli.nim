@@ -789,17 +789,22 @@ suite "cli — gene parse/fmt/compile":
     check ("at " & normalizedPath(absolutePath(path)) & ":2:1") in ran.output
     check "2 | (+ x missing)" in ran.output
 
-  test "serde references round-trip across module boundaries":
-    ## Stage 3 (docs/proposals/serialization.md §5/§6): type/enum/variant/
-    ## protocol/fn refs to an imported module round-trip by identity, and
-    ## serde/read resolves against loaded modules WITHOUT executing a module
-    ## that only appears in a reference (no-code-execution property).
+  test "serde references and instances round-trip across module boundaries":
+    ## Stages 3-4 (docs/proposals/serialization.md §5-§7): type/enum/variant/
+    ## protocol/fn refs to an imported module round-trip by identity; typed
+    ## instances round-trip via direct construction (ctor never runs on
+    ## read-back); serde/read resolves against loaded modules WITHOUT executing
+    ## a module that only appears in a reference (no-code-execution property).
     discard writeCliProgram("serde_geometry.gene", """
 (mod serde-geometry)
 (type Point ^props {^x Int ^y Int})
+(type Line ^props {^a Point ^b Point})
 (enum Shape circle square triangle)
+(enum Result (ok Any) (err Str))
 (protocol Drawable (message draw [self : Self] : Str))
 (fn area [p : Point] : Int (* p/x p/y))
+(type Counter ^props {^n Int}
+  (ctor [start] (println "COUNTER-CTOR-RAN") (self ~ Node/set-prop! `n start)))
 """)
     discard writeCliProgram("serde_sidefx.gene", """
 (mod serde-sidefx)
@@ -807,10 +812,11 @@ suite "cli — gene parse/fmt/compile":
 (type Widget ^props {^n Int})
 """)
     let prog = writeCliProgram("serde_refs.gene", """
-(import serde [write read SerdeError])
+(import serde [write read write-data SerdeError])
 (import str [contains? join])
-(import [Point Shape Drawable area] from "./serde_geometry")
+(import [Point Line Shape Result Drawable area Counter] from "./serde_geometry")
 (fn check [label ok] (println (join [label (if ok "ok" "FAIL")] " ")))
+# stage 3: references
 (check "type" (= Point (read (write Point))))
 (check "enum" (= Shape (read (write Shape))))
 (check "variant" (= Shape/circle (read (write Shape/circle))))
@@ -819,10 +825,25 @@ suite "cli — gene parse/fmt/compile":
 (check "fn" (= 12 (a2 (Point ^x 3 ^y 4))))
 (var t (write Point))
 (check "ref-shape" (&& (contains? t "serde-type-ref") (contains? t "Point")))
-# resolving a ref to an un-imported module must not load/run it
 (check "no-exec"
   (try (do (read "(serde-v1 (serde-type-ref ^module \"serde-sidefx\" ^path \"Widget\"))") false)
        catch (SerdeError ^message m) (contains? m "not loaded")))
+# stage 4: typed instances via direct construction
+(var p (Point ^x 3 ^y 4))
+(check "inst" (= p (read (write p))))
+(check "inst-nested"
+  (= (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))
+     (read (write (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))))))
+(check "inst-variant-payload" (= (Result/ok 42) (read (write (Result/ok 42)))))
+(check "inst-wd-reject"
+  (try (do (write-data p) false) catch (SerdeError ^message m) (contains? m "not data")))
+(check "inst-unknown-field"
+  (try (do (read "(serde-v1 (serde-inst (serde-type-ref ^module \"serde_geometry\" ^path \"Point\") (serde-map false [\"x\" 1 \"y\" 2 \"z\" 9]) []))") false)
+       catch (SerdeError ^message m) (contains? m "no field")))
+# ctor must NOT run on read-back (new runs it once, printing the marker)
+(var c (new Counter 7))
+(var c2 (read (write c)))
+(check "inst-no-ctor" (&& (= c c2) (= 7 c2/n)))
 """)
     let ran = runGene(["run", prog])
     check ran.exitCode == 0
@@ -833,8 +854,16 @@ suite "cli — gene parse/fmt/compile":
     check "fn ok" in ran.output
     check "ref-shape ok" in ran.output
     check "no-exec ok" in ran.output
+    check "inst ok" in ran.output
+    check "inst-nested ok" in ran.output
+    check "inst-variant-payload ok" in ran.output
+    check "inst-wd-reject ok" in ran.output
+    check "inst-unknown-field ok" in ran.output
+    check "inst-no-ctor ok" in ran.output
     check "FAIL" notin ran.output
     check "SIDEFX-RAN" notin ran.output
+    # The ctor ran exactly once (from `new`), never during read-back.
+    check ran.output.count("COUNTER-CTOR-RAN") == 1
 
 suite "cli — gene doc":
   setup:
