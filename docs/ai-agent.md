@@ -568,8 +568,8 @@ Gateway / multi-surface milestones (§12; each independently shippable):
     multi-session switcher, transcript streaming via long-poll deltas.
 11. **Persistence.** Sessions/events in sqlite via the existing `db/sqlite`
     backend; gateway restart restores transcripts. Rides serde's data core
-    (`serde/write-data`/`read-data`, docs/serialization.md §4/§9) — session
-    transcripts are pure data, so this needs no reference resolution.
+    (`serde/write-data`/`read-data`, docs/proposals/serialization.md §4/§9) —
+    session transcripts are pure data, so this needs no reference resolution.
 12. **TUI as gateway client.** The full §7 curses TUI speaking the gateway API
     (nodelay `wgetch` polling so background events render while typing).
 13. **Slack channel.** Events API + `crypto/hmac-sha256` (§12.9 gap 4), or
