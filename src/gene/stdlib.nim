@@ -1884,6 +1884,7 @@ type SerdePolicyLimits = object
   maxNodes: int
   maxDepth: int
   maxSymbols: int
+  allowRestore: bool   # serde-hooked serde-restore runs user code; off by default
 
 type SerdeWriter = object
   sb: string
@@ -2286,10 +2287,23 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
       raiseSerdeError(w.scope,
         "functions are not data (use serde/write to reference a module-level " &
         "function)", w.path)
-  of vkCell, vkAtomicCell:
+  of vkCell:
+    if w.allowRefs:
+      # Snapshot only, and OUTSIDE the round-trip equality guarantee: identity
+      # and sharing are not preserved (design §7). read-data still rejects it.
+      w.sb.add "(serde-snapshot-cell "
+      w.path.add "cell"
+      serdeEmit(w, cellValue(v))
+      discard w.path.pop()
+      w.sb.add ')'
+    else:
+      raiseSerdeError(w.scope,
+        "cells are not data (identity equality; serialize the contents via " &
+        "Cell/get, or use serde/write for a snapshot)", w.path)
+  of vkAtomicCell:
     raiseSerdeError(w.scope,
-      "cells do not serialize (identity equality; serialize the contents " &
-      "via Cell/get instead)", w.path)
+      "atomic cells do not serialize (shared-memory escape hatch; serialize " &
+      "a loaded snapshot instead)", w.path)
   of vkCapability:
     raiseSerdeError(w.scope,
       "capability values never serialize (authority does not round-trip " &
@@ -2302,9 +2316,27 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
   ## A typed instance: (serde-inst <head-ref> <props-serde-map> [body...]).
   ## Read-back uses direct typed-data construction (never ctor), so the head
   ## must be a resolvable type or enum variant.
+  ##
+  ## A type with a `serde-state` type-direct message serializes its state
+  ## instead: (serde-hooked <type-ref> <state>). Read-back runs serde-restore
+  ## (user code) only under ^allow-restore (design §7).
   if not w.allowRefs:
     raiseSerdeError(w.scope,
       "typed instances are not data (use serde/write)", w.path)
+  if v.head.kind == vkType:
+    let stateFn = typeDirectMessage(v.head, "serde-state")
+    if stateFn.kind != vkNil:
+      let state = applyCall(stateFn, [v], NamedArgs(), w.scope)
+      w.sb.add "(serde-hooked "
+      w.path.add "type"
+      serdeEmit(w, v.head)
+      discard w.path.pop()
+      w.sb.add ' '
+      w.path.add "state"
+      serdeEmit(w, state)
+      discard w.path.pop()
+      w.sb.add ')'
+      return
   if v.head.kind == vkEnumVariant and v.props.len > 0:
     raiseSerdeError(w.scope,
       "enum-variant value unexpectedly carries props", w.path)
@@ -2352,11 +2384,25 @@ proc serdePolicyInt(policy: Value, key: string, fallback: int,
     raiseSerdeError(scope, "^policy " & key & " must be an Int")
   int(v.intVal)
 
+proc serdePolicyBool(policy: Value, key: string, fallback: bool,
+                     scope: Scope): bool =
+  let entries =
+    if policy.kind == vkNode: policy.props
+    elif policy.kind == vkMap: policy.mapEntries
+    else: return fallback
+  let v = entries.getOrDefault(key, VOID)
+  if v.kind == vkVoid:
+    return fallback
+  if v.kind != vkBool:
+    raiseSerdeError(scope, "^policy " & key & " must be a Bool")
+  v.boolVal
+
 proc serdeLimitsFrom(policy: Value, scope: Scope): SerdePolicyLimits =
   result = SerdePolicyLimits(maxBytes: serdeDefaultMaxBytes,
                              maxNodes: serdeDefaultMaxNodes,
                              maxDepth: serdeDefaultMaxDepth,
-                             maxSymbols: serdeDefaultMaxSymbols)
+                             maxSymbols: serdeDefaultMaxSymbols,
+                             allowRestore: false)
   if policy.kind == vkNil or policy.kind == vkVoid:
     return
   result.maxBytes = serdePolicyInt(policy, "max-bytes", result.maxBytes, scope)
@@ -2364,6 +2410,8 @@ proc serdeLimitsFrom(policy: Value, scope: Scope): SerdePolicyLimits =
   result.maxDepth = serdePolicyInt(policy, "max-depth", result.maxDepth, scope)
   result.maxSymbols = serdePolicyInt(policy, "max-symbols",
                                      result.maxSymbols, scope)
+  result.allowRestore = serdePolicyBool(policy, "allow-restore",
+                                        result.allowRestore, scope)
 
 proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value
 
@@ -2683,6 +2731,44 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     else:
       raiseSerdeError(r.scope, "serde-inst head resolved to a " &
         $head.kind & ", not a type or variant", r.path)
+      NIL
+  of "serde-snapshot-cell":
+    if not r.resolveRefs:
+      raiseSerdeError(r.scope,
+        "serde-snapshot-cell requires serde/read (serde/read-data accepts " &
+        "pure data only)", r.path)
+    serdeBodyLen(r, v, tag, 1)
+    r.path.add "cell"
+    let inner = serdeDecode(r, v.body[0], depth + 1)
+    discard r.path.pop()
+    newCell(inner)
+  of "serde-hooked":
+    if not r.resolveRefs:
+      raiseSerdeError(r.scope,
+        "serde-hooked requires serde/read (serde/read-data accepts pure " &
+        "data only)", r.path)
+    if not r.limits.allowRestore:
+      raiseSerdeError(r.scope,
+        "serde-hooked requires ^policy (SerdePolicy ^allow-restore true) — " &
+        "restore hooks execute user code during deserialization", r.path)
+    if v.props.len > 0 or v.meta.len > 0 or v.body.len != 2:
+      raiseSerdeError(r.scope, "serde-hooked expects (type-ref state)", r.path)
+    r.path.add "type"
+    let head = serdeDecode(r, v.body[0], depth + 1)
+    discard r.path.pop()
+    if head.kind != vkType:
+      raiseSerdeError(r.scope, "serde-hooked head must be a type", r.path)
+    r.path.add "state"
+    let state = serdeDecode(r, v.body[1], depth + 1)
+    discard r.path.pop()
+    let restoreFn = typeDirectMessage(head, "serde-restore")
+    if restoreFn.kind == vkNil:
+      raiseSerdeError(r.scope, "type " & head.typeName &
+        " has a serde-state message but no serde-restore", r.path)
+    try:
+      applyCall(restoreFn, [state], NamedArgs(), r.scope)
+    except GeneError as e:
+      raiseSerdeError(r.scope, "serde-restore: " & e.msg, r.path)
       NIL
   else:
     raiseSerdeError(r.scope, "unknown serde control tag: " & tag, r.path)

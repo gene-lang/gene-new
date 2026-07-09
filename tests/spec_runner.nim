@@ -3200,10 +3200,11 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
 
   test "cells and capabilities are rejected with clear errors":
     check_eval("(import serde [write-data SerdeError]) " &
+               "(import str [contains?]) " &
                "(try (write-data [1 (cell 2)]) " &
-               "catch (SerdeError ^message m) m)",
-               "\"at 1: cells do not serialize (identity equality; " &
-               "serialize the contents via Cell/get instead)\"")
+               "catch (SerdeError ^message m) " &
+               "  [(contains? m \"at 1:\") (contains? m \"not data\")])",
+               "[true true]")
     check_eval("(import serde [write-data SerdeError]) " &
                "(try (write-data {^net Net/Connect}) " &
                "catch (SerdeError ^path p) p)",
@@ -3323,6 +3324,31 @@ suite "spec — serde references (stage 3)":
                "(import str [contains?]) " &
                "(try (read \"(serde-v1 (serde-type-ref ^path \\\"str/join\\\"))\") " &
                "catch (SerdeError ^message m) (contains? m \"not the expected kind\"))",
+               "true")
+
+  test "cells snapshot through serde/write, outside the equality guarantee":
+    check_eval("(import serde [write read]) " &
+               "(var c (cell 41)) (var c2 (read (write c))) " &
+               "[(c2 ~ Cell/get) (! (= c c2))]",
+               "[41 true]")
+
+  test "write-data refuses cells; read-data refuses snapshot-cells":
+    check_eval("(import serde [write-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (write-data (cell 1)) " &
+               "catch (SerdeError ^message m) (contains? m \"not data\"))",
+               "true")
+    check_eval("(import serde [write read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data (write (cell 1))) " &
+               "catch (SerdeError ^message m) (contains? m \"read-data\"))",
+               "true")
+
+  test "atomic cells never serialize":
+    check_eval("(import serde [write SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (write (atomic-cell 1)) " &
+               "catch (SerdeError ^message m) (contains? m \"atomic\"))",
                "true")
 
 suite "spec — web demo remains parseable":

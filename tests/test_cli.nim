@@ -805,6 +805,9 @@ suite "cli — gene parse/fmt/compile":
 (fn area [p : Point] : Int (* p/x p/y))
 (type Counter ^props {^n Int}
   (ctor [start] (println "COUNTER-CTOR-RAN") (self ~ Node/set-prop! `n start)))
+(type Conn ^props {^host Str ^live Bool}
+  (message serde-state [self] {^host self/host})
+  (message serde-restore [state] (Conn ^host state/host ^live true)))
 """)
     discard writeCliProgram("serde_sidefx.gene", """
 (mod serde-sidefx)
@@ -812,9 +815,9 @@ suite "cli — gene parse/fmt/compile":
 (type Widget ^props {^n Int})
 """)
     let prog = writeCliProgram("serde_refs.gene", """
-(import serde [write read write-data SerdeError])
+(import serde [write read write-data SerdePolicy SerdeError])
 (import str [contains? join])
-(import [Point Line Shape Result Drawable area Counter] from "./serde_geometry")
+(import [Point Line Shape Result Drawable area Counter Conn] from "./serde_geometry")
 (fn check [label ok] (println (join [label (if ok "ok" "FAIL")] " ")))
 # stage 3: references
 (check "type" (= Point (read (write Point))))
@@ -844,6 +847,14 @@ suite "cli — gene parse/fmt/compile":
 (var c (new Counter 7))
 (var c2 (read (write c)))
 (check "inst-no-ctor" (&& (= c c2) (= 7 c2/n)))
+# stage 5: Serde hooks behind ^allow-restore
+(var conn (Conn ^host "db" ^live false))
+(var ht (write conn))
+(check "hooked-form" (&& (contains? ht "serde-hooked") (! (contains? ht "live"))))
+(check "hooked-no-allow"
+  (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow-restore")))
+(var conn2 (read ht ^policy (SerdePolicy ^allow-restore true)))
+(check "hooked-restore" (&& (= "db" conn2/host) (= true conn2/live)))
 """)
     let ran = runGene(["run", prog])
     check ran.exitCode == 0
@@ -860,6 +871,9 @@ suite "cli — gene parse/fmt/compile":
     check "inst-wd-reject ok" in ran.output
     check "inst-unknown-field ok" in ran.output
     check "inst-no-ctor ok" in ran.output
+    check "hooked-form ok" in ran.output
+    check "hooked-no-allow ok" in ran.output
+    check "hooked-restore ok" in ran.output
     check "FAIL" notin ran.output
     check "SIDEFX-RAN" notin ran.output
     # The ctor ran exactly once (from `new`), never during read-back.
