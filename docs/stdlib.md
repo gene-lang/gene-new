@@ -33,6 +33,12 @@ Implementation status:
   on the namespace scopes, so only importing programs pay protocol-dispatch
   cost.
 - Phase 5 (`web/router` etc.) — not started.
+- `serde` (Gene-text serialization, data core) — implemented:
+  `serde/write-data`/`read-data`/`data?` with `SerdeError`, `SerdePolicy`
+  resource limits, reserved-head escaping, float specials, and cycle
+  detection, per docs/proposals/serialization.md stages 1–2 (the gateway
+  persists sessions through it). Typed refs/instances (stages 3–6) are
+  designed, not built.
 
 ## Goals
 

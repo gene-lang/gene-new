@@ -3119,6 +3119,158 @@ suite "spec — os and json from ai-agent plan":
                "catch (JsonError ^message _) \"bad\")",
                "\"bad\"")
 
+suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
+  test "scalars and containers round-trip under structural equality":
+    check_eval("(import serde [write-data read-data]) " &
+               "(var v {^a 1 ^b [1 2.5 \"x\" true nil void] " &
+               "        ^c {^nested \"y\"} ^d 'q' ^e 0x0aff " &
+               "        ^f 123456789012345678901234567890}) " &
+               "(= v (read-data (write-data v)))",
+               "true")
+    check_eval("(import serde [write-data read-data]) " &
+               "(import str [contains?]) " &
+               "(var v #[1 #{^k 2} [3]]) " &
+               "(var rt (read-data (write-data v))) " &
+               "[(= v rt) (contains? (write-data rt) \"#[1 #{\")]",
+               "[true true]")
+
+  test "dates, times, ranges, sets, durations, timezones round-trip":
+    check_eval("(import serde [write-data read-data]) " &
+               "(var v [2026-07-08 12:30:05 2026-07-08T12:30:05Z " &
+               "        (range 1 10 2) (Set 1 2 3) (duration 1500000) " &
+               "        (timezone 120 \"CEST\")]) " &
+               "(= v (read-data (write-data v)))",
+               "true")
+
+  test "regexes round-trip as source plus flags":
+    check_eval("(import serde [write-data read-data]) " &
+               "(var v #\"ab+c\"i) " &
+               "(= v (read-data (write-data v)))",
+               "true")
+
+  test "nodes round-trip including props, meta, children, immutability":
+    check_eval("(import serde [write-data read-data]) " &
+               "(var v `(p @m 1 ^x 2 \"c\" [3])) " &
+               "(= v (read-data (write-data v)))",
+               "true")
+
+  test "reserved serde heads in user data are escaped and round-trip":
+    check_eval("(import serde [write-data read-data]) " &
+               "(import str [contains?]) " &
+               "(var evil `(serde-float \"nan\")) " &
+               "(var text (write-data evil)) " &
+               "[(contains? text \"serde-data-node\") " &
+               " (= evil (read-data text))]",
+               "[true true]")
+    check_eval("(import serde [write-data read-data]) " &
+               "(var evil2 `(serde-data-node 1)) " &
+               "(= evil2 (read-data (write-data evil2)))",
+               "true")
+
+  test "float specials use canonical serde-float forms":
+    check_eval("(import serde [write-data read-data]) " &
+               "(import str [contains?]) " &
+               "(var nanv (read-data \"(serde-v1 (serde-float \\\"nan\\\"))\")) " &
+               "(var back (write-data nanv)) " &
+               "[(contains? back \"serde-float\") " &
+               " (! (= nanv nanv))]",   # NaN != NaN
+               "[true true]")
+    check_eval("(import serde [write-data read-data]) " &
+               "(var inf (read-data \"(serde-v1 (serde-float \\\"+inf\\\"))\")) " &
+               "(= inf (read-data (write-data inf)))",
+               "true")
+
+  test "symbols that do not re-read verbatim are escaped":
+    check_eval("(import serde [write-data read-data]) " &
+               "(import str [contains?]) " &
+               "(var s (read-data \"(serde-v1 (serde-sym \\\"a/b\\\"))\")) " &
+               "(var text (write-data s)) " &
+               "[(contains? text \"serde-sym\") " &
+               " (= s (read-data text))]",
+               "[true true]")
+
+  test "maps with non-literal keys use the serde-map escape":
+    check_eval("(import serde [write-data read-data]) " &
+               "(import str [contains?]) " &
+               "(var m {}) (m ~ Map/put! \"weird key\" 1) " &
+               "(var text (write-data m)) " &
+               "[(contains? text \"serde-map\") " &
+               " (= m (read-data text))]",
+               "[true true]")
+
+  test "cells and capabilities are rejected with clear errors":
+    check_eval("(import serde [write-data SerdeError]) " &
+               "(try (write-data [1 (cell 2)]) " &
+               "catch (SerdeError ^message m) m)",
+               "\"at 1: cells do not serialize (identity equality; " &
+               "serialize the contents via Cell/get instead)\"")
+    check_eval("(import serde [write-data SerdeError]) " &
+               "(try (write-data {^net Net/Connect}) " &
+               "catch (SerdeError ^path p) p)",
+               "\"net\"")
+
+  test "serde/data? classifies without raising":
+    check_eval("(import serde [data?]) " &
+               "[(data? [1 {^a 2}]) (data? (cell 1)) (data? (fn [] 1))]",
+               "[true false false]")
+
+  test "cycles are detected with a path":
+    check_eval("(import serde [write-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(var m {}) (m ~ Map/put! \"self\" m) " &
+               "(try (write-data m) " &
+               "catch (SerdeError ^message msg) (contains? msg \"cycle\"))",
+               "true")
+
+  test "policy limits are enforced and named":
+    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 [[[[1]]]])\" " &
+               "               ^policy (SerdePolicy ^max-depth 2)) " &
+               "catch (SerdeError ^message m) (contains? m \"max-depth\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 [1 2 3 4 5])\" " &
+               "               ^policy (SerdePolicy ^max-nodes 3)) " &
+               "catch (SerdeError ^message m) (contains? m \"max-nodes\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 [a b c])\" " &
+               "               ^policy (SerdePolicy ^max-symbols 2)) " &
+               "catch (SerdeError ^message m) (contains? m \"max-symbols\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 nil)\" " &
+               "               ^policy (SerdePolicy ^max-bytes 5)) " &
+               "catch (SerdeError ^message m) (contains? m \"max-bytes\"))",
+               "true")
+
+  test "envelope versioning is enforced":
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v2 nil)\") " &
+               "catch (SerdeError ^message m) " &
+               "  (contains? m \"unsupported serde envelope\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(try (read-data \"[1 2]\") " &
+               "catch (SerdeError ^message _) \"no-envelope\")",
+               "\"no-envelope\"")
+
+  test "unknown control tags and malformed shapes are rejected":
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 (serde-bogus 1))\") " &
+               "catch (SerdeError ^message m) (contains? m \"serde-bogus\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(try (read-data \"(serde-v1 (serde-range 1 2))\") " &
+               "catch (SerdeError ^message _) \"bad-range\")",
+               "\"bad-range\"")
+
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))

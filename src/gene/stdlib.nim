@@ -1858,6 +1858,597 @@ proc biJsonStringify(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   newStr(buffer)
 
 
+# --- serde: Gene-text serialization, data core -------------------------------
+#
+# Stage 1 of docs/proposals/serialization.md: write-data / read-data / data?
+# over the data bucket, riding the canonical printer/reader. Serialized text is
+# a (serde-v1 <payload>) envelope of ordinary Gene source. Control tags are
+# dash-named plain symbols (serde-v1, serde-float, serde-sym, serde-map,
+# serde-set, serde-range, serde-timezone, serde-duration, serde-data-node):
+# slash tokens read back as (path ...) nodes, so slash-headed tags would not
+# survive a print/read cycle. The design doc's serde/* names refer to these.
+#
+# Round-trip guarantee: (= v (read-data (write-data v))) under structural
+# equality for every data-bucket value. Everything that would falsify it is
+# either escaped (reserved heads, non-rereadable symbols and map keys, float
+# specials) or rejected (cells and other identity/process-bound values).
+
+const serdeReservedPrefix = "serde-"
+const serdeDefaultMaxBytes = 10_485_760
+const serdeDefaultMaxNodes = 100_000
+const serdeDefaultMaxDepth = 1_000
+const serdeDefaultMaxSymbols = 10_000
+
+type SerdePolicyLimits = object
+  maxBytes: int
+  maxNodes: int
+  maxDepth: int
+  maxSymbols: int
+
+type SerdeWriter = object
+  sb: string
+  scope: Scope
+  path: seq[string]
+  onPath: HashSet[uint64]           # container identities on the current path
+  symCache: Table[string, bool]     # symbol text -> re-reads verbatim
+  keyCache: Table[string, bool]     # prop key -> usable as ^key literal
+
+type SerdeReader = object
+  scope: Scope
+  limits: SerdePolicyLimits
+  nodes: int
+  symbols: HashSet[string]
+  path: seq[string]
+
+proc serdePathText(path: seq[string]): string =
+  if path.len == 0: "payload" else: path.join("/")
+
+proc raiseSerdeError(scope: Scope, message: string, path: seq[string] = @[]) =
+  var full = message
+  if path.len > 0:
+    full = "at " & serdePathText(path) & ": " & message
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(full)
+  props["path"] = newStr(serdePathText(path))
+  var e: ref GeneError
+  new(e)
+  e.msg = full
+  e.errVal = newNode(builtInTypeHead(scope, "SerdeError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc serdeSymbolRereads(w: var SerdeWriter, s: string): bool =
+  ## A symbol is emitted verbatim only when its text reads back as the same
+  ## symbol. Probing the real reader is authoritative — no second grammar.
+  if s in w.symCache:
+    return w.symCache[s]
+  var ok = false
+  if s.len > 0:
+    try:
+      let forms = readAll(s)
+      ok = forms.len == 1 and forms[0].kind == vkSymbol and
+           forms[0].symVal == s
+    except CatchableError:
+      ok = false
+  w.symCache[s] = ok
+  ok
+
+proc serdePropKeyUsable(w: var SerdeWriter, k: string): bool =
+  ## A prop key is emitted as `^key` only if that text reads back to the same
+  ## single-entry map. Otherwise the whole container uses the serde-map escape.
+  if k in w.keyCache:
+    return w.keyCache[k]
+  var ok = false
+  if k.len > 0:
+    try:
+      let forms = readAll("{^" & k & " 1}")
+      if forms.len == 1 and forms[0].kind == vkMap:
+        var count = 0
+        var hit = false
+        for key, val in forms[0].mapEntries:
+          inc count
+          if key == k and val.kind == vkInt and val.intVal == 1:
+            hit = true
+        ok = count == 1 and hit
+    except CatchableError:
+      ok = false
+  w.keyCache[k] = ok
+  ok
+
+proc serdeEmit(w: var SerdeWriter, v: Value)
+
+proc serdeEnterContainer(w: var SerdeWriter, v: Value) =
+  if v.bits in w.onPath:
+    raiseSerdeError(w.scope, "cycle detected", w.path)
+  w.onPath.incl v.bits
+
+proc serdeLeaveContainer(w: var SerdeWriter, v: Value) =
+  w.onPath.excl v.bits
+
+proc serdeEmitStrLit(w: var SerdeWriter, s: string) =
+  w.sb.add print(newStr(s))
+
+proc serdeEmitMapBody(w: var SerdeWriter, entries: PropTable) =
+  ## Emit `^k v` pairs; caller guarantees every key is usable.
+  var first = true
+  for k, val in entries:
+    if not first: w.sb.add ' '
+    first = false
+    w.sb.add "^" & k & " "
+    w.path.add k
+    serdeEmit(w, val)
+    discard w.path.pop()
+
+proc serdeMapKeysUsable(w: var SerdeWriter, entries: PropTable): bool =
+  for k, _ in entries:
+    if not serdePropKeyUsable(w, k):
+      return false
+  true
+
+proc serdeEmitEscapedMap(w: var SerdeWriter, entries: PropTable,
+                         immutable: bool) =
+  ## (serde-map <immutable> [k1 v1 k2 v2 ...]) — keys as strings.
+  w.sb.add "(serde-map "
+  w.sb.add (if immutable: "true" else: "false")
+  w.sb.add " ["
+  var first = true
+  for k, val in entries:
+    if not first: w.sb.add ' '
+    first = false
+    serdeEmitStrLit(w, k)
+    w.sb.add ' '
+    w.path.add k
+    serdeEmit(w, val)
+    discard w.path.pop()
+  w.sb.add "])"
+
+proc serdeEmitMapValue(w: var SerdeWriter, entries: PropTable,
+                       immutable: bool) =
+  if serdeMapKeysUsable(w, entries):
+    w.sb.add (if immutable: "#{" else: "{")
+    serdeEmitMapBody(w, entries)
+    w.sb.add '}'
+  else:
+    serdeEmitEscapedMap(w, entries, immutable)
+
+proc serdeNodeNeedsEscape(w: var SerdeWriter, v: Value): bool =
+  if v.head.kind == vkSymbol and v.head.symVal.startsWith(serdeReservedPrefix):
+    return true
+  for k, _ in v.props:
+    if not serdePropKeyUsable(w, k):
+      return true
+  for k, _ in v.meta:
+    if not serdePropKeyUsable(w, k):
+      return true
+  false
+
+proc serdeEmit(w: var SerdeWriter, v: Value) =
+  if v.isNil:
+    w.sb.add "nil"
+    return
+  case v.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkString, vkBytes, vkChar,
+     vkDate, vkTime, vkDateTime, vkRegex:
+    w.sb.add print(v)
+  of vkFloat:
+    let f = v.floatVal
+    if f != f:
+      w.sb.add "(serde-float \"nan\")"
+    elif f == Inf:
+      w.sb.add "(serde-float \"+inf\")"
+    elif f == NegInf:
+      w.sb.add "(serde-float \"-inf\")"
+    elif f == 0.0 and 1.0 / f == NegInf:
+      w.sb.add "(serde-float \"-0.0\")"
+    else:
+      w.sb.add print(v)
+  of vkSymbol:
+    if serdeSymbolRereads(w, v.symVal):
+      w.sb.add v.symVal
+    else:
+      w.sb.add "(serde-sym "
+      serdeEmitStrLit(w, v.symVal)
+      w.sb.add ')'
+  of vkTimezone:
+    w.sb.add "(serde-timezone "
+    w.sb.add (if v.timezoneHasOffset: "true " else: "false ")
+    w.sb.add $v.timezoneOffsetMinutes & " "
+    serdeEmitStrLit(w, v.timezoneName)
+    w.sb.add ')'
+  of vkDuration:
+    w.sb.add "(serde-duration " & $v.durationMicroseconds & ")"
+  of vkRange:
+    w.sb.add "(serde-range " & $v.rangeStart & " " & $v.rangeStop & " " &
+             $v.rangeStep & " " &
+             (if v.rangeInclusive: "true" else: "false") & ")"
+  of vkSet:
+    w.sb.add "(serde-set"
+    for i, it in v.setItems:
+      w.sb.add ' '
+      w.path.add $i
+      serdeEmit(w, it)
+      discard w.path.pop()
+    w.sb.add ')'
+  of vkList:
+    serdeEnterContainer(w, v)
+    w.sb.add (if v.listImmutable: "#[" else: "[")
+    for i, it in v.listItems:
+      if i > 0: w.sb.add ' '
+      w.path.add $i
+      serdeEmit(w, it)
+      discard w.path.pop()
+    w.sb.add ']'
+    serdeLeaveContainer(w, v)
+  of vkMap:
+    serdeEnterContainer(w, v)
+    serdeEmitMapValue(w, v.mapEntries, v.mapImmutable)
+    serdeLeaveContainer(w, v)
+  of vkHashMap:
+    serdeEnterContainer(w, v)
+    w.sb.add "{{"
+    var first = true
+    for entry in v.hashMapEntries:
+      if not first: w.sb.add ' '
+      first = false
+      w.path.add "key"
+      serdeEmit(w, entry.key)
+      discard w.path.pop()
+      w.sb.add " : "
+      w.path.add "val"
+      serdeEmit(w, entry.val)
+      discard w.path.pop()
+    w.sb.add "}}"
+    serdeLeaveContainer(w, v)
+  of vkNode:
+    serdeEnterContainer(w, v)
+    if serdeNodeNeedsEscape(w, v):
+      # (serde-data-node <immutable> <head> <props-map> <meta-map> <child>*)
+      w.sb.add "(serde-data-node "
+      w.sb.add (if v.nodeImmutable: "true " else: "false ")
+      w.path.add "head"
+      serdeEmit(w, v.head)
+      discard w.path.pop()
+      w.sb.add ' '
+      serdeEmitEscapedMap(w, v.props, false)
+      w.sb.add ' '
+      serdeEmitEscapedMap(w, v.meta, false)
+      for i, it in v.body:
+        w.sb.add ' '
+        w.path.add $i
+        serdeEmit(w, it)
+        discard w.path.pop()
+      w.sb.add ')'
+    else:
+      w.sb.add (if v.nodeImmutable: "#(" else: "(")
+      w.path.add "head"
+      serdeEmit(w, v.head)
+      discard w.path.pop()
+      if v.meta.len > 0:
+        w.sb.add ' '
+        var first = true
+        for k, val in v.meta:
+          if not first: w.sb.add ' '
+          first = false
+          w.sb.add "@" & k & " "
+          w.path.add k
+          serdeEmit(w, val)
+          discard w.path.pop()
+      if v.props.len > 0:
+        w.sb.add ' '
+        serdeEmitMapBody(w, v.props)
+      for i, it in v.body:
+        w.sb.add ' '
+        w.path.add $i
+        serdeEmit(w, it)
+        discard w.path.pop()
+      w.sb.add ')'
+    serdeLeaveContainer(w, v)
+  of vkCell, vkAtomicCell:
+    raiseSerdeError(w.scope,
+      "cells do not serialize (identity equality; serialize the contents " &
+      "via Cell/get instead)", w.path)
+  of vkCapability:
+    raiseSerdeError(w.scope,
+      "capability values never serialize (authority does not round-trip " &
+      "through data)", w.path)
+  of vkFunction:
+    raiseSerdeError(w.scope,
+      "functions with captured scope do not serialize", w.path)
+  else:
+    raiseSerdeError(w.scope,
+      $v.kind & " values do not serialize (process-bound)", w.path)
+
+proc serdeWriteDataText(v: Value, scope: Scope): string =
+  var w = SerdeWriter(scope: scope)
+  w.sb.add "(serde-v1 "
+  serdeEmit(w, v)
+  w.sb.add ')'
+  w.sb
+
+proc serdePolicyInt(policy: Value, key: string, fallback: int,
+                    scope: Scope): int =
+  let entries =
+    if policy.kind == vkNode: policy.props
+    elif policy.kind == vkMap: policy.mapEntries
+    else:
+      raiseSerdeError(scope, "^policy expects a SerdePolicy or Map")
+      return fallback
+  let v = entries.getOrDefault(key, VOID)
+  if v.kind == vkVoid:
+    return fallback
+  if v.kind != vkInt:
+    raiseSerdeError(scope, "^policy " & key & " must be an Int")
+  int(v.intVal)
+
+proc serdeLimitsFrom(policy: Value, scope: Scope): SerdePolicyLimits =
+  result = SerdePolicyLimits(maxBytes: serdeDefaultMaxBytes,
+                             maxNodes: serdeDefaultMaxNodes,
+                             maxDepth: serdeDefaultMaxDepth,
+                             maxSymbols: serdeDefaultMaxSymbols)
+  if policy.kind == vkNil or policy.kind == vkVoid:
+    return
+  result.maxBytes = serdePolicyInt(policy, "max-bytes", result.maxBytes, scope)
+  result.maxNodes = serdePolicyInt(policy, "max-nodes", result.maxNodes, scope)
+  result.maxDepth = serdePolicyInt(policy, "max-depth", result.maxDepth, scope)
+  result.maxSymbols = serdePolicyInt(policy, "max-symbols",
+                                     result.maxSymbols, scope)
+
+proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value
+
+proc serdeCountValue(r: var SerdeReader, depth: int) =
+  inc r.nodes
+  if r.nodes > r.limits.maxNodes:
+    raiseSerdeError(r.scope, "payload exceeds max-nodes (" &
+                    $r.limits.maxNodes & ")", r.path)
+  if depth > r.limits.maxDepth:
+    raiseSerdeError(r.scope, "payload exceeds max-depth (" &
+                    $r.limits.maxDepth & ")", r.path)
+
+proc serdeCountSymbol(r: var SerdeReader, s: string) =
+  r.symbols.incl s
+  if r.symbols.len > r.limits.maxSymbols:
+    raiseSerdeError(r.scope, "payload exceeds max-symbols (" &
+                    $r.limits.maxSymbols & ")", r.path)
+
+proc serdeBodyLen(r: var SerdeReader, v: Value, tag: string, n: int) =
+  if v.body.len != n or v.props.len > 0 or v.meta.len > 0:
+    raiseSerdeError(r.scope, tag & " expects exactly " & $n &
+                    " children and no props", r.path)
+
+proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
+                        depth: int): Value =
+  case tag
+  of "serde-float":
+    serdeBodyLen(r, v, tag, 1)
+    if v.body[0].kind != vkString:
+      raiseSerdeError(r.scope, "serde-float expects a Str", r.path)
+    case v.body[0].strVal
+    of "nan": newFloat(NaN)
+    of "+inf": newFloat(Inf)
+    of "-inf": newFloat(NegInf)
+    of "-0.0": newFloat(-0.0)
+    else:
+      raiseSerdeError(r.scope, "unknown serde-float value: " &
+                      v.body[0].strVal, r.path)
+      NIL
+  of "serde-sym":
+    serdeBodyLen(r, v, tag, 1)
+    if v.body[0].kind != vkString:
+      raiseSerdeError(r.scope, "serde-sym expects a Str", r.path)
+    serdeCountSymbol(r, v.body[0].strVal)
+    newSym(v.body[0].strVal)
+  of "serde-set":
+    if v.props.len > 0 or v.meta.len > 0:
+      raiseSerdeError(r.scope, "serde-set expects no props", r.path)
+    var items: seq[Value]
+    for i, it in v.body:
+      r.path.add $i
+      items.add serdeDecode(r, it, depth + 1)
+      discard r.path.pop()
+    newSet(items)
+  of "serde-range":
+    serdeBodyLen(r, v, tag, 4)
+    for i in 0 .. 2:
+      if v.body[i].kind != vkInt:
+        raiseSerdeError(r.scope, "serde-range expects Int bounds", r.path)
+    if v.body[3].kind != vkBool:
+      raiseSerdeError(r.scope, "serde-range expects a Bool inclusive flag",
+                      r.path)
+    try:
+      newRange(v.body[0].intVal, v.body[1].intVal, v.body[2].intVal,
+               v.body[3].boolVal)
+    except GeneError as e:
+      raiseSerdeError(r.scope, "serde-range: " & e.msg, r.path)
+      NIL
+  of "serde-timezone":
+    serdeBodyLen(r, v, tag, 3)
+    if v.body[0].kind != vkBool or v.body[1].kind != vkInt or
+        v.body[2].kind != vkString:
+      raiseSerdeError(r.scope,
+        "serde-timezone expects (Bool Int Str)", r.path)
+    try:
+      newTimezone(v.body[0].boolVal, int(v.body[1].intVal), v.body[2].strVal)
+    except GeneError as e:
+      raiseSerdeError(r.scope, "serde-timezone: " & e.msg, r.path)
+      NIL
+  of "serde-duration":
+    serdeBodyLen(r, v, tag, 1)
+    if v.body[0].kind != vkInt:
+      raiseSerdeError(r.scope, "serde-duration expects an Int", r.path)
+    newDuration(v.body[0].intVal)
+  of "serde-map":
+    serdeBodyLen(r, v, tag, 2)
+    if v.body[0].kind != vkBool or v.body[1].kind != vkList:
+      raiseSerdeError(r.scope,
+        "serde-map expects (Bool [k v ...])", r.path)
+    let items = v.body[1].listItems
+    if items.len mod 2 != 0:
+      raiseSerdeError(r.scope, "serde-map expects an even k/v list", r.path)
+    var entries = initOrderedTable[string, Value]()
+    var i = 0
+    while i < items.len:
+      if items[i].kind != vkString:
+        raiseSerdeError(r.scope, "serde-map keys must be Str", r.path)
+      r.path.add items[i].strVal
+      entries[items[i].strVal] = serdeDecode(r, items[i + 1], depth + 1)
+      discard r.path.pop()
+      inc i, 2
+    newMap(entries, immutable = v.body[0].boolVal)
+  of "serde-data-node":
+    if v.body.len < 4 or v.props.len > 0 or v.meta.len > 0:
+      raiseSerdeError(r.scope,
+        "serde-data-node expects (Bool head props meta child*)", r.path)
+    if v.body[0].kind != vkBool:
+      raiseSerdeError(r.scope,
+        "serde-data-node expects a Bool immutable flag", r.path)
+    r.path.add "head"
+    let head = serdeDecode(r, v.body[1], depth + 1)
+    discard r.path.pop()
+    r.path.add "props"
+    let propsVal = serdeDecode(r, v.body[2], depth + 1)
+    discard r.path.pop()
+    r.path.add "meta"
+    let metaVal = serdeDecode(r, v.body[3], depth + 1)
+    discard r.path.pop()
+    if propsVal.kind != vkMap or metaVal.kind != vkMap:
+      raiseSerdeError(r.scope,
+        "serde-data-node props/meta must decode to maps", r.path)
+    var children: seq[Value]
+    for i in 4 ..< v.body.len:
+      r.path.add $(i - 4)
+      children.add serdeDecode(r, v.body[i], depth + 1)
+      discard r.path.pop()
+    var props = initOrderedTable[string, Value]()
+    for k, val in propsVal.mapEntries:
+      props[k] = val
+    var meta = initOrderedTable[string, Value]()
+    for k, val in metaVal.mapEntries:
+      meta[k] = val
+    newNode(head, props = props, body = children, meta = meta,
+            immutable = v.body[0].boolVal)
+  else:
+    raiseSerdeError(r.scope, "unknown serde control tag: " & tag, r.path)
+    NIL
+
+proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
+  serdeCountValue(r, depth)
+  case v.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
+     vkDate, vkTime, vkDateTime, vkRegex:
+    v
+  of vkSymbol:
+    serdeCountSymbol(r, v.symVal)
+    v
+  of vkList:
+    var items: seq[Value]
+    for i, it in v.listItems:
+      r.path.add $i
+      items.add serdeDecode(r, it, depth + 1)
+      discard r.path.pop()
+    newList(items, immutable = v.listImmutable)
+  of vkMap:
+    var entries = initOrderedTable[string, Value]()
+    for k, val in v.mapEntries:
+      r.path.add k
+      entries[k] = serdeDecode(r, val, depth + 1)
+      discard r.path.pop()
+    newMap(entries, immutable = v.mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in v.hashMapEntries:
+      r.path.add "key"
+      let k = serdeDecode(r, entry.key, depth + 1)
+      discard r.path.pop()
+      r.path.add "val"
+      let value = serdeDecode(r, entry.val, depth + 1)
+      discard r.path.pop()
+      entries.add HashMapEntry(key: k, val: value)
+    newHashMap(entries)
+  of vkNode:
+    if v.head.kind == vkSymbol and
+        v.head.symVal.startsWith(serdeReservedPrefix):
+      return serdeDecodeControl(r, v, v.head.symVal, depth)
+    r.path.add "head"
+    let head = serdeDecode(r, v.head, depth + 1)
+    discard r.path.pop()
+    var props = initOrderedTable[string, Value]()
+    for k, val in v.props:
+      r.path.add k
+      props[k] = serdeDecode(r, val, depth + 1)
+      discard r.path.pop()
+    var meta = initOrderedTable[string, Value]()
+    for k, val in v.meta:
+      r.path.add k
+      meta[k] = serdeDecode(r, val, depth + 1)
+      discard r.path.pop()
+    var children: seq[Value]
+    for i, it in v.body:
+      r.path.add $i
+      children.add serdeDecode(r, it, depth + 1)
+      discard r.path.pop()
+    newNode(head, props = props, body = children, meta = meta,
+            immutable = v.nodeImmutable)
+  else:
+    raiseSerdeError(r.scope,
+      "unsupported value kind in payload: " & $v.kind, r.path)
+    NIL
+
+proc biSerdeWriteData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("serde/write-data", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  newStr(serdeWriteDataText(args[0], scope))
+
+proc biSerdeDataP(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("serde/data?", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    discard serdeWriteDataText(args[0], scope)
+    TRUE
+  except GeneError:
+    FALSE
+
+proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError,
+      "serde/read-data expects a Str plus optional ^policy")
+  requireStr("serde/read-data", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  var policy = NIL
+  if call != nil:
+    for i, name in call[].namedNames:
+      case name
+      of "policy":
+        policy = call[].namedValues[i]
+      else:
+        raiseSerdeError(scope,
+          "serde/read-data got unexpected named argument: " & name)
+  let limits = serdeLimitsFrom(policy, scope)
+  let text = args[0].strVal
+  if text.len > limits.maxBytes:
+    raiseSerdeError(scope, "payload exceeds max-bytes (" &
+                    $limits.maxBytes & ")")
+  var forms: seq[Value]
+  try:
+    forms = readAll(text, "<serde>")
+  except ReadError as e:
+    raiseSerdeError(scope, "parse: " & e.msg)
+  if forms.len != 1 or forms[0].kind != vkNode:
+    raiseSerdeError(scope, "expected a single (serde-v1 ...) envelope")
+  let envelope = forms[0]
+  if envelope.head.kind != vkSymbol or envelope.head.symVal != "serde-v1":
+    if envelope.head.kind == vkSymbol and
+        envelope.head.symVal.startsWith(serdeReservedPrefix):
+      raiseSerdeError(scope, "unsupported serde envelope version: " &
+                      envelope.head.symVal)
+    raiseSerdeError(scope, "expected a (serde-v1 ...) envelope")
+  if envelope.body.len != 1 or envelope.props.len > 0 or
+      envelope.meta.len > 0:
+    raiseSerdeError(scope,
+      "serde-v1 envelope expects exactly one payload form")
+  var r = SerdeReader(scope: scope, limits: limits)
+  serdeDecode(r, envelope.body[0], 0)
+
+
 # --- db backends: sqlite and postgres behind the shared Db protocol ---
 #
 # Both backends load their C client library at runtime through std/dynlib, so
@@ -2395,6 +2986,7 @@ proc registerStdlibNamespaces(root: Scope) =
     root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
   let osError = defineErrorType("OsError")
   let jsonError = defineErrorType("JsonError")
+  let serdeError = defineErrorType("SerdeError")
   # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
   # built-ins above under stable module paths, so source programs can write
   # `(import std/stream [map])` / `(import str [join])` today and swap in
@@ -2655,3 +3247,30 @@ proc registerStdlibNamespaces(root: Scope) =
                                                 acceptsNamed = false))
   jsonScope.define("JsonError", jsonError)
   root.define("json", newNamespace("json", jsonScope))
+
+  # serde: Gene-text serialization data core (docs/proposals/serialization.md
+  # stage 1).
+  let serdeScope = newScope(root)
+  serdeScope.define("write-data",
+    newNativeCallFn("serde/write-data", biSerdeWriteData,
+                    acceptsNamed = false))
+  serdeScope.define("read-data",
+    newNativeCallFn("serde/read-data", biSerdeReadData))
+  serdeScope.define("data?",
+    newNativeCallFn("serde/data?", biSerdeDataP, acceptsNamed = false))
+  serdeScope.define("SerdeError", serdeError)
+  let intField = proc (name: string): TypeField =
+    TypeField(name: name, optional: true, typeExpr: newSym("Int"),
+              scope: root)
+  let serdePolicyType = newType("SerdePolicy", NIL,
+                                @[intField("max-bytes"),
+                                  intField("max-nodes"),
+                                  intField("max-depth"),
+                                  intField("max-symbols"),
+                                  TypeField(name: "allow-restore",
+                                            optional: true,
+                                            typeExpr: newSym("Bool"),
+                                            scope: root)],
+                                @[], root)
+  serdeScope.define("SerdePolicy", serdePolicyType)
+  root.define("serde", newNamespace("serde", serdeScope))

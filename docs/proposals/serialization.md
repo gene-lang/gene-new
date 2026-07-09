@@ -1,9 +1,20 @@
 # Gene Serialization (serde) — Design
 
-Status: **designed; not implemented. Revision 2** (incorporates review:
+Status: **stages 1–2 implemented (data core in `src/gene/stdlib.nim`,
+spec-tested; gateway persistence in `examples/agent_gateway.gene`,
+e2e-tested); stages 3–6 designed.** Revision 2 (incorporates review:
 reserved-head escaping, cells out of the data bucket, policy-gated hooks and
 resource limits, narrowed value refs, reserved version/package slots).
-Date: 2026-07-08.
+Date: 2026-07-09.
+
+Implementation note: control tags are **dash-named plain symbols**
+(`serde-v1`, `serde-float`, `serde-sym`, `serde-map`, `serde-set`,
+`serde-range`, `serde-timezone`, `serde-duration`, `serde-data-node`) rather
+than the `serde/*` spellings used in prose below — slash tokens read back as
+`(path ...)` nodes, so slash-headed tags would not survive a print/read
+cycle. The reserved namespace is "symbols starting with `serde-`", and the
+prose's `serde/x` names denote `serde-x`. Namespaced *function* names
+(`serde/write-data` etc.) are unaffected — those are ordinary imports.
 
 Serialization converts runtime values to a storable/transmittable text form
 and back. This design adapts the prior Gene implementation's serdes proposal
