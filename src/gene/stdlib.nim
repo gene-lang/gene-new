@@ -748,7 +748,14 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 # paths, and the worker never runs Gene code.
 
 when compileOption("threads"):
-  type OsExecAsyncCtx = ref object
+  # Job records cross the scheduler->worker thread boundary, so they must be
+  # RC-hygienic on the default orc build: {.acyclic.} keeps them out of the
+  # thread-local cycle-collector registry, Values carry their own (atomic,
+  # once markSharedValue'd) refcounts, and the scheduler is a raw pointer —
+  # the Application keeps it alive for the process lifetime, and workers only
+  # borrow it through {.cursor.} casts so its non-atomic Nim refcount is
+  # never touched off-thread.
+  type OsExecAsyncCtx {.acyclic.} = ref object
     name: string          # native name, for error messages
     cmd: string
     procArgs: seq[string]
@@ -757,26 +764,35 @@ when compileOption("threads"):
     maxBytes: int
     task: Value           # external Task; marked shared by the spawner
     lineChan: Value       # NIL, or a Channel receiving stdout lines
-    scope: Scope          # resolves the spawner's scheduler for wakes
+    # The spawner's scheduler, captured at spawn time. NOT the dispatch scope:
+    # call scopes are pooled and their .application is nilled on release, so a
+    # scope captured here would resolve to no scheduler by the time the worker
+    # settles — wakes would be lost and fibers parked on the task/channel
+    # would never resume.
+    schedulerPtr: pointer
+
+  # Persistent exec-worker pool. Threads are created on demand up to a cap and
+  # NEVER exit: values a job creates (stdout strings, the result map) live on
+  # the creating thread's heap arena, and Nim tears that arena down at thread
+  # exit — so a thread-per-exec design corrupts the allocator as soon as a
+  # result outlives its thread. Long-lived workers are the same discipline as
+  # the scheduler's aio lane. Jobs queue when all workers are busy; the cap is
+  # generous because jobs can legitimately be long (60s streaming curl).
+  const osExecAsyncMaxWorkers = 32
 
   var osExecAsyncLock: Lock
-  var osExecAsyncThreads: seq[ref Thread[OsExecAsyncCtx]]
+  var osExecAsyncCond: Cond
+  var osExecAsyncQueue: seq[OsExecAsyncCtx]
+  var osExecAsyncThreads: seq[ref Thread[void]]
+  var osExecAsyncIdle = 0
   initLock(osExecAsyncLock)
+  initCond(osExecAsyncCond)
 
-  proc reapOsExecAsyncThreads() =
-    ## Join finished exec threads so handles don't accumulate. Runs on the
-    ## scheduler thread before each spawn; threads still running are left.
-    withLock osExecAsyncLock:
-      var i = 0
-      while i < osExecAsyncThreads.len:
-        if osExecAsyncThreads[i][].running:
-          inc i
-        else:
-          joinThread(osExecAsyncThreads[i][])
-          osExecAsyncThreads.delete(i)
-
-  proc osExecAsyncWorker(ctx: OsExecAsyncCtx) {.thread.} =
+  proc runOsExecAsyncJob(ctx: OsExecAsyncCtx) {.gcsafe.} =
     {.cast(gcsafe).}:
+      # Borrow the spawner's scheduler without touching its refcount; all
+      # wakes below go through the explicit *In variants.
+      let sched {.cursor.} = cast[SchedulerState](ctx.schedulerPtr)
       defer:
         endExternalNativeOp()
       var outText = ""
@@ -807,18 +823,18 @@ when compileOption("threads"):
       proc sendLine(line: string) =
         ## Push one stdout line with bounded backpressure: retry while the
         ## channel is full, give up (but keep capturing) once it is closed or
-        ## the exec deadline passes. newStr here is safe: the channel send
-        ## path marks the value shared before it becomes visible cross-thread.
+        ## the exec deadline passes. The value is marked shared before it
+        ## becomes visible cross-thread, so its refcount ops are atomic.
         if chanGone:
           return
         while true:
-          try:
-            if nativeChannelTrySend(ctx.lineChan, newStr(line), ctx.scope):
-              return
-          except CatchableError:
-            chanGone = true
+          let item = newStr(line)
+          markSharedValue(item)
+          let pushed = ctx.lineChan.tryPushChannel(item)
+          if pushed.pushed:
+            wakeChannelWaitersIn(sched, ctx.lineChan, wakeSenders = false)
             return
-          if ctx.lineChan.channelClosed:
+          if pushed.closed:
             chanGone = true
             return
           if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
@@ -841,21 +857,19 @@ when compileOption("threads"):
       proc closeLineChan() =
         if ctx.lineChan.kind != vkNil:
           closeChannel(ctx.lineChan)
-          wakeAllChannelWaiters(ctx.lineChan, wakeSenders = false)
-          wakeAllChannelWaiters(ctx.lineChan, wakeSenders = true)
+          wakeAllChannelWaitersIn(sched, ctx.lineChan, wakeSenders = false)
+          wakeAllChannelWaitersIn(sched, ctx.lineChan, wakeSenders = true)
 
       proc settle(value: Value) =
         markSharedValue(value)
-        withScopedScheduler(ctx.scope):
-          closeLineChan()
-          if tryCompleteTask(ctx.task, value):
-            wakeTaskWaiters(ctx.task)
+        closeLineChan()
+        if tryCompleteTask(ctx.task, value):
+          wakeTaskWaitersIn(sched, ctx.task)
 
       proc settleFail(message: string) =
-        withScopedScheduler(ctx.scope):
-          closeLineChan()
-          if tryFailTask(ctx.task, message):
-            wakeTaskWaiters(ctx.task)
+        closeLineChan()
+        if tryFailTask(ctx.task, message):
+          wakeTaskWaitersIn(sched, ctx.task)
 
       var process: Process
       try:
@@ -927,6 +941,36 @@ when compileOption("threads"):
         except CatchableError:
           discard
 
+when compileOption("threads"):
+  proc osExecAsyncWorkerMain() {.thread.} =
+    {.cast(gcsafe).}:
+      while true:
+        var job: OsExecAsyncCtx = nil
+        withLock osExecAsyncLock:
+          while osExecAsyncQueue.len == 0:
+            inc osExecAsyncIdle
+            wait(osExecAsyncCond, osExecAsyncLock)
+            dec osExecAsyncIdle
+          job = osExecAsyncQueue[0]
+          osExecAsyncQueue.delete(0)
+        runOsExecAsyncJob(job)
+
+  proc enqueueOsExecAsyncJob(ctx: OsExecAsyncCtx) =
+    var needThread = false
+    withLock osExecAsyncLock:
+      osExecAsyncQueue.add ctx
+      if osExecAsyncIdle == 0 and
+          osExecAsyncThreads.len < osExecAsyncMaxWorkers:
+        needThread = true
+      else:
+        signal(osExecAsyncCond)
+    if needThread:
+      var tr: ref Thread[void]
+      new(tr)
+      createThread(tr[], osExecAsyncWorkerMain)
+      withLock osExecAsyncLock:
+        osExecAsyncThreads.add tr
+
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        args: openArray[Value],
                        call: ptr NativeCall): Value =
@@ -989,18 +1033,15 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     let ctx = OsExecAsyncCtx(name: name, cmd: cmd, procArgs: procArgs,
                              workdir: workdir, timeoutMs: timeoutMs,
                              maxBytes: maxBytes, task: task,
-                             lineChan: lineChan, scope: scope)
-    reapOsExecAsyncThreads()
-    var tr: ref Thread[OsExecAsyncCtx]
-    new(tr)
+                             lineChan: lineChan,
+                             schedulerPtr: cast[pointer](
+                               schedulerForScope(scope)))
     beginExternalNativeOp()
     try:
-      createThread(tr[], osExecAsyncWorker, ctx)
+      enqueueOsExecAsyncJob(ctx)
     except CatchableError as e:
       endExternalNativeOp()
       raiseOsError(name & " could not start a worker thread: " & e.msg, scope)
-    withLock osExecAsyncLock:
-      osExecAsyncThreads.add tr
     task
   else:
     raiseOsError(name & " requires a threaded runtime build", scope)

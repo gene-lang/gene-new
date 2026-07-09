@@ -352,6 +352,14 @@ template currentFiberActive: untyped =
 # moving it from the wait list to the run queue. Defined with the scheduler below.
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool)
 proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool)
+# Explicit-scheduler variants for foreign threads that must not touch the
+# scheduler ref's (non-atomic) refcount: callers hold the SchedulerState via a
+# raw pointer + {.cursor.} cast (the Application keeps it alive for the
+# process lifetime).
+proc wakeChannelWaitersIn(s: SchedulerState, channel: Value, wakeSenders: bool)
+proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
+                             wakeSenders: bool)
+proc wakeTaskWaitersIn(s: SchedulerState, task: Value)
 proc enqueueRunnable(f: Fiber)
 
 # Wake fibers parked in `await` on a task that has just settled.
@@ -6620,6 +6628,9 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     publishSpawnValue(value.ffiCallableReturnType, seenScopes, seenValues,
                       seenChunks)
   of vkType:
+    # okEnum also reports vkType. The type* accessors tolerate enums
+    # (NIL/empty), but the lent-seq protocol accessors reject them, and enums
+    # have their own edges (backing type, variant payload types) to publish.
     publishSpawnValue(value.typeParent, seenScopes, seenValues, seenChunks)
     publishSpawnScope(value.typeScope, seenScopes, seenValues, seenChunks)
     for field in value.typeFields:
@@ -6630,12 +6641,22 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
       publishSpawnValue(field.typeExpr, seenScopes, seenValues, seenChunks)
       publishSpawnScope(field.typeBodyFieldScope(value.typeScope), seenScopes,
                         seenValues, seenChunks)
-    for item in value.typeRequiredProtocols:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
-    for item in value.typeDerivedProtocols:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
-    for item in value.typeDeriveRequests:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    if value.isEnumType:
+      publishSpawnValue(value.enumBackingType, seenScopes, seenValues,
+                        seenChunks)
+      for variant in value.enumVariants:
+        for payload in variant.enumVariantPayloadTypes:
+          publishSpawnValue(payload, seenScopes, seenValues, seenChunks)
+        if variant.enumVariantHasBacking:
+          publishSpawnValue(variant.enumVariantBacking, seenScopes,
+                            seenValues, seenChunks)
+    else:
+      for item in value.typeRequiredProtocols:
+        publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+      for item in value.typeDerivedProtocols:
+        publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+      for item in value.typeDeriveRequests:
+        publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkProtocol:
     for _, message in value.protocolMessages:
       publishSpawnValue(message, seenScopes, seenValues, seenChunks)
@@ -10095,14 +10116,34 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # resume — the task is still on the stack. At the root, drive the queue.
           let task = stack[^1]
           if task.kind == vkTask and not task.taskDone:
-            if currentFiberActive:
+            if currentFiberActive and fiber != nil:
               captureContinuation(ip - 1)   # task stays on the stack for re-execution
               fiber.waitTask = task
               fiber.waitChannel = NIL
               fiber.waitActor = NIL
               fiber.waitTimer = false
               return RunStop(kind: rskSuspend, value: NIL)
-            pumpUntilDone(task)
+            elif currentFiberActive:
+              # Nested native trampoline (native callback re-entered the VM)
+              # inside a fiber: there is no continuation to park. An external
+              # task settles from its own thread, so wait for it directly —
+              # blocking, but correct. A scheduler-owned task would need this
+              # thread to progress; suspend is impossible, so fail cleanly.
+              when compileOption("threads"):
+                if task.taskExternalPending:
+                  while not task.taskDone:
+                    if not task.waitExternalTaskChange():
+                      os.sleep(1)
+                else:
+                  raise newException(GeneError,
+                    "await cannot suspend inside a native callback; " &
+                    "move the await out of the callback")
+              else:
+                raise newException(GeneError,
+                  "await cannot suspend inside a native callback; " &
+                  "move the await out of the callback")
+            else:
+              pumpUntilDone(task)
           discard stack.pop()
           stack.add awaitTaskValue(task)
         of opFail:
@@ -10678,10 +10719,10 @@ proc sleepUntil(deadline: MonoTime) =
     return
   os.sleep(max(1, int(min(remaining.inMilliseconds, int64(high(int))))))
 
-proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
+proc wakeChannelWaitersIn(s: SchedulerState, channel: Value,
+                          wakeSenders: bool) =
   ## Move one fiber parked on `channel` — a receiver, or a sender when
   ## `wakeSenders` — from the wait list onto the run queue (FIFO over waiters).
-  let s = currentScheduler()
   withSchedulerLock(s):
     for i in 0 ..< s.waiters.len:
       let f = s.waiters[i]
@@ -10690,11 +10731,14 @@ proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
         s.enqueueRunnableUnlocked(f)
         return
 
-proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
+proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
+  wakeChannelWaitersIn(currentScheduler(), channel, wakeSenders)
+
+proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
+                             wakeSenders: bool) =
   ## Channel close changes the state observed by every parked counterpart:
   ## receivers on an empty channel and senders on a full one must all resume and
   ## re-run their operation so they can raise ChannelClosed.
-  let s = currentScheduler()
   withSchedulerLock(s):
     var i = 0
     while i < s.waiters.len:
@@ -10705,10 +10749,12 @@ proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
       else:
         inc i
 
-proc wakeTaskWaiters(task: Value) =
+proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
+  wakeAllChannelWaitersIn(currentScheduler(), channel, wakeSenders)
+
+proc wakeTaskWaitersIn(s: SchedulerState, task: Value) =
   ## Move every fiber parked in `await` on `task` onto the run queue. A completed
   ## task wakes all of its awaiters (unlike a channel, which wakes one counterpart).
-  let s = currentScheduler()
   withSchedulerLock(s):
     var i = 0
     while i < s.waiters.len:
@@ -10718,6 +10764,9 @@ proc wakeTaskWaiters(task: Value) =
         s.enqueueRunnableUnlocked(f)
       else:
         inc i
+
+proc wakeTaskWaiters(task: Value) =
+  wakeTaskWaitersIn(currentScheduler(), task)
 
 proc scopeHasActorOwner(scope: Scope): bool =
   var current = scope
