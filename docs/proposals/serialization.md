@@ -1,11 +1,26 @@
 # Gene Serialization (serde) — Design
 
-Status: **stages 1–2 implemented (data core in `src/gene/stdlib.nim`,
-spec-tested; gateway persistence in `examples/agent_gateway.gene`,
-e2e-tested); stages 3–6 designed.** Revision 2 (incorporates review:
-reserved-head escaping, cells out of the data bucket, policy-gated hooks and
-resource limits, narrowed value refs, reserved version/package slots).
-Date: 2026-07-09.
+Status: **stages 1–6 implemented** (all in `src/gene/stdlib.nim`, spec- and
+e2e-tested; gateway persistence in `examples/agent_gateway.gene`). Revision 2
+(incorporates review: reserved-head escaping, cells out of the data bucket,
+policy-gated hooks and resource limits, narrowed value refs, reserved
+version/package slots). Date: 2026-07-09.
+
+**Implementation deltas from the prose below** (the prose is the design;
+these are the shipped specifics):
+- `serde-state`/`serde-restore` are **type-direct messages**, not a `Serde`
+  protocol — dispatch works both ways and needs no protocol/impl ceremony.
+  `SerdeRef` (§7) is a real empty marker protocol.
+- Stage-3+ references resolve against **loaded modules only** and never load
+  a module named by a payload (no-code-execution, verified). The entry
+  module currently executing has no origin yet (it is mid-load, not cached),
+  so refs cover imported dependencies and builtins — the design-intended
+  path.
+- Value refs (§7) are emitted **only** for module-level instances of a
+  `SerdeRef`-marked type. The "immutable/hash-stable auto-qualifies" option
+  is intentionally not implemented: for immutable data, by-value and by-ref
+  are observationally identical, and auto-ref'ing every module constant would
+  be surprising.
 
 Implementation note: control tags are **dash-named plain symbols**
 (`serde-v1`, `serde-float`, `serde-sym`, `serde-map`, `serde-set`,

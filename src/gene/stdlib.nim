@@ -2004,6 +2004,12 @@ proc serdeIndexBinding(app: Application, name: string, val: Value,
   of vkNamespace:
     serdeRecordOrigin(app, val, module, internal)
     serdeIndexScope(app, val.nsScope, module, internal, visited)
+  of vkNode:
+    # A module-level typed instance is a candidate for a SerdeRef value ref.
+    # Only nodes (heap objects, unique bits) are recorded — scalars would
+    # collide with unrelated equal values.
+    if val.head.kind == vkType and not app.serdeValueOrigins.hasKey(val.bits):
+      app.serdeValueOrigins[val.bits] = (module: module, path: internal)
   else:
     discard
 
@@ -2312,17 +2318,33 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     raiseSerdeError(w.scope,
       $v.kind & " values do not serialize (process-bound)", w.path)
 
+proc serdeTypeIsSerdeRef(scope: Scope, typ: Value): bool =
+  if scope == nil or typ.kind != vkType:
+    return false
+  var proto: Value
+  if not scope.lookupOptional("SerdeRef", proto) or proto.kind != vkProtocol:
+    return false
+  typeImplementsProtocol(scope, typ, proto)
+
 proc serdeEmitInst(w: var SerdeWriter, v: Value) =
   ## A typed instance: (serde-inst <head-ref> <props-serde-map> [body...]).
   ## Read-back uses direct typed-data construction (never ctor), so the head
   ## must be a resolvable type or enum variant.
   ##
-  ## A type with a `serde-state` type-direct message serializes its state
-  ## instead: (serde-hooked <type-ref> <state>). Read-back runs serde-restore
-  ## (user code) only under ^allow-restore (design §7).
+  ## A module-level instance of a SerdeRef-marked type serializes by identity
+  ## (serde-value-ref); a type with a `serde-state` type-direct message
+  ## serializes its state (serde-hooked, ^allow-restore on read); otherwise
+  ## fields (design §7).
   if not w.allowRefs:
     raiseSerdeError(w.scope,
       "typed instances are not data (use serde/write)", w.path)
+  if v.head.kind == vkType and w.app != nil:
+    serdeEnsureOrigins(w.app)
+    if w.app.serdeValueOrigins.hasKey(v.bits) and
+        serdeTypeIsSerdeRef(w.scope, v.head):
+      let o = w.app.serdeValueOrigins[v.bits]
+      serdeEmitRef(w, "serde-value-ref", o.module, o.path)
+      return
   if v.head.kind == vkType:
     let stateFn = typeDirectMessage(v.head, "serde-state")
     if stateFn.kind != vkNil:
@@ -2562,12 +2584,25 @@ proc serdeResolveRef(r: var SerdeReader, v: Value, tag: string): Value =
       ", not the expected kind, at '" & coords.path & "'", r.path)
   resolved
 
+proc serdeResolveValueRef(r: var SerdeReader, v: Value): Value =
+  ## Resolve a module-level binding by identity — no kind check: it returns the
+  ## module's own object (design §7 identity semantics).
+  if not r.resolveRefs:
+    raiseSerdeError(r.scope,
+      "serde-value-ref requires serde/read (serde/read-data accepts pure " &
+      "data only)", r.path)
+  let coords = serdeRefCoords(r, v, "serde-value-ref")
+  let startScope = serdeResolveModuleScope(r, coords.module)
+  serdeLookupRefPath(r, startScope, coords.module, coords.path)
+
 proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
                         depth: int): Value =
   case tag
   of "serde-type-ref", "serde-enum-ref", "serde-protocol-ref",
      "serde-variant-ref", "serde-ns-ref", "serde-fn-ref":
     return serdeResolveRef(r, v, tag)
+  of "serde-value-ref":
+    return serdeResolveValueRef(r, v)
   else: discard
   case tag
   of "serde-float":
@@ -3736,6 +3771,7 @@ proc registerStdlibNamespaces(root: Scope) =
   serdeScope.define("data?",
     newNativeCallFn("serde/data?", biSerdeDataP, acceptsNamed = false))
   serdeScope.define("SerdeError", serdeError)
+  serdeScope.define("SerdeRef", root.vars["SerdeRef"])
   let intField = proc (name: string): TypeField =
     TypeField(name: name, optional: true, typeExpr: newSym("Int"),
               scope: root)

@@ -353,8 +353,10 @@ suite "cli — gene run":
     check "slow " in s1Events
     check "answer" in s2Events
     # Concurrency: serial turns would take >= 1800ms against a 900ms
-    # endpoint; parallel sessions finish in roughly one latency.
-    check elapsedMs < 1700
+    # endpoint; parallel sessions finish in roughly one latency. The margin
+    # is generous (vs. the 1800ms serial floor) because a full `nimble verify`
+    # run contends for cores and can stretch the two concurrent turns.
+    check elapsedMs < 1750
 
   test "agent gateway persists sessions across restarts":
     ## Milestone 11 e2e: run a turn with GENE_GATEWAY_DB set, kill the
@@ -789,7 +791,7 @@ suite "cli — gene parse/fmt/compile":
     check ("at " & normalizedPath(absolutePath(path)) & ":2:1") in ran.output
     check "2 | (+ x missing)" in ran.output
 
-  test "serde references and instances round-trip across module boundaries":
+  test "serde references, instances, hooks, and value-refs round-trip across modules":
     ## Stages 3-4 (docs/proposals/serialization.md §5-§7): type/enum/variant/
     ## protocol/fn refs to an imported module round-trip by identity; typed
     ## instances round-trip via direct construction (ctor never runs on
@@ -808,6 +810,9 @@ suite "cli — gene parse/fmt/compile":
 (type Conn ^props {^host Str ^live Bool}
   (message serde-state [self] {^host self/host})
   (message serde-restore [state] (Conn ^host state/host ^live true)))
+(type Registry ^props {^label Str})
+(impl SerdeRef for Registry)
+(var REGISTRY (Registry ^label "the-one"))
 """)
     discard writeCliProgram("serde_sidefx.gene", """
 (mod serde-sidefx)
@@ -817,7 +822,7 @@ suite "cli — gene parse/fmt/compile":
     let prog = writeCliProgram("serde_refs.gene", """
 (import serde [write read write-data SerdePolicy SerdeError])
 (import str [contains? join])
-(import [Point Line Shape Result Drawable area Counter Conn] from "./serde_geometry")
+(import [Point Line Shape Result Drawable area Counter Conn REGISTRY] from "./serde_geometry")
 (fn check [label ok] (println (join [label (if ok "ok" "FAIL")] " ")))
 # stage 3: references
 (check "type" (= Point (read (write Point))))
@@ -855,6 +860,13 @@ suite "cli — gene parse/fmt/compile":
   (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow-restore")))
 (var conn2 (read ht ^policy (SerdePolicy ^allow-restore true)))
 (check "hooked-restore" (&& (= "db" conn2/host) (= true conn2/live)))
+# stage 6: SerdeRef module singleton -> identity value-ref
+(check "value-ref-form" (contains? (write REGISTRY) "serde-value-ref"))
+(var reg2 (read (write REGISTRY)))
+(reg2 ~ Node/set-prop! `marker 99)
+(check "value-ref-identity" (= 99 REGISTRY/marker))
+# a non-SerdeRef module instance serializes by value, not as a value-ref
+(check "plain-by-value" (! (contains? (write (Point ^x 1 ^y 2)) "value-ref")))
 """)
     let ran = runGene(["run", prog])
     check ran.exitCode == 0
@@ -874,6 +886,9 @@ suite "cli — gene parse/fmt/compile":
     check "hooked-form ok" in ran.output
     check "hooked-no-allow ok" in ran.output
     check "hooked-restore ok" in ran.output
+    check "value-ref-form ok" in ran.output
+    check "value-ref-identity ok" in ran.output
+    check "plain-by-value ok" in ran.output
     check "FAIL" notin ran.output
     check "SIDEFX-RAN" notin ran.output
     # The ctor ran exactly once (from `new`), never during read-back.

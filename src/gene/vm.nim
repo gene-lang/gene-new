@@ -281,6 +281,10 @@ type
     # needs a ref, so module load pays nothing when serde is unused. Read never
     # touches it (it resolves directly against builtins + moduleCache).
     serdeOrigins: Table[uint64, tuple[module, path: string]]
+    # Module-level typed-instance bindings, for SerdeRef identity value refs
+    # (stage 6). Only heap instances are recorded, so bits never collide with
+    # inline scalars.
+    serdeValueOrigins: Table[uint64, tuple[module, path: string]]
     serdeOriginBuiltinsDone: bool
     serdeOriginModules: HashSet[string]
 
@@ -4240,6 +4244,10 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
+  # Marker protocol (empty): a module-level instance whose type implements it
+  # serializes by identity reference (serde, docs/proposals/serialization.md §7).
+  let serdeRefProtocol = newProtocol("SerdeRef", [])
+  result.define("SerdeRef", serdeRefProtocol)
   let callType = newType("Call", NIL,
                          @[
                            TypeField(name: "named", optional: false,
