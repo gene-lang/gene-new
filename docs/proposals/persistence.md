@@ -1,6 +1,9 @@
 # Gene Persistence & Reload — Design
 
-Status: **designed; not implemented.** Date: 2026-07-09.
+Status: **controlled-stop MVP implemented** (stages 1-4: `Store` protocol,
+`store/sqlite`, gateway migration, `Fs/make-dir`/`Fs/remove`, and `store/fs`).
+Crash/power-loss hardening remains deferred to §7 / stage 5. Date:
+2026-07-09.
 
 Goal: let a Gene application **save its durable state to a store and reload it
 on the next run**, so a controlled stop-and-restart resumes where it left off.
@@ -167,12 +170,12 @@ them in `src/gene/stdlib.nim`:
 | `Fs/make-dir` (mkdir -p) | create the store directory on `open` |
 | `Fs/remove` | `delete` / `clear` a record |
 
-`Fs/exists?` is convenient but optional (a failed `read-text` already
-signals absence). **Path confinement** (review #12): these operate on a path
-under the store root; the store composes root + encoded key, and the natives
-reject absolute paths and `..` segments — the same confinement discipline as
-module loading. `Fs/rename` and the atomic-write native belong to §7. The
-**sqlite backend needs none of this** — another reason it ships first.
+`Fs/exists?` is convenient but optional (a failed `read-text` already signals
+absence). The shipped `Fs/make-dir`/`Fs/remove` follow the existing broad
+`Fs/*` path semantics; `store/fs` keeps record paths confined by composing the
+caller-chosen root with a URL-encoded key that contains no path separators.
+`Fs/rename` and the atomic-write native belong to §7. The **sqlite backend
+needs none of this** — another reason it ships first.
 
 ## 5. Stop-and-reload model
 

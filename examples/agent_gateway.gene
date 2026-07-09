@@ -31,8 +31,10 @@
 (import [gene-system-prompt system-item user-item run-turn live-transport
          demo-transport-for max-tool-turns append model auth-token]
         from "./ai_agent")
-(import serde [write-data read-data])
 (import db/sqlite [open : sqlite-open])
+(import store/sqlite [open : store-sqlite-open])
+(import store/fs [open : store-fs-open])
+(import Fs [ReadWriteDir])
 
 (var gw-host (get-env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
 (var gw-port (parse_int (get-env Env "GENE_GATEWAY_PORT" "8090")))
@@ -41,6 +43,8 @@
 # to a sqlite path and sessions survive restarts — transcripts and event logs
 # are pure data, stored as serde text (docs/proposals/serialization.md §4).
 (var gw-db-path (get-env Env "GENE_GATEWAY_DB" ""))
+(var gw-state-dir (get-env Env "GENE_GATEWAY_STATE" ""))
+(var gw-resume (get-env Env "GENE_GATEWAY_RESUME" "1"))
 
 # Telegram channel (docs/ai-agent.md §12.6). Outbound HTTPS only: a getUpdates
 # long-poll rides os/exec-async, so no inbound port, webhook, or TLS server.
@@ -57,18 +61,17 @@
 (var sessions {})
 (var session-seq (cell 0))
 
-(var gw-db (cell nil))
+(var gw-store (cell nil))
 
 (fn persist-session [id, items, events, next-v]
-  (if (= (gw-db ~ Cell/get) nil)
+  (if (= (gw-store ~ Cell/get) nil)
     nil
     (try
-      ((gw-db ~ Cell/get) ~ execute
-        "insert or replace into sessions(id, data) values (?, ?)"
+      ((gw-store ~ Cell/get) ~ put
         id
-        (write-data {^items (items ~ Cell/get)
-                     ^events (events ~ Cell/get)
-                     ^next-v (next-v ~ Cell/get)}))
+        {^items (items ~ Cell/get)
+         ^events (events ~ Cell/get)
+         ^next-v (next-v ~ Cell/get)})
     catch * (println $"persist failed for session ${id}"))))
 
 # on-event: nil, or (fn [event] ...) called after each event is logged — how
@@ -461,12 +464,10 @@ document.getElementById('f').addEventListener('submit', function (e) {
     nil))
 
 (fn restore-sessions []
-  (var rows ((gw-db ~ Cell/get) ~ query "select id, data from sessions"))
   (var count (cell 0))
-  (for row in rows
+  (for id in ((gw-store ~ Cell/get) ~ keys)
     (try
-      (var id row/id)
-      (var saved (read-data row/data))
+      (var saved ((gw-store ~ Cell/get) ~ get id))
       (var hook
         (if (starts_with? id "tg-")
           (make-telegram-sender ((split id "tg-") ~ join ""))
@@ -474,21 +475,34 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (sessions ~ Map/put! id (make-session id hook saved))
       (restore-session-id-seq id)
       (count ~ Cell/set (+ (count ~ Cell/get) 1))
-    catch * (println $"failed to restore session ${row/id}")))
+    catch * (println $"failed to restore session ${id}")))
   (count ~ Cell/get))
 
-(fn open-gateway-db []
-  (if (= gw-db-path "")
-    nil
+(fn finish-gateway-store [label : Str]
+  (if (= gw-resume "0")
     (do
-      (gw-db ~ Cell/set (sqlite-open gw-db-path))
-      ((gw-db ~ Cell/get) ~ exec
-        "create table if not exists sessions (id text primary key, data text not null)")
+      ((gw-store ~ Cell/get) ~ clear)
+      (println $"Persistence enabled - ${label} (fresh start)"))
+    (do
       (var n (restore-sessions))
-      (println $"Persistence enabled - ${gw-db-path} (${n} sessions restored)"))))
+      (println $"Persistence enabled - ${label} (${n} sessions restored)"))))
+
+(fn open-gateway-store []
+  (if (= gw-state-dir "")
+    (if (= gw-db-path "")
+      nil
+      (do
+        (var db (sqlite-open gw-db-path))
+        (gw-store ~ Cell/set
+          (store-sqlite-open db
+            ^table "sessions" ^key-column "id" ^data-column "data"))
+        (finish-gateway-store gw-db-path)))
+    (do
+      (gw-store ~ Cell/set (store-fs-open ReadWriteDir ^root gw-state-dir))
+      (finish-gateway-store gw-state-dir))))
 
 (fn main [args]
-  (open-gateway-db)
+  (open-gateway-store)
   (println $"Gene agent gateway - http://${gw-host}:${gw-port} (model ${model})")
   (if (= auth-token nil)
     (println "No model API token set - sessions use the offline demo transport.")

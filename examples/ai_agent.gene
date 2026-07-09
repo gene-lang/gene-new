@@ -23,6 +23,8 @@
 # Codex backend and chat for any custom OPENAI_BASE_URL.
 # Tools auto-approve by default (single-user agent); set GENE_AGENT_APPROVE_ALL=0
 # to be prompted before writes and shell commands.
+# Optional local persistence: set GENE_AGENT_STATE=.gene-agent-state to save
+# non-secret config, the interactive session, and memory across restarts.
 # Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
 #             tool-call round trip — needs no network)
@@ -38,7 +40,8 @@
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower trim])
 (import std/stream [to_stream map filter into each])
-(import Fs [read-text write-text list-dir ReadDir WriteDir])
+(import Fs [read-text write-text list-dir ReadDir WriteDir ReadWriteDir])
+(import store/fs [open : store-open StoreError])
 (import repl [run : run-repl-session])
 
 # -----------------------------------------------------------------------------
@@ -61,6 +64,8 @@
   (get-env Env "OPENAI_API" (if (= base codex-base) "responses" "chat")))
 (var workspace-root ".")
 (var approve-all (get-env Env "GENE_AGENT_APPROVE_ALL" "1"))
+(var agent-state-dir (get-env Env "GENE_AGENT_STATE" ""))
+(var agent-resume (get-env Env "GENE_AGENT_RESUME" "1"))
 
 # -----------------------------------------------------------------------------
 # Minimal personal-use safety. The full §8.5 contract (realpath confinement,
@@ -778,6 +783,117 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   ((to_stream [x]) ~ into xs))
 
 # -----------------------------------------------------------------------------
+# Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
+# Store with three data records:
+#   config  — non-secret runtime config
+#   session — current interactive transcript and Responses-style items
+#   memory  — user-managed durable notes included in the system prompt
+# -----------------------------------------------------------------------------
+
+(var agent-store (cell nil))
+
+(fn state-enabled? []
+  (! (= (trim agent-state-dir) "")))
+
+(fn resume-enabled? []
+  (flag-enabled? agent-resume))
+
+(fn init-agent-state []
+  (if (|| (! (state-enabled?))
+          (! (= (agent-store ~ Cell/get) nil)))
+    nil
+    (try
+      (agent-store ~ Cell/set (store-open ReadWriteDir ^root agent-state-dir))
+    catch (StoreError ^message m)
+      (println $"agent state disabled: ${m}")
+    catch *
+      (println "agent state disabled: could not open store"))))
+
+(fn state-put [key : Str, value]
+  (if (= (agent-store ~ Cell/get) nil)
+    nil
+    (try
+      ((agent-store ~ Cell/get) ~ put key value)
+    catch (StoreError ^message m)
+      (println $"agent state save failed (${key}): ${m}")
+    catch *
+      (println $"agent state save failed (${key})"))))
+
+(fn state-get [key : Str, default]
+  (if (= (agent-store ~ Cell/get) nil)
+    default
+    (try
+      ((agent-store ~ Cell/get) ~ get key ^default default)
+    catch (StoreError ^message m)
+      (do
+        (println $"agent state load failed (${key}): ${m}")
+        default)
+    catch *
+      default)))
+
+(fn config-snapshot []
+  {^model model
+   ^base base
+   ^api-flavor api-flavor
+   ^workspace-root workspace-root
+   ^approve-all approve-all
+   ^max-tool-turns max-tool-turns})
+
+(fn save-config []
+  (state-put "config" (config-snapshot)))
+
+(fn prompt-with-memory [memory]
+  (if (empty? memory)
+    gene-system-prompt
+    (do
+      (var sep "\n")
+      $"${gene-system-prompt}\n\nPersistent memory:\n${(join memory sep)}\n")))
+
+(fn initial-items [memory]
+  [(system-item (prompt-with-memory memory))])
+
+(fn refresh-system-memory [items, memory]
+  (var out (cell []))
+  (var i (cell 0))
+  (for item in items
+    (if (= (i ~ Cell/get) 0)
+      (out ~ Cell/set
+        (append (out ~ Cell/get) (system-item (prompt-with-memory memory))))
+      (out ~ Cell/set (append (out ~ Cell/get) item)))
+    (i ~ Cell/set (+ (i ~ Cell/get) 1)))
+  (if (= (i ~ Cell/get) 0)
+    (initial-items memory)
+    (out ~ Cell/get)))
+
+(fn load-memory []
+  (state-get "memory" []))
+
+(fn load-session []
+  (if (resume-enabled?)
+    (state-get "session" nil)
+    nil))
+
+(fn save-agent-state [items, transcript, memory]
+  (save-config)
+  (state-put "memory" memory)
+  (state-put "session" {^items items ^transcript transcript}))
+
+(fn after-prefix [s : Str, prefix : Str] : Str
+  (var parts (split s prefix))
+  (var i (cell 0))
+  (var acc (cell ""))
+  ((to_stream parts)
+    ~ each (fn [p]
+        (var n (i ~ Cell/get))
+        (i ~ Cell/set (+ n 1))
+        (if (= n 0)
+          nil
+          (if (= n 1)
+            (acc ~ Cell/set p)
+            (acc ~ Cell/set $"${(acc ~ Cell/get)}${prefix}${p}")))))
+  (acc ~ Cell/get))
+
+# -----------------------------------------------------------------------------
 # Offline demo transport: turn 1 asks to list the workspace, turn 2 answers.
 # Proves the full tool-call loop with no network or key.
 # -----------------------------------------------------------------------------
@@ -809,6 +925,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (println "Demo complete. Set OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN to go live."))
 
 (fn run-one-shot [task : Str]
+  (init-agent-state)
+  (save-config)
   (println $"Gene AI agent - model ${model}")
   (println $"user> ${task}")
   (if (= auth-token nil)
@@ -816,28 +934,31 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     nil)
   (var streaming (cell false))
   (var transport (if (= auth-token nil) (demo-transport-for) live-transport))
-  (run-turn transport
-            [(system-item gene-system-prompt) (user-item task)]
-            (fn [text]
-              (if (Cell/get streaming)
-                (do
-                  (println "")
-                  (Cell/set streaming false))
-                nil)
-              (if (= text "")
-                nil
-                (println $"agent> ${text}")))
-            (fn [text]
-              (if (= text "")
-                nil
-                (do
-                  (if (Cell/get streaming)
-                    nil
-                    (do
-                      (print "agent> ")
-                      (Cell/set streaming true)))
-                  (print text))))
-            max-tool-turns)
+  (var memory (load-memory))
+  (var result-items
+    (run-turn transport
+              (append (initial-items memory) (user-item task))
+              (fn [text]
+                (if (Cell/get streaming)
+                  (do
+                    (println "")
+                    (Cell/set streaming false))
+                  nil)
+                (if (= text "")
+                  nil
+                  (println $"agent> ${text}")))
+              (fn [text]
+                (if (= text "")
+                  nil
+                  (do
+                    (if (Cell/get streaming)
+                      nil
+                      (do
+                        (print "agent> ")
+                        (Cell/set streaming true)))
+                    (print text))))
+              max-tool-turns))
+  (save-agent-state result-items $"Gene AI agent - model ${model}\nuser> ${task}\n" memory)
   (if (Cell/get streaming)
     (println "")
     nil))
@@ -851,7 +972,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn append-transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
-(var input-status "Enter sends | Paste/Shift+Enter keep newlines | /sh shell | /repl Gene REPL | /quit exit")
+(var input-status "Enter sends | /remember note | /memory | /status | /sh | /repl | /quit")
 
 (fn close-user-input []
   (if (stdin-tty?)
@@ -876,46 +997,39 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn render-agent-delta [transcript streaming text]
   (if (= text "")
     nil
-    (if (stdin-tty?)
-      (do
-        (if (Cell/get streaming)
-          nil
-          (do
-            (append-transcript transcript "agent> ")
-            (Cell/set streaming true)))
-        (append-transcript transcript text)
-        (refresh-user-input transcript))
-      (do
-        (if (Cell/get streaming)
-          nil
-          (do
-            (print "agent> ")
-            (Cell/set streaming true)))
+    (do
+      (if (Cell/get streaming)
+        nil
+        (do
+          (append-transcript transcript "agent> ")
+          (if (stdin-tty?)
+            nil
+            (print "agent> "))
+          (Cell/set streaming true)))
+      (append-transcript transcript text)
+      (if (stdin-tty?)
+        (refresh-user-input transcript)
         (print text)))))
 
 (fn finish-agent-stream [transcript streaming]
   (if (Cell/get streaming)
     (do
+      (append-transcript transcript "\n")
       (if (stdin-tty?)
-        (do
-          (append-transcript transcript "\n")
-          (refresh-user-input transcript))
+        (refresh-user-input transcript)
         (println ""))
       (Cell/set streaming false))
     nil))
 
 (fn render-agent-text [transcript streaming text]
   (finish-agent-stream transcript streaming)
-  (if (stdin-tty?)
+  (if (= text "")
+    nil
     (do
-      (if (= text "")
-        nil
-        (do
-          (append-transcript transcript $"agent> ${text}\n")
-          (refresh-user-input transcript))))
-    (if (= text "")
-      nil
-      (println $"agent> ${text}"))))
+      (append-transcript transcript $"agent> ${text}\n")
+      (if (stdin-tty?)
+        (refresh-user-input transcript)
+        (println $"agent> ${text}")))))
 
 (fn run-shell-session []
   (close-user-input)
@@ -951,11 +1065,13 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                 nil)))))
       (println ""))))
 
-(fn run-session-repl [items]
+(fn run-session-repl [items, memory]
   (close-user-input)
   (var session {^items items
                 ^model model
                 ^workspace-root workspace-root
+                ^memory memory
+                ^config (config-snapshot)
                 ^tools tools
                 ^tool-schemas tool-schemas})
   (var repl-env (env ^bindings {^session session}))
@@ -964,40 +1080,113 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   nil)
 
 (fn run-repl []
+  (init-agent-state)
+  (save-config)
   (println $"Gene AI agent - model ${model}. Type /quit to exit.")
-  (var items (cell [(system-item gene-system-prompt)]))
-  (var transcript (cell $"Gene AI agent - model ${model}\n"))
+  (var memory (cell (load-memory)))
+  (var saved (load-session))
+  (var items
+    (cell
+      (if (= saved nil)
+        (initial-items (memory ~ Cell/get))
+        (refresh-system-memory saved/items (memory ~ Cell/get)))))
+  (var transcript
+    (cell
+      (if (= saved nil)
+        $"Gene AI agent - model ${model}\n"
+        saved/transcript)))
   (var running (cell true))
   (var line nil)
   (var streaming (cell false))
+  (if (! (= saved nil))
+    (do
+      (append-transcript transcript $"[restored session from ${agent-state-dir}]\n")
+      (refresh-user-input transcript))
+    nil)
   (while (Cell/get running)
     (set line (read-user-input transcript))
     (if (= line nil)
       (do
         (close-user-input)
+        (save-agent-state (items ~ Cell/get)
+                          (transcript ~ Cell/get)
+                          (memory ~ Cell/get))
         (Cell/set running false))
-      (if (= line "/quit")
+      (if (blank-line? line)
+        nil
         (do
-          (close-user-input)
-          (Cell/set running false))
-        (if (= line "/sh")
-          (run-shell-session)
-          (if (= line "/repl")
-            (run-session-repl items)
-            (if (blank-line? line)
-              nil
-              (do
-                (append-transcript transcript $"──────\n${line}\n")
-                (refresh-user-input transcript)
-                (Cell/set streaming false)
-                (Cell/set items
-                  (run-turn live-transport
-                            (append (Cell/get items) (user-item line))
-                            (fn [text]
-                              (render-agent-text transcript streaming text))
-                            (fn [text]
-                              (render-agent-delta transcript streaming text))
-                            max-tool-turns))))))))))
+          # Keep submitted commands in the visible/persisted transcript just
+          # like model-bound user input. Slash commands are handled locally,
+          # but they are still input from the user.
+          (append-transcript transcript $"──────\n${line}\n")
+          (refresh-user-input transcript)
+          (if (= line "/quit")
+            (do
+              (close-user-input)
+              (save-agent-state (items ~ Cell/get)
+                                (transcript ~ Cell/get)
+                                (memory ~ Cell/get))
+              (Cell/set running false))
+            (if (= line "/sh")
+              (run-shell-session)
+              (if (= line "/repl")
+                (run-session-repl items memory)
+                (if (= line "/memory")
+                  (do
+                    (var sep "\n")
+                    (render-agent-text transcript streaming
+                      (if (empty? (memory ~ Cell/get))
+                        "memory is empty"
+                        $"memory:\n${(join (memory ~ Cell/get) sep)}")))
+                  (if (= line "/forget-memory")
+                    (do
+                      (memory ~ Cell/set [])
+                      (items ~ Cell/set
+                        (refresh-system-memory (items ~ Cell/get)
+                                               (memory ~ Cell/get)))
+                      (save-agent-state (items ~ Cell/get)
+                                        (transcript ~ Cell/get)
+                                        (memory ~ Cell/get))
+                      (render-agent-text transcript streaming "memory cleared"))
+                    (if (starts_with? line "/remember ")
+                      (do
+                        (var note (trim (after-prefix line "/remember ")))
+                        (if (= note "")
+                          (render-agent-text transcript streaming
+                            "usage: /remember <note>")
+                          (do
+                            (memory ~ Cell/set (append (memory ~ Cell/get) note))
+                            (items ~ Cell/set
+                              (refresh-system-memory (items ~ Cell/get)
+                                                     (memory ~ Cell/get)))
+                            (save-agent-state (items ~ Cell/get)
+                                              (transcript ~ Cell/get)
+                                              (memory ~ Cell/get))
+                            (render-agent-text transcript streaming
+                              $"remembered: ${note}"))))
+                      (if (= line "/status")
+                        (do
+                          (var state-label
+                            (if (= (agent-store ~ Cell/get) nil)
+                              "off"
+                              agent-state-dir))
+                          (var item-count ((items ~ Cell/get) ~ size))
+                          (var memory-count ((memory ~ Cell/get) ~ size))
+                          (render-agent-text transcript streaming
+                            $"state: ${state-label}\nmodel: ${model}\napi: ${api-flavor}\nitems: ${item-count}\nmemory: ${memory-count}"))
+                        (do
+                          (Cell/set streaming false)
+                          (Cell/set items
+                            (run-turn live-transport
+                                      (append (Cell/get items) (user-item line))
+                                      (fn [text]
+                                        (render-agent-text transcript streaming text))
+                                      (fn [text]
+                                        (render-agent-delta transcript streaming text))
+                                      max-tool-turns))
+                          (save-agent-state (items ~ Cell/get)
+                                            (transcript ~ Cell/get)
+                                            (memory ~ Cell/get)))))))))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main [args]

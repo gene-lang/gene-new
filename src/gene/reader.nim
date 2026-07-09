@@ -27,13 +27,18 @@ type
     flags*: string
     line*, col*: int
 
+  ReadOptions* = object
+    maxDepth*: int              # 0 means unlimited
+
   Reader* = object
     src*: string
     sourceName*: string
+    options*: ReadOptions
     pos*: int
     line*, col*: int
     tokens: seq[Token]
     tokIdx: int
+    parseDepth: int
     locs: Table[uint64, SourceLoc]
 
   ReadError* = object of CatchableError
@@ -93,8 +98,9 @@ proc isIntLexeme(lexeme: string): bool =
     inc i
   true
 
-proc initReader(src: string, sourceName = ""): Reader =
-  Reader(src: src, sourceName: sourceName, line: 1, col: 1,
+proc initReader(src: string, sourceName = "",
+                options: ReadOptions = ReadOptions()): Reader =
+  Reader(src: src, sourceName: sourceName, options: options, line: 1, col: 1,
          tokens: newSeqOfCap[Token](min(src.len + 1, 4096)),
          locs: initTable[uint64, SourceLoc]())
 
@@ -1159,10 +1165,12 @@ proc parseHashMap(r: var Reader): Value =
   discard r.next()
   result = newHashMap(entries)
 
-proc read*(src: string, sourceName = ""): Value
+proc read*(src: string, sourceName = "",
+           options: ReadOptions = ReadOptions()): Value
 
 proc parseInterpolatedString(lexeme, sourceName: string,
-                             line, col: int): Value =
+                             line, col: int,
+                             options: ReadOptions = ReadOptions()): Value =
   var body = newSeq[Value]()
   var i = 0
   var last = 0
@@ -1180,7 +1188,7 @@ proc parseInterpolatedString(lexeme, sourceName: string,
         raiseReadIncompleteAt(sourceName, line, col,
                               "unterminated interpolation '${...}'")
       let exprStr = lexeme[start ..< i-1]
-      body.add read(exprStr, sourceName)
+      body.add read(exprStr, sourceName, options)
       last = i
     elif lexeme[i..^1].startsWith("$("):
       if i > last: body.add newStr(lexeme[last ..< i])
@@ -1196,7 +1204,7 @@ proc parseInterpolatedString(lexeme, sourceName: string,
         raiseReadIncompleteAt(sourceName, line, col,
                               "unterminated interpolation '$(...)'")
       let exprStr = lexeme[start ..< i]
-      body.add read(exprStr, sourceName)
+      body.add read(exprStr, sourceName, options)
       last = i
     else: i += 1
   if last < lexeme.len: body.add newStr(lexeme[last..^1])
@@ -1205,6 +1213,11 @@ proc parseInterpolatedString(lexeme, sourceName: string,
 proc parseForm(r: var Reader, inList = false): Value =
   r.skipDatumComments()
   let tok = r.next()
+  if r.options.maxDepth > 0 and r.parseDepth > r.options.maxDepth:
+    r.raiseReadErrorAt(tok, "reader max-depth exceeded (" &
+                       $r.options.maxDepth & ")")
+  inc r.parseDepth
+  defer: dec r.parseDepth
   template finish(value: Value): untyped =
     let parsed = value
     r.recordSourceLoc(parsed, tok)
@@ -1259,7 +1272,8 @@ proc parseForm(r: var Reader, inList = false): Value =
     if nextTok.kind == tkString and nextTok.line == tok.line and
         nextTok.col == tok.col + 1:
       let s = r.next()
-      finish parseInterpolatedString(s.lexeme, r.sourceName, tok.line, tok.col)
+      finish parseInterpolatedString(s.lexeme, r.sourceName, tok.line, tok.col,
+                                     r.options)
     finish newSym("$")
   of tkRParen, tkRBracket, tkRBrace:
     r.raiseReadErrorAt(tok, "unexpected closing delimiter '" & tok.lexeme & "'")
@@ -1267,16 +1281,18 @@ proc parseForm(r: var Reader, inList = false): Value =
     r.raiseReadIncomplete("unexpected end of input")
   else: finish NIL
 
-proc read*(src: string, sourceName = ""): Value =
-  var r = initReader(src, sourceName)
+proc read*(src: string, sourceName = "",
+           options: ReadOptions = ReadOptions()): Value =
+  var r = initReader(src, sourceName, options)
   r.tokenize()
   r.skipDatumComments()
   if r.peekKind() == tkEof: return NIL
   return r.parseForm(inList = false)
 
-proc readAllWithLocs*(src: string, sourceName = ""): SourceUnit =
+proc readAllWithLocs*(src: string, sourceName = "",
+                      options: ReadOptions = ReadOptions()): SourceUnit =
   ## Read all top-level forms from src (program = { form }).
-  var r = initReader(src, sourceName)
+  var r = initReader(src, sourceName, options)
   r.tokenize()
   while true:
     r.skipDatumComments()
@@ -1288,6 +1304,7 @@ proc readAllWithLocs*(src: string, sourceName = ""): SourceUnit =
   result.sourceName = sourceName
   result.locs = r.locs
 
-proc readAll*(src: string, sourceName = ""): seq[Value] =
+proc readAll*(src: string, sourceName = "",
+              options: ReadOptions = ReadOptions()): seq[Value] =
   ## Read all top-level forms from src (program = { form }).
-  readAllWithLocs(src, sourceName).forms
+  readAllWithLocs(src, sourceName, options).forms

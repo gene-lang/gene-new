@@ -3000,6 +3000,55 @@ suite "spec — db protocol from stdlib plan":
                " (not (= (Namespace/lookup db/postgres \"open\") void))]",
                "[true true true]")
 
+suite "spec — store persistence protocol":
+  test "sqlite store round-trips data records and missing/default semantics":
+    check_eval("(import db/sqlite [open]) " &
+               "(import store/sqlite [open : store-open StoreError]) " &
+               "(var db (open \":memory:\")) " &
+               "(var s (store-open db)) " &
+               "(s ~ put \"a\" {^x 1}) " &
+               "(s ~ put \"void\" void) " &
+               "[(s ~ get \"a\") " &
+               " (s ~ get \"void\") " &
+               " (s ~ has? \"a\") " &
+               " (s ~ has? \"missing\") " &
+               " (s ~ get \"missing\" ^default \"fallback\") " &
+               " (try (s ~ get \"missing\") catch (StoreError ^kind k) k)]",
+               "[{^x 1} void true false \"fallback\" missing]")
+
+  test "sqlite store supports full mode refs, keys, delete, clear, and close":
+    check_eval("(import db/sqlite [open]) " &
+               "(import store/sqlite [open : store-open StoreError]) " &
+               "(var db (open \":memory:\")) " &
+               "(var s (store-open db)) " &
+               "(s ~ put \"fn\" str/join ^mode \"full\") " &
+               "(s ~ put \"n\" 1) " &
+               "(var got (s ~ get \"fn\" ^mode \"full\")) " &
+               "(var before (s ~ keys)) " &
+               "(s ~ delete \"n\") " &
+               "(var after-delete [(s ~ has? \"n\") (s ~ keys)]) " &
+               "(s ~ clear) " &
+               "(var after-clear (s ~ keys)) " &
+               "(s ~ close) " &
+               "[(same? got str/join) before after-delete after-clear " &
+               " (try (s ~ keys) catch (StoreError ^kind k) k)]",
+               "[true [\"fn\" \"n\"] [false [\"fn\"]] [] closed]")
+
+  test "filesystem store uses encoded keys and ignores junk files":
+    let dir = getTempDir() / "gene-store-fs-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    writeFile(dir / "junk.tmp", "not a record")
+    check_eval("(import store/fs [open : store-open StoreError]) " &
+               "(import Fs [ReadWriteDir]) " &
+               "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
+               "(s ~ put \"session:tg/42\" {^x 1}) " &
+               "[(s ~ get \"session:tg/42\") " &
+               " (s ~ keys) " &
+               " (try (s ~ put \"\" 1) catch (StoreError ^kind k) k)]",
+               "[{^x 1} [\"session:tg/42\"] invalid-key]")
+
 suite "spec — os and json from ai-agent plan":
   test "os/get-env reads, defaults, and errors under Os/Env":
     check_eval("(import os [get-env env? Env]) " &
@@ -3092,11 +3141,17 @@ suite "spec — os and json from ai-agent plan":
       removeDir(dir)
     createDir(dir)
     let path = dir / "note.txt"
-    check_eval("(import Fs [read-text write-text list-dir ReadDir WriteDir]) " &
+    let made = dir / "made"
+    let removable = dir / "remove-me.txt"
+    check_eval("(import Fs [read-text write-text list-dir make-dir remove " &
+               "ReadDir WriteDir]) " &
                "(write-text WriteDir " & geneString(path) & " \"hello\") " &
+               "(write-text WriteDir " & geneString(removable) & " \"bye\") " &
+               "(make-dir WriteDir " & geneString(made) & ") " &
+               "(remove WriteDir " & geneString(removable) & ") " &
                "[(read-text ReadDir " & geneString(path) & ") " &
                " (list-dir ReadDir " & geneString(dir) & ")]",
-               "[\"hello\" [\"note.txt\"]]")
+               "[\"hello\" [\"made\" \"note.txt\"]]")
 
   test "json round-trips objects, arrays, scalars, and escapes":
     check_eval("(import json [parse stringify]) " &
@@ -3214,6 +3269,10 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
     check_eval("(import serde [data?]) " &
                "[(data? [1 {^a 2}]) (data? (cell 1)) (data? (fn [] 1))]",
                "[true false false]")
+    check_eval("(import serde [write-data data?]) " &
+               "[(try (write-data 1 ^policy nil) catch * \"rejected\") " &
+               " (try (data? 1 ^policy nil) catch * \"rejected\")]",
+               "[\"rejected\" \"rejected\"]")
 
   test "cycles are detected with a path":
     check_eval("(import serde [write-data SerdeError]) " &
@@ -3229,6 +3288,14 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(try (read-data \"(serde-v1 [[[[1]]]])\" " &
                "               ^policy (SerdePolicy ^max-depth 2)) " &
                "catch (SerdeError ^message m) (contains? m \"max-depth\"))",
+               "true")
+    let deep = "(serde-v1 " & repeat("[", 20) & "1" & repeat("]", 20) & ")"
+    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+               "(import str [contains?]) " &
+               "(try (read-data " & geneString(deep) &
+               "               ^policy (SerdePolicy ^max-depth 2)) " &
+               "catch (SerdeError ^message m) " &
+               "  (&& (contains? m \"parse\") (contains? m \"max-depth\")))",
                "true")
     check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
                "(import str [contains?]) " &
@@ -3271,6 +3338,21 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(try (read-data \"(serde-v1 (serde-range 1 2))\") " &
                "catch (SerdeError ^message _) \"bad-range\")",
                "\"bad-range\"")
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 (serde-map false [\\\"a\\\" 1 \\\"a\\\" 2]))\") " &
+               "catch (SerdeError ^message m) (contains? m \"duplicate key\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 (serde-set 1 1))\") " &
+               "catch (SerdeError ^message m) (contains? m \"duplicate\"))",
+               "true")
+    check_eval("(import serde [read-data SerdeError]) " &
+               "(import str [contains?]) " &
+               "(try (read-data \"(serde-v1 (serde-set [1]))\") " &
+               "catch (SerdeError ^message m) (contains? m \"hash-stable\"))",
+               "true")
 
 suite "spec — serde references (stage 3)":
   test "builtin function references round-trip by identity":

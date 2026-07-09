@@ -1606,6 +1606,31 @@ proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     raiseOsError("Fs/list-dir: " & e.msg, scope)
   newList(names)
 
+proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Fs/make-dir expects (Fs/WriteDir, path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsWriteDir("Fs/make-dir", args[0])
+  requireStr("Fs/make-dir path", args[1])
+  try:
+    createDir(args[1].strVal)
+  except OSError as e:
+    raiseOsError("Fs/make-dir: " & e.msg, scope)
+  NIL
+
+proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Fs/remove expects (Fs/WriteDir, path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsWriteDir("Fs/remove", args[0])
+  requireStr("Fs/remove path", args[1])
+  try:
+    if fileExists(args[1].strVal):
+      removeFile(args[1].strVal)
+  except OSError as e:
+    raiseOsError("Fs/remove: " & e.msg, scope)
+  NIL
+
 # --- json: parse and stringify over Gene value kinds (docs/ai-agent.md §5) ---
 
 const jsonMaxDepth = 200
@@ -1922,11 +1947,27 @@ proc raiseSerdeError(scope: Scope, message: string, path: seq[string] = @[]) =
   e.hasErrVal = true
   raise e
 
+proc serdeFastBareName(s: string): bool =
+  ## Common identifiers and property keys can be accepted without probing the
+  ## reader. Unusual spellings still use the authoritative read-back check.
+  if s.len == 0 or s in ["true", "false", "nil", "void"] or
+      s.startsWith(serdeReservedPrefix) or s.endsWith("..."):
+    return false
+  if s[0] notin {'A'..'Z', 'a'..'z', '_'}:
+    return false
+  for c in s:
+    if c notin {'A'..'Z', 'a'..'z', '0'..'9', '_', '-', '?', '!', '*'}:
+      return false
+  true
+
 proc serdeSymbolRereads(w: var SerdeWriter, s: string): bool =
   ## A symbol is emitted verbatim only when its text reads back as the same
   ## symbol. Probing the real reader is authoritative — no second grammar.
   if s in w.symCache:
     return w.symCache[s]
+  if serdeFastBareName(s):
+    w.symCache[s] = true
+    return true
   var ok = false
   if s.len > 0:
     try:
@@ -1943,6 +1984,9 @@ proc serdePropKeyUsable(w: var SerdeWriter, k: string): bool =
   ## single-entry map. Otherwise the whole container uses the serde-map escape.
   if k in w.keyCache:
     return w.keyCache[k]
+  if serdeFastBareName(k):
+    w.keyCache[k] = true
+    return true
   var ok = false
   if k.len > 0:
     try:
@@ -1982,7 +2026,9 @@ proc serdeModuleRelPath(app: Application, absPath: string): string =
 
 proc serdeRecordOrigin(app: Application, v: Value, module, path: string) =
   ## First name wins for a given value, so a stable path is chosen across
-  ## re-scans and alias bindings.
+  ## re-scans and alias bindings. The index keys by value bits and assumes
+  ## module definitions stay rooted for the Application lifetime; collectible
+  ## modules must invalidate these tables before value bits can be reused.
   if not app.serdeOrigins.hasKey(v.bits):
     app.serdeOrigins[v.bits] = (module: module, path: path)
 
@@ -2184,6 +2230,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
              $v.rangeStep & " " &
              (if v.rangeInclusive: "true" else: "false") & ")"
   of vkSet:
+    serdeEnterContainer(w, v)
     w.sb.add "(serde-set"
     for i, it in v.setItems:
       w.sb.add ' '
@@ -2191,6 +2238,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
       serdeEmit(w, it)
       discard w.path.pop()
     w.sb.add ')'
+    serdeLeaveContainer(w, v)
   of vkList:
     serdeEnterContainer(w, v)
     w.sb.add (if v.listImmutable: "#[" else: "[")
@@ -2376,6 +2424,85 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
     discard w.path.pop()
   w.sb.add "])"
 
+proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool =
+  if v.isNil:
+    return true
+  case v.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
+     vkDate, vkTime, vkDateTime, vkRegex, vkSymbol, vkTimezone, vkDuration,
+     vkRange:
+    true
+  of vkList:
+    if v.bits in onPath:
+      return false
+    onPath.incl v.bits
+    for it in v.listItems:
+      if not serdeDataValueP(it, onPath):
+        onPath.excl v.bits
+        return false
+    onPath.excl v.bits
+    true
+  of vkMap:
+    if v.bits in onPath:
+      return false
+    onPath.incl v.bits
+    for _, val in v.mapEntries:
+      if not serdeDataValueP(val, onPath):
+        onPath.excl v.bits
+        return false
+    onPath.excl v.bits
+    true
+  of vkSet:
+    if v.bits in onPath:
+      return false
+    onPath.incl v.bits
+    for it in v.setItems:
+      if not serdeDataValueP(it, onPath):
+        onPath.excl v.bits
+        return false
+    onPath.excl v.bits
+    true
+  of vkHashMap:
+    if v.bits in onPath:
+      return false
+    onPath.incl v.bits
+    for entry in v.hashMapEntries:
+      if not serdeDataValueP(entry.key, onPath) or
+          not serdeDataValueP(entry.val, onPath):
+        onPath.excl v.bits
+        return false
+    onPath.excl v.bits
+    true
+  of vkNode:
+    if v.head.kind in {vkType, vkEnumVariant}:
+      return false
+    if v.bits in onPath:
+      return false
+    onPath.incl v.bits
+    if not serdeDataValueP(v.head, onPath):
+      onPath.excl v.bits
+      return false
+    for _, val in v.props:
+      if not serdeDataValueP(val, onPath):
+        onPath.excl v.bits
+        return false
+    for _, val in v.meta:
+      if not serdeDataValueP(val, onPath):
+        onPath.excl v.bits
+        return false
+    for it in v.body:
+      if not serdeDataValueP(it, onPath):
+        onPath.excl v.bits
+        return false
+    onPath.excl v.bits
+    true
+  else:
+    false
+
+proc serdeDataValueP(v: Value): bool =
+  var onPath = initHashSet[uint64]()
+  serdeDataValueP(v, onPath)
+
 proc serdeWriteDataText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope)
   w.sb.add "(serde-v1 "
@@ -2515,18 +2642,8 @@ proc serdeResolveModuleScope(r: var SerdeReader, module: string): Scope =
     raiseSerdeError(r.scope, "cannot resolve module '" & module & "': " &
                     e.msg, r.path)
   if not r.app.moduleCache.hasKey(absPath):
-    var props = initOrderedTable[string, Value]()
-    props["message"] = newStr("at " & serdePathText(r.path) &
-      ": module not loaded: " & module &
-      " (import it before deserializing references to it)")
-    props["path"] = newStr(serdePathText(r.path))
-    props["unresolved"] = newStr(module)
-    var e: ref GeneError
-    new(e)
-    e.msg = "serde: module not loaded: " & module
-    e.errVal = newNode(builtInTypeHead(r.scope, "SerdeError"), props = props)
-    e.hasErrVal = true
-    raise e
+    raiseSerdeError(r.scope, "module not loaded: " & module &
+      " (import it before deserializing references to it)", r.path)
   let modVal = r.app.moduleCache.getOrDefault(absPath)
   if modVal.kind != vkModule:
     raiseSerdeError(r.scope, "module '" & module & "' is not a module", r.path)
@@ -2630,7 +2747,15 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     var items: seq[Value]
     for i, it in v.body:
       r.path.add $i
-      items.add serdeDecode(r, it, depth + 1)
+      let item = serdeDecode(r, it, depth + 1)
+      if not isHashStable(item):
+        raiseSerdeError(r.scope,
+          "serde-set element is not hash-stable", r.path)
+      for existing in items:
+        if equal(existing, item):
+          raiseSerdeError(r.scope,
+            "serde-set contains a duplicate element", r.path)
+      items.add item
       discard r.path.pop()
     newSet(items)
   of "serde-range":
@@ -2676,8 +2801,11 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     while i < items.len:
       if items[i].kind != vkString:
         raiseSerdeError(r.scope, "serde-map keys must be Str", r.path)
-      r.path.add items[i].strVal
-      entries[items[i].strVal] = serdeDecode(r, items[i + 1], depth + 1)
+      let key = items[i].strVal
+      if entries.hasKey(key):
+        raiseSerdeError(r.scope, "serde-map duplicate key: " & key, r.path)
+      r.path.add key
+      entries[key] = serdeDecode(r, items[i + 1], depth + 1)
       discard r.path.pop()
       inc i, 2
     newMap(entries, immutable = v.body[0].boolVal)
@@ -2879,12 +3007,7 @@ proc biSerdeWriteData(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc biSerdeDataP(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("serde/data?", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
-  try:
-    discard serdeWriteDataText(args[0], scope)
-    TRUE
-  except GeneError:
-    FALSE
+  if serdeDataValueP(args[0]): TRUE else: FALSE
 
 proc serdeReadEnvelope(name, text: string, scope: Scope, policy: Value,
                        resolveRefs: bool): Value =
@@ -2894,7 +3017,9 @@ proc serdeReadEnvelope(name, text: string, scope: Scope, policy: Value,
                     $limits.maxBytes & ")")
   var forms: seq[Value]
   try:
-    forms = readAll(text, "<serde>")
+    let readerMaxDepth =
+      if limits.maxDepth <= 0: 0 else: limits.maxDepth + 1
+    forms = readAll(text, "<serde>", ReadOptions(maxDepth: readerMaxDepth))
   except ReadError as e:
     raiseSerdeError(scope, "parse: " & e.msg)
   if forms.len != 1 or forms[0].kind != vkNode:
@@ -3466,6 +3591,379 @@ proc biPostgresTransaction(args: openArray[Value], call: ptr NativeCall): Value 
     proc(conn: Value, sql: string, scope: Scope) =
       discard pgRun(conn, sql, [], "Db/transaction", scope))
 
+# --- store: durable key -> serde text over sqlite or filesystem --------------
+
+const storeDefaultTable = "store_records"
+const storeDefaultKeyColumn = "key"
+const storeDefaultDataColumn = "data"
+
+proc raiseStoreError(scope: Scope, kind, message: string, key = "") =
+  var props = initOrderedTable[string, Value]()
+  props["kind"] = newSym(kind)
+  props["message"] = newStr(message)
+  if key.len > 0:
+    props["key"] = newStr(key)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, "StoreError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc storeNamed(call: ptr NativeCall): NamedArgs =
+  if call == nil:
+    NamedArgs()
+  else:
+    NamedArgs(names: call[].namedNames, values: call[].namedValues)
+
+proc storeNamedOr(named: NamedArgs, name: string, fallback: Value): Value =
+  if named.hasArg(name): named.getArg(name) else: fallback
+
+proc storeModeText(scope: Scope, value: Value, fallback = "data"): string =
+  if value.kind == vkNil or value.kind == vkVoid:
+    return fallback
+  case value.kind
+  of vkSymbol: result = value.symVal
+  of vkString: result = value.strVal
+  else:
+    raiseStoreError(scope, "invalid-key",
+      "store ^mode expects data or full")
+  if result != "data" and result != "full":
+    raiseStoreError(scope, "invalid-key",
+      "store ^mode expects data or full, got " & result)
+
+proc storeModeOf(store: Value, scope: Scope): string =
+  storeModeText(scope, store.props.getOrDefault("mode", newSym("data")),
+                "data")
+
+proc storePolicyOf(store: Value): Value =
+  store.props.getOrDefault("policy", NIL)
+
+proc storeValidateKey(scope: Scope, key: string) =
+  if key.len == 0:
+    raiseStoreError(scope, "invalid-key", "store key must not be empty", key)
+
+proc storeSqlIdent(scope: Scope, ident, label: string): string =
+  if ident.len == 0:
+    raiseStoreError(scope, "invalid-key", label & " must not be empty")
+  if ident[0] notin {'A'..'Z', 'a'..'z', '_'}:
+    raiseStoreError(scope, "invalid-key", "invalid SQL identifier for " & label)
+  for c in ident:
+    if c notin {'A'..'Z', 'a'..'z', '0'..'9', '_'}:
+      raiseStoreError(scope, "invalid-key",
+        "invalid SQL identifier for " & label)
+  ident
+
+proc storeRequire(scope: Scope, value: Value): string =
+  if value.kind != vkNode or value.head.kind != vkType:
+    raiseStoreError(scope, "closed", "Store operation expects a Store")
+  let name = value.head.typeName
+  if name != "SqliteStore" and name != "FsStore":
+    raiseStoreError(scope, "closed", "Store operation expects a Store")
+  let closed = value.props.getOrDefault("closed", NIL)
+  if closed.kind == vkCell and closed.cellValue.isTruthy:
+    raiseStoreError(scope, "closed", "store is closed")
+  name
+
+proc storeClose(store: Value) =
+  let closed = store.props.getOrDefault("closed", NIL)
+  if closed.kind == vkCell:
+    closed.setCellValue(TRUE)
+
+proc storeEncode(scope: Scope, mode: string, value: Value): string =
+  try:
+    if mode == "full":
+      result = serdeWriteFullText(value, scope)
+    else:
+      result = serdeWriteDataText(value, scope)
+  except GeneError as e:
+    raiseStoreError(scope, "serde", "store encode: " & e.msg)
+
+proc storeDecode(scope: Scope, mode, text: string, policy: Value,
+                 key: string): Value =
+  try:
+    result = serdeReadEnvelope("store/get", text, scope, policy,
+                               resolveRefs = mode == "full")
+  except GeneError as e:
+    raiseStoreError(scope, "corrupt", "store decode for key '" & key &
+      "': " & e.msg, key)
+
+proc storeReadModePolicy(store: Value, call: ptr NativeCall, scope: Scope):
+    tuple[mode: string, policy: Value] =
+  let named = storeNamed(call)
+  result.mode = storeModeOf(store, scope)
+  if named.hasArg("mode"):
+    result.mode = storeModeText(scope, named.getArg("mode"), result.mode)
+  result.policy = storePolicyOf(store)
+  if named.hasArg("policy"):
+    result.policy = named.getArg("policy")
+
+proc storeWriteMode(store: Value, call: ptr NativeCall, scope: Scope): string =
+  result = storeModeOf(store, scope)
+  let named = storeNamed(call)
+  if named.hasArg("mode"):
+    result = storeModeText(scope, named.getArg("mode"), result)
+  for name in named.names:
+    if name != "mode":
+      raiseStoreError(scope, "invalid-key",
+        "store/put got unexpected named argument: " & name)
+
+proc storeSqliteDb(store: Value, scope: Scope): pointer =
+  let dbVal = store.props.getOrDefault("db", NIL)
+  sqliteHandle("Store/sqlite", dbVal, scope)
+
+proc storeSqliteTable(store: Value): tuple[tableName, keyColumn, dataColumn: string] =
+  (store.props["table"].strVal,
+   store.props["key-column"].strVal,
+   store.props["data-column"].strVal)
+
+proc storeSqliteEnsureSchema(db: pointer, tableName, keyColumn,
+                             dataColumn: string, scope: Scope) =
+  sqliteExecScript(db, "create table if not exists " & tableName &
+    " (" & keyColumn & " text primary key, " & dataColumn & " text not null)",
+    "store/sqlite/open", scope)
+
+proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("store/sqlite/open", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard sqliteHandle("store/sqlite/open", args[0], scope)
+  let named = storeNamed(call)
+  let tableName = storeSqlIdent(scope,
+    (if named.hasArg("table"): (requireStr("store/sqlite/open ^table",
+      named.getArg("table")); named.getArg("table").strVal) else: storeDefaultTable),
+    "table")
+  let keyColumn = storeSqlIdent(scope,
+    (if named.hasArg("key-column"): (requireStr("store/sqlite/open ^key-column",
+      named.getArg("key-column")); named.getArg("key-column").strVal)
+     else: storeDefaultKeyColumn), "key-column")
+  let dataColumn = storeSqlIdent(scope,
+    (if named.hasArg("data-column"): (requireStr("store/sqlite/open ^data-column",
+      named.getArg("data-column")); named.getArg("data-column").strVal)
+     else: storeDefaultDataColumn), "data-column")
+  let mode = if named.hasArg("mode"):
+      storeModeText(scope, named.getArg("mode"))
+    else:
+      "data"
+  let policy = storeNamedOr(named, "policy", NIL)
+  for name in named.names:
+    if name notin ["table", "key-column", "data-column", "mode", "policy"]:
+      raiseStoreError(scope, "invalid-key",
+        "store/sqlite/open got unexpected named argument: " & name)
+  storeSqliteEnsureSchema(sqliteHandle("store/sqlite/open", args[0], scope),
+                          tableName, keyColumn, dataColumn, scope)
+  var props = initOrderedTable[string, Value]()
+  props["db"] = args[0]
+  props["table"] = newStr(tableName)
+  props["key-column"] = newStr(keyColumn)
+  props["data-column"] = newStr(dataColumn)
+  props["mode"] = newSym(mode)
+  props["policy"] = policy
+  props["closed"] = newCell(FALSE)
+  newNode(builtInTypeHead(scope, "SqliteStore"), props = props)
+
+proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Store/put expects (store, key, value)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  requireStr("Store/put key", args[1])
+  let key = args[1].strVal
+  storeValidateKey(scope, key)
+  let mode = storeWriteMode(args[0], call, scope)
+  let data = storeEncode(scope, mode, args[2])
+  if kind == "SqliteStore":
+    let db = storeSqliteDb(args[0], scope)
+    let names = storeSqliteTable(args[0])
+    discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+      "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
+      [newStr(key), newStr(data)], "Store/put", scope)
+  else:
+    let root = args[0].props["root"].strVal
+    let path = root / (urlEncodeComponent(key) & ".gene")
+    try:
+      writeFile(path, data)
+    except IOError as e:
+      raiseStoreError(scope, "io", "Store/put: " & e.msg, key)
+  NIL
+
+proc biStoreGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Store/get expects (store, key)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  requireStr("Store/get key", args[1])
+  let key = args[1].strVal
+  storeValidateKey(scope, key)
+  let named = storeNamed(call)
+  for name in named.names:
+    if name notin ["mode", "policy", "default"]:
+      raiseStoreError(scope, "invalid-key",
+        "Store/get got unexpected named argument: " & name, key)
+  let opts = storeReadModePolicy(args[0], call, scope)
+  var text = ""
+  var found = false
+  if kind == "SqliteStore":
+    let db = storeSqliteDb(args[0], scope)
+    let names = storeSqliteTable(args[0])
+    let row = sqliteRunStmt(db, "select " & names.dataColumn & " from " &
+      names.tableName & " where " & names.keyColumn & " = ?",
+      [newStr(key)], "Store/get", scope).rows
+    if row.len > 0:
+      text = row[0].mapEntries[names.dataColumn].strVal
+      found = true
+  else:
+    let root = args[0].props["root"].strVal
+    let path = root / (urlEncodeComponent(key) & ".gene")
+    if fileExists(path):
+      try:
+        text = readFile(path)
+        found = true
+      except IOError as e:
+        raiseStoreError(scope, "io", "Store/get: " & e.msg, key)
+  if not found:
+    if named.hasArg("default"):
+      return named.getArg("default")
+    raiseStoreError(scope, "missing", "store key not found: " & key, key)
+  storeDecode(scope, opts.mode, text, opts.policy, key)
+
+proc biStoreHas(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Store/has? expects (store, key)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  requireStr("Store/has? key", args[1])
+  let key = args[1].strVal
+  storeValidateKey(scope, key)
+  if kind == "SqliteStore":
+    let db = storeSqliteDb(args[0], scope)
+    let names = storeSqliteTable(args[0])
+    let row = sqliteRunStmt(db, "select 1 as found from " & names.tableName &
+      " where " & names.keyColumn & " = ?", [newStr(key)], "Store/has?",
+      scope).rows
+    if row.len > 0: TRUE else: FALSE
+  else:
+    let path = args[0].props["root"].strVal / (urlEncodeComponent(key) & ".gene")
+    if fileExists(path): TRUE else: FALSE
+
+proc biStoreDelete(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Store/delete expects (store, key)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  requireStr("Store/delete key", args[1])
+  let key = args[1].strVal
+  storeValidateKey(scope, key)
+  if kind == "SqliteStore":
+    let db = storeSqliteDb(args[0], scope)
+    let names = storeSqliteTable(args[0])
+    discard sqliteRunStmt(db, "delete from " & names.tableName & " where " &
+      names.keyColumn & " = ?", [newStr(key)], "Store/delete", scope)
+  else:
+    let path = args[0].props["root"].strVal / (urlEncodeComponent(key) & ".gene")
+    try:
+      if fileExists(path):
+        removeFile(path)
+    except OSError as e:
+      raiseStoreError(scope, "io", "Store/delete: " & e.msg, key)
+  NIL
+
+proc storeKeyFromFsName(scope: Scope, name: string): tuple[ok: bool, key: string] =
+  if not name.endsWith(".gene") or name.len <= ".gene".len:
+    return (false, "")
+  let encoded = name[0 ..< name.len - ".gene".len]
+  try:
+    let key = urlDecodeComponent(encoded, plusIsSpace = false, scope)
+    if key.len == 0 or urlEncodeComponent(key) != encoded:
+      return (false, "")
+    (true, key)
+  except GeneError:
+    (false, "")
+
+proc biStoreKeys(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Store/keys", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  var keys: seq[Value]
+  if kind == "SqliteStore":
+    let db = storeSqliteDb(args[0], scope)
+    let names = storeSqliteTable(args[0])
+    let rows = sqliteRunStmt(db, "select " & names.keyColumn & " from " &
+      names.tableName & " order by " & names.keyColumn, [], "Store/keys",
+      scope).rows
+    for row in rows:
+      keys.add row.mapEntries[names.keyColumn]
+  else:
+    let root = args[0].props["root"].strVal
+    try:
+      for kind, path in walkDir(root, relative = true):
+        if kind == pcFile:
+          let decoded = storeKeyFromFsName(scope, path)
+          if decoded.ok:
+            keys.add newStr(decoded.key)
+    except OSError as e:
+      raiseStoreError(scope, "io", "Store/keys: " & e.msg)
+  newList(keys)
+
+proc biStoreClear(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Store/clear", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  if kind == "SqliteStore":
+    let db = storeSqliteDb(args[0], scope)
+    let names = storeSqliteTable(args[0])
+    discard sqliteRunStmt(db, "delete from " & names.tableName, [],
+                          "Store/clear", scope)
+  else:
+    let root = args[0].props["root"].strVal
+    try:
+      for kind, path in walkDir(root, relative = true):
+        if kind == pcFile:
+          let decoded = storeKeyFromFsName(scope, path)
+          if decoded.ok:
+            removeFile(root / path)
+    except OSError as e:
+      raiseStoreError(scope, "io", "Store/clear: " & e.msg)
+  NIL
+
+proc biStoreClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Store/close", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard storeRequire(scope, args[0])
+  storeClose(args[0])
+  NIL
+
+proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("store/fs/open", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsReadDir("store/fs/open", args[0])
+  requireFsWriteDir("store/fs/open", args[0])
+  let named = storeNamed(call)
+  if not named.hasArg("root"):
+    raiseStoreError(scope, "invalid-key", "store/fs/open requires ^root")
+  let rootVal = named.getArg("root")
+  requireStr("store/fs/open ^root", rootVal)
+  let root = rootVal.strVal
+  let mode = if named.hasArg("mode"):
+      storeModeText(scope, named.getArg("mode"))
+    else:
+      "data"
+  let policy = storeNamedOr(named, "policy", NIL)
+  for name in named.names:
+    if name notin ["root", "mode", "policy"]:
+      raiseStoreError(scope, "invalid-key",
+        "store/fs/open got unexpected named argument: " & name)
+  try:
+    createDir(root)
+  except OSError as e:
+    raiseStoreError(scope, "io", "store/fs/open: " & e.msg)
+  var props = initOrderedTable[string, Value]()
+  props["fs"] = args[0]
+  props["root"] = newStr(root)
+  props["mode"] = newSym(mode)
+  props["policy"] = policy
+  props["closed"] = newCell(FALSE)
+  newNode(builtInTypeHead(scope, "FsStore"), props = props)
+
 proc registerStdlibNamespaces(root: Scope) =
   ## Define the importable stdlib namespaces (std/*, str, html, url, net/http,
   ## db, db/sqlite, db/postgres) and their error types on the built-ins root
@@ -3706,6 +4204,87 @@ proc registerStdlibNamespaces(root: Scope) =
   dbScope.define("postgres", newNamespace("db/postgres", dbPostgresScope))
   root.define("db", newNamespace("db", dbScope))
 
+  # store: durable key -> serde text over interchangeable backends
+  # (docs/proposals/persistence.md). Backend namespaces mirror db/sqlite.
+  let storeError = newType("StoreError", NIL,
+                           @[TypeField(name: "kind", optional: false,
+                                       typeExpr: newSym("Sym"), scope: root),
+                             TypeField(name: "message", optional: false,
+                                       typeExpr: newSym("Str"), scope: root),
+                             TypeField(name: "key", optional: true,
+                                       typeExpr: newSym("Str"), scope: root)],
+                           @[errorProtocol], root)
+  root.define("StoreError", storeError)
+  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: storeError)
+  let storeProtocol = newProtocol("Store", ["put", "get", "has?", "delete",
+                                            "keys", "clear", "close"])
+  let storeMessages = storeProtocol.protocolMessages
+  let sqliteStoreType = newType("SqliteStore", NIL, @[], @[storeProtocol], root)
+  let fsStoreType = newType("FsStore", NIL, @[], @[storeProtocol], root)
+  root.define("SqliteStore", sqliteStoreType)
+  root.define("FsStore", fsStoreType)
+  let storeScope = newScope(root)
+  storeScope.define("Store", storeProtocol)
+  storeScope.define("StoreError", storeError)
+  let storeSqliteScope = newScope(root)
+  storeSqliteScope.define("open", newNativeCallFn("store/sqlite/open",
+                                                  biStoreSqliteOpen))
+  storeSqliteScope.define("Store", storeProtocol)
+  storeSqliteScope.define("StoreError", storeError)
+  storeSqliteScope.define("SqliteStore", sqliteStoreType)
+  storeSqliteScope.impls.add ProtocolImpl(
+    protocol: storeProtocol, receiver: sqliteStoreType,
+    messages: @[
+      ImplMessage(message: storeMessages["put"],
+                  fn: newNativeCallFn("Store/put", biStorePut)),
+      ImplMessage(message: storeMessages["get"],
+                  fn: newNativeCallFn("Store/get", biStoreGet)),
+      ImplMessage(message: storeMessages["has?"],
+                  fn: newNativeCallFn("Store/has?", biStoreHas,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["delete"],
+                  fn: newNativeCallFn("Store/delete", biStoreDelete,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["keys"],
+                  fn: newNativeCallFn("Store/keys", biStoreKeys,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["clear"],
+                  fn: newNativeCallFn("Store/clear", biStoreClear,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["close"],
+                  fn: newNativeCallFn("Store/close", biStoreClose,
+                                      acceptsNamed = false))])
+  let storeFsScope = newScope(root)
+  storeFsScope.define("open", newNativeCallFn("store/fs/open", biStoreFsOpen))
+  storeFsScope.define("Store", storeProtocol)
+  storeFsScope.define("StoreError", storeError)
+  storeFsScope.define("FsStore", fsStoreType)
+  storeFsScope.impls.add ProtocolImpl(
+    protocol: storeProtocol, receiver: fsStoreType,
+    messages: @[
+      ImplMessage(message: storeMessages["put"],
+                  fn: newNativeCallFn("Store/put", biStorePut)),
+      ImplMessage(message: storeMessages["get"],
+                  fn: newNativeCallFn("Store/get", biStoreGet)),
+      ImplMessage(message: storeMessages["has?"],
+                  fn: newNativeCallFn("Store/has?", biStoreHas,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["delete"],
+                  fn: newNativeCallFn("Store/delete", biStoreDelete,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["keys"],
+                  fn: newNativeCallFn("Store/keys", biStoreKeys,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["clear"],
+                  fn: newNativeCallFn("Store/clear", biStoreClear,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["close"],
+                  fn: newNativeCallFn("Store/close", biStoreClose,
+                                      acceptsNamed = false))])
+  storeScope.define("sqlite", newNamespace("store/sqlite", storeSqliteScope))
+  storeScope.define("fs", newNamespace("store/fs", storeFsScope))
+  root.define("store", newNamespace("store", storeScope))
+
   # os: env, subprocess, line input (docs/ai-agent.md §3,§6). Capabilities are
   # ambient values like Net/Connect; a launcher can withhold them.
   let osScope = newScope(root)
@@ -3745,6 +4324,10 @@ proc registerStdlibNamespaces(root: Scope) =
       newNativeCallFn("Fs/write-text", biFsWriteTextSync, acceptsNamed = false))
     fsNs.nsScope.define("list-dir",
       newNativeCallFn("Fs/list-dir", biFsListDir, acceptsNamed = false))
+    fsNs.nsScope.define("make-dir",
+      newNativeCallFn("Fs/make-dir", biFsMakeDir, acceptsNamed = false))
+    fsNs.nsScope.define("remove",
+      newNativeCallFn("Fs/remove", biFsRemove, acceptsNamed = false))
 
   # json: parse/stringify over Gene value kinds (docs/ai-agent.md §5).
   let jsonScope = newScope(root)

@@ -132,6 +132,43 @@ suite "cli — gene run":
     check "gpt-5.4-mini" in ran.output
     check "gene> \nyou>" in ran.output
 
+  test "ai agent persists config session and memory":
+    buildGeneCli()
+    let stateDir = cliDir / "ai_agent_state"
+    if dirExists(stateDir):
+      removeDir(stateDir)
+
+    let first = execCmdEx(
+      "printf '/remember project uses Gene\\n/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent.gene")
+    check first.exitCode == 0
+    check "remembered: project uses Gene" in first.output
+    check "state: " & stateDir in first.output
+    check "memory: 1" in first.output
+    let configText = readFile(stateDir / "config.gene")
+    check "dummy" notin configText
+    check "OPENAI_AUTH_TOKEN" notin configText
+    check "CODEX_ACCESS_TOKEN" notin configText
+
+    let second = execCmdEx(
+      "printf '/memory\\n/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent.gene")
+    check second.exitCode == 0
+    check "memory:\nproject uses Gene" in second.output
+    check "state: " & stateDir in second.output
+    check "model: gpt-5.4-mini" in second.output
+    check "api: responses" in second.output
+    check "memory: 1" in second.output
+    let sessionText = readFile(stateDir / "session.gene")
+    check "/remember project uses Gene\\n" in sessionText
+    check "/memory\\n" in sessionText
+    check "agent> remembered: project uses Gene" in sessionText
+    check "agent> memory:\\nproject uses Gene" in sessionText
+
   test "ai agent talks to an openai-compatible chat endpoint":
     ## End-to-end over loopback: a fake /chat/completions endpoint streams a
     ## tool_call in SSE fragments, then validates that the agent's second

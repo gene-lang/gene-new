@@ -4802,6 +4802,19 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   }
   }
 
+  function ___syscall_mkdirat(dirfd, path, mode) {
+  try {
+  
+      path = SYSCALLS.getStr(path);
+      path = SYSCALLS.calculateAt(dirfd, path);
+      FS.mkdir(path, mode, 0);
+      return 0;
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+
   function ___syscall_newfstatat(dirfd, path, buf, flags) {
   try {
   
@@ -5235,6 +5248,25 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   
       path = SYSCALLS.getStr(path);
       return SYSCALLS.writeStat(buf, FS.stat(path));
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+
+  function ___syscall_unlinkat(dirfd, path, flags) {
+  try {
+  
+      path = SYSCALLS.getStr(path);
+      path = SYSCALLS.calculateAt(dirfd, path);
+      if (!flags) {
+        FS.unlink(path);
+      } else if (flags === 512) {
+        FS.rmdir(path);
+      } else {
+        return -28;
+      }
+      return 0;
     } catch (e) {
     if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
@@ -6499,6 +6531,8 @@ var wasmImports = {
   /** @export */
   __syscall_lstat64: ___syscall_lstat64,
   /** @export */
+  __syscall_mkdirat: ___syscall_mkdirat,
+  /** @export */
   __syscall_newfstatat: ___syscall_newfstatat,
   /** @export */
   __syscall_openat: ___syscall_openat,
@@ -6516,6 +6550,8 @@ var wasmImports = {
   __syscall_socket: ___syscall_socket,
   /** @export */
   __syscall_stat64: ___syscall_stat64,
+  /** @export */
+  __syscall_unlinkat: ___syscall_unlinkat,
   /** @export */
   _abort_js: __abort_js,
   /** @export */

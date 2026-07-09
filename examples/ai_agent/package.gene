@@ -1,0 +1,5 @@
+^name "genni-agent"
+^description "Genni - your special agent"
+^version "0.1.0"
+^dependencies [
+]

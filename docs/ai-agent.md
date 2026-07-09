@@ -1,11 +1,13 @@
 # Gene AI Agent — Design
 
-Status: **milestones 1–4 implemented; subprocess streaming prompt shipped;
-OpenAI-compatible chat endpoints shipped; milestone 8 shipped (async
-subprocess + gateway skeleton) and milestone 9 shipped (Telegram channel),
-both in `examples/agent_gateway.gene`; milestone 11 shipped (sqlite session
-persistence); 5–7, 10, 12–13 planned.**
-Date: 2026-07-08.
+Status: **the usable bootstrap is shipped: streaming Responses/Chat transports,
+file/shell tools, `/sh`, `/repl`, local CLI state/memory, async session actors,
+the gateway/web skeleton, Telegram, and SQLite gateway persistence. The next
+official product slice is typed tool derivation + a stable live `/repl` session
+object + an authoritative queryable event log + narrow catastrophe guards.
+Native libcurl, the full TUI, MCP, worktrees, browser automation, and general
+multi-agent orchestration are optional later work, not prerequisites.**
+Date: 2026-07-09.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -13,22 +15,33 @@ timeout + output caps, `exec-stream` with stdout callbacks, `read-line`,
 `read-input`/`refresh-input`/`close-input`), `Fs/read-text`/`Fs/write-text`/
 `Fs/list-dir`, the `json` namespace (`parse`/`stringify`/`JsonError`), and the
 agent itself — a streaming Responses-API loop over a `curl` subprocess, a
-minimal single-user safety policy (§8.5: `rm -rf` denial, simple path check,
-timeout/output caps with truncation flags, display-side secret redaction;
-tools auto-approve by default), and tool use
+minimal single-user catastrophe guard (§8.5: `rm -rf` denial, simple path
+check, timeout/output caps — `os/exec` returns truncation flags, though the
+agent does not surface them yet — secret redaction; tools auto-approve by
+default), and tool use
 (`read_file`, `write_file`, `edit_file`, `list_dir`, `run_shell`, `grep`),
-plus an offline
-demo transport so the loop runs (and is verified) with no network or key. Not
-yet built: the native libcurl client (§4 option 1, milestone 5), the full
-scrollback TUI (§7, milestone 6), and capability injection via `gene run` flags
-(milestone 7).
+plus optional `store/fs` state persistence for non-secret config, the
+interactive session, and user-managed memory. An offline demo transport keeps
+the loop runnable (and verified) with no network or key. Not yet built: typed
+tool derivation, the stable live session/event surface, and `/trace` (the next
+slice in §10). The native libcurl client, full scrollback TUI, and launcher
+capability injection remain available later but do not gate the signature Gene
+experience.
 
-This document specifies a Claude-Code-like AI coding agent written in Gene: a
-terminal program that holds a conversation with a hosted model API, lets the
-model call local tools (read/write files, run shell commands, search), and
-renders the session in a full-screen terminal UI built on a native `curses`
-binding. The API auth token is read from an environment variable; nothing is
-hard-coded.
+This document specifies a live, programmable AI coding agent written in Gene:
+a terminal program that holds a conversation with a hosted model API, lets the
+model call local tools (read/write files, run shell commands, search), and lets
+the user inspect and reshape the running agent through ordinary Gene values.
+The API auth token is read from an environment variable; nothing is hard-coded.
+
+**Product decision:** this is first and foremost the author's personal power
+tool for developing Gene, not a multi-user service or a parity project against
+every commercial coding agent. Optimize for flow, leverage, inspectability,
+and dogfooding. Routine local work stays auto-approved. Safety is deliberately
+narrow: prevent catastrophic, hard-to-recover actions without surrounding
+normal edits, commands, tests, installs, or network calls with permission
+theater. Features such as MCP, worktree teams, browser automation, and a plugin
+marketplace are a menu to adopt when daily use proves their value.
 
 **Backends (implemented).** The agent speaks two wire shapes, both entirely
 env-configured:
@@ -64,9 +77,11 @@ Chat Completions is the compatibility shape for third-party endpoints, and is
 implemented as an adapter over the same item vocabulary (see Backends above).
 (Migration guide: https://platform.openai.com/docs/guides/migrate-to-responses.)
 
-**Final target is a single self-contained binary** (native TLS client, native
-curses); the bootstrap milestone (§10) deliberately depends on `curl(1)` and a
-line UI to get the agent talking before that native work lands.
+**Packaging target, not current priority:** a single self-contained binary with
+native TLS and a native full-screen UI remains attractive, but replacing
+working `curl(1)`/prompt infrastructure is scheduled only when it produces a
+visible daily-driver benefit. The next slice is the programmable-agent surface
+in §10.
 
 The goal of this doc is to make the build *actionable against the real
 runtime*. Each subsystem below states what exists in this repo today, what is
@@ -82,23 +97,30 @@ A CLI, launched as:
 OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
 ```
 
-Behavior, mirroring a coding agent:
+Behavior:
 
-- a full-screen terminal UI (curses): scrollable transcript pane, a status
-  line, and an input line;
+- a shipped multiline TTY prompt with persistent transcript/status rendering;
+  a full-screen curses UI with richer scrollback remains optional later work;
 - a conversation loop that sends the running input-item list to the Responses
   API and streams assistant text deltas into the transcript as items arrive;
 - **tool use**: the model may return `function_call` items (`read_file`,
-  `write_file`, `list_dir`, `run_shell`, `grep`); the agent executes them
-  against the local workspace under explicit capabilities and safety policy
+  `write_file`, `edit_file`, `list_dir`, `run_shell`, `grep`); the agent
+  executes them
+  against the local workspace under explicit capabilities and the catastrophe
+  guard
   (§8.5), appends `function_call_output` items, and loops until the model
   returns a final message item;
-- slash commands in the input line (shipped: `/quit`, `/sh` shell session,
-  `/repl` Gene REPL; planned: `/model`, `/clear`), and Ctrl-C interrupting a
-  `/sh` command or `/repl` eval (interrupting an in-flight *model response* is
-  still planned, §12.9/milestone 7);
+- slash commands in the input line (shipped: `/quit`, `/sh`, `/repl`,
+  `/remember`, `/memory`, `/forget-memory`, `/status`; planned next: `/trace`,
+  later as dogfooding demands: `/model`, `/clear`, `/diff`, `/undo`), and
+  Ctrl-C interrupting a `/sh` command or `/repl` eval (interrupting an
+  in-flight model response is part of daily-driver slice B in §10);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
   registered in a map, and the transcript is a list — homoiconic and testable.
+- the target signature experience makes that last property an official API:
+  `/repl` exposes stable session objects, typed tools register from one
+  declaration, and `/trace` queries the same versioned events used by the CLI,
+  gateway, persistence, and tests.
 
 The single-process CLI above is the **embedded bootstrap** of a larger shape:
 §12 extends the same session/turn/tool machinery into a Hermes-style personal
@@ -166,6 +188,10 @@ The agent reads a bearer token from `OPENAI_AUTH_TOKEN`, `OPENAI_API_KEY`, or
 `CODEX_ACCESS_TOKEN` (in that order), and optionally `OPENAI_BASE_URL`
 (default: the Codex backend), `OPENAI_MODEL`, and `OPENAI_API`
 (`responses`|`chat` wire shape; defaults by backend as described above).
+`GENE_AGENT_STATE=<dir>` enables local filesystem persistence for the
+single-process CLI; `GENE_AGENT_RESUME=0` keeps saving but starts with a fresh
+interactive session. The persisted config deliberately excludes auth tokens and
+other secrets.
 
 Before this work there was no OS-environment access at the Gene surface. The
 `Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
@@ -204,7 +230,7 @@ The runtime's networking is **plaintext TCP only** (`Net/tcp-read-text-async` /
 `Net/tcp-write-text-async` in `src/gene/vm.nim`), with no TLS. Three ways to get
 HTTPS, in order of recommendation:
 
-1. **libcurl native namespace (recommended, and the only path that streams).**
+1. **libcurl native namespace (recommended native option).**
    Add `net/http-client` backed by libcurl loaded via dynlib, mirroring the
    `db/sqlite` bindings:
    - candidates `libcurl.4.dylib` / `libcurl.so.4` (present on macOS via the
@@ -255,8 +281,9 @@ returns the same shape and also invokes callbacks as stdout arrives.
 
 - **Bootstrap:** `os/exec-stream` + `curl -N` gives visible Responses SSE text
   deltas without adding TLS code to Gene.
-- **Native client (milestone 5):** still replaces the subprocess with libcurl
-  and should expose a scheduler-friendly stream/channel API, so cancellation and
+- **Optional native client:** replace the subprocess with libcurl when
+  packaging, cancellation, WebSockets, or measured performance justifies it;
+  expose a scheduler-friendly stream/channel API so cancellation and
   worker-thread boundaries are explicit.
 - **Future general subprocess API:** a long-lived `os/spawn` with stdin/stdout
   handles or channels may still be useful, but is not needed for the current
@@ -266,11 +293,11 @@ Both transports present the same non-streaming Gene API; only the native client
 adds `stream`:
 
 ```gene
-(import net/http-client [request Http])         ; milestone 1 + 5
+(import net/http-client [request Http])         ; optional native client
 (var resp (request http ^method "POST" ^url url ^headers hs ^body json-body))
 ; resp => {^status Int ^body Str}
 
-(import net/http-client [stream])               ; milestone 5 only
+(import net/http-client [stream])               ; optional native client
 (var ch (stream http ^method "POST" ^url url ^headers hs ^body json-body))
 ; ch => Channel of SSE event payloads (Str), drained with Channel/recv
 ```
@@ -288,8 +315,7 @@ with a content-type.
 - `json/parse : Str -> Any ^errors [JsonError]` — objects → `Map`, arrays →
   `List`, strings → `Str`, numbers → `Int`/`Float`, `true`/`false` → `Bool`,
   `null` → `nil`. Mirrors the `DbError`/`UrlError` typed-error pattern.
-- `json/stringify : Any -> Str` — inverse over the same value kinds; reuses the
-  escaping already hand-rolled in `examples/todo_app.gene` (promote it here).
+- `json/stringify : Any -> Str` — inverse over the same value kinds.
 
 A native scanner is the safe choice (correct number/string/escape handling,
 depth limit against malicious input — same defensive posture as the HTTP
@@ -302,7 +328,8 @@ With `json`, the Responses request body is just data:
 (json/stringify
   {^model model
    ^input input-items      ; Responses API: a list of typed input items
-   ^tools tool-schemas})   ; ^stream omitted — MVP is non-streaming (§4)
+   ^tools tool-schemas
+   ^stream true})          ; shipped transports stream SSE deltas (§4)
 ```
 
 ## 6. Agent tools: files and subprocess (§6)
@@ -310,9 +337,10 @@ With `json`, the Responses request body is just data:
 The model calls tools; the agent executes them under capabilities and returns
 results. Tools needed for a coding agent:
 
-- `read_file`, `write_file`, `list_dir` — files. `Fs/read-text-async` /
-  `Fs/write-text-async` still exist; `Fs/read-text`, `Fs/write-text`, and
-  `Fs/list-dir` are implemented for the line-oriented agent tools.
+- `read_file`, `write_file`, `edit_file`, `list_dir` — files.
+  `Fs/read-text-async` / `Fs/write-text-async` still exist; `Fs/read-text`,
+  `Fs/write-text`, and `Fs/list-dir` are implemented for the line-oriented
+  agent tools.
 - `run_shell`, `grep` — subprocess via the implemented `os` namespace entry
   gated by a new `Os/Exec` capability:
 
@@ -327,11 +355,27 @@ results. Tools needed for a coding agent:
   `Os/Exec` is deliberately a *distinct* capability from `Os/Env` so a launcher
   can grant file+env without shell access.
 
-Tools are registered as ordinary Gene functions and described to the model with
-a JSON schema list; dispatch is a `Map Str Fn` lookup on the `function_call`
-item's name — the same pattern the `net/http` router uses for routes. Every
-tool runs under the operational safety contract in §8.5, which is not optional
-for a coding agent.
+Today tools are registered as ordinary Gene functions and described to the
+model with a separate hand-written JSON schema list; dispatch is a `Map Str Fn`
+lookup on the `function_call` item's name. The duplicated handler/schema lists
+can drift silently.
+
+The next slice replaces them with **typed tool declarations**. A typed Gene
+function plus metadata is the single source of truth:
+
+```gene
+(@tool ^name "read_file"
+       ^description "Read a UTF-8 workspace file"
+       ^risk 'read
+  (fn read-file [path : Str] : Str
+    (read-text ReadDir (safe-path path))))
+```
+
+Registration derives the handler entry, model-facing JSON Schema, argument and
+result validation, documentation, simple risk class, and event serialization.
+This is intentionally the first Gene-native improvement: it removes current
+technical debt while demonstrating how types, metadata, functions, and nodes
+compose. Every call still passes through the narrow catastrophe guard in §8.5.
 
 ## 7. Terminal UI via curses (§7)
 
@@ -380,8 +424,9 @@ clears a partially typed line instead of killing the agent: the interactive
 repl installs a SIGINT handler that arms a VM interrupt (surfaced as a
 catchable "interrupted" error), and `/sh` traps INT in the shell loop while
 `os/exec-stdio` ignores it in the parent, system(3)-style. Interrupting an
-in-flight model response is still milestone 7. A full `curses` namespace and scrollable transcript TUI can still
-remain a later milestone.
+in-flight model response is part of daily-driver slice B (§10). A full `curses`
+namespace and scrollable transcript TUI remain optional later work, pulled
+forward only when the current prompt is the limiting daily-use problem.
 
 ## 8. Capabilities and the launcher (§8)
 
@@ -394,219 +439,295 @@ Every new host power is a capability value, consistent with the existing model
 - `Fs/ReadWriteDir` — workspace file tools (reuse; §6).
 
 Open runtime question (tracked in `docs/stdlib.md`): how an entrypoint receives
-capabilities. For MVP these are defined on the built-ins root (as the test
-harness grants `native` today), so the agent script imports them directly.
-A hardened build would have `gene run` inject a capability set into `main`
-based on flags (`--allow-exec`, `--allow-net`), so the agent runs least-
-privilege. The agent design assumes the capability-value shape either way; only
-the *granting* mechanism changes.
+capabilities. Today these are defined on the built-ins root, so the agent script
+imports them directly. Capability injection through `gene run` flags remains a
+sound future mechanism for embedding or distributing the agent, but it is not
+required before the personal tool's live programming model. Capability values
+still matter now because typed tools and future actors can state their authority
+explicitly even when the launcher grants the normal personal-tool bundle.
 
-### 8.5 Tool safety contract
+### 8.5 Catastrophe guard
 
-**Current posture (2026-07-08): the agent is a single-user personal tool, so
-the shipped policy is deliberately minimal** — deny `rm -rf` in `run_shell`,
-reject absolute/`..` paths in file tools, enforce timeouts and output caps,
-and redact the token from displayed output. Tools auto-approve by default;
-set `GENE_AGENT_APPROVE_ALL=0` to be prompted before writes and shell
-commands. The full contract below is the hardening spec for any shared or
-hostile-input deployment, deferred to milestone 7.
+**Official posture (2026-07-09): single-user personal power tool, routine work
+auto-approved, narrow hard stops for catastrophic and hard-to-recover actions.**
+The goal is not to sandbox the author from their own agent or to construct an
+enterprise permission system. Normal workspace reads/edits, shell commands,
+tests, builds, package installs, and network calls should run without prompts.
 
-Capability-gating says *whether* a tool may touch the filesystem or shell; it
-says nothing about *what* the model is allowed to do with that access. Because a
-coding agent executes model-chosen file writes and shell commands, the following
-is the full operational contract for a shared deployment:
+The shipped guard is deliberately small: `run_shell` denies `rm -rf` by a
+substring check; file tools reject absolute and `..` paths; subprocesses have
+timeouts and output caps; known auth tokens are redacted from displayed and
+model-visible tool output; tools auto-approve by default. Setting
+`GENE_AGENT_APPROVE_ALL=0` retains the older prompt-before-write/shell mode for
+occasional use, but it is not the primary design.
 
-- **Workspace-root confinement.** Every file tool resolves its path argument
-  against a configured workspace root and rejects anything that escapes it. The
-  `net/http` static-file handler and `resolveModulePath`
-  (`src/gene/vm.nim`, "module path escapes package root") already establish this
-  pattern: normalize, then verify the result is still within root.
-- **Path normalization first.** Normalize (`..`, symlinks, absolute paths)
-  *before* the confinement check, so `../../etc/passwd` and a symlinked escape
-  are both caught. Never string-prefix-match raw input.
-- **Command timeout and output caps.** `run_shell` runs with a hard timeout and
-  bounded captured stdout/stderr (truncate + flag), so a runaway or noisy
-  command cannot hang the agent or blow up the transcript/next request. `os/exec`
-  (§6) takes `^timeout-ms` and an output cap for exactly this.
-- **Approval / policy hook.** A pluggable policy decides per call: auto-allow
-  (read-only tools), prompt the user (writes, shell), or deny (configurable
-  deny-list, e.g. no `rm -rf`, no network from within `run_shell`). Default
-  posture: reads auto-allowed, writes and shell require confirmation unless a
-  `--yolo`-style flag opts out.
-- **Secret redaction.** The API token and any `Authorization` header are redacted
-  from transcript, logs, and error messages. Tool output that echoes the
-  environment must not leak the key back into the next model request.
-- **Least privilege by default.** `Os/Exec` is distinct from `Os/Env` and
-  `Fs/*` precisely so a run can grant file+env without shell, or read-only
-  files. The default launcher grants the minimum the requested toolset needs.
+The next guard classifies a structured operation or high-confidence raw command
+as `normal`, `destructive`, or `catastrophic`:
 
-These are enumerated here so the hardening milestone treats them as acceptance
-criteria, with spec tests for the escape/timeout/redaction cases — the same
-defensive-test posture as the `net/http` request-parser caps. Known gaps in the
-current minimal build, in rough priority order for milestone 7: tool output is
-not redacted before being sent back to the model (one-line fix: wrap
-`run-tool-call`'s output in `redact`), `safe-path` does not realpath so a
-symlink inside the workspace can point outside it, and the `run_shell`
-deny-list is a naive substring match.
+- **Normal:** run immediately.
+- **Destructive but plausibly intentional:** show the exact target, create a
+  checkpoint when practical, and require one explicit confirmation.
+- **Catastrophic or nonsensical:** deny unless the user deliberately disables
+  the guard outside the active session.
 
-## 9. Agent loop (pseudo-Gene sketch)
+Initial coverage:
 
-> **This is pseudo-Gene, not runnable code.** It shows the control-flow shape the
-> runtime work in §3–§8 must support. Capability/handle values (`env`, `sh`,
-> `fs`, `http`) are assumed already granted and in scope (see §8). Helpers shown
-> as one-liner comments (`decode-response`, `run-tools`, `render`, `tool-schemas`)
-> are elided; the point is the turn loop against Responses-API items, not a
-> complete program. It targets the non-streaming milestone-1 transport (§4).
+- recursive deletion of `/`, `$HOME`, the workspace root, a drive/mount root,
+  or an unexpectedly large tree;
+- disk formatting, raw-device writes, fork bombs, shutdown/reboot, and similar
+  host-destroying commands;
+- `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, and unbounded `DELETE`/`UPDATE`
+  against non-ephemeral databases;
+- `git reset --hard`, `git clean -fdx`, destructive branch deletion, and force
+  push when they would erase commits or pre-existing work;
+- `terraform destroy`, namespace/cluster deletion, broad cloud-resource
+  deletion, and production deployment/rollback commands when a production
+  target is detectable;
+- printing, persisting, or sending known auth tokens and credentials.
 
+Prefer structured wrappers for database, Git, and deployment tools because
+parsing arbitrary shell is necessarily incomplete. For `run_shell` and `/sh`,
+block or ask only on high-confidence catastrophic patterns; do not pretend this
+is an OS sandbox.
+
+Reliability rules apply even with auto-approval:
+
+- resolve real paths before protected-root checks so symlinks cannot bypass
+  them;
+- preserve and distinguish pre-existing user changes;
+- enforce command timeouts and bounded output, surface truncation flags in the
+  transcript/model result, and avoid extra unbounded copies;
+- redact known secrets before transcript persistence, logs, errors, and model
+  transmission;
+- regression-test the seeded worst cases while ensuring ordinary dogfood
+  commands remain interruption-free.
+
+Known current gaps: `safe-path` does not realpath, truncation flags are not yet
+surfaced by the agent, and the shell deny-list is a naive substring match. A
+general policy language, default-on approval modes, OS/container sandboxing,
+multi-user isolation, and compliance controls are explicit non-goals unless the
+project later chooses to become a distributed product.
+
+## 9. Agent loop (Gene)
+
+The following is actual Gene surface syntax, condensed directly from
+`examples/ai_agent.gene`. Transport decoders and small item helpers are elided,
+but this tool-call recursion is the shipped loop rather than language-neutral
+pseudocode.
+
+```gene
+(fn call-model [transport, input-items, render-stream]
+  (var body
+    (if (= api-flavor "chat")
+      (stringify {^model model
+                  ^messages (items-to-chat-messages input-items)
+                  ^tools chat-tool-schemas
+                  ^tool_choice "auto"
+                  ^stream true})
+      (stringify {^model model
+                  ^store false
+                  ^stream true
+                  ^input input-items
+                  ^tools tool-schemas
+                  ^tool_choice "auto"
+                  ^parallel_tool_calls true})))
+  (transport body render-stream))
+
+# Call the model; if it asks for tools, execute them and recur with the model
+# output plus function_call_output items. Otherwise render and retain the final
+# assistant message. `budget` prevents an endless tool-call loop.
+(fn run-turn [transport, input-items, render, render-stream, budget]
+  (var streamed (cell false))
+  (var resp
+    (call-model transport input-items
+      (fn [text]
+        (Cell/set streamed true)
+        (render-stream text))))
+  (if (! (= resp/agent_error void))
+    (do
+      (render resp/agent_error)
+      input-items)
+    (do
+      (var calls (response-calls resp))
+      (if (empty? calls)
+        (do
+          (if (Cell/get streamed)
+            (render "")
+            (render (redact (response-text resp))))
+          (append-all input-items (response-output-items resp)))
+        (if (<= budget 0)
+          (do
+            (render "[stopped: tool-call budget exhausted]")
+            input-items)
+          (do
+            (var outputs
+              ((to_stream calls) ~ map run-tool-call ; ~ into []))
+            (each (to_stream calls) (fn [c]
+              (render $"  · tool ${c/name} ${c/arguments}")))
+            (run-turn
+              transport
+              ((to_stream outputs) ~ into
+                (append-all input-items (response-output-items resp)))
+              render
+              render-stream
+              (- budget 1))))))))
+
+# The interactive path adds one user item and stores the returned item list.
+(items ~ Cell/set
+  (run-turn live-transport
+            (append (items ~ Cell/get) (user-item line))
+            (fn [text]
+              (render-agent-text transcript streaming text))
+            (fn [text]
+              (render-agent-delta transcript streaming text))
+            max-tool-turns))
 ```
-# capabilities/handles granted by the launcher (§8): env sh fs http
-token := os/get-env(env, "OPENAI_AUTH_TOKEN")              # required
-base  := os/get-env(env, "OPENAI_BASE_URL", "https://api.openai.com")
-model := os/get-env(env, "OPENAI_MODEL",   "gpt-4o")
 
-# tool name -> fn(args-map) -> result value; each fn is wrapped by the §8.5
-# safety policy before it runs.
-tools := {
-  "read_file":  fn(a) -> fs.read_text(a.path),
-  "write_file": fn(a) -> { fs.write_text(a.path, a.content); "ok" },
-  "list_dir":   fn(a) -> fs.list_dir(a.path),
-  "run_shell":  fn(a) -> sh.exec(cmd="sh", args=["-c", a.command], timeout_ms=10000),
-}
+### 9.1 Stable live session object
 
-fn call_model(input_items) -> response {
-  body := json/stringify({ model: model,
-                           input: input_items,        # Responses API: `input`
-                           tools: tool_schemas })     # function tools
-  resp := http.request(method="POST",
-                       url=base + "/v1/responses",
-                       headers={ authorization: "Bearer " + token,
-                                 content_type:  "application/json" },
-                       body=body)
-  json/parse(resp.body)          # -> {output: [ items... ], ...}
-}
+`/repl` is the agent's defining control surface, not merely an escape hatch.
+The shipped REPL already receives a `session` binding; the next slice turns it
+into a stable message-based object rather than exposing incidental map layout.
+The supported projections are:
 
-# One turn: call the model, then either finish (message item) or run the
-# function_call items it emitted and loop with their outputs appended.
-fn run_turn(input_items) -> input_items {
-  resp  := call_model(input_items)
-  calls := filter(resp.output, is_function_call)   # typed output items
-  if empty(calls) {
-    render(text_of(resp.output))                   # final assistant message
-    return input_items
-  }
-  outputs := for c in calls:                        # {type:"function_call_output",
-               run_tool(tools, c)                   #  call_id:.., output:..}
-  run_turn(input_items + resp.output + outputs)     # loop until no more calls
-}
-
-fn main() {
-  with_screen(fn(scr) {                             # milestone 6; line UI before
-    items := [ system_item("You are a coding agent.") ]
-    loop {
-      line := read_input(scr)
-      if line == "/quit": break
-      items := run_turn(items + [ user_item(line) ])
-    }
-  })
-}
+```text
+session/config       session/items        session/transcript
+session/memory       session/tools        session/current-task
+session/events       session/evidence     session/workspace
 ```
 
-## 10. Staged plan
+Reads may use ordinary selectors. Mutations go through messages so the session
+can validate invariants and append an audit event:
 
-Ordered so each stage is independently testable and the risky pieces (TLS,
-curses) are isolated behind working milestones.
+```gene
+(session ~ add-tool my-domain-check)
+(session ~ remember "reader datum comments are spacing")
+(session ~ subscribe 'tool-call)
+(session ~ resume)
+```
 
-1. **`os` namespace**: `get-env`/`env?` (`Os/Env`), `exec`/`exec-stream`
-   (`Os/Exec`) with `^timeout-ms` + output cap, `read-line`, `read-input`,
-   `refresh-input`, `close-input`; `Fs/read-text`/`Fs/list-dir` sync
-   helpers. Spec-tested.
-2. **`json`**: `parse`/`stringify` with `JsonError`; round-trip spec tests
-   including escapes, nesting, and a depth cap.
-3. **Agent loop, bootstrap transport — streaming subprocess.** One streaming
-   request against `POST /v1/responses` by shelling out to `curl -N` via
-   `os/exec-stream`; parse SSE `data:` lines with `json/parse`; stream text
-   deltas into the transcript while retaining the final response item list for
-   tool calls. The interactive prompt uses ncurses-backed multiline input while
-   preserving line-based behavior in non-TTY tests. Gated on `OPENAI_AUTH_TOKEN`;
-   tests inject a fake
-   transport (a recorded Responses body) so CI needs no network or key. Model
-   the response decoder around Responses output *items* from the start, so the
-   later streaming client slots in without reshaping the agent.
-4. **Tool use + minimal safety.** `read_file`/`write_file`/`edit_file`/
-   `list_dir`/`run_shell`/`grep` as `function_call` handlers, the tool schema
-   list, and the dispatch loop — shipped with the minimal single-user policy
-   (§8.5 current posture: `rm -rf` denial, simple path check, timeout/output
-   caps, display-side redaction, auto-approve). Verified against a scripted
-   model-response fixture; the full §8.5 contract and its escape/redaction
-   spec tests move to milestone 7.
-5. **`net/http-client` (libcurl namespace)**: replace the `curl` subprocess with
-   the native client; keep streaming via the channel path in §4 and add real
-   cancellation rather than killing a child process.
-6. **`curses` namespace + TUI**: scrollable transcript, status line, input line,
-   Ctrl-C interrupt; `with-screen` cleanup; swap the line UI for the full
-   screen.
-7. **Hardening**: the full §8.5 contract (realpath confinement, approval
-   policy default-on, redaction of tool output sent to the model, escape/
-   redaction spec tests), capability injection via `gene run` flags (§8),
-   broader policy config, and interrupt/cancel wired through `Task/cancel`.
+The API begins small. Do not expose every implementation field or build a
+general plugin system first. Stabilize the pieces needed to inspect a real turn,
+add/replace a typed tool, query events, and continue.
 
-Gateway / multi-surface milestones (§12; each independently shippable):
+### 9.2 Authoritative event log and `/trace`
 
-8. **Async subprocess + gateway skeleton — implemented.** `os/exec-async` and
-   `os/exec-stream-async` run the child on a dedicated OS thread (§12.9 gap 1
-   closed); `examples/agent_gateway.gene` ships session actors, the HTTP+JSON
-   API with cursor long-poll, bearer auth, and an embedded web chat page. The
-   agent's transports and `run_shell`/`grep` tools now ride the async
-   primitives, so the CLI keeps identical behavior while the gateway runs
-   sessions concurrently (verified: two 900 ms model calls complete in ~one
-   latency in the test_cli e2e).
-9. **Telegram channel — implemented.** `getUpdates` long-poll adapter task
-   over `os/exec-async`, chat-id allowlist (`TELEGRAM_ALLOWED_CHAT_IDS`),
-   per-chat sessions (`tg-<chat-id>`), streamed replies via `sendMessage` +
-   size-throttled `editMessageText`. Outbound events cross to a dedicated
-   sender fiber through a channel as JSON strings (channel items must be
-   Send-safe). Verified against a fake Bot API over loopback in test_cli
-   (allowed chat answered through the full turn, unlisted chat dropped).
-10. **Web UI + async approvals.** Approval-request events rendered as buttons,
-    multi-session switcher, transcript streaming via long-poll deltas.
-11. **Persistence — implemented.** Set `GENE_GATEWAY_DB=<path>` and sessions
-    (transcript + event log) persist to sqlite as serde text
-    (`serde/write-data`/`read-data`, docs/proposals/serialization.md §4/§9;
-    pure data, no reference resolution). Sessions save on `turn_done` and
-    restore at startup — Telegram sessions reattach their sender hook, and
-    the session-id sequence resumes past restored ids. e2e-tested in
-    test_cli (turn → kill → restart → history intact, restored session
-    continues, new ids don't collide). The gateway is the reference consumer
-    for the general durable-store + crash-resume design in
-    docs/proposals/persistence.md, which will fold this bespoke sqlite code
-    into a `Store` backend (and add a filesystem option) without a format
-    change.
-12. **TUI as gateway client.** The full §7 curses TUI speaking the gateway API
-    (nodelay `wgetch` polling so background events render while typing).
-13. **Slack channel.** Events API + `crypto/hmac-sha256` (§12.9 gap 4), or
-    Socket Mode once a WebSocket client exists (after milestone 5).
+The CLI and gateway currently accumulate related state in different shapes.
+Converge them on one append-only, versioned event vocabulary. At minimum:
 
-Milestones 5 (native libcurl client) and 7 (hardening) remain enablers that can
-interleave: 5 sharpens cancellation and removes the curl dependency everywhere,
-and 7's approval/redaction work is a prerequisite for exposing any surface
-beyond localhost.
+```gene
+{^v 1 ^type 'user-input  ^text "..."}
+{^v 2 ^type 'model-item  ^item {...}}
+{^v 3 ^type 'tool-call   ^id "..." ^name "read_file" ^args {...}}
+{^v 4 ^type 'tool-result ^id "..." ^value "..." ^truncated false}
+{^v 5 ^type 'file-change ^path "..." ^patch-ref "..."}
+{^v 6 ^type 'check       ^command [...] ^status 0 ^duration-ms 123}
+{^v 7 ^type 'agent-text  ^text "..."}
+```
 
-Milestones 1–4 make the agent genuinely usable (real API, real tools, real
-safety). The new runtime surface they require is: the `os` namespace
-(`get-env`/`env?`/`exec`/`exec-stream`/`read-line`/`read-input`/`refresh-input`/`close-input`
-with `Os/Env`+`Os/Exec`), the `Fs/read-text` and `Fs/list-dir` sync helpers,
-and the `json` namespace — plus the minimal §8.5 safety layer in Gene.
-Crucially,
-**no TLS, full curses namespace, or OS-level sandbox build-out is required
-first** — that is what makes this the sharp MVP. The prompt may use ncurses and
-subprocess SSE streaming, but the full TUI (6) and native HTTP client (5) are
-isolated behind it. Each
-stage follows the repo's rule set: `nimble
-test` / `nimble spec` / `nimble perf` before commit, natives implemented in
-`src/gene/stdlib.nim` beside the existing db/http code, and every new host power
-expressed as a capability value.
+The event log is authoritative for rendering and persistence; transcript text,
+evidence, and current UI state are projections. Every surface consumes the same
+events. `/trace` exposes a few useful filters first (type, tool name, path,
+event range, current turn), while `/repl` can apply normal selectors and stream
+operations. Full replay/fork/compare and sanitized trajectory fixtures are later
+extensions, not requirements for the first event slice.
 
-## 11. Non-goals (for the first version)
+Events carry correlation ids where needed (turn, tool call, actor), module/tool
+version hashes once hot reload exists, and redaction/truncation state. They do
+not contain hidden chain-of-thought; they record explicit plans, decisions,
+actions, results, and evidence.
+
+### 9.3 Dogfood rule
+
+The quality bar is whether the author voluntarily uses this agent to build
+Gene. Repeated friction observed during that work chooses the next feature.
+Competitor parity does not. When a real failure is instructive, sanitize the
+smallest event sequence into a deterministic fake-model/tool regression test.
+
+## 10. Product strategy and staged plan
+
+The feature inventory in this document is a menu. This section is the official
+order. Each slice must improve daily dogfooding and remain independently
+testable.
+
+### 10.1 Shipped foundation
+
+The previous numbered milestones remain useful as implementation history:
+
+- **Bootstrap 1–4:** `os`, `json`, streaming model loop, file/shell tools,
+  multiline prompt, minimal catastrophe guard, and fake-transport tests.
+- **Async/gateway 8:** async subprocesses, concurrent session actors, HTTP/JSON
+  API, cursor long-poll, bearer auth, and embedded web chat.
+- **Telegram 9:** allowlisted Telegram sessions and streamed replies.
+- **Persistence 11:** SQLite gateway sessions/events plus `store/fs` CLI
+  config, session, and `/remember` memory.
+
+These shipped pieces prove the transport, tool loop, actor concurrency, event
+delivery, and persistence patterns needed by the next work. Historical numbers
+are retained in §12 where they explain existing code; they no longer define the
+forward priority order.
+
+### 10.2 Slice A — program the agent that exists
+
+1. Replace the duplicated tool map/schema list with typed tool declarations
+   (§6, §9.1).
+2. Stabilize the live `session` object exposed through `/repl` (§9.1).
+3. Route CLI and gateway actions through one versioned event vocabulary
+   (§9.2, §12.3).
+4. Add `/trace` with type/tool/path/turn filters and selector examples.
+5. Extend the §8.5 guard for seeded worst cases: realpath-protected roots,
+   destructive database/Git/infrastructure patterns, visible output
+   truncation, and known-secret redaction—without prompting for normal work.
+6. Cover typed registration and event behavior with deterministic fake-model
+   tests.
+
+The signature demo is deliberately single-session: inspect live state in
+`/repl`, add or replace a typed Gene tool, query the event trail, and continue
+the same turn. It requires no MCP, worktrees, browser, native TLS, or subagents.
+
+### 10.3 Slice B — make it the best daily driver
+
+Choose exact ordering from dogfood pain:
+
+- cancel/steer in-flight model and subprocess work;
+- `/diff`, targeted `/undo`, and preservation of pre-existing changes;
+- structured command/test/benchmark evidence and explicit unverified claims;
+- context visibility and compaction when long sessions actually lose intent;
+- prompt/TUI improvements where the current UI causes friction;
+- hierarchical `AGENTS.md` loading for work outside the Gene repository.
+
+### 10.4 Slice C — keep repeated workflows
+
+- Promote repeated `/repl` experiments into small Gene workflow modules.
+- Record module/tool version hashes and hot-reload new calls without changing
+  already-running calls.
+- Add hook points only after the same manual workflow repeats.
+- Add a Gene-aware module/symbol map if raw search becomes a measured
+  bottleneck.
+- Add stable JSONL automation if scripting the agent becomes useful.
+
+### 10.5 Slice D — expand only where leverage is proven
+
+- Add one supervised explorer or reviewer actor before general agent teams.
+- Orchestrate `git worktree` only when parallel edits are genuinely useful;
+  worktrees are greenfield subprocess orchestration, not a current runtime
+  primitive.
+- Add MCP only when a needed integration justifies its greenfield protocol,
+  transport, authentication, and lifecycle surface.
+- Add browser/visual automation only when frontend work becomes frequent.
+- Extend TUI/web/chat surfaces only when they improve the author's workflow.
+- Replace `curl` with native libcurl when packaging, cancellation, WebSockets,
+  or performance provides a user-visible reason.
+
+There is no obligation to complete slice D. A personal agent with typed tools,
+live state, queryable events, reliable edits, and excellent Gene support is
+already a killer application and language demonstration.
+
+Every implemented slice follows the repository gates: `nimble test`, `nimble
+spec`, `nimble perf`, and `nimble wasm` before commit (or `nimble verify` for
+broad/risky runtime changes); performance regressions must remain visible.
+
+## 11. Non-goals for the personal tool
 
 - Windows terminal support (curses assumes a Unix TTY);
 - a full provider abstraction — the agent speaks the OpenAI Responses shape
@@ -617,50 +738,61 @@ expressed as a capability value.
 - multi-user or multi-tenant operation — the gateway (§12) stays a
   **single-user** tool: one bearer token, one workspace owner, allowlisted
   chat ids; no accounts, roles, or per-user isolation;
-- **OS/process-level** sandboxing of `run_shell` (containers, seccomp, chroot)
-  beyond the `Os/Exec` capability gate, the §8.5 in-agent safety contract
-  (workspace confinement, approval policy, redaction), and output/time caps;
+- general permission modes, default-on approval prompts, enterprise policy,
+  compliance controls, and OS/process-level sandboxing (`seccomp`, containers,
+  `chroot`) beyond the explicit capability values and §8.5 catastrophe guard;
+- crash-safe exactly-once recovery — controlled stop/reload is sufficient until
+  dogfooding demonstrates that crash consistency repays its complexity;
+- a large formal eval/analytics program — deterministic harness tests plus
+  small regressions captured from real Gene work are the quality mechanism;
+- MCP, worktree orchestration, browser automation, a general multi-language
+  code graph, and large agent teams as prerequisites; each remains optional
+  slice-D work triggered by actual use;
 - TLS certificate pinning and proxy configuration.
 
-## 12. Hermes-style multi-surface architecture (gateway, TUI, web, channels)
+## 12. Local-first multi-surface architecture (gateway, TUI, web, channels)
 
 One long-running **gateway** process owns every conversation; surfaces are
 thin views onto it. The terminal agent of §1 becomes one surface among four,
-and a session started in the terminal can be continued from the phone.
+and a session started in the terminal can be continued from the phone. The
+gateway is already useful infrastructure, but expanding surfaces is slice-D
+work: the embedded CLI and its live Gene control plane remain the primary
+product.
 
 ```
                        ┌───────────────────────────────┐
   ┌──────────┐  HTTP   │            gateway            │
   │ TUI      │◄───────►│                               │   curl (async)
   ├──────────┤  +JSON  │  session actors (one per      │◄───────────────► model
-  │ Web UI   │◄───────►│  conversation): transcript,   │   Responses/chat APIs
-  ├──────────┤ cursor  │  turn loop, tools, policy,    │
-  │ Telegram │◄──long──│  approvals                    │   curl (async, long-poll)
+  │ Web UI   │◄───────►│  conversation): events,       │   Responses/chat APIs
+  ├──────────┤ cursor  │  turn loop, typed tools,      │
+  │ Telegram │◄──long──│  catastrophe guard            │   curl (async, long-poll)
   ├──────────┤  poll   │                               │◄───────────────► api.telegram.org
   │ Slack    │◄───────►│  event log per session,       │
   └──────────┘         │  sqlite persistence (m11)     │
                        └───────────────────────────────┘
 ```
 
-Design rules, in the spirit of the rest of this doc: every piece reuses a
-pattern already proven in this repo, every new host power is a capability
-value, and each milestone is independently shippable and testable over
-loopback with fake endpoints (the §10-milestone-4 / chat-endpoint test
-posture).
+Design rules: every piece reuses a pattern already proven in this repo, every
+new host power is a capability value, and each addition is independently
+shippable and testable over loopback with fake endpoints.
 
 ### 12.1 The gateway process and session actors
 
 The gateway is ordinary Gene: `gene run examples/agent_gateway.gene`
-(**shipped** — milestone 8 sessions/HTTP API/long-poll/auth/web page,
-milestone 9 Telegram channel, milestone 11 sqlite persistence; the Slack
-adapter and web-UI approvals still follow the plan below). Each
+(**shipped foundation** — historical milestone 8 sessions/HTTP
+API/long-poll/auth/web page, milestone 9 Telegram channel, milestone 11 SQLite
+persistence). Additional surfaces and rare remote confirmations are optional
+slice-D work. Each
 conversation is a **session actor** (`actor/spawn`, design.md §13) owning:
 
-- the transcript as a list of Responses-style items (the §5/§9 vocabulary the
-  chat adapter already normalizes to — surfaces never see wire formats);
-- a monotonically versioned **event log** (12.3) derived from the turn loop;
+- the Responses-style model item list (the chat adapter normalizes wire
+  formats at the boundary);
+- a monotonically versioned **authoritative event log** (12.3), from which
+  transcript and surface state are projected;
 - model config (base/model/flavor per session, defaulted from env as today);
-- the tool table + §8.5 policy, and at most one pending approval (12.6).
+- the typed tool registry + §8.5 catastrophe guard, and at most one pending
+  destructive-operation confirmation (12.8).
 
 Actors give per-session ordering for free (one turn at a time per session)
 while the scheduler runs sessions concurrently — the same task-per-request
@@ -669,9 +801,10 @@ in-repo precedent for routing requests into actors via `RequestMsg`/reply.
 
 ### 12.2 Gateway API (HTTP + JSON)
 
-Served by the existing `net/http` server, bound to `127.0.0.1` by default,
-authenticated by a single static bearer token (`GENE_GATEWAY_TOKEN`) checked
-on every request — single-user posture (§11), no accounts.
+Served by the existing `net/http` server, bound to `127.0.0.1` by default.
+A single static bearer token (`GENE_GATEWAY_TOKEN`) is checked on every
+request when set; when unset the API is open and the gateway warns to keep
+the bind on localhost — single-user posture (§11), no accounts.
 
 | Route | Meaning |
 |---|---|
@@ -679,8 +812,8 @@ on every request — single-user posture (§11), no accounts.
 | `GET  /api/sessions` | list sessions (id, title, surface, last-event) |
 | `POST /api/sessions/:id/messages` | append a user turn; returns immediately |
 | `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N, or park until one arrives |
-| `POST /api/sessions/:id/approvals/:aid` | `{^decision "allow"\|"deny"}` |
-| `POST /api/sessions/:id/cancel` | cancel the in-flight turn (`Task/cancel`, m7) |
+| `POST /api/sessions/:id/confirmations/:cid` | resolve a rare destructive-operation confirmation |
+| `POST /api/sessions/:id/cancel` | cancel the in-flight turn (`Task/cancel`, slice B) |
 | `GET  /` | the web UI page (12.5) |
 
 Long-poll is the bootstrap streaming mechanism because the `net/http` server
@@ -692,26 +825,31 @@ chunked/SSE response streaming is gap 2 in 12.9.
 ### 12.3 Event log
 
 Each session appends typed events; surfaces render them and remember only a
-cursor. Events are maps (JSON-friendly, like everything else here):
+cursor. Events are maps (JSON-friendly, like everything else here). The block
+below is the **current gateway shape** (string types, snake_case names);
+converging it with the §9.2 vocabulary into one set of type names shared by
+the CLI, gateway, and `/trace` is slice-A work (§10.2):
 
 ```gene
 {^v 41 ^type "text_delta"        ^text "..."}          ; coalesced ~100ms
 {^v 42 ^type "turn_done"         ^text "full reply"}
-{^v 43 ^type "tool_call"         ^name "run_shell" ^detail "make test"}
-{^v 44 ^type "approval_request"  ^id "ap_7" ^tool "write_file" ^detail "..."}
-{^v 45 ^type "approval_resolved" ^id "ap_7" ^decision "allow"}
+{^v 43 ^type "tool_call"         ^id "tc_7" ^name "run_shell" ^args {...}}
+{^v 44 ^type "tool_result"       ^id "tc_7" ^value "..." ^truncated false}
+{^v 45 ^type "confirmation"      ^id "cf_2" ^risk "destructive" ^target "..."}
 {^v 46 ^type "error"             ^text "..."}
 ```
 
 Deltas are coalesced server-side (~100 ms batches) so chat surfaces that edit
 messages (12.6/12.7) and long-poll clients see bounded event rates. All text
 passes the §8.5 `redact` before entering the log — tokens live only in the
-gateway process; surfaces can only ever receive redacted text.
+gateway process; surfaces can only ever receive redacted text. The same event
+schema must drive embedded CLI rendering and `/trace`; do not maintain a second
+gateway-only vocabulary.
 
 ### 12.4 TUI surface
 
 The current CLI keeps working unchanged as **embedded mode** (no gateway).
-Milestone 12 turns the §7 curses TUI into a gateway client: send via
+Optional slice-D work turns the §7 curses TUI into a gateway client: send via
 `POST messages`, render via the events long-poll. Live background updates
 while the user types require non-blocking input — `nodelay`/`timeout`
 `wgetch` polling from a Gene task, exactly as §7 already plans; until then a
@@ -723,9 +861,9 @@ today's behavior.
 A single static page served by the gateway (`html` helpers;
 `examples/todo_app.gene` is the in-repo precedent for a self-contained web
 app): vanilla JS, `fetch` to post messages, a long-poll loop for events,
-approval requests rendered as allow/deny buttons posting to 12.2. No build
-step, no framework, no external assets — the page is a string in the Gene
-source. Session switcher reads `GET /api/sessions`.
+rare destructive-operation confirmations rendered as allow/deny buttons
+posting to 12.2. No build step, no framework, no external assets — the page is
+a string in the Gene source. Session switcher reads `GET /api/sessions`.
 
 ### 12.6 Telegram channel (implemented, milestone 9)
 
@@ -749,16 +887,18 @@ HTTPS only**, which the curl transport already provides. As shipped in
 - config: `TELEGRAM_BOT_TOKEN`, optional `TELEGRAM_API_BASE` (points at the
   fake Bot API in tests); no inbound port, no webhook, no TLS server.
 
-Still pending from the original sketch: approval requests as Telegram
-messages (`/approve ap_7`) — arrives with the async-approvals milestone
-(m10).
+Optional later work can render the rare destructive-operation confirmation as
+a Telegram message (`/confirm cf_2`). Routine work stays auto-approved, so this
+does not gate the shipped channel.
 
 ### 12.7 Slack channel
 
-Two integration modes, both requiring runtime work — hence last (m13):
+Two integration modes, both requiring runtime work — hence optional slice-D
+work:
 
 1. **Socket Mode** (preferred; outbound-only like Telegram): needs a
-   WebSocket client over TLS — blocked on the native net client (§4 m5).
+   WebSocket client over TLS — blocked on optional native networking work
+   (§4, slice D).
 2. **Events API**: inbound webhooks to the gateway → needs public HTTPS
    exposure (tunnel) + request signing (`X-Slack-Signature`,
    HMAC-SHA256) → needs a small `crypto` namespace (12.9 gap 4), plus the
@@ -768,23 +908,23 @@ Outbound (`chat.postMessage`, throttled `chat.update` for streaming) works
 over curl today. Sessions key by `(channel, thread_ts)` so each Slack thread
 is a conversation.
 
-### 12.8 Approvals across surfaces
+### 12.8 Rare destructive confirmations across surfaces
 
-§8.5's approval hook generalizes from a blocking stdin prompt to an
-**asynchronous approval event**: the session emits `approval_request`, parks
-the turn on a reply channel with a deadline (default deny on timeout), and
-the owning surface renders it natively — y/N in the TUI, buttons on the web,
-`/approve` in chat. The single-user default posture is unchanged
-(`GENE_AGENT_APPROVE_ALL=1` ⇒ no approval events at all); this machinery is
-what makes prompts *possible* on surfaces that have no stdin.
+§8.5's catastrophe guard normally produces no interaction. When a structured
+operation is destructive but plausibly intentional, the session emits a
+`confirmation` event, parks the turn on a reply channel with a deadline
+(default deny on timeout), and the owning surface renders it natively — y/N in
+the TUI, buttons on the web, `/confirm` in chat. Catastrophic operations remain
+denied; normal operations remain auto-approved. This is not a general approval
+workflow.
 
-### 12.9 Runtime gaps, in priority order
+### 12.9 Runtime gaps for optional surfaces
 
 | # | Gap | Blocks | Bootstrap workaround | Proper fix |
 |---|---|---|---|---|
 | 1 | ~~**Async subprocess**~~ — **closed (m8)**: `os/exec-async`/`exec-stream-async` run the child on a dedicated OS thread; stdout lines cross via `nativeChannelTrySend` (values marked shared → atomic rc), the Task settles via `tryCompleteTask`+`wakeTaskWaiters`, and root-level `await`/`Channel/recv` poll instead of declaring deadlock while external native ops are in flight | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
-| 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | after m5 (libcurl / native TLS) |
+| 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
 | 4 | `crypto/hmac-sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
 | 5 | Non-blocking TUI input | live TUI updates while typing | render between turns | `nodelay` `wgetch` (§7) |
 
@@ -795,7 +935,7 @@ workable bootstraps.
 
 ### 12.10 Testing posture
 
-Same as milestones 1–4: every surface must be drivable over loopback with no
+As with the shipped bootstrap: every surface must be drivable over loopback with no
 network or real accounts. The fake `/chat/completions` endpoint (test_cli)
 proves the model side; milestone 8 shipped its e2e (a 900 ms fake endpoint
 serves two gateway sessions — create → post → long-poll — asserting streamed
