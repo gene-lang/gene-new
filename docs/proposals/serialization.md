@@ -408,6 +408,10 @@ why cells are not in the bucket and reserved heads are escaped.
 4. **Typed instances and refs** (§5–§7) as the config/document story: read a
    `.gene` data file whose nodes reconstruct as typed instances with
    validation but without executing arbitrary code.
+5. **Application persistence & resume.** The durable-store and crash-resume
+   layer above this format — `serde/write`/`read` are its encode/decode, the
+   §7 `serde-state`/`serde-restore` hooks are its per-type resume primitive.
+   Designed in docs/proposals/persistence.md.
 
 ## 11. Non-goals (first version)
 

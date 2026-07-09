@@ -573,7 +573,11 @@ Gateway / multi-surface milestones (§12; each independently shippable):
     restore at startup — Telegram sessions reattach their sender hook, and
     the session-id sequence resumes past restored ids. e2e-tested in
     test_cli (turn → kill → restart → history intact, restored session
-    continues, new ids don't collide).
+    continues, new ids don't collide). The gateway is the reference consumer
+    for the general durable-store + crash-resume design in
+    docs/proposals/persistence.md, which will fold this bespoke sqlite code
+    into a `Store` backend (and add a filesystem option) without a format
+    change.
 12. **TUI as gateway client.** The full §7 curses TUI speaking the gateway API
     (nodelay `wgetch` polling so background events render while typing).
 13. **Slack channel.** Events API + `crypto/hmac-sha256` (§12.9 gap 4), or
