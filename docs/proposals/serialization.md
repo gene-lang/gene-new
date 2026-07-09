@@ -7,10 +7,22 @@ policy-gated hooks and resource limits, narrowed value refs, reserved
 version/package slots). Date: 2026-07-09.
 
 **Implementation deltas from the prose below** (the prose is the design;
-these are the shipped specifics):
+these are the shipped specifics — the body still reads normative in places,
+so trust this block where they differ):
+- **Control tags are dash-named plain symbols** (`serde-v1`, `serde-float`,
+  `serde-inst`, `serde-type-ref`, …), *not* the `serde/x` slash spellings the
+  examples below use — slash tokens read back as `(path …)` nodes. The `serde/x`
+  names in the prose denote `serde-x`. (Namespaced *function* names like
+  `serde/write-data` are unaffected — those are ordinary imports.)
+- **Origin tagging is lazy**: the reverse origin index is built on the first
+  `serde/write` that needs a ref, not at module load (§5's "at module load"
+  is aspirational; the observable behavior is identical).
 - `serde-state`/`serde-restore` are **type-direct messages**, not a `Serde`
   protocol — dispatch works both ways and needs no protocol/impl ceremony.
-  `SerdeRef` (§7) is a real empty marker protocol.
+  `SerdeRef` (§7) is a real empty marker protocol. Recommendation (not yet
+  enforced): `serde-state` should return a **data-bucket** value; the writer
+  currently accepts any `serde/write`-serializable state, so keeping hook
+  state pure data is a convention until validated.
 - Stage-3+ references resolve against **loaded modules only** and never load
   a module named by a payload (no-code-execution, verified). The entry
   module currently executing has no origin yet (it is mid-load, not cached),
@@ -349,18 +361,17 @@ or fails with a clear error. Value refs land in the final stage (§12).
 ## 8. Resource limits (`SerdePolicy`)
 
 `read-data` on a network payload is an attack surface even with no code
-execution: interned symbols persist for the process lifetime (a payload
-minting millions of unique symbols is a memory DoS), and big ints, byte
-literals, deep nesting, and giant containers all cost resources at parse
-time. Both readers take a policy with conservative-by-default screws, the
-generalization of `json/parse`'s existing depth cap:
+execution: big ints, byte literals, deep nesting, and giant containers all
+cost resources at parse time. Both readers take a policy with
+conservative-by-default screws, the generalization of `json/parse`'s existing
+depth cap:
 
 ```gene
 (serde/read-data text ^policy (SerdePolicy
-  ^max-bytes   10485760    ; input size
+  ^max-bytes   10485760    ; input size — the real pre-parse memory bound
   ^max-nodes   100000      ; total values constructed
   ^max-depth   1000        ; nesting
-  ^max-symbols 10000))     ; distinct symbols interned per read
+  ^max-symbols 10000))     ; distinct symbols in the constructed value (see note)
 
 (serde/read text ^policy (SerdePolicy
   ...as above...
@@ -370,6 +381,19 @@ generalization of `json/parse`'s existing depth cap:
 Defaults are generous enough that trusted local use (config files, the
 gateway's own sqlite rows) never notices them; network-facing callers tighten
 them. Exceeding any limit is a `SerdeError` naming the limit.
+
+**`max-symbols` caveat (implementation reality).** Gene interns symbols in a
+process-lifetime global table (`newSym`, `src/gene/types.nim`), and the reader
+interns *during* `readAll` — before `serde`'s walk runs. So `max-symbols`,
+which is enforced while decoding the already-parsed value, bounds the distinct
+symbols in the *constructed value* but does **not** prevent a payload from
+having already grown the global intern table at parse time. **`max-bytes` is
+the real defense against interning-DoS**: a payload can introduce at most
+~`max-bytes/2` distinct symbol lexemes, so bounding input size bounds intern
+growth. To make `max-symbols` a true pre-intern cap, serde would need a
+symbol-counting reader/token policy that runs before `newSym` — a future
+refinement; today, set `max-bytes` for untrusted input and treat `max-symbols`
+as a structural cap, not an interning-DoS guard.
 
 ## 9. API surface
 
