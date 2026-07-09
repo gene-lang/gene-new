@@ -3,7 +3,8 @@
 Status: **milestones 1–4 implemented; subprocess streaming prompt shipped;
 OpenAI-compatible chat endpoints shipped; milestone 8 shipped (async
 subprocess + gateway skeleton) and milestone 9 shipped (Telegram channel),
-both in `examples/agent_gateway.gene`; 5–7 and 10–13 planned.**
+both in `examples/agent_gateway.gene`; milestone 11 shipped (sqlite session
+persistence); 5–7, 10, 12–13 planned.**
 Date: 2026-07-08.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
@@ -92,8 +93,10 @@ Behavior, mirroring a coding agent:
   against the local workspace under explicit capabilities and safety policy
   (§8.5), appends `function_call_output` items, and loops until the model
   returns a final message item;
-- slash commands in the input line (`/model`, `/clear`, `/quit`), and Ctrl-C to
-  interrupt an in-flight response;
+- slash commands in the input line (shipped: `/quit`, `/sh` shell session,
+  `/repl` Gene REPL; planned: `/model`, `/clear`), and Ctrl-C interrupting a
+  `/sh` command or `/repl` eval (interrupting an in-flight *model response* is
+  still planned, §12.9/milestone 7);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
   registered in a map, and the transcript is a list — homoiconic and testable.
 
@@ -648,8 +651,9 @@ posture).
 ### 12.1 The gateway process and session actors
 
 The gateway is ordinary Gene: `gene run examples/agent_gateway.gene`
-(**shipped, milestone 8** — sessions, HTTP API, long-poll, auth, web page;
-Telegram/Slack adapters and persistence still follow the plan below). Each
+(**shipped** — milestone 8 sessions/HTTP API/long-poll/auth/web page,
+milestone 9 Telegram channel, milestone 11 sqlite persistence; the Slack
+adapter and web-UI approvals still follow the plan below). Each
 conversation is a **session actor** (`actor/spawn`, design.md §13) owning:
 
 - the transcript as a list of Responses-style items (the §5/§9 vocabulary the

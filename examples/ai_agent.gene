@@ -6,7 +6,8 @@
 #     OpenAI-compatible Chat Completions endpoint (MiniMax, DeepSeek, vLLM,
 #     api.openai.com, ...) configured entirely from the environment. Streaming
 #     in both modes.
-#   * Transport is `curl` shelled out through os/exec-stream.
+#   * Transport is `curl` shelled out through os/exec-stream-async, so a model
+#     call never blocks the scheduler (the gateway runs sessions concurrently).
 #   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
 #     with a minimal personal-use guard: `rm -rf` is denied, paths stay inside
 #     the workspace, timeouts + output caps apply, the token is redacted from
@@ -369,7 +370,10 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
       catch (OsError ^message m) $"error: ${m}"
       catch (JsonError ^message m) $"error: bad tool arguments: ${m}"
       catch * "error: tool failed")))
-  {^type "function_call_output" ^call_id call/call_id ^output output})
+  # Redact before the output re-enters the model transcript (§8.5): a tool
+  # like run_shell can echo the environment, and the raw API token must never
+  # leak back into the next request.
+  {^type "function_call_output" ^call_id call/call_id ^output (redact output)})
 
 # -----------------------------------------------------------------------------
 # Transport. Live mode shells out to curl; demo mode uses a scripted closure.
@@ -749,7 +753,10 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
           (if (Cell/get streamed)
             (render "")
             (render (redact (response-text resp))))
-          input-items)
+          # Retain the final assistant message in the conversation so the next
+          # turn can see what the agent just said (mirrors the tool-call path,
+          # which already appends resp's output items).
+          (append-all input-items (response-output-items resp)))
         (if (<= budget 0)
           (do
             (render "[stopped: tool-call budget exhausted]")

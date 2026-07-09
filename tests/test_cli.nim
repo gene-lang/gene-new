@@ -233,6 +233,92 @@ suite "cli — gene run":
     check "tool list_dir" in ran.output
     check "verdict: roundtrip-ok" in ran.output
 
+  test "ai agent redacts the api token out of tool output before the model sees it":
+    ## §8.5 secret-redaction: a run_shell tool whose OUTPUT contains the token
+    ## must not leak it into the next model request. Turn 1 runs
+    ## `printenv OPENAI_AUTH_TOKEN` (token is in the child env, not the command
+    ## text); turn 2 inspects the request body — the tool output must be
+    ## redacted. The command itself carries no token, so a LEAKED verdict can
+    ## only come from unredacted tool output.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_redact_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join contains?])
+(import std/stream [to_stream map into])
+
+(var hits (cell 0))
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(var turn1
+  [{^choices [{^index 0
+               ^delta {^role "assistant"
+                       ^tool_calls [{^index 0 ^id "call_r1" ^type "function"
+                                     ^function {^name "run_shell" ^arguments ""}}]}}]}
+   {^choices [{^index 0
+               ^delta {^tool_calls [{^index 0
+                 ^function {^arguments "{\"command\":\"printenv OPENAI_AUTH_TOKEN\"}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+
+(fn turn2-verdict [body]
+  (if (contains? body "sk-secret-tok-9Z")
+    "LEAKED"
+    (if (contains? body "REDACTED")
+      "redacted-ok"
+      "no-tool-output")))
+
+(fn turn2-chunks [body]
+  [{^choices [{^index 0 ^delta {^content "verdict: "}}]}
+   {^choices [{^index 0 ^delta {^content (turn2-verdict body)}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (var chunks (if (= (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body chunks)))
+
+(serve (Server ^host "127.0.0.1" ^port 8991) handle ^max-requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8991), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let ran = execCmdEx("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                        "-u OPENAI_API OPENAI_AUTH_TOKEN=sk-secret-tok-9Z " &
+                        "GENE_AGENT_APPROVE_ALL=1 " &
+                        "OPENAI_BASE_URL=http://127.0.0.1:8991/v1 " &
+                        "OPENAI_MODEL=fake-chat " &
+                        shellQuote(geneExe) &
+                        " run examples/ai_agent.gene 'print the token'")
+    check ran.exitCode == 0
+    check "verdict: redacted-ok" in ran.output
+    check "LEAKED" notin ran.output
+
   test "agent gateway runs concurrent sessions over the async transport":
     ## Milestone 8 e2e (docs/ai-agent.md §12): a slow fake chat endpoint
     ## (900ms per response) serves two gateway sessions. Both turns must
@@ -831,6 +917,9 @@ suite "cli — gene parse/fmt/compile":
 (check "protocol" (= Drawable (read (write Drawable))))
 (var a2 (read (write area)))
 (check "fn" (= 12 (a2 (Point ^x 3 ^y 4))))
+(var imported-area area)
+(var a3 (read (write imported-area)))
+(check "fn-alias" (= 30 (a3 (Point ^x 5 ^y 6))))
 (var t (write Point))
 (check "ref-shape" (&& (contains? t "serde-type-ref") (contains? t "Point")))
 (check "no-exec"
@@ -875,6 +964,7 @@ suite "cli — gene parse/fmt/compile":
     check "variant ok" in ran.output
     check "protocol ok" in ran.output
     check "fn ok" in ran.output
+    check "fn-alias ok" in ran.output
     check "ref-shape ok" in ran.output
     check "no-exec ok" in ran.output
     check "inst ok" in ran.output
