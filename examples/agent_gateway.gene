@@ -24,17 +24,23 @@
 
 (import os [get-env exec-async Env Exec])
 (import json [parse stringify JsonError])
-(import str [split trim])
+(import str [split trim join starts_with?])
 (import std/stream [to_stream filter each into])
 (import std/parse [parse_int])
 (import net/http [Server serve Response])
 (import [gene-system-prompt system-item user-item run-turn live-transport
          demo-transport-for max-tool-turns append model auth-token]
         from "./ai_agent")
+(import serde [write-data read-data])
+(import db/sqlite [open : sqlite-open])
 
 (var gw-host (get-env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
 (var gw-port (parse_int (get-env Env "GENE_GATEWAY_PORT" "8090")))
 (var gw-token (get-env Env "GENE_GATEWAY_TOKEN" ""))
+# Optional persistence (docs/ai-agent.md §12 milestone 11): set GENE_GATEWAY_DB
+# to a sqlite path and sessions survive restarts — transcripts and event logs
+# are pure data, stored as serde text (docs/proposals/serialization.md §4).
+(var gw-db-path (get-env Env "GENE_GATEWAY_DB" ""))
 
 # Telegram channel (docs/ai-agent.md §12.6). Outbound HTTPS only: a getUpdates
 # long-poll rides os/exec-async, so no inbound port, webhook, or TLS server.
@@ -51,13 +57,30 @@
 (var sessions {})
 (var session-seq (cell 0))
 
+(var gw-db (cell nil))
+
+(fn persist-session [id, items, events, next-v]
+  (if (= (gw-db ~ Cell/get) nil)
+    nil
+    (try
+      ((gw-db ~ Cell/get) ~ execute
+        "insert or replace into sessions(id, data) values (?, ?)"
+        id
+        (write-data {^items (items ~ Cell/get)
+                     ^events (events ~ Cell/get)
+                     ^next-v (next-v ~ Cell/get)}))
+    catch * (println $"persist failed for session ${id}"))))
+
 # on-event: nil, or (fn [event] ...) called after each event is logged — how
 # push surfaces (Telegram) mirror the log without polling it. It runs inside
 # the session actor's turn fiber, so per-session ordering carries over.
-(fn make-session [id, on-event]
-  (var events (cell []))
-  (var next-v (cell 0))
-  (var items (cell [(system-item gene-system-prompt)]))
+# saved: nil, or a restored {^items ^events ^next-v} snapshot from the db.
+(fn make-session [id, on-event, saved]
+  (var events (cell (if (= saved nil) [] saved/events)))
+  (var next-v (cell (if (= saved nil) 0 saved/next-v)))
+  (var items (cell (if (= saved nil)
+                     [(system-item gene-system-prompt)]
+                     saved/items)))
   (fn push-event [type : Str, text : Str]
     (next-v ~ Cell/set (+ (next-v ~ Cell/get) 1))
     (var event {^v (next-v ~ Cell/get) ^type type ^text text})
@@ -77,6 +100,7 @@
                     (fn [d] (if (= d "") nil (push-event "text_delta" d)))
                     max-tool-turns))
         (push-event "turn_done" "")
+        (persist-session id items events next-v)
         (actor/continue state))))
   {^id id ^actor turn-actor ^events events ^next-v next-v})
 
@@ -212,7 +236,7 @@
   (var s (sessions ~ Map/get id))
   (if (= s void)
     (do
-      (set s (make-session id (make-telegram-sender chat-id)))
+      (set s (make-session id (make-telegram-sender chat-id) nil))
       (sessions ~ Map/put! id s)
       s)
     s))
@@ -279,7 +303,7 @@
 (fn create-session []
   (session-seq ~ Cell/set (+ (session-seq ~ Cell/get) 1))
   (var id $"s${(session-seq ~ Cell/get)}")
-  (sessions ~ Map/put! id (make-session id nil))
+  (sessions ~ Map/put! id (make-session id nil nil))
   (json-response 200 {^id id}))
 
 (fn list-sessions []
@@ -419,7 +443,52 @@ document.getElementById('f').addEventListener('submit', function (e) {
     (route req)
     (json-response 401 {^error "unauthorized"})))
 
+# -----------------------------------------------------------------------------
+# Persistence bootstrap (§12 milestone 11). Sessions restore with their event
+# log and transcript; Telegram sessions (tg-<chat-id>) reattach their sender
+# hook so replies keep flowing after a restart. session-seq resumes past the
+# highest restored s<N> id so new ids never collide.
+# -----------------------------------------------------------------------------
+
+(fn restore-session-id-seq [id : Str]
+  (if (starts_with? id "s")
+    (try
+      (var n (parse_int ((split id "s") ~ join "")))
+      (if (> n (session-seq ~ Cell/get))
+        (session-seq ~ Cell/set n)
+        nil)
+    catch * nil)
+    nil))
+
+(fn restore-sessions []
+  (var rows ((gw-db ~ Cell/get) ~ query "select id, data from sessions"))
+  (var count (cell 0))
+  (for row in rows
+    (try
+      (var id row/id)
+      (var saved (read-data row/data))
+      (var hook
+        (if (starts_with? id "tg-")
+          (make-telegram-sender ((split id "tg-") ~ join ""))
+          nil))
+      (sessions ~ Map/put! id (make-session id hook saved))
+      (restore-session-id-seq id)
+      (count ~ Cell/set (+ (count ~ Cell/get) 1))
+    catch * (println $"failed to restore session ${row/id}")))
+  (count ~ Cell/get))
+
+(fn open-gateway-db []
+  (if (= gw-db-path "")
+    nil
+    (do
+      (gw-db ~ Cell/set (sqlite-open gw-db-path))
+      ((gw-db ~ Cell/get) ~ exec
+        "create table if not exists sessions (id text primary key, data text not null)")
+      (var n (restore-sessions))
+      (println $"Persistence enabled - ${gw-db-path} (${n} sessions restored)"))))
+
 (fn main [args]
+  (open-gateway-db)
   (println $"Gene agent gateway - http://${gw-host}:${gw-port} (model ${model})")
   (if (= auth-token nil)
     (println "No model API token set - sessions use the offline demo transport.")

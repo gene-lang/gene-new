@@ -566,10 +566,14 @@ Gateway / multi-surface milestones (§12; each independently shippable):
    (allowed chat answered through the full turn, unlisted chat dropped).
 10. **Web UI + async approvals.** Approval-request events rendered as buttons,
     multi-session switcher, transcript streaming via long-poll deltas.
-11. **Persistence.** Sessions/events in sqlite via the existing `db/sqlite`
-    backend; gateway restart restores transcripts. Rides serde's data core
-    (`serde/write-data`/`read-data`, docs/proposals/serialization.md §4/§9) —
-    session transcripts are pure data, so this needs no reference resolution.
+11. **Persistence — implemented.** Set `GENE_GATEWAY_DB=<path>` and sessions
+    (transcript + event log) persist to sqlite as serde text
+    (`serde/write-data`/`read-data`, docs/proposals/serialization.md §4/§9;
+    pure data, no reference resolution). Sessions save on `turn_done` and
+    restore at startup — Telegram sessions reattach their sender hook, and
+    the session-id sequence resumes past restored ids. e2e-tested in
+    test_cli (turn → kill → restart → history intact, restored session
+    continues, new ids don't collide).
 12. **TUI as gateway client.** The full §7 curses TUI speaking the gateway API
     (nodelay `wgetch` polling so background events render while typing).
 13. **Slack channel.** Events API + `crypto/hmac-sha256` (§12.9 gap 4), or

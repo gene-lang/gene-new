@@ -356,6 +356,95 @@ suite "cli — gene run":
     # endpoint; parallel sessions finish in roughly one latency.
     check elapsedMs < 1700
 
+  test "agent gateway persists sessions across restarts":
+    ## Milestone 11 e2e: run a turn with GENE_GATEWAY_DB set, kill the
+    ## gateway, restart on the same db — the event history must be intact,
+    ## the restored session must accept another turn (versions continue),
+    ## and new session ids must not collide with restored ones.
+    buildGeneCli()
+    let dbPath = cliDir / "gateway_persist.sqlite"
+    removeFile(dbPath)
+
+    proc startGw(): Process =
+      startProcess(
+        "/usr/bin/env",
+        args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
+                "-u", "OPENAI_API_KEY", "-u", "OPENAI_BASE_URL",
+                "-u", "TELEGRAM_BOT_TOKEN",
+                "GENE_GATEWAY_PORT=8997",
+                "GENE_GATEWAY_DB=" & dbPath,
+                geneExe, "run", "examples/agent_gateway.gene"],
+        options = {poUsePath, poStdErrToStdOut})
+
+    proc waitPort() =
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8997), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+
+    proc waitTurn(cursor: int): string =
+      let deadline = getMonoTime() + initDuration(seconds = 15)
+      while getMonoTime() < deadline:
+        let ran = execCmdEx(
+          "curl -sS --max-time 5 " &
+          "'http://127.0.0.1:8997/api/sessions/s1/events?cursor=" &
+          $cursor & "'")
+        if ran.exitCode == 0:
+          result = ran.output
+          if "turn_done" in result:
+            return
+        sleep(200)
+      checkpoint "turn never completed: " & result
+      check false
+
+    var gw = startGw()
+    waitPort()
+    let created = execCmdEx(
+      "curl -sS -X POST http://127.0.0.1:8997/api/sessions")
+    check "\"id\":\"s1\"" in created.output
+    discard execCmdEx(
+      "curl -sS -X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"list it\"}' " &
+      "http://127.0.0.1:8997/api/sessions/s1/messages")
+    let firstTurn = waitTurn(0)
+    check "list_dir tool" in firstTurn
+    gw.terminate()
+    discard gw.waitForExit()
+    gw.close()
+
+    gw = startGw()
+    defer:
+      if gw.running:
+        gw.terminate()
+      gw.close()
+    waitPort()
+    # History restored verbatim.
+    let restored = execCmdEx(
+      "curl -sS --max-time 5 " &
+      "'http://127.0.0.1:8997/api/sessions/s1/events?cursor=0'")
+    check "\"v\":1" in restored.output
+    check "list it" in restored.output
+    check "list_dir tool" in restored.output
+    # New ids continue past restored ones.
+    let second = execCmdEx(
+      "curl -sS -X POST http://127.0.0.1:8997/api/sessions")
+    check "\"id\":\"s2\"" in second.output
+    # The restored session keeps working, with versions continuing.
+    discard execCmdEx(
+      "curl -sS -X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"again\"}' " &
+      "http://127.0.0.1:8997/api/sessions/s1/messages")
+    let contTurn = waitTurn(4)
+    check "\"v\":5" in contTurn
+
   test "agent gateway bridges telegram chats through the bot api":
     ## Milestone 9 e2e (docs/ai-agent.md §12.6) over loopback: a fake Telegram
     ## Bot API serves one canned getUpdates batch — a message from allowed
