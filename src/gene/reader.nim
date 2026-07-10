@@ -1127,6 +1127,11 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
     if tok.kind in {tkCaret, tkCaretCaret}:
       discard r.next()
     let key = r.parsePropKey()
+    if tok.kind == tkCaretCaret:
+      # `^^k` is true-flag sugar, same as in node props; it consumes no value.
+      items[key] = TRUE
+      if r.peekKind() == tkComma: discard r.next()
+      continue
     var val: Value = NIL
     if r.peekKind() == tkColon:
       discard r.next()

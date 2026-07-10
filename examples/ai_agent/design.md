@@ -7,10 +7,13 @@ now shipped too: typed tool declarations (one `Tool` value derives handler +
 schema + validation + risk), a stable live `/repl` `session` object, an
 authoritative versioned event log with `/trace`, and an extended catastrophe
 guard (realpath-confined paths, normal/destructive/catastrophic command
-classification, surfaced truncation). Native libcurl, the full TUI, MCP,
+classification, surfaced truncation). Slice B has started with tracked turn
+Tasks, subprocess cancellation, the programmable `Session/cancel` message,
+and `POST /api/sessions/:id/cancel`; terminal Ctrl-C cancellation and steering
+remain. Native libcurl, the full TUI, MCP,
 worktrees, browser automation, and general multi-agent orchestration are
 optional later work, not prerequisites.**
-Date: 2026-07-09.
+Date: 2026-07-10.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -25,7 +28,8 @@ ones, timeout/output caps with surfaced truncation, secret redaction; routine
 work auto-approves), and typed tool use — each of `read_file`, `write_file`,
 `edit_file`, `list_dir`, `run_shell`, `grep` is one `Tool` value from which the
 model-facing JSON Schema, argument validation, risk class, and handler all
-derive. Every action appends to a versioned event log (§9.2) that `/trace`
+derive. Turn, tool, guard, registration, and memory actions append to a
+versioned event log (§9.2) that `/trace`
 queries and the `/repl` `session` object exposes, plus optional `store/fs`
 state persistence for non-secret config, the interactive session, memory, and
 the event log. An offline demo transport keeps the loop runnable (and verified)
@@ -116,8 +120,8 @@ Behavior:
   (§8.5), appends `function_call_output` items, and loops until the model
   returns a final message item;
 - slash commands in the input line (shipped: `/quit`, `/sh`, `/repl`,
-  `/remember`, `/memory`, `/forget-memory`, `/status`; planned next: `/trace`,
-  later as dogfooding demands: `/model`, `/clear`, `/diff`, `/undo`), and
+  `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`; later as
+  dogfooding demands: `/model`, `/clear`, `/diff`, `/undo`), and
   Ctrl-C interrupting a `/sh` command or `/repl` eval (interrupting an
   in-flight model response is part of daily-driver slice B in §10);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
@@ -429,7 +433,9 @@ clears a partially typed line instead of killing the agent: the interactive
 repl installs a SIGINT handler that arms a VM interrupt (surfaced as a
 catchable "interrupted" error), and `/sh` traps INT in the shell loop while
 `os/exec-stdio` ignores it in the parent, system(3)-style. Interrupting an
-in-flight model response is part of daily-driver slice B (§10). A full `curses`
+in-flight model response through the embedded terminal is still part of
+daily-driver slice B (§10); gateway and programmable-session cancellation are
+shipped. A full `curses`
 namespace and scrollable transcript TUI remain optional later work, pulled
 forward only when the current prompt is the limiting daily-use problem.
 
@@ -545,14 +551,14 @@ pseudocode.
     (if (== api-flavor "chat")
       (stringify {^model model
                   ^messages (items-to-chat-messages input-items)
-                  ^tools chat-tool-schemas
+                  ^tools (chat-tool-schemas-now)
                   ^tool_choice "auto"
                   ^stream true})
       (stringify {^model model
                   ^store false
                   ^stream true
                   ^input input-items
-                  ^tools tool-schemas
+                  ^tools (tool-schemas-now)
                   ^tool_choice "auto"
                   ^parallel_tool_calls true})))
   (transport body render-stream))
@@ -560,32 +566,40 @@ pseudocode.
 # Call the model; if it asks for tools, execute them and recur with the model
 # output plus function_call_output items. Otherwise render and retain the final
 # assistant message. `budget` prevents an endless tool-call loop.
-(fn run-turn [transport, input-items, render, render-stream, budget]
+(fn run-turn [transport, input-items, render, render-stream, budget, emit]
   (var streamed (cell false))
   (var resp
     (call-model transport input-items
       (fn [text]
         (Cell/set streamed true)
-        (render-stream text))))
-  (if (! (== resp/agent_error void))
+        (emit "text-delta" {^text (redact text)})
+        (render-stream (redact text)))))
+  (if (!= resp/agent_error void)
     (do
+      (emit "error" {^text resp/agent_error})
       (render resp/agent_error)
+      (emit "turn-done" {})
       input-items)
     (do
+      (each (to_stream (response-output-items resp))
+        (fn [item] (emit "model-item" {^item item})))
       (var calls (response-calls resp))
       (if (empty? calls)
         (do
+          (emit "agent-text" {^text (response-text resp)})
           (if (Cell/get streamed)
             (render "")
             (render (redact (response-text resp))))
+          (emit "turn-done" {^text (response-text resp)})
           (append-all input-items (response-output-items resp)))
         (if (<= budget 0)
           (do
             (render "[stopped: tool-call budget exhausted]")
+            (emit "turn-done" {})
             input-items)
           (do
-            (var outputs
-              ((to_stream calls) ~ map run-tool-call ; ~ into []))
+            (var outputs ((to_stream calls)
+              ~ map (fn [c] (run-tool-call c emit)) ; ~ into []))
             (each (to_stream calls) (fn [c]
               (render $"  · tool ${c/name} ${c/arguments}")))
             (run-turn
@@ -594,17 +608,19 @@ pseudocode.
                 (append-all input-items (response-output-items resp)))
               render
               render-stream
-              (- budget 1))))))))
+              (- budget 1)
+              emit)))))))
 
 # The interactive path adds one user item and stores the returned item list.
 (items ~ Cell/set
-  (run-turn live-transport
+  (run-turn-tracked live-transport
             (append (items ~ Cell/get) (user-item line))
             (fn [text]
               (render-agent-text transcript streaming text))
             (fn [text]
               (render-agent-delta transcript streaming text))
-            max-tool-turns))
+            max-tool-turns
+            emit-event!))
 ```
 
 ### 9.1 Stable live session object
@@ -617,10 +633,10 @@ layout. The shipped projections are:
 ```text
 session/config       session/items        session/transcript
 session/memory       session/tools        session/events
-session/workspace
+session/workspace    session/current-task
 ```
 
-(`current-task` and `evidence` arrive with slice B.) Reads use ordinary
+(`evidence` arrives with slice B's later evidence work.) Reads use ordinary
 selectors. Mutations go through messages so the session can keep invariants
 (system-prompt memory refresh, persistence) and append an audit event:
 
@@ -731,7 +747,9 @@ the same turn. It requires no MCP, worktrees, browser, native TLS, or subagents.
 
 Choose exact ordering from dogfood pain:
 
-- cancel/steer in-flight model and subprocess work;
+- **Partial:** tracked turn Tasks, subprocess termination, `Session/cancel`,
+  gateway busy state, and `POST /api/sessions/:id/cancel` are shipped. Terminal
+  Ctrl-C cancellation and steering remain;
 - `/diff`, targeted `/undo`, and preservation of pre-existing changes;
 - structured command/test/benchmark evidence and explicit unverified claims;
 - context visibility and compaction when long sessions actually lose intent;
@@ -848,15 +866,15 @@ A single static bearer token (`GENE_GATEWAY_TOKEN`) is checked on every
 request when set; when unset the API is open and the gateway warns to keep
 the bind on localhost — single-user posture (§11), no accounts.
 
-| Route | Meaning |
-|---|---|
-| `POST /api/sessions` | create session → `{^id ...}` |
-| `GET  /api/sessions` | list sessions (id, title, surface, last-event) |
-| `POST /api/sessions/:id/messages` | append a user turn; returns immediately |
-| `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N, or park until one arrives |
-| `POST /api/sessions/:id/confirmations/:cid` | resolve a rare destructive-operation confirmation |
-| `POST /api/sessions/:id/cancel` | cancel the in-flight turn (`Task/cancel`, slice B) |
-| `GET  /` | the web UI page (12.5) |
+| Route | Meaning | Status |
+|---|---|---|
+| `POST /api/sessions` | create session → `{^id ...}` | shipped |
+| `GET  /api/sessions` | list sessions with event version and busy state | shipped |
+| `POST /api/sessions/:id/messages` | append a user turn; returns immediately | shipped |
+| `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N, or park until one arrives | shipped |
+| `POST /api/sessions/:id/confirmations/:cid` | resolve a rare destructive-operation confirmation | planned |
+| `POST /api/sessions/:id/cancel` | cancel the in-flight turn and its subprocess | shipped |
+| `GET  /` | the web UI page (12.5) | shipped |
 
 Long-poll is the bootstrap streaming mechanism because the `net/http` server
 sends complete `Response` bodies — a handler parked on `Channel/recv` waiting
@@ -867,23 +885,21 @@ chunked/SSE response streaming is gap 2 in 12.9.
 ### 12.3 Event log
 
 Each session appends typed events; surfaces render them and remember only a
-cursor. Events are maps (JSON-friendly, like everything else here). The block
-below is the **current gateway shape** (string types, snake_case names);
-converging it with the §9.2 vocabulary into one set of type names shared by
-the CLI, gateway, and `/trace` is slice-A work (§10.2):
+cursor. Events are maps (JSON-friendly, like everything else here). The
+gateway now uses the same hyphenated §9.2 vocabulary as the CLI and `/trace`:
 
 ```gene
-{^v 41 ^type "text_delta"        ^text "..."}          ; coalesced ~100ms
-{^v 42 ^type "turn_done"         ^text "full reply"}
-{^v 43 ^type "tool_call"         ^id "tc_7" ^name "run_shell" ^args {...}}
-{^v 44 ^type "tool_result"       ^id "tc_7" ^value "..." ^truncated false}
+{^v 41 ^type "text-delta"        ^text "..."}
+{^v 42 ^type "turn-done"         ^text "full reply"}
+{^v 43 ^type "tool-call"         ^id "tc_7" ^name "run_shell" ^args {...}}
+{^v 44 ^type "tool-result"       ^id "tc_7" ^value "..." ^truncated false}
 {^v 45 ^type "confirmation"      ^id "cf_2" ^risk "destructive" ^target "..."}
 {^v 46 ^type "error"             ^text "..."}
+{^v 47 ^type "error"             ^kind "cancelled" ^text "turn cancelled"}
+{^v 48 ^type "turn-done"         ^cancelled true}
 ```
 
-Deltas are coalesced server-side (~100 ms batches) so chat surfaces that edit
-messages (12.6/12.7) and long-poll clients see bounded event rates. All text
-passes the §8.5 `redact` before entering the log — tokens live only in the
+All text passes the §8.5 `redact` before entering the log — tokens live only in the
 gateway process; surfaces can only ever receive redacted text. The same event
 schema must drive embedded CLI rendering and `/trace`; do not maintain a second
 gateway-only vocabulary.
@@ -919,7 +935,7 @@ HTTPS only**, which the curl transport already provides. As shipped in
   to the HTTP API and web UI); unknown chat ids are dropped unless listed in
   `TELEGRAM_ALLOWED_CHAT_IDS` (single-user posture; `*` allows all);
 - replies stream by `sendMessage` + `editMessageText` throttled by size
-  (one edit per ~200 new characters), final edit on `turn_done`;
+  (one edit per ~200 new characters), final edit on `turn-done`;
 - session events reach Telegram through an **outbound queue**: the session's
   on-event hook does a non-blocking `Channel/try-send` of the event as a
   JSON string (channel items must be Send-safe, i.e. immutable), and a
@@ -969,7 +985,7 @@ This is not a general approval workflow.
 
 | # | Gap | Blocks | Bootstrap workaround | Proper fix |
 |---|---|---|---|---|
-| 1 | ~~**Async subprocess**~~ — **closed (m8)**: `os/exec-async`/`exec-stream-async` run the child on a dedicated OS thread; stdout lines cross via `nativeChannelTrySend` (values marked shared → atomic rc), the Task settles via `tryCompleteTask`+`wakeTaskWaiters`, and root-level `await`/`Channel/recv` poll instead of declaring deadlock while external native ops are in flight | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
+| 1 | ~~**Async subprocess**~~ — **closed (m8, cancellation extended in slice B)**: `os/exec-async`/`exec-stream-async` run the child on a dedicated OS thread; stdout lines cross through a channel, the Task settles through the scheduler, and `Task/cancel` now terminates the child and closes its stdout channel | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
 | 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
 | 4 | `crypto/hmac-sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
@@ -986,7 +1002,9 @@ As with the shipped bootstrap: every surface must be drivable over loopback with
 network or real accounts. The fake `/chat/completions` endpoint (test_cli)
 proves the model side; milestone 8 shipped its e2e (a 900 ms fake endpoint
 serves two gateway sessions — create → post → long-poll — asserting streamed
-`text_delta` events, bearer auth, and that both turns finish in ~one endpoint
-latency, i.e. sessions really run concurrently). Milestone 9 adds a fake
+`text-delta` events, bearer auth, and that both turns finish in ~one endpoint
+latency, i.e. sessions really run concurrently). Slice B adds a five-second
+fake model turn that is cancelled through the gateway and must emit its
+cancelled `turn-done` in under two seconds. Milestone 9 adds a fake
 Telegram API server (canned `getUpdates` + captured `sendMessage`), and the
 pty harness pattern from the Ctrl-C work covers the TUI client.

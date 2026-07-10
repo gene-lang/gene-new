@@ -5,7 +5,7 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[os, sequtils, strutils, tables, unittest]
+import std/[monotimes, os, sequtils, strutils, tables, times, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
@@ -3120,6 +3120,19 @@ suite "spec — os and json from ai-agent plan":
                "[(seen ~ Cell/get) r/stdout r/status]",
                "[[\"a\" \"b\"] \"a\\nb\\n\" 0]")
 
+  test "Task/cancel terminates an async exec child and closes its channel":
+    let started = getMonoTime()
+    check_eval("(import os [exec-stream-async Exec]) " &
+               "(scope " &
+               "  (var ch (channel ^capacity 1)) " &
+               "  (var t (exec-stream-async Exec ^cmd \"sleep\" ^args [\"2\"] " &
+               "           ^stdout-chan ch)) " &
+               "  (spawn (do (sleep 50) (t ~ Task/cancel))) " &
+               "  (try (loop (ch ~ Channel/recv)) " &
+               "    catch (ChannelClosed) \"closed\"))",
+               "\"closed\"")
+    check getMonoTime() - started < initDuration(milliseconds = 1200)
+
   test "scheduler stays live while an async exec child runs":
     # The whole point of the async variants (examples/ai_agent/design.md §12.9 gap 1):
     # fibers must make progress during a subprocess. The snapshot is taken
@@ -3248,6 +3261,11 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
     check_eval("(if_not false 1 2 3)", "3")
     check_eval("(if_not true 1 2 3)", "nil")
     check_eval("(if_not false)", "nil")
+
+  test "map ^^k is true-flag sugar, consistent with node props":
+    check_eval("(var m {^^ok}) m/ok", "true")
+    check_eval("(var m {^^ok ^n 1}) m/n", "1")
+    check_eval("(var n (quote (x ^^ok))) n/ok", "true")
 
   test "contains? is structural membership on lists and sets":
     check_eval("([\"a\" \"b\"] ~ contains? \"b\")", "true")

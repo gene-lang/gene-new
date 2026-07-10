@@ -845,6 +845,7 @@ when compileOption("threads"):
       var outTruncated = false
       var errTruncated = false
       var timedOut = false
+      var cancelled = false
       var lineBuf = ""
       var exitCode = 0
       var chanGone = ctx.lineChanBits == 0
@@ -882,6 +883,13 @@ when compileOption("threads"):
                 wakeChannelWaitersIn(sched, lineChanView, wakeSenders = false)
                 break sendBlock
               if pushed.closed:
+                chanGone = true
+                break sendBlock
+              if taskView.taskCancelled:
+                # The consumer may have unwound without draining the bounded
+                # channel. Stop applying backpressure so the outer process
+                # loop can observe cancellation and terminate the child.
+                cancelled = true
                 chanGone = true
                 break sendBlock
               if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
@@ -923,6 +931,17 @@ when compileOption("threads"):
           if tryFailTask(taskView, failMsg):
             wakeTaskWaitersIn(sched, taskView)
 
+      template cancellationRequested(): bool =
+        ## External Tasks settle as cancelled on the scheduler thread before
+        ## this worker observes the request. Poll the terminal state so task
+        ## cancellation also stops the owned subprocess instead of merely
+        ## discarding its eventual result.
+        taskView.taskCancelled
+
+      if cancellationRequested():
+        closeLineChan()
+        return
+
       var process: Process
       try:
         process = startProcess(ctx.cmd, workingDir = ctx.workdir,
@@ -957,27 +976,47 @@ when compileOption("threads"):
             while process.running:
               drainAvailable(outFd, true)
               drainAvailable(errFd, false)
+              if cancellationRequested():
+                cancelled = true
+                process.terminate()
+                break
               if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
                 timedOut = true
                 process.terminate()
                 break
               os.sleep(osExecPollMs)
-            exitCode = if timedOut: (discard process.waitForExit(); -1)
-                       else: process.waitForExit()
+            exitCode = if timedOut or cancelled:
+                         (discard process.waitForExit(); -1)
+                       else:
+                         process.waitForExit()
             drainAvailable(outFd, true)
             drainAvailable(errFd, false)
           else:
-            exitCode = process.waitForExit(
-              if ctx.timeoutMs >= 0: ctx.timeoutMs else: -1)
-            if process.running:
-              timedOut = true
-              process.terminate()
-              exitCode = -1
+            while process.running:
+              if cancellationRequested():
+                cancelled = true
+                process.terminate()
+                break
+              if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
+                timedOut = true
+                process.terminate()
+                break
+              os.sleep(osExecPollMs)
+            exitCode = if timedOut or cancelled:
+                         (discard process.waitForExit(); -1)
+                       else:
+                         process.waitForExit()
             handleStdoutChunk(process.outputStream.readAll())
             appendCapped(errText, errTruncated, process.errorStream.readAll())
           if lineBuf.len > 0:
             sendLine(lineBuf)
             lineBuf.setLen(0)
+          if cancelled:
+            # Task/cancel already settled and woke its waiters. Only the
+            # worker-owned channel still needs closing; do not race it with a
+            # second task settlement or manufacture an exec result.
+            closeLineChan()
+            return
           var props = initOrderedTable[string, Value]()
           props["status"] = newInt(exitCode)
           props["stdout"] = newStr(outText)

@@ -954,6 +954,85 @@ suite "cli — gene run":
     # run contends for cores and can stretch the two concurrent turns.
     check elapsedMs < 1750
 
+  test "agent gateway cancellation stops an in-flight model turn":
+    buildGeneCli()
+    let endpoint = writeCliProgram("cancel_chat_endpoint.gene", """
+(import net/http [Server serve Response])
+(fn handle [req]
+  (sleep 5000)
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body "data: [DONE]\n\n"))
+(serve (Server ^host "127.0.0.1" ^port 8972) handle ^max-requests 1)
+""")
+    let endpointProc = startProcess(geneExe, args = ["run", endpoint],
+                                    options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if endpointProc.running:
+        endpointProc.terminate()
+      endpointProc.close()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "CODEX_ACCESS_TOKEN", "-u", "OPENAI_API_KEY",
+              "-u", "OPENAI_API", "OPENAI_AUTH_TOKEN=dummy",
+              "OPENAI_BASE_URL=http://127.0.0.1:8972/v1",
+              "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=8973",
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running:
+        gatewayProc.terminate()
+      gatewayProc.close()
+
+    for port in [8972, 8973]:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(port), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+
+    proc curl(call: string): tuple[output: string, exitCode: int] =
+      execCmdEx("curl -sS --max-time 5 " & call)
+
+    check "\"id\":\"s1\"" in
+      curl("-X POST http://127.0.0.1:8973/api/sessions").output
+    let started = getMonoTime()
+    check "\"ok\":true" in curl(
+      "-X POST -H 'content-type: application/json' -d '{\"text\":\"wait\"}' " &
+      "http://127.0.0.1:8973/api/sessions/s1/messages").output
+
+    # Wait until the actor has published its tracked Task, then cancel it.
+    let busyDeadline = getMonoTime() + initDuration(seconds = 5)
+    var busy = false
+    while getMonoTime() < busyDeadline and not busy:
+      busy = "\"busy\":true" in
+        curl("http://127.0.0.1:8973/api/sessions").output
+      if not busy:
+        sleep(20)
+    check busy
+    check "\"ok\":true" in curl(
+      "-X POST http://127.0.0.1:8973/api/sessions/s1/cancel").output
+
+    let doneDeadline = getMonoTime() + initDuration(seconds = 5)
+    var events = ""
+    while getMonoTime() < doneDeadline:
+      events = curl(
+        "'http://127.0.0.1:8973/api/sessions/s1/events?cursor=0'").output
+      if "turn-done" in events:
+        break
+      sleep(20)
+    check "turn cancelled" in events
+    check "\"cancelled\":true" in events
+    check "turn-done" in events
+    check (getMonoTime() - started).inMilliseconds < 2000
+
   test "agent gateway persists sessions across restarts":
     ## Milestone 11 e2e: run a turn with GENE_GATEWAY_DB set, kill the
     ## gateway, restart on the same db — the event history must be intact,
@@ -1353,16 +1432,43 @@ suite "cli — gene parse/fmt/compile":
       "[x 2]"
     ]
 
-  test "fmt uses the same canonical source-unit printer":
+  test "fmt is human-friendly: sugar restored, comments kept, forms wrapped":
     let path = writeCliProgram("fmt_subject.gene",
-      "(quote (x @line   7 ^name \"Ada\"))\n" &
-      "#{^b 2 ^a   1}")
+      "# header comment\n" &
+      "\n" &
+      "(var x (path a b))\n" &
+      "(fn f [t] (if (== (path t done) 0) (quasiquote (li (unquote t))) " &
+      "\"a really really really really really long string to force a wrap\"))\n")
     let ran = runGene(["fmt", path])
     check ran.exitCode == 0
-    check ran.output.strip.splitLines == @[
-      "(quote (x @line 7 ^name \"Ada\"))",
-      "#{^b 2 ^a 1}"
-    ]
+    let outText = ran.output
+    check "# header comment" in outText          # comments preserved
+    check "(var x a/b)" in outText               # slash-path resugared
+    check "`(li %t)" in outText                  # quasiquote/unquote resugared
+    check "\n  (if (== t/done 0)" in outText     # fn body wrapped + indented
+
+  test "fmt output is parse-equivalent and idempotent on the todo app":
+    buildGeneCli()
+    let f1 = execCmdEx(shellQuote(geneExe) & " fmt examples/todo_app.gene")
+    check f1.exitCode == 0
+    let fmtPath = writeCliProgram("todo_fmt.gene", f1.output)
+    # Same canonical forms as the original source.
+    let p0 = execCmdEx(shellQuote(geneExe) & " parse examples/todo_app.gene")
+    let p1 = execCmdEx(shellQuote(geneExe) & " parse " & shellQuote(fmtPath))
+    check p0.exitCode == 0
+    check p1.exitCode == 0
+    check p0.output == p1.output
+    # Formatting a second time changes nothing.
+    let f2 = execCmdEx(shellQuote(geneExe) & " fmt " & shellQuote(fmtPath))
+    check f2.exitCode == 0
+    check f2.output == f1.output
+    # Interior comments survive verbatim (the reader drops them; fmt keeps
+    # the original span for forms that contain them).
+    let commented = writeCliProgram("fmt_interior.gene",
+      "(fn g [x]\n  # interior comment\n  x)\n")
+    let f3 = runGene(["fmt", commented])
+    check f3.exitCode == 0
+    check "# interior comment" in f3.output
 
   test "compile prints bytecode without executing forms":
     let path = writeCliProgram("compile_subject.gene",

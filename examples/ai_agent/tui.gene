@@ -290,6 +290,7 @@
 # (§12.1/§12.3), so it disables this one to avoid accumulating every session's
 # events in a single shared list across concurrent actor turns.
 (var events-enabled (cell true))
+(var active-turn-task (cell nil))
 
 (fn set-events-enabled [on : Bool]
   (events-enabled ~ Cell/set on))
@@ -531,6 +532,15 @@
                               ^parameters t/parameters}})
     ; ~ into []))
 
+# Await a native subprocess task with structured cancellation. Cancelling the
+# surrounding turn runs the ensure before unwinding, which forwards the
+# request to os/exec-*-async and terminates the child process.
+(fn await-exec [task]
+  (try
+    (await task)
+  ensure
+    (task ~ Task/cancel)))
+
 (register-tool! (Tool
   ^name "read_file"
   ^description "Read a UTF-8 text file inside the workspace."
@@ -604,9 +614,10 @@
       denial
       (if (approve? "run_shell" args/command)
         (do
-          (var r (await (exec-async Exec ^cmd "sh" ^args ["-c" args/command]
-                            ^dir workspace-root
-                            ^timeout-ms 10000 ^max-bytes 65536)))
+          (var r (await-exec
+                   (exec-async Exec ^cmd "sh" ^args ["-c" args/command]
+                               ^dir workspace-root
+                               ^timeout-ms 10000 ^max-bytes 65536)))
           (var tail (if r/timed-out "\n[timed out]" ""))
           {^text $"${r/stdout}${r/stderr}${tail}"
            ^truncated (== r/truncated true)})
@@ -621,10 +632,11 @@
             ^doc "workspace-relative directory or file; defaults to the workspace root"}]
   ^handler (fn [args]
     (var p (if (== args/path void) "." args/path))
-    (var r (await (exec-async Exec ^cmd "grep"
-                      ^args ["-rn" args/pattern (safe-path p)]
-                      ^dir workspace-root
-                      ^timeout-ms 10000 ^max-bytes 65536)))
+    (var r (await-exec
+             (exec-async Exec ^cmd "grep"
+                         ^args ["-rn" args/pattern (safe-path p)]
+                         ^dir workspace-root
+                         ^timeout-ms 10000 ^max-bytes 65536)))
     (var tail (if r/timed-out "\n[timed out]" ""))
     {^text $"${r/stdout}${r/stderr}${tail}"
      ^truncated (== r/truncated true)})))
@@ -866,11 +878,15 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                             ^stdout-chan ch))
   (var line nil)
   (try
-    (loop
-      (set line (ch ~ Channel/recv))
-      (on-line line))
-  catch (ChannelClosed) nil)
-  (await t))
+    (do
+      (try
+        (loop
+          (set line (ch ~ Channel/recv))
+          (on-line line))
+      catch (ChannelClosed) nil)
+      (await t))
+  ensure
+    (t ~ Task/cancel)))
 
 (fn api-error-text [resp]
   (var status (if (== resp/status void) "?" resp/status))
@@ -1252,6 +1268,18 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                       (- budget 1)
                       emit)))))))
 
+# Run a CLI turn as a first-class Task so the stable Session projection and
+# future input surfaces have one cancellation target. Gateway sessions use
+# their own per-session tracked tasks in gateway.gene.
+(fn run-turn-tracked [transport, input-items, render, render-stream, budget, emit]
+  (var task (spawn
+    (run-turn transport input-items render render-stream budget emit)))
+  (active-turn-task ~ Cell/set task)
+  (try
+    (await task)
+  ensure
+    (active-turn-task ~ Cell/set nil)))
+
 # -----------------------------------------------------------------------------
 # Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
 # Store with four data records:
@@ -1403,7 +1431,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (emit-event! "user-input" {^text "what's in this directory?"})
   (var items [(system-item gene-system-prompt)
               (user-item "what's in this directory?")])
-  (run-turn (demo-transport-for) items
+  (run-turn-tracked (demo-transport-for) items
     (fn [text] (println $"agent> ${text}"))
     ignore-stream-delta
     max-tool-turns
@@ -1424,7 +1452,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (begin-turn!)
   (emit-event! "user-input" {^text task})
   (var result-items
-    (run-turn transport
+    (run-turn-tracked transport
               (append (initial-items memory) (user-item task))
               (fn [text]
                 (if (Cell/get streaming)
@@ -1567,10 +1595,10 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # Stable live session object (§9.1). Projections are props holding the live
 # cells and registry; mutations go through messages so the session can keep
 # invariants (system-prompt memory refresh, persistence) and append an audit
-# event. `current-task` and `evidence` projections arrive with slice B.
+# event. `evidence` arrives with the later slice-B evidence work.
 (type Session
   ^props {^items Any ^transcript Any ^memory Any ^tools Any ^events Any
-          ^config Any ^workspace Any ^resume-requested Any}
+          ^config Any ^workspace Any ^current-task Any ^resume-requested Any}
 
   # Register (or replace) a typed Tool; it reaches the next model call.
   (message add-tool [self, t]
@@ -1599,6 +1627,16 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (message trace [self, filters : Str]
     (trace-report filters))
 
+  # Cancel the active model/tool turn. The embedded CLI currently exposes
+  # this through the programmable session; gateway.gene also maps it to HTTP.
+  (message cancel [self]
+    (var task (self/current-task ~ Cell/get))
+    (if (== task nil)
+      "no turn in flight"
+      (do
+        (task ~ Task/cancel)
+        "cancellation requested")))
+
   # Ask the agent to run another model turn on the current items (no new user
   # input) right after the REPL exits — the add-a-tool-and-continue flow.
   (message resume [self]
@@ -1616,12 +1654,13 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                         ^events agent-events
                         ^config (config-snapshot)
                         ^workspace workspace-real
+                        ^current-task active-turn-task
                         ^resume-requested resume-flag))
   # classify-command is bound so the guard's classification of dangerous
   # strings can be inspected (and tested) without ever executing them.
   (var repl-env (env ^bindings {^session session ^Tool Tool
                                 ^classify-command classify-command}))
-  (println "Entering Gene REPL. `session` is bound: session/items session/events (session ~ add-tool (Tool ...)) (session ~ remember \"...\") (session ~ subscribe \"tool-call\") (session ~ trace \"type=tool-call\") (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
+  (println "Entering Gene REPL. `session` is bound: session/items session/events session/current-task (session ~ add-tool (Tool ...)) (session ~ remember \"...\") (session ~ subscribe \"tool-call\") (session ~ trace \"type=tool-call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run-repl-session repl-env ^interactive true)
   (resume-flag ~ Cell/get))
 
@@ -1688,7 +1727,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                     # (possibly reshaped) items — no new user input item.
                     (Cell/set streaming false)
                     (items ~ Cell/set
-                      (run-turn live-transport
+                      (run-turn-tracked live-transport
                                 (items ~ Cell/get)
                                 (fn [text]
                                   (render-agent-text transcript streaming text))
@@ -1713,6 +1752,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                       (items ~ Cell/set
                         (refresh-system-memory (items ~ Cell/get)
                                                (memory ~ Cell/get)))
+                      (emit-event! "memory" {^action "clear" ^text "memory cleared"})
                       (save-agent-state (items ~ Cell/get)
                                         (transcript ~ Cell/get)
                                         (memory ~ Cell/get))
@@ -1728,6 +1768,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                             (items ~ Cell/set
                               (refresh-system-memory (items ~ Cell/get)
                                                      (memory ~ Cell/get)))
+                            (emit-event! "memory" {^action "remember" ^text note})
                             (save-agent-state (items ~ Cell/get)
                                               (transcript ~ Cell/get)
                                               (memory ~ Cell/get))
@@ -1756,7 +1797,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                             (begin-turn!)
                             (emit-event! "user-input" {^text line})
                             (Cell/set items
-                              (run-turn live-transport
+                              (run-turn-tracked live-transport
                                         (append (Cell/get items) (user-item line))
                                         (fn [text]
                                           (render-agent-text transcript streaming text))

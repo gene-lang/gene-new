@@ -60,7 +60,9 @@ Sessions are actors sharing the tui's turn loop; surfaces (web, Telegram
 via `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_CHAT_IDS`) read one versioned
 event log per session. `GENE_GATEWAY_DB=<path>` persists sessions in
 SQLite; `GENE_GATEWAY_TOKEN` adds bearer auth (keep the bind on localhost
-when unset). API routes: design.md §12.2.
+when unset). `POST /api/sessions/:id/cancel` cancels an active model/tool turn
+and terminates its subprocess; `GET /api/sessions` exposes each session's
+`busy` state. API routes: design.md §12.2.
 
 ## Tests
 

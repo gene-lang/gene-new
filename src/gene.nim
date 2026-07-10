@@ -11,8 +11,8 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
-import gene/[compiler, diagnostics, gir, printer, reader, repl, repl_curses,
-             types, vm]
+import gene/[compiler, diagnostics, fmt, gir, printer, reader, repl,
+             repl_curses, types, vm]
 import gene/lsp/server as lsp_server
 
 proc usage() =
@@ -192,7 +192,15 @@ proc cmdParse(path: string) =
     quit(1)
 
 proc cmdFmt(path: string) =
-  cmdParse(path)
+  ## Human-friendly formatting (src/gene/fmt.nim): wrapped/indented forms,
+  ## reader sugar restored, comments preserved. `gene parse` stays canonical.
+  let src = readSourceFile(path)
+  let absPath = normalizedPath(absolutePath(path))
+  try:
+    stdout.write formatSource(src, absPath)
+  except ReadError as e:
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    quit(1)
 
 proc cmdCompile(path: string) =
   let src = readSourceFile(path)

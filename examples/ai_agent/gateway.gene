@@ -93,6 +93,8 @@
 (fn make-session [id, on-event, saved]
   (var events (cell (if (== saved nil) [] saved/events)))
   (var next-v (cell (if (== saved nil) 0 saved/next-v)))
+  (var current-task (cell nil))
+  (var cancel-requested (cell false))
   (var items (cell (if (== saved nil)
                      [(system-item gene-system-prompt)]
                      saved/items)))
@@ -121,20 +123,60 @@
       (when "text-delta" nil)
       (else (push-structured type props))))
   (var transport (if (== auth-token nil) (demo-transport-for) live-transport))
+  # A small detached monitor owns terminal bookkeeping. It is deliberately a
+  # separate task: cancelling a turn before its fiber first runs would skip
+  # that fiber's ensure blocks, while the monitor starts normally, observes
+  # the cancelled Task, and still emits the terminal events and clears the
+  # session's current-task projection.
+  (fn monitor-turn [task]
+    (var outcome (cell "running"))
+    (try
+      (try
+        (do
+          (await task)
+          (outcome ~ Cell/set "done"))
+      catch *
+        (outcome ~ Cell/set "failed"))
+    ensure
+      (do
+        (if (== (outcome ~ Cell/get) "running")
+          (if (cancel-requested ~ Cell/get)
+            (do
+              (push-structured "error" {^kind "cancelled" ^text "turn cancelled"})
+              (push-structured "turn-done" {^cancelled true}))
+            (do
+              (push-structured "error" {^kind "failed" ^text "turn failed"})
+              (push-structured "turn-done" {^failed true})))
+          (if (== (outcome ~ Cell/get) "failed")
+            (do
+              (push-structured "error" {^kind "failed" ^text "turn failed"})
+              (push-structured "turn-done" {^failed true}))
+            nil))
+        (current-task ~ Cell/set nil)
+        (persist-session id items events next-v))))
   (var turn-actor
     (actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx, state, text]
-        (push-event "user-input" text)
-        (items ~ Cell/set
-          (run-turn transport
-                    (append (items ~ Cell/get) (user-item text))
-                    (fn [t] (if (== t "") nil (push-event "agent-text" t)))
-                    (fn [d] (if (== d "") nil (push-event "text-delta" d)))
-                    max-tool-turns
-                    emit-turn-event))
-        (persist-session id items events next-v)
+        (if (!= (current-task ~ Cell/get) nil)
+          (push-structured "error" {^kind "busy" ^text "turn already in flight"})
+          (do
+            (push-event "user-input" text)
+            (cancel-requested ~ Cell/set false)
+            (var task
+              (spawn
+                (items ~ Cell/set
+                  (run-turn transport
+                            (append (items ~ Cell/get) (user-item text))
+                            (fn [t] (if (== t "") nil (push-event "agent-text" t)))
+                            (fn [d] (if (== d "") nil (push-event "text-delta" d)))
+                            max-tool-turns
+                            emit-turn-event))))
+            (current-task ~ Cell/set task)
+            (task ~ Task/detach)
+            ((spawn (monitor-turn task)) ~ Task/detach)))
         (actor/continue state))))
-  {^id id ^actor turn-actor ^events events ^next-v next-v})
+  {^id id ^actor turn-actor ^events events ^next-v next-v
+   ^current-task current-task ^cancel-requested cancel-requested})
 
 (fn events-after [s, cursor : Int]
   ((to_stream (s/events ~ Cell/get))
@@ -353,22 +395,38 @@
         (var [k, s] pair)
         (out ~ Cell/set
           (append (out ~ Cell/get)
-                  {^id k ^events (s/next-v ~ Cell/get)}))))
+                  {^id k ^events (s/next-v ~ Cell/get)
+                   ^busy (!= (s/current-task ~ Cell/get) nil)}))))
   (json-response 200 {^sessions (out ~ Cell/get)}))
 
 (fn post-message [id : Str, req]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json-response 404 {^error "no such session"})
-    (try
-      (var body (parse req/body))
-      (if (|| (== body/text void) (== body/text nil) (== body/text ""))
-        (json-response 400 {^error "missing text"})
+    (if (!= (s/current-task ~ Cell/get) nil)
+      (json-response 409 {^error "turn already in flight"})
+      (try
+        (var body (parse req/body))
+        (if (|| (== body/text void) (== body/text nil) (== body/text ""))
+          (json-response 400 {^error "missing text"})
+          (do
+            (s/actor ~ actor/send body/text)
+            (json-response 202 {^ok true})))
+      catch (JsonError ^message m)
+        (json-response 400 {^error m})))))
+
+(fn cancel-turn [id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json-response 404 {^error "no such session"})
+    (do
+      (var task (s/current-task ~ Cell/get))
+      (if (== task nil)
+        (json-response 409 {^error "no turn in flight"})
         (do
-          (s/actor ~ actor/send body/text)
-          (json-response 202 {^ok true})))
-    catch (JsonError ^message m)
-      (json-response 400 {^error m}))))
+          (s/cancel-requested ~ Cell/set true)
+          (task ~ Task/cancel)
+          (json-response 202 {^ok true}))))))
 
 # Long-poll: return events after ^cursor as soon as any exist, waiting up to
 # ~20s. A handler parked in sleep does not stall other requests (task-per-
@@ -475,6 +533,10 @@ document.getElementById('f').addEventListener('submit', function (e) {
               (post-message parts/3 req)
               (json-response 405 {^error "method not allowed"})))
           (when "events" (get-events parts/3 req))
+          (when "cancel"
+            (if (== req/method "POST")
+              (cancel-turn parts/3)
+              (json-response 405 {^error "method not allowed"})))
           (else (json-response 404 {^error "not found"})))
         (json-response 404 {^error "not found"})))))
 
