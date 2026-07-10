@@ -1,0 +1,147 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Gene",
+  "scopeName": "source.gene",
+  "patterns": [
+    { "include": "#bytes" },
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#properties" },
+    { "include": "#meta" },
+    { "include": "#operators" },
+    { "include": "#function-heads" },
+    { "include": "#types" }
+  ],
+  "repository": {
+    "bytes": {
+      "comment": "Bytes literals (reader tryScanBytesLexeme): 0!binary, 0xhex, 0#base64. Listed before comments so the # of a base64 literal never reads as a line comment.",
+      "name": "constant.numeric.bytes.gene",
+      "match": "(?<![^\\s()\\[\\]{},;])0(![01_]+|x[0-9a-fA-F_]+|#[A-Za-z0-9+/=]+)(?![^\\s()\\[\\]{},;\"])"
+    },
+    "chars": {
+      "comment": "Char literals: 'a', '\\n', '\\u0041'. Gene's ' exclusively introduces chars (no quote sugar).",
+      "name": "constant.character.gene",
+      "match": "'(\\\\[^'\\n]{1,10}|[^'\\\\\\n])'"
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.gene",
+          "begin": "#<",
+          "end": ">#",
+          "patterns": [{ "include": "#comments" }]
+        },
+        {
+          "name": "comment.line.datum.gene",
+          "match": "#_"
+        },
+        {
+          "name": "comment.line.number-sign.gene",
+          "match": "#(?![(\\[{_<\"]).*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.gene",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.interpolated.gene",
+          "begin": "\\$\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#string-escape" },
+            {
+              "name": "meta.embedded.expression.gene",
+              "begin": "\\$\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.embedded.begin.gene" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.section.embedded.end.gene" }
+              },
+              "patterns": [{ "include": "$self" }]
+            }
+          ]
+        },
+        {
+          "name": "string.regexp.gene",
+          "begin": "#\"",
+          "end": "\"[a-zA-Z]*",
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
+          "name": "string.quoted.double.gene",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "include": "#string-escape" }]
+        }
+      ]
+    },
+    "string-escape": {
+      "name": "constant.character.escape.gene",
+      "match": "\\\\."
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.gene",
+          "match": "(?<=\\()\\s*(fn!|fn|var|set|do|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|new|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"])"
+        },
+        {
+          "name": "keyword.operator.logical.gene",
+          "match": "(?<=\\()\\s*(&&|\\|\\||!)(?=[\\s)])"
+        }
+      ]
+    },
+    "constants": {
+      "name": "constant.language.gene",
+      "match": "(?<![^\\s()\\[\\]{},;])(true|false|nil|void|self|_)(?![^\\s()\\[\\]{},;\"])"
+    },
+    "numbers": {
+      "name": "constant.numeric.gene",
+      "match": "(?<![^\\s()\\[\\]{},;])-?[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?(?![^\\s()\\[\\]{},;\"])"
+    },
+    "properties": {
+      "name": "entity.other.attribute-name.gene",
+      "match": "\\^\\^?!?[^\\s()\\[\\]{},;\"]*"
+    },
+    "meta": {
+      "name": "storage.type.annotation.gene",
+      "match": "@@?[^\\s()\\[\\]{},;\"]+"
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.send.gene",
+          "match": "(?<=[\\s(])~(?=\\s)"
+        },
+        {
+          "name": "keyword.operator.quasiquote.gene",
+          "match": "`|%(?=[^\\s()\\[\\]{},;\"])"
+        },
+        {
+          "name": "keyword.operator.spread.gene",
+          "match": "\\.\\.\\."
+        }
+      ]
+    },
+    "function-heads": {
+      "name": "entity.name.function.gene",
+      "match": "(?<=\\()[a-z][^\\s()\\[\\]{},;\"]*"
+    },
+    "types": {
+      "name": "entity.name.type.gene",
+      "match": "(?<![^\\s()\\[\\]{},;/])[A-Z][A-Za-z0-9_]*"
+    }
+  }
+}

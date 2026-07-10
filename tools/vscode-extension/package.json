@@ -1,0 +1,71 @@
+{
+  "name": "gene-lang",
+  "displayName": "Gene Language",
+  "description": "Syntax highlighting and language-server support (outline, go to definition, hover, diagnostics) for the Gene programming language.",
+  "version": "0.1.0",
+  "publisher": "gene-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:gene"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "gene",
+        "aliases": [
+          "Gene",
+          "gene"
+        ],
+        "extensions": [
+          ".gene"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gene",
+        "scopeName": "source.gene",
+        "path": "./syntaxes/gene.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Gene",
+      "properties": {
+        "gene.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the Gene language server (gene lsp) for diagnostics, outline, go to definition, and hover."
+        },
+        "gene.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the gene binary. When empty, the extension tries bin/gene in the workspace root, then `gene` on PATH."
+        },
+        "gene.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the Gene language server."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "scripts": {
+    "package": "vsce package"
+  }
+}

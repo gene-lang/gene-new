@@ -13,6 +13,7 @@
 import std/[algorithm, os, strutils, tables]
 import gene/[compiler, diagnostics, gir, printer, reader, repl, repl_curses,
              types, vm]
+import gene/lsp/server as lsp_server
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -26,6 +27,7 @@ proc usage() =
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed-native C"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
+  echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
 
 proc readSourceFile(path: string): string =
   if not fileExists(path):
@@ -386,6 +388,8 @@ proc main() =
       stderr.writeLine "Error: 'doc' needs a file path"
       quit(1)
     cmdDoc(paramStr(2))
+  of "lsp":
+    quit(runLspServer())
   of "-h", "--help", "help":
     usage()
   else:
