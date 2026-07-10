@@ -1860,7 +1860,7 @@ suite "spec — streams from design":
                " (s ~ Stream/has_next)]",
                "[1 2 false]")
 
-  test "Stream/close on a bounded helper closes upstream":
+  test "Stream/close after natural take exhaustion stays local":
     check_eval("(var upstream (to_stream [1 2 3 4 5])) " &
                "(var taken (take upstream 2)) " &
                "[(taken ~ Stream/next) " &
@@ -1868,8 +1868,78 @@ suite "spec — streams from design":
                " (taken ~ Stream/has_next) " &
                " (upstream ~ Stream/has_next) " &
                " (do (taken ~ Stream/close) " &
-               "     (upstream ~ Stream/has_next))]",
-               "[1 2 false true false]")
+               "     (upstream ~ Stream/next))]",
+               "[1 2 false true 3]")
+    check_eval("(var closes (cell 0)) " &
+               "(fn source [] : (Stream Int Never) " &
+               "  (try (yield 1) (yield 2) " &
+               "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+               "(var upstream (source)) " &
+               "(for x in (take upstream 2) (break)) " &
+               "[(closes ~ Cell/get) (upstream ~ Stream/has_next)]",
+               "[1 false]")
+
+  test "generator return is terminal and close unwinds ensure blocks":
+    check_eval("(fn choose [yes] " &
+               "  (if yes (then (return 7))) " &
+               "  9) " &
+               "[(choose true) (choose false)]",
+               "[7 9]")
+    check_eval("(var log (cell [])) " &
+               "(fn note [x] (log ~ Cell/update (fn [xs] [xs... x]))) " &
+               "(fn gen [] : (Stream Int Never) " &
+               "  (try " &
+               "    (try (yield 1) (return) " &
+               "     ensure (note `inner)) " &
+               "   ensure (note `outer))) " &
+               "(var completed (gen)) " &
+               "(completed ~ Stream/next) " &
+               "(var done (completed ~ Stream/has_next)) " &
+               "(var closed (gen)) " &
+               "(closed ~ Stream/next) " &
+               "(closed ~ Stream/close) " &
+               "[done (log ~ Cell/get)]",
+               "[false [inner outer inner outer]]")
+    expect GeneError:
+      discard compileSource("(fn bad [] : (Stream Int Never) " &
+                            "  (yield 1) (return 2))")
+    expect GeneError:
+      discard compileSource("(return 1)")
+
+  test "producer errors are terminal and close upstream":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error for Boom) " &
+               "(var calls (cell 0)) " &
+               "(var closes (cell 0)) " &
+               "(fn source [] : (Stream Int Never) " &
+               "  (try (yield 1) " &
+               "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+               "(var s (map (source) " &
+               "  (fn [x] (calls ~ Cell/update (fn [n] (+ n 1))) " &
+               "          (fail (Boom ^message \"boom\"))))) " &
+               "(var first (try (s ~ Stream/next) " &
+               "  catch (Boom ^message m) m)) " &
+               "[first (s ~ Stream/has_next) " &
+               " (try (s ~ Stream/next) " &
+               "  catch (EndOfStream ^message m) m) " &
+               " (calls ~ Cell/get) (closes ~ Cell/get)]",
+               "[\"boom\" false \"end of stream\" 1 1]")
+    check_eval("(type GenBoom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error for GenBoom) " &
+               "(var runs (cell 0)) " &
+               "(fn bad ^errors [GenBoom] [] : (Stream Int GenBoom) " &
+               "  (yield 1) " &
+               "  (runs ~ Cell/update (fn [n] (+ n 1))) " &
+               "  (fail (GenBoom ^message \"generator failed\"))) " &
+               "(var s (bad)) " &
+               "(var first (s ~ Stream/next)) " &
+               "(var message (try (s ~ Stream/has_next) " &
+               "  catch (GenBoom ^message m) m)) " &
+               "[first message (s ~ Stream/has_next) " &
+               " (try (s ~ Stream/peek) " &
+               "  catch (EndOfStream ^message m) m) " &
+               " (runs ~ Cell/get)]",
+               "[1 \"generator failed\" false \"end of stream\" 1]")
 
   test "has_next on an empty stream returns false without raising":
     check_eval("(var s (to_stream [])) (s ~ Stream/has_next)", "false")

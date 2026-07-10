@@ -24,6 +24,9 @@ type
     seenModDecl: bool
     allowYield: bool
     sawYield: bool
+    sawNonVoidReturn: bool
+    inFunction: bool
+    inGenerator: bool
     loopDepth: int
     loopStack: seq[LoopCompileContext]
     gensym: int
@@ -467,6 +470,8 @@ proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(c.sourceName), sourceName: c.sourceName,
            sourceLocs: c.sourceLocs, currentLoc: c.currentLoc,
            selfAvailable: c.selfAvailable,
+           allowYield: c.allowYield, inFunction: c.inFunction,
+           inGenerator: c.inGenerator,
            ffiLibraryNames: c.ffiLibraryNames,
            macros: c.macros, hasMacros: c.hasMacros,
            macroExpansionDepth: c.macroExpansionDepth,
@@ -1023,7 +1028,7 @@ proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq
     return
   raise newException(GeneError, "function name must be a symbol or (name type...)")
 
-proc compileSubBody(c: Compiler, forms: openArray[Value],
+proc compileSubBody(c: var Compiler, forms: openArray[Value],
                     pattern: Value = NIL, scoped = false): Chunk =
   var child = c.childCompiler()
   if scoped:
@@ -1037,6 +1042,8 @@ proc compileSubBody(c: Compiler, forms: openArray[Value],
     child.selfAvailable = true
   compileBody(child, forms)            # empty -> nil
   discard child.emit(opReturn)
+  c.sawYield = c.sawYield or child.sawYield
+  c.sawNonVoidReturn = c.sawNonVoidReturn or child.sawNonVoidReturn
   if scoped:
     child.chunk.localNames = child.localNames
   child.chunk
@@ -2140,6 +2147,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   if specs.rest.len > 0:
     restSlot = fnCompiler.reserveLocal(specs.rest)
   fnCompiler.allowYield = true
+  fnCompiler.inFunction = true
+  fnCompiler.inGenerator = body.bodyContainsYield(start)
+  fnCompiler.sawYield = fnCompiler.inGenerator
   if "self" in specs.positional or specs.rest == "self":
     fnCompiler.selfAvailable = true
   for p in specs.named:
@@ -2147,6 +2157,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       fnCompiler.selfAvailable = true
       break
   compileBodyFrom(fnCompiler, body, start)
+  if fnCompiler.sawYield and fnCompiler.sawNonVoidReturn:
+    raise newException(GeneError,
+      "generator return value must be void")
   let returnKnownBareInt =
     returnType.isBareIntType and not fnCompiler.sawYield and
       fnCompiler.formsKnownBareInt(body, start)
@@ -3815,6 +3828,22 @@ proc compileYield(c: var Compiler, node: Value) =
   discard c.emit(opYield)
   c.sawYield = true
 
+proc compileReturn(c: var Compiler, node: Value) =
+  if not c.inFunction:
+    raise newException(GeneError, "return is only valid inside fn")
+  if node.props.len != 0 or node.body.len > 1:
+    raise newException(GeneError, "return expects zero or one value")
+  if c.inGenerator and node.body.len == 1 and node.body[0].kind != vkVoid:
+    raise newException(GeneError,
+      "generator return value must be void")
+  if node.body.len == 1 and node.body[0].kind != vkVoid:
+    c.sawNonVoidReturn = true
+  if node.body.len == 0:
+    c.emitConst VOID
+  else:
+    compileExpr(c, node.body[0])
+  discard c.emit(opExplicitReturn)
+
 proc compileTry(c: var Compiler, node: Value) =
   ## (try body... catch pat recovery... [catch ...] [ensure cleanup...]) — the
   ## `catch`/`ensure` markers are bare symbols in the flat body.
@@ -4437,6 +4466,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "yield":
       compileYield(c, node)
+      return
+    of "return":
+      compileReturn(c, node)
       return
     of "try":
       compileTry(c, node)

@@ -2669,6 +2669,134 @@ suite "vm — streams":
        " (s ~ Stream/has_next) (hits ~ Cell/get)]",
        "[0 1 1 false 1]"
 
+  test "naturally exhausted take detaches and leaves upstream resumable":
+    ck "(var source (to_stream [1 2 3])) " &
+       "(for x in (take source 2) x) " &
+       "[(source ~ Stream/has_next) (source ~ Stream/next)]",
+       "[true 3]"
+
+  test "producer errors are terminal and close owned upstream once":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error for Boom) " &
+       "(var calls (cell 0)) " &
+       "(var closes (cell 0)) " &
+       "(fn source [] : (Stream Int Never) " &
+       "  (try (yield 1) (yield 2) " &
+       "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+       "(var s (map (source) " &
+       "  (fn [x] (calls ~ Cell/update (fn [n] (+ n 1))) " &
+       "          (fail (Boom ^message \"boom\"))))) " &
+       "(var first (try (s ~ Stream/has_next) " &
+       "  catch (Boom ^message m) m)) " &
+       "(var after (s ~ Stream/has_next)) " &
+       "(var terminal (try (s ~ Stream/next) " &
+       "  catch (EndOfStream ^message m) m)) " &
+       "[first after terminal (calls ~ Cell/get) (closes ~ Cell/get)]",
+       "[\"boom\" false \"end of stream\" 1 1]"
+    ck "(type PredBoom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error for PredBoom) " &
+       "(var calls (cell 0)) " &
+       "(var s (filter (to_stream [1 2]) " &
+       "  (fn [x] (calls ~ Cell/update (fn [n] (+ n 1))) " &
+       "          (fail (PredBoom ^message \"predicate\"))))) " &
+       "(var first (try (s ~ Stream/next) " &
+       "  catch (PredBoom ^message m) m)) " &
+       "[first (s ~ Stream/has_next) (calls ~ Cell/get)]",
+       "[\"predicate\" false 1]"
+
+  test "generator close unwinds nested ensures in LIFO order":
+    ck "(var log (cell [])) " &
+       "(fn note [x] (log ~ Cell/update (fn [xs] [xs... x]))) " &
+       "(fn gen [] : (Stream Int Never) " &
+       "  (try " &
+       "    (try (yield 1) (yield 2) ensure (note `inner)) " &
+       "   ensure (note `outer))) " &
+       "(var s (gen)) " &
+       "(s ~ Stream/next) " &
+       "(s ~ Stream/close) " &
+       "(s ~ Stream/close) " &
+       "[(log ~ Cell/get) (s ~ Stream/has_next)]",
+       "[[inner outer] false]"
+
+  test "generator close preserves the first cleanup error and finishes ensures":
+    ck "(type Cleanup ^props {^message Str} ^impl [Error]) " &
+       "(impl Error for Cleanup) " &
+       "(var outer-ran (cell false)) " &
+       "(fn gen ^errors [Cleanup] [] : (Stream Int Cleanup) " &
+       "  (try " &
+       "    (try (yield 1) " &
+       "     ensure (fail (Cleanup ^message \"first\"))) " &
+       "   ensure " &
+       "     (outer-ran ~ Cell/set true) " &
+       "     (fail (Cleanup ^message \"second\")))) " &
+       "(var s (gen)) " &
+       "(s ~ Stream/next) " &
+       "(var message (try (s ~ Stream/close) " &
+       "  catch (Cleanup ^message m) m)) " &
+       "[message (outer-ran ~ Cell/get) (s ~ Stream/has_next)]",
+       "[\"first\" true false]"
+
+  test "task cancellation closes an active generator and runs ensure once":
+    let scope = newGlobalScope()
+    var cancelled = false
+    try:
+      discard run(compileSource(
+        "(var closes (cell 0)) " &
+        "(fn gen [] : (Stream Int Never) " &
+        "  (try (while true (yield 1)) " &
+        "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+        "(scope " &
+        "  (var t (spawn (for x in (gen) (sleep 10)))) " &
+        "  (sleep 0) " &
+        "  (t ~ Task/cancel) " &
+        "  (await t))"), scope)
+    except GeneCancel:
+      cancelled = true
+    check cancelled
+    check scope.lookup("closes").cellValue.intVal == 1
+
+  test "return exits functions and terminates generators without an item":
+    ck "(fn choose [yes] (if yes (then (return 7))) 9) " &
+       "[(choose true) (choose false)]",
+       "[7 9]"
+    ck "(var cleaned (cell 0)) " &
+       "(fn stop [] " &
+       "  (try (return 8) " &
+       "   ensure (cleaned ~ Cell/update (fn [n] (+ n 1))))) " &
+       "[(stop) (cleaned ~ Cell/get)]",
+       "[8 1]"
+    ck "(fn outer [] " &
+       "  (fn inner [] (return 1) 99) " &
+       "  [(inner) 2]) " &
+       "(outer)",
+       "[1 2]"
+    ck "(var cleaned (cell 0)) " &
+       "(fn inner [] (return 3) 99) " &
+       "(fn outer [] " &
+       "  (try (var value (inner)) (+ value 4) " &
+       "   ensure (cleaned ~ Cell/update (fn [n] (+ n 1))))) " &
+       "[(outer) (cleaned ~ Cell/get)]",
+       "[7 1]"
+    ck "(var closes (cell 0)) " &
+       "(fn source [] : (Stream Int Never) " &
+       "  (try (yield 4) (yield 5) " &
+       "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+       "(fn first [s] " &
+       "  (for x in s (return x)) " &
+       "  0) " &
+       "(var s (source)) " &
+       "[(first s) (closes ~ Cell/get) (s ~ Stream/has_next)]",
+       "[4 1 false]"
+    ck "(fn gen [] : (Stream Int Never) " &
+       "  (yield 1) (return) (yield 2)) " &
+       "(var s (gen)) " &
+       "[(s ~ Stream/next) (s ~ Stream/has_next) " &
+       " (try (s ~ Stream/peek) catch (EndOfStream ^message m) m)]",
+       "[1 false \"end of stream\"]"
+    expect GeneError:
+      discard compileSource("(fn bad [] : (Stream Int Never) " &
+                            "  (yield 1) (return 2))")
+
   test "stream into materializes list and map targets":
     ck "[(into (to_stream [2 3]) [1]) " &
        " (into (to_pairs_stream {^b 2}) {^a 1})]",

@@ -73,6 +73,10 @@ type
     kind: RunStopKind
     value: Value
 
+  GeneReturn = object of CatchableError
+    value: Value
+    targetDepth: int
+
   FrameKind = enum
     fkNormal
     fkTryBody
@@ -81,6 +85,7 @@ type
     fkEnsureErrorBody
     fkEnsurePanicBody
     fkEnsureCancelBody
+    fkEnsureReturnBody
     fkForBody
     fkTaskScopeBody
     fkSupervisorBody
@@ -93,6 +98,7 @@ type
     pendingError: ref GeneError
     pendingPanic: ref GenePanic
     pendingCancel: ref GeneCancel
+    pendingReturn: ref GeneReturn
     forItems: seq[Value]
     forIndex: int
     forStream: Value
@@ -116,6 +122,7 @@ type
     validateImpls: bool
     returnType: Value       # instantiated return-type to adapt on return, or NIL
     returnLabel: string     # "return from '<fn>'" label for the adaptation error
+    returnDepth: int        # frame-stack depth of this function's caller
     checksErrors: bool      # this frame is an ^errors function (translate on throw)
     errorTypes: seq[Value]  # declared error rows, when checksErrors
     fnName {.cursor.}: string # function name, for the undeclared-error message;
@@ -143,7 +150,7 @@ type
     stackLen: int           # shared-operand-stack length at try entry; unwinding
                             # truncates back to it before running catch clauses
 
-  Fiber = ref object
+  Fiber = ref object of RootObj
     ## A suspendable Gene task: the full runLoop continuation captured on the heap.
     ## A fresh fiber carries just chunk/scope (started = false); once it suspends,
     ## every register, the operand stack, and the frame/handler stacks are saved
@@ -161,6 +168,7 @@ type
     validateImpls: bool
     returnType: Value
     returnLabel: string
+    returnDepth: int
     checksErrors: bool
     errorTypes: seq[Value]
     fnName: string
@@ -171,6 +179,7 @@ type
     pendingError: ref GeneError
     pendingPanic: ref GenePanic
     pendingCancel: ref GeneCancel
+    pendingReturn: ref GeneReturn
     forItems: seq[Value]
     forIndex: int
     forStream: Value
@@ -2093,6 +2102,10 @@ proc checkedStreamItem(stream, item: Value, where: string): Value =
   if itemType.kind != vkNil:
     let itemScope = stream.streamItemScope
     if not matchesTypeExpr(itemType, item, itemScope):
+      try:
+        stream.closeStream()
+      except CatchableError:
+        discard
       raiseTypeError(where, itemType.typeExprLabel, item, itemScope)
   item
 
@@ -3086,9 +3099,15 @@ proc pullTakeStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
   while stream.streamRemaining > 0 and source.streamHasNext:
     stream.setStreamRemaining(stream.streamRemaining - 1)
-    return StreamPullResult(
-      has: true,
-      item: checkedStreamNext(source, "take item"))
+    let item = checkedStreamNext(source, "take item")
+    if stream.streamRemaining == 0:
+      # Reaching the bound is normal adaptor exhaustion, not cancellation.
+      # Relinquish ownership now so `for`'s mandatory cleanup cannot close the
+      # still-resumable upstream cursor.
+      stream.detachStreamSource()
+    return StreamPullResult(has: true, item: item)
+  if stream.streamRemaining == 0:
+    stream.detachStreamSource()
   StreamPullResult(has: false, item: NIL)
 
 proc newSelectorCallStage(callee: Value, args: openArray[Value]): Value =
@@ -3126,7 +3145,9 @@ proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
   var remaining = requireInt64("take count", args[1])
   if remaining < 0:
     raise newException(GeneError, "take count must be non-negative")
-  newLazyStream(args[0], pullTakeStream, remaining = remaining)
+  result = newLazyStream(args[0], pullTakeStream, remaining = remaining)
+  if remaining == 0:
+    result.detachStreamSource()
 
 proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
   if args.len == 1:
@@ -7916,6 +7937,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var evalBudget = scope.evalBudget
   var returnType = NIL          # current frame's return-type to adapt, or NIL
   var returnLabel = ""
+  var returnDepth = 0
   # Error-boundary registers for the current frame. The outermost frame is never
   # an ^errors boundary here: direct entry points (applyCall / runPooled) wrap
   # their own try/except, so runLoop only translates frames it pushed itself.
@@ -7932,6 +7954,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curPendingError: ref GeneError = nil
   var curPendingPanic: ref GenePanic = nil
   var curPendingCancel: ref GeneCancel = nil
+  var curPendingReturn: ref GeneReturn = nil
   var curForItems: seq[Value] = @[]
   var curForIndex = 0
   var curForStream = NIL
@@ -7958,6 +7981,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     validateImplRequirements = fiber.validateImpls
     returnType = fiber.returnType
     returnLabel = fiber.returnLabel
+    returnDepth = fiber.returnDepth
     curChecksErrors = fiber.checksErrors
     curErrorTypes = fiber.errorTypes
     curFnName = fiber.fnName
@@ -7968,6 +7992,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curPendingError = fiber.pendingError
     curPendingPanic = fiber.pendingPanic
     curPendingCancel = fiber.pendingCancel
+    curPendingReturn = fiber.pendingReturn
     curForItems = move fiber.forItems
     curForIndex = fiber.forIndex
     curForStream = fiber.forStream
@@ -7997,6 +8022,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     validateImplRequirements = f.validateImpls
     returnType = move f.returnType
     returnLabel = move f.returnLabel
+    returnDepth = f.returnDepth
     curChecksErrors = f.checksErrors
     curErrorTypes = move f.errorTypes
     curFnName = f.fnName
@@ -8008,6 +8034,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curPendingError = nil
       curPendingPanic = nil
       curPendingCancel = nil
+      curPendingReturn = nil
       curForItems = @[]
       curForIndex = 0
       curForStream = NIL
@@ -8022,6 +8049,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curPendingError = f.extra.pendingError
       curPendingPanic = f.extra.pendingPanic
       curPendingCancel = f.extra.pendingCancel
+      curPendingReturn = f.extra.pendingReturn
       curForItems = move f.extra.forItems
       curForIndex = f.extra.forIndex
       curForStream = f.extra.forStream
@@ -8037,7 +8065,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curForItems.len == 0 and curForStream.kind != vkStream and
           curOwnedScope == nil and
           curPendingError == nil and curPendingPanic == nil and
-          curPendingCancel == nil:
+          curPendingCancel == nil and curPendingReturn == nil:
         nil
       else:
         FrameExtra(ensureValue: curEnsureValue,
@@ -8046,6 +8074,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                    pendingError: curPendingError,
                    pendingPanic: curPendingPanic,
                    pendingCancel: curPendingCancel,
+                   pendingReturn: curPendingReturn,
                    forItems: move curForItems, forIndex: curForIndex,
                    forStream: curForStream,
                    forPattern: curForPattern, forBody: curForBody,
@@ -8060,6 +8089,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      validateImpls: validateImplRequirements,
                      returnType: move returnType,
                      returnLabel: move returnLabel,
+                     returnDepth: returnDepth,
                      checksErrors: curChecksErrors,
                      errorTypes: move curErrorTypes, fnName: curFnName,
                      kind: curFrameKind, extra: frameExtra,
@@ -8072,20 +8102,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      validateImpls: validateImplRequirements,
                      returnType: move returnType,
                      returnLabel: move returnLabel,
+                     returnDepth: returnDepth,
                      checksErrors: curChecksErrors,
                      errorTypes: move curErrorTypes, fnName: curFnName,
                      kind: fkNormal, extra: nil,
                      restoreSlot: -1, restoreValue: NIL)
+    returnDepth = frames.len
 
   template pushCallFrame() =
     if curFrameKind == fkNormal and curEnsureBody == nil and
         curForItems.len == 0 and curForStream.kind != vkStream and
         curOwnedScope == nil and
         curPendingError == nil and curPendingPanic == nil and
-        curPendingCancel == nil:
+        curPendingCancel == nil and curPendingReturn == nil:
       pushFrameFastNormal()
     else:
       pushFrame()
+    returnDepth = frames.len
 
   template enterFrame(nextChunk: Chunk, nextScope: Scope, nextValidate: bool,
                       nextKind: FrameKind = fkNormal) =
@@ -8108,6 +8141,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curPendingError = nil
     curPendingPanic = nil
     curPendingCancel = nil
+    curPendingReturn = nil
     curForItems = @[]
     curForIndex = 0
     curForStream = NIL
@@ -8128,6 +8162,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.validateImpls = validateImplRequirements
     fiber.returnType = returnType
     fiber.returnLabel = returnLabel
+    fiber.returnDepth = returnDepth
     fiber.checksErrors = curChecksErrors
     fiber.errorTypes = curErrorTypes
     fiber.fnName = curFnName
@@ -8138,6 +8173,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.pendingError = curPendingError
     fiber.pendingPanic = curPendingPanic
     fiber.pendingCancel = curPendingCancel
+    fiber.pendingReturn = curPendingReturn
     fiber.forItems = move curForItems
     fiber.forIndex = curForIndex
     fiber.forStream = curForStream
@@ -8271,6 +8307,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           caller.scope.slots[caller.restoreSlot] = caller.restoreValue
           curStackBase = caller.stackBase
           ip = caller.ip
+          returnDepth = caller.returnDepth
           if caller.recycleScope or caller.validateImpls or
               caller.returnType.kind != vkNil or caller.returnLabel.len != 0:
             recycleScope = caller.recycleScope
@@ -8287,6 +8324,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       raise curPendingPanic
     elif curFrameKind == fkEnsureCancelBody:
       raise curPendingCancel
+    elif curFrameKind == fkEnsureReturnBody:
+      raise curPendingReturn
     elif curFrameKind == fkEnsureValueBody:
       stack.setLen(curStackBase)
       let preserved = curEnsureValue
@@ -8381,6 +8420,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         caller.scope.slots[caller.restoreSlot] = caller.restoreValue
         curStackBase = caller.stackBase
         ip = caller.ip
+        returnDepth = caller.returnDepth
         if caller.recycleScope or caller.validateImpls or
             caller.returnType.kind != vkNil or caller.returnLabel.len != 0:
           recycleScope = caller.recycleScope
@@ -8461,7 +8501,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     if curFrameKind != fkNormal or curEnsureBody != nil or curForItems.len != 0 or
         curForStream.kind == vkStream or curOwnedScope != nil or
         curPendingError != nil or curPendingPanic != nil or
-        curPendingCancel != nil:
+        curPendingCancel != nil or curPendingReturn != nil:
       enterRecur1Frame(arg, argKnownBareInt)
     let slot = proto.positionalSlots[0]
     let previous = scope.slots[slot]
@@ -8469,10 +8509,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      stackBase: curStackBase, ip: ip,
                      validateImpls: validateImplRequirements,
                      returnType: returnType, returnLabel: returnLabel,
+                     returnDepth: returnDepth,
                      checksErrors: curChecksErrors,
                      errorTypes: curErrorTypes, fnName: curFnName,
                      kind: fkNormal, extra: nil,
                      restoreSlot: slot, restoreValue: previous)
+    returnDepth = frames.len
     scope.slots[slot] = arg
     curStackBase = stack.len
     ip = 0
@@ -8507,7 +8549,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curEnsureBody == nil and curForItems.len == 0 and
       curForStream.kind != vkStream and curOwnedScope == nil and
       curPendingError == nil and curPendingPanic == nil and
-      curPendingCancel == nil and ip < chunk.instructions.len and
+      curPendingCancel == nil and curPendingReturn == nil and
+      ip < chunk.instructions.len and
       chunk.instructions[ip].op in {opReturn, opReturnBareInt} and
       (not recycleScope or not scopeChainContains(calleeScope, scope))
 
@@ -9440,7 +9483,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 curEnsureBody == nil and curForItems.len == 0 and
                 curForStream.kind != vkStream and curOwnedScope == nil and
                 curPendingError == nil and curPendingPanic == nil and
-                curPendingCancel == nil and ip < chunk.instructions.len and
+                curPendingCancel == nil and curPendingReturn == nil and
+                ip < chunk.instructions.len and
                 chunk.instructions[ip].op in {opReturn, opReturnBareInt}:
               restartRecur1SameScopeFrame(arg, argKnownBareInt)
             else:
@@ -10589,10 +10633,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # A generator suspends in its own (outermost) frame; simpleCall callees
           # never yield, so `frames` is empty here and stack/ip persist via the args.
           let yielded = escapeWeakFunctions(stack[^1])
-          stackArg = move stack
-          ipArg = ip
-          releaseFrameStack(gVmPools, frames)
+          if fiber != nil:
+            captureContinuation(ip)
+          else:
+            stackArg = move stack
+            ipArg = ip
+            releaseFrameStack(gVmPools, frames)
           return RunStop(kind: rskYield, value: yielded)
+        of opExplicitReturn:
+          let returnValue = if stack.len > 0: stack.pop() else: VOID
+          if curFrameKind == fkNormal and frames.len == returnDepth:
+            frameReturn(returnValue)
+          else:
+            var signal: ref GeneReturn
+            new(signal)
+            signal.value = escapeWeakFunctions(returnValue)
+            signal.targetDepth = returnDepth
+            raise signal
         of opJumpIfFalse:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
@@ -10682,9 +10739,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # boundaries on the function frames crossed. A catch that fires resumes the
       # outer dispatch loop with its result; otherwise the error propagates out.
       let errorLoc = instructionLocBefore(chunk, ip)
-      var err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
-      attachSourceLoc(err, errorLoc)
-      appendVmTrace(err, curFnName, errorLoc, frames, tailTraceFrames)
+      let preservingFirstCleanupError =
+        curFrameKind == fkEnsureErrorBody and curPendingError != nil
+      var err =
+        if preservingFirstCleanupError:
+          curPendingError
+        else:
+          translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
+      if not preservingFirstCleanupError:
+        attachSourceLoc(err, errorLoc)
+        appendVmTrace(err, curFnName, errorLoc, frames, tailTraceFrames)
       trimTailTraceFrames(frames.len)
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
@@ -10842,6 +10906,61 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if fiber != nil:
         return RunStop(kind: rskCancel, value: NIL)
       raise c
+    except GeneReturn as r:
+      # Explicit return is a structured exit: skip catches, but unwind every
+      # active ensure and close loop-owned streams before leaving the nearest
+      # function frame.
+      if curFrameKind == fkForBody and
+          not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
+        closeCurrentForStream()
+      releaseCurrentCallScope()
+      if curFrameKind == fkTaskScopeBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        try:
+          owned.waitOwnedTasks()
+        finally:
+          owned.closeOwnedActors()
+      elif curFrameKind == fkSupervisorBody:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        owned.closeOwnedActors()
+      if curFrameKind == fkCatchBody and curEnsureBody != nil:
+        let body = curEnsureBody
+        let cleanupScope = curEnsureScope
+        stack.setLen(curStackBase)
+        enterFrame(body, cleanupScope, false, fkEnsureReturnBody)
+        curPendingReturn = r
+        continue
+      var cleanupStarted = false
+      while true:
+        if handlers.len > 0 and handlers[^1].framesLen == frames.len:
+          let h = handlers.pop()
+          stack.setLen(curStackBase)
+          if h.tp.ensureBody != nil:
+            enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureReturnBody)
+            curPendingReturn = r
+            cleanupStarted = true
+            break
+          var owner = frames.pop()
+          loadFrameRegs(owner)
+          closeCurrentForStream()
+          releaseCurrentCallScope()
+        elif frames.len == r.targetDepth:
+          frameReturn(r.value)
+          cleanupStarted = true
+          break
+        elif frames.len == 0:
+          releaseFrameStack(gVmPools, frames)
+          return RunStop(kind: rskReturn, value: r.value)
+        else:
+          stack.setLen(curStackBase)
+          var owner = frames.pop()
+          loadFrameRegs(owner)
+          closeCurrentForStream()
+          releaseCurrentCallScope()
+      if cleanupStarted:
+        continue
     except SuspendError as se:
       # A blocking channel op asked to park this fiber. Capture the whole
       # continuation into `fiber` and hand control back to the scheduler. The
@@ -11858,24 +11977,65 @@ proc driveActor(actor: Value) =
     if not schedulerRunOneRoot(workerLease):
       break
 
+proc generatorFiber(stream: Value): Fiber =
+  let continuation = stream.streamGeneratorContinuation
+  if continuation == nil:
+    return nil
+  Fiber(continuation)
+
+proc closeGeneratorStream(stream: Value) {.nimcall.} =
+  let fiber = stream.generatorFiber
+  if fiber == nil:
+    return
+  # Clear ownership before unwinding so a cleanup path that closes the same
+  # stream remains idempotent.
+  stream.clearStreamGeneratorContinuation()
+  var stack: seq[Value]
+  var ip = 0
+  var injectCancel = true
+  while true:
+    let stopped = runLoop(fiber.chunk, fiber.scope, stack, ip,
+                          stopOnYield = true, validateArg = false,
+                          fiber = fiber, injectCancel = injectCancel)
+    injectCancel = false
+    case stopped.kind
+    of rskCancel, rskReturn:
+      break
+    of rskYield:
+      # Cleanup must finish; values yielded by an ensure during close have no
+      # consumer and are deliberately discarded.
+      continue
+    else:
+      raise newException(GeneError,
+        "generator close did not finish cleanup")
+
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
   let code = stream.streamGeneratorCode
   if code == nil or not (code of FunctionProto):
     return StreamPullResult(has: false, item: NIL)
   let proto = FunctionProto(code)
-  var ip = stream.streamGeneratorIp
+  let fiber = stream.generatorFiber
+  if fiber == nil:
+    return StreamPullResult(has: false, item: NIL)
+  var stack: seq[Value]
+  var ip = 0
   let workerLease = beginSchedulerWorkerLease()
   defer:
     endSchedulerWorkerLease(workerLease)
-  let stopped = runLoop(proto.chunk, stream.streamGeneratorScope,
-                        stream.streamGeneratorStack, ip,
-                        stopOnYield = true,
-                        validateArg = false)
-  stream.setStreamGeneratorIp(ip)
+  var stopped: RunStop
+  try:
+    stopped = runLoop(proto.chunk, stream.streamGeneratorScope,
+                      stack, ip, stopOnYield = true,
+                      validateArg = false, fiber = fiber)
+  except CatchableError:
+    # runLoop has already unwound the failed continuation and its ensures.
+    stream.clearStreamGeneratorContinuation()
+    raise
   case stopped.kind
   of rskYield:
     StreamPullResult(has: true, item: stopped.value)
   of rskReturn:
+    stream.clearStreamGeneratorContinuation()
     stream.closeStream()
     StreamPullResult(has: false, item: NIL)
   of rskSuspend:
@@ -18133,7 +18293,10 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     returnType = bound.returnType
   let frameReturnType = proto.checkedFrameReturnType(returnType)
   if proto.isGenerator:
-    var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream)
+    let fiber = Fiber(chunk: proto.chunk, scope: callScope)
+    var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream,
+                                         closeGeneratorStream)
+    resultValue.setStreamGeneratorContinuation(fiber)
     if frameReturnType.kind != vkNil:
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                   frameReturnType, resultValue, callScope)

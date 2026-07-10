@@ -583,7 +583,7 @@ If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 MVP core special forms:
 
 ```text
-var set do if if_then if_not && || ! match for while loop repeat break continue
+var set do if if_then if_not && || ! match for while loop repeat break continue return
 fn fn! macro type ctor protocol impl derive try fail panic quote quasiquote
 select eval mod ns import yield scope supervisor spawn await
 ```
@@ -796,7 +796,8 @@ error `err`, but it does not raise `EndOfStream`.
   (message next [self] : item
     ^errors [EndOfStream err])
 
-  (message close [self] : Nil))
+  (message close [self] : Nil
+    ^errors [err]))
 ```
 
 `Never` contributes no errors. Error rows flatten and deduplicate.
@@ -845,10 +846,11 @@ channel, or future — not symmetric yield.
 - `(yield <value>)` — emits the value as the next item. If the value is
   `void`, this iteration produces no item; execution continues at the
   next `yield` (or the end of the function).
-- `(return <value>)` — leaves the generator immediately. A subsequent
-  `next`/`peek` reads the return value (or `void`) and the stream is
-  closed. Returning early therefore consumes the rest of the generator
-  without producing further items.
+- `(return)` or `(return void)` — leaves the generator immediately without
+  producing an item. A non-`void` generator return value is a compile-time
+  error in the MVP because `(Stream T E)` has no out-of-band result channel.
+  Ordinary functions may use `(return value)` to leave the nearest function;
+  structured cleanup (`for` close and pending `ensure` blocks) still runs.
 - `(yield)` with no value is a compile-time error — the generator item
   type requires a value.
 
@@ -858,20 +860,20 @@ channel, or future — not symmetric yield.
   discards generator frames, marks the stream closed, and propagates
   the close to its upstream source (if any). Subsequent calls are
   no-ops.
-- A bounded helper like `take` does not close its upstream on natural
-  exhaustion — remaining items stay available so a second consumer can
-  continue pulling. Explicitly closing the downstream helper **does**
-  close upstream.
+- A bounded helper like `take` detaches from its upstream as soon as it emits
+  its requested count. Its later local close (including `for` cleanup after
+  normal exhaustion) does not close upstream, so a second consumer can resume
+  pulling. Explicit close, loop `break`, producer error, or cancellation before
+  the count is reached still closes upstream exactly once.
 - `filter`, `map`, and other stream combinators all close their upstream
   source when closed (directly or transitively) — see `Stream/close`
   in the protocol above.
-- In the MVP, generator `close` stops future pulls by discarding the
-  saved generator state. It does **not** resume or unwind the
-  generator to run pending `ensure` blocks; generator `ensure` runs
-  only on normal fall-through. This is reserved for the continuation
-  model that preserves generator frames and handlers. Future versions
-  may switch to running `ensure` on close — when that lands, the
-  change should be transparent to streams that don't use `ensure`.
+- Generator streams retain their full VM continuation. `close` cancels and
+  unwinds that continuation, running pending `ensure` blocks once in LIFO
+  order, including cleanup reached through saved helper/loop frames. Cleanup
+  continues after a cleanup error; the first cleanup error is reported and
+  later cleanup failures are suppressed when no structured suppressed-error
+  representation is available.
 
 Pull-side error model (`Stream T E`):
 
@@ -885,6 +887,10 @@ Pull-side error model (`Stream T E`):
   returns `false` for any subsequent read.
 - A consumer that catches `E` and asks "is there more?" gets `false`
   once the producer has finished or signalled exhaustion.
+- A producer error is terminal. The failing producer expression runs once, the
+  stream closes its owned upstream resources, and the first pull propagates
+  `E`. Later `has_next` returns `false`; later `peek`/`next` raise
+  `EndOfStream` rather than replaying the producer or its original error.
 
 These rules combine into a simple consumer idiom:
 

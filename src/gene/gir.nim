@@ -102,6 +102,7 @@ type
     opFail            # pop an Error value and raise it through GeneError
     opPanic           # pop a value and raise it through GenePanic
     opYield           # suspend a generator and expose the stack top as item
+    opExplicitReturn  # leave the nearest function, unwinding structured cleanup
     opJumpIfFalse
     opJumpIfFalseOrPop # falsy top: jump keeping the value; truthy: pop it (&&)
     opJumpIfTrueOrPop  # truthy top: jump keeping the value; falsy: pop it (||)
@@ -698,8 +699,8 @@ proc formatInstruction(inst: Instruction): string =
   of opSyntaxGuard:
     result.add " target=" & $inst.intArg & " const=" & $inst.depth
   of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
-     opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield, opReturn,
-     opReturnBareInt:
+     opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield,
+     opExplicitReturn, opReturn, opReturnBareInt:
     discard
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
@@ -1939,7 +1940,7 @@ const scopelessOps = {
   opIntAddConst, opIntSubConst, opIntMulConst,
   opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
   opIntFast2, opIntFastConst, opNativeFast2, opNativeFastConst,
-  opReturn, opReturnBareInt}
+  opExplicitReturn, opReturn, opReturnBareInt}
 
 proc deriveScopelessChunk*(proto: FunctionProto) =
   ## Scopeless calling convention: a leaf, param-only, untyped body can run

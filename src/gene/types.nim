@@ -497,6 +497,7 @@ type
     item*: Value
 
   StreamPullProc* = proc(stream: Value): StreamPullResult {.nimcall.}
+  StreamCloseProc* = proc(stream: Value) {.nimcall.}
 
   StreamData = ref object of GeneObjectData
     items: seq[Value]
@@ -506,6 +507,7 @@ type
     callable: Value
     remaining: int64
     pull: StreamPullProc
+    close: StreamCloseProc
     buffered: bool
     buffer: Value
     itemType: Value
@@ -515,6 +517,7 @@ type
     generatorScope: Scope
     generatorStack: seq[Value]
     generatorIp: int
+    generatorContinuation: RootRef
 
   TaskState = ref object
     lock: Lock
@@ -2409,14 +2412,25 @@ proc skipStreamVoids(data: StreamData) =
       data.items[data.index].kind == vkVoid:
     inc data.index
 
+proc closeStream*(v: Value)
+
 proc fillStreamBuffer(stream: Value, data: StreamData): bool =
   if data.buffered:
     return true
   while not data.closed:
-    let pulled = data.pull(stream)
+    var pulled: StreamPullResult
+    try:
+      pulled = data.pull(stream)
+    except CatchableError as producerError:
+      # A producer failure is terminal. Close the adaptor and its owned source,
+      # but preserve the producer's first error if cleanup also fails.
+      try:
+        stream.closeStream()
+      except CatchableError:
+        discard
+      raise producerError
     if not pulled.has:
-      data.closed = true
-      data.buffer = NIL
+      stream.closeStream()
       return false
     if pulled.item.kind != vkVoid:
       data.buffer = pulled.item
@@ -2429,7 +2443,16 @@ proc streamHasNext*(v: Value): bool =
   if data.pull != nil:
     return fillStreamBuffer(v, data)
   if data.source.kind == vkStream:
-    return not data.closed and data.source.streamHasNext()
+    if data.closed:
+      return false
+    try:
+      return data.source.streamHasNext()
+    except CatchableError as producerError:
+      try:
+        v.closeStream()
+      except CatchableError:
+        discard
+      raise producerError
   data.skipStreamVoids()
   not data.closed and data.index < data.items.len
 
@@ -2440,7 +2463,14 @@ proc streamPeek*(v: Value): Value =
   if data.pull != nil:
     return data.buffer
   if data.source.kind == vkStream:
-    return data.source.streamPeek
+    try:
+      return data.source.streamPeek
+    except CatchableError as producerError:
+      try:
+        v.closeStream()
+      except CatchableError:
+        discard
+      raise producerError
   data.items[data.index]
 
 proc streamNext*(v: Value): Value =
@@ -2457,17 +2487,38 @@ proc streamNext*(v: Value): Value =
 
 proc closeStream*(v: Value) =
   let data = streamData(v)
+  if data.closed:
+    return
   data.closed = true
   data.buffered = false
   data.buffer = NIL
+  var firstError: ref CatchableError
+  if data.close != nil:
+    let close = data.close
+    data.close = nil
+    try:
+      close(v)
+    except CatchableError as cleanupError:
+      firstError = cleanupError
+  if data.source.kind == vkStream:
+    try:
+      data.source.closeStream()
+    except CatchableError as cleanupError:
+      if firstError == nil:
+        firstError = cleanupError
+  data.source = NIL
   data.generatorCode = nil
   data.generatorScope = nil
   data.generatorStack.setLen(0)
   data.generatorIp = 0
-  if data.source.kind == vkStream:
-    data.source.closeStream()
-  else:
-    data.index = data.items.len
+  data.generatorContinuation = nil
+  data.index = data.items.len
+  if firstError != nil:
+    raise firstError
+
+proc detachStreamSource*(v: Value) =
+  ## Relinquish adaptor ownership without closing the upstream cursor.
+  streamData(v).source = NIL
 
 proc streamSource*(v: Value): Value =
   streamData(v).source
@@ -2504,6 +2555,15 @@ proc streamGeneratorIp*(v: Value): int =
 
 proc setStreamGeneratorIp*(v: Value, ip: int) =
   streamData(v).generatorIp = ip
+
+proc streamGeneratorContinuation*(v: Value): RootRef =
+  streamData(v).generatorContinuation
+
+proc setStreamGeneratorContinuation*(v: Value, continuation: RootRef) =
+  streamData(v).generatorContinuation = continuation
+
+proc clearStreamGeneratorContinuation*(v: Value) =
+  streamData(v).generatorContinuation = nil
 
 # Templates + cast, NOT procs returning refs: a proc materializes an owning
 # TaskData/TaskState temporary whose inc/dec goes through plain (non-atomic)
@@ -4183,12 +4243,15 @@ proc escapeWeakFunctions*(v: Value): Value =
                          items: data.items, index: data.index,
                          callable: escapedCallable, remaining: data.remaining,
                          pull: data.pull, closed: data.closed,
+                         close: data.close,
                          buffered: data.buffered, buffer: escapedBuffer,
-                         itemType: data.itemType, itemScope: data.itemScope,
+                         itemType: data.itemType, errType: data.errType,
+                         itemScope: data.itemScope,
                          generatorCode: data.generatorCode,
                          generatorScope: data.generatorScope,
                          generatorStack: data.generatorStack,
-                         generatorIp: data.generatorIp))
+                         generatorIp: data.generatorIp,
+                         generatorContinuation: data.generatorContinuation))
   of vkTask:
     let data {.cursor.} = taskData(v)
     let state = data.state
@@ -4784,8 +4847,9 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
                        errType: errType, itemScope: itemScope, closed: false))
 
 proc newGeneratorStream*(code: FunctionCode, scope: Scope,
-                         pull: StreamPullProc): Value =
-  boxObject(StreamData(objKind: okStream, pull: pull, closed: false,
+                         pull: StreamPullProc,
+                         close: StreamCloseProc = nil): Value =
+  boxObject(StreamData(objKind: okStream, pull: pull, close: close, closed: false,
                        generatorCode: code, generatorScope: scope,
                        generatorStack: @[], generatorIp: 0))
 
