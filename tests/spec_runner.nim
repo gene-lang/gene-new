@@ -1280,7 +1280,7 @@ suite "spec — typed variable boundaries from design":
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
 
-  test "optional type sugar T? is (opt T) (design §7.2)":
+  test "optional type sugar T? is (? T) (design §7.2)":
     check_eval("(var a : Int? nil) a", "nil")
     check_eval("(var b : Int? 5) b", "5")
     check_eval("(fn f [x : Str?] : Str? x) [(f nil) (f \"hi\")]",

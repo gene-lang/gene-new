@@ -1151,6 +1151,7 @@ Any
 ├── Number
 │   ├── Integer
 │   │   ├── Int
+│   │   │   └── Fixnum
 │   │   ├── SignedInt
 │   │   │   ├── I8
 │   │   │   ├── I16
@@ -1508,10 +1509,10 @@ Invalid examples:
   ^is Animal
   ^props {^name Any}) # invalid: inherited field type changed
 
-(type AlsoBad
-  ^is Animal
-  ^props {}) # invalid if Animal/name is required
 ```
+
+A child may add no fields. `(type Dog ^is Animal ^props {})` is valid; an
+instance of that child must still supply every inherited required field.
 
 Field narrowing, abstract parent types, final/sealed inheritance, layout inheritance, parent-constructor chaining, inherited constructors, and schema-evolution adapters are post-MVP.
 
@@ -1521,10 +1522,10 @@ MVP numeric types:
 
 ```gene
 Int     # arbitrary-precision integer at the language level
-Fixnum  # implementation-sized immediate integer, optimized subset of Int
-F64     # 64-bit IEEE float
-F32     # 32-bit IEEE float for typed buffers/native code
-Float   # alias for F64 in MVP
+Fixnum  # immediate Int in the inclusive range -140737488355328..140737488355327
+Float   # abstract floating-point family
+F64     # 64-bit IEEE float; representation of unannotated runtime floats
+F32     # 32-bit IEEE range boundary for typed buffers/native code
 ```
 
 `Int` has mathematical integer semantics. The MVP VM implements this as a
@@ -1539,6 +1540,13 @@ MVP contract is "promote to bignum on overflow or raise." Silent wraparound
 is forbidden. Typed native code may specialize `Fixnum`, `I64`, `F64`, and
 `F32`; using such fixed-width types creates range-checked boundaries (a
 fixed-width result out of range raises rather than wrapping).
+
+Numeric equality is kind-strict in the MVP: integers compare only with
+integers and floats only with floats, so `(== 1 1.0)` is false. IEEE NaN is
+unequal to every value, including itself, and is rejected as a hash-map or set
+key. Positive and negative floating-point zero compare equal and have identical
+hashes. These rules ensure that every admissible pair equal under `==` has the
+same hash.
 
 FFI types such as `C/Int32`, `C/Long`, and `C/Size` are ABI types, not aliases for Gene `Int`. Passing a Gene `Int` to an FFI integer parameter performs an explicit range check and then marshals to the target ABI width.
 
@@ -1561,6 +1569,45 @@ Call-site inference uses local unification. Given:
 The compiler compares `(Stream item err)` with `(Stream User Never)` and infers `item = User`, `err = Never`.
 
 MVP generics include generic declarations, type application, generic functions, and local unification-based call inference. MVP generics do not include variance, higher-kinded types, associated types, complex constraints, or required explicit type application syntax.
+
+### 7.4.1 Type-expression grammar
+
+The executable MVP accepts the following type expressions. A compound form is
+ordinary Gene data, so quoting and printing it preserves the spelling shown.
+
+```ebnf
+type-expr       = type-name | type-name "?"
+                | "(" "|" type-expr+ ")"
+                | "(" "?" type-expr+ ")"
+                | "(" "List" type-expr ")"
+                | "(" "Set" type-expr ")"
+                | "(" ("Map" | "PropMap" | "HashMap")
+                      type-expr type-expr ")"
+                | "(" "Tuple" type-expr* ")"
+                | "(" "Fn" "[" type-expr* "]" type-expr
+                      [ "^errors" "[" type-expr* "]" ] ")"
+                | "(" generic-enum-name type-expr* ")"
+```
+
+`(Tuple A B ...)` is a fixed-length positional product represented by a Gene
+list. `(Fn [A B ...] R)` describes an ordinary `fn`, never `fn!`: it has fixed
+required positional parameters, no named/default/rest parameters, and an
+unchecked error row. Supplying `^errors [E ...]` instead requires the checked
+error row to match exactly. Parameter, result, and error types are invariant in
+the MVP.
+
+Generic declarations currently comprise `(enum Name [T ...] ...)` and generic
+functions whose name is `(name T ...)`. Enum applications such as `(Option
+Int)` must supply exactly the declared number of arguments; arguments are
+erased from runtime enum identity. Generic nominal record declarations are not
+accepted yet.
+
+Schemas are closed for props. A field name ending in `?` may be omitted, while
+body schemas admit one final repeated field as `[A B T...]`. Open/rest prop
+schemas and named type aliases are reserved for a later extension; the compiler
+rejects `^rest`, `^open`, `^alias`, and `(type (Name T) ...)` rather than
+silently assigning them semantics. Named unions therefore repeat their union
+expression in the MVP.
 
 Gene remains gradually typed. Unannotated code defaults to `Any`:
 

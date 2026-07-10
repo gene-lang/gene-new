@@ -723,7 +723,7 @@ defaults, and derive all apply to `Nil` with no special case, since none of
 those mechanisms inspect anything but the receiver's runtime type and the
 protocol's message set.
 
-**Optional types need no union-impl mechanism.** For `(opt T) = (| T Nil)`,
+**Optional types need no union-impl mechanism.** For `(? T) = (| T Nil)`,
 dispatch happens on the concrete runtime value at the call site: if the
 value is `nil`, `impl P for Nil` runs; if it is a `T`, `impl P for T` runs. No
 separate `impl P (| T Nil)` form is needed or should be added — a union is

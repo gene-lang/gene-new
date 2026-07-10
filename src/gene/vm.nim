@@ -13015,7 +13015,7 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   of vkSymbol:
     var resolved: Value
     let name = expr.symVal
-    # `T?` is sugar for `(opt T)` = `(| T Nil)`: nil, or the stripped type. The
+    # `T?` is sugar for `(? T)` = `(| T Nil)`: nil, or the stripped type. The
     # `?` suffix is only special in type position, so predicate names like
     # `empty?` in value position are never affected.
     if name.len > 1 and name[^1] == '?':
@@ -13047,6 +13047,14 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     if closedExpr.bits != expr.bits:
       return matchesTypeExpr(closedExpr, value, scope)
     if expr.head.kind == vkType:
+      if expr.head.isEnumType:
+        let arity = expr.head.enumTypeParams.len
+        if expr.body.len != arity:
+          raise newException(GeneError, expr.head.typeName & " expects " &
+            $arity & " type argument(s), got " & $expr.body.len)
+      elif expr.body.len != 0:
+        raise newException(GeneError,
+          expr.head.typeName & " is not a generic type")
       return value.isInstanceOfType(expr.head)
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
@@ -13066,9 +13074,19 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           if matchesTypeExpr(alt, value, scope):
             return true
         return false
+      of "?":
+        if expr.body.len == 0:
+          raise newException(GeneError, "(? T ...) expects at least one type")
+        if value.kind == vkNil:
+          return true
+        for alt in expr.body:
+          if matchesTypeExpr(alt, value, scope):
+            return true
+        return false
       of "opt":
+        # Legacy internal compatibility only. Never emit this spelling.
         if expr.body.len != 1:
-          raise newException(GeneError, "(opt T) expects one type")
+          raise newException(GeneError, "(? T) expects one type")
         return value.kind == vkNil or matchesTypeExpr(expr.body[0], value, scope)
       of "List":
         if value.kind != vkList:
@@ -13080,6 +13098,61 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         for item in value.listItems:
           if not matchesTypeExpr(expr.body[0], item, scope):
             return false
+        return true
+      of "Tuple":
+        if value.kind != vkList:
+          return false
+        if value.listItems.len != expr.body.len:
+          return false
+        for i, itemType in expr.body:
+          if not matchesTypeExpr(itemType, value.listItems[i], scope):
+            return false
+        return true
+      of "Fn":
+        if expr.body.len != 2 or expr.body[0].kind != vkList:
+          raise newException(GeneError,
+            "(Fn [A ...] R ^errors [E ...]) expects parameters and a return type")
+        for key, _ in expr.props:
+          if key != "errors":
+            raise newException(GeneError,
+              "function type got unexpected named argument: " & key)
+        if expr.props.hasKey("errors") and expr.props["errors"].kind != vkList:
+          raise newException(GeneError, "function type ^errors must be a list")
+        if value.kind != vkFunction or value.isSyntaxFn:
+          return false
+        let code = value.fnCode
+        if code == nil or not (code of FunctionProto):
+          return false
+        let proto = FunctionProto(code)
+        if proto.namedParams.len != 0 or proto.restParam.len != 0 or
+            proto.params.len != expr.body[0].listItems.len or
+            proto.requiredPositional != proto.params.len:
+          return false
+        for i, expected in expr.body[0].listItems:
+          let actual =
+            if i < proto.paramTypes.len and proto.paramTypes[i].kind != vkNil:
+              proto.paramTypes[i]
+            else:
+              newSym("Any")
+          if not typeExprEqual(closeTypeExpr(expected, scope),
+                               closeTypeExpr(actual, value.fnScope)):
+            return false
+        let actualReturn =
+          if proto.hasReturnType: proto.returnType
+          else: newSym("Any")
+        if not typeExprEqual(closeTypeExpr(expr.body[1], scope),
+                             closeTypeExpr(actualReturn, value.fnScope)):
+          return false
+        if expr.props.hasKey("errors"):
+          let expectedErrors = expr.props["errors"].listItems
+          if not value.fnChecksErrors or expectedErrors.len != value.fnErrorTypes.len:
+            return false
+          for i, expected in expectedErrors:
+            if not typeExprEqual(closeTypeExpr(expected, scope),
+                                 closeTypeExpr(value.fnErrorTypes[i], value.fnScope)):
+              return false
+        elif value.fnChecksErrors:
+          return false
         return true
       of "Set":
         if value.kind != vkSet:

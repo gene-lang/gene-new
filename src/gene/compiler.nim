@@ -1569,7 +1569,7 @@ proc macroMatchesTypeExpr(expr, value: Value): bool =
   case expr.kind
   of vkSymbol:
     let name = expr.symVal
-    # `T?` is sugar for `(opt T)`; see matchesTypeExpr in vm.nim.
+    # `T?` is sugar for `(? T)`; see matchesTypeExpr in vm.nim.
     if name.len > 1 and name[^1] == '?':
       return value.kind == vkNil or
              macroMatchesTypeExpr(newSym(name[0 ..< name.len - 1]), value)
@@ -1585,9 +1585,20 @@ proc macroMatchesTypeExpr(expr, value: Value): bool =
           if macroMatchesTypeExpr(alt, value):
             return true
         return false
+      of "?":
+        if expr.body.len == 0:
+          raise newException(GeneError, "(? T ...) expects at least one macro type")
+        if value.kind == vkNil:
+          return true
+        for alt in expr.body:
+          if macroMatchesTypeExpr(alt, value):
+            return true
+        return false
       of "opt":
+        # Legacy internal compatibility only. Public signatures and diagnostics
+        # use the canonical `(? T)` spelling.
         if expr.body.len != 1:
-          raise newException(GeneError, "(opt T) expects one macro type")
+          raise newException(GeneError, "(? T) expects one macro type")
         return value.kind == vkNil or macroMatchesTypeExpr(expr.body[0], value)
       of "List":
         if value.kind != vkList:

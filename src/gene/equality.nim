@@ -138,7 +138,10 @@ proc hash*(v: Value): Hash =
   of vkNil, vkVoid: discard
   of vkBool:   h = h !& hash(v.boolVal)
   of vkInt:    h = h !& hash(v.intToString)
-  of vkFloat:  h = h !& hash(v.floatVal)
+  of vkFloat:
+    # IEEE equality identifies both signed zeroes, so hashing must as well.
+    let x = v.floatVal
+    h = h !& hash(if x == 0.0: 0.0 else: x)
   of vkString: h = h !& hash(v.strVal)
   of vkBytes:  h = h !& hash(v.bytesVal)
   of vkRegex:
@@ -220,7 +223,11 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
     seen.incl v.bits
 
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
+  of vkFloat:
+    # NaN is unequal to itself and therefore cannot be a stable key.
+    let x = v.floatVal
+    x == x
+  of vkNil, vkVoid, vkBool, vkInt, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,

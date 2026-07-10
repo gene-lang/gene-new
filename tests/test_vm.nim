@@ -927,7 +927,7 @@ suite "vm — special forms":
     ck "(var x 5) (+ x 1)", "6"
   test "typed var checks gradual boundaries":
     ck "(var x : Int 5) (+ x 1)", "6"
-    ck "(var maybe : (opt Int)) maybe", "nil"
+    ck "(var maybe : (? Int)) maybe", "nil"
     ck "(try (var x : Int \"no\") x catch (TypeError ^where w) w)",
        "\"var 'x'\""
     ck "(type Request ^props {^path Str}) " &

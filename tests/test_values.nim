@@ -105,6 +105,15 @@ suite "value — equality":
     check not isHashStable(newList(@[newInt(1)]))
     check not isHashStable(newList(@[newCell(newInt(1))], immutable = true))
 
+  test "float key equality and hashing follow the numeric contract":
+    let positiveZero = newFloat(0.0)
+    let negativeZero = newFloat(-0.0)
+    let nan = newFloat(NaN)
+    check equal(positiveZero, negativeZero)
+    check hash(positiveZero) == hash(negativeZero)
+    check not equal(nan, nan)
+    check not isHashStable(nan)
+
 suite "value — reference counting":
   # Managed values are manually heap-allocated and refcounted via Value's
   # =copy/=sink/=dup/=destroy hooks. This stress builds and drops nested, aliased

@@ -74,7 +74,7 @@ type
     vkVoid      ## no-value / skip / delete (`void` : Void)
     vkBool
     vkInt       ## mathematical Int; fixnums/int64 fast paths, bigint on overflow
-    vkFloat     ## F64 (design `Float` alias)
+    vkFloat     ## Unannotated runtime float; represented as F64.
     vkString    ## immutable UTF-8 string
     vkBytes     ## immutable byte string
     vkRegex     ## immutable compiled PCRE regular expression

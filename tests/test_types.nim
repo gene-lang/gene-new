@@ -1842,6 +1842,12 @@ suite "types — single inheritance":
   test "a child inherits parent fields":
     ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
        "(var d (Dog ^name \"Rex\" ^breed \"Lab\")) d/name", "\"Rex\""
+  test "a child may add no fields but still requires inherited fields":
+    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {}) " &
+       "(var d (Dog ^name \"Rex\")) d/name", "\"Rex\""
+    expect GeneError:
+      discard runStr("(type Animal ^props {^name Str}) " &
+                     "(type Dog ^is Animal ^props {}) (Dog)")
   test "a child inherits parent body fields":
     ck "(type Row ^body [Int]) (type LabeledRow ^is Row ^props {^label Str} ^body [Str]) " &
        "(var r (LabeledRow ^label \"a\" 7 \"ok\")) " &
@@ -7057,7 +7063,58 @@ suite "types — function boundaries":
 
   test "union and optional annotations":
     ck "(fn f [x : (| Int Str)] x) (f \"ok\")", "\"ok\""
-    ck "(fn f [x : (opt Int)] x) (f nil)", "nil"
+    ck "(fn f [x : (? Int)] x) (f nil)", "nil"
+    ck "(fn f [x : (? Int Str)] x) [(f nil) (f 2) (f \"ok\")]",
+       "[nil 2 \"ok\"]"
+    expect GeneError:
+      discard runStr("(fn f [x : (?)] x) (f nil)")
+
+  test "numeric family and fixed representation annotations":
+    ck "(fn f [x : Float] x) (f 1.5)", "1.5"
+    ck "(fn f [x : F64] x) (f 1.5)", "1.5"
+    ck "(fn f [x : F32] x) (f 1.5)", "1.5"
+    ck "(fn f [x : Fixnum] x) (f -140737488355328)", "-140737488355328"
+    ck "(fn f [x : Fixnum] x) (f 140737488355327)", "140737488355327"
+    expect GeneError:
+      discard runStr("(fn f [x : Fixnum] x) (f 140737488355328)")
+    ck "(fn f [x : Int] x) (f 140737488355328)", "140737488355328"
+    ck "[(== 1 1.0) (!= 1 1.0) (== 0.0 -0.0)]", "[false true true]"
+
+  test "tuple product annotations are positional and exact":
+    ck "(fn f [x : (Tuple Int Str)] x/1) (f [1 \"ok\"])", "\"ok\""
+    ck "(quote (Tuple Int Str))", "(Tuple Int Str)"
+    expect GeneError:
+      discard runStr("(fn f [x : (Tuple Int Str)] x) (f [1])")
+    expect GeneError:
+      discard runStr("(fn f [x : (Tuple Int Str)] x) (f [1 2])")
+
+  test "function annotations describe fixed ordinary signatures":
+    ck "(fn use [f : (Fn [Int] Str)] (f 1)) " &
+       "(use (fn [x : Int] : Str \"ok\"))", "\"ok\""
+    ck "(quote (Fn [Int] Str ^errors []))",
+       "(Fn ^errors [] [Int] Str)"
+    expect GeneError:
+      discard runStr("(fn use [f : (Fn [Int] Str)] f) " &
+                     "(use (fn [x : Str] : Str x))")
+    expect GeneError:
+      discard runStr("(fn use [f : (Fn [Int] Str)] f) " &
+                     "(use (fn! [x] x))")
+    expect GeneError:
+      discard runStr("(fn use [f : (Fn Int Str)] f) (use (fn [x] x))")
+
+  test "unsupported nominal generic aliases and open prop schemas fail clearly":
+    expect GeneError:
+      discard compileSource("(type (Box t) ^props {^value t})")
+    expect GeneError:
+      discard compileSource("(type Maybe ^alias (? Int))")
+    expect GeneError:
+      discard compileSource("(type Bag ^props {} ^rest Int)")
+    expect GeneError:
+      discard runStr("(enum Option [T] none (some T)) " &
+                     "(fn f [x : (Option Int Str)] x) (f Option/none)")
+    expect GeneError:
+      discard runStr("(type Box ^props {^value Int}) " &
+                     "(fn f [x : (Box Int)] x) (f (Box ^value 1))")
 
   test "callable annotation accepts callables only":
     ck "(fn call-it [f : Callable] (f {^name \"Ada\"})) (call-it /name)", "\"Ada\""
