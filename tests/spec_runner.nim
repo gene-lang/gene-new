@@ -3121,7 +3121,7 @@ suite "spec — os and json from ai-agent plan":
                "[[\"a\" \"b\"] \"a\\nb\\n\" 0]")
 
   test "scheduler stays live while an async exec child runs":
-    # The whole point of the async variants (docs/ai-agent.md §12.9 gap 1):
+    # The whole point of the async variants (examples/ai_agent/design.md §12.9 gap 1):
     # fibers must make progress during a subprocess. The snapshot is taken
     # right after the await — a blocking exec would leave it at 0.
     check_eval("(import os [exec-async Exec]) " &
@@ -3154,7 +3154,7 @@ suite "spec — os and json from ai-agent plan":
                "[\"hello\" [\"made\" \"note.txt\"]]")
 
   test "Fs/real-path resolves an existing file and a not-yet-created path":
-    ## docs/ai-agent.md §8.5: workspace confinement resolves real paths before
+    ## examples/ai_agent/design.md §8.5: workspace confinement resolves real paths before
     ## the containment check. An existing file and a to-be-created file under
     ## the same directory must resolve to sibling absolute paths, so a `..`
     ## detour still lands inside the resolved root.
@@ -3176,7 +3176,7 @@ suite "spec — os and json from ai-agent plan":
                "[true true true]")
 
   test "Fs/real-path follows a dangling final symlink to its real target":
-    ## docs/ai-agent.md §8.5: a workspace symlink whose target does not exist
+    ## examples/ai_agent/design.md §8.5: a workspace symlink whose target does not exist
     ## yet must still resolve to (and be confined against) where a write would
     ## land, not be treated as an ordinary in-workspace name — otherwise a
     ## dangling symlink is a write escape.

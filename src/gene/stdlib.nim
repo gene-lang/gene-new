@@ -327,7 +327,7 @@ proc biStreamEach(args: openArray[Value]): Value {.nimcall.} =
 # net/http server implementation (event loop, dispatch, helpers).
 include ./http_server
 
-# --- os: environment, subprocess, and line input (docs/ai-agent.md §3,§6) ---
+# --- os: environment, subprocess, and line input (examples/ai_agent/design.md §3,§6) ---
 #
 # Host authority is capability-gated exactly like Fs/Net: `os/get-env` needs an
 # `Os/Env` value and `os/exec`/`os/exec-stdio` need `Os/Exec`, so a launcher can
@@ -740,7 +740,7 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 #
 # The synchronous exec natives block the scheduler thread, freezing every
 # fiber (and the net/http event loop) for the duration of the child — the
-# §12.9 gap-1 problem in docs/ai-agent.md. These variants run the child on a
+# §12.9 gap-1 problem in examples/ai_agent/design.md. These variants run the child on a
 # dedicated OS thread and settle an external Task, following the proven
 # foreign-thread pattern (tests/test_native_api_threads.nim, the aio worker's
 # runAsyncIoRequest): every value crossing threads is markSharedValue'd so its
@@ -1637,7 +1637,7 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
                               ReplOptions(interactive: interactive,
                                           prompt: prompt)))
 
-# --- fs: synchronous read + directory listing (docs/ai-agent.md §6) ---
+# --- fs: synchronous read + directory listing (examples/ai_agent/design.md §6) ---
 
 proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -1706,7 +1706,7 @@ proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   NIL
 
 proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## Absolute, symlink-resolved form of a path (docs/ai-agent.md §8.5:
+  ## Absolute, symlink-resolved form of a path (examples/ai_agent/design.md §8.5:
   ## protected-root checks must run on real paths). A path that does not exist
   ## yet resolves its longest existing ancestor and reattaches the remaining
   ## suffix, so a to-be-created file still confines correctly. A final symlink
@@ -1750,7 +1750,7 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     raiseOsError("Fs/real-path: " & e.msg, scope)
     NIL
 
-# --- json: parse and stringify over Gene value kinds (docs/ai-agent.md §5) ---
+# --- json: parse and stringify over Gene value kinds (examples/ai_agent/design.md §5) ---
 
 const jsonMaxDepth = 200
 
@@ -4404,7 +4404,7 @@ proc registerStdlibNamespaces(root: Scope) =
   storeScope.define("fs", newNamespace("store/fs", storeFsScope))
   root.define("store", newNamespace("store", storeScope))
 
-  # os: env, subprocess, line input (docs/ai-agent.md §3,§6). Capabilities are
+  # os: env, subprocess, line input (examples/ai_agent/design.md §3,§6). Capabilities are
   # ambient values like Net/Connect; a launcher can withhold them.
   let osScope = newScope(root)
   osScope.define("Env", newCapability("Os/Env"))
@@ -4450,7 +4450,7 @@ proc registerStdlibNamespaces(root: Scope) =
     fsNs.nsScope.define("real-path",
       newNativeCallFn("Fs/real-path", biFsRealPath, acceptsNamed = false))
 
-  # json: parse/stringify over Gene value kinds (docs/ai-agent.md §5).
+  # json: parse/stringify over Gene value kinds (examples/ai_agent/design.md §5).
   let jsonScope = newScope(root)
   jsonScope.define("parse", newNativeCallFn("json/parse", biJsonParse,
                                             acceptsNamed = false))

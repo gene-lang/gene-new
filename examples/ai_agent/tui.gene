@@ -1,6 +1,6 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene AI coding agent — MVP (docs/ai-agent.md milestones 1-4).
+# Gene AI coding agent — MVP (examples/ai_agent/design.md milestones 1-4).
 #
 #   * Talks to Codex's ChatGPT-account Responses backend by default, or to any
 #     OpenAI-compatible Chat Completions endpoint (MiniMax, DeepSeek, vLLM,
@@ -11,7 +11,7 @@
 #   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
 #     each declared ONCE as a typed Tool value — the model-facing JSON schema,
 #     argument validation, risk class, and handler all derive from that single
-#     declaration (docs/ai-agent.md §6, slice A).
+#     declaration (examples/ai_agent/design.md §6, slice A).
 #   * §8.5 catastrophe guard: host-destroying commands (rm -rf of protected
 #     roots, mkfs, fork bombs, shutdown, DROP DATABASE) are denied; destructive
 #     git/db/infra commands take one explicit confirmation; file paths are
@@ -24,17 +24,17 @@
 #   * Ncurses-backed prompt on TTY; paste and Shift+Enter/Alt+Enter keep newlines.
 #
 # Run live (Codex Responses backend, the default):
-#   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
+#   OPENAI_AUTH_TOKEN=... gene run examples/ai_agent/tui.gene
 # Run live against any OpenAI-compatible chat-completions endpoint, e.g. MiniMax:
 #   OPENAI_BASE_URL=https://api.minimax.io/v1 OPENAI_MODEL=MiniMax-M2 \
-#   OPENAI_API_KEY=... gene run examples/ai_agent.gene
+#   OPENAI_API_KEY=... gene run examples/ai_agent/tui.gene
 # Wire shape is OPENAI_API=responses|chat; it defaults to responses for the
 # Codex backend and chat for any custom OPENAI_BASE_URL.
 # Tools auto-approve by default (single-user agent); set GENE_AGENT_APPROVE_ALL=0
 # to be prompted before writes and shell commands.
 # Optional local persistence: set GENE_AGENT_STATE=.gene-agent-state to save
 # non-secret config, the interactive session, and memory across restarts.
-# Run demo:   gene run examples/ai_agent.gene         (no token -> offline demo
+# Run demo:   gene run examples/ai_agent/tui.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
 #             tool-call round trip — needs no network)
 #
@@ -856,7 +856,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # Both take a request-body string and return a parsed Responses map.
 # curl runs on a dedicated thread (os/exec-stream-async) with stdout lines
 # drained from a channel, so the scheduler — other sessions, the gateway's
-# HTTP loop — stays live during a model call (docs/ai-agent.md §12.9 gap 1).
+# HTTP loop — stays live during a model call (examples/ai_agent/design.md §12.9 gap 1).
 # -----------------------------------------------------------------------------
 
 (fn exec-curl-lines [curl-args, timeout-ms, on-line]

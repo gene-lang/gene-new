@@ -95,7 +95,7 @@ suite "cli — gene run":
     buildGeneCli()
     let ran = execRetry139("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                         "-u CODEX_ACCESS_TOKEN " &
-                        shellQuote(geneExe) & " run examples/ai_agent.gene")
+                        shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check ran.exitCode == 0
     check "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set" in
       ran.output
@@ -106,7 +106,7 @@ suite "cli — gene run":
     buildGeneCli()
     let command = "printf '/sh\\nprintf hi\\nexit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check "Entering shell" in ran.output
@@ -117,7 +117,7 @@ suite "cli — gene run":
     buildGeneCli()
     let command = "printf '   \\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check "agent>" notin ran.output
@@ -126,7 +126,7 @@ suite "cli — gene run":
     buildGeneCli()
     let command = "printf '/repl\\nsession/config/model\\n(var x 41)\\n(+ x 1)\\nquit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check "Entering Gene REPL" in ran.output
@@ -140,7 +140,7 @@ suite "cli — gene run":
     buildGeneCli()
     let command = "printf '/repl\\nsession/model\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check "gpt-5.4-mini" in ran.output
@@ -156,7 +156,7 @@ suite "cli — gene run":
       "printf '/remember project uses Gene\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check first.exitCode == 0
     check "remembered: project uses Gene" in first.output
     check "state: " & stateDir in first.output
@@ -170,7 +170,7 @@ suite "cli — gene run":
       "printf '/memory\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check second.exitCode == 0
     check "memory:\nproject uses Gene" in second.output
     check "state: " & stateDir in second.output
@@ -279,7 +279,7 @@ suite "cli — gene run":
                         "OPENAI_BASE_URL=http://127.0.0.1:8987/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent.gene 'what is here?'")
+                        " run examples/ai_agent/tui.gene 'what is here?'")
     check ran.exitCode == 0
     check "tool list_dir" in ran.output
     check "verdict: roundtrip-ok" in ran.output
@@ -365,7 +365,7 @@ suite "cli — gene run":
                         "OPENAI_BASE_URL=http://127.0.0.1:8991/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent.gene 'print the token'")
+                        " run examples/ai_agent/tui.gene 'print the token'")
     check ran.exitCode == 0
     check "verdict: redacted-ok" in ran.output
     check "LEAKED" notin ran.output
@@ -446,7 +446,7 @@ suite "cli — gene run":
                         "OPENAI_BASE_URL=http://127.0.0.1:8993/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent.gene 'read something'")
+                        " run examples/ai_agent/tui.gene 'read something'")
     check ran.exitCode == 0
     check "verdict: schema-ok" in ran.output
 
@@ -460,7 +460,7 @@ suite "cli — gene run":
     buildGeneCli()
     let command = "printf '/sh\\nrm -rf /nonexistent-gene-guard-root\\necho ran-normal\\nexit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check "denied by catastrophe guard" in ran.output
@@ -479,7 +479,7 @@ suite "cli — gene run":
       "(classify-command \"npm test\")\\n" &
       "quit\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check ran.output.count("\"catastrophic\"") == 3
@@ -553,7 +553,7 @@ suite "cli — gene run":
                   "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
                   "OPENAI_AUTH_TOKEN=dummy " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8971/v1 OPENAI_MODEL=fake-chat " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     # #5: no crash — the turn completed with the model's final answer.
@@ -642,7 +642,7 @@ suite "cli — gene run":
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8969/v1 OPENAI_MODEL=fake-chat " &
-      shellQuote(geneExe) & " run examples/ai_agent.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(script)
     check ran.exitCode == 0
     check "verdict: shape-error-ok" in ran.output
@@ -732,7 +732,7 @@ suite "cli — gene run":
                         "OPENAI_BASE_URL=http://127.0.0.1:8994/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent.gene 'clean up the disk'")
+                        " run examples/ai_agent/tui.gene 'clean up the disk'")
     check ran.exitCode == 0
     check "verdict: guard-blocked" in ran.output
 
@@ -744,7 +744,7 @@ suite "cli — gene run":
     let command = "printf '/trace type=tool-registered\\n/status\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                   "CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(command)
     check ran.exitCode == 0
     check "tool-registered read_file (read)" in ran.output
@@ -824,13 +824,13 @@ suite "cli — gene run":
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8992/v1 OPENAI_MODEL=fake-chat " &
-      shellQuote(geneExe) & " run examples/ai_agent.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execRetry139(script)
     check ran.exitCode == 0
     check "verdict: ping-visible" in ran.output
 
   test "agent gateway runs concurrent sessions over the async transport":
-    ## Milestone 8 e2e (docs/ai-agent.md §12): a slow fake chat endpoint
+    ## Milestone 8 e2e (examples/ai_agent/design.md §12): a slow fake chat endpoint
     ## (900ms per response) serves two gateway sessions. Both turns must
     ## complete in well under 2x the endpoint latency — proof that model
     ## calls ride dedicated threads and sessions do not block each other.
@@ -877,7 +877,7 @@ suite "cli — gene run":
               "OPENAI_MODEL=fake-chat",
               "GENE_GATEWAY_PORT=8989",
               "GENE_GATEWAY_TOKEN=gw-secret",
-              geneExe, "run", "examples/agent_gateway.gene"],
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running:
@@ -971,7 +971,7 @@ suite "cli — gene run":
                 "-u", "TELEGRAM_BOT_TOKEN",
                 "GENE_GATEWAY_PORT=8997",
                 "GENE_GATEWAY_DB=" & dbPath,
-                geneExe, "run", "examples/agent_gateway.gene"],
+                geneExe, "run", "examples/ai_agent/gateway.gene"],
         options = {poUsePath, poStdErrToStdOut})
 
     proc waitPort() =
@@ -1060,7 +1060,7 @@ suite "cli — gene run":
     check ("\"v\":" & $(maxV + 1)) in contTurn
 
   test "agent gateway bridges telegram chats through the bot api":
-    ## Milestone 9 e2e (docs/ai-agent.md §12.6) over loopback: a fake Telegram
+    ## Milestone 9 e2e (examples/ai_agent/design.md §12.6) over loopback: a fake Telegram
     ## Bot API serves one canned getUpdates batch — a message from allowed
     ## chat 42 and one from unlisted chat 99 — and records sendMessage /
     ## editMessageText calls. The gateway (offline demo transport) must route
@@ -1137,7 +1137,7 @@ suite "cli — gene run":
               "TELEGRAM_BOT_TOKEN=test-token",
               "TELEGRAM_API_BASE=http://127.0.0.1:8994",
               "TELEGRAM_ALLOWED_CHAT_IDS=42",
-              geneExe, "run", "examples/agent_gateway.gene"],
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running:

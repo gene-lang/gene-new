@@ -1,7 +1,7 @@
 # Gene Serialization (serde) — Design
 
 Status: **stages 1–6 implemented** (all in `src/gene/stdlib.nim`, spec- and
-e2e-tested; gateway persistence in `examples/agent_gateway.gene`). Revision 2
+e2e-tested; gateway persistence in `examples/ai_agent/gateway.gene`). Revision 2
 (incorporates review: reserved-head escaping, cells out of the data bucket,
 policy-gated hooks and resource limits, narrowed value refs, reserved
 version/package slots). Date: 2026-07-09.

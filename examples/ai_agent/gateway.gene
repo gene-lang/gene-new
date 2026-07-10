@@ -1,6 +1,6 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene agent gateway — milestone 8 of docs/ai-agent.md §12.
+# Gene agent gateway — milestone 8 of examples/ai_agent/design.md §12.
 #
 # One long-running process that owns every conversation. Sessions are actors
 # (mailbox = per-session turn ordering; the scheduler runs sessions
@@ -15,7 +15,7 @@
 #
 # Config: GENE_GATEWAY_HOST (default 127.0.0.1), GENE_GATEWAY_PORT (8090),
 # GENE_GATEWAY_TOKEN (optional bearer token; open when unset — bind localhost).
-# Model/backend config is shared with examples/ai_agent.gene (OPENAI_* env);
+# Model/backend config is shared with examples/ai_agent/tui.gene (OPENAI_* env);
 # with no model token, sessions run the offline demo transport.
 # =============================================================================
 
@@ -31,7 +31,7 @@
 (import [gene-system-prompt system-item user-item run-turn live-transport
          demo-transport-for max-tool-turns append model auth-token
          set-events-enabled redact-any set-guard-confirm]
-        from "./ai_agent")
+        from "./tui")
 
 # Each gateway session owns its own versioned event log (§12.1/§12.3), so turn
 # off the embedded CLI's process-global log the imported run-turn would
@@ -51,14 +51,14 @@
 (var gw-host (get-env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
 (var gw-port (parse_int (get-env Env "GENE_GATEWAY_PORT" "8090")))
 (var gw-token (get-env Env "GENE_GATEWAY_TOKEN" ""))
-# Optional persistence (docs/ai-agent.md §12 milestone 11): set GENE_GATEWAY_DB
+# Optional persistence (examples/ai_agent/design.md §12 milestone 11): set GENE_GATEWAY_DB
 # to a sqlite path and sessions survive restarts — transcripts and event logs
 # are pure data, stored as serde text (docs/proposals/serialization.md §4).
 (var gw-db-path (get-env Env "GENE_GATEWAY_DB" ""))
 (var gw-state-dir (get-env Env "GENE_GATEWAY_STATE" ""))
 (var gw-resume (get-env Env "GENE_GATEWAY_RESUME" "1"))
 
-# Telegram channel (docs/ai-agent.md §12.6). Outbound HTTPS only: a getUpdates
+# Telegram channel (examples/ai_agent/design.md §12.6). Outbound HTTPS only: a getUpdates
 # long-poll rides os/exec-async, so no inbound port, webhook, or TLS server.
 (var tg-token (get-env Env "TELEGRAM_BOT_TOKEN" ""))
 (var tg-base  (get-env Env "TELEGRAM_API_BASE" "https://api.telegram.org"))

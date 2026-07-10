@@ -12,7 +12,7 @@ worktrees, browser automation, and general multi-agent orchestration are
 optional later work, not prerequisites.**
 Date: 2026-07-09.
 
-Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
+Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
 timeout + output caps, `exec-stream` with stdout callbacks, `read-line`,
 `read-input`/`refresh-input`/`close-input`), `Fs/read-text`/`Fs/write-text`/
@@ -59,7 +59,7 @@ env-configured:
 
   ```bash
   OPENAI_BASE_URL=https://api.minimax.io/v1 OPENAI_MODEL=MiniMax-M2 \
-  OPENAI_API_KEY=... gene run examples/ai_agent.gene
+  OPENAI_API_KEY=... gene run examples/ai_agent/tui.gene
   ```
 
 `OPENAI_API=responses|chat` picks the shape explicitly; it defaults to
@@ -99,7 +99,7 @@ the `net/http` server, capability values, and the async task/worker model).
 A CLI, launched as:
 
 ```bash
-OPENAI_AUTH_TOKEN=... gene run examples/ai_agent.gene
+OPENAI_AUTH_TOKEN=... gene run examples/ai_agent/tui.gene
 ```
 
 Behavior:
@@ -460,7 +460,7 @@ enterprise permission system. Normal workspace reads/edits, shell commands,
 tests, builds, package installs, and network calls should run without prompts.
 
 The shipped guard classifies each `run_shell`/`/sh`-bound command as `normal`,
-`destructive`, or `catastrophic` (`classify-command` in `examples/ai_agent.gene`)
+`destructive`, or `catastrophic` (`classify-command` in `examples/ai_agent/tui.gene`)
 and acts accordingly:
 
 - **Normal:** run immediately.
@@ -482,7 +482,7 @@ model-visible output — including inside event-log entries. `GENE_AGENT_APPROVE
 retains the older prompt-before-write/shell mode for occasional use, but it is
 not the primary design.
 
-Shipped coverage (`classify-command` in `examples/ai_agent.gene`):
+Shipped coverage (`classify-command` in `examples/ai_agent/tui.gene`):
 
 - **catastrophic** — recursive deletion (`rm -rf`/`-fr`/`-r`) of `/`, `$HOME`,
   a top-level absolute directory, the workspace root, `.`, `..`, or `.git`;
@@ -535,7 +535,7 @@ project later chooses to become a distributed product.
 ## 9. Agent loop (Gene)
 
 The following is actual Gene surface syntax, condensed directly from
-`examples/ai_agent.gene`. Transport decoders and small item helpers are elided,
+`examples/ai_agent/tui.gene`. Transport decoders and small item helpers are elided,
 but this tool-call recursion is the shipped loop rather than language-neutral
 pseudocode.
 
@@ -821,7 +821,7 @@ shippable and testable over loopback with fake endpoints.
 
 ### 12.1 The gateway process and session actors
 
-The gateway is ordinary Gene: `gene run examples/agent_gateway.gene`
+The gateway is ordinary Gene: `gene run examples/ai_agent/gateway.gene`
 (**shipped foundation** — historical milestone 8 sessions/HTTP
 API/long-poll/auth/web page, milestone 9 Telegram channel, milestone 11 SQLite
 persistence). Additional surfaces and rare remote confirmations are optional
@@ -911,7 +911,7 @@ a string in the Gene source. Session switcher reads `GET /api/sessions`.
 
 The cheapest remote surface, and deliberately the first: it needs **outbound
 HTTPS only**, which the curl transport already provides. As shipped in
-`examples/agent_gateway.gene`:
+`examples/ai_agent/gateway.gene`:
 
 - an adapter task long-polls `getUpdates` (`timeout=50`, offset cursor) via
   `os/exec-async`;

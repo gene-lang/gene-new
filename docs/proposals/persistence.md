@@ -259,7 +259,7 @@ one that needs this work.
 
 ## 8. Migrating the gateway (the first consumer)
 
-`examples/agent_gateway.gene` milestone 11 already persists sessions to sqlite
+`examples/ai_agent/gateway.gene` milestone 11 already persists sessions to sqlite
 by hand (`write-data`/`read-data` + `insert or replace`). It becomes the
 reference `Store` consumer:
 

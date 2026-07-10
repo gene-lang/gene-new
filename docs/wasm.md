@@ -71,7 +71,7 @@ Mapping each hostile dependency to its wasm reality:
 The conclusion: a wasm build is a **reduced-capability profile** at runtime — the
 parser, compiler, GIR, VM core, and pure stdlib (`str`, `json`, `html`, `url`,
 `std/stream`, `std/parse`) all work; the host-authority builtins (`os`, `net`,
-`db/*`, `ffi`, and the curses/curl work in `docs/ai-agent.md`) are present but
+`db/*`, `ffi`, and the curses/curl work in `examples/ai_agent/design.md`) are present but
 non-functional. Whether to physically *remove* them (smaller binary, cleaner
 errors) or leave them stubbed is the optional gating decision in §A.2 — either
 way the language core runs.
@@ -377,7 +377,7 @@ does not, and none of the above uses it.
    GIR image so load does not re-parse.
 3. **fetch bridge (Target A optional).** `net/fetch` over a host Promise import,
    settled through external-pending tasks — the browser analogue of
-   `Fs/*-async`. Lets a wasm-hosted agent (`docs/ai-agent.md`) talk to an API
+   `Fs/*-async`. Lets a wasm-hosted agent (`examples/ai_agent/design.md`) talk to an API
    without sockets.
 4. **wasm-in-Gene (Target B).** `wasm` namespace over an embedded engine via the
    dynlib pattern; `Wasm/Run` capability; numeric marshaling; spec tests with a
