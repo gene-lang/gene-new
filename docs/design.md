@@ -2546,8 +2546,17 @@ Conceptual operations:
 send      : [(Channel T), T] -> Nil ^errors [ChannelClosed]
 recv      : [(Channel T)] -> T ^errors [ChannelClosed]
 try-send  : [(Channel T), T] -> Bool
-try-recv  : [(Channel T)] -> (| T Void)
+try-recv  : [(Channel T)] -> (TryRecv T)
 close     : [(Channel T)] -> Nil
+```
+
+`TryRecv` is a tagged result with variants `TryRecv/empty` and
+`(TryRecv/value payload)`. Empty state is therefore distinct from receiving a
+stored `void`, `nil`, or any ordinary `T` value; all four cases remain
+pattern-matchable without a sentinel convention.
+
+```gene
+(enum TryRecv [T] empty (value T))
 ```
 
 A dynamic `Any` value is checked against `T` and the `Send` requirement before it enters the channel. Failed dynamic-to-typed checks raise recoverable boundary `TypeError` with blame.

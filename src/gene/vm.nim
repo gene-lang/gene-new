@@ -1472,27 +1472,48 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a sender
       return item
 
+proc tryRecvVariant(scope: Scope, name: string): Value =
+  if scope == nil:
+    raise newException(GeneError,
+      "Channel/try-recv requires a runtime scope")
+  var root = scope
+  while root.parent != nil:
+    root = root.parent
+  if not root.vars.hasKey("TryRecv") or not root.vars["TryRecv"].isEnumType:
+    raise newException(GeneError, "TryRecv result type is unavailable")
+  let variant = root.vars["TryRecv"].enumVariantDescriptor(name)
+  if variant.kind != vkEnumVariant:
+    raise newException(GeneError, "TryRecv result variant is unavailable: " & name)
+  variant
+
+proc tryRecvEmpty(scope: Scope): Value =
+  scope.tryRecvVariant("empty")
+
+proc tryRecvValue(scope: Scope, item: Value): Value =
+  newNode(scope.tryRecvVariant("value"), body = @[item], immutable = true)
+
 proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/try-recv", args)
   requireChannel("Channel/try-recv", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
   let popped = args[0].tryPopChannel()
   if not popped.popped:
-    return VOID
-  let scope = if call == nil: nil else: call[].dispatchScope
+    return tryRecvEmpty(scope)
   let item = checkedChannelItem(args[0], popped.item, "Channel/try-recv item",
                                 scope)
   wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a parked sender
-  item
+  tryRecvValue(scope, item)
 
-proc nativeChannelTryRecv*(channel: Value, scope: Scope = nil): Value =
+proc nativeChannelTryRecv*(channel: Value, scope: Scope): Value =
   withScopedScheduler(scope):
     requireChannel("native channel try-recv", channel)
     let popped = channel.tryPopChannel()
     if not popped.popped:
-      return VOID
-    result = checkedChannelItem(channel, popped.item,
-                                "native channel item", scope)
+      return tryRecvEmpty(scope)
+    let item = checkedChannelItem(channel, popped.item,
+                                  "native channel item", scope)
     wakeChannelWaiters(channel, wakeSenders = true)
+    result = tryRecvValue(scope, item)
 
 proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/close", args)
@@ -4784,6 +4805,13 @@ proc buildBuiltins(app: Application): Scope =
   taskScope.define("detach", newNativeCallFn("Task/detach", biTaskDetach,
                                              acceptsNamed = false))
   result.define("Task", newNamespace("Task", taskScope))
+  let tryRecvType = newEnum("TryRecv", @["T"],
+    [(name: "empty", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "value", payloadTypes: @[newSym("T")],
+      hasBacking: false, backing: NIL)],
+    NIL, result)
+  result.define("TryRecv", tryRecvType)
   result.define("channel", newNativeCallFn("channel", biChannel))
   let channelScope = newScope(result)
   channelScope.define("send", newNativeCallFn("Channel/send", biChannelSend,

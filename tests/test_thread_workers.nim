@@ -375,7 +375,9 @@ suite "threaded scheduler workers":
          "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
          "  (fn recv_once [] " &
          "    (var got (ch ~ Channel/try-recv)) " &
-         "    (if (same? got void) nil (mark_success))) " &
+         "    (match got " &
+         "      (when TryRecv/empty nil) " &
+         "      (when (TryRecv/value _) (mark_success)))) " &
          "  (var a (spawn (recv_once))) " &
          "  (var b (spawn (recv_once))) " &
          "  (var c (spawn (recv_once))) " &
@@ -388,6 +390,17 @@ suite "threaded scheduler workers":
          "  (await e) (await f) (await g) (await h) " &
          "  (success ~ AtomicCell/load))",
          "1"
+
+  test "worker-candidate try-recv may return its immutable tagged result":
+    withGeneWorkerSetting "2":
+      ck "(scope " &
+         "  (var ch (channel ^capacity 1)) " &
+         "  (ch ~ Channel/send 41) " &
+         "  (var result (await (spawn (ch ~ Channel/try-recv)))) " &
+         "  (match result " &
+         "    (when (TryRecv/value n) (+ n 1)) " &
+         "    (when TryRecv/empty 0)))",
+         "42"
 
   test "worker-candidate actor try-send respects mailbox capacity":
     withGeneWorkerSetting "8":

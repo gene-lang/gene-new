@@ -197,10 +197,10 @@ suite "native api — roots and trampoline":
     check full.value == FALSE
     let received = api.channelTryRecv(channel, scope)
     check received.status == gsOk
-    check received.value.print() == "7"
+    check received.value.print() == "#(TryRecv/value 7)"
     let empty = api.channelTryRecv(channel, scope)
     check empty.status == gsOk
-    check empty.value.kind == vkVoid
+    check empty.value.print() == "TryRecv/empty"
     api.rootRelease(itemRoot)
 
     let typedChannel = run(compileSource("(var ch : (Channel Int) " &

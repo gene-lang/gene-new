@@ -2232,8 +2232,29 @@ suite "spec — bounded channels from design":
                "[(ch ~ Channel/try-send 1) " &
                " (ch ~ Channel/try-send 2) " &
                " (ch ~ Channel/recv) " &
-               " (same? (ch ~ Channel/try-recv) void)]",
+               " (match (ch ~ Channel/try-recv) " &
+               "   (when TryRecv/empty true) " &
+               "   (when (TryRecv/value _) false))]",
                "[true false 1 true]")
+
+  test "try-recv tags empty and preserves Void and Nil payloads":
+    check_eval("(var ch (channel ^capacity 3)) " &
+               "(var empty (ch ~ Channel/try-recv)) " &
+               "(ch ~ Channel/send void) " &
+               "(ch ~ Channel/send nil) " &
+               "(ch ~ Channel/send 9) " &
+               "[(match empty (when TryRecv/empty `empty)) " &
+               " (match (ch ~ Channel/try-recv) " &
+               "   (when (TryRecv/value v) v)) " &
+               " (match (ch ~ Channel/try-recv) " &
+               "   (when (TryRecv/value v) v)) " &
+               " (match (ch ~ Channel/try-recv) " &
+               "   (when (TryRecv/value v) v))]",
+               "[empty void nil 9]")
+    check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
+               "  (ch ~ Channel/try-recv)) " &
+               "(match (poll (channel)) (when TryRecv/empty true))",
+               "true")
 
   test "typed channel boundaries check items before enqueue":
     check_eval("(var ch : (Channel Int) (channel)) " &

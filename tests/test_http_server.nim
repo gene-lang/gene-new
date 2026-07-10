@@ -309,9 +309,11 @@ suite "net/http server e2e":
     (fail (Boom ^message "worker boom"))
     (do
       (var ev (failures ~ Channel/try-recv))
-      (if (== ev void)
-        (reply ~ ReplyTo/send (text "no-failures"))
-        (reply ~ ReplyTo/send (text ($ "saw:" ev/message))))
+      (match ev
+        (when TryRecv/empty
+          (reply ~ ReplyTo/send (text "no-failures")))
+        (when (TryRecv/value failure)
+          (reply ~ ReplyTo/send (text ($ "saw:" failure/message)))))
       (actor/continue state))))
 (serve (Server ^host "127.0.0.1" ^port 8191)
   ^max-requests 2

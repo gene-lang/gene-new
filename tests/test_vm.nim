@@ -1525,8 +1525,22 @@ suite "vm — channels":
        "[(ch ~ Channel/try-send 1) " &
        " (ch ~ Channel/try-send 2) " &
        " (ch ~ Channel/recv) " &
-       " (same? (ch ~ Channel/try-recv) void)]",
+       " (match (ch ~ Channel/try-recv) " &
+       "   (when TryRecv/empty true) " &
+       "   (when (TryRecv/value _) false))]",
        "[true false 1 true]"
+
+  test "try-recv distinguishes empty, Void, Nil, and ordinary payloads":
+    ck "(var ch (channel ^capacity 3)) " &
+       "(var empty-result (ch ~ Channel/try-recv)) " &
+       "(ch ~ Channel/send void) " &
+       "(ch ~ Channel/send nil) " &
+       "(ch ~ Channel/send 7) " &
+       "[(match empty-result (when TryRecv/empty `empty)) " &
+       " (match (ch ~ Channel/try-recv) (when (TryRecv/value v) v)) " &
+       " (match (ch ~ Channel/try-recv) (when (TryRecv/value v) v)) " &
+       " (match (ch ~ Channel/try-recv) (when (TryRecv/value v) v))]",
+       "[empty void nil 7]"
 
   test "closed channels drain buffered values before ChannelClosed":
     ck "(var ch (channel ^capacity 1)) " &
