@@ -2844,6 +2844,56 @@ suite "spec — macros across modules (design §11/§15)":
     let app = newApplication(dir)
     check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "12"
 
+  test "compile artifacts expose macros without running dependency top levels":
+    let dir = macroModuleDir()
+    writeFile(dir / "compile_only.gene",
+      "(macro twice! [x] `(+ %x %x))\n" &
+      "(panic \"runtime phase executed\")\n")
+    writeFile(dir / "consumer.gene",
+      "(import [twice!] from \"./compile_only\")\n" &
+      "(var answer (twice! 21))\n")
+    let app = newApplication(dir)
+    let first = app.compileFileModule(dir / "consumer.gene")
+    let second = app.compileFileModule(dir / "consumer.gene")
+    check first == second
+    check not first.disassemble().contains("twice!")
+    expect GenePanic:
+      discard app.loadFileModule(dir / "consumer.gene")
+
+  test "runtime initialization remains separate and runs once":
+    let dir = macroModuleDir()
+    writeFile(dir / "phase_dep.gene",
+      "(macro identity! [x] `%x)\n" &
+      "(var starts (cell 0))\n" &
+      "(starts ~ Cell/update (fn [n] (+ n 1)))\n")
+    writeFile(dir / "phase_user.gene",
+      "(import [identity!] from \"./phase_dep\")\n" &
+      "(var answer (identity! 42))\n")
+    let app = newApplication(dir)
+    discard app.compileFileModule(dir / "phase_user.gene")
+    let user = app.loadFileModule(dir / "phase_user.gene")
+    check moduleVar(user, "answer") == "42"
+    let dependency = app.loadFileModule(dir / "phase_dep.gene")
+    let starts = dependency.moduleRootNamespace.nsScope.vars["starts"]
+    check starts.cellValue.intVal == 1
+    discard app.loadFileModule(dir / "phase_user.gene")
+    check starts.cellValue.intVal == 1
+
+  test "macro dependency cycles have a compile-phase diagnostic":
+    let dir = macroModuleDir()
+    writeFile(dir / "a.gene",
+      "(macro a! [x] `%x)\n" &
+      "(import [b!] from \"./b\")\n")
+    writeFile(dir / "b.gene",
+      "(macro b! [x] `%x)\n" &
+      "(import [a!] from \"./a\")\n")
+    var message = ""
+    try:
+      discard newApplication(dir).compileFileModule(dir / "a.gene")
+    except GeneError as e:
+      message = e.msg
+    check message.contains("compile-time macro dependency cycle")
+
   test "imported macros are usable but not re-exported":
     let dir = macroModuleDir()
     writeFile(dir / "mid.gene",

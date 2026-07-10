@@ -253,6 +253,16 @@ type
     scheduler: SchedulerState
     active: bool
 
+  ModuleCompileHeader = ref object
+    unit: SourceUnit
+    macroNames: HashSet[string]
+    syntaxFnNames: seq[string]
+
+  ModuleCompileArtifact = ref object
+    chunk: Chunk
+    macroExports: Table[string, MacroDef]
+    syntaxFnExports: seq[string]
+
   Application* = ref object of RuntimeContext
     builtins: Scope
     spawnBuiltinsPublished: bool
@@ -266,15 +276,10 @@ type
     nativeGe: Value
     moduleCache: Table[string, Value]
     moduleLoading: HashSet[string]
+    moduleCompileHeaders: Table[string, ModuleCompileHeader]
+    moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
+    moduleCompileLoading: HashSet[string]
     implEpoch: uint64
-    # Macro exports per loaded module (abs path -> name -> def). Filled when a
-    # module compiles; consumed by importing modules' compilers so `(import
-    # [m!] from "path")` expands at the importer's compile time (design §11).
-    moduleMacros: Table[string, Table[string, MacroDef]]
-    # fn! exports per loaded module (abs path -> names). The values import as
-    # ordinary runtime bindings; the importer's compiler needs the name set so
-    # call sites keep raw syntax (design §3/§11.1).
-    moduleSyntaxFns: Table[string, seq[string]]
     currentModuleDir: string
     packageRoot: string
     # serde stage 3+ reverse origin index: definition value bits ->
@@ -4857,6 +4862,11 @@ proc newApplication*(entryDir = ""): Application =
   let root = normalizedDir(entryDir)
   result = Application(moduleCache: initTable[string, Value](),
                        moduleLoading: initHashSet[string](),
+                       moduleCompileHeaders:
+                         initTable[string, ModuleCompileHeader](),
+                       moduleCompileArtifacts:
+                         initTable[string, ModuleCompileArtifact](),
+                       moduleCompileLoading: initHashSet[string](),
                        scheduler: newSchedulerState(),
                        currentModuleDir: root,
                        packageRoot: root)
@@ -18441,53 +18451,149 @@ proc importFromPath(form: Value): string =
       return ""
   ""
 
+proc collectCompileHeaderForms(forms: openArray[Value],
+                               macroNames: var HashSet[string],
+                               syntaxNames: var HashSet[string]) =
+  ## Lightweight declaration scan used only to decide which import edges are
+  ## compile-time macro dependencies. It never evaluates a form.
+  for form in forms:
+    if form.kind != vkNode or form.head.kind != vkSymbol:
+      continue
+    case form.head.symVal
+    of "macro":
+      if form.body.len > 0 and form.body[0].kind == vkSymbol:
+        macroNames.incl form.body[0].symVal
+    of "fn!":
+      if form.body.len > 0 and form.body[0].kind == vkSymbol:
+        syntaxNames.incl form.body[0].symVal
+    of "var":
+      if form.body.len >= 2 and form.body[0].kind == vkSymbol:
+        let valueIndex =
+          if form.body.len >= 3 and form.body[1].isSymbol(":"): 3
+          else: 1
+        if valueIndex < form.body.len:
+          let value = form.body[valueIndex]
+          if (value.kind == vkSymbol and value.symVal in syntaxNames) or
+              (value.kind == vkNode and value.head.isSymbol("fn!")):
+            syntaxNames.incl form.body[0].symVal
+    of "set":
+      if form.body.len > 0 and form.body[0].kind == vkSymbol:
+        syntaxNames.excl form.body[0].symVal
+    of "mod", "do":
+      collectCompileHeaderForms(form.body, macroNames, syntaxNames)
+    else:
+      discard
+
+proc moduleCompileHeader(app: Application,
+                         absPath: string): ModuleCompileHeader =
+  if app.moduleCompileHeaders.hasKey(absPath):
+    return app.moduleCompileHeaders[absPath]
+  if not fileExists(absPath):
+    raise newException(GeneError, "module not found: " & absPath)
+  let unit = readAllWithLocs(readFile(absPath), absPath)
+  var macroNames = initHashSet[string]()
+  var syntaxNames = initHashSet[string]()
+  collectCompileHeaderForms(unit.forms, macroNames, syntaxNames)
+  var syntaxFnNames: seq[string]
+  for name in syntaxNames:
+    syntaxFnNames.add name
+  syntaxFnNames.sort()
+  result = ModuleCompileHeader(unit: unit, macroNames: macroNames,
+                               syntaxFnNames: syntaxFnNames)
+  app.moduleCompileHeaders[absPath] = result
+
+proc importSelectionSourceNames(form: Value): seq[string] =
+  if form.kind != vkNode or not form.head.isSymbol("import"):
+    return
+  var fromIndex = -1
+  for i, item in form.body:
+    if item.isSymbol("from"):
+      fromIndex = i
+      break
+  if fromIndex != 1:
+    return
+  let selection = form.body[0]
+  if selection.kind == vkSymbol:
+    return @[selection.symVal]
+  if selection.kind != vkList:
+    return
+  var i = 0
+  while i < selection.listItems.len:
+    let item = selection.listItems[i]
+    if item.kind != vkSymbol:
+      inc i
+      continue
+    if item.symVal in [",", ":"]:
+      inc i
+      continue
+    result.add item.symVal
+    inc i
+    if i < selection.listItems.len and selection.listItems[i].isSymbol(":"):
+      i += 2 # skip `:` plus the local alias
+
+proc compileModuleArtifact(app: Application,
+                           absPath: string): ModuleCompileArtifact =
+  ## Build/cache a module's compile artifact without creating a runtime scope or
+  ## executing top-level code. Only imports that select an exported macro form
+  ## compile-time dependency edges; value-only cycles remain runtime cycles.
+  if app.moduleCompileArtifacts.hasKey(absPath):
+    return app.moduleCompileArtifacts[absPath]
+  if absPath in app.moduleCompileLoading:
+    raise newException(GeneError,
+      "compile-time macro dependency cycle at " & absPath)
+  let header = app.moduleCompileHeader(absPath)
+  app.moduleCompileLoading.incl absPath
+  let savedDir = app.currentModuleDir
+  app.currentModuleDir = parentDir(absPath)
+  try:
+    var importedMacros = initTable[string, Table[string, MacroDef]]()
+    var importedSyntaxFns = initTable[string, seq[string]]()
+    for form in header.unit.forms:
+      let raw = importFromPath(form)
+      if raw.len == 0:
+        continue
+      let depPath = app.resolveModulePath(raw)
+      let depHeader = app.moduleCompileHeader(depPath)
+      importedSyntaxFns[raw] = depHeader.syntaxFnNames
+      var needsMacroArtifact = false
+      for name in importSelectionSourceNames(form):
+        if name in depHeader.macroNames:
+          needsMacroArtifact = true
+          break
+      if needsMacroArtifact:
+        let dependency = compileModuleArtifact(app, depPath)
+        importedMacros[raw] = dependency.macroExports
+    let compiled = compileFormsWithMacros(header.unit, importedMacros,
+                                          importedSyntaxFns)
+    result = ModuleCompileArtifact(chunk: compiled.chunk,
+                                   macroExports: compiled.macroExports,
+                                   syntaxFnExports: compiled.syntaxFnExports)
+    app.moduleCompileArtifacts[absPath] = result
+  finally:
+    app.currentModuleDir = savedDir
+    app.moduleCompileLoading.excl absPath
+
 proc loadModuleValue(app: Application, absPath: string): Value =
-  ## Load, execute, and cache a module; return its first-class Module value.
-  ## Modules run at most once (cache) and import cycles are rejected (loading set).
-  ##
-  ## Macros cross modules at compile time, so top-level `from "path"` imports
-  ## are pre-loaded before this module compiles: each dependency's macro
-  ## exports are handed to the compiler keyed by the raw path string, and this
-  ## module's own macro definitions are recorded for its importers (design
-  ## §11/§15). A consequence is that a dependency's top level runs before any
-  ## of this module's code, even code textually above the import.
+  ## Initialize/cache the runtime phase of a compiled module. Compile-time
+  ## macro discovery has a separate artifact cache and cycle set above and does
+  ## not create scopes, grant capabilities, or execute top-level forms.
   if app.moduleCache.hasKey(absPath):
     return app.moduleCache[absPath]
   if absPath in app.moduleLoading:
-    raise newException(GeneError, "import cycle detected at " & absPath)
+    raise newException(GeneError,
+      "runtime module initialization cycle at " & absPath)
   if not fileExists(absPath):
     raise newException(GeneError, "module not found: " & absPath)
   app.moduleLoading.incl absPath
-  let src = readFile(absPath)
   let modScope = newGlobalScope(app)
   modScope.implStageRoot = true
   result = bindThisModule(modScope, splitFile(absPath).name, absPath)
   let savedDir = app.currentModuleDir
   app.currentModuleDir = parentDir(absPath)
   try:
-    let unit = readAllWithLocs(src, absPath)
-    var importedMacros = initTable[string, Table[string, MacroDef]]()
-    var importedSyntaxFns = initTable[string, seq[string]]()
-    for form in unit.forms:
-      let raw = importFromPath(form)
-      if raw.len == 0 or importedMacros.hasKey(raw):
-        continue
-      let depPath = app.resolveModulePath(raw)
-      discard loadModuleValue(app, depPath)
-      importedMacros[raw] =
-        app.moduleMacros.getOrDefault(depPath,
-                                      initTable[string, MacroDef]())
-      importedSyntaxFns[raw] = app.moduleSyntaxFns.getOrDefault(depPath, @[])
-    let compiled = compileFormsWithMacros(unit, importedMacros,
-                                          importedSyntaxFns)
-    app.moduleMacros[absPath] = compiled.macroExports
-    app.moduleSyntaxFns[absPath] = compiled.syntaxFnExports
-    discard run(compiled.chunk, modScope)
+    let artifact = compileModuleArtifact(app, absPath)
+    discard run(artifact.chunk, modScope)
     activateStagedImpls(modScope)
-  except:
-    app.moduleMacros.del(absPath)
-    app.moduleSyntaxFns.del(absPath)
-    raise
   finally:
     app.currentModuleDir = savedDir
     app.moduleLoading.excl absPath
@@ -18504,3 +18610,14 @@ proc loadFileModule*(app: Application, path: string): Value =
   if not app.isWithinPackageRoot(absPath):
     raise newException(GeneError, "module path escapes package root: " & path)
   loadModuleValue(app, absPath)
+
+proc compileFileModule*(app: Application, path: string): Chunk =
+  ## Compile a file module and its macro dependencies without running any
+  ## module's runtime phase. Used by tooling/cross-compilation surfaces.
+  var p = path
+  if splitFile(p).ext.len == 0:
+    p = p & ".gene"
+  let absPath = normalizedPath(absolutePath(p))
+  if not app.isWithinPackageRoot(absPath):
+    raise newException(GeneError, "module path escapes package root: " & path)
+  compileModuleArtifact(app, absPath).chunk

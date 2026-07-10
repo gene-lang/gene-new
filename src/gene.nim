@@ -203,10 +203,10 @@ proc cmdFmt(path: string) =
     quit(1)
 
 proc cmdCompile(path: string) =
-  let src = readSourceFile(path)
   let absPath = normalizedPath(absolutePath(path))
   try:
-    echo compileSource(src, absPath).disassemble()
+    let app = newApplication(parentDir(absPath))
+    echo app.compileFileModule(absPath).disassemble()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
@@ -218,10 +218,10 @@ proc cmdCompile(path: string) =
     quit(1)
 
 proc cmdCompileC(path: string) =
-  let src = readSourceFile(path)
   let absPath = normalizedPath(absolutePath(path))
   try:
-    echo compileSource(src, absPath).emitExperimentalC()
+    let app = newApplication(parentDir(absPath))
+    echo app.compileFileModule(absPath).emitExperimentalC()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)

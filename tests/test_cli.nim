@@ -1478,6 +1478,18 @@ suite "cli — gene parse/fmt/compile":
     check "opPanic" in ran.output
     check "Panic:" notin ran.output
 
+  test "compile loads macro artifacts without running dependency top levels":
+    discard writeCliProgram("compile_macro_dep.gene",
+      "(macro twice! [x] `(+ %x %x))\n" &
+      "(panic \"dependency runtime should not run\")\n")
+    let path = writeCliProgram("compile_macro_user.gene",
+      "(import [twice!] from \"./compile_macro_dep\")\n" &
+      "(var answer (twice! 21))\n")
+    let ran = runGene(["compile", path])
+    check ran.exitCode == 0
+    check "twice!" notin ran.output
+    check "Panic:" notin ran.output
+
   test "compile target c prints experimental typed-native C":
     let path = writeCliProgram("compile_c_subject.gene",
       "(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &

@@ -230,10 +230,15 @@ suite "modules — file imports":
   test "missing module raises":
     expect GeneError: discard runProgram("(import [x] from \"./does-not-exist\")")
 
-  test "import cycle is rejected":
+  test "runtime import cycles have a runtime-phase diagnostic":
     writeModule("a.gene", "(import from \"./b\" ^as b) (var x 1)")
     writeModule("b.gene", "(import from \"./a\" ^as a) (var y 2)")
-    expect GeneError: discard runProgram("(import from \"./a\" ^as a) a/x")
+    var message = ""
+    try:
+      discard runProgram("(import from \"./a\" ^as a) a/x")
+    except GeneError as e:
+      message = e.msg
+    check message.contains("runtime module initialization cycle")
 
 suite "modules — built-in identity and scope hygiene":
   setup:

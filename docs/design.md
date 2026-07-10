@@ -2162,7 +2162,14 @@ Macros are module exports selected through top-level `from "path"` import lists 
 (import [when! : unless-not!] from "./control")
 ```
 
-Because expansion happens while the importer compiles, a top-level `from "path"` import pre-loads its module before the importing module's own top level runs. Imported macros are usable but are not re-exported by the importing module. Namespace-path imports such as `(import std/stream [...])` do not carry macros in MVP. Imports inside nested scopes resolve at runtime only, so macros must be imported at top level.
+Because expansion happens while the importer compiles, a top-level
+`from "path"` macro selection reads the dependency's cached compile artifact.
+This parses and compiles macro/derive declarations but does not create a
+runtime module scope or execute any dependency top-level form. Imported macros
+are usable but are not re-exported by the importing module. Namespace-path
+imports such as `(import std/stream [...])` do not carry macros in MVP. Imports
+inside nested scopes resolve at runtime only, so macros must be imported at top
+level.
 
 Use `macro` for:
 
@@ -2986,10 +2993,13 @@ Top-level execution rules:
 - top-level forms execute from top to bottom;
 - declarations create bindings in the current namespace;
 - ordinary expressions execute for side effects and their result is normally discarded by `gene run`;
-- imports are resolved before dependent forms need their bindings;
+- macro imports are resolved from compile artifacts before expansion; runtime
+  import operations initialize and bind dependencies at their execution point;
 - a module is loaded/executed at most once per application/module graph unless explicitly reloaded or evaluated as a separate overlay.
 
-Module loading must detect import cycles. MVP rejects import cycles. Future versions may admit declaration-only cycles after the compiler has a precise two-phase declaration/execution model.
+Both compile-time macro dependency cycles and runtime initialization cycles are
+detected and rejected with phase-specific diagnostics (§15.6). Future versions
+may admit declaration-only cycles.
 
 ### 15.5 Namespace
 
@@ -3110,7 +3120,27 @@ For MVP, extension handling can be simple:
 
 The loader must use normalized identities so `"./a/../b"` and `"b"` do not create duplicate modules when they refer to the same module under the same root.
 
-Import cycles are rejected in MVP. Future declaration-only cycles require a precise two-phase module initialization design and are not part of the implementation-ready slice.
+Compilation and runtime initialization are separate phases with separate
+caches and cycle diagnostics:
+
+1. A compile artifact contains expanded GIR plus exported macro metadata and
+   syntax-callable declaration metadata. Building it performs no runtime
+   evaluation and grants no host/runtime capabilities. Cross-compilation uses
+   this phase, so obtaining a macro can never inherit the build host's runtime
+   authority.
+2. Only imports that select a macro form compile-time dependency edges.
+   Cycles on those edges fail as `compile-time macro dependency cycle`.
+   Value-only cycles remain runtime concerns.
+3. Executing an import initializes the dependency's runtime phase, in the
+   application's granted runtime environment, at most once per normalized
+   module identity. Runtime top-level forms are never run merely to compile an
+   importer.
+4. Runtime initialization has its own in-progress set. A cycle there fails as
+   `runtime module initialization cycle`; a compile-cache entry neither marks a
+   module initialized nor suppresses its one runtime execution.
+
+Declaration-only cyclic modules remain deferred; the MVP rejects both phase-
+specific cycle classes described above.
 
 ### 15.7 Module and namespace introspection
 

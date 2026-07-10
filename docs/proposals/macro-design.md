@@ -432,7 +432,10 @@ Rules:
 
 ```text
 - only top-level `from "path"` imports can import macros;
-- imported macros are available while compiling the importing module;
+- imported macros come from a cached compile artifact and are available while
+  compiling the importing module;
+- building that artifact never executes runtime top-level forms or grants
+  runtime/host capabilities;
 - imported macros are not runtime bindings;
 - imported macros are not re-exported by default;
 - namespace-path imports do not carry macros in MVP;
@@ -680,6 +683,8 @@ Spec-locked in `tests/spec_runner.nim` ("spec — macros from design",
 - fresh-name hygiene for recognized introduced binders (var, fn, and
   pattern binders such as match);
 - top-level `from "path"` macro imports, aliases, no re-export;
+- compile-artifact/runtime-initialization cache separation and phase-specific
+  cycle diagnostics;
 - macro/value namespace conflict checks ("one name means one thing").
 ```
 
