@@ -65,6 +65,16 @@ when defined(geneRcStats):
     test "eval named functions are reclaimed when the result does not escape":
       check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
 
+    test "borrowed caller environments and snapshots are reclaimed":
+      check leakedManaged(
+        "(fn! inspect! [] (eval (quote 1) ^in caller-env)) (inspect!)") == 0
+      check leakedManaged(
+        "(fn! reject! [] (try [caller-env] catch * nil)) (reject!)") == 0
+      check leakedManaged(
+        "(var x 1) " &
+        "(fn! snapshot! [] (Env/snapshot caller-env [\"x\"])) " &
+        "(snapshot!)") == 0
+
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
       check leakedManaged("(var s (read-all \"(a) (b)\")) (s ~ Stream/next)") == 0

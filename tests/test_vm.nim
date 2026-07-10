@@ -70,6 +70,27 @@ suite "compiler — GIR emission":
     check chunk.constants[chunk.instructions[1].depth].intVal == 2
     check chunk.instructions[2].op == opReturn
 
+  test "guards dynamic callees before argument bytecode":
+    let dynamic = compileSource("(fn hof [f] (f 1))").functions[0].chunk
+    check dynamic.instructions[0].op == opLoadLocal
+    check dynamic.instructions[1].op == opSyntaxGuard
+    check dynamic.instructions[2].op == opPushConst
+    check dynamic.instructions[3].op == opCall1
+
+    let ambient = compileSource("(external 1)")
+    check ambient.instructions[0].op == opLoadName
+    check ambient.instructions[1].op == opSyntaxGuard
+    check ambient.instructions[2].op == opPushConst
+    check ambient.instructions[3].op == opCall1
+
+    let typed = compileSource("(fn hof [f : Fn] (f 1))").functions[0].chunk
+    var typedHasSyntaxGuard = false
+    for inst in typed.instructions:
+      typedHasSyntaxGuard = typedHasSyntaxGuard or inst.op == opSyntaxGuard
+    check not typedHasSyntaxGuard
+    check typed.instructions[0].op == opPushConst
+    check typed.instructions[1].op == opCallLocal1
+
   test "emits nested function prototypes":
     let chunk = compileSource("(fn inc [x] (+ x 1))")
     check chunk.functions.len == 1
@@ -246,17 +267,15 @@ suite "compiler — GIR emission":
         sawRecur = true
     check sawRecur
 
-  test "keeps mutable recursive var-bound calls indirect":
+  test "keeps mutable recursive var-bound calls callable-first":
     let chunk = compileSource(
       "(var fib (fn [n] (if (< n 2) n (fib (- n 1))))) " &
       "(set fib (fn [n] n))")
     let proto = chunk.functions[0]
-    var sawOuterFib = false
-    for inst in proto.chunk.instructions:
-      if inst.op == opCallParentLocal1 and inst.name == "fib" and
-          inst.intArg == 0:
-        sawOuterFib = true
-    check sawOuterFib
+    check proto.chunk.instructions[5].op == opLoadOuterLocal
+    check proto.chunk.instructions[5].name == "fib"
+    check proto.chunk.instructions[6].op == opSyntaxGuard
+    check proto.chunk.instructions[9].op == opCall1
 
   test "marks worker-candidate spawns without outer mutation":
     let readOnly = compileSource(
@@ -572,7 +591,9 @@ suite "gir — disassembly":
       "(var call_four (fn [a b c d] nil)) (call_four 1 2 3 4)").disassemble()
     check dump.contains("opCallLocalN slot=0 name=call_four argc=4")
     let globalDump = compileSource("(call_four 1 2 3 4)").disassemble()
-    check globalDump.contains("opCallNameN name=call_four argc=4")
+    check globalDump.contains("opLoadName name=call_four")
+    check globalDump.contains("opSyntaxGuard")
+    check globalDump.contains("opCall argc=4")
 
 suite "vm — literals and self-evaluation":
   test "scalars evaluate to themselves":

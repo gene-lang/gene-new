@@ -295,6 +295,9 @@ type
 const schedulerSharedQueueInitialCap = 65536
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
+proc raiseCallKindError(where, expected, actual: string, value: Value,
+                        scope: Scope)
+proc rejectCallerEnvEscape(where: string, value: Value)
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
@@ -454,7 +457,8 @@ proc newScope*(parent: Scope = nil,
   let budget =
     if parent != nil: parent.evalBudget
     else: nil
-  Scope(application: owner, parent: parent, evalBudget: budget)
+  Scope(application: owner, parent: parent, evalBudget: budget,
+        borrowedCallerEnv: parent != nil and parent.borrowedCallerEnv)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
   var s = scope
@@ -853,13 +857,14 @@ proc getArg(named: NamedArgs, name: string): Value =
     if key == name: return named.valueAt(i)
   raise newException(GeneError, "missing named argument: " & name)
 
-proc rejectEvaluatedSyntaxCall(callee: Value) {.noreturn.} =
-  ## Safety net (design §3): a fn! must never observe pre-evaluated arguments.
-  ## Call sites that bind arguments before resolving the callee reject fn!
-  ## values instead of silently mis-evaluating.
+proc rejectSyntaxCallWithoutSite(callee: Value) {.noreturn.} =
+  ## Host/native calls do not carry the raw source envelope required by fn!.
   raise newException(GeneError,
-    "fn! '" & callee.fnName & "' reached a call site with pre-evaluated " &
-    "arguments; call it by its fn!-visible name or through an expression head")
+    "fn! '" & callee.fnName & "' requires a source call site")
+
+proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
+  raiseCallKindError("message send", "Callable", "SyntaxCallable", callee,
+                     scope)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value
@@ -1175,6 +1180,7 @@ proc requireCell(name: string, value: Value) =
 
 proc biCell(args: openArray[Value]): Value {.nimcall.} =
   requireOne("cell", args)
+  rejectCallerEnvEscape("cell construction", args[0])
   newCell(args[0])
 
 proc biCellGet(args: openArray[Value]): Value {.nimcall.} =
@@ -1186,6 +1192,7 @@ proc biCellSet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Cell/set expects 2 arguments, got " & $args.len)
   requireCell("Cell/set", args[0])
+  rejectCallerEnvEscape("Cell/set", args[1])
   args[0].setCellValue(args[1])
   args[1]
 
@@ -1193,6 +1200,7 @@ proc biCellSwap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Cell/swap expects 2 arguments, got " & $args.len)
   requireCell("Cell/swap", args[0])
+  rejectCallerEnvEscape("Cell/swap", args[1])
   let old = args[0].cellValue
   args[0].setCellValue(args[1])
   old
@@ -1203,6 +1211,7 @@ proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
   requireCell("Cell/update", args[0])
   var callArgs = [args[0].cellValue]
   let next = applyCall(args[1], callArgs, NamedArgs())
+  rejectCallerEnvEscape("Cell/update", next)
   args[0].setCellValue(next)
   next
 
@@ -1212,6 +1221,7 @@ proc requireAtomicCell(name: string, value: Value) =
 
 proc biAtomicCell(args: openArray[Value]): Value {.nimcall.} =
   requireOne("atomic-cell", args)
+  rejectCallerEnvEscape("atomic-cell construction", args[0])
   newAtomicCell(args[0])
 
 proc biAtomicCellLoad(args: openArray[Value]): Value {.nimcall.} =
@@ -1223,6 +1233,7 @@ proc biAtomicCellStore(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "AtomicCell/store expects 2 arguments, got " & $args.len)
   requireAtomicCell("AtomicCell/store", args[0])
+  rejectCallerEnvEscape("AtomicCell/store", args[1])
   args[0].setAtomicCellValue(args[1])
   args[1]
 
@@ -1230,6 +1241,7 @@ proc biAtomicCellSwap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "AtomicCell/swap expects 2 arguments, got " & $args.len)
   requireAtomicCell("AtomicCell/swap", args[0])
+  rejectCallerEnvEscape("AtomicCell/swap", args[1])
   # Single locked critical section (not load-then-store), so a concurrent
   # writer can't interleave between reading the old value and writing the new
   # one (design Section 12.3: AtomicCell operations are linearizable).
@@ -1240,6 +1252,7 @@ proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "AtomicCell/compare-exchange expects 3 arguments, got " & $args.len)
   requireAtomicCell("AtomicCell/compare-exchange", args[0])
+  rejectCallerEnvEscape("AtomicCell/compare-exchange", args[2])
   # Compare and swap happen under one lock acquisition, avoiding the
   # check-then-set race a separate load+same?+store would have.
   if atomicCellCompareExchange(args[0], args[1], args[2], same):
@@ -2097,6 +2110,80 @@ proc requireEnv(name: string, value: Value) =
   if value.kind != vkEnv:
     raise newException(GeneError, name & " expects an Env")
 
+proc carriesCallerEnv(value: Value, seen: var HashSet[uint64]): bool =
+  ## Detect direct or captured borrowed authority at publication boundaries.
+  ## Containers are walked defensively; ordinary construction rejects them, so
+  ## this remains a cold error-path check rather than a hot lookup tax.
+  if value.kind == vkCallerEnv:
+    return true
+  if value.isHeapBacked:
+    if seen.contains(value.bits):
+      return false
+    seen.incl value.bits
+  case value.kind
+  of vkFunction:
+    value.fnCapturesCallerEnv
+  of vkList:
+    for item in value.listItems:
+      if carriesCallerEnv(item, seen): return true
+    false
+  of vkMap:
+    for _, item in value.mapEntries:
+      if carriesCallerEnv(item, seen): return true
+    false
+  of vkSet:
+    for item in value.setItems:
+      if carriesCallerEnv(item, seen): return true
+    false
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      if carriesCallerEnv(entry.key, seen) or
+          carriesCallerEnv(entry.val, seen): return true
+    false
+  of vkNode:
+    if carriesCallerEnv(value.head, seen): return true
+    for _, item in value.props:
+      if carriesCallerEnv(item, seen): return true
+    for item in value.body:
+      if carriesCallerEnv(item, seen): return true
+    for _, item in value.meta:
+      if carriesCallerEnv(item, seen): return true
+    false
+  of vkNamespace:
+    value.nsScope != nil and value.nsScope.borrowedCallerEnv
+  of vkModule:
+    carriesCallerEnv(value.moduleRootNamespace, seen)
+  of vkEnv:
+    if carriesCallerEnv(value.envParent, seen): return true
+    for _, item in value.envBindings:
+      if carriesCallerEnv(item, seen): return true
+    for item in value.envImports:
+      if carriesCallerEnv(item, seen): return true
+    carriesCallerEnv(value.envModule, seen) or
+      carriesCallerEnv(value.envCapabilities, seen) or
+      carriesCallerEnv(value.envPolicy, seen)
+  of vkCell:
+    carriesCallerEnv(value.cellValue, seen)
+  of vkAtomicCell:
+    carriesCallerEnv(value.atomicCellValue, seen)
+  of vkStream:
+    (value.streamGeneratorScope != nil and
+      value.streamGeneratorScope.borrowedCallerEnv) or
+      carriesCallerEnv(value.streamSource, seen) or
+      carriesCallerEnv(value.streamCallable, seen)
+  else:
+    false
+
+proc carriesCallerEnv(value: Value): bool =
+  var seen = initHashSet[uint64]()
+  carriesCallerEnv(value, seen)
+
+proc rejectCallerEnvEscape(where: string, value: Value) =
+  if value.carriesCallerEnv:
+    raise newException(GeneError,
+      where & " cannot retain borrowed CallerEnv authority; use " &
+      "Env/snapshot with explicit binding names")
+
 proc raiseEndOfStream() =
   var props = initOrderedTable[string, Value]()
   props["message"] = newStr("end of stream")
@@ -2631,7 +2718,7 @@ proc freezeValue(value: Value): Value =
             body = body,
             meta = freezeEntries(value.meta),
             immutable = true)
-  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell,
+  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
      vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
      vkFfiLoad, vkFfiLibrary, vkFfiCallable:
@@ -2747,6 +2834,7 @@ proc declarationKind*(value: Value): string =
   of vkNamespace: "Namespace"
   of vkModule: "Module"
   of vkEnv: "Env"
+  of vkCallerEnv: "CallerEnv"
   of vkCell: "Cell"
   of vkAtomicCell: "AtomicCell"
   of vkStream: "Stream"
@@ -2938,6 +3026,38 @@ proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   newEnv(bindingsFromMap("Env/extend bindings", args[1]), args[0],
          bindingScope = call.dispatchScope)
 
+proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "Env/snapshot expects a CallerEnv and a binding-name list")
+  if args[0].kind != vkCallerEnv:
+    raise newException(GeneError, "Env/snapshot expects a CallerEnv")
+  if args[1].kind != vkList:
+    raise newException(GeneError,
+      "Env/snapshot binding names must be a list")
+  let source = args[0].callerEnvScope
+  var bindings = initTable[string, Value]()
+  var seen = initHashSet[string]()
+  for item in args[1].listItems:
+    let name =
+      case item.kind
+      of vkSymbol: item.symVal
+      of vkString: item.strVal
+      else:
+        raise newException(GeneError,
+          "Env/snapshot binding names must be symbols or strings")
+    if seen.contains(name):
+      raise newException(GeneError,
+        "Env/snapshot duplicate binding name: " & name)
+    seen.incl name
+    var value: Value
+    if not source.lookupOptional(name, value):
+      raise newException(GeneError,
+        "Env/snapshot undefined binding: " & name)
+    rejectCallerEnvEscape("Env/snapshot binding '" & name & "'", value)
+    bindings[name] = escapeWeakFunctions(value)
+  newEnv(bindings)
+
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
   while source.streamHasNext:
@@ -3092,6 +3212,8 @@ proc readUpdateChild(name: string, target, segment: Value): Value =
       name & " cannot update through " & $target.kind)
 
 proc writeUpdateChild(name: string, target, segment, value: Value): Value =
+  if value.kind != vkVoid:
+    rejectCallerEnvEscape(name & " functional update", value)
   case target.kind
   of vkMap:
     var entries = copyEntries(target.mapEntries)
@@ -3257,6 +3379,7 @@ proc biListAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "List/assoc expects 3 arguments, got " & $args.len)
   requireList("List/assoc", args[0])
+  rejectCallerEnvEscape("List/assoc", args[2])
   let index = updateIndex("List/assoc", args[0].listItems.len,
                           requireInt64("List/assoc", args[1]))
   var items = copyItems(args[0].listItems)
@@ -3267,6 +3390,7 @@ proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "List/set! expects 3 arguments, got " & $args.len)
   requireList("List/set!", args[0])
+  rejectCallerEnvEscape("List/set!", args[2])
   let index = updateIndex("List/set!", args[0].listItems.len,
                           requireInt64("List/set!", args[1]))
   let stored = if args[2].kind == vkVoid: NIL else: args[2]
@@ -3294,6 +3418,7 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "Map/put! expects 3 arguments, got " & $args.len)
   requirePropMap("Map/put!", args[0])
+  rejectCallerEnvEscape("Map/put!", args[2])
   args[0].putMapEntry(keySegment("Map/put!", args[1]), args[2])
   args[2]
 
@@ -3301,6 +3426,7 @@ proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "Map/assoc expects 3 arguments, got " & $args.len)
   requireMap("Map/assoc", args[0])
+  rejectCallerEnvEscape("Map/assoc", args[2])
   case args[0].kind
   of vkMap:
     var entries = copyEntries(args[0].mapEntries)
@@ -3576,6 +3702,7 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "Node/set-prop! expects 3 arguments, got " & $args.len)
   requireNode("Node/set-prop!", args[0])
+  rejectCallerEnvEscape("Node/set-prop!", args[2])
   args[0].setNodeProp(keySegment("Node/set-prop!", args[1]), args[2])
   args[2]
 
@@ -3586,6 +3713,7 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   requireNode("Node/set-body!", args[0])
   if args[1].kind != vkList:
     raise newException(GeneError, "Node/set-body! expects a List")
+  rejectCallerEnvEscape("Node/set-body!", args[1])
   args[0].setNodeBody(args[1].listItems)
   args[1]
 
@@ -3594,6 +3722,7 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "Node/push-body! expects 2 arguments, got " & $args.len)
   requireNode("Node/push-body!", args[0])
+  rejectCallerEnvEscape("Node/push-body!", args[1])
   args[0].pushNodeBody(args[1])
   args[1]
 
@@ -3656,6 +3785,7 @@ proc setCheckedBufferItem*(buffer: Value, index: int, item: Value,
                            scope: Scope = nil): Value =
   if buffer.kind != vkBuffer:
     raise newException(GeneError, "Buffer/set! expects a Buffer")
+  rejectCallerEnvEscape("Buffer/set!", item)
   let actualIndex = updateIndex("Buffer/set!", buffer.bufferLen, int64(index))
   result = checkedBufferItem(buffer, item, "Buffer/set! item", scope)
   buffer.setBufferItem(actualIndex, result)
@@ -4320,6 +4450,11 @@ proc buildBuiltins(app: Application): Scope =
   result.define("TypeError", typeError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: typeError)
+  # A send that resolves to a SyntaxCallable is a distinct dynamic call-kind
+  # mismatch. It inherits TypeError's diagnostic fields and Error impl so
+  # callers can catch it specifically without losing ordinary type matching.
+  let callKindError = newType("CallKindError", typeError, @[], @[], result)
+  result.define("CallKindError", callKindError)
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
                                        typeExpr: newSym("Str"), scope: result)],
@@ -4674,6 +4809,7 @@ proc buildBuiltins(app: Application): Scope =
   let envScope = newScope(result)
   envScope.define("extend", newNativeCallFn("Env/extend", biEnvExtend,
                                             acceptsNamed = false))
+  envScope.define("snapshot", newNativeFn("Env/snapshot", biEnvSnapshot))
   result.define("Env", newNamespace("Env", envScope))
   result.define("read-one", newNativeCallFn("read-one", biReadOne,
                                             acceptsNamed = false))
@@ -5306,6 +5442,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.impls.setLen(0)
   scope.implOverlayRoot = false
   scope.implStageRoot = false
+  scope.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   scope.requiredImplTypes.setLen(0)
   scope.evalBudget =
     if parent != nil: parent.evalBudget
@@ -5350,6 +5487,7 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
     else: nil
   result.parent = parent
   result.simpleCallScope = true
+  result.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   result.evalBudget =
     if parent != nil: parent.evalBudget
     else: nil
@@ -5616,6 +5754,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.parent = nil
     scope.application = nil
     scope.evalBudget = nil
+    scope.borrowedCallerEnv = false
     if pools.callScopesLen < MaxCallScopePool:
       pools.callScopes[pools.callScopesLen] = scope
       inc pools.callScopesLen
@@ -5652,6 +5791,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.parent = nil
   scope.application = nil
   scope.evalBudget = nil
+  scope.borrowedCallerEnv = false
   if pools.callScopesLen < MaxCallScopePool:
     pools.callScopes[pools.callScopesLen] = scope
     inc pools.callScopesLen
@@ -6301,7 +6441,7 @@ proc isSendableValue(value: Value, scope: Scope,
       if scope == nil: builtinsScope()
       else: scope.application().builtinsScope()
     value.nsScope != nil and value.nsScope.parent == root
-  of vkModule, vkEnv, vkCell, vkStream, vkActorContext,
+  of vkModule, vkEnv, vkCallerEnv, vkCell, vkStream, vkActorContext,
      vkActorStep, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable:
     false
@@ -7171,6 +7311,29 @@ proc materializeEvalParent(env: Value): Scope =
       bindingScope.defineOverlay(k, v)
     current = bindingScope
   current
+
+proc materializeCallerEvalParent(callerEnv: Value): Scope =
+  ## Materialize a read-only overlay for one eval from the live borrowed view.
+  ## The overlay is marked borrowed so any closure it creates cannot escape the
+  ## surrounding syntax call. Declarations stay in eval's child scope.
+  let source = callerEnv.callerEnvScope
+  var chain: seq[Scope]
+  let builtins = source.application().builtinsScope()
+  var current = source
+  while current != nil and current != builtins:
+    chain.add current
+    current = current.parent
+  result = newScope(builtins)
+  result.borrowedCallerEnv = true
+  for i in countdown(chain.high, 0):
+    let item = chain[i]
+    for index, name in item.slotNames:
+      if name.len > 0 and item.slotDefined(index):
+        result.defineOverlay(name, item.slots[index])
+    for name, value in item.vars:
+      result.defineOverlay(name, value)
+    for impl in item.impls:
+      result.impls.add impl
 
 proc collectProtocolMatches(scope: Scope, recvType, message: Value,
                             matches: var seq[Value]) =
@@ -8433,6 +8596,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSetName:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in set")
+          rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
+                                stack[^1])
           scope.assign(inst[].name, stack[^1])
         of opSetLocal:
           if stack.len == 0:
@@ -8441,6 +8606,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSetOuterLocal:
           if stack.len == 0:
             raise newException(GeneError, "VM stack underflow in set")
+          rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
+                                stack[^1])
           scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[^1])
         of opPop:
           discard stack.pop()
@@ -8449,6 +8616,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
               items[i] = stack.pop()
+          for item in items:
+            rejectCallerEnvEscape("list construction", item)
           stack.add newList(items, inst[].flag)
         of opMakeListSplice:
           let proto = chunk.listBuilds[inst[].intArg]
@@ -8462,6 +8631,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               appendSplicedBody(items, part)
             else:
               items.add part
+          for item in items:
+            rejectCallerEnvEscape("list construction", item)
           stack.add newList(items, proto.immutable)
         of opMakeMap:
           var values = newSeq[Value](inst[].intArg)
@@ -8471,6 +8642,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var entries = initOrderedTable[string, Value]()
           for i, key in inst[].names:
             if values[i].kind != vkVoid:
+              rejectCallerEnvEscape("map construction", values[i])
               entries[key] = values[i]
           stack.add newMap(entries, inst[].flag)
         of opMakeHashMap:
@@ -8479,6 +8651,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             for i in countdown(inst[].intArg - 1, 0):
               let val = stack.pop()
               let key = stack.pop()
+              rejectCallerEnvEscape("hash-map key construction", key)
+              rejectCallerEnvEscape("hash-map value construction", val)
               entries[i] = HashMapEntry(key: key, val: val)
           stack.add buildHashMap("general map literal", entries)
         of opMakeNode:
@@ -8504,12 +8678,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if metaValues[i].kind != vkVoid:
                 meta[key] = metaValues[i]
           let head = stack.pop()
+          rejectCallerEnvEscape("node head construction", head)
           var body: seq[Value]
           for i, part in bodyParts:
             if proto.bodySplices.len > 0 and proto.bodySplices[i]:
               mergeSplicedNodePart(props, body, part)
             else:
               body.add part
+          for _, value in props:
+            rejectCallerEnvEscape("node prop construction", value)
+          for value in body:
+            rejectCallerEnvEscape("node body construction", value)
+          for _, value in meta:
+            rejectCallerEnvEscape("node meta construction", value)
           stack.add newNode(head, props = props, body = body, meta = meta,
                             immutable = proto.immutable)
         of opMakeSelector:
@@ -8517,6 +8698,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
               body[i] = stack.pop()
+          for item in body:
+            rejectCallerEnvEscape("selector construction", item)
           stack.add newNode(newSym("select"), body = body)
         of opApplySelector:
           if stack.len < 2:
@@ -8564,11 +8747,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opEval:
           let env = stack.pop()
           let node = stack.pop()
-          if env.kind != vkEnv:
-            raise newException(GeneError, "eval ^in must be an Env")
-          let evalScope = newScope(materializeEvalParent(env))
+          if env.kind notin {vkEnv, vkCallerEnv}:
+            raise newException(GeneError,
+              "eval ^in must be an Env or live CallerEnv")
+          let evalParent =
+            if env.kind == vkCallerEnv:
+              materializeCallerEvalParent(env)
+            else:
+              materializeEvalParent(env)
+          let evalScope = newScope(evalParent)
           evalScope.implOverlayRoot = true
-          evalScope.evalBudget = evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
+          evalScope.evalBudget =
+            if env.kind == vkCallerEnv:
+              scope.evalBudget
+            else:
+              evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
           let evalChunk =
             try:
               compileEvalForm(node)
@@ -8911,7 +9104,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
-                  rejectEvaluatedSyntaxCall(callee)
+                  rejectSyntaxCallWithoutSite(callee)
                 let bound = bindCallScope(callee, proto, [], NamedArgs())
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
@@ -9121,7 +9314,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
-                  rejectEvaluatedSyntaxCall(callee)
+                  rejectSyntaxCallWithoutSite(callee)
                 var boundScope: Scope
                 var boundReturnType: Value
                 var usedUnaryIntFast = false
@@ -9290,11 +9483,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if callee.kind == vkNil:
             if not scope.lookupOptional(inst[].name, callee):
               raise newException(GeneError, "undefined symbol: " & inst[].name)
+          if callee.isSyntaxFn:
+            rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
             stack.insert(callee, stack.len - inst[].intArg)
           else:
             stack.add callee
           stack.add receiver
+        of opPlaceSendReceiver:
+          # [callee, receiver, named...] -> [callee, named..., receiver]. The
+          # resolution itself happened before named argument evaluation.
+          let namedCount = inst[].intArg
+          if namedCount <= 0 or stack.len < namedCount + 2:
+            raise newException(GeneError,
+              "VM stack underflow placing message receiver")
+          let receiverIndex = stack.len - namedCount - 1
+          var receiver = move stack[receiverIndex]
+          for i in receiverIndex ..< stack.len - 1:
+            stack[i] = move stack[i + 1]
+          stack[stack.len - 1] = move receiver
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
@@ -9413,7 +9620,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 # bind via the shared helper, then push a frame carrying the return
                 # type to adapt and the callee's error boundary to translate on throw.
                 if callee.isSyntaxFn:
-                  rejectEvaluatedSyntaxCall(callee)
+                  rejectSyntaxCallWithoutSite(callee)
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount > 0 and proto.canFastBindRequiredNamed:
@@ -9566,7 +9773,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not fnProto.isGenerator:
                 if callee.isSyntaxFn:
-                  rejectEvaluatedSyntaxCall(callee)
+                  rejectSyntaxCallWithoutSite(callee)
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount == 0 and fnProto.canFastBindPositionalInt and
@@ -10303,6 +10510,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # safepoints. Worker-safe tasks receive a sparse captured-scope
           # snapshot; atomicArc threaded builds may hand those leaf-like tasks
           # to the opt-in worker lane.
+          if scope.borrowedCallerEnv:
+            raise newException(GeneError,
+              "spawn cannot capture borrowed CallerEnv authority")
           let body = chunk.subchunks[inst[].intArg]
           let workerSafe = inst[].flag and scope.spawnCanMoveToWorker(body)
           publishSpawnCapture(scope, body)
@@ -10420,6 +10630,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             stack.add applySyntaxCall(callee, chunk.constants[inst[].depth],
                                       scope)
             ip = inst[].intArg
+        of opRejectSyntaxSend:
+          if stack.len == 0:
+            raise newException(GeneError,
+              "VM stack underflow checking message callable")
+          if stack[stack.len - 1].isSyntaxFn:
+            rejectSyntaxSend(stack[stack.len - 1], scope)
         of opReturn:
           frameReturn(if stack.len > 0: stack.pop() else: NIL)
         of opReturnBareInt:
@@ -11896,6 +12112,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkNamespace: newSym("Namespace")
   of vkModule: newSym("Module")
   of vkEnv: newSym("Env")
+  of vkCallerEnv: newSym("CallerEnv")
   of vkCell: newSym("Cell")
   of vkAtomicCell: newSym("AtomicCell")
   of vkStream:
@@ -12201,6 +12418,27 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   e.hasErrVal = true
   raise e
 
+proc raiseCallKindError(where, expected, actual: string, value: Value,
+                        scope: Scope) =
+  let message = where & " expected " & expected & ", got " & actual
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  props["where"] = newStr(where)
+  props["expected"] = newStr(expected)
+  props["actual"] = newStr(actual)
+  props["actual-value"] = value
+  var head = newSym("CallKindError")
+  var callKindError: Value
+  if scope != nil and scope.lookupOptional("CallKindError", callKindError) and
+      callKindError.kind == vkType:
+    head = callKindError
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
 proc isInstanceOfType(value, expected: Value): bool =
   if expected.isEnumType:
     let enumType = value.enumValueEnum
@@ -12401,6 +12639,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkModule)
   of "Env":
     (true, value.kind == vkEnv)
+  of "CallerEnv":
+    (true, value.kind == vkCallerEnv)
   of "Cell":
     (true, value.kind == vkCell)
   of "AtomicCell":
@@ -17712,6 +17952,11 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       let fresh = newScope(callee.fnScope)
       fresh.prepareSlots(proto.localNames)
       fresh
+  if proto.isSyntaxFn and args.len > 0 and args[0].kind == vkCallerEnv:
+    # Any child/eval scope and closure created during this syntax call inherits
+    # the marker. Escape checks can therefore reject authority captured
+    # indirectly through a closure, without scanning the whole scope graph.
+    callScope.borrowedCallerEnv = true
   var typeBindings: Table[string, Value]
   if proto.typeParams.len > 0:
     typeBindings = initTable[string, Value]()
@@ -17797,6 +18042,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     var rest = newSeq[Value](args.len - positional.len)
     for i in 0 ..< rest.len:
       rest[i] = args[positional.len + i]
+      rejectCallerEnvEscape("rest parameter '" & proto.restParam & "'", rest[i])
     if proto.restSlot >= 0:
       callScope.defineFreshCallSlot(proto.restSlot, newList(rest))
     else:
@@ -17902,28 +18148,6 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if proto.poolCallScope:
       releaseCallScope(callScope)
 
-proc snapshotCallerEnv(scope: Scope): Value =
-  ## The caller's visible lexical bindings as an Env (design §11.1):
-  ## `caller-env` inside a fn! body. A binding snapshot is a read-only view
-  ## for name resolution — code evaluated `^in caller-env` cannot create or
-  ## rebind caller bindings — while mutable values reachable through it stay
-  ## live. Builtins are excluded here; Env materialization re-adds them.
-  var chain: seq[Scope]
-  let builtins = builtinsScope()
-  var s = scope
-  while s != nil and s != builtins:
-    chain.add s
-    s = s.parent
-  var bindings = initTable[string, Value]()
-  for i in countdown(chain.high, 0):  # outermost first, so inner shadows
-    let sc = chain[i]
-    for index, slotName in sc.slotNames:
-      if slotName.len > 0 and sc.slotDefined(index):
-        bindings[slotName] = sc.slots[index]
-    for key, value in sc.vars:
-      bindings[key] = value
-  newEnv(bindings, bindingScope = scope)
-
 proc syntaxCallEnvelope(scope: Scope, node: Value): Value =
   ## SyntaxCall envelope (design §3): the raw prop/body syntax nodes of the
   ## call plus the site, mirroring the ordinary Call envelope shape.
@@ -17950,7 +18174,8 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value 
     raise newException(GeneError, "fn! has no VM code")
   let proto = FunctionProto(code)
   var args = newSeqOfCap[Value](callNode.body.len + 2)
-  args.add snapshotCallerEnv(callerScope)
+  let callerEnv = newCallerEnv(callerScope)
+  args.add callerEnv
   args.add syntaxCallEnvelope(callerScope, callNode)
   for item in callNode.body:
     args.add item
@@ -17959,10 +18184,16 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value 
     named.names.add key
     named.values.add value
   try:
-    applyFunctionCall(callee, args, named, proto)
-  except GeneError as e:
-    attachSourceLoc(e, proto.sourceLoc)
-    raise
+    try:
+      result = applyFunctionCall(callee, args, named, proto)
+      rejectCallerEnvEscape("fn! return", result)
+    except GeneError as e:
+      if e.hasErrVal:
+        rejectCallerEnvEscape("fn! error payload", e.errVal)
+      attachSourceLoc(e, proto.sourceLoc)
+      raise
+  finally:
+    deactivateCallerEnv(callerEnv)
 
 proc validateConstructedInstance(typ, instance: Value) =
   ## Schema validation after a ctor body runs (design §7.1.1): required fields
@@ -18148,7 +18379,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     constructEnumVariant(callee, args, named)
   of vkFunction:
     if callee.isSyntaxFn:
-      rejectEvaluatedSyntaxCall(callee)
+      rejectSyntaxCallWithoutSite(callee)
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")

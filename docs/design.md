@@ -504,7 +504,7 @@ Syntax calls use a `SyntaxCall` envelope:
   ^body  [Node...])
 
 (protocol SyntaxCallable
-  (message apply_syntax [callee : Self, call : SyntaxCall, caller-env : Env] : Any))
+  (message apply_syntax [callee : Self, call : SyntaxCall, caller-env : CallerEnv] : Any))
 ```
 
 `Fn`, `Type`, `Selector`, protocol messages, native functions, and user-defined callable values implement `Callable`. `Fn!` values created by `fn!` implement `SyntaxCallable`.
@@ -514,7 +514,7 @@ To evaluate `(h ^p v c1 c2)`:
 1. If `h` names a special form, use that special-form rule.
 2. If `h` names a compile-time `macro`, expand it before runtime evaluation.
 3. Otherwise evaluate `h` to a callee.
-4. If the callee implements `SyntaxCallable`, build a `SyntaxCall` from the **unevaluated** prop/body syntax nodes and call `apply_syntax` with the caller `Env`. Ordinary argument evaluation does not happen.
+4. If the callee implements `SyntaxCallable`, build a `SyntaxCall` from the **unevaluated** prop/body syntax nodes and call `apply_syntax` with a borrowed `CallerEnv`. Ordinary argument evaluation does not happen.
 5. Otherwise evaluate props/body into a `Call` envelope.
 6. If the callee implements `Callable`, call `apply`.
 7. Otherwise it is a call error.
@@ -529,7 +529,21 @@ Syntax callability is a runtime property of the callee value, so it has an expli
 
 The generic-path check is the price of first-class fexprs. Code that must compile to direct calls should type its callees.
 
-MVP approximation: call sites whose head is a statically tracked fn! name (definitions, direct `var` aliases, and `from "path"` imports) compile to the syntax path, and expression heads compile to the guarded generic path. The remaining arg-first fused call sites (for example a fn! flowing into an untyped function parameter that is then called) reject fn! callees with a recoverable error instead of silently evaluating arguments; full generic-path coverage for those sites is future work.
+Retained syntax is also an artifact-size and confidentiality cost: a sealed/AOT
+build may discard argument syntax only at call sites proven ordinary. Dynamic
+sites must retain the source-shaped envelope needed by `SyntaxCallable`, so
+builds that must omit sensitive syntax should exclude `Fn!` statically at those
+boundaries.
+
+The compiler tracks direct `fn!` names (definitions, direct `var` aliases, and
+`from "path"` imports) and emits the syntax path directly while that binding is
+not mutable. Every dynamic or
+`Any` callee—including an untyped function parameter and an Env-provided
+binding—uses the guarded generic path: the callee is loaded and tested before
+any named or positional argument form runs. Arg-first fused call opcodes are
+reserved for callees proven to exclude `SyntaxCallable`, such as stable
+ordinary function declarations and `Fn`/`Callable`-typed parameters. Unknown
+ambient bindings are dynamic even during ordinary source compilation.
 
 Normal calls are callable-first:
 
@@ -546,6 +560,14 @@ Message sends use `~`:
 (x ~ X/f a b) # qualified: X/f resolves lexically, then (X/f x a b)
 (~ f a b)     # send to lexical self: (self ~ f a b)
 ```
+
+`~` resolves only ordinary `Callable` behavior. A lexical fallback or
+expression callee that is an `Fn!`/`SyntaxCallable` is rejected immediately
+after the receiver/callee is resolved and before any remaining send argument
+is evaluated. The recoverable error is `CallKindError`, a subtype of
+`TypeError`, with `^where`, `^expected`, `^actual`, and `^actual-value`
+diagnostics. Syntax callables are invoked only in ordinary call-head position;
+send syntax is never reinterpreted as a syntax call.
 
 For an unqualified send, `f` is resolved receiver-first: the receiver's
 type-direct messages (walking `^is`), then protocol messages provided by
@@ -2052,7 +2074,7 @@ Such a helper would expand to a normal `impl Reader BufferedReader` whose messag
 Gene separates runtime syntax behavior from compile-time rewriting.
 
 ```text
-fn!    runtime fexpr / syntax callable / Env-aware DSL tool
+fn!    runtime fexpr / syntax callable / CallerEnv-aware DSL tool
 macro  compile-time template expansion
 derive protocol-local compile-time declaration generation
 ```
@@ -2061,7 +2083,7 @@ This split avoids making full Lisp-style macros the default abstraction while st
 
 ### 11.1 `fn!`: runtime fexprs
 
-`fn!` defines a runtime syntax callable. It receives unevaluated syntax nodes and the caller `Env`, then decides what to evaluate.
+`fn!` defines a runtime syntax callable. It receives unevaluated syntax nodes and a borrowed view of the caller, then decides what to evaluate.
 
 ```gene
 (fn! unless! [cond, body...]
@@ -2073,21 +2095,30 @@ This split avoids making full Lisp-style macros the default abstraction while st
 A `fn!` value implements `SyntaxCallable` (§3). Its parameter vector matches the raw syntax nodes in the call envelope. Inside a `fn!` body, the implementation provides read-only bindings:
 
 ```text
-caller-env  Env         # the caller's evaluation environment
+caller-env  CallerEnv   # borrowed; valid only during this syntax call
 syntax-call SyntaxCall  # the full raw call envelope, including props/site
 ```
 
-The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly, usually with `caller-env` or a restricted child environment.
+The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly with the live `caller-env`, or explicitly snapshot selected authority into a durable `Env`.
 
 Like macros, names bound to `fn!` values should keep the `!` suffix by convention (`unless!`); this is not enforced.
 
-`caller-env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling a `fn!` implicitly grants the callee a view of the caller's full evaluation environment:
+`caller-env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling a `fn!` implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
 
 - `caller-env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
 - `caller-env` is a read-only view for name resolution. Code evaluated `^in caller-env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
-- Because calling an unknown value may hand it your environment, security-sensitive code should treat syntax calls deliberately: type callees to exclude `Fn!`, pass a restricted child or purpose-built `Env` when evaluating untrusted syntax, and rely on evaluation policies (§11.5), which travel with the environment `eval` actually receives.
+- `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
+- Durable capture is explicit: `(Env/snapshot caller-env ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
+- Because calling an unknown value may temporarily hand it your environment, security-sensitive code should type callees to exclude `Fn!`. A syntax callable evaluating untrusted syntax should first create a purpose-built snapshot and apply the evaluation policies described in §11.5.
 
-`fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and `caller-env`. The compilation cost model for this dispatch is specified in §3.
+For example, this durable environment contains `config` but not `secret`:
+
+```gene
+(fn! capture-config! []
+  (Env/snapshot caller-env ["config"]))
+```
+
+`fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and a fresh borrowed `CallerEnv`. The compilation cost model for this dispatch is specified in §3.
 
 Use `fn!` for:
 
@@ -3711,7 +3742,7 @@ The design is close enough to start implementation once the following MVP cuts a
 5. **Callable evaluator:** implement callable-first evaluation, syntax-callable dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `SyntaxCallable`, `Fn`, `Fn!`, `NativeFn`, and `~` message sends.
 6. **Selectors:** implement selector literals, static and dynamic `%` stages, `void` propagation, strict/default options, list/map/node/module/namespace lookup, and functional update paths.
 7. **Streams and parser pipeline:** implement `(Stream T E)`, `yield`, `peek`, `next`, `has_next`, `close`, `Never` error normalization, declaration streams, and stream-shaped reader/parser output.
-8. **Errors:** implement `Error` marker protocol, `fail`, `panic`, `try/catch/ensure`, `CompileError`, `MatchError`, `TypeError`, and checked/dynamic `^errors` rules.
+8. **Errors:** implement `Error` marker protocol, `fail`, `panic`, `try/catch/ensure`, `CompileError`, `MatchError`, `TypeError`, `CallKindError`, and checked/dynamic `^errors` rules.
 9. **Protocols:** implement protocol declarations, messages, visible-implementation coherence, ambiguity errors, `^impl`, and basic `^derive` plumbing. Manual delegation is ordinary forwarding impls and needs no dedicated support; the derive-based delegation helper is deferred.
 10. **Env and eval:** implement first-class GC-managed `Env`, explicit `eval node ^in env`, isolated overlays, compile-time/runtime capability separation, and overlay lifetime rules.
 11. **Concurrency foundation:** implement structured tasks, cancellation, bounded channels, `Send`, `Cell`, `AtomicCell`, then typed actors with sequential mailboxes.
@@ -3749,7 +3780,7 @@ Deferred until after the first implementation slice:
 - `~` is the message-send operator: `(x ~ f a)` resolves `f` receiver-first (type-direct messages, then protocol impls, then lexical fallback); `(x ~ X/f a)` resolves `X/f` lexically. Message names are not bound in the enclosing scope. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
-- `fn!` defines runtime fexprs / syntax callables that receive raw syntax and `caller-env`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
+- `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `Env/snapshot`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.
 - Generic constraints are deferred until needed for generic derived implementations.

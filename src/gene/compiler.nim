@@ -53,6 +53,14 @@ type
     # Unlike macros, fn! values stay runtime bindings; imports carry only the
     # name set so the importer's call sites keep raw syntax.
     syntaxFnNames: Table[string, bool]
+    # Names proven to hold ordinary fn values in the current compilation flow.
+    # Dynamic parameters/Any bindings are deliberately absent and use the
+    # callable-first syntax guard before argument evaluation.
+    ordinaryFnNames: Table[string, bool]
+    # A whole-unit conservative prepass records every syntactic `set` target.
+    # A name in this set is not a stable callable proof, including when the
+    # mutation appears after a closure that captures the binding.
+    mutableBindingNames: HashSet[string]
     importedSyntaxFnSets: Table[string, seq[string]]
     importedSyntaxFnNames: HashSet[string]
 
@@ -136,6 +144,7 @@ proc reserveLocal(c: var Compiler, name: string): int =
   # A rebound name is an ordinary binding again; fn! call-site tracking must
   # not survive shadowing (design §11.1). fn! definitions re-add themselves.
   c.syntaxFnNames.del(name)
+  c.ordinaryFnNames.del(name)
   if not c.useLocalSlots:
     return -1
   if c.localSlots.hasKey(name):
@@ -160,6 +169,28 @@ proc localType(c: Compiler, name: string): Value =
   if c.useLocalSlots and c.localTypes.hasKey(name):
     return c.localTypes[name]
   NIL
+
+proc typeExcludesSyntaxCallable(expr: Value): bool =
+  case expr.kind
+  of vkSymbol:
+    expr.symVal in ["Fn", "Callable", "NativeFn", "Type",
+                    "ProtocolMessage", "Selector"]
+  of vkNode:
+    if expr.head.kind != vkSymbol:
+      return false
+    if expr.head.symVal in ["Fn", "Callable", "NativeFn", "Type",
+                            "ProtocolMessage", "Selector"]:
+      return true
+    if expr.head.symVal == "|":
+      if expr.body.len == 0:
+        return false
+      for item in expr.body:
+        if not typeExcludesSyntaxCallable(item):
+          return false
+      return true
+    false
+  else:
+    false
 
 proc parentSlot(c: Compiler, name: string): tuple[depth: int, slot: int] =
   for i, slots in c.parentSlots:
@@ -280,6 +311,24 @@ proc hasLexicalBinding(c: Compiler, name: string): bool =
     return true
   c.parentSlot(name).slot >= 0
 
+proc calleeKnownOrdinary(c: Compiler, callee: Value): bool =
+  case callee.kind
+  of vkSymbol:
+    if c.ordinaryFnNames.hasKey(callee.symVal) and
+        callee.symVal notin c.mutableBindingNames:
+      return true
+    let local = c.localType(callee.symVal)
+    if local.kind != vkNil and local.typeExcludesSyntaxCallable:
+      return true
+    # These names map to compiler-known ordinary native operators. Every other
+    # ambient name can come from a caller-supplied Scope/Env and stays guarded.
+    c.allowAmbientImports and not c.hasLexicalBinding(callee.symVal) and
+      nativeFastLoadKind(callee.symVal) != nfkNone
+  of vkNode:
+    callee.head.kind == vkSymbol and callee.head.symVal == "fn"
+  else:
+    false
+
 proc lexicalCallSlot(c: Compiler, name: string): tuple[op: OpCode, depth: int, slot: int] =
   let slot = c.localSlot(name)
   if slot >= 0:
@@ -320,7 +369,7 @@ proc emitLoadBinding(c: var Compiler, name: string) =
       discard c.emit(opLoadOuterLocal, outer.slot, depth = outer.depth, name = name)
     else:
       let fastKind = nativeFastLoadKind(name)
-      if fastKind != nfkNone:
+      if fastKind != nfkNone and c.allowAmbientImports:
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
       else:
         discard c.emit(opLoadName, name = name)
@@ -425,6 +474,8 @@ proc childCompiler(c: Compiler): Compiler =
            importedMacroSets: c.importedMacroSets,
            importedMacroNames: c.importedMacroNames,
            syntaxFnNames: c.syntaxFnNames,
+           ordinaryFnNames: c.ordinaryFnNames,
+           mutableBindingNames: c.mutableBindingNames,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
            importedSyntaxFnNames: c.importedSyntaxFnNames)
 
@@ -2375,6 +2426,12 @@ proc compileVar(c: var Compiler, node: Value) =
          (body[valueIndex].kind == vkNode and
           body[valueIndex].head.isSymbol("fn!"))):
       c.syntaxFnNames[body[0].symVal] = true
+    elif body.len > valueIndex and
+        ((body[valueIndex].kind == vkSymbol and
+          c.ordinaryFnNames.hasKey(body[valueIndex].symVal)) or
+         (body[valueIndex].kind == vkNode and
+          body[valueIndex].head.isSymbol("fn"))):
+      c.ordinaryFnNames[body[0].symVal] = true
   else:
     if c.useLocalSlots:
       for name in patternBindingNames(body[0]):
@@ -2388,6 +2445,8 @@ proc compileSet(c: var Compiler, node: Value) =
   if body.len < 2 or body[0].kind != vkSymbol:
     raise newException(GeneError, "set requires a name and a value")
   compileExpr(c, body[1])
+  c.syntaxFnNames.del(body[0].symVal)
+  c.ordinaryFnNames.del(body[0].symVal)
   c.emitSetBinding(body[0].symVal)
 
 proc compileFn(c: var Compiler, node: Value, inferredName: string) =
@@ -2409,6 +2468,10 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
 
   if definesName and c.useLocalSlots:
     discard c.reserveLocal(name)
+  if name.len > 0:
+    # Register before compiling the body so recursive ordinary calls can use
+    # fused call opcodes. A later `set` removes this proof.
+    c.ordinaryFnNames[name] = true
   let errorRow = compileErrorRow(c, node)
   let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
                                  typeParams = typeParams,
@@ -2423,6 +2486,7 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
     c.emitDefineBinding(name)
+    c.ordinaryFnNames[name] = true
 
 proc compileFnBang(c: var Compiler, node: Value) =
   ## (fn! name [params] body...) — runtime fexpr / syntax callable (design
@@ -3295,7 +3359,7 @@ proc compileHashMapValue(c: var Compiler, value: Value) =
     compileExpr(c, entry.val)
   discard c.emit(opMakeHashMap, value.hashMapEntries.len)
 
-proc compileCall(c: var Compiler, node: Value)
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true)
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
                  sendName: string, argsStart: int) =
@@ -3303,11 +3367,15 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   ## receiver-first at runtime, falling back to the lexical binding. Stack
   ## shape matches ordinary calls: [callee, named..., receiver, args...].
   var names: seq[string]
+  compileExpr(c, receiver)
+  # Resolve before every send argument. In particular, a lexical fn! fallback
+  # is rejected here without running named or positional argument forms.
+  discard c.emit(opResolveMessage, 0, name = sendName)
   for k, value in node.props:
     names.add k
     compileExpr(c, value)
-  compileExpr(c, receiver)
-  discard c.emit(opResolveMessage, names.len, name = sendName)
+  if names.len > 0:
+    discard c.emit(opPlaceSendReceiver, names.len)
   var splices = @[false]
   var hasSplice = false
   compileSpreadValues(c, node.body, argsStart, forList = false, splices,
@@ -3324,7 +3392,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         c.emit(opCall, argCount, names = names)
     c.chunk.callSites[callIndex] = node
 
-proc compileCall(c: var Compiler, node: Value) =
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       node.body[0].symVal == "~":
     # (x ~ f a) — infix message send / flipped call (docs/core.md §9.1).
@@ -3340,17 +3408,26 @@ proc compileCall(c: var Compiler, node: Value) =
     args.add node.head
     for i in 2 ..< node.body.len:
       args.add node.body[i]
-    compileCall(c, newNode(node.body[1], node.props, args, node.meta))
+    compileCall(c, newNode(node.body[1], node.props, args, node.meta),
+                allowSyntax = false)
     return
   if c.syntaxFnNames.len > 0 and node.head.kind == vkSymbol and
-      c.syntaxFnNames.hasKey(node.head.symVal):
+      c.syntaxFnNames.hasKey(node.head.symVal) and
+      node.head.symVal notin c.mutableBindingNames:
+    if not allowSyntax:
+      compileExpr(c, node.head)
+      discard c.emit(opRejectSyntaxSend)
+      return
     # Known fn! callee (design §3 step 4): props/body stay raw syntax nodes;
     # no argument evaluation happens.
     compileExpr(c, node.head)
     c.emitConst node
     c.chunk.callSites[c.emit(opSyntaxCall)] = node
     return
-  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 0:
+  let knownOrdinary = c.calleeKnownOrdinary(node.head) or
+    node.props.hasKey("protocol")
+  if knownOrdinary and node.props.len == 0 and
+      node.head.kind == vkSymbol and node.body.len == 0:
     let direct = c.lexicalCallSlot0(node.head.symVal)
     if direct.slot >= 0:
       c.chunk.callSites[c.emit(direct.op, direct.slot,
@@ -3360,7 +3437,8 @@ proc compileCall(c: var Compiler, node: Value) =
     if not c.hasLexicalBinding(node.head.symVal):
       c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
       return
-  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 2:
+  if knownOrdinary and node.props.len == 0 and
+      node.head.kind == vkSymbol and node.body.len == 2:
     let fastKind = nativeFastLoadKind(node.head.symVal)
     if fastKind != nfkNone and not c.hasLexicalBinding(node.head.symVal):
       compileExpr(c, node.body[0])
@@ -3381,7 +3459,8 @@ proc compileCall(c: var Compiler, node: Value) =
         else:
           discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
       return
-  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len == 1:
+  if knownOrdinary and node.props.len == 0 and
+      node.head.kind == vkSymbol and node.body.len == 1:
     let direct = c.lexicalCallSlot(node.head.symVal)
     if direct.slot >= 0:
       let argKnownBareInt = c.exprKnownBareInt(node.body[0])
@@ -3396,7 +3475,8 @@ proc compileCall(c: var Compiler, node: Value) =
       c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal,
                                flag = argKnownBareInt)] = node
       return
-  if node.props.len == 0 and node.head.kind == vkSymbol and node.body.len > 1 and
+  if knownOrdinary and node.props.len == 0 and
+      node.head.kind == vkSymbol and node.body.len > 1 and
       not node.body.hasValueSpread:
     let slot = c.localSlot(node.head.symVal)
     if slot >= 0:
@@ -3447,7 +3527,14 @@ proc compileCall(c: var Compiler, node: Value) =
   # be a fn!, so guard before evaluating props/body. On the syntax branch the
   # VM performs the syntax call from the raw node and jumps past the plain
   # call sequence.
-  let syntaxGuardAt = c.emit(opSyntaxGuard, 0, depth = c.chunk.addConst(node))
+  let syntaxGuardAt =
+    if allowSyntax and not knownOrdinary:
+      c.emit(opSyntaxGuard, 0, depth = c.chunk.addConst(node))
+    elif not allowSyntax:
+      discard c.emit(opRejectSyntaxSend)
+      -1
+    else:
+      -1
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:
@@ -3467,7 +3554,8 @@ proc compileCall(c: var Compiler, node: Value) =
       else:
         c.emit(opCall, node.body.len, names = names)
     c.chunk.callSites[callIndex] = node
-  c.patchJump(syntaxGuardAt)
+  if syntaxGuardAt >= 0:
+    c.patchJump(syntaxGuardAt)
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
@@ -3500,6 +3588,9 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
                            body = @[node.props["protocol"], node.body[0]]))
   else:
     compileExpr(c, node.body[0])
+  # `~` is ordinary message-send/flipped-call syntax. SyntaxCallable values
+  # are valid only in call-head position, and rejection precedes send args.
+  discard c.emit(opRejectSyntaxSend)
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:
@@ -4414,8 +4505,41 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   else:
     c.emitConst node
 
+proc collectMutableBindingNames(value: Value,
+                                names: var HashSet[string]) =
+  ## Conservatively collect mutation targets across nested closures before any
+  ## call site is lowered. Quoted/generated syntax may produce false positives,
+  ## which only disables an optimization; missing a later captured mutation
+  ## would make an argument-first call semantically incorrect for fn! values.
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("set") and value.body.len > 0 and
+        value.body[0].kind == vkSymbol:
+      names.incl value.body[0].symVal
+    collectMutableBindingNames(value.head, names)
+    for _, item in value.props:
+      collectMutableBindingNames(item, names)
+    for item in value.body:
+      collectMutableBindingNames(item, names)
+    for _, item in value.meta:
+      collectMutableBindingNames(item, names)
+  of vkList:
+    for item in value.listItems:
+      collectMutableBindingNames(item, names)
+  of vkMap:
+    for _, item in value.mapEntries:
+      collectMutableBindingNames(item, names)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      collectMutableBindingNames(entry.key, names)
+      collectMutableBindingNames(entry.val, names)
+  else:
+    discard
+
 proc compileFormsInto(c: var Compiler, forms: openArray[Value],
                       useLocalSlots: bool): Chunk =
+  for form in forms:
+    collectMutableBindingNames(form, c.mutableBindingNames)
   if useLocalSlots:
     c.enableLocalSlots()
   if forms.len == 0:

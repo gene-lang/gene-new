@@ -96,6 +96,7 @@ type
     vkNamespace ## named binding container (`ns` or module root namespace)
     vkModule    ## first-class module value with a root namespace
     vkEnv       ## first-class eval environment (design Section 11.1 MVP)
+    vkCallerEnv ## borrowed fn! caller view; valid only during the syntax call
     vkCell      ## first-class mutable reference (design Section 12.2)
     vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
     vkStream    ## first-class pull stream (design Section 6)
@@ -294,6 +295,7 @@ type
     impls*: seq[ProtocolImpl]
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
     implStageRoot*: bool    # module impls remain pending until atomic activation
+    borrowedCallerEnv*: bool # scope or ancestor is inside a live syntax call
     requiredImplTypes*: seq[Value]
     evalBudget*: EvalBudget
     ownsTasks*: bool
@@ -341,6 +343,7 @@ type
     weakScope: pointer       # non-owning Scope used for scope-owned bindings
     checksErrors: bool
     syntaxFn: bool           # fn! syntax callable / fexpr (design §3/§11.1)
+    capturesCallerEnv: bool  # closure was created under a borrowed caller view
     errorTypes: seq[Value]
 
   GeneNativeFn = object
@@ -475,6 +478,9 @@ type
     module: Value
     capabilities: Value
     policy: Value
+    borrowed: bool
+    borrowedActive: bool
+    borrowedScope: Scope
 
   CellData = ref object of GeneObjectData
     cycleRefs: int            # Value-held refs, for trial-deletion collection
@@ -1250,6 +1256,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.module)
     clearValueSlot(d.capabilities)
     clearValueSlot(d.policy)
+    d.borrowedActive = false
+    d.borrowedScope = nil
   of okCell, okAtomicCell:
     clearValueSlot(CellData(data).value)
   of okStream:
@@ -1713,7 +1721,8 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okDuration: vkDuration
     of okSet: vkSet
     of okHashMap: vkHashMap
-    of okEnv: vkEnv
+    of okEnv:
+      if EnvData(objData(v)).borrowed: vkCallerEnv else: vkEnv
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
     of okStream: vkStream
@@ -2082,6 +2091,11 @@ proc fnHasWeakScope*(v: Value): bool =
   let fn = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
   fn.scope == nil and fn.weakScope != nil
 
+proc fnCapturesCallerEnv*(v: Value): bool =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).capturesCallerEnv
+
 proc fnChecksErrors*(v: Value): bool =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
@@ -2153,6 +2167,10 @@ proc newEnv*(bindings: sink Table[string, Value],
              capabilities: Value = NIL,
              policy: Value = NIL,
              bindingScope: Scope = nil): Value
+
+proc newCallerEnv*(scope: Scope): Value
+proc callerEnvScope*(v: Value): Scope
+proc deactivateCallerEnv*(v: Value)
 
 proc escapeWeakFunctions*(v: Value): Value
 
@@ -3906,6 +3924,7 @@ proc newFunction*(name: string, params: sink seq[string],
   p.scope = scope
   p.checksErrors = checksErrors
   p.syntaxFn = syntaxFn
+  p.capturesCallerEnv = scope != nil and scope.borrowedCallerEnv
   p.errorTypes = errorTypes
   boxPtr(FUNCTION_TAG, p)
 
@@ -3922,6 +3941,7 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
     p.scope = scope
   p.checksErrors = src.checksErrors
   p.syntaxFn = src.syntaxFn
+  p.capturesCallerEnv = src.capturesCallerEnv
   p.errorTypes = src.errorTypes
   boxPtr(FUNCTION_TAG, p)
 
@@ -4370,6 +4390,8 @@ proc escapeWeakFunctions*(v: Value): Value =
       return v
     newEnv(bindings, escapedParent, imports, escapedModule,
            escapedCapabilities, escapedPolicy)
+  of vkCallerEnv:
+    v
   of vkCPtr:
     v
   of vkCSlice:
@@ -4699,6 +4721,32 @@ proc newEnv*(bindings: sink Table[string, Value],
   boxObject(EnvData(objKind: okEnv, parent: parent, bindings: storedBindings,
                     imports: imports, module: module,
                     capabilities: capabilities, policy: policy))
+
+proc newCallerEnv*(scope: Scope): Value =
+  if scope == nil:
+    raise newException(FieldDefect, "CallerEnv requires a caller scope")
+  boxObject(EnvData(objKind: okEnv, borrowed: true, borrowedActive: true,
+                    borrowedScope: scope))
+
+proc callerEnvScope*(v: Value): Scope =
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not a CallerEnv")
+  let data = EnvData(objData(v))
+  if not data.borrowed:
+    raise newException(FieldDefect, "value is not a CallerEnv")
+  if not data.borrowedActive or data.borrowedScope == nil:
+    raise newException(GeneError,
+      "CallerEnv is no longer valid outside its syntax call")
+  data.borrowedScope
+
+proc deactivateCallerEnv*(v: Value) =
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not a CallerEnv")
+  let data = EnvData(objData(v))
+  if not data.borrowed:
+    raise newException(FieldDefect, "value is not a CallerEnv")
+  data.borrowedActive = false
+  data.borrowedScope = nil
 
 proc newCell*(value: Value): Value =
   boxObject(CellData(objKind: okCell, value: value))

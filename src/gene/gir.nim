@@ -64,6 +64,7 @@ type
     opCall
     opCallSplice
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
+    opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
     opReturnIntAdd2
     opIntSub2
@@ -112,6 +113,7 @@ type
     opDeclareType
     opSyntaxCall  # pop raw call node + fn! callee, apply the syntax call (design §3/§11.1)
     opSyntaxGuard # if the callee on top is a fn!, syntax-call the const node and jump
+    opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
 
   Instruction* = object
     op*: OpCode
@@ -657,6 +659,8 @@ proc formatInstruction(inst: Instruction): string =
       result.add " names=" & formatNames(inst.names)
   of opResolveMessage:
     result.add " name=" & inst.name & " named=" & $inst.intArg
+  of opPlaceSendReceiver:
+    result.add " named=" & $inst.intArg
   of opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
      opIntLe2, opIntGe2, opIntFast2:
     result.add " name=" & inst.name
@@ -689,7 +693,7 @@ proc formatInstruction(inst: Instruction): string =
     discard
   of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJump:
     result.add " target=" & $inst.intArg
-  of opSyntaxCall:
+  of opSyntaxCall, opRejectSyntaxSend:
     discard
   of opSyntaxGuard:
     result.add " target=" & $inst.intArg & " const=" & $inst.depth

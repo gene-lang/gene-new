@@ -320,10 +320,51 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
                "catch (TypeError ^expected e) e)",
                "\"Callable\"")
 
-  test "fn! rejects argument-evaluating call sites instead of mis-evaluating":
-    check_eval("(fn! q! [e] e) (fn hof [f] (f 1)) " &
-               "(try (hof q!) catch * \"rejected\")",
-               "\"rejected\"")
+  test "dynamic callees choose fn! before evaluating arguments":
+    check_eval("(fn! q! [e] e) (var side 0) " &
+               "(fn hof [f] (f (set side 1))) " &
+               "[(hof q!) side]",
+               "[(set side 1) 0]")
+    check_eval("(fn! q! [e] e) " &
+               "(fn hof [f : Any] (f (+ 1 2))) (hof q!)",
+               "(+ 1 2)")
+    check_eval("(fn! q! [^x] x) (var side 0) " &
+               "(fn hof [f] (f ^x (set side 1))) " &
+               "[(hof q!) side]",
+               "[(set side 1) 0]")
+    check_eval("(fn! z! [] 42) (fn hof [f] (f)) (hof z!)", "42")
+    check_eval("(fn f [x] x) (var side 0) " &
+               "(fn invoke [] (f (set side 1))) " &
+               "(set f (fn! [x] x)) [(invoke) side]",
+               "[(set side 1) 0]")
+
+  test "eval Env bindings use callable-first fn! dispatch":
+    check_eval("(fn! q! [e] e) " &
+               "(var e (env ^bindings {^q q!})) " &
+               "(eval (quote (q (+ 1 2))) ^in e)",
+               "(+ 1 2)")
+    check_eval("(fn! q! [e] e) " &
+               "(var e (env ^bindings {^+ q!})) " &
+               "(eval (quote (+ (set never 1))) ^in e)",
+               "(set never 1)")
+
+  test "message sends reject fn! before evaluating send arguments":
+    check_eval("(fn f [self y ^x] [self y x]) ([1] ~ f ^x 2 3)",
+               "[[1] 3 2]")
+    check_eval("(fn! q! [x] x) (var side 0) " &
+               "(try ([1] ~ q! (set side 1)) catch * side)",
+               "0")
+    check_eval("(fn! q! [^x] x) (var side 0) " &
+               "(try ([1] ~ q! ^x (set side 1)) catch * side)",
+               "0")
+    check_eval("(fn! q! [x] x) (var side 0) " &
+               "(try ([1] ~ (do q!) (set side 1)) catch * side)",
+               "0")
+    check_eval("(fn! q! [x] x) " &
+               "(try ([1] ~ q! 1) " &
+               " catch (CallKindError ^where w ^expected e ^actual a) " &
+               " [w e a])",
+               "[\"message send\" \"Callable\" \"SyntaxCallable\"]")
 
   test "fn! prints as a fn! value":
     check_eval("(fn! q! [e] e) q!", "(fn! q!)")
@@ -333,6 +374,54 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
     # not surface in arity diagnostics.
     check_eval("(fn! q! [e] e) (try (q!) catch (Error ^message m) m)",
                "\"fn! 'q!' expects 1..1 syntax argument(s), got 0\"")
+
+  test "caller-env is borrowed and explicit snapshots are durable":
+    check_eval("(var x 41) " &
+               "(fn! capture! [] (Env/snapshot caller-env [\"x\"])) " &
+               "(var saved (capture!)) (eval (quote (+ x 1)) ^in saved)",
+               "42")
+    check_eval("(var x 1) (var secret 9) " &
+               "(fn! capture! [] (Env/snapshot caller-env [\"x\"])) " &
+               "(var saved (capture!)) " &
+               "(try (eval (quote secret) ^in saved) catch * \"absent\")",
+               "\"absent\"")
+    check_eval("(fn! type! [] (var e : CallerEnv caller-env) \"ok\") " &
+               "(type!)",
+               "\"ok\"")
+
+  test "caller-env escape boundaries reject borrowed authority":
+    check_eval("(fn! leak! [] caller-env) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(fn! leak! [] [caller-env]) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(fn! leak! [] (cell caller-env)) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(var leaked nil) (fn! leak! [] (set leaked caller-env)) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller-env))) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(fn! leak! [] (fail caller-env)) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(fn! leak! [] (scope (spawn caller-env))) " &
+               "(try (leak!) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(import serde [write SerdeError]) " &
+               "(fn! leak! [] " &
+               "  (try (write caller-env) catch (SerdeError) \"blocked\")) " &
+               "(leak!)",
+               "\"blocked\"")
+    check_eval("(var ch (channel ^capacity 1)) " &
+               "(fn! leak! [] " &
+               "  (try (ch ~ Channel/send caller-env) " &
+               "   catch (TypeError ^expected e) e)) " &
+               "(leak!)",
+               "\"Send\"")
 
 suite "spec — typed native compilation prototype from design":
   test "simple typed Int arithmetic can use a native direct op":

@@ -220,6 +220,8 @@ proc print*(v: Value): string =
     "(mod " & v.moduleName & ")"
   of vkEnv:
     "(env)"
+  of vkCallerEnv:
+    "(caller-env)"
   of vkCell:
     "(cell)"
   of vkAtomicCell:

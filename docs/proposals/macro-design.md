@@ -153,22 +153,18 @@ Evaluation is:
 1. evaluate head `f!`;
 2. if result is SyntaxCallable, do not evaluate body arguments or named arguments;
 3. package raw syntax nodes into SyntaxCall;
-4. pass SyntaxCall plus caller Env to the fexpr body;
+4. pass SyntaxCall plus a borrowed CallerEnv to the fexpr body;
 5. the fexpr decides what, when, and where to evaluate.
 ```
 
 This means only the callee position is evaluated normally. Argument evaluation is controlled by the fexpr.
 
-**As implemented (design §3, MVP approximation):** the dispatch above is not a
-per-call runtime check on every call site. Call sites whose head is a
-statically tracked fn! name (definitions, direct `var` aliases, and
-`from "path"` imports) compile to the syntax path directly; expression heads
-(`((do f!) ...)`, a value fetched from a map, etc.) compile to a guarded
-generic path that checks the evaluated callee before touching the arguments.
-The remaining arg-first fused call sites — for example a fn! flowing into an
-untyped function parameter that is then called — **reject** fn! callees with a
-recoverable error instead of silently evaluating arguments. Full generic
-coverage for those sites is future work.
+**As implemented (design §3):** call sites whose head is a stable, statically
+tracked fn! name compile to the syntax path directly. Every dynamic/`Any`
+callee—including untyped parameters, expression heads, and Env-provided
+bindings—uses a guarded generic path that checks the evaluated callee before
+touching named or positional arguments. Argument-first fused calls are emitted
+only when the compiler can exclude `SyntaxCallable`.
 
 Relatedly, `Fn!` is a sibling of `Fn` in the type hierarchy, not a subtype: a
 fn! value does not satisfy an `Fn`-typed (or `Callable`-typed) parameter, so
@@ -225,16 +221,19 @@ Conceptual `SyntaxCall`:
 Inside a `fn!`, Gene provides a lexical binding:
 
 ```gene
-caller-env : Env
+caller-env : CallerEnv
 ```
 
-`caller-env` is a **read-only view** of the caller's evaluation environment
+`caller-env` is a **borrowed, read-only view** of the caller's evaluation environment
 (design §11.1). It resolves the caller's lexical bindings, imports, module
 namespace, and core built-ins, and it can be passed to `eval`. Code evaluated
 `^in caller-env` cannot create, rebind, or `set` bindings in the caller's
 scope — declarations made by an evaluated unit live in that unit's own
 overlay. Mutable values reachable through caller bindings (`Cell`, buffers,
-actors) can still be mutated; the view is read-only, not deep-frozen.
+actors) can still be mutated; the view is read-only, not deep-frozen. The view
+cannot escape the syntax call through returns, containers, closures, tasks,
+serialization, or `Send` boundaries. Use `(Env/snapshot caller-env ["name" ...])`
+to create a durable `Env` containing only explicitly selected bindings.
 
 Example:
 
@@ -498,7 +497,7 @@ Use `fn!` when:
 ```text
 - custom evaluation order is enough;
 - syntax is evaluated at runtime;
-- the construct needs caller Env authority;
+- the construct needs borrowed caller authority;
 - the construct is a DSL or control abstraction;
 - the result does not need to create compile-time declarations;
 - tooling does not need to see the expanded form ahead of time.
@@ -559,9 +558,8 @@ Usage:
   (match binding
     (when [name init]
       (var value (eval init ^in caller-env))
-      (var child (caller-env ~ Env/extend {name value}))
       (try
-        (eval `(do %body...) ^in child)
+        (eval `(do (var %name %value) %body...) ^in caller-env)
       ensure
         (value ~ Closeable/close)))))
 ```
@@ -693,13 +691,13 @@ design", "spec — fn! across modules"), with the §4.2/§5.2/§5.4 MVP notes:
 ```text
 - `SyntaxCall` value (^named, ^site, raw body nodes);
 - `fn!` definition form, named and anonymous;
-- read-only caller-env binding (plus syntax-call), as implicit leading
+- read-only borrowed CallerEnv binding (plus syntax-call), as implicit leading
   parameters;
-- static call-site tracking + guarded expression heads; fused sites
-  reject fn! callees (SyntaxCallable stays conceptual — see §5.1);
-- explicit eval through `caller-env` and `Env/extend` sandboxes;
-- tests for lazy args, named syntax args, Env authority, and fn! value
-  aliasing/rejection.
+- guarded dynamic/Any call sites before argument evaluation; fused sites only
+  for callees proven ordinary (SyntaxCallable stays conceptual — see §5.1);
+- explicit eval through live `caller-env`, and named durable `Env/snapshot`;
+- tests for lazy args, named syntax args, borrowed authority/escape rejection,
+  durable snapshots, and fn! value aliasing.
 ```
 
 Not yet implemented: destructuring patterns in fn! parameter vectors (§5.3).

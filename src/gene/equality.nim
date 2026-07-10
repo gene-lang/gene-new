@@ -105,7 +105,8 @@ proc equal*(a, b: Value): bool =
     for i in 0 ..< a.body.len:
       if not equal(a.body[i], b.body[i]): return false
     tablesEqual(a.props, b.props)
-  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
+  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
+     vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability, vkFfiLoad,
      vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage,
@@ -124,7 +125,7 @@ proc same*(a, b: Value): bool =
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol:
     equal(a, b)
   of vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
-     vkEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
+     vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable, vkType, vkProtocol,
      vkProtocolMessage, vkEnumVariant:
@@ -203,7 +204,8 @@ proc hash*(v: Value): Hash =
     for k, val in v.props:
       acc = acc xor (hash(k) !& hash(val))
     h = h !& acc
-  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
+  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
+     vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability, vkFfiLoad,
      vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage,
@@ -224,7 +226,8 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
      vkProtocol, vkProtocolMessage, vkEnumVariant:
     true
-  of vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
+  of vkCallerEnv, vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer,
+     vkDeviceBuffer, vkCapability,
      vkFfiLoad, vkFfiLibrary, vkFfiCallable:
     false
   of vkList:
