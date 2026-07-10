@@ -30,13 +30,14 @@ actual lexical surface (src/gene/reader.nim):
 
 - line comments `# …`, nested block comments `#< … >#`, datum comments `#_`
   (`#(`, `#[`, `#{` stay literals, not comments);
-- strings `"…"`, triple-quoted `"""…"""`, interpolated `$"…${expr}…"` with
-  the interpolation body highlighted as embedded Gene, regex literals
-  `#"…"flags`;
+- strings `"…"`, triple-quoted `"""…"""`, regular and triple interpolated
+  strings with embedded Gene bodies, and regular/triple regex literals with
+  flags;
 - bytes literals `0!binary` / `0xhex` / `0#base64` (listed before the
   comment rule so a base64 `#` never reads as a comment) and char literals
   `'a'` / `'\n'` (Gene's `'` exclusively introduces chars — there is no
   quote sugar);
+- date, time, and datetime literals, highlighted before numeric fallback;
 - special forms in head position (`fn`, `var`, `type`, `match`, `impl`, …)
   and boolean control (`&&`, `||`, `!`);
 - properties `^name`, meta `@name`, spread `...`, send `~`, quasiquote

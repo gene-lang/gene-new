@@ -1,7 +1,7 @@
 import gene/reader
 import gene/printer
 import gene/types
-import std/unittest
+import std/[strutils, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
@@ -81,6 +81,10 @@ suite "reader — sugars":
   test "message send round-trips": check_read("(x ~ f a b)", "(x ~ f a b)")
   test "flipped standalone": check_read("(~ f a b)",   "(~ f a b)")
   test "spread":             check_read("x...",         "(... x)")
+  test "prop and meta flags consume no values":
+    check_read("(x ^^ready false @@generated nil)",
+               "(x @@generated ^^ready false nil)")
+    check_read("{^^ready ^value false}", "{^^ready ^value false}")
   test "bare at can be a node head":
     check_read("(@ {^line l} (x ^name n))", "(@ {^line l} (x ^name n))")
     check_read("(x @line 7)", "(x @line 7)")
@@ -196,6 +200,24 @@ suite "reader — malformed input is rejected":
     expect ReadError: discard read("\"\\q\"")
     expect ReadError: discard read("\"\\uD800\"")
     expect ReadError: discard read("\"\\u{110000}\"")
+  test "ordinary props and meta props require values":
+    for source in ["(x ^name)", "(x ^name ^age 1)", "(x @doc)",
+                   "(x @doc @@generated)", "{^name}", "#{^name}",
+                   "{^name, ^age 1}"]:
+      expect ReadError:
+        discard read(source)
+  test "prop maps require explicit property keys":
+    expect ReadError:
+      discard read("{name \"Ada\"}")
+  test "missing prop values report the key location":
+    try:
+      discard read("(x\n  ^name)", "props.gene")
+      check false
+    except ReadError as e:
+      check e.sourceName == "props.gene"
+      check e.line == 2
+      check e.col == 4
+      check "requires a value" in e.msg
   test "stray closing paren":
     expect ReadError: discard read(")")
   test "stray closing bracket":

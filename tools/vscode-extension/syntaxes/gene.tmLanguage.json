@@ -9,6 +9,7 @@
     { "include": "#chars" },
     { "include": "#keywords" },
     { "include": "#constants" },
+    { "include": "#temporals" },
     { "include": "#numbers" },
     { "include": "#properties" },
     { "include": "#meta" },
@@ -20,7 +21,7 @@
     "bytes": {
       "comment": "Bytes literals (reader tryScanBytesLexeme): 0!binary, 0xhex, 0#base64. Listed before comments so the # of a base64 literal never reads as a line comment.",
       "name": "constant.numeric.bytes.gene",
-      "match": "(?<![^\\s()\\[\\]{},;])0(![01_]+|x[0-9a-fA-F_]+|#[A-Za-z0-9+/=]+)(?![^\\s()\\[\\]{},;\"])"
+      "match": "(?<![^\\s()\\[\\]{},;])0(![01]+|x[0-9a-fA-F]+|#[A-Za-z0-9+/=]+)(?![^\\s()\\[\\]{},;\"])"
     },
     "chars": {
       "comment": "Char literals: 'a', '\\n', '\\u0041'. Gene's ' exclusively introduces chars (no quote sugar).",
@@ -48,6 +49,20 @@
     "strings": {
       "patterns": [
         {
+          "name": "string.interpolated.triple.gene",
+          "begin": "\\$\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            { "include": "#string-escape" },
+            {
+              "name": "meta.embedded.expression.gene",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "patterns": [{ "include": "$self" }]
+            }
+          ]
+        },
+        {
           "name": "string.quoted.triple.gene",
           "begin": "\"\"\"",
           "end": "\"\"\"",
@@ -74,6 +89,12 @@
           ]
         },
         {
+          "name": "string.regexp.triple.gene",
+          "begin": "#\"\"\"",
+          "end": "\"\"\"[a-zA-Z]*",
+          "patterns": [{ "include": "#string-escape" }]
+        },
+        {
           "name": "string.regexp.gene",
           "begin": "#\"",
           "end": "\"[a-zA-Z]*",
@@ -95,7 +116,7 @@
       "patterns": [
         {
           "name": "keyword.control.gene",
-          "match": "(?<=\\()\\s*(fn!|fn|var|set|do|if_then|if_not|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|new|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"])"
+          "match": "(?<=\\()\\s*(fn!|fn|var|set|do|if_then|if_not|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|env|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"])"
         },
         {
           "name": "keyword.operator.logical.gene",
@@ -106,6 +127,11 @@
     "constants": {
       "name": "constant.language.gene",
       "match": "(?<![^\\s()\\[\\]{},;])(true|false|nil|void|self|_)(?![^\\s()\\[\\]{},;\"])"
+    },
+    "temporals": {
+      "comment": "Date, time, and datetime literals recognized before numeric atoms by reader.tryScanTemporalLexeme.",
+      "name": "constant.other.datetime.gene",
+      "match": "(?<![^\\s()\\[\\]{},;])([0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2})?(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?(\\[[^]\\r\\n]+\\])?)?|[0-9]{2}:[0-9]{2}(:[0-9]{2})?(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?(\\[[^]\\r\\n]+\\])?)(?![^\\s()\\[\\]{},;\"])"
     },
     "numbers": {
       "name": "constant.numeric.gene",

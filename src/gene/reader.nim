@@ -909,8 +909,7 @@ proc parsePropKey(r: var Reader): string =
     let idx = r.tokIdx
     r.tokIdx += 1
     return internName(r.tokens[idx].lexeme)
-  let keyForm = r.parseForm()
-  if keyForm.kind == vkSymbol: keyForm.symVal else: ""
+  r.raiseReadErrorAt(r.peek(), "property key must be a symbol")
 
 proc desugarPath*(lexeme: string): Value =
   if lexeme == "/": return newSym("/")
@@ -1059,13 +1058,17 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     case tok.kind
     of tkCaret, tkCaretCaret:
       discard r.next()
+      let keyTok = r.peek()
       let key = r.parsePropKey()
       var val: Value
-      let afterKey = r.peekKind()
-      if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
-         afterKey in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+      if tok.kind == tkCaretCaret:
         val = TRUE
       else:
+        let afterKey = r.peekKind()
+        if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
+                        tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi}:
+          r.raiseReadErrorAt(keyTok,
+            "property '^" & key & "' requires a value")
         val = r.parseForm()
       props[key] = val
     of tkAt, tkAtAt:
@@ -1079,13 +1082,17 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
           body.add form
       else:
         discard r.next()
+        let keyTok = r.peek()
         let key = r.parsePropKey()
         var val: Value
-        let afterKey = r.peekKind()
-        if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof} or
-           afterKey in {tkCaret, tkCaretCaret, tkAt, tkAtAt}:
+        if tok.kind == tkAtAt:
           val = TRUE
         else:
+          let afterKey = r.peekKind()
+          if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
+                          tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi}:
+            r.raiseReadErrorAt(keyTok,
+              "meta property '@" & key & "' requires a value")
           val = r.parseForm()
         meta[key] = val
     of tkSemi:
@@ -1124,20 +1131,26 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
     let k = r.peekKind()
     if k == closing or k == tkEof: break
     let tok = r.peek()
-    if tok.kind in {tkCaret, tkCaretCaret}:
-      discard r.next()
+    if tok.kind notin {tkCaret, tkCaretCaret}:
+      r.raiseReadErrorAt(tok,
+        "prop map entries must start with '^' or '^^'")
+    discard r.next()
+    let keyTok = r.peek()
     let key = r.parsePropKey()
     if tok.kind == tkCaretCaret:
       # `^^k` is true-flag sugar, same as in node props; it consumes no value.
       items[key] = TRUE
       if r.peekKind() == tkComma: discard r.next()
       continue
-    var val: Value = NIL
+    var val: Value
     if r.peekKind() == tkColon:
       discard r.next()
     let afterKey = r.peekKind()
-    if afterKey != closing and afterKey != tkComma:
-      val = r.parseForm()
+    if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
+                    tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi}:
+      r.raiseReadErrorAt(keyTok,
+        "map property '^" & key & "' requires a value")
+    val = r.parseForm()
     items[key] = val
     if r.peekKind() == tkComma: discard r.next()
   if r.peekKind() == tkEof:

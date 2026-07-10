@@ -1447,6 +1447,17 @@ suite "cli — gene parse/fmt/compile":
     check "`(li %t)" in outText                  # quasiquote/unquote resugared
     check "\n  (if (== t/done 0)" in outText     # fn body wrapped + indented
 
+    let lexical = writeCliProgram("fmt_lexical_dispatch.gene",
+      "#\"a#b\"im # after regex\n" &
+      "$\"\"\"hello ${name}\"\"\" # after interpolation\n" &
+      "'a' # after char\n" &
+      "0#SGk= # after bytes\n" &
+      "2026-07-04T09:30Z # after datetime\n")
+    let lexicalFmt = runGene(["fmt", lexical])
+    check lexicalFmt.exitCode == 0
+    check lexicalFmt.output.count("# after ") == 5
+    check "#\"a#b\"im" in lexicalFmt.output
+
   test "fmt output is parse-equivalent and idempotent on the todo app":
     buildGeneCli()
     let f1 = execCmdEx(shellQuote(geneExe) & " fmt examples/todo_app.gene")

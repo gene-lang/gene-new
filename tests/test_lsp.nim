@@ -134,6 +134,17 @@ suite "lsp — analysis":
     check src[closing - 1] == ')'
     check closing < src.find("(var after")
 
+  test "triple regex and interpolation atoms preserve raw form ranges":
+    let src = "(var pattern #\"\"\"[)#]+\"\"\"im)\n" &
+              "(var text $\"\"\"value ${name} ) #\"\"\")\n" &
+              "(var after 1)"
+    let a = analyze(src)
+    check a.parsed
+    check a.symbols.len == 3
+    check a.symbols[0].range.endPos.line == 0
+    check a.symbols[1].range.endPos.line == 1
+    check a.symbols[2].name == "after"
+
   test "char literals with delimiters do not break form ranges":
     let src = "(var close ')')\n(var open '(')\n(var after 2)"
     let a = analyze(src)

@@ -230,7 +230,7 @@ x/user/name  => (x ~ (select user name))
 #(h ^p v x) => (immutable-node h ^p v x)
 ```
 
-Reader forms beginning with `#`:
+Reader literal/comment dispatch examples:
 
 ```gene
 #[1 2 3]                 # shallow immutable List
@@ -240,9 +240,17 @@ Reader forms beginning with `#`:
 #< nested block comment >#
 #_ next-node-is-discarded
 #! shebang
+#"[a-z]+"im                # regular expression
+#"""multi-line regex"""i # triple-quoted regular expression
+0!01000001                  # binary Bytes
+0x4869                      # hexadecimal Bytes
+0#SGk=                      # base64 Bytes
 ```
 
-Reader precedence is determined by the character immediately following `#`: `[`, `{`, and `(` begin immutable literals; `_`, `!`, and `<` begin their dedicated reader forms; other uses begin a line comment. `#_` followed by EOF is a read error.
+Reader precedence follows the ordered dispatch table in §2.2. In particular,
+`#"` begins a regex and `0#` is part of a base64 byte literal; neither can be
+swallowed by the catch-all line-comment branch. `#_` followed by EOF is a read
+error.
 
 ### 2.1 Symbols, slash paths, qualified names, and division
 
@@ -288,7 +296,11 @@ The printer must preserve token boundaries so slash paths and delimited symbols 
 
 ### 2.2 Reader grammar sketch
 
-This EBNF is the parser starting point. It describes the reader surface before semantic resolution. The compiler later classifies path nodes as selector literals, expression access chains, or static qualified names according to context.
+This EBNF describes the implemented reader surface before semantic resolution.
+The compiler later classifies path nodes as selector literals, expression
+access chains, or static qualified names according to context. Ordered lexical
+dispatch below is part of the grammar: a recognized literal prefix wins before
+the more general atom or comment branch.
 
 ```ebnf
 program        = spacing, { form, spacing }, eof ;
@@ -298,15 +310,22 @@ spread_form    = primary, [ "..." ] ;
 
 primary        = immutable_node
                | immutable_vector
-               | immutable_map
+               | immutable_prop_map
+               | general_map
                | node
                | vector
-               | map
+               | prop_map
                | quasiquote
                | unquote
                | interpolated_string
                | char
+               | regex
+               | long_string
                | string
+               | bytes
+               | datetime
+               | date
+               | time
                | path_form
                | atom ;
 
@@ -314,39 +333,83 @@ node           = "(", spacing, { element, spacing }, ")" ;
 immutable_node = "#(", spacing, { element, spacing }, ")" ;
 vector         = "[", spacing, [ form, { separator, form } ], spacing, "]" ;
 immutable_vector = "#[", spacing, [ form, { separator, form } ], spacing, "]" ;
-map            = "{", spacing, { prop_entry, spacing }, "}" ;
-immutable_map  = "#{", spacing, { prop_entry, spacing }, "}" ;
+prop_map       = "{", spacing, { map_entry, spacing }, "}" ;
+immutable_prop_map = "#{", spacing, { map_entry, spacing }, "}" ;
+general_map    = "{{", spacing,
+                   { form, spacing, ":", spacing, form, separator },
+                 "}}" ;
 
 element        = prop_entry | meta_entry | form ;
-prop_entry     = prop_key, spacing, [ form ] ;
-meta_entry     = meta_key, spacing, [ form ] ;
-prop_key       = "^^", symbol | "^", symbol, [ "?" ] ;
-meta_key       = "@@", symbol | "@", symbol ;
+prop_entry     = prop_value | prop_flag ;
+meta_entry     = meta_value | meta_flag ;
+map_entry      = map_value | prop_flag ;
+prop_value     = "^", symbol, [ "?" ], spacing, form ;
+map_value      = "^", symbol, [ "?" ], spacing, [ ":", spacing ], form ;
+prop_flag      = "^^", symbol ;
+meta_value     = "@", symbol, spacing, form ;
+meta_flag      = "@@", symbol ;
 
 quasiquote     = "`", form ;
 unquote        = "%", spread_form ;
+
+string         = '"', { string_char | escape }, '"' ;
+long_string    = '"""', { long_string_char | escape }, '"""' ;
+interpolated_string = "$", ( string | long_string ) ;
+regex          = "#", ( string | long_string ), { ascii_letter } ;
+char           = "'", ( unicode_scalar | char_escape ), "'" ;
+bytes          = binary_bytes | hex_bytes | base64_bytes ;
+binary_bytes   = "0!", binary_digit, { binary_digit | byte_continuation } ;
+hex_bytes      = "0x", hex_digit, { hex_digit | byte_continuation } ;
+base64_bytes   = "0#", base64_digit, { base64_digit | byte_continuation } ;
+byte_continuation = "~", whitespace, { whitespace } ;
+
+date           = digit, digit, digit, digit, "-", digit, digit, "-",
+                 digit, digit ;
+time           = time_body, [ time_timezone ] ;
+datetime       = date, "T", time_body, [ offset_timezone ] ;
+time_body      = digit, digit, ":", digit, digit,
+                 [ ":", digit, digit ], [ fraction ] ;
+fraction       = ".", digit, { digit } ;
+time_timezone  = offset_timezone | timezone_name ;
+offset_timezone = "Z" | ( ( "+" | "-" ), digit, digit, ":", digit, digit,
+                           [ timezone_name ] ) ;
+timezone_name  = "[", timezone_name_char, { timezone_name_char }, "]" ;
 
 path_form      = selector_literal | access_or_qualified_path ;
 selector_literal = "/", path_segment, { "/", path_segment } ;
 access_or_qualified_path = atom, "/", path_segment, { "/", path_segment } ;
 path_segment   = symbol | integer | "%", symbol | "~", symbol ;
 
-atom           = number | symbol ;
+atom           = float | integer | "true" | "false" | "nil" | "void" | symbol ;
 separator      = spacing, [ "," ], spacing ;
 spacing        = { whitespace | line_comment | block_comment | datum_comment } ;
-line_comment   = "#", not_one_of("[", "{", "(", "_", "!", "<"), { not_newline }, newline ;
+line_comment   = "#", { not_newline }, ( newline | eof ) ;
 block_comment  = "#<", { block_comment | any_char_but_unmatched_end }, ">#" ;
 datum_comment  = "#_", spacing, form ;
 ```
 
+Ordered lexical dispatch:
+
+| Prefix | Reader branch |
+|---|---|
+| `0!`, `0x`, `0#` followed by a valid digit | binary, hexadecimal, or base64 `Bytes` (recognized while scanning a `0` atom, before `#` comments) |
+| `#(`, `#[`, `#{` | shallow immutable node, list, or prop map |
+| `#"` / `#"""` | regular or triple-quoted regex, followed by optional ASCII flags |
+| `#_` | datum comment; discard exactly the next form as spacing |
+| `#<` | nested block comment through the matching `>#` |
+| `#!` | shebang-style line comment (the same spacing semantics as a line comment) |
+| any other `#` | line comment through newline or EOF |
+| digit prefix matching `date`, `time`, or `datetime` | temporal literal, before numeric/atom fallback |
+| any remaining atom start | number or symbol |
+
 Lexical notes:
 
-- `#[`, `#{`, and `#(` start shallow immutable literals.
-- `#_`, `#!`, and `#<` are dedicated reader forms.
-- Other `#...` starts a line comment.
 - `access_or_qualified_path` is intentionally context-neutral at reader time.
 - Short slash syntax permits `%name` segments only; complex stages use long `(select ... %(expr) ...)` syntax.
 - A delimited `/` token is a `symbol`, not a `path_segment` by itself.
+- Ordinary `^key` and `@key` entries always require a following form. Only
+  `^^key` and `@@key` are flag-only, and both store `true`; the same `^^key`
+  rule applies in mutable and immutable prop maps.
 
 ### 2.3 Strings and interpolation
 
@@ -582,11 +645,13 @@ If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
 MVP core special forms:
 
+<!-- compiler-head-dispatch:start -->
 ```text
-var set do if if_then if_not && || ! match for while loop repeat break continue return
-fn fn! macro type ctor protocol impl derive try fail panic quote quasiquote
-select eval mod ns import yield scope supervisor spawn await
+do if if_then if_not && || ! var set ~ fn fn! macro quote quasiquote select path
+ns env eval import mod match while loop repeat for break continue yield return try
+scope supervisor spawn await fail panic type enum protocol impl derive
 ```
+<!-- compiler-head-dispatch:end -->
 
 `&&`, `||`, and `!` are boolean control flow (§9); `while`, `loop`, `repeat`,
 `break`, and `continue` are loop control; `supervisor` owns a concurrency scope
@@ -595,6 +660,13 @@ select eval mod ns import yield scope supervisor spawn await
 shadowed by a binding.
 
 Core special forms are reserved in head position. They are not ordinary bindings that `Env` can shadow. A value named `if` may exist in data or as a qualified member, but `(if ...)` always uses the special-form rule. Clause heads such as `then`, `elif`, `else`, `when`, `catch`, and `ensure` are recognized only inside their owning special form.
+
+`path` is the canonical reader/compiler node behind glued slash syntax; users
+normally write `a/b`. `ctor`, `message`, `then`, `elif`, `else`, `when`,
+`catch`, and `ensure` are clause/declaration heads, not independently
+dispatched core forms. `new` is an ordinary runtime constructor callable: it
+can be passed or qualified like another callable and is not reserved by the
+compiler.
 
 `select` is special because selector bodies are quoted-like contexts: bare names become static segments, and `%` escapes to lexical values.
 
@@ -978,9 +1050,10 @@ Constructor invocation uses `new`:
 (var p (new Point 10.0 20.0))
 ```
 
-`new` is the explicit operation for running constructor logic. If the type has
-no `ctor`, `(new T ...)` falls back to the same schema mapping as `(T ...)`. If
-the type has a `ctor`, the construction sequence is:
+`new` is an ordinary runtime callable and the explicit operation for running
+constructor logic; it is not a compiler special form. If the type has no
+`ctor`, `(new T ...)` falls back to the same schema mapping as `(T ...)`. If the
+type has a `ctor`, the construction sequence is:
 
 ```text
 evaluate the type expression to a Type
@@ -1233,13 +1306,13 @@ next steps.
 
 #### Enums (sum types)
 
-Enums are a planned **core language feature** (not a stdlib type): a closed,
+Enums are a **core declaration special form** (not a stdlib type): a closed,
 named set of variants under one type. One `enum` form unifies simple
 enumerations (all variants carry no payload) and tagged sum types / ADTs
 (variants carry payloads) — states, message sets, `Option`/`Result`, JSON/AST
 nodes. `enum` is a declaration special form parallel to `type`. The MVP gives
 tagged-value ergonomics, nominal boundaries, and runtime matching first;
-static exhaustiveness checking is the planned follow-on once the checker can
+Static exhaustiveness checking is the planned follow-on once the checker can
 reliably know the scrutinee's enum type.
 
 ```gene
@@ -1863,6 +1936,19 @@ Compact expression form:
 ```gene
 (if cond true-expr false-expr)
 ```
+
+Guard forms treat their whole tail as one implicit `do` branch:
+
+```gene
+(if_then cond body...) # run body when truthy; otherwise nil
+(if_not cond body...)  # run body when falsy; otherwise nil
+```
+
+Each condition is evaluated once. An empty taken tail evaluates to `nil`.
+
+`(return value)` leaves the nearest function after running structured cleanup;
+`(return)` returns `void`. In generators only the empty form or
+`(return void)` is accepted, and it terminates without yielding an item (§6.1).
 
 Short-circuit boolean operators:
 

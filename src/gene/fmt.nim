@@ -80,8 +80,19 @@ proc formSpan(src: string, startOff: int): int =
     return span.matchingCloseOffset(src, i)
   if i + 1 < src.len and src[i] == '#' and src[i + 1] in {'(', '[', '{'}:
     return span.matchingCloseOffset(src, i)
+  if i + 1 < src.len and src[i] == '$' and src[i + 1] == '"':
+    return skipStringRaw(src, i + 1)
+  if i + 1 < src.len and src[i] == '#' and src[i + 1] == '"':
+    i = skipStringRaw(src, i + 1)
+    while i < src.len and src[i] in {'A'..'Z', 'a'..'z'}: inc i
+    return i
   if i < src.len and src[i] == '"':
     return skipStringRaw(src, i)
+  if i < src.len and src[i] == '\'':
+    var j = i + 1
+    if j < src.len and src[j] == '\\': inc j
+    while j < src.len and src[j] notin {'\'', '\n', '\r'}: inc j
+    return (if j < src.len and src[j] == '\'': j + 1 else: src.len)
   while i < src.len and src[i] notin {'(', ')', '[', ']', '{', '}', ' ',
       '\t', '\n', '\r', ',', ';', '"'}:
     inc i

@@ -5,7 +5,7 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[monotimes, os, sequtils, strutils, tables, times, unittest]
+import std/[algorithm, monotimes, os, sequtils, strutils, tables, times, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
@@ -58,11 +58,112 @@ suite "spec — reader surface from design":
     check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
     check_read("($ \"hello \" name)", "($ \"hello \" name)")
 
+  test "ordered literal dispatch covers every documented prefix family":
+    check_read("[#(x) #[1] #{^a 1} {{\"k\" : 2}}]",
+               "[#(x) #[1] #{^a 1} {{\"k\" : 2}}]")
+    check_read("[#\"a#b\"im #\"\"\"x+y\"\"\"i]",
+               "[#\"a#b\"im #\"x+y\"i]")
+    check_read("[0!01000001 0x41 0#QQ==]", "[0x41 0x41 0x41]")
+    check_read("[2026-07-04 09:30 2026-07-04T09:30Z]",
+               "[2026-07-04 09:30 2026-07-04T09:30:00Z]")
+    check_read("['a' \"s\" \"\"\"long\"\"\" $\"x ${name}\"]",
+               "['a' \"s\" \"long\" ($ \"x \" name)]")
+    let forms = readAll("0#QQ== # comment\n#\"x#y\"")
+    check forms.len == 2
+    check forms[0].kind == vkBytes
+    check forms[1].kind == vkRegex
+
+  test "each literal family rejects a recognized malformed form":
+    for source in ["#(x", "#[1", "#{^a 1", "{{\"k\" : }}",
+                   "#\"\"\"unterminated", "0!1", "'ab'", "\"unterminated",
+                   "$\"unterminated ${x\"", "2026-02-30", "09:99"]:
+      expect ReadError:
+        discard read(source)
+
+  test "ordinary props require values and flags are explicit":
+    check_read("(x ^^ready @@generated false)",
+               "(x @@generated ^^ready false)")
+    check_read("{^^ready ^value nil}", "{^^ready ^value nil}")
+    for source in ["(x ^name)", "(x @doc)", "{^name}", "#{^name}"]:
+      expect ReadError:
+        discard read(source)
+    let manifest = readAll(readFile("examples/ai_agent/package.gene"))
+    check manifest.len == 1
+    check manifest[0].kind == vkMap
+    check manifest[0].mapEntries.hasKey("name")
+    check manifest[0].mapEntries.hasKey("dependencies")
+
   test "malformed syntax is rejected":
     expect ReadError: discard read("(a b")
     expect ReadError: discard read(")")
     expect ReadError: discard read("$\"hello ${name\"")
     expect ReadError: discard read("'ab'")
+
+suite "spec — compiler special-form inventory from design §3":
+  test "documented inventory matches compiler dispatch and has fixtures":
+    let design = readFile("docs/design.md")
+    let marker = "<!-- compiler-head-dispatch:start -->"
+    let markerAt = design.find(marker)
+    check markerAt >= 0
+    let fenceAt = design.find("```text", markerAt)
+    let namesAt = design.find('\n', fenceAt) + 1
+    let fenceEnd = design.find("```", namesAt)
+    var documented = design[namesAt ..< fenceEnd].splitWhitespace()
+    var dispatched = CoreSpecialFormNames.toSeq()
+    documented.sort()
+    dispatched.sort()
+    check documented == dispatched
+    for i in 1 ..< documented.len:
+      check documented[i - 1] != documented[i]
+
+    var covered: seq[string]
+    template fixture(names: openArray[string], source: string) =
+      discard compileSource(source)
+      for name in names:
+        covered.add name
+
+    fixture(["do", "var", "set", "if"],
+      "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
+    fixture(["if_then"], "(if_then true 1 2)")
+    fixture(["if_not"], "(if_not false 1 2)")
+    fixture(["&&", "||", "!"], "[(&& true 1) (|| nil 2) (! false)]")
+    fixture(["~"], "(fn size-of [self] (~ size))")
+    fixture(["fn"], "(fn identity [x] x)")
+    fixture(["fn!"], "(fn! syntax-id! [x] x)")
+    fixture(["macro"], "(macro identity! [x] `%x) (identity! 1)")
+    fixture(["quote", "quasiquote", "select", "path"],
+      "(do (quote x) (quasiquote x) (select name) (path a b))")
+    fixture(["ns"], "(ns sample (var x 1))")
+    fixture(["env"], "(env ^bindings {^x 1})")
+    fixture(["eval"], "(eval (quote 1) ^in (env))")
+    fixture(["import"], "(import std/stream [map])")
+    fixture(["mod"], "(mod sample)")
+    fixture(["match"], "(match 1 (when x x))")
+    fixture(["while", "break"], "(while true (break))")
+    fixture(["loop", "continue"], "(loop (continue))")
+    fixture(["repeat"], "(repeat 0 nil)")
+    fixture(["for"], "(for x in [] x)")
+    fixture(["yield"], "(fn items [] (yield 1))")
+    fixture(["return"], "(fn early [] (return 1))")
+    fixture(["try"], "(try 1 ensure nil)")
+    fixture(["scope"], "(scope nil)")
+    fixture(["supervisor"], "(supervisor ^strategy stop nil)")
+    fixture(["spawn"], "(scope (spawn 1))")
+    fixture(["await"], "(scope (await (spawn 1)))")
+    fixture(["fail"], "(fail error-value)")
+    fixture(["panic"], "(panic)")
+    fixture(["type"], "(type FixtureType ^props {})")
+    fixture(["enum"], "(enum FixtureEnum one two)")
+    fixture(["protocol"], "(protocol FixtureProtocol)")
+    fixture(["impl"],
+      "(protocol EmptyProtocol) (type EmptyType ^props {}) " &
+      "(impl EmptyProtocol for EmptyType)")
+    expect GeneError:
+      discard compileSource("(derive)")
+    covered.add "derive"
+
+    covered.sort()
+    check covered == dispatched
 
 suite "spec — value spread from design":
   test "spread flattens values in calls and list literals":

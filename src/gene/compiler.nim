@@ -103,6 +103,15 @@ type
 
 const MaxMacroExpansionDepth = 100
 
+const CoreSpecialFormNames* = [
+  "do", "if", "if_then", "if_not", "&&", "||", "!", "var", "set", "~",
+  "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "ns",
+  "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
+  "for", "break", "continue", "yield", "return", "try", "scope",
+  "supervisor", "spawn", "await", "fail", "panic", "type", "enum",
+  "protocol", "impl", "derive"
+]
+
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           depth = 0,
           names: seq[string] = @[], flag = false): int =
