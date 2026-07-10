@@ -202,15 +202,17 @@ type
     waitTask: Value        # task the fiber is parked on, when suspended in `await`
     waitTimer: bool        # fiber is parked until `waitDeadline`
     waitDeadline: MonoTime
-    internalSendChannel: Value
-    internalSendValue: Value
-    internalSendScope: Scope
 
   AskTimeout = object
     task: Value
     reply: Value
     scope: Scope
     deadline: MonoTime
+
+  SupervisorFailureRetry = object
+    sink: Value
+    event: Value
+    scope: Scope
 
   AsyncIoKind = enum
     aioReadText
@@ -242,6 +244,11 @@ type
     runQueue: seq[Fiber]
     waiters: seq[Fiber]
     askTimeouts: seq[AskTimeout]
+    supervisorRetries: seq[SupervisorFailureRetry]
+    supervisorRetryHead: int
+    supervisorRetryDrops: uint64
+    supervisorRetryHighWater: int
+    supervisorDrainActive: bool
     when compileOption("threads") and defined(gcAtomicArc):
       workers: seq[Thread[SchedulerWorkerContext]]
       workerContexts: seq[SchedulerWorkerContext]
@@ -307,6 +314,7 @@ type
 # threads. Reserve enough room up front so worker parking/enqueue paths do not
 # force cross-thread seq reallocation in the experimental M:N lane.
 const schedulerSharedQueueInitialCap = 65536
+const supervisorFailureRetryCapacity = 64
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
@@ -356,8 +364,16 @@ type
 # Application.
 var activeScheduler {.threadvar.}: SchedulerState
 var activeFiberRunning {.threadvar.}: bool
+var activeWorkerThread {.threadvar.}: bool
 
 proc currentScheduler(): SchedulerState
+
+template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
+  acquire(s.lock)
+  try:
+    body
+  finally:
+    release(s.lock)
 
 template withScopedScheduler(scope: Scope, body: untyped): untyped =
   let schedulerScope = scope
@@ -391,6 +407,7 @@ proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
                              wakeSenders: bool)
 proc wakeTaskWaitersIn(s: SchedulerState, task: Value)
 proc enqueueRunnable(f: Fiber)
+proc drainSupervisorFailures()
 
 # Wake fibers parked in `await` on a task that has just settled.
 proc wakeTaskWaiters(task: Value)
@@ -1470,6 +1487,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       let item = checkedChannelItem(args[0], popped.item,
                                     "Channel/recv item", scope)
       wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a sender
+      drainSupervisorFailures()
       return item
 
 proc tryRecvVariant(scope: Scope, name: string): Value =
@@ -1502,6 +1520,7 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
   let item = checkedChannelItem(args[0], popped.item, "Channel/try-recv item",
                                 scope)
   wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a parked sender
+  drainSupervisorFailures()
   tryRecvValue(scope, item)
 
 proc nativeChannelTryRecv*(channel: Value, scope: Scope): Value =
@@ -1513,6 +1532,7 @@ proc nativeChannelTryRecv*(channel: Value, scope: Scope): Value =
     let item = checkedChannelItem(channel, popped.item,
                                   "native channel item", scope)
     wakeChannelWaiters(channel, wakeSenders = true)
+    drainSupervisorFailures()
     result = tryRecvValue(scope, item)
 
 proc biChannelClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -1620,11 +1640,53 @@ proc tryEmitSupervisorFailure(sink, event: Value,
 proc queueSupervisorFailure(sink, event: Value, scope: Scope) =
   if sink.kind != vkChannel:
     return
-  let task = newPendingTask()
-  let f = Fiber(scope: scope, task: task, actorOwner: NIL,
-                internalSendChannel: sink, internalSendValue: event,
-                internalSendScope: scope)
-  enqueueRunnable(f)
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    let pending = s.supervisorRetries.len - s.supervisorRetryHead
+    if pending >= supervisorFailureRetryCapacity:
+      inc s.supervisorRetryDrops
+      return
+    s.supervisorRetries.add SupervisorFailureRetry(
+      sink: sink, event: event, scope: scope)
+    let nextPending = pending + 1
+    if nextPending > s.supervisorRetryHighWater:
+      s.supervisorRetryHighWater = nextPending
+
+proc noteDroppedSupervisorFailure() =
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    inc s.supervisorRetryDrops
+
+proc drainSupervisorFailures() =
+  ## Drain the bounded FIFO opportunistically whenever a receive frees channel
+  ## space. No retry task/fiber is allocated per failure.
+  let s = currentScheduler()
+  withSchedulerLock(s):
+    if s.supervisorDrainActive:
+      return
+    s.supervisorDrainActive = true
+  defer:
+    withSchedulerLock(s):
+      s.supervisorDrainActive = false
+      if s.supervisorRetryHead == s.supervisorRetries.len:
+        s.supervisorRetries.setLen(0)
+        s.supervisorRetryHead = 0
+  while true:
+    var retry: SupervisorFailureRetry
+    withSchedulerLock(s):
+      if s.supervisorRetryHead >= s.supervisorRetries.len:
+        return
+      retry = s.supervisorRetries[s.supervisorRetryHead]
+    case tryEmitSupervisorFailure(retry.sink, retry.event, retry.scope)
+    of serDelivered:
+      withSchedulerLock(s):
+        inc s.supervisorRetryHead
+    of serUnavailable:
+      withSchedulerLock(s):
+        inc s.supervisorRetryHead
+        inc s.supervisorRetryDrops
+    of serFull:
+      return
 
 proc emitOrQueueSupervisorFailure(sink, fallback, event: Value, scope: Scope) =
   case tryEmitSupervisorFailure(sink, event, scope)
@@ -1638,7 +1700,7 @@ proc emitOrQueueSupervisorFailure(sink, fallback, event: Value, scope: Scope) =
       of serFull:
         queueSupervisorFailure(fallback, event, scope)
       of serUnavailable:
-        discard
+        queueSupervisorFailure(sink, event, scope)
     else:
       queueSupervisorFailure(sink, event, scope)
   of serUnavailable:
@@ -1649,7 +1711,9 @@ proc emitOrQueueSupervisorFailure(sink, fallback, event: Value, scope: Scope) =
       of serFull:
         queueSupervisorFailure(fallback, event, scope)
       of serUnavailable:
-        discard
+        noteDroppedSupervisorFailure()
+    elif sink.kind == vkChannel:
+      noteDroppedSupervisorFailure()
 
 proc emitSupervisorFailure(actor, failedMessage: Value, scope: Scope,
                            message: string, errorValue: Value,
@@ -1842,7 +1906,17 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let handler = actorNamedValue(call, "handle")
   let messageType = actorOptionalNamedValue(call, "type")
   let closedMessageType =
-    if messageType.kind == vkNil: NIL else: closeTypeExpr(messageType, scope)
+    if messageType.kind != vkNil:
+      closeTypeExpr(messageType, scope)
+    elif handler.kind == vkFunction and handler.fnCode != nil and
+        handler.fnCode of FunctionProto:
+      let proto = FunctionProto(handler.fnCode)
+      if proto.paramTypes.len >= 3 and proto.paramTypes[2].kind != vkNil:
+        closeTypeExpr(proto.paramTypes[2], handler.fnScope)
+      else:
+        newSym("Any")
+    else:
+      newSym("Any")
   let failureStrategy =
     if scope == nil: afsStop else: scope.actorOwnerFailureStrategy()
   let failureEvents =
@@ -1870,7 +1944,8 @@ proc biActorSpawn(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
                        failureDeadLetters, parentFailureEvents,
                        parentFailureDeadLetters,
                        maxRestarts = restartLimits.maxRestarts,
-                       restartWindowMs = restartLimits.windowMs)
+                       restartWindowMs = restartLimits.windowMs,
+                       messageTypeExplicit = messageType.kind != vkNil)
   if scope != nil:
     scope.registerOwnedActor(result)
 
@@ -4384,6 +4459,16 @@ proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
       TRUE
     else:
       FALSE
+  let scheduler = currentScheduler()
+  withSchedulerLock(scheduler):
+    entries["supervisor-retry-pending"] =
+      newInt(scheduler.supervisorRetries.len - scheduler.supervisorRetryHead)
+    entries["supervisor-retry-capacity"] =
+      newInt(supervisorFailureRetryCapacity)
+    entries["supervisor-retry-high-water"] =
+      newInt(scheduler.supervisorRetryHighWater)
+    entries["supervisor-retry-drops"] =
+      newIntFromDecimal($scheduler.supervisorRetryDrops)
   newMap(entries, immutable = true)
 
 proc biCPtrClose(args: openArray[Value]): Value {.nimcall.} =
@@ -6330,6 +6415,12 @@ proc namedCaptureSendable(fnScope, visibleScope: Scope, name: string,
   var captured: Value
   if not fnScope.lookupOptional(name, captured):
     return false
+  if mode == csmWorker and captured.kind == vkNativeFn and
+      captured.nativeFnName in ["os/exec-async", "os/exec-stream-async"]:
+    # Dedicated exec jobs retain Task/Channel ORC objects in a root-lane
+    # registry; constructing that ownership graph on a worker would perform
+    # non-atomic GC_ref/GC_unref operations on the wrong lane.
+    return false
   isSendableValue(captured, visibleScope, seen, mode)
 
 proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
@@ -6401,6 +6492,12 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
         return false
     of opSetName:
       return false
+    of opFail, opPanic:
+      if mode == csmWorker:
+        return false
+    of opMakeNamespace:
+      if mode == csmWorker:
+        return false
     else:
       discard
 
@@ -7712,13 +7809,6 @@ proc clearWaitReason(f: Fiber) =
 
 proc workerCandidate(f: Fiber): bool {.inline.} =
   f.workerSafe
-
-template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
-  acquire(s.lock)
-  try:
-    body
-  finally:
-    release(s.lock)
 
 proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
   ## Scheduler-thread callers only. Foreign threads must use the move-based
@@ -11394,6 +11484,25 @@ proc actorFiberWorkerSafe(actor, handler, state, message, reply: Value,
     return false
   reply.kind == vkNil or isSendableValue(reply, scope, seen, csmWorker)
 
+proc workerPublicationValue(value: Value, scope: Scope): tuple[ok: bool,
+                                                               value: Value] =
+  ## Runtime-created payloads were not part of the pre-enqueue capture graph.
+  ## Preserve ordinary error shapes by freezing data-only nodes before rejecting
+  ## them; payloads containing local authority (Cell, handles, Env, etc.) fail.
+  var seen = initHashSet[uint64]()
+  if isSendableValue(value, scope, seen, csmWorker):
+    markSharedValue(value)
+    return (true, value)
+  try:
+    let frozen = freezeValue(value)
+    seen.clear()
+    if isSendableValue(frozen, scope, seen, csmWorker):
+      markSharedValue(frozen)
+      return (true, frozen)
+  except GeneError:
+    discard
+  (false, NIL)
+
 proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   ## Build a fiber that runs the actor's handler on one message. Returns nil if the
   ## handler is not a fiber-able Gene function (the caller then processes inline).
@@ -11451,42 +11560,6 @@ proc runFiber(f: Fiber) =
   ## failure strategy) and advances the actor to its next message. A parked fiber
   ## had its continuation captured by the dispatch loop, so just keep it on the
   ## wait list.
-  if f.internalSendChannel.kind == vkChannel:
-    try:
-      let state = f.internalSendChannel.channelSendState()
-      if state.closed:
-        completeTask(f.task, NIL)
-        wakeTaskWaiters(f.task)
-        return
-      if state.full:
-        f.waitChannel = f.internalSendChannel
-        f.waitActor = NIL
-        f.waitIsSend = true
-        f.waitSendValue = f.internalSendValue
-        f.waitTask = NIL
-        f.waitTimer = false
-        parkFiber(f)
-        return
-      let pushed = f.internalSendChannel.tryPushChannel(
-        checkedChannelSendItem(f.internalSendChannel, f.internalSendValue,
-                               "supervisor failure event", f.internalSendScope))
-      if pushed.pushed:
-        wakeChannelWaiters(f.internalSendChannel, wakeSenders = false)
-      elif not pushed.closed:
-        f.waitChannel = f.internalSendChannel
-        f.waitActor = NIL
-        f.waitIsSend = true
-        f.waitSendValue = f.internalSendValue
-        f.waitTask = NIL
-        f.waitTimer = false
-        parkFiber(f)
-        return
-      completeTask(f.task, NIL)
-      wakeTaskWaiters(f.task)
-    except CatchableError:
-      completeTask(f.task, NIL)
-      wakeTaskWaiters(f.task)
-    return
   if not f.started:
     f.scope.prepareChunkScope(f.chunk)
   var dummyStack: seq[Value]
@@ -11513,6 +11586,13 @@ proc runFiber(f: Fiber) =
                                step, f.actorScope)
         if step.kind != vkActorStep:
           raiseTypeError("actor handler return", "ActorStep", step, f.actorScope)
+        if f.workerSafe and activeWorkerThread and step.actorStepContinue:
+          var seen = initHashSet[uint64]()
+          if not isSendableValue(step.actorStepState, f.actorScope, seen,
+                                 csmWorker):
+            raiseTypeError("actor worker state", "Send",
+                           step.actorStepState, f.actorScope)
+          markSharedValue(step.actorStepState)
         if step.actorStepContinue: actor.finishActorContinue(step.actorStepState)
         else: closeActorAndCancelMailbox(actor)
         if f.actorAskReply.kind == vkReplyTo and
@@ -11533,6 +11613,11 @@ proc runFiber(f: Fiber) =
     else:
       case stop.kind
       of rskReturn:
+        if f.workerSafe and activeWorkerThread:
+          var seen = initHashSet[uint64]()
+          if not isSendableValue(stop.value, f.scope, seen, csmWorker):
+            raiseTypeError("worker task result", "Send", stop.value, f.scope)
+          markSharedValue(stop.value)
         completeTask(f.task, stop.value)
         wakeTaskWaiters(f.task)
       of rskSuspend:
@@ -11548,7 +11633,13 @@ proc runFiber(f: Fiber) =
   except GeneError as e:
     if isActorFiber:
       let askSettled = failReplyTask(f.actorAskReply, e)
-      let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
+      var errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
+      if f.workerSafe and activeWorkerThread and e.hasErrVal:
+        let published = workerPublicationValue(errorValue, f.actorScope)
+        if published.ok:
+          errorValue = published.value
+        else:
+          errorValue = newStr("actor worker error payload does not satisfy Send")
       emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
                             errorValue)
       case actor.actorFailureStrategy
@@ -11568,6 +11659,12 @@ proc runFiber(f: Fiber) =
         try:
           let restartState =
             applyCall(actor.actorRestartInit, [], NamedArgs(), f.actorScope)
+          if f.workerSafe and activeWorkerThread:
+            var seen = initHashSet[uint64]()
+            if not isSendableValue(restartState, f.actorScope, seen, csmWorker):
+              raiseTypeError("actor worker restart state", "Send",
+                             restartState, f.actorScope)
+            markSharedValue(restartState)
           actor.finishActorContinue(restartState)
         except CatchableError:
           closeActorAndCancelMailbox(actor)
@@ -11581,20 +11678,46 @@ proc runFiber(f: Fiber) =
         if not askSettled:
           raise
     else:
-      if e.hasErrVal: failTask(f.task, e.msg, e.errVal, hasValue = true)
-      else: failTask(f.task, e.msg)
+      var publishErrorValue = e.hasErrVal
+      if f.workerSafe and activeWorkerThread and publishErrorValue:
+        let published = workerPublicationValue(e.errVal, f.scope)
+        publishErrorValue = published.ok
+        if published.ok:
+          e.errVal = published.value
+      if publishErrorValue:
+        failTask(f.task, e.msg, e.errVal, hasValue = true)
+      elif f.workerSafe and activeWorkerThread and e.hasErrVal:
+        failTask(f.task, "worker task error payload does not satisfy Send")
+      else:
+        failTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
   except GenePanic as e:
     if isActorFiber:
       closeActorAndCancelMailbox(actor)
       discard panicReplyTask(f.actorAskReply, e)
-      let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
+      var errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
+      if f.workerSafe and activeWorkerThread and e.hasErrVal:
+        let published = workerPublicationValue(errorValue, f.actorScope)
+        if published.ok:
+          errorValue = published.value
+        else:
+          errorValue = newStr("actor worker panic payload does not satisfy Send")
       emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
                             errorValue, panic = true)
       raise
     else:
-      if e.hasErrVal: panicTask(f.task, e.msg, e.errVal, hasValue = true)
-      else: panicTask(f.task, e.msg)
+      var publishPanicValue = e.hasErrVal
+      if f.workerSafe and activeWorkerThread and publishPanicValue:
+        let published = workerPublicationValue(e.errVal, f.scope)
+        publishPanicValue = published.ok
+        if published.ok:
+          e.errVal = published.value
+      if publishPanicValue:
+        panicTask(f.task, e.msg, e.errVal, hasValue = true)
+      elif f.workerSafe and activeWorkerThread and e.hasErrVal:
+        panicTask(f.task, "worker task panic payload does not satisfy Send")
+      else:
+        panicTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
   except CatchableError as e:
     if not (e of GeneCancel):
@@ -11755,6 +11878,7 @@ when compileOption("threads") and defined(gcAtomicArc):
     {.cast(gcsafe).}:
       let s = ctx.scheduler
       activeScheduler = s
+      activeWorkerThread = true
       while not schedulerWorkerStopRequested(s):
         discard wakeExpiredTimers()
         let req = popAsyncIoRequest(s)
@@ -13260,7 +13384,9 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         if expr.body.len != 1:
           raise newException(GeneError, "(ActorRef M) expects one message type")
         let messageType = value.actorMessageType
-        if messageType.kind != vkNil:
+        if messageType.isSymbol("Any") and value.actorMessageTypeExplicit:
+          return typeExprEqual(closeTypeExpr(expr.body[0], scope), messageType)
+        if messageType.kind != vkNil and not messageType.isSymbol("Any"):
           return typeExprEqual(closeTypeExpr(expr.body[0], scope), messageType)
         return true
       of "ActorContext":
@@ -13318,7 +13444,9 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
     return newCheckedChannel(value, closeTypeExpr(typeExpr.body[0], scope), nil)
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("ActorRef") and
       typeExpr.body.len == 1 and value.kind == vkActorRef and
-      value.actorMessageType.kind == vkNil:
+      not value.actorMessageTypeExplicit and
+      (value.actorMessageType.kind == vkNil or
+       value.actorMessageType.isSymbol("Any")):
     value.setActorMessageType(closeTypeExpr(typeExpr.body[0], scope))
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("ReplyTo") and
       typeExpr.body.len == 1 and value.kind == vkReplyTo and

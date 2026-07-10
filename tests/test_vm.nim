@@ -1753,6 +1753,9 @@ suite "vm — cooperative scheduler":
        "  (c ~ Cell/set 2) " &
        "  (await t))",
        "2"
+    ck "(scope (var c (cell 7)) (var t (spawn c)) " &
+       "  (same? (await t) c))",
+       "true"
 
   test "applications keep scheduler queues isolated":
     withoutGeneWorkers:
@@ -2244,6 +2247,26 @@ suite "vm — actors":
        "(try (a ~ actor/send [1]) catch (TypeError ^expected e) e)",
        "\"Send\""
 
+  test "actor message type is explicit inferred or Any":
+    ck "(type Msg ^props {^n Int}) (impl Send for Msg) " &
+       "(var a (actor/spawn ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg : Msg] (actor/continue state)))) " &
+       "(fn use [x : (ActorRef Msg)] true) (use a)",
+       "true"
+    ck "(type Msg ^props {^n Int}) (impl Send for Msg) " &
+       "(var a (actor/spawn ^type Msg ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg : Int] (actor/continue state)))) " &
+       "(fn use [x : (ActorRef Msg)] true) (use a)",
+       "true"
+    ck "(var a (actor/spawn ^init (fn [] 0) " &
+       "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
+       "(fn use [x : (ActorRef Any)] true) (use a)",
+       "true"
+    expect GeneError:
+      discard runStr("(var a : (ActorRef Int) " &
+        "(actor/spawn ^type Any ^init (fn [] 0) " &
+        "  ^handle (fn [ctx state msg] (actor/continue state))))")
+
   test "actor refs are Send values":
     ck "(var a (actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
@@ -2341,6 +2364,35 @@ suite "vm — actors":
        "  (a ~ actor/send 5) " &
        "  (seen ~ Cell/get))",
        "10"
+
+  test "supervisor failure retries are bounded FIFO with observable drops":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error for Boom) " &
+       "(var events (channel ^capacity 1)) " &
+       "(supervisor ^strategy restart ^events events " &
+       "  (var i 0) (var a nil) " &
+       "  (while (< i 66) " &
+       "    (set a (actor/spawn ^init (fn [] 0) " &
+       "      ^handle (fn [ctx state msg] " &
+       "        (fail (Boom ^message \"bad\"))))) " &
+       "    (spawn (a ~ actor/send i)) " &
+       "    (set i (+ i 1))) " &
+       "  (sleep 20) " &
+       "  (var stats (Runtime/gc-stats)) " &
+       "  (var first (events ~ Channel/recv)) " &
+       "  (var second (events ~ Channel/recv)) " &
+       "  (var drained 0) " &
+       "  (while (< drained 62) " &
+       "    (events ~ Channel/recv) " &
+       "    (set drained (+ drained 1))) " &
+       "  [stats/supervisor-retry-pending " &
+       "   stats/supervisor-retry-capacity " &
+       "   stats/supervisor-retry-high-water " &
+       "   stats/supervisor-retry-drops " &
+       "   first/failed-message second/failed-message])",
+       "[64 64 64 1 0 1]"
+
+  test "supervisor failure delivery uses event and dead-letter channels":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(var events (channel ^capacity 4)) " &

@@ -3436,6 +3436,12 @@ suite "spec — os and json from ai-agent plan":
                "                          ^timeout-ms 150))) " &
                "r/timed-out",
                "true")
+    check_eval("(import os [exec-async Exec]) " &
+               "(var status 1) " &
+               "(repeat 20 " &
+               "  (set status ((await (exec-async Exec ^cmd \"true\")) ~ /status))) " &
+               "status",
+               "0")
 
   test "os/exec-stream-async feeds stdout lines through a channel then closes it":
     check_eval("(import os [exec-stream-async Exec]) " &

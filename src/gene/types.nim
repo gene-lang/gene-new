@@ -572,6 +572,7 @@ type
     restartInit: Value
     handler: Value
     messageType: Value
+    messageTypeExplicit: bool
     failureStrategy: ActorFailureStrategy
     failureEvents: Value
     failureDeadLetters: Value
@@ -2385,6 +2386,7 @@ proc newChannelState(capacity: int, items: seq[Value] = @[],
 
 proc newActorData(capacity: int, state, restartInit, handler,
                   messageType: Value,
+                  messageTypeExplicit: bool,
                   failureStrategy: ActorFailureStrategy,
                   failureEvents, failureDeadLetters: Value,
                   parentFailureEvents: Value = NIL,
@@ -2398,6 +2400,7 @@ proc newActorData(capacity: int, state, restartInit, handler,
                      restartInit: restartInit,
                      handler: handler,
                      messageType: messageType,
+                     messageTypeExplicit: messageTypeExplicit,
                      failureStrategy: failureStrategy,
                      failureEvents: failureEvents,
                      failureDeadLetters: failureDeadLetters,
@@ -2891,6 +2894,11 @@ proc actorMessageType*(v: Value): Value =
   let data = actorData(v)
   withActorLock(data):
     result = data.messageType
+
+proc actorMessageTypeExplicit*(v: Value): bool =
+  let data = actorData(v)
+  withActorLock(data):
+    result = data.messageTypeExplicit
 
 proc actorFailureStrategy*(v: Value): ActorFailureStrategy =
   let data = actorData(v)
@@ -4331,6 +4339,7 @@ proc escapeWeakFunctions*(v: Value): Value =
     var sourceRestartInit: Value
     var sourceHandler: Value
     var sourceMessageType: Value
+    var messageTypeExplicit: bool
     var failureStrategy: ActorFailureStrategy
     var sourceFailureEvents: Value
     var sourceFailureDeadLetters: Value
@@ -4346,6 +4355,7 @@ proc escapeWeakFunctions*(v: Value): Value =
       sourceRestartInit = data.restartInit
       sourceHandler = data.handler
       sourceMessageType = data.messageType
+      messageTypeExplicit = data.messageTypeExplicit
       failureStrategy = data.failureStrategy
       sourceFailureEvents = data.failureEvents
       sourceFailureDeadLetters = data.failureDeadLetters
@@ -4385,6 +4395,7 @@ proc escapeWeakFunctions*(v: Value): Value =
       restartInit = escapedRestartInit,
       handler = escapedHandler,
       messageType = sourceMessageType,
+      messageTypeExplicit = messageTypeExplicit,
       failureStrategy = failureStrategy,
       failureEvents = escapedFailureEvents,
       failureDeadLetters = escapedFailureDeadLetters,
@@ -4603,7 +4614,8 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                   failureDeadLetters: Value = NIL,
                   parentFailureEvents: Value = NIL,
                   parentFailureDeadLetters: Value = NIL,
-                  maxRestarts = 0, restartWindowMs = 0): Value =
+                  maxRestarts = 0, restartWindowMs = 0,
+                  messageTypeExplicit = false): Value =
   let storedRestartInit =
     if restartInit.kind == vkFunction:
       functionForScopeStorage(restartInit, restartInit.fnScope)
@@ -4619,6 +4631,7 @@ proc newActorRef*(capacity: int, state, handler, messageType: Value,
                          restartInit = storedRestartInit,
                          handler = storedHandler,
                          messageType = messageType,
+                         messageTypeExplicit = messageTypeExplicit,
                          failureStrategy = failureStrategy,
                          failureEvents = failureEvents,
                          failureDeadLetters = failureDeadLetters,

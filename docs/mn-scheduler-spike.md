@@ -56,7 +56,9 @@ production gaps explicit.
 - **Atomic refcounting is cheap (~2–4% worst case), not the blocker.** Measured below.
 - **The real blocker is shared mutable state — scopes above all.** Unsafe spawned
   tasks can still share a mutable parent scope chain; worker-candidate tasks now
-  avoid that by using captured-scope snapshots.
+  avoid that by using captured-scope snapshots. Dynamic results and error/panic
+  payloads are checked for `Send` before a worker publishes them back to the
+  root lane.
 - **M:N fits the share-nothing actor/channel model, sendable actor handler
   turns, and snapshot-isolated leaf-like worker-candidate spawns; it does NOT fit
   arbitrary `spawn` closures that share a parent scope or create nested unsafely
@@ -151,8 +153,10 @@ Notes:
   Worker-candidate tasks already receive sparse captured-scope snapshots instead
   of a live shared parent (`no outer mutation`, no nested `spawn`, plus `Send`
   captures). Sendable actor handler turns can also run on workers while actor
-  processing still admits only one active handler per actor. The bounded worker
-  lane consumes only those eligible fibers.
+  processing still admits only one active handler per actor. Handler closure,
+  state, message, reply, replacement state, and failure payload all participate
+  in the worker boundary. The bounded worker lane consumes only those eligible
+  fibers; failures in the graph check stay cooperative on the root lane.
 - **C. Thread-safe runtime objects.** `--mm:atomicArc`; locks (or lock-free) for
   channel buffers, actor mailboxes/state, and the shared run queue + wait lists.
   The queue/object-locking portion has started, Send-boundary and spawned-fiber

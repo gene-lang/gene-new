@@ -2638,6 +2638,18 @@ Rules:
 - `ensure` cleanup runs during cancellation;
 - detached lifetime is explicit and is not the default MVP behavior.
 
+Task placement has two paths. A root-lane cooperative task may retain local,
+non-`Send` captures such as `Cell`; it never migrates. A worker-candidate task
+is selected only after its complete captured graph passes the worker-safe
+`Send` check, and receives a detached capture snapshot before enqueueing.
+Worker results and recoverable/panic payloads are checked again before they are
+published back to the owning lane; a non-`Send` payload becomes a task boundary
+error. This final check is necessary for dynamic code whose result cannot be
+proven before execution. Worker-safe actor turns apply the same rule to the
+handler closure, current state, inbound message, reply capability, replacement
+state, and failure payload. An actor that fails the pre-enqueue graph check
+stays on the root lane.
+
 The program entry point runs as a root task, so `await` is meaningful without an `async fn` distinction. A function containing `await` is lowered to a resumable task frame as needed. Native compilation may initially route suspension through runtime helpers and later perform dedicated coroutine lowering.
 
 A task may be cancelled explicitly:
@@ -2789,6 +2801,12 @@ Core guarantees:
 - actors may run on different worker threads over their lifetime;
 - `ActorRef M` is sendable and enforces the mailbox message type `M`.
 
+`actor/spawn ^type M` is authoritative when supplied. Without `^type`, the
+runtime uses the third handler parameter's annotation when it is present;
+otherwise it stores `Any`. Actor reflection and `(ActorRef M)` type inference
+use that resolved message type. `Send` is enforced independently for every
+mailbox value even when `M` is `Any`.
+
 A handler commonly returns immutable replacement state. It may also use actor-private mutable objects created by `^init`, because no external mutable aliases exist by construction.
 
 ### 13.5 Sending, backpressure, and request/reply
@@ -2873,10 +2891,13 @@ error value, display message, panic flag, and active supervisor strategy. A
 supervisor may also be given `^dead-letter channel`; when the primary event
 channel is closed, full, or rejects the event, the runtime attempts to write the
 same `ActorFailure` to the dead-letter channel. A full sink without an available
-fallback queues the failure for retry when channel space is freed. If both
-channels are unavailable, the MVP drops the event rather than masking or
-blocking failure handling; stronger durable delivery and explicit backpressure
-policies are future runtime work.
+fallback queues the failure in one application-owned FIFO with capacity 64 and
+retries when a channel receive frees space. The queue allocates no task or fiber
+per notification. On overflow the newest notification is dropped; a
+closed/rejected queued sink is also dropped. `Runtime/gc-stats` exposes
+`supervisor-retry-pending`, `supervisor-retry-capacity`,
+`supervisor-retry-high-water`, and `supervisor-retry-drops`. Failure handling
+and the original actor error remain independent of notification delivery.
 
 Restart policy must define whether queued messages are retained, discarded, or moved to a dead-letter channel. The MVP default should discard the message that caused failure and retain later queued messages only for explicitly restartable actors.
 

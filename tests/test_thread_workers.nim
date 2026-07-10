@@ -1,5 +1,5 @@
 import gene/[compiler, printer, types, vm]
-import std/[locks, net, os, sets, unittest]
+import std/[locks, net, os, sets, strutils, unittest]
 
 var probeLock: Lock
 var probeLockReady = false
@@ -652,6 +652,20 @@ suite "threaded scheduler workers":
          "  (while (< i 200000) (set i (+ i 1))) " &
          "  (try (await t) catch (Boom ^message m) m))",
          "\"worker\""
+
+  test "worker-candidate non-Send results are rejected before publication":
+    withGeneWorkerSetting "8":
+      try:
+        discard run(compileSource(
+          "(scope " &
+          "  (fn make-cell [] (cell 1)) " &
+          "  (var t (spawn (make-cell))) " &
+          "  (var i 0) " &
+          "  (while (< i 200000) (set i (+ i 1))) " &
+          "  (await t))"), newGlobalScope())
+        check false
+      except GeneError as e:
+        check e.msg.contains("Send")
 
   test "worker-candidate task panics wake root awaiters":
     withGeneWorkerSetting "8":

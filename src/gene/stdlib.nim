@@ -801,23 +801,32 @@ when compileOption("threads"):
   initLock(osExecAsyncLock)
   initCond(osExecAsyncCond)
 
-  # Scheduler-thread-only (spawn + prune both run on the scheduler; the worker
-  # never touches this), so it needs no lock. Entries keep the Task, the
-  # stdout Channel, and the ctx alive for the worker's whole run.
+  # Exec workers never touch this registry. Calls may nevertheless originate
+  # from more than one scheduler lane, so the exec lock serializes prune/add and
+  # keeps destructor-bearing Value entries from racing each other. Entries keep
+  # the Task, stdout Channel, and ctx alive for the worker's whole run.
   var osExecAsyncPending: seq[tuple[task: Value, chan: Value, ctxPtr: pointer]]
 
   proc pruneOsExecAsyncPending() =
     ## Free finished jobs' task/channel/ctx references — on this (scheduler)
     ## thread, which is the whole point. Called before each new spawn, so the
     ## registry is bounded by the number of jobs since the last spawn.
-    var i = 0
-    while i < osExecAsyncPending.len:
-      let ctx {.cursor.} = cast[OsExecAsyncCtx](osExecAsyncPending[i].ctxPtr)
-      if atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE):
-        GC_unref(cast[OsExecAsyncCtx](osExecAsyncPending[i].ctxPtr))
-        osExecAsyncPending.delete(i)
-      else:
-        inc i
+    withLock osExecAsyncLock:
+      var i = 0
+      while i < osExecAsyncPending.len:
+        let ctx {.cursor.} = cast[OsExecAsyncCtx](osExecAsyncPending[i].ctxPtr)
+        if atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE):
+          GC_unref(cast[OsExecAsyncCtx](osExecAsyncPending[i].ctxPtr))
+          # `seq.delete` shifts every following tuple through destructor-bearing
+          # Value fields. Under ORC that has intermittently double-released a
+          # moved Task/Channel entry. Swap-remove performs one explicit move and
+          # keeps registry order irrelevant.
+          let last = osExecAsyncPending.high
+          if i != last:
+            osExecAsyncPending[i] = move osExecAsyncPending[last]
+          osExecAsyncPending.setLen(last)
+        else:
+          inc i
 
   proc runOsExecAsyncJob(jobPtr: pointer) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -1146,14 +1155,16 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     pendingEntry.task = task
     pendingEntry.chan = lineChan
     pendingEntry.ctxPtr = cast[pointer](ctx)
-    osExecAsyncPending.add(move pendingEntry)
+    withLock osExecAsyncLock:
+      osExecAsyncPending.add(move pendingEntry)
     beginExternalNativeOp()
     try:
       enqueueOsExecAsyncJob(cast[pointer](ctx))
     except CatchableError as e:
       endExternalNativeOp()
       GC_unref(ctx)
-      osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
+      withLock osExecAsyncLock:
+        osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
       raiseOsError(name & " could not start a worker thread: " & e.msg, scope)
     task
   else:
