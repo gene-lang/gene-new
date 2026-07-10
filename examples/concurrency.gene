@@ -234,7 +234,7 @@
   (var counter
     (actor/spawn ^init (fn [] 10)
       ^handle (fn [ctx state msg]
-        (if (= msg 0)
+        (if (== msg 0)
           (fail (Boom ^message "bad"))
           (actor/continue (+ state msg))))))
   (println "   - feed 1 + 5 + 0 (failure → restart)")
@@ -261,7 +261,7 @@
   (var stoptest
     (actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx state msg]
-        (if (= msg 0)
+        (if (== msg 0)
           (fail (Boom ^message "bad"))
           (actor/continue (+ state msg))))))
   (var first-send

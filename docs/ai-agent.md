@@ -542,7 +542,7 @@ pseudocode.
 ```gene
 (fn call-model [transport, input-items, render-stream]
   (var body
-    (if (= api-flavor "chat")
+    (if (== api-flavor "chat")
       (stringify {^model model
                   ^messages (items-to-chat-messages input-items)
                   ^tools chat-tool-schemas
@@ -567,7 +567,7 @@ pseudocode.
       (fn [text]
         (Cell/set streamed true)
         (render-stream text))))
-  (if (! (= resp/agent_error void))
+  (if (! (== resp/agent_error void))
     (do
       (render resp/agent_error)
       input-items)

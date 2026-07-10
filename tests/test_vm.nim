@@ -823,16 +823,16 @@ suite "vm — comparison and logic":
   test "ordering is chained":
     ck "(< 1 2 3)", "true"
     ck "(< 9223372036854775808 9223372036854775809)", "true"
-    ck "(= (+ 9223372036854775807 1) 9223372036854775808)", "true"
+    ck "(== (+ 9223372036854775807 1) 9223372036854775808)", "true"
     ck "(< 1 3 2)", "false"
     ck "(>= 3 3 1)", "true"
   test "structural equality":
-    ck "(= 2 2)", "true"
-    ck "(= [1 2] [1 2])", "true"
-    ck "(= 1 2)", "false"
+    ck "(== 2 2)", "true"
+    ck "(== [1 2] [1 2])", "true"
+    ck "(== 1 2)", "false"
   test "hash follows stable structural equality":
-    ck "(= (hash #[1 2]) (hash (freeze [1 2])))", "true"
-    ck "(= (hash (quote #(x @line 1 ^a 2))) " &
+    ck "(== (hash #[1 2]) (hash (freeze [1 2])))", "true"
+    ck "(== (hash (quote #(x @line 1 ^a 2))) " &
        "   (hash (quote #(x @line 99 ^a 2))))", "true"
     ck "(try (hash [1 2]) catch {^message m} m)",
        "\"hash expects a hash-stable value\""
@@ -978,18 +978,18 @@ suite "vm — functions and closures":
   test "deep non-tail recursion runs on the heap frame stack, not the Nim stack":
     # Pre-trampoline this recursed one Nim frame per call and overflowed the
     # OS stack. Now simple calls push heap Frames, so deep call chains succeed.
-    ck "(fn count [n] (if (= n 0) 0 (+ 1 (count (- n 1))))) (count 200000)",
+    ck "(fn count [n] (if (== n 0) 0 (+ 1 (count (- n 1))))) (count 200000)",
        "200000"
   test "deep recursion through a typed (general-path) function uses heap frames":
     # Typed params / return types take the general call path; it is now on the
     # frame stack too, so deep recursion through it no longer grows the Nim stack.
-    ck "(fn count [n : Int] : Int (if (= n 0) 0 (+ 1 (count (- n 1))))) " &
+    ck "(fn count [n : Int] : Int (if (== n 0) 0 (+ 1 (count (- n 1))))) " &
        "(count 200000)", "200000"
   test "deep recursion through an ^errors function uses heap frames":
     # ^errors functions also push heap frames now; the loop's exception handler
     # applies the undeclared-error boundary on unwind, so deep recursion through
     # a checked function no longer grows the Nim stack on the success path.
-    ck "(fn count ^errors [] [n] (if (= n 0) 0 (+ 1 (count (- n 1))))) " &
+    ck "(fn count ^errors [] [n] (if (== n 0) 0 (+ 1 (count (- n 1))))) " &
        "(count 200000)", "200000"
   test "recoverable errors expose bytecode frame traces":
     ck "(fn outer [] (inner)) " &
@@ -1296,7 +1296,7 @@ suite "vm — namespaces":
   test "namespace exports do not leak into the enclosing scope":
     expect GeneError: discard runStr("(ns m (var secret 1)) secret")
   test "namespaces compare by identity":
-    ck "(ns m (var a 1)) (= m m)", "true"
+    ck "(ns m (var a 1)) (== m m)", "true"
   test "namespace reflection exposes bindings and lookup":
     ck "(ns m (var b 2) (var a 1)) [(Namespace/lookup m \"a\") (Namespace/lookup m \"missing\")]",
        "[1 void]"
@@ -1422,7 +1422,7 @@ suite "vm — cells":
        "[2 2]"
 
   test "cells compare by identity":
-    ck "(var a (cell 1)) (var b (cell 1)) [(= a a) (= a b)]",
+    ck "(var a (cell 1)) (var b (cell 1)) [(== a a) (== a b)]",
        "[true false]"
 
   test "Cell annotations accept cells only":
@@ -1458,7 +1458,7 @@ suite "vm — atomic cells":
        "[true 3 false 3]"
 
   test "atomic cells compare by identity":
-    ck "(var a (atomic-cell 1)) (var b (atomic-cell 1)) [(= a a) (= a b)]",
+    ck "(var a (atomic-cell 1)) (var b (atomic-cell 1)) [(== a a) (== a b)]",
        "[true false]"
 
   test "AtomicCell annotations accept atomic cells only":
@@ -2280,7 +2280,7 @@ suite "vm — actors":
        "(supervisor ^strategy restart " &
        "  (var a (actor/spawn ^init (fn [] 10) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (if (= msg 1) " &
+       "      (if (== msg 1) " &
        "        (fail (Boom ^message \"bad\")) " &
        "        (do " &
        "          (seen ~ Cell/set state) " &
@@ -2296,7 +2296,7 @@ suite "vm — actors":
        "(supervisor ^strategy restart ^events events " &
        "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (if (= msg 1) " &
+       "      (if (== msg 1) " &
        "        (fail (Boom ^message \"bad\")) " &
        "        (do " &
        "          (seen ~ Cell/set state) " &
@@ -2307,7 +2307,7 @@ suite "vm — actors":
        "  (var event (events ~ Channel/recv)) " &
        "  (var tries 0) " &
        "  (while (< tries 100) " &
-       "    (if (= (seen ~ Cell/get) 0) " &
+       "    (if (== (seen ~ Cell/get) 0) " &
        "      (do (sleep 1) (set tries (+ tries 1))) " &
        "      (set tries 100))) " &
        "  [(seen ~ Cell/get) " &
@@ -2422,7 +2422,7 @@ suite "vm — actors":
        "(supervisor ^strategy restart ^events events ^dead-letter dead " &
        "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (if (= msg 1) " &
+       "      (if (== msg 1) " &
        "        (fail (Boom ^message \"bad\")) " &
        "        (do " &
        "          (seen ~ Cell/set state) " &
@@ -2589,7 +2589,7 @@ suite "vm — streams":
        "[2 4 6 false]"
 
   test "stream map skips void results":
-    ck "(var s (map (to_stream [1 2]) (fn [x] (if (= x 1) void x)))) " &
+    ck "(var s (map (to_stream [1 2]) (fn [x] (if (== x 1) void x)))) " &
        "[(s ~ Stream/next) (s ~ Stream/has_next)]",
        "[2 false]"
 

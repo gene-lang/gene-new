@@ -223,7 +223,7 @@ suite "protocols — declarations and dispatch":
        "(type Counter ^props {}) " &
        "(impl Count for Counter " &
        "  (message down [self n] " &
-       "    (if (= n 0) 0 (+ 1 (self ~ down (- n 1)))))) " &
+       "    (if (== n 0) 0 (+ 1 (self ~ down (- n 1)))))) " &
        "((Counter) ~ down 200000)",
        "200000"
 

@@ -73,13 +73,13 @@ suite "cli — gene run":
 
   test "main receives command-line arguments":
     let argMain = writeCliProgram("arg_main.gene",
-      "(fn main [args] (if (= args/0 \"ok\") 0 4))")
+      "(fn main [args] (if (== args/0 \"ok\") 0 4))")
     let ran = runGene(["run", argMain, "ok"])
     check ran.exitCode == 0
 
   test "main receives raw command-line argument tail":
     let rawMain = writeCliProgram("raw_arg_main.gene",
-      "(fn main [args] (if (= args/raw \"a b, c\") 0 4))")
+      "(fn main [args] (if (== args/raw \"a b, c\") 0 4))")
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
@@ -222,18 +222,18 @@ suite "cli — gene run":
   (var saw-tool-reply (cell false))
   ((to_stream req/messages)
     ~ each (fn [m]
-        (if (&& (= m/role "assistant")
-                (= m/tool_calls/0/id "call_fake_1")
-                (= m/tool_calls/0/function/name "list_dir"))
+        (if (&& (== m/role "assistant")
+                (== m/tool_calls/0/id "call_fake_1")
+                (== m/tool_calls/0/function/name "list_dir"))
           (Cell/set saw-assistant-call true)
           nil)
-        (if (&& (= m/role "tool")
-                (= m/tool_call_id "call_fake_1"))
+        (if (&& (== m/role "tool")
+                (== m/tool_call_id "call_fake_1"))
           (Cell/set saw-tool-reply true)
           nil)))
-  (if (! (= req/model "fake-chat"))
+  (if (!= req/model "fake-chat")
     "roundtrip-bad: model"
-    (if (! (= req/tools/0/function/name "read_file"))
+    (if (!= req/tools/0/function/name "read_file")
       "roundtrip-bad: tools"
       (if (! (Cell/get saw-assistant-call))
         "roundtrip-bad: assistant tool_calls"
@@ -248,7 +248,7 @@ suite "cli — gene run":
 
 (fn handle [req]
   (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (= (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (var chunks (if (== (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -333,7 +333,7 @@ suite "cli — gene run":
 
 (fn handle [req]
   (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (= (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (var chunks (if (== (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -395,16 +395,16 @@ suite "cli — gene run":
 (fn read-file-schema [req]
   (var hit
     ((to_stream req/tools)
-      ~ filter (fn [t] (= t/function/name "read_file"))
+      ~ filter (fn [t] (== t/function/name "read_file"))
       ; ~ into []))
   hit/0/function)
 
 (fn verdict [body-text]
   (var req (parse body-text))
   (var f (read-file-schema req))
-  (if (! (= f/parameters/type "object"))
+  (if (!= f/parameters/type "object")
     "schema-bad: type"
-    (if (! (= f/parameters/required/0 "path"))
+    (if (!= f/parameters/required/0 "path")
       "schema-bad: required"
       (if (! (contains? (stringify f/parameters/properties/path) "workspace"))
         "schema-bad: param-doc"
@@ -526,7 +526,7 @@ suite "cli — gene run":
   (Cell/set hits (+ (Cell/get hits) 1))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
-            ^body (sse-body (if (= (Cell/get hits) 1) turn1 turn2))))
+            ^body (sse-body (if (== (Cell/get hits) 1) turn1 turn2))))
 
 (serve (Server ^host "127.0.0.1" ^port 8971) handle ^max-requests 2)
 """)
@@ -598,7 +598,7 @@ suite "cli — gene run":
   (var tool-text (cell "no-tool-msg"))
   ((to_stream req/messages)
     ~ each (fn [m]
-        (if (= m/role "tool")
+        (if (== m/role "tool")
           (Cell/set tool-text m/content)
           nil)))
   (var v (if (contains? (Cell/get tool-text) "invalid result shape")
@@ -609,7 +609,7 @@ suite "cli — gene run":
 
 (fn handle [req]
   (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (= (Cell/get hits) 1) call-badres (verdict-chunks req/body)))
+  (var chunks (if (== (Cell/get hits) 1) call-badres (verdict-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -686,7 +686,7 @@ suite "cli — gene run":
   (var tool-text (cell "no-tool-msg"))
   ((to_stream req/messages)
     ~ each (fn [m]
-        (if (= m/role "tool")
+        (if (== m/role "tool")
           (Cell/set tool-text m/content)
           nil)))
   (if (contains? (Cell/get tool-text) "catastrophe guard")
@@ -700,7 +700,7 @@ suite "cli — gene run":
 
 (fn handle [req]
   (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (= (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (var chunks (if (== (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -782,14 +782,14 @@ suite "cli — gene run":
   (var req (parse body))
   (var hit
     ((to_stream req/tools)
-      ~ filter (fn [t] (= t/function/name "ping"))
+      ~ filter (fn [t] (== t/function/name "ping"))
       ; ~ into []))
   (> hit/~size 0))
 
 (fn handle [req]
   (Cell/set hits (+ (Cell/get hits) 1))
   (var chunks
-    (if (= (Cell/get hits) 1)
+    (if (== (Cell/get hits) 1)
       (plain "started")
       (plain (if (has-ping req/body) "verdict: ping-visible" "verdict: ping-missing"))))
   (Response ^status 200
@@ -1117,7 +1117,7 @@ suite "cli — gene run":
           (append-out {^method "editMessageText" ^chat_id payload/chat_id
                        ^message_id payload/message_id ^text payload/text})
           (json-response {^ok true ^result true}))
-        (if (= req/path "/outbox")
+        (if (== req/path "/outbox")
           (json-response {^outbox (outbox ~ Cell/get)})
           (json-response {^ok false ^description "unknown method"}))))))
 
@@ -1437,15 +1437,15 @@ suite "cli — gene parse/fmt/compile":
 (import [Point Line Shape Result Drawable area Counter Conn REGISTRY] from "./serde_geometry")
 (fn check [label ok] (println (join [label (if ok "ok" "FAIL")] " ")))
 # stage 3: references
-(check "type" (= Point (read (write Point))))
-(check "enum" (= Shape (read (write Shape))))
-(check "variant" (= Shape/circle (read (write Shape/circle))))
-(check "protocol" (= Drawable (read (write Drawable))))
+(check "type" (== Point (read (write Point))))
+(check "enum" (== Shape (read (write Shape))))
+(check "variant" (== Shape/circle (read (write Shape/circle))))
+(check "protocol" (== Drawable (read (write Drawable))))
 (var a2 (read (write area)))
-(check "fn" (= 12 (a2 (Point ^x 3 ^y 4))))
+(check "fn" (== 12 (a2 (Point ^x 3 ^y 4))))
 (var imported-area area)
 (var a3 (read (write imported-area)))
-(check "fn-alias" (= 30 (a3 (Point ^x 5 ^y 6))))
+(check "fn-alias" (== 30 (a3 (Point ^x 5 ^y 6))))
 (var t (write Point))
 (check "ref-shape" (&& (contains? t "serde-type-ref") (contains? t "Point")))
 (check "no-exec"
@@ -1453,11 +1453,11 @@ suite "cli — gene parse/fmt/compile":
        catch (SerdeError ^message m) (contains? m "not loaded")))
 # stage 4: typed instances via direct construction
 (var p (Point ^x 3 ^y 4))
-(check "inst" (= p (read (write p))))
+(check "inst" (== p (read (write p))))
 (check "inst-nested"
-  (= (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))
+  (== (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))
      (read (write (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))))))
-(check "inst-variant-payload" (= (Result/ok 42) (read (write (Result/ok 42)))))
+(check "inst-variant-payload" (== (Result/ok 42) (read (write (Result/ok 42)))))
 (check "inst-wd-reject"
   (try (do (write-data p) false) catch (SerdeError ^message m) (contains? m "not data")))
 (check "inst-unknown-field"
@@ -1466,7 +1466,7 @@ suite "cli — gene parse/fmt/compile":
 # ctor must NOT run on read-back (new runs it once, printing the marker)
 (var c (new Counter 7))
 (var c2 (read (write c)))
-(check "inst-no-ctor" (&& (= c c2) (= 7 c2/n)))
+(check "inst-no-ctor" (&& (== c c2) (== 7 c2/n)))
 # stage 5: Serde hooks behind ^allow-restore
 (var conn (Conn ^host "db" ^live false))
 (var ht (write conn))
@@ -1474,12 +1474,12 @@ suite "cli — gene parse/fmt/compile":
 (check "hooked-no-allow"
   (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow-restore")))
 (var conn2 (read ht ^policy (SerdePolicy ^allow-restore true)))
-(check "hooked-restore" (&& (= "db" conn2/host) (= true conn2/live)))
+(check "hooked-restore" (&& (== "db" conn2/host) (== true conn2/live)))
 # stage 6: SerdeRef module singleton -> identity value-ref
 (check "value-ref-form" (contains? (write REGISTRY) "serde-value-ref"))
 (var reg2 (read (write REGISTRY)))
 (reg2 ~ Node/set-prop! `marker 99)
-(check "value-ref-identity" (= 99 REGISTRY/marker))
+(check "value-ref-identity" (== 99 REGISTRY/marker))
 # a non-SerdeRef module instance serializes by value, not as a value-ref
 (check "plain-by-value" (! (contains? (write (Point ^x 1 ^y 2)) "value-ref")))
 """)

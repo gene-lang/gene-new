@@ -78,7 +78,7 @@ suite "net/http server e2e":
     let p = startHttpServer("concurrent.gene", """
 (import net/http [Server serve text])
 (fn handle [req]
-  (if (= req/path "/slow")
+  (if (== req/path "/slow")
     (then
       (sleep 800)
       (text "slow-done"))
@@ -224,7 +224,7 @@ suite "net/http server e2e":
   (text ($ "job-" req/params/id)))
 (fn not-a-route [x] x)
 (fn routed? [d]
-  (not (= d/%meta/route void)))
+  (not (== d/%meta/route void)))
 (fn route-entry [d]
   (var r d/%meta/route)
   (route ^method r/method ^path r/path ^handler d/value))
@@ -247,16 +247,16 @@ suite "net/http server e2e":
 (fn on-access [rec] (access-entries ~ Cell/set rec))
 (fn on-error-log [rec] (error-entries ~ Cell/set rec))
 (fn handle [req]
-  (if (= req/path "/boom")
+  (if (== req/path "/boom")
     (nonexistent-fn)
     (do
       (var last (access-entries ~ Cell/get))
       (var last-err (error-entries ~ Cell/get))
-      (if (= last nil)
+      (if (== last nil)
         (text "no-log")
         (text ($ "logged:" last/method ":" last/path ":" last/status
                  ":auth=" last/headers/authorization
-                 ":err=" (if (= last-err nil) "none" last-err/message)))))))
+                 ":err=" (if (== last-err nil) "none" last-err/message)))))))
 (serve (Server ^host "127.0.0.1" ^port 8193) handle
   ^max-requests 3
   ^access-log on-access
@@ -305,11 +305,11 @@ suite "net/http server e2e":
 (fn worker-init [] 0)
 (fn worker-handle [ctx state msg]
   (var (RequestMsg ^req req ^reply reply) msg)
-  (if (= req/path "/boom")
+  (if (== req/path "/boom")
     (fail (Boom ^message "worker boom"))
     (do
       (var ev (failures ~ Channel/try-recv))
-      (if (= ev void)
+      (if (== ev void)
         (reply ~ ReplyTo/send (text "no-failures"))
         (reply ~ ReplyTo/send (text ($ "saw:" ev/message))))
       (actor/continue state))))

@@ -42,18 +42,18 @@ suite "modules — file imports":
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
     check runProgram("(import from \"./decls\" ^as m) " &
-      "(var ds (filter (declarations m) (fn [d] (= d/name \"exported\")))) " &
+      "(var ds (filter (declarations m) (fn [d] (== d/name \"exported\")))) " &
       "(ds ~ Stream/next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
     check runProgram("(import from \"./decls\" ^as m) " &
-      "(var ds (filter (m ~ Module/declarations) (fn [d] (= d/name \"exported\")))) " &
+      "(var ds (filter (m ~ Module/declarations) (fn [d] (== d/name \"exported\")))) " &
       "(ds ~ Stream/next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
 
   test "file modules receive a this-mod binding":
     writeModule("self.gene",
       "(var x 9) " &
-      "(var ds (filter (declarations this-mod) (fn [d] (= d/name \"x\")))) " &
+      "(var ds (filter (declarations this-mod) (fn [d] (== d/name \"x\")))) " &
       "(var decl (ds ~ Stream/next)) " &
       "(var seen decl/value)")
     check runProgram("(import [seen] from \"./self\") seen").print() == "9"
@@ -64,7 +64,7 @@ suite "modules — file imports":
       "(var root (this-mod ~ Module/root_namespace)) " &
       "(var reflected [(this-mod ~ Module/name) " &
       "                (this-mod ~ Module/path) " &
-      "                (= root this-mod) " &
+      "                (== root this-mod) " &
       "                (/marker root)])")
     let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
     check reflected.listItems[0].strVal == "selfpath"
@@ -94,7 +94,7 @@ suite "modules — file imports":
 
   test "a module is loaded once (cache returns the same module value)":
     writeModule("m.gene", "(var v 1)")
-    check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (= a b)").print() == "true"
+    check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (== a b)").print() == "true"
 
   test "entry file modules load through the application cache":
     let entryPath = modDir / "entry.gene"
@@ -233,10 +233,10 @@ suite "modules — built-in identity and scope hygiene":
     # Filtering the module's declarations for a built-in name finds nothing,
     # because built-ins live in the shared parent scope, not the module root.
     check runProgram("(import from \"./decls2\" ^as m) " &
-      "(var ds (filter (declarations m) (fn [d] (= d/name \"map\")))) " &
+      "(var ds (filter (declarations m) (fn [d] (== d/name \"map\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
     check runProgram("(import from \"./decls2\" ^as m) " &
-      "(var ds (filter (declarations m) (fn [d] (= d/name \"this-mod\")))) " &
+      "(var ds (filter (declarations m) (fn [d] (== d/name \"this-mod\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":

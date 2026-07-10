@@ -66,7 +66,7 @@
   nil)
 
 (fn done? [t] : Bool
-  (! (= t/done 0)))
+  (!= t/done 0))
 
 # -----------------------------------------------------------------------------
 # Filter views: every listing route accepts all | active | done. The public URL
@@ -80,7 +80,7 @@
 
 (fn parse_filter [value] : TodoFilter
   (var flt (TodoFilter ~ from_backing (|| value "all")))
-  (if (= flt void) TodoFilter/all flt))
+  (if (== flt void) TodoFilter/all flt))
 
 (fn keep? [flt : TodoFilter]
   (match flt
@@ -108,7 +108,7 @@
 
 (fn render_attr [pair] : Str
   (var [k, v] pair)
-  (if (= v void)
+  (if (== v void)
     ""
     $" ${(to-str k)}=\"${(escape (to-str v))}\""))
 
@@ -125,7 +125,7 @@
     ; ~ join ""))
 
 (fn void_tag? [tag : Str] : Bool
-  (|| (= tag "input") (= tag "br") (= tag "hr") (= tag "meta")))
+  (|| (== tag "input") (== tag "br") (== tag "hr") (== tag "meta")))
 
 (fn render_node [n : Node] : Str
   (var tag (to-str (n ~ head)))
@@ -177,9 +177,9 @@
        (button ^title "delete" "✕"))))
 
 (fn filter_link [flt : TodoFilter, target : TodoFilter] : Node
-  (var cls (if (= flt target) "filter on" "filter"))
+  (var cls (if (== flt target) "filter on" "filter"))
   (var key (target ~ backing))
-  (var href (if (= target TodoFilter/all) "/" $"/?filter=${key}"))
+  (var href (if (== target TodoFilter/all) "/" $"/?filter=${key}"))
   `(a ^class %cls ^href %href %key))
 
 (fn page [flt : TodoFilter] : Str
@@ -242,13 +242,13 @@
 # Run `action` with a validated form field, or answer 400 without it.
 (fn with_text [req, action]
   (var text (form_text req))
-  (if (= text "")
+  (if (== text "")
     (bad_request "text is required")
     (action text)))
 
 (fn with_id [req, action]
   (var id (form_id req))
-  (if (= id -1)
+  (if (== id -1)
     (bad_request "id must be an integer")
     (action id)))
 

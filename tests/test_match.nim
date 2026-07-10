@@ -113,7 +113,7 @@ suite "loops — while":
     ck "(var i 0) (var s 0) " &
        "(while true " &
        "  (set i (+ i 1)) " &
-       "  (if (= i 2) (then (continue))) " &
+       "  (if (== i 2) (then (continue))) " &
        "  (if (> i 4) (then (break))) " &
        "  (set s (+ s i))) " &
        "[s i]",
@@ -122,7 +122,7 @@ suite "loops — while":
     ck "(var i 0) (var s 0) " &
        "(loop " &
        "  (set i (+ i 1)) " &
-       "  (if (= i 2) (then (continue))) " &
+       "  (if (== i 2) (then (continue))) " &
        "  (if (> i 4) (then (break))) " &
        "  (set s (+ s i))) " &
        "[s i]",
@@ -131,7 +131,7 @@ suite "loops — while":
     ck "(var i 0) (var s 0) " &
        "(repeat 6 " &
        "  (set i (+ i 1)) " &
-       "  (if (= i 2) (then (continue))) " &
+       "  (if (== i 2) (then (continue))) " &
        "  (if (> i 4) (then (break))) " &
        "  (set s (+ s i))) " &
        "[s i]",
@@ -145,7 +145,7 @@ suite "loops — while":
   test "indexed repeat supports break and continue":
     ck "(var s 0) " &
        "(repeat i in 6 " &
-       "  (if (= i 2) (then (continue))) " &
+       "  (if (== i 2) (then (continue))) " &
        "  (if (> i 4) (then (break))) " &
        "  (set s (+ s i))) " &
        "s",
@@ -175,7 +175,7 @@ suite "loops — for":
        "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
        "(var first-hits 0) " &
        "(for x in source " &
-       "  (if (= x 1) (set first-hits (hits ~ Cell/get)))) " &
+       "  (if (== x 1) (set first-hits (hits ~ Cell/get)))) " &
        "first-hits",
        "1"
   test "for closes stream on destructuring failure":
@@ -195,7 +195,7 @@ suite "loops — for":
   test "for supports break and continue":
     ck "(var s 0) " &
        "(for x in [1 2 3 4 5] " &
-       "  (if (= x 2) (then (continue))) " &
+       "  (if (== x 2) (then (continue))) " &
        "  (if (> x 4) (then (break))) " &
        "  (set s (+ s x))) " &
        "s",

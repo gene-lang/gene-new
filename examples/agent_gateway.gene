@@ -76,7 +76,7 @@
 (var gw-store (cell nil))
 
 (fn persist-session [id, items, events, next-v]
-  (if (= (gw-store ~ Cell/get) nil)
+  (if (== (gw-store ~ Cell/get) nil)
     nil
     (try
       ((gw-store ~ Cell/get) ~ put
@@ -91,14 +91,14 @@
 # the session actor's turn fiber, so per-session ordering carries over.
 # saved: nil, or a restored {^items ^events ^next-v} snapshot from the db.
 (fn make-session [id, on-event, saved]
-  (var events (cell (if (= saved nil) [] saved/events)))
-  (var next-v (cell (if (= saved nil) 0 saved/next-v)))
-  (var items (cell (if (= saved nil)
+  (var events (cell (if (== saved nil) [] saved/events)))
+  (var next-v (cell (if (== saved nil) 0 saved/next-v)))
+  (var items (cell (if (== saved nil)
                      [(system-item gene-system-prompt)]
                      saved/items)))
   (fn append-event [event]
     (events ~ Cell/set (append (events ~ Cell/get) event))
-    (if (= on-event nil)
+    (if (== on-event nil)
       nil
       (try (on-event event) catch * nil)))
   (fn push-event [type : Str, text : Str]
@@ -120,7 +120,7 @@
       (when "agent-text" nil)
       (when "text-delta" nil)
       (else (push-structured type props))))
-  (var transport (if (= auth-token nil) (demo-transport-for) live-transport))
+  (var transport (if (== auth-token nil) (demo-transport-for) live-transport))
   (var turn-actor
     (actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx, state, text]
@@ -128,8 +128,8 @@
         (items ~ Cell/set
           (run-turn transport
                     (append (items ~ Cell/get) (user-item text))
-                    (fn [t] (if (= t "") nil (push-event "agent-text" t)))
-                    (fn [d] (if (= d "") nil (push-event "text-delta" d)))
+                    (fn [t] (if (== t "") nil (push-event "agent-text" t)))
+                    (fn [d] (if (== d "") nil (push-event "text-delta" d)))
                     max-tool-turns
                     emit-turn-event))
         (persist-session id items events next-v)
@@ -164,16 +164,16 @@
 
 (fn tg-send-message [chat-id, text : Str]
   # returns the sent message_id, or nil
-  (if (= text "")
+  (if (== text "")
     nil
     (try
       (var r (tg-call "sendMessage" {^chat_id chat-id ^text text}))
       (var resp (parse r/stdout))
-      (if (= resp/ok true) resp/result/message_id nil)
+      (if (== resp/ok true) resp/result/message_id nil)
     catch * nil)))
 
 (fn tg-edit-message [chat-id, message-id, text : Str]
-  (if (|| (= message-id nil) (= text ""))
+  (if (|| (== message-id nil) (== text ""))
     nil
     (do
       (try (tg-call "editMessageText"
@@ -194,8 +194,7 @@
 # trail (tool-call/tool-result/model-item/...) stays in the session log but is
 # not mirrored to chat, so a tool-heavy turn does not flood the outbox.
 (fn tg-relevant? [type : Str]
-  (|| (= type "text-delta")
-      (|| (= type "agent-text") (= type "turn-done"))))
+  (["text-delta" "agent-text" "turn-done"] ~ contains? type))
 
 (fn make-telegram-sender [chat-id]
   (fn [event]
@@ -214,7 +213,7 @@
 (fn tg-state-for [chat-id]
   (var key $"${chat-id}")
   (var st (tg-chat-state ~ Map/get key))
-  (if (= st void)
+  (if (== st void)
     (do
       (set st {^pending (cell "") ^sent-id (cell nil) ^sent-len (cell 0)})
       (tg-chat-state ~ Map/put! key st)
@@ -230,7 +229,7 @@
     (when "text-delta"
       (st/pending ~ Cell/set $"${(st/pending ~ Cell/get)}${event/text}")
       (var text (st/pending ~ Cell/get))
-      (if (= (st/sent-id ~ Cell/get) nil)
+      (if (== (st/sent-id ~ Cell/get) nil)
         (do
           (st/sent-id ~ Cell/set (tg-send-message chat-id text))
           (st/sent-len ~ Cell/set text/~size))
@@ -244,7 +243,7 @@
       nil)
     (when "turn-done"
       (var text (st/pending ~ Cell/get))
-      (if (&& (! (= (st/sent-id ~ Cell/get) nil))
+      (if (&& (!= (st/sent-id ~ Cell/get) nil)
               (> text/~size (st/sent-len ~ Cell/get)))
         (tg-edit-message chat-id (st/sent-id ~ Cell/get) text)
         nil)
@@ -262,20 +261,20 @@
     catch * nil)))
 
 (fn tg-chat-allowed? [chat-id] : Bool
-  (if (= tg-allowed "*")
+  (if (== tg-allowed "*")
     true
     (do
       (var key $"${chat-id}")
       (var found (cell false))
       ((to_stream (split tg-allowed ","))
         ~ each (fn [entry]
-            (if (= (trim entry) key) (found ~ Cell/set true) nil)))
+            (if (== (trim entry) key) (found ~ Cell/set true) nil)))
       (found ~ Cell/get))))
 
 (fn tg-session-for [chat-id]
   (var id $"tg-${chat-id}")
   (var s (sessions ~ Map/get id))
-  (if (= s void)
+  (if (== s void)
     (do
       (set s (make-session id (make-telegram-sender chat-id) nil))
       (sessions ~ Map/put! id s)
@@ -284,12 +283,12 @@
 
 (fn tg-handle-update [u]
   (var msg u/message)
-  (if (= msg void)
+  (if (== msg void)
     nil
     (do
       (var chat-id msg/chat/id)
       (var text msg/text)
-      (if (|| (= chat-id void) (= text void) (= text nil) (= text ""))
+      (if (|| (== chat-id void) (== text void) (== text nil) (== text ""))
         nil
         (if (tg-chat-allowed? chat-id)
           (do
@@ -303,10 +302,10 @@
   (var r (await (exec-async Exec ^cmd "curl"
             ^args ["-sS" $"${tg-base}/bot${tg-token}/getUpdates?timeout=50&offset=${(offset ~ Cell/get)}"]
             ^timeout-ms 65000 ^max-bytes 1000000)))
-  (if (= r/status 0)
+  (if (== r/status 0)
     (do
       (var resp (parse r/stdout))
-      (if (= resp/ok true)
+      (if (== resp/ok true)
         ((to_stream resp/result)
           ~ each (fn [u]
               (if (>= u/update_id (offset ~ Cell/get))
@@ -333,13 +332,13 @@
             ^body (stringify value)))
 
 (fn authorized? [req]
-  (if (= gw-token "")
+  (if (== gw-token "")
     true
     (do
       (var h req/headers/authorization)
-      (if (= h void)
+      (if (== h void)
         false
-        (= h $"Bearer ${gw-token}")))))
+        (== h $"Bearer ${gw-token}")))))
 
 (fn create-session []
   (session-seq ~ Cell/set (+ (session-seq ~ Cell/get) 1))
@@ -359,11 +358,11 @@
 
 (fn post-message [id : Str, req]
   (var s (sessions ~ Map/get id))
-  (if (= s void)
+  (if (== s void)
     (json-response 404 {^error "no such session"})
     (try
       (var body (parse req/body))
-      (if (|| (= body/text void) (= body/text nil) (= body/text ""))
+      (if (|| (== body/text void) (== body/text nil) (== body/text ""))
         (json-response 400 {^error "missing text"})
         (do
           (s/actor ~ actor/send body/text)
@@ -376,11 +375,11 @@
 # request dispatch), so this works without streaming responses (§12.9 gap 2).
 (fn get-events [id : Str, req]
   (var s (sessions ~ Map/get id))
-  (if (= s void)
+  (if (== s void)
     (json-response 404 {^error "no such session"})
     (do
       (var cursor 0)
-      (if (= req/params/cursor void)
+      (if (== req/params/cursor void)
         nil
         (try
           (set cursor (parse_int req/params/cursor))
@@ -459,20 +458,20 @@ document.getElementById('f').addEventListener('submit', function (e) {
 
 (fn route [req]
   (var parts (split req/path "/"))
-  (if (= req/path "/")
+  (if (== req/path "/")
     (Response ^status 200
               ^headers {^content-type "text/html; charset=utf-8"}
               ^body web-page)
-    (if (= req/path "/api/sessions")
-      (if (= req/method "POST")
+    (if (== req/path "/api/sessions")
+      (if (== req/method "POST")
         (create-session)
         (list-sessions))
       (if (&& (>= parts/~size 5)
-              (= parts/1 "api")
-              (= parts/2 "sessions"))
+              (== parts/1 "api")
+              (== parts/2 "sessions"))
         (match parts/4
           (when "messages"
-            (if (= req/method "POST")
+            (if (== req/method "POST")
               (post-message parts/3 req)
               (json-response 405 {^error "method not allowed"})))
           (when "events" (get-events parts/3 req))
@@ -517,7 +516,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (count ~ Cell/get))
 
 (fn finish-gateway-store [label : Str]
-  (if (= gw-resume "0")
+  (if (== gw-resume "0")
     (do
       ((gw-store ~ Cell/get) ~ clear)
       (println $"Persistence enabled - ${label} (fresh start)"))
@@ -526,8 +525,8 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (println $"Persistence enabled - ${label} (${n} sessions restored)"))))
 
 (fn open-gateway-store []
-  (if (= gw-state-dir "")
-    (if (= gw-db-path "")
+  (if (== gw-state-dir "")
+    (if (== gw-db-path "")
       nil
       (do
         (var db (sqlite-open gw-db-path))
@@ -542,13 +541,13 @@ document.getElementById('f').addEventListener('submit', function (e) {
 (fn main [args]
   (open-gateway-store)
   (println $"Gene agent gateway - http://${gw-host}:${gw-port} (model ${model})")
-  (if (= auth-token nil)
+  (if (== auth-token nil)
     (println "No model API token set - sessions use the offline demo transport.")
     nil)
-  (if (= gw-token "")
+  (if (== gw-token "")
     (println "GENE_GATEWAY_TOKEN unset - API is open; keep the bind on localhost.")
     nil)
-  (if (= tg-token "")
+  (if (== tg-token "")
     (do
       (println "TELEGRAM_BOT_TOKEN unset - Telegram channel disabled.")
       (serve (Server ^host gw-host ^port gw-port) handle))

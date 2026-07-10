@@ -2228,6 +2228,36 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   result.chunk.owner = result
   deriveScopelessChunk(result)
 
+proc compileIfThen(c: var Compiler, node: Value) =
+  ## (if_then cond body...) — everything after the condition is the then
+  ## branch (implicit do); the whole form is nil when the condition is falsy.
+  let body = node.body
+  if body.len == 0:
+    c.emitConst NIL
+    return
+  compileExpr(c, body[0])
+  let elseJump = c.emitJump(opJumpIfFalse)
+  compileBodyFrom(c, body, 1)
+  let endJump = c.emitJump(opJump)
+  c.patchJump(elseJump)
+  c.emitConst NIL
+  c.patchJump(endJump)
+
+proc compileIfNot(c: var Compiler, node: Value) =
+  ## (if_not cond body...) — everything after the condition is the else
+  ## branch (implicit do); the whole form is nil when the condition is truthy.
+  let body = node.body
+  if body.len == 0:
+    c.emitConst NIL
+    return
+  compileExpr(c, body[0])
+  let bodyJump = c.emitJump(opJumpIfFalse)
+  c.emitConst NIL
+  let endJump = c.emitJump(opJump)
+  c.patchJump(bodyJump)
+  compileBodyFrom(c, body, 1)
+  c.patchJump(endJump)
+
 proc compileIf(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0:
@@ -4210,6 +4240,12 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "if":
       compileIf(c, node)
+      return
+    of "if_then":
+      compileIfThen(c, node)
+      return
+    of "if_not":
+      compileIfNot(c, node)
       return
     of "&&":
       compileShortCircuit(c, node, opJumpIfFalseOrPop, TRUE)

@@ -47,7 +47,7 @@ when defined(geneRcStats):
     test "scope-owned named functions are reclaimed":
       check leakedManaged("(fn f [] 1)") == 0
       check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
-      check leakedManaged("(fn fac [n] (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
+      check leakedManaged("(fn fac [n] (if (== n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
 
     test "self-referential closures stored in their scope are reclaimed":
       check leakedManaged("(var f nil) (set f (fn [] f))") == 0

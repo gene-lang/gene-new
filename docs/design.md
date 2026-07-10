@@ -129,14 +129,15 @@ Rules:
 ### 1.5 Equality and identity
 
 ```gene
-(= a b)       # structural equality, meta-blind
+(== a b)      # structural equality, meta-blind
+(!= a b)      # structural inequality: exactly (! (== a b))
 (same? a b)   # scalar value identity, heap/container reference identity
 ```
 
 `same?` treats immutable scalar-like values such as numbers, booleans, symbols,
 characters, strings, `nil`, and `void` by value. Heap/container values such as
 lists, maps, nodes, namespaces, cells, streams, functions, types, and protocols
-compare by object identity. Hashing follows `=`. Meta never changes hash keys.
+compare by object identity. Hashing follows `==`. Meta never changes hash keys.
 
 ### 1.6 `nil`, `void`, and `Never`
 
@@ -151,7 +152,7 @@ void : Void
 
 ```gene
 (var a void)
-(= a void) # true
+(== a void) # true
 ```
 
 Container normalization:
@@ -560,9 +561,9 @@ If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 MVP core special forms:
 
 ```text
-var set do if && || ! match for while loop repeat break continue fn fn! macro type
-ctor protocol impl derive try fail panic quote quasiquote select eval mod ns
-import yield scope supervisor spawn await
+var set do if if_then if_not && || ! match for while loop repeat break continue
+fn fn! macro type ctor protocol impl derive try fail panic quote quasiquote
+select eval mod ns import yield scope supervisor spawn await
 ```
 
 `&&`, `||`, and `!` are boolean control flow (§9); `while`, `loop`, `repeat`,
@@ -869,7 +870,7 @@ These rules combine into a simple consumer idiom:
 (while true
   (match (try-ok (s ~ Stream/next))
     (when (Ok v)   (yield-handler v))
-    (when (Err e)  (if (= e (EndOfStream)) (break) (handle e)))))
+    (when (Err e)  (if (== e (EndOfStream)) (break) (handle e)))))
 ```
 
 Standard stream helpers are ordinary functions/stages:
@@ -1625,7 +1626,7 @@ Core pattern forms:
 _                    # wildcard / ignore
 name                 # bind new name
 %name                # match existing lexical value
-literal              # match by =
+literal              # match by ==
 x : T                # bind x and require type/shape T
 (Task ^id id title)  # node/type shape
 Enum/variant         # enum unit variant, matches by identity

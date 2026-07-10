@@ -1801,9 +1801,9 @@ suite "types — declaration and construction":
        "[(e ~ /name) (e ~ /0) (e ~ /1)]",
        "[\"scores\" 1 2]"
   test "the instance head is the type value":
-    ck "(type Task ^props {^id Int}) (= (head (Task ^id 1)) Task)", "true"
+    ck "(type Task ^props {^id Int}) (== (head (Task ^id 1)) Task)", "true"
   test "distinct types are not equal":
-    ck "(type A ^props {^x Int}) (type B ^props {^x Int}) (= A B)", "false"
+    ck "(type A ^props {^x Int}) (type B ^props {^x Int}) (== A B)", "false"
   test "type declarations reject unsupported props":
     expect GeneError:
       discard compileSource("(type T ^sealed true ^props {})")

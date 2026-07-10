@@ -77,7 +77,7 @@ suite "spec — value spread from design":
 suite "spec — enums from design":
   test "unit variants are qualified singleton values with reflection":
     check_eval("(enum Color red green blue) " &
-               "[Color/red Color/green (= Color/red Color/red) " &
+               "[Color/red Color/green (== Color/red Color/red) " &
                " (same? Color/red Color/red) (Color/red ~ name) " &
                " (Color/green ~ ordinal) (Color ~ names) (Color ~ variants) " &
                " (Color ~ from_name (quote red)) (Color ~ from_name \"red\") " &
@@ -133,7 +133,7 @@ suite "spec — enums from design":
                "  off on " &
                "  (impl Label " &
                "    (message label [self] : Str " &
-               "      (if (= self Light/on) \"on\" \"off\")))) " &
+               "      (if (== self Light/on) \"on\" \"off\")))) " &
                "(Light/on ~ label)",
                "\"on\"")
     check_eval("(protocol Code (message code [self] : Int)) " &
@@ -266,7 +266,7 @@ suite "spec — macros from design":
                "[3 100]")
     check_eval("(macro recursive! [x] " &
                "  `(do (fn helper [n] " &
-               "          (if (= n 0) 0 (helper (- n 1)))) " &
+               "          (if (== n 0) 0 (helper (- n 1)))) " &
                "       (helper %x))) " &
                "(fn helper [n] 99) [(recursive! 3) (helper 3)]",
                "[0 99]")
@@ -788,12 +788,12 @@ suite "spec — regular expressions from design":
 
 suite "spec — equality and identity from design":
   test "same question mark is scalar identity or heap identity":
-    check_eval("(var xs [1]) [(= [1] [1]) (same? [1] [1]) (same? xs xs)]",
+    check_eval("(var xs [1]) [(== [1] [1]) (same? [1] [1]) (same? xs xs)]",
                "[true false true]")
 
   test "hash follows equality for hash-stable values":
-    check_eval("[(= (hash #[1 2]) (hash (freeze [1 2]))) " &
-               " (= (hash (quote #(x @line 1 ^a 2))) " &
+    check_eval("[(== (hash #[1 2]) (hash (freeze [1 2]))) " &
+               " (== (hash (quote #(x @line 1 ^a 2))) " &
                "    (hash (quote #(x @line 99 ^a 2))))]",
                "[true true]")
     check_eval("(try (hash [1 2]) catch {^message m} m)",
@@ -1101,7 +1101,7 @@ suite "spec — typed variable boundaries from design":
     check_eval("(try (var a : Int? \"bad\") a catch (TypeError ^expected e) e)",
                "\"Int?\"")
     # `?` is special only in type position; a `name?` predicate call is untouched.
-    check_eval("(fn done? [x] (= x 0)) [(done? 0) (done? 1)]", "[true false]")
+    check_eval("(fn done? [x] (== x 0)) [(done? 0) (done? 1)]", "[true false]")
 
   test "callable runtime values have explicit boundary types":
     check_eval("(fn keep-native [f : NativeFn] f) (keep-native +)",
@@ -1276,7 +1276,7 @@ suite "spec — pattern destructuring from design":
                "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
                "(var first-hits 0) " &
                "(for x in source " &
-               "  (if (= x 1) (set first-hits (hits ~ Cell/get)))) " &
+               "  (if (== x 1) (set first-hits (hits ~ Cell/get)))) " &
                "first-hits",
                "1")
     check_eval("(var hits (cell 0)) " &
@@ -1302,7 +1302,7 @@ suite "spec — pattern destructuring from design":
     check_eval("(var i 0) (var sum 0) " &
                "(while true " &
                "  (set i (+ i 1)) " &
-               "  (if (= i 2) (then (continue))) " &
+               "  (if (== i 2) (then (continue))) " &
                "  (if (> i 4) (then (break))) " &
                "  (set sum (+ sum i))) " &
                "[sum i]",
@@ -1310,7 +1310,7 @@ suite "spec — pattern destructuring from design":
     check_eval("(var i 0) (var sum 0) " &
                "(loop " &
                "  (set i (+ i 1)) " &
-               "  (if (= i 2) (then (continue))) " &
+               "  (if (== i 2) (then (continue))) " &
                "  (if (> i 4) (then (break))) " &
                "  (set sum (+ sum i))) " &
                "[sum i]",
@@ -1318,7 +1318,7 @@ suite "spec — pattern destructuring from design":
     check_eval("(var i 0) (var sum 0) " &
                "(repeat 6 " &
                "  (set i (+ i 1)) " &
-               "  (if (= i 2) (then (continue))) " &
+               "  (if (== i 2) (then (continue))) " &
                "  (if (> i 4) (then (break))) " &
                "  (set sum (+ sum i))) " &
                "[sum i]",
@@ -1330,7 +1330,7 @@ suite "spec — pattern destructuring from design":
                "10")
     check_eval("(var sum 0) " &
                "(repeat i in 6 " &
-               "  (if (= i 2) (then (continue))) " &
+               "  (if (== i 2) (then (continue))) " &
                "  (if (> i 4) (then (break))) " &
                "  (set sum (+ sum i))) " &
                "sum",
@@ -1342,7 +1342,7 @@ suite "spec — pattern destructuring from design":
                "0")
     check_eval("(var s 0) " &
                "(for x in [1 2 3 4 5] " &
-               "  (if (= x 2) (then (continue))) " &
+               "  (if (== x 2) (then (continue))) " &
                "  (if (> x 4) (then (break))) " &
                "  (set s (+ s x))) " &
                "s",
@@ -1451,9 +1451,9 @@ suite "spec — Int overflow contract per design §7.4":
 suite "spec — Range type":
   test "range constructs immutable integer ranges":
     check_eval("(range 1 4)", "(range 1 4)")
-    check_eval("[(= (range 0 3) (range 0 3)) " &
-               " (= (range 0 3) (range 0 4)) " &
-               " (= (hash (range 0 3)) (hash (range 0 3)))]",
+    check_eval("[(== (range 0 3) (range 0 3)) " &
+               " (== (range 0 3) (range 0 4)) " &
+               " (== (hash (range 0 3)) (hash (range 0 3)))]",
                "[true false true]")
     expect GeneError:
       discard run(compileSource("(range 0 10 0)"), newGlobalScope())
@@ -1534,9 +1534,9 @@ suite "spec — Date/time type family":
                "2.0")
 
   test "date time values are immutable and hash stable":
-    check_eval("[(= 2026-07-04 2026-07-04) " &
-               " (= 09:30 09:31) " &
-               " (= (hash 2026-07-04T09:30Z) (hash 2026-07-04T09:30Z))]",
+    check_eval("[(== 2026-07-04 2026-07-04) " &
+               " (== 09:30 09:31) " &
+               " (== (hash 2026-07-04T09:30Z) (hash 2026-07-04T09:30Z))]",
                "[true false true]")
 
 suite "spec — protocol derive from design":
@@ -1700,7 +1700,7 @@ suite "spec — streams from design":
     check_eval("(fn nums [] : (Stream Int Never) " &
                "  (var i 0) " &
                "  (while (< i 3) " &
-               "    (yield (if (= i 1) void i)) " &
+               "    (yield (if (== i 1) void i)) " &
                "    (set i (+ i 1)))) " &
                "(var s (nums)) " &
                "[(s ~ Stream/next) " &
@@ -1726,7 +1726,7 @@ suite "spec — streams from design":
                "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
                "(fn take-one [s] : (Stream Int Never) " &
                "  (for x in s " &
-               "    (if (= x 2) (then (break))) " &
+               "    (if (== x 2) (then (break))) " &
                "    (yield x))) " &
                "(var out (take-one source)) " &
                "[(out ~ Stream/next) " &
@@ -1852,11 +1852,11 @@ suite "spec — streams from design":
 
   test "declaration records expose source @meta through %meta":
     check_eval("(ns m (fn home [] @doc \"hi\" 1) (var x 2)) " &
-               "(var d ((filter m/%declarations (fn [d] (= d/name \"home\"))) " &
+               "(var d ((filter m/%declarations (fn [d] (== d/name \"home\"))) " &
                "        ~ Stream/next)) " &
-               "(var v ((filter m/%declarations (fn [d] (= d/name \"x\"))) " &
+               "(var v ((filter m/%declarations (fn [d] (== d/name \"x\"))) " &
                "        ~ Stream/next)) " &
-               "[d/%meta/doc d/kind (= v/%meta/doc void)]",
+               "[d/%meta/doc d/kind (== v/%meta/doc void)]",
                "[\"hi\" \"Fn\" true]")
 
   test "this-mod exposes the current module declaration stream":
@@ -1864,7 +1864,7 @@ suite "spec — streams from design":
     discard bindThisModule(scope, "spec")
     check run(compileSource("(var x 9) " &
                             "(var ds (filter (this-mod ~ Module/declarations) " &
-                            "  (fn [d] (= d/name \"x\")))) " &
+                            "  (fn [d] (== d/name \"x\")))) " &
                             "(var decl (ds ~ Stream/next)) " &
                             "[(/value decl) (this-mod ~ Module/path)]"),
               scope).print() == "[9 nil]"
@@ -2398,7 +2398,7 @@ suite "spec — actors from design":
                "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 50 " &
                "  (var a (actor/spawn ^init (fn [] 10) " &
                "    ^handle (fn [ctx state msg] " &
-               "      (if (= msg 1) " &
+               "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do (seen ~ Cell/set state) (actor/continue state)))))) " &
                "  (a ~ actor/send 1) " &
@@ -2415,7 +2415,7 @@ suite "spec — actors from design":
                "(supervisor ^strategy restart " &
                "  (var a (actor/spawn ^init (fn [] 10) " &
                "    ^handle (fn [ctx state msg] " &
-               "      (if (= msg 1) " &
+               "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do " &
                "          (seen ~ Cell/set state) " &
@@ -2431,7 +2431,7 @@ suite "spec — actors from design":
                "(supervisor ^strategy restart ^events events " &
                "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
                "    ^handle (fn [ctx state msg] " &
-               "      (if (= msg 1) " &
+               "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do " &
                "          (seen ~ Cell/set state) " &
@@ -2442,7 +2442,7 @@ suite "spec — actors from design":
                "  (var event (events ~ Channel/recv)) " &
                "  (var tries 0) " &
                "  (while (< tries 100) " &
-               "    (if (= (seen ~ Cell/get) 0) " &
+               "    (if (== (seen ~ Cell/get) 0) " &
                "      (do (sleep 1) (set tries (+ tries 1))) " &
                "      (set tries 100))) " &
                "  [(seen ~ Cell/get) " &
@@ -2539,7 +2539,7 @@ suite "spec — actors from design":
                "(supervisor ^strategy restart ^events events ^dead-letter dead " &
                "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
                "    ^handle (fn [ctx state msg] " &
-               "      (if (= msg 1) " &
+               "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do " &
                "          (seen ~ Cell/set state) " &
@@ -2997,7 +2997,7 @@ suite "spec — db protocol from stdlib plan":
     check_eval("(import db [Db]) " &
                "[(same? Db (Namespace/lookup db/sqlite \"Db\")) " &
                " (same? Db (Namespace/lookup db/postgres \"Db\")) " &
-               " (not (= (Namespace/lookup db/postgres \"open\") void))]",
+               " (not (== (Namespace/lookup db/postgres \"open\") void))]",
                "[true true true]")
 
 suite "spec — store persistence protocol":
@@ -3170,7 +3170,7 @@ suite "spec — os and json from ai-agent plan":
                "(var direct (real-path ReadDir " & geneString(path) & ")) " &
                "(var detour (real-path ReadDir " &
                geneString(dir / "sub" / ".." / "new.txt") & ")) " &
-               "[(= direct (real-path ReadDir " & geneString(dir & "/here.txt") & ")) " &
+               "[(== direct (real-path ReadDir " & geneString(dir & "/here.txt") & ")) " &
                " (starts_with? direct base) " &
                " (starts_with? detour base)]",
                "[true true true]")
@@ -3220,19 +3220,61 @@ suite "spec — os and json from ai-agent plan":
                "catch (JsonError ^message _) \"bad\")",
                "\"bad\"")
 
+suite "spec — equality and guard sugar (design §1.5/§3)":
+  test "== is structural equality and chains":
+    check_eval("(== 1 1)", "true")
+    check_eval("(== 1 2)", "false")
+    check_eval("(== [1 {^a 2}] [1 {^a 2}])", "true")
+    check_eval("(== 1 1 1)", "true")
+    check_eval("(== 1 1 2)", "false")
+
+  test "!= is exactly (! (== ...))":
+    check_eval("(!= 1 2)", "true")
+    check_eval("(!= 1 1)", "false")
+    check_eval("(!= [1] [2])", "true")
+    check_eval("(!= 1 1 2)", "true")
+
+  test "bare = is no longer bound":
+    expect GeneError:
+      discard run(compileSource("(" & "= 1 1)"), newGlobalScope())
+
+  test "if_then evaluates its whole tail as the then branch":
+    check_eval("(if_then true 1 2 3)", "3")
+    check_eval("(if_then false 1 2 3)", "nil")
+    check_eval("(if_then true)", "nil")
+    check_eval("(var a 1) (if_then true (set a 5) (+ a 10))", "15")
+
+  test "if_not evaluates its whole tail as the else branch":
+    check_eval("(if_not false 1 2 3)", "3")
+    check_eval("(if_not true 1 2 3)", "nil")
+    check_eval("(if_not false)", "nil")
+
+  test "contains? is structural membership on lists and sets":
+    check_eval("([\"a\" \"b\"] ~ contains? \"b\")", "true")
+    check_eval("([\"a\" \"b\"] ~ contains? \"c\")", "false")
+    check_eval("([[1 2]] ~ contains? [1 2])", "true")
+    check_eval("((Set 1 2) ~ contains? 2)", "true")
+    check_eval("((Set 1 2) ~ contains? 3)", "false")
+    check_eval("(contains? #[1 2] 2)", "true")
+
+  test "contains? rejects non-collection receivers":
+    expect GeneError:
+      discard run(compileSource("({^a 1} ~ contains? \"a\")"),
+                  newGlobalScope())
+
 suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
   test "scalars and containers round-trip under structural equality":
     check_eval("(import serde [write-data read-data]) " &
                "(var v {^a 1 ^b [1 2.5 \"x\" true nil void] " &
                "        ^c {^nested \"y\"} ^d 'q' ^e 0x0aff " &
                "        ^f 123456789012345678901234567890}) " &
-               "(= v (read-data (write-data v)))",
+               "(== v (read-data (write-data v)))",
                "true")
     check_eval("(import serde [write-data read-data]) " &
                "(import str [contains?]) " &
                "(var v #[1 #{^k 2} [3]]) " &
                "(var rt (read-data (write-data v))) " &
-               "[(= v rt) (contains? (write-data rt) \"#[1 #{\")]",
+               "[(== v rt) (contains? (write-data rt) \"#[1 #{\")]",
                "[true true]")
 
   test "dates, times, ranges, sets, durations, timezones round-trip":
@@ -3240,19 +3282,19 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(var v [2026-07-08 12:30:05 2026-07-08T12:30:05Z " &
                "        (range 1 10 2) (Set 1 2 3) (duration 1500000) " &
                "        (timezone 120 \"CEST\")]) " &
-               "(= v (read-data (write-data v)))",
+               "(== v (read-data (write-data v)))",
                "true")
 
   test "regexes round-trip as source plus flags":
     check_eval("(import serde [write-data read-data]) " &
                "(var v #\"ab+c\"i) " &
-               "(= v (read-data (write-data v)))",
+               "(== v (read-data (write-data v)))",
                "true")
 
   test "nodes round-trip including props, meta, children, immutability":
     check_eval("(import serde [write-data read-data]) " &
                "(var v `(p @m 1 ^x 2 \"c\" [3])) " &
-               "(= v (read-data (write-data v)))",
+               "(== v (read-data (write-data v)))",
                "true")
 
   test "reserved serde heads in user data are escaped and round-trip":
@@ -3261,11 +3303,11 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(var evil `(serde-float \"nan\")) " &
                "(var text (write-data evil)) " &
                "[(contains? text \"serde-data-node\") " &
-               " (= evil (read-data text))]",
+               " (== evil (read-data text))]",
                "[true true]")
     check_eval("(import serde [write-data read-data]) " &
                "(var evil2 `(serde-data-node 1)) " &
-               "(= evil2 (read-data (write-data evil2)))",
+               "(== evil2 (read-data (write-data evil2)))",
                "true")
 
   test "float specials use canonical serde-float forms":
@@ -3274,11 +3316,11 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(var nanv (read-data \"(serde-v1 (serde-float \\\"nan\\\"))\")) " &
                "(var back (write-data nanv)) " &
                "[(contains? back \"serde-float\") " &
-               " (! (= nanv nanv))]",   # NaN != NaN
+               " (!= nanv nanv)]",   # NaN != NaN
                "[true true]")
     check_eval("(import serde [write-data read-data]) " &
                "(var inf (read-data \"(serde-v1 (serde-float \\\"+inf\\\"))\")) " &
-               "(= inf (read-data (write-data inf)))",
+               "(== inf (read-data (write-data inf)))",
                "true")
 
   test "symbols that do not re-read verbatim are escaped":
@@ -3287,7 +3329,7 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(var s (read-data \"(serde-v1 (serde-sym \\\"a/b\\\"))\")) " &
                "(var text (write-data s)) " &
                "[(contains? text \"serde-sym\") " &
-               " (= s (read-data text))]",
+               " (== s (read-data text))]",
                "[true true]")
 
   test "maps with non-literal keys use the serde-map escape":
@@ -3296,7 +3338,7 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "(var m {}) (m ~ Map/put! \"weird key\" 1) " &
                "(var text (write-data m)) " &
                "[(contains? text \"serde-map\") " &
-               " (= m (read-data text))]",
+               " (== m (read-data text))]",
                "[true true]")
 
   test "cells and capabilities are rejected with clear errors":
@@ -3403,7 +3445,7 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
 suite "spec — serde references (stage 3)":
   test "builtin function references round-trip by identity":
     check_eval("(import serde [write read]) " &
-               "(= str/join (read (write str/join)))",
+               "(== str/join (read (write str/join)))",
                "true")
     check_eval("(import serde [write read]) " &
                "(var f (read (write str/join))) (f [\"a\" \"b\"] \"-\")",
@@ -3457,7 +3499,7 @@ suite "spec — serde references (stage 3)":
   test "cells snapshot through serde/write, outside the equality guarantee":
     check_eval("(import serde [write read]) " &
                "(var c (cell 41)) (var c2 (read (write c))) " &
-               "[(c2 ~ Cell/get) (! (= c c2))]",
+               "[(c2 ~ Cell/get) (!= c c2)]",
                "[41 true]")
 
   test "write-data refuses cells; read-data refuses snapshot-cells":

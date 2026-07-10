@@ -95,7 +95,7 @@
       "patterns": [
         {
           "name": "keyword.control.gene",
-          "match": "(?<=\\()\\s*(fn!|fn|var|set|do|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|new|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"])"
+          "match": "(?<=\\()\\s*(fn!|fn|var|set|do|if_then|if_not|if|then|elif|else|match|when|while|loop|repeat|for|in|break|continue|macro|type|enum|ctor|new|protocol|impl|derive|message|try|catch|ensure|fail|panic|quote|quasiquote|select|eval|mod|ns|import|from|yield|scope|supervisor|spawn|await|return)(?![^\\s()\\[\\]{},;\"])"
         },
         {
           "name": "keyword.operator.logical.gene",

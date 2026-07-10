@@ -993,6 +993,32 @@ proc biEq(args: openArray[Value]): Value {.nimcall.} =
     if not equal(args[i-1], args[i]): return FALSE
   TRUE
 
+proc biNe(args: openArray[Value]): Value {.nimcall.} =
+  ## (!= a b ...) — exactly (! (== a b ...)).
+  for i in 1 ..< args.len:
+    if not equal(args[i-1], args[i]): return TRUE
+  FALSE
+
+proc biContains(args: openArray[Value]): Value {.nimcall.} =
+  ## (xs ~ contains? x) — structural-equality membership for List and Set
+  ## receivers (design §1.5: membership follows ==). Maps are deliberately
+  ## unsupported: key-vs-value membership would be ambiguous.
+  if args.len != 2:
+    raise newException(GeneError,
+      "contains? expects (collection, item), got " & $args.len & " arguments")
+  case args[0].kind
+  of vkList:
+    for item in args[0].listItems:
+      if equal(item, args[1]): return TRUE
+    FALSE
+  of vkSet:
+    for item in args[0].setItems:
+      if equal(item, args[1]): return TRUE
+    FALSE
+  else:
+    raise newException(GeneError,
+      "contains? expects a List or Set, got " & $args[0].kind)
+
 proc biSame(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
@@ -4396,7 +4422,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define(">", app.nativeGt)
   result.define("<=", app.nativeLe)
   result.define(">=", app.nativeGe)
-  result.define("=", newNativeFn("=", biEq))
+  result.define("==", newNativeFn("==", biEq))
+  result.define("!=", newNativeFn("!=", biNe))
+  result.define("contains?", newNativeFn("contains?", biContains))
   result.define("same?", newNativeFn("same?", biSame))
   result.define("hash", newNativeFn("hash", biHash))
   result.define("not", newNativeFn("not", biNot))
@@ -5916,7 +5944,13 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
   case receiver.kind
   of vkList:
     case name
-    of "size", "empty?", "first", "last":
+    of "size", "empty?", "first", "last", "contains?":
+      builtinBinding(scope, name)
+    else:
+      NIL
+  of vkSet:
+    case name
+    of "contains?":
       builtinBinding(scope, name)
     else:
       NIL

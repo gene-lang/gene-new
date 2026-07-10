@@ -241,7 +241,7 @@ suite "errors — try on the frame stack":
   test "deep recursion through a try-wrapped function does not overflow":
     # Each level used to start a nested runLoop for the try body and overflow the
     # Nim stack in the low hundreds; the try body now runs as a heap Frame.
-    ck "(fn f [n] (try (if (= n 0) 0 (+ 1 (f (- n 1)))) catch _ -1)) (f 200000)",
+    ck "(fn f [n] (try (if (== n 0) 0 (+ 1 (f (- n 1)))) catch _ -1)) (f 200000)",
        "200000"
   test "an inner try catches before the enclosing ^errors boundary applies":
     # The undeclared error is caught by the function's own inner try, so the

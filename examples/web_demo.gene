@@ -195,7 +195,7 @@
 # -----------------------------------------------------------------------------
 
 (fn routed? [decl : Node] : Bool
-  (not (= decl/%meta/route void)))
+  (not (== decl/%meta/route void)))
 
 (fn route_entry [decl : Node] : (List Any)
   (match decl
@@ -216,7 +216,7 @@
 
 (fn render_attr [pair] : Str
   (var [k, v] pair)
-  (if (= v void)
+  (if (== v void)
     ""
     $" ${(to-str k)}=\"${(escape (to-str v))}\""))
 
@@ -258,7 +258,7 @@
       (do
         (var path (or req/path "/"))
         (var handler routes/%path)
-        (if (= handler void)
+        (if (== handler void)
           (fail (NotFound ^path path))
           (handler req)))
     catch (NotFound ^path p)
