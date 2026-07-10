@@ -2,11 +2,12 @@
 
 Syntax highlighting plus language-server support (diagnostics, outline,
 go to definition, hover, workspace symbols) for the
-[Gene programming language](../../docs/design.md).
+[Gene programming language](https://github.com/gene-lang/gene-new).
 
 Full setup, feature, and troubleshooting documentation:
-[docs/vscode-extension.md](../../docs/vscode-extension.md). The server
-half is documented in [docs/lsp.md](../../docs/lsp.md).
+[docs/vscode-extension.md](https://github.com/gene-lang/gene-new/blob/main/docs/vscode-extension.md).
+The server half is documented in
+[docs/lsp.md](https://github.com/gene-lang/gene-new/blob/main/docs/lsp.md).
 
 Quick start:
 

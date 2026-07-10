@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "publisher": "gene-lang",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gene-lang/gene-new.git",
+    "directory": "tools/vscode-extension"
+  },
   "engines": {
     "vscode": "^1.82.0"
   },

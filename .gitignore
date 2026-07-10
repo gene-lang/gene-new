@@ -42,3 +42,4 @@ vendor/
 coverage/
 .cache/
 tmp/
+*.vsix
