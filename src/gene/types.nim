@@ -2478,36 +2478,45 @@ proc streamGeneratorIp*(v: Value): int =
 proc setStreamGeneratorIp*(v: Value, ip: int) =
   streamData(v).generatorIp = ip
 
-proc taskData(v: Value): TaskData =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okTask:
-    raise newException(FieldDefect, "value is not a Task")
-  TaskData(objData(v))
+# Templates + cast, NOT procs returning refs: a proc materializes an owning
+# TaskData/TaskState temporary whose inc/dec goes through plain (non-atomic)
+# ORC refcounting. Task and Channel state is read and settled from foreign
+# threads (os/exec-*-async workers) while the scheduler polls the same
+# objects, so those temporaries silently corrupt the refcount via lost
+# updates and the object is freed while still referenced. The caller's Value
+# argument pins the object, so hook-free borrows are safe — bind results
+# with {.cursor.}.
+template taskData(v: Value): TaskData =
+  block:
+    if v.tagOf != OBJECT_TAG or objData(v).objKind != okTask:
+      raise newException(FieldDefect, "value is not a Task")
+    cast[TaskData](cast[pointer](v.bits and PAYLOAD_MASK))
 
-proc taskState(v: Value): TaskState =
+template taskState(v: Value): TaskState =
   taskData(v).state
 
 proc taskDone*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.done
 
 proc taskCancelled*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.cancelled
 
 proc taskCancelRequested*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.cancelRequested
 
 proc taskAwaited*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.awaited
 
 proc taskExternalPending*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.external and not data.done
 
@@ -2515,7 +2524,7 @@ proc waitExternalTaskChange*(v: Value): bool =
   ## Wait for a native/external operation to settle this task. Returns true when
   ## the task is now done; false means it was not an external-pending task.
   when compileOption("threads") and defined(gcAtomicArc):
-    let data = taskState(v)
+    let data {.cursor.} = taskState(v)
     withTaskStateLock(data):
       if not data.external or data.done:
         return data.done
@@ -2525,13 +2534,13 @@ proc waitExternalTaskChange*(v: Value): bool =
     false
 
 proc cancelTask*(v: Value) =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     if not data.done:
       data.cancelRequested = true
 
 proc tryCancelTask*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     if data.done:
       return
@@ -2547,47 +2556,47 @@ proc finishTaskCancel*(v: Value) =
   discard tryCancelTask(v)
 
 proc taskResult*(v: Value): Value =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.result
 
 proc taskHasError*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.errorMsg.len > 0 or data.hasErrorValue
 
 proc taskErrorMsg*(v: Value): string =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.errorMsg
 
 proc taskErrorValue*(v: Value): Value =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.errorValue
 
 proc taskHasErrorValue*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.hasErrorValue
 
 proc taskHasPanic*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.panicMsg.len > 0 or data.hasPanicValue
 
 proc taskPanicMsg*(v: Value): string =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.panicMsg
 
 proc taskPanicValue*(v: Value): Value =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.panicValue
 
 proc taskHasPanicValue*(v: Value): bool =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     result = data.hasPanicValue
 
@@ -2604,7 +2613,7 @@ proc taskSharesState*(a, b: Value): bool =
   a.kind == vkTask and b.kind == vkTask and taskData(a).state == taskData(b).state
 
 proc clearTaskPayload*(v: Value) =
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     data.awaited = true
     data.cancelRequested = false
@@ -2616,44 +2625,47 @@ proc clearTaskPayload*(v: Value) =
     data.panicValue = NIL
     data.hasPanicValue = false
 
-proc channelData(v: Value): ChannelData =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okChannel:
-    raise newException(FieldDefect, "value is not a Channel")
-  ChannelData(objData(v))
+# Same discipline as taskData: hook-free borrow, no owning ref temporary
+# (channels are pushed/closed from exec worker threads).
+template channelData(v: Value): ChannelData =
+  block:
+    if v.tagOf != OBJECT_TAG or objData(v).objKind != okChannel:
+      raise newException(FieldDefect, "value is not a Channel")
+    cast[ChannelData](cast[pointer](v.bits and PAYLOAD_MASK))
 
 proc channelCapacity*(v: Value): int =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result = state.capacity
 
 proc channelLen*(v: Value): int =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result = state.items.len
 
 proc channelItemsSnapshot*(v: Value): seq[Value] =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result = state.items
 
 proc channelClosed*(v: Value): bool =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result = state.closed
 
 proc channelFull*(v: Value): bool =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result = state.items.len >= state.capacity
 
 proc channelSendState*(v: Value): tuple[closed: bool, full: bool] =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result.closed = state.closed
     result.full = state.items.len >= state.capacity
 
 proc channelRecvState*(v: Value): tuple[closed: bool, empty: bool] =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     result.closed = state.closed
     result.empty = state.items.len == 0
@@ -2665,20 +2677,20 @@ proc channelItemScope*(v: Value): Scope =
   channelData(v).itemScope
 
 proc closeChannel*(v: Value) =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     state.closed = true
 
 proc pushChannel*(v, item: Value) =
   let stored = escapeWeakFunctions(item)
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     state.items.add stored
 
 proc tryPushChannel*(v, item: Value): tuple[pushed: bool, closed: bool,
                                             full: bool] =
   let stored = escapeWeakFunctions(item)
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     if state.closed:
       result.closed = true
@@ -2689,7 +2701,7 @@ proc tryPushChannel*(v, item: Value): tuple[pushed: bool, closed: bool,
       result.pushed = true
 
 proc popChannel*(v: Value): Value =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     if state.items.len == 0:
       raise newException(FieldDefect, "channel is empty")
@@ -2697,7 +2709,7 @@ proc popChannel*(v: Value): Value =
     state.items.delete(0)
 
 proc tryPopChannel*(v: Value): tuple[popped: bool, item: Value] =
-  let state = channelData(v).state
+  let state {.cursor.} = channelData(v).state
   withChannelStateLock(state):
     if state.items.len == 0:
       return (false, NIL)
@@ -4133,7 +4145,7 @@ proc escapeWeakFunctions*(v: Value): Value =
                          generatorStack: data.generatorStack,
                          generatorIp: data.generatorIp))
   of vkTask:
-    let data = taskData(v)
+    let data {.cursor.} = taskData(v)
     let state = data.state
     var done: bool
     var cancelRequested: bool
@@ -4181,7 +4193,7 @@ proc escapeWeakFunctions*(v: Value): Value =
                        errorType: data.errorType,
                        boundaryScope: data.boundaryScope))
   of vkChannel:
-    let data = channelData(v)
+    let data {.cursor.} = channelData(v)
     var sourceItems: seq[Value]
     var capacity: int
     var closed: bool
@@ -4387,7 +4399,7 @@ proc newExternalTask*(): Value =
 
 proc tryCompleteTask*(v, value: Value): bool =
   let stored = escapeWeakFunctions(value)
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     if data.done:
       return
@@ -4405,7 +4417,7 @@ proc completeTask*(v, value: Value) =
 proc tryFailTask*(v: Value, message: string, value: Value = NIL,
                   hasValue = false): bool =
   let stored = escapeWeakFunctions(value)
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     if data.done:
       return
@@ -4425,7 +4437,7 @@ proc failTask*(v: Value, message: string, value: Value = NIL, hasValue = false) 
 proc tryPanicTask*(v: Value, message: string, value: Value = NIL,
                    hasValue = false): bool =
   let stored = escapeWeakFunctions(value)
-  let data = taskState(v)
+  let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
     if data.done:
       return
@@ -4460,7 +4472,7 @@ proc newPanickedTask*(message: string, value: Value = NIL,
 
 proc newCheckedTask*(source, resultType, errorType: Value,
                      boundaryScope: Scope): Value =
-  let data = taskData(source)
+  let data {.cursor.} = taskData(source)
   boxObject(TaskData(objKind: okTask, state: data.state,
                      resultType: resultType, errorType: errorType,
                      boundaryScope: boundaryScope))
@@ -4470,7 +4482,7 @@ proc newChannel*(capacity = 16): Value =
                         state: newChannelState(capacity)))
 
 proc newCheckedChannel*(source, itemType: Value, itemScope: Scope): Value =
-  let data = channelData(source)
+  let data {.cursor.} = channelData(source)
   boxObject(ChannelData(objKind: okChannel, state: data.state,
                         itemType: itemType, itemScope: itemScope))
 

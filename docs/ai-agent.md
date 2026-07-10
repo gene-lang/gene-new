@@ -2,31 +2,36 @@
 
 Status: **the usable bootstrap is shipped: streaming Responses/Chat transports,
 file/shell tools, `/sh`, `/repl`, local CLI state/memory, async session actors,
-the gateway/web skeleton, Telegram, and SQLite gateway persistence. The next
-official product slice is typed tool derivation + a stable live `/repl` session
-object + an authoritative queryable event log + narrow catastrophe guards.
-Native libcurl, the full TUI, MCP, worktrees, browser automation, and general
-multi-agent orchestration are optional later work, not prerequisites.**
+the gateway/web skeleton, Telegram, and SQLite gateway persistence. Slice A is
+now shipped too: typed tool declarations (one `Tool` value derives handler +
+schema + validation + risk), a stable live `/repl` `session` object, an
+authoritative versioned event log with `/trace`, and an extended catastrophe
+guard (realpath-confined paths, normal/destructive/catastrophic command
+classification, surfaced truncation). Native libcurl, the full TUI, MCP,
+worktrees, browser automation, and general multi-agent orchestration are
+optional later work, not prerequisites.**
 Date: 2026-07-09.
 
 Implemented (see `examples/ai_agent.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get-env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
 timeout + output caps, `exec-stream` with stdout callbacks, `read-line`,
 `read-input`/`refresh-input`/`close-input`), `Fs/read-text`/`Fs/write-text`/
-`Fs/list-dir`, the `json` namespace (`parse`/`stringify`/`JsonError`), and the
-agent itself — a streaming Responses-API loop over a `curl` subprocess, a
-minimal single-user catastrophe guard (§8.5: `rm -rf` denial, simple path
-check, timeout/output caps — `os/exec` returns truncation flags, though the
-agent does not surface them yet — secret redaction; tools auto-approve by
-default), and tool use
-(`read_file`, `write_file`, `edit_file`, `list_dir`, `run_shell`, `grep`),
-plus optional `store/fs` state persistence for non-secret config, the
-interactive session, and user-managed memory. An offline demo transport keeps
-the loop runnable (and verified) with no network or key. Not yet built: typed
-tool derivation, the stable live session/event surface, and `/trace` (the next
-slice in §10). The native libcurl client, full scrollback TUI, and launcher
-capability injection remain available later but do not gate the signature Gene
-experience.
+`Fs/list-dir`/`Fs/real-path`, the `json` namespace (`parse`/`stringify`/
+`JsonError`), and the agent itself — a streaming Responses-API loop over a
+`curl` subprocess, the §8.5 catastrophe guard (realpath-confined workspace
+paths, normal/destructive/catastrophic command classification with hard stops
+for host-destroying commands and one confirmation for destructive-but-intended
+ones, timeout/output caps with surfaced truncation, secret redaction; routine
+work auto-approves), and typed tool use — each of `read_file`, `write_file`,
+`edit_file`, `list_dir`, `run_shell`, `grep` is one `Tool` value from which the
+model-facing JSON Schema, argument validation, risk class, and handler all
+derive. Every action appends to a versioned event log (§9.2) that `/trace`
+queries and the `/repl` `session` object exposes, plus optional `store/fs`
+state persistence for non-secret config, the interactive session, memory, and
+the event log. An offline demo transport keeps the loop runnable (and verified)
+with no network or key. The native libcurl client, full scrollback TUI, and
+launcher capability injection remain available later but do not gate the
+signature Gene experience.
 
 This document specifies a live, programmable AI coding agent written in Gene:
 a terminal program that holds a conversation with a hosted model API, lets the
@@ -355,27 +360,27 @@ results. Tools needed for a coding agent:
   `Os/Exec` is deliberately a *distinct* capability from `Os/Env` so a launcher
   can grant file+env without shell access.
 
-Today tools are registered as ordinary Gene functions and described to the
-model with a separate hand-written JSON schema list; dispatch is a `Map Str Fn`
-lookup on the `function_call` item's name. The duplicated handler/schema lists
-can drift silently.
-
-The next slice replaces them with **typed tool declarations**. A typed Gene
-function plus metadata is the single source of truth:
+Tools are **typed `Tool` declarations** (shipped, slice A). One `Tool` value is
+the single source of truth; the registry entry, model-facing JSON Schema (both
+wire shapes), argument validation, and risk class all derive from it:
 
 ```gene
-(@tool ^name "read_file"
-       ^description "Read a UTF-8 workspace file"
-       ^risk 'read
-  (fn read-file [path : Str] : Str
-    (read-text ReadDir (safe-path path))))
+(register-tool! (Tool
+  ^name "read_file"
+  ^description "Read a UTF-8 text file inside the workspace."
+  ^risk "read"
+  ^params [{^name "path" ^type "string" ^required true
+            ^doc "workspace-relative file path"}]
+  ^handler (fn [args] (read-text ReadDir (safe-path args/path)))))
 ```
 
-Registration derives the handler entry, model-facing JSON Schema, argument and
-result validation, documentation, simple risk class, and event serialization.
-This is intentionally the first Gene-native improvement: it removes current
-technical debt while demonstrating how types, metadata, functions, and nodes
-compose. Every call still passes through the narrow catastrophe guard in §8.5.
+`Tool` is a `type` with `schema` and `validate-args` messages (§9.1); the turn
+loop reads the live registry (`tool-schemas-now`), so a tool added or replaced
+from `/repl` reaches the very next model call. This removes the earlier
+drift-prone duplication between a handler map and a hand-written schema list,
+and demonstrates how types, metadata, functions, and maps compose. Every call
+passes through argument validation and then the narrow catastrophe guard in
+§8.5, and both the call and its result are appended to the event log (§9.2).
 
 ## 7. Terminal UI via curses (§7)
 
@@ -454,41 +459,48 @@ The goal is not to sandbox the author from their own agent or to construct an
 enterprise permission system. Normal workspace reads/edits, shell commands,
 tests, builds, package installs, and network calls should run without prompts.
 
-The shipped guard is deliberately small: `run_shell` denies `rm -rf` by a
-substring check; file tools reject absolute and `..` paths; subprocesses have
-timeouts and output caps; known auth tokens are redacted from displayed and
-model-visible tool output; tools auto-approve by default. Setting
-`GENE_AGENT_APPROVE_ALL=0` retains the older prompt-before-write/shell mode for
-occasional use, but it is not the primary design.
-
-The next guard classifies a structured operation or high-confidence raw command
-as `normal`, `destructive`, or `catastrophic`:
+The shipped guard classifies each `run_shell`/`/sh`-bound command as `normal`,
+`destructive`, or `catastrophic` (`classify-command` in `examples/ai_agent.gene`)
+and acts accordingly:
 
 - **Normal:** run immediately.
-- **Destructive but plausibly intentional:** show the exact target, create a
-  checkpoint when practical, and require one explicit confirmation.
-- **Catastrophic or nonsensical:** deny unless the user deliberately disables
-  the guard outside the active session.
+- **Destructive but plausibly intentional:** show the exact target and require
+  one explicit confirmation (`confirm-destructive?`; EOF/no-stdin denies, so a
+  destructive command never auto-approves in a scripted run).
+- **Catastrophic or nonsensical:** deny outright, and emit a `confirmation`
+  event recording the denial. `GENE_AGENT_GUARD=0`, set outside the session,
+  disables classification.
 
-Initial coverage:
+Classification anchors command-name patterns at the start of each simple
+command (splitting on `&&`, `;`, `|`) so `grep shutdown src/` stays normal while
+`ls && git clean -fdx` is caught. File tools realpath every path and reject
+anything resolving outside the workspace root, so a symlink inside the workspace
+cannot point a read/write outside it. Subprocesses keep their timeouts and
+output caps, and truncation is surfaced in both the transcript and the
+model-visible tool result. Known auth tokens are redacted from displayed and
+model-visible output — including inside event-log entries. `GENE_AGENT_APPROVE_ALL=0`
+retains the older prompt-before-write/shell mode for occasional use, but it is
+not the primary design.
 
-- recursive deletion of `/`, `$HOME`, the workspace root, a drive/mount root,
-  or an unexpectedly large tree;
-- disk formatting, raw-device writes, fork bombs, shutdown/reboot, and similar
-  host-destroying commands;
-- `DROP DATABASE`, `DROP TABLE`, `TRUNCATE`, and unbounded `DELETE`/`UPDATE`
-  against non-ephemeral databases;
-- `git reset --hard`, `git clean -fdx`, destructive branch deletion, and force
-  push when they would erase commits or pre-existing work;
-- `terraform destroy`, namespace/cluster deletion, broad cloud-resource
-  deletion, and production deployment/rollback commands when a production
-  target is detectable;
-- printing, persisting, or sending known auth tokens and credentials.
+Shipped coverage (`classify-command` in `examples/ai_agent.gene`):
+
+- **catastrophic** — recursive deletion (`rm -rf`/`-fr`/`-r`) of `/`, `$HOME`,
+  a top-level absolute directory, the workspace root, `.`, `..`, or `.git`;
+  disk formatting (`mkfs`), raw-device writes (`of=/dev/…`), fork bombs
+  (`:(){`), and `shutdown`/`reboot`/`poweroff`/`halt`; `DROP DATABASE`;
+- **destructive** (one confirmation) — recursive deletion of any other tree;
+  `git reset --hard`, `git clean -fd`, force push, `git branch -D`;
+  `DROP TABLE`, `TRUNCATE TABLE`, and `DELETE`/`UPDATE` with no `WHERE`;
+  `terraform destroy`; `kubectl delete namespace`/`ns`/`cluster`;
+- printing, persisting, or sending known auth tokens is prevented separately by
+  redaction (below), not by the classifier.
 
 Prefer structured wrappers for database, Git, and deployment tools because
-parsing arbitrary shell is necessarily incomplete. For `run_shell` and `/sh`,
-block or ask only on high-confidence catastrophic patterns; do not pretend this
-is an OS sandbox.
+parsing arbitrary shell is necessarily incomplete. For `run_shell`, block or ask
+only on the high-confidence patterns above; do not pretend this is an OS sandbox.
+Interactive `/sh` is a deliberate user-driven escape hatch — the TTY session
+hands the loop to the real shell, so the classifier does not sit in front of it;
+the scripted (piped) `/sh` path does run each line through the classifier.
 
 Reliability rules apply even with auto-approval:
 
@@ -502,9 +514,21 @@ Reliability rules apply even with auto-approval:
 - regression-test the seeded worst cases while ensuring ordinary dogfood
   commands remain interruption-free.
 
-Known current gaps: `safe-path` does not realpath, truncation flags are not yet
-surfaced by the agent, and the shell deny-list is a naive substring match. A
-general policy language, default-on approval modes, OS/container sandboxing,
+Known current gaps (documented, not yet classified):
+
+- **large-tree deletion** — a recursive `rm` of an ordinary path is destructive
+  but its size is not measured, so a huge-but-unprotected tree is not escalated;
+- **cloud/infra breadth and production targets** — only the specific `kubectl`
+  namespace/cluster and `terraform destroy` forms above are recognized; broad
+  cloud-resource deletion, production deploy/rollback, and "is this prod?"
+  detection are not modeled;
+- **parsed wrappers** — database/Git/deployment classification is substring- and
+  segment-based rather than argument-parsed, so an unusual spelling can slip a
+  destructive command through as normal or trip a false confirmation; DB
+  connection awareness (which database, ephemeral vs. not) is not modeled;
+- **interactive `/sh`** — the TTY shell loop is outside the classifier (above).
+
+A general policy language, default-on approval modes, OS/container sandboxing,
 multi-user isolation, and compliance controls are explicit non-goals unless the
 project later chooses to become a distributed product.
 
@@ -586,48 +610,58 @@ pseudocode.
 ### 9.1 Stable live session object
 
 `/repl` is the agent's defining control surface, not merely an escape hatch.
-The shipped REPL already receives a `session` binding; the next slice turns it
-into a stable message-based object rather than exposing incidental map layout.
-The supported projections are:
+The shipped REPL binds `session` to a stable `Session` value (a typed node whose
+props hold the live cells and tool registry) rather than exposing incidental map
+layout. The shipped projections are:
 
 ```text
 session/config       session/items        session/transcript
-session/memory       session/tools        session/current-task
-session/events       session/evidence     session/workspace
+session/memory       session/tools        session/events
+session/workspace
 ```
 
-Reads may use ordinary selectors. Mutations go through messages so the session
-can validate invariants and append an audit event:
+(`current-task` and `evidence` arrive with slice B.) Reads use ordinary
+selectors. Mutations go through messages so the session can keep invariants
+(system-prompt memory refresh, persistence) and append an audit event:
 
 ```gene
-(session ~ add-tool my-domain-check)
+(session ~ add-tool (Tool ^name "check" ^description "..." ^risk 'read
+                          ^params [...] ^handler my-domain-check))
 (session ~ remember "reader datum comments are spacing")
-(session ~ subscribe 'tool-call)
-(session ~ resume)
+(session ~ subscribe "tool-call")     ; echo future events of this type
+(session ~ trace "type=tool-call")    ; same filters as /trace
+(session ~ resume)                    ; continue the current turn on exit
 ```
 
-The API begins small. Do not expose every implementation field or build a
-general plugin system first. Stabilize the pieces needed to inspect a real turn,
-add/replace a typed tool, query events, and continue.
+`add-tool` registers into the same typed registry the turn loop reads, so a tool
+added or replaced from `/repl` reaches the very next model call. The API begins
+small: it stabilizes the pieces needed to inspect a real turn, add/replace a
+typed tool, query events, and continue — not every implementation field or a
+general plugin system.
 
 ### 9.2 Authoritative event log and `/trace`
 
-The CLI and gateway currently accumulate related state in different shapes.
-Converge them on one append-only, versioned event vocabulary. At minimum:
+CLI and gateway share one append-only, versioned event vocabulary. Shipped
+types (`file-change` and `check` arrive with slice B's evidence work):
 
 ```gene
-{^v 1 ^type 'user-input  ^text "..."}
-{^v 2 ^type 'model-item  ^item {...}}
-{^v 3 ^type 'tool-call   ^id "..." ^name "read_file" ^args {...}}
-{^v 4 ^type 'tool-result ^id "..." ^value "..." ^truncated false}
-{^v 5 ^type 'file-change ^path "..." ^patch-ref "..."}
-{^v 6 ^type 'check       ^command [...] ^status 0 ^duration-ms 123}
-{^v 7 ^type 'agent-text  ^text "..."}
+{^v 1 ^type "user-input"  ^text "..."}
+{^v 2 ^type "model-item"  ^item {...}}
+{^v 3 ^type "tool-call"   ^id "..." ^name "read_file" ^args {...}}
+{^v 4 ^type "tool-result" ^id "..." ^value "..." ^truncated false}
+{^v 5 ^type "text-delta"  ^text "..."}          ; streamed model text
+{^v 6 ^type "agent-text"  ^text "..."}          ; the turn's final text
+{^v 7 ^type "turn-done"   ^text "..."}          ; exactly one per turn
+{^v 8 ^type "confirmation" ^risk "destructive" ^decision "deny" ^target "..."}
+{^v 9 ^type "tool-registered" ^name "..." ^risk "read"}
 ```
 
-The event log is authoritative for rendering and persistence; transcript text,
-evidence, and current UI state are projections. Every surface consumes the same
-events. `/trace` exposes a few useful filters first (type, tool name, path,
+`run-turn` and `run-tool-call` write through an explicit **emit sink**: the CLI
+passes its process-global logger, the gateway passes a per-session sink — so
+each gateway session owns its complete tool trail without cross-session
+interleaving. Every value is redacted at append. The event log is authoritative
+for rendering and persistence; transcript text, evidence, and current UI state
+are projections. Every surface consumes the same events. `/trace` exposes a few useful filters first (type, tool name, path,
 event range, current turn), while `/repl` can apply normal selectors and stream
 operations. Full replay/fork/compare and sanitized trajectory fixtures are later
 extensions, not requirements for the first event slice.
@@ -667,19 +701,27 @@ delivery, and persistence patterns needed by the next work. Historical numbers
 are retained in §12 where they explain existing code; they no longer define the
 forward priority order.
 
-### 10.2 Slice A — program the agent that exists
+### 10.2 Slice A — program the agent that exists (shipped)
 
-1. Replace the duplicated tool map/schema list with typed tool declarations
+1. **Done.** The duplicated tool map/schema list is replaced by typed `Tool`
+   declarations; the registry entry, model-facing JSON Schema (both wire
+   shapes), argument validation, and risk class all derive from one value
    (§6, §9.1).
-2. Stabilize the live `session` object exposed through `/repl` (§9.1).
-3. Route CLI and gateway actions through one versioned event vocabulary
-   (§9.2, §12.3).
-4. Add `/trace` with type/tool/path/turn filters and selector examples.
-5. Extend the §8.5 guard for seeded worst cases: realpath-protected roots,
-   destructive database/Git/infrastructure patterns, visible output
-   truncation, and known-secret redaction—without prompting for normal work.
-6. Cover typed registration and event behavior with deterministic fake-model
-   tests.
+2. **Done.** `/repl` binds a stable `Session` object with message-based
+   mutations (`add-tool`, `remember`, `subscribe`, `trace`, `resume`) (§9.1).
+3. **Done.** CLI and gateway emit one versioned event vocabulary — `user-input`,
+   `model-item`, `tool-call`, `tool-result`, `agent-text`, `text-delta`,
+   `turn-done`, `tool-registered`, `confirmation`, `memory`, `error` (§9.2,
+   §12.3).
+4. **Done.** `/trace` filters the log by `type`/`tool`/`path`/`turn`/`from`/`to`
+   (a bare token is shorthand for `type=`); the `session` object exposes the
+   same filters.
+5. **Done.** The §8.5 guard realpath-confines file paths, classifies commands as
+   normal/destructive/catastrophic, surfaces output truncation, and redacts
+   known secrets — all without prompting for normal work.
+6. **Done.** Deterministic fake-model tests cover derived-schema-on-the-wire,
+   catastrophe denial, event/trace behavior (`tests/test_cli.nim`), and
+   `Fs/real-path` (`tests/spec_runner.nim`).
 
 The signature demo is deliberately single-session: inspect live state in
 `/repl`, add or replace a typed Gene tool, query the event trail, and continue
@@ -910,13 +952,18 @@ is a conversation.
 
 ### 12.8 Rare destructive confirmations across surfaces
 
-§8.5's catastrophe guard normally produces no interaction. When a structured
-operation is destructive but plausibly intentional, the session emits a
-`confirmation` event, parks the turn on a reply channel with a deadline
-(default deny on timeout), and the owning surface renders it natively — y/N in
-the TUI, buttons on the web, `/confirm` in chat. Catastrophic operations remain
-denied; normal operations remain auto-approved. This is not a general approval
-workflow.
+§8.5's catastrophe guard normally produces no interaction. The guard's
+confirmation strategy and event sink are injectable (`set-guard-confirm`; the
+per-turn emit sink), because an embedding host has no terminal: the CLI
+confirms on stdin, while the shipped gateway **denies destructive commands
+outright** — never blocking the scheduler on an invisible prompt — and records
+the deny as a `confirmation` event in the owning session's log. The planned
+extension: when a structured operation is destructive but plausibly
+intentional, the session emits a `confirmation` event, parks the turn on a
+reply channel with a deadline (default deny on timeout), and the owning surface
+renders it natively — y/N in the TUI, buttons on the web, `/confirm` in chat.
+Catastrophic operations remain denied; normal operations remain auto-approved.
+This is not a general approval workflow.
 
 ### 12.9 Runtime gaps for optional surfaces
 

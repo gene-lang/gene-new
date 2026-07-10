@@ -7337,6 +7337,11 @@ template withSchedulerLock(s: SchedulerState, body: untyped): untyped =
     release(s.lock)
 
 proc enqueueRunnableUnlocked(s: SchedulerState, f: Fiber) =
+  ## Scheduler-thread callers only. Foreign threads must use the move-based
+  ## transfer inside the wake*In procs: this proc copies the fiber ref
+  ## (non-atomic inc) and clearWaitReason releases the wait-field Values —
+  ## both racy off-thread. The dequeue site clears wait reasons again, which
+  ## covers fibers that arrive via the move path.
   clearWaitReason(f)
   s.runQueue.add f
   when compileOption("threads") and defined(gcAtomicArc):
@@ -10663,6 +10668,9 @@ proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false,
         continue
       result = f
       s.runQueue.delete(i)
+      # Fibers woken by a foreign thread (wake*In move path) still carry their
+      # wait reason: release those Values here, on the claiming thread.
+      clearWaitReason(f)
       when compileOption("threads") and defined(gcAtomicArc):
         # Root deadlock detection and cancellation scans both need to see a
         # claimed fiber before it leaves the scheduler lock.
@@ -10739,12 +10747,20 @@ proc wakeChannelWaitersIn(s: SchedulerState, channel: Value,
                           wakeSenders: bool) =
   ## Move one fiber parked on `channel` — a receiver, or a sender when
   ## `wakeSenders` — from the wait list onto the run queue (FIFO over waiters).
+  ## Runs on foreign threads (exec workers), so the transfer is rc-free: the
+  ## fiber is inspected through a cursor and MOVED between the seqs — a copy
+  ## would inc/dec its non-atomic refcount off-thread, racing the scheduler.
+  ## Wait reasons are cleared at the dequeue site instead of here (clearing
+  ## releases the wait-field Values, which must happen on the scheduler).
   withSchedulerLock(s):
     for i in 0 ..< s.waiters.len:
-      let f = s.waiters[i]
+      let f {.cursor.} = s.waiters[i]
       if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+        when compileOption("threads") and defined(gcAtomicArc):
+          if f.workerCandidate:
+            broadcast(s.workerCond)
+        s.runQueue.add(move s.waiters[i])
         s.waiters.delete(i)
-        s.enqueueRunnableUnlocked(f)
         return
 
 proc wakeChannelWaiters(channel: Value, wakeSenders: bool) =
@@ -10754,14 +10770,18 @@ proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
                              wakeSenders: bool) =
   ## Channel close changes the state observed by every parked counterpart:
   ## receivers on an empty channel and senders on a full one must all resume and
-  ## re-run their operation so they can raise ChannelClosed.
+  ## re-run their operation so they can raise ChannelClosed. Foreign-thread
+  ## safe: rc-free move transfer, same discipline as wakeChannelWaitersIn.
   withSchedulerLock(s):
     var i = 0
     while i < s.waiters.len:
-      let f = s.waiters[i]
+      let f {.cursor.} = s.waiters[i]
       if f.waitIsSend == wakeSenders and same(f.waitChannel, channel):
+        when compileOption("threads") and defined(gcAtomicArc):
+          if f.workerCandidate:
+            broadcast(s.workerCond)
+        s.runQueue.add(move s.waiters[i])
         s.waiters.delete(i)
-        s.enqueueRunnableUnlocked(f)
       else:
         inc i
 
@@ -10770,14 +10790,19 @@ proc wakeAllChannelWaiters(channel: Value, wakeSenders: bool) =
 
 proc wakeTaskWaitersIn(s: SchedulerState, task: Value) =
   ## Move every fiber parked in `await` on `task` onto the run queue. A completed
-  ## task wakes all of its awaiters (unlike a channel, which wakes one counterpart).
+  ## task wakes all of its awaiters (unlike a channel, which wakes one
+  ## counterpart). Foreign-thread safe: rc-free move transfer, same discipline
+  ## as wakeChannelWaitersIn.
   withSchedulerLock(s):
     var i = 0
     while i < s.waiters.len:
-      let f = s.waiters[i]
+      let f {.cursor.} = s.waiters[i]
       if f.waitTask.taskSharesState(task):
+        when compileOption("threads") and defined(gcAtomicArc):
+          if f.workerCandidate:
+            broadcast(s.workerCond)
+        s.runQueue.add(move s.waiters[i])
         s.waiters.delete(i)
-        s.enqueueRunnableUnlocked(f)
       else:
         inc i
 

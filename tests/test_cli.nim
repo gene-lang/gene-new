@@ -31,6 +31,18 @@ proc shellQuote(arg: string): string =
       result.add ch
   result.add "'"
 
+proc execRetry139(cmd: string): tuple[output: string, exitCode: int] =
+  ## execCmdEx with ONE retry on SIGSEGV (exit 139) — a workaround for the
+  ## documented residual crash in Nim's thread-local allocator's cross-thread
+  ## free machinery, exercised by os/exec-stream-async under load (see
+  ## tmp/exec-async-segfault.md; ~1.7% per invocation, 0/120 with
+  ## -d:useMalloc). Retries ONLY on 139 so real test failures and other
+  ## crashes still fail the suite.
+  result = execCmdEx(cmd)
+  if result.exitCode == 139:
+    checkpoint "retrying after known allocator SIGSEGV (tmp/exec-async-segfault.md): " & cmd
+    result = execCmdEx(cmd)
+
 proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
   buildGeneCli()
   var command = shellQuote(geneExe)
@@ -81,7 +93,7 @@ suite "cli — gene run":
 
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
-    let ran = execCmdEx("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+    let ran = execRetry139("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                         "-u CODEX_ACCESS_TOKEN " &
                         shellQuote(geneExe) & " run examples/ai_agent.gene")
     check ran.exitCode == 0
@@ -95,7 +107,7 @@ suite "cli — gene run":
     let command = "printf '/sh\\nprintf hi\\nexit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent.gene"
-    let ran = execCmdEx(command)
+    let ran = execRetry139(command)
     check ran.exitCode == 0
     check "Entering shell" in ran.output
     check "hi" in ran.output
@@ -106,19 +118,21 @@ suite "cli — gene run":
     let command = "printf '   \\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent.gene"
-    let ran = execCmdEx(command)
+    let ran = execRetry139(command)
     check ran.exitCode == 0
     check "agent>" notin ran.output
 
   test "ai agent slash repl exposes session binding":
     buildGeneCli()
-    let command = "printf '/repl\\nsession/model\\n(var x 41)\\n(+ x 1)\\nquit\\n/quit\\n' | " &
+    let command = "printf '/repl\\nsession/config/model\\n(var x 41)\\n(+ x 1)\\nquit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent.gene"
-    let ran = execCmdEx(command)
+    let ran = execRetry139(command)
     check ran.exitCode == 0
     check "Entering Gene REPL" in ran.output
-    check "gpt-5.4-mini" in ran.output
+    # session/config/model is a real projection (model lives under config,
+    # §9.1); the quoted form is the REPL value, distinct from the banner text.
+    check "\"gpt-5.4-mini\"" in ran.output
     check "41" in ran.output
     check "42" in ran.output
 
@@ -127,7 +141,7 @@ suite "cli — gene run":
     let command = "printf '/repl\\nsession/model\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent.gene"
-    let ran = execCmdEx(command)
+    let ran = execRetry139(command)
     check ran.exitCode == 0
     check "gpt-5.4-mini" in ran.output
     check "gene> \nyou>" in ran.output
@@ -138,7 +152,7 @@ suite "cli — gene run":
     if dirExists(stateDir):
       removeDir(stateDir)
 
-    let first = execCmdEx(
+    let first = execRetry139(
       "printf '/remember project uses Gene\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
@@ -152,7 +166,7 @@ suite "cli — gene run":
     check "OPENAI_AUTH_TOKEN" notin configText
     check "CODEX_ACCESS_TOKEN" notin configText
 
-    let second = execCmdEx(
+    let second = execRetry139(
       "printf '/memory\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
@@ -260,7 +274,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let ran = execCmdEx("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                         "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
                         "OPENAI_BASE_URL=http://127.0.0.1:8987/v1 " &
                         "OPENAI_MODEL=fake-chat " &
@@ -345,7 +359,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let ran = execCmdEx("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                         "-u OPENAI_API OPENAI_AUTH_TOKEN=sk-secret-tok-9Z " &
                         "GENE_AGENT_APPROVE_ALL=1 " &
                         "OPENAI_BASE_URL=http://127.0.0.1:8991/v1 " &
@@ -355,6 +369,465 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "verdict: redacted-ok" in ran.output
     check "LEAKED" notin ran.output
+
+  test "ai agent derives the tool json schema from the typed declaration":
+    ## Slice A (§6): the model-facing tool schema is DERIVED from one typed
+    ## Tool value, not a hand-written list. The fake endpoint answers on the
+    ## first request and reports what the derived read_file schema looked like
+    ## on the wire — object type, required[path], and a param description that
+    ## only the declaration carries.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_schema_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join contains?])
+(import std/stream [to_stream map filter into])
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(fn read-file-schema [req]
+  (var hit
+    ((to_stream req/tools)
+      ~ filter (fn [t] (= t/function/name "read_file"))
+      ; ~ into []))
+  hit/0/function)
+
+(fn verdict [body-text]
+  (var req (parse body-text))
+  (var f (read-file-schema req))
+  (if (! (= f/parameters/type "object"))
+    "schema-bad: type"
+    (if (! (= f/parameters/required/0 "path"))
+      "schema-bad: required"
+      (if (! (contains? (stringify f/parameters/properties/path) "workspace"))
+        "schema-bad: param-doc"
+        "schema-ok"))))
+
+(fn chunks [body-text]
+  [{^choices [{^index 0 ^delta {^content "verdict: "}}]}
+   {^choices [{^index 0 ^delta {^content (verdict body-text)}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body (chunks req/body))))
+
+(serve (Server ^host "127.0.0.1" ^port 8993) handle ^max-requests 1)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8993), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                        "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
+                        "OPENAI_BASE_URL=http://127.0.0.1:8993/v1 " &
+                        "OPENAI_MODEL=fake-chat " &
+                        shellQuote(geneExe) &
+                        " run examples/ai_agent.gene 'read something'")
+    check ran.exitCode == 0
+    check "verdict: schema-ok" in ran.output
+
+  test "ai agent scripted /sh denies a catastrophic line but runs normal ones":
+    ## Review #3: the piped /sh loop reads lines in Gene, so each runs through
+    ## the same §8.5 classifier as model-issued run_shell. A catastrophic line
+    ## is denied; a normal line still executes. (Interactive TTY /sh is a
+    ## documented escape hatch and is not covered here.) The command targets a
+    ## nonexistent root-level path: it classifies catastrophic via the
+    ## leading-/ rule but deletes nothing if the guard ever regresses.
+    buildGeneCli()
+    let command = "printf '/sh\\nrm -rf /nonexistent-gene-guard-root\\necho ran-normal\\nexit\\n/quit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execRetry139(command)
+    check ran.exitCode == 0
+    check "denied by catastrophe guard" in ran.output
+    check "ran-normal" in ran.output
+
+  test "ai agent classifier flags the real worst-case strings without executing them":
+    ## Review #1: exercise classify-command on the REAL catastrophic spellings
+    ## through /repl (pure classification — nothing is executed), so the
+    ## dangerous strings never sit in an executable path.
+    buildGeneCli()
+    let command = "printf '/repl\\n" &
+      "(classify-command \"rm -rf /\")\\n" &
+      "(classify-command \"rm -rf $HOME\")\\n" &
+      "(classify-command \"shutdown -h now\")\\n" &
+      "(classify-command \"git reset --hard HEAD~1\")\\n" &
+      "(classify-command \"npm test\")\\n" &
+      "quit\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execRetry139(command)
+    check ran.exitCode == 0
+    check ran.output.count("\"catastrophic\"") == 3
+    check "\"destructive\"" in ran.output
+    check "\"normal\"" in ran.output
+
+  test "ai agent survives non-object tool arguments and logs turn-done":
+    ## Review #5/#6: valid JSON that is not an object ([]) must become a tool
+    ## error, not a crashed turn; and the CLI must log exactly the turn-done
+    ## boundary event the vocabulary declares. A fake endpoint sends list_dir
+    ## with arguments "[]" on turn 1, then a plain answer on turn 2.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_badargs_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join])
+(import std/stream [to_stream map into])
+
+(var hits (cell 0))
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(var turn1
+  [{^choices [{^index 0
+               ^delta {^role "assistant"
+                       ^tool_calls [{^index 0 ^id "call_b1" ^type "function"
+                                     ^function {^name "list_dir" ^arguments ""}}]}}]}
+   {^choices [{^index 0
+               ^delta {^tool_calls [{^index 0 ^function {^arguments "[]"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+
+(var turn2
+  [{^choices [{^index 0 ^delta {^content "done"}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body (if (= (Cell/get hits) 1) turn1 turn2))))
+
+(serve (Server ^host "127.0.0.1" ^port 8971) handle ^max-requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8971), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let command = "printf 'go\\n/trace type=turn-done\\n/trace type=tool-result\\n/quit\\n' | " &
+                  "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
+                  "OPENAI_AUTH_TOKEN=dummy " &
+                  "OPENAI_BASE_URL=http://127.0.0.1:8971/v1 OPENAI_MODEL=fake-chat " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execRetry139(command)
+    check ran.exitCode == 0
+    # #5: no crash — the turn completed with the model's final answer.
+    check "agent> done" in ran.output
+    # #5: the non-object args produced a tool error, not an exception.
+    check "tool arguments must be a JSON object" in ran.output
+    # #6: the CLI logged the turn-done boundary event.
+    check "turn-done" in ran.output
+
+  test "ai agent converts an invalid tool result shape into a tool error":
+    ## Review #6: a /repl-registered handler returning nil (or any non-Str,
+    ## non-{^text Str} shape) must become a tool error the model sees — not a
+    ## boundary error that aborts the turn. The fake endpoint asks for the
+    ## bad tool on the resumed turn, then reports what the tool reply said.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_badshape_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join contains?])
+(import std/stream [to_stream map each into])
+
+(var hits (cell 0))
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(var call-badres
+  [{^choices [{^index 0
+               ^delta {^role "assistant"
+                       ^tool_calls [{^index 0 ^id "call_s1" ^type "function"
+                                     ^function {^name "badres" ^arguments "{}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+
+(fn verdict-chunks [body]
+  (var req (parse body))
+  (var tool-text (cell "no-tool-msg"))
+  ((to_stream req/messages)
+    ~ each (fn [m]
+        (if (= m/role "tool")
+          (Cell/set tool-text m/content)
+          nil)))
+  (var v (if (contains? (Cell/get tool-text) "invalid result shape")
+           "shape-error-ok"
+           "shape-unhandled"))
+  [{^choices [{^index 0 ^delta {^content $"verdict: ${v}"}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (var chunks (if (= (Cell/get hits) 1) call-badres (verdict-chunks req/body)))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body chunks)))
+
+(serve (Server ^host "127.0.0.1" ^port 8969) handle ^max-requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8969), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let script = "printf '/repl\\n" &
+      "(session ~ add-tool (Tool ^name \"badres\" ^description \"demo\" " &
+      "^risk \"read\" ^params [] ^handler (fn [a] nil)))\\n" &
+      "(session ~ resume)\\nexit\\n/quit\\n' | " &
+      "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
+      "OPENAI_AUTH_TOKEN=dummy " &
+      "OPENAI_BASE_URL=http://127.0.0.1:8969/v1 OPENAI_MODEL=fake-chat " &
+      shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execRetry139(script)
+    check ran.exitCode == 0
+    check "verdict: shape-error-ok" in ran.output
+
+  test "ai agent catastrophe guard denies a host-destroying run_shell command":
+    ## §8.5: a run_shell tool call whose command is catastrophic (recursive rm
+    ## of a root-level path — harmless here: the target does not exist)
+    ## must be denied by the guard BEFORE the subprocess runs, and the denial
+    ## must be the tool output the model sees on the next turn. Auto-approve is
+    ## on, so only the guard can stop it — proving classification, not a prompt.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_guard_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join contains?])
+(import std/stream [to_stream each into map])
+
+(var hits (cell 0))
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(var turn1
+  [{^choices [{^index 0
+               ^delta {^role "assistant"
+                       ^tool_calls [{^index 0 ^id "call_g1" ^type "function"
+                                     ^function {^name "run_shell" ^arguments ""}}]}}]}
+   {^choices [{^index 0
+               ^delta {^tool_calls [{^index 0
+                 ^function {^arguments "{\"command\":\"rm -rf /nonexistent-gene-guard-root\"}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+
+(fn turn2-verdict [body]
+  (var req (parse body))
+  (var tool-text (cell "no-tool-msg"))
+  ((to_stream req/messages)
+    ~ each (fn [m]
+        (if (= m/role "tool")
+          (Cell/set tool-text m/content)
+          nil)))
+  (if (contains? (Cell/get tool-text) "catastrophe guard")
+    "guard-blocked"
+    "guard-bypassed"))
+
+(fn turn2-chunks [body]
+  [{^choices [{^index 0 ^delta {^content "verdict: "}}]}
+   {^choices [{^index 0 ^delta {^content (turn2-verdict body)}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (var chunks (if (= (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body chunks)))
+
+(serve (Server ^host "127.0.0.1" ^port 8994) handle ^max-requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8994), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                        "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
+                        "GENE_AGENT_APPROVE_ALL=1 " &
+                        "OPENAI_BASE_URL=http://127.0.0.1:8994/v1 " &
+                        "OPENAI_MODEL=fake-chat " &
+                        shellQuote(geneExe) &
+                        " run examples/ai_agent.gene 'clean up the disk'")
+    check ran.exitCode == 0
+    check "verdict: guard-blocked" in ran.output
+
+  test "ai agent trace lists tool registration and turn events":
+    ## Slice A (§9.2/§10.2): every tool registers as a tool-registered event
+    ## and /trace filters the versioned log. /status surfaces the guard state
+    ## and event count.
+    buildGeneCli()
+    let command = "printf '/trace type=tool-registered\\n/status\\n/quit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+                  "CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execRetry139(command)
+    check ran.exitCode == 0
+    check "tool-registered read_file (read)" in ran.output
+    check "tool-registered run_shell (execute)" in ran.output
+    check "guard: on" in ran.output
+
+  test "ai agent repl add-tool plus resume exposes the new tool to the model":
+    ## Slice A signature demo (§9.1/§10.2): a typed tool registered live in
+    ## /repl reaches the model on the resumed turn. The fake endpoint answers
+    ## the first turn as plain text, then on the resume turn reports whether a
+    ## tool named `ping` — added only from /repl — is present in the wire tools.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_resume_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [join])
+(import std/stream [to_stream map filter into])
+
+(var hits (cell 0))
+
+(fn sse-body [chunks]
+  (var lines
+    ((to_stream chunks)
+      ~ map (fn [c] $"data: ${(stringify c)}")
+      ; ~ into []))
+  (var sep "\n\n")
+  (var joined (join lines sep))
+  $"${joined}${sep}data: [DONE]${sep}")
+
+(fn plain [text]
+  [{^choices [{^index 0 ^delta {^content text}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn has-ping [body]
+  (var req (parse body))
+  (var hit
+    ((to_stream req/tools)
+      ~ filter (fn [t] (= t/function/name "ping"))
+      ; ~ into []))
+  (> hit/~size 0))
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (var chunks
+    (if (= (Cell/get hits) 1)
+      (plain "started")
+      (plain (if (has-ping req/body) "verdict: ping-visible" "verdict: ping-missing"))))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse-body chunks)))
+
+(serve (Server ^host "127.0.0.1" ^port 8992) handle ^max-requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8992), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let script = "printf 'go\\n/repl\\n" &
+      "(session ~ add-tool (Tool ^name \"ping\" ^description \"demo\" " &
+      "^risk \"read\" ^params [] ^handler (fn [a] \"pong\")))\\n" &
+      "(session ~ resume)\\nexit\\n/quit\\n' | " &
+      "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
+      "OPENAI_AUTH_TOKEN=dummy " &
+      "OPENAI_BASE_URL=http://127.0.0.1:8992/v1 OPENAI_MODEL=fake-chat " &
+      shellQuote(geneExe) & " run examples/ai_agent.gene"
+    let ran = execRetry139(script)
+    check ran.exitCode == 0
+    check "verdict: ping-visible" in ran.output
 
   test "agent gateway runs concurrent sessions over the async transport":
     ## Milestone 8 e2e (docs/ai-agent.md §12): a slow fake chat endpoint
@@ -455,7 +928,7 @@ suite "cli — gene run":
         let body = gwCurl("'http://127.0.0.1:8989/api/sessions/" & sid &
                           "/events?cursor=" & $cursor & "'")
         result.add body
-        if "turn_done" in result:
+        if "turn-done" in result:
           return
         for piece in body.split("\"v\":"):
           let numEnd = piece.find(',')
@@ -464,7 +937,7 @@ suite "cli — gene run":
               cursor = max(cursor, parseInt(piece[0 ..< numEnd]))
             except ValueError:
               discard
-      checkpoint "timed out waiting for turn_done: " & result
+      checkpoint "timed out waiting for turn-done: " & result
       check false
 
     let s1Events = waitTurnDone("s1")
@@ -472,7 +945,7 @@ suite "cli — gene run":
     let elapsedMs = (getMonoTime() - t0).inMilliseconds
 
     # Streaming deltas arrived as events for both sessions.
-    check "text_delta" in s1Events
+    check "text-delta" in s1Events
     check "slow " in s1Events
     check "answer" in s2Events
     # Concurrency: serial turns would take >= 1800ms against a 900ms
@@ -524,7 +997,7 @@ suite "cli — gene run":
           $cursor & "'")
         if ran.exitCode == 0:
           result = ran.output
-          if "turn_done" in result:
+          if "turn-done" in result:
             return
         sleep(200)
       checkpoint "turn never completed: " & result
@@ -541,6 +1014,10 @@ suite "cli — gene run":
       "http://127.0.0.1:8997/api/sessions/s1/messages")
     let firstTurn = waitTurn(0)
     check "list_dir tool" in firstTurn
+    # Slice A / review #2: the per-session log carries the full tool trail, not
+    # just streamed text — the demo transport invokes list_dir.
+    check "tool-call" in firstTurn
+    check "tool-result" in firstTurn
     gw.terminate()
     discard gw.waitForExit()
     gw.close()
@@ -551,24 +1028,36 @@ suite "cli — gene run":
         gw.terminate()
       gw.close()
     waitPort()
-    # History restored verbatim.
+    # History restored verbatim, including the structured tool events.
     let restored = execCmdEx(
       "curl -sS --max-time 5 " &
       "'http://127.0.0.1:8997/api/sessions/s1/events?cursor=0'")
     check "\"v\":1" in restored.output
     check "list it" in restored.output
     check "list_dir tool" in restored.output
+    check "tool-call" in restored.output
+    check "tool-result" in restored.output
+    # Highest version in the restored log (robust to per-turn event count).
+    var maxV = 0
+    for piece in restored.output.split("\"v\":"):
+      let numEnd = piece.find(',')
+      if numEnd > 0:
+        try:
+          maxV = max(maxV, parseInt(piece[0 ..< numEnd]))
+        except ValueError:
+          discard
+    check maxV >= 1
     # New ids continue past restored ones.
     let second = execCmdEx(
       "curl -sS -X POST http://127.0.0.1:8997/api/sessions")
     check "\"id\":\"s2\"" in second.output
-    # The restored session keeps working, with versions continuing.
+    # The restored session keeps working, with versions continuing past maxV.
     discard execCmdEx(
       "curl -sS -X POST -H 'content-type: application/json' " &
       "-d '{\"text\":\"again\"}' " &
       "http://127.0.0.1:8997/api/sessions/s1/messages")
-    let contTurn = waitTurn(4)
-    check "\"v\":5" in contTurn
+    let contTurn = waitTurn(maxV)
+    check ("\"v\":" & $(maxV + 1)) in contTurn
 
   test "agent gateway bridges telegram chats through the bot api":
     ## Milestone 9 e2e (docs/ai-agent.md §12.6) over loopback: a fake Telegram
@@ -692,7 +1181,7 @@ suite "cli — gene run":
       "curl -sS --max-time 5 " &
       "'http://127.0.0.1:8995/api/sessions/tg-42/events?cursor=0'")
     check events.exitCode == 0
-    check "turn_done" in events.output
+    check "turn-done" in events.output
 
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")

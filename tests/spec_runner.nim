@@ -3153,6 +3153,52 @@ suite "spec — os and json from ai-agent plan":
                " (list-dir ReadDir " & geneString(dir) & ")]",
                "[\"hello\" [\"made\" \"note.txt\"]]")
 
+  test "Fs/real-path resolves an existing file and a not-yet-created path":
+    ## docs/ai-agent.md §8.5: workspace confinement resolves real paths before
+    ## the containment check. An existing file and a to-be-created file under
+    ## the same directory must resolve to sibling absolute paths, so a `..`
+    ## detour still lands inside the resolved root.
+    let dir = getTempDir() / "gene-ai-agent-realpath-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    let path = dir / "here.txt"
+    writeFile(path, "x")
+    check_eval("(import Fs [real-path write-text ReadDir WriteDir]) " &
+               "(import str [starts_with?]) " &
+               "(var base (real-path ReadDir " & geneString(dir) & ")) " &
+               "(var direct (real-path ReadDir " & geneString(path) & ")) " &
+               "(var detour (real-path ReadDir " &
+               geneString(dir / "sub" / ".." / "new.txt") & ")) " &
+               "[(= direct (real-path ReadDir " & geneString(dir & "/here.txt") & ")) " &
+               " (starts_with? direct base) " &
+               " (starts_with? detour base)]",
+               "[true true true]")
+
+  test "Fs/real-path follows a dangling final symlink to its real target":
+    ## docs/ai-agent.md §8.5: a workspace symlink whose target does not exist
+    ## yet must still resolve to (and be confined against) where a write would
+    ## land, not be treated as an ordinary in-workspace name — otherwise a
+    ## dangling symlink is a write escape.
+    let root = getTempDir() / "gene-ai-agent-symlink-spec"
+    if dirExists(root):
+      removeDir(root)
+    createDir(root)
+    let ws = root / "ws"
+    let outside = root / "outside"
+    createDir(ws)
+    createDir(outside)
+    createSymlink(outside / "new-file", ws / "escape")
+    # Compare against the resolved outside dir (getTempDir may itself sit under
+    # a symlink, e.g. macOS /var -> /private/var), so both sides are real paths.
+    check_eval("(import Fs [real-path ReadDir]) " &
+               "(import str [starts_with?]) " &
+               "(var base (real-path ReadDir " & geneString(ws) & ")) " &
+               "(var outside-real (real-path ReadDir " & geneString(outside) & ")) " &
+               "(var rp (real-path ReadDir " & geneString(ws / "escape") & ")) " &
+               "[(starts_with? rp base) (starts_with? rp outside-real)]",
+               "[false true]")
+
   test "json round-trips objects, arrays, scalars, and escapes":
     check_eval("(import json [parse stringify]) " &
                "(stringify (parse \"{\\\"a\\\":1,\\\"b\\\":[true,null,2.5]}\"))",

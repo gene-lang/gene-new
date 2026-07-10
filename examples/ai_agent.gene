@@ -9,9 +9,18 @@
 #   * Transport is `curl` shelled out through os/exec-stream-async, so a model
 #     call never blocks the scheduler (the gateway runs sessions concurrently).
 #   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
-#     with a minimal personal-use guard: `rm -rf` is denied, paths stay inside
-#     the workspace, timeouts + output caps apply, the token is redacted from
-#     displayed output. Full §8.5 hardening is deferred (docs/ai-agent.md).
+#     each declared ONCE as a typed Tool value — the model-facing JSON schema,
+#     argument validation, risk class, and handler all derive from that single
+#     declaration (docs/ai-agent.md §6, slice A).
+#   * §8.5 catastrophe guard: host-destroying commands (rm -rf of protected
+#     roots, mkfs, fork bombs, shutdown, DROP DATABASE) are denied; destructive
+#     git/db/infra commands take one explicit confirmation; file paths are
+#     realpath-confined to the workspace; timeouts + output caps apply and
+#     truncation is surfaced; known secrets are redacted everywhere. Routine
+#     work runs without prompts. GENE_AGENT_GUARD=0 disables the guard.
+#   * Every action is appended to a versioned event log (§9.2): /trace queries
+#     it, and /repl binds a stable `session` object with message-based
+#     mutations (add-tool / remember / subscribe / trace / resume).
 #   * Ncurses-backed prompt on TTY; paste and Shift+Enter/Alt+Enter keep newlines.
 #
 # Run live (Codex Responses backend, the default):
@@ -40,7 +49,8 @@
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower trim])
 (import std/stream [to_stream map filter into each])
-(import Fs [read-text write-text list-dir ReadDir WriteDir ReadWriteDir])
+(import std/parse [parse_int])
+(import Fs [read-text write-text list-dir real-path ReadDir WriteDir ReadWriteDir])
 (import store/fs [open : store-open StoreError])
 (import repl [run : run-repl-session])
 
@@ -66,42 +76,158 @@
 (var approve-all (get-env Env "GENE_AGENT_APPROVE_ALL" "1"))
 (var agent-state-dir (get-env Env "GENE_AGENT_STATE" ""))
 (var agent-resume (get-env Env "GENE_AGENT_RESUME" "1"))
+(var guard-flag (get-env Env "GENE_AGENT_GUARD" "1"))
+
+(fn present? [v]
+  (! (|| (= v void) (= v nil))))
+
+(fn flag-enabled? [value : Str]
+  (var v (lower (trim value)))
+  (|| (= v "1")
+      (|| (= v "true")
+          (|| (= v "yes") (= v "on")))))
+
+(fn append-all [xs, ys]
+  ((to_stream ys) ~ into xs))
+
+(fn append [xs, x]
+  ((to_stream [x]) ~ into xs))
 
 # -----------------------------------------------------------------------------
-# Minimal personal-use safety. The full §8.5 contract (realpath confinement,
-# approval-by-default, redaction of tool output sent to the model) is deferred
-# hardening — see docs/ai-agent.md.
+# §8.5 catastrophe guard. Posture: single-user power tool — routine work runs
+# without prompts; narrow hard stops for catastrophic, hard-to-recover actions;
+# one explicit confirmation for destructive-but-plausibly-intentional commands.
+# GENE_AGENT_GUARD=0 (set outside the session) disables classification.
 # -----------------------------------------------------------------------------
 
 (fn replace-all [s : Str, from : Str, to : Str] : Str
   ((split s from) ~ join to))
 
-# Never let the API token surface in transcript, logs, or errors.
+# Never let the API token surface in transcript, logs, events, or errors.
 (fn redact [s : Str] : Str
   (if (= auth-token nil)
     s
     (replace-all s auth-token "auth-***REDACTED***")))
 
-# Confine every file path to the workspace root. Conservative primitive: reject
-# absolute paths and any `..` segment (a production build should realpath and
-# prefix-check against the resolved root — see docs/ai-agent.md §8.5).
+(fn guard-enabled? []
+  (flag-enabled? guard-flag))
+
+# The workspace root as a real (symlink-resolved, absolute) path; every file
+# tool path must resolve inside it.
+(var workspace-real (real-path ReadDir workspace-root))
+
+# Confine every file path to the workspace root: reject absolute paths and
+# `..` segments up front, then realpath the target so a symlink inside the
+# workspace cannot point writes/reads outside it (§8.5).
 (fn safe-path [p : Str] : Str
   (if (starts_with? p "/")
     (fail $"unsafe path rejected (absolute): ${p}")
     (if (contains? p "..")
       (fail $"unsafe path rejected (escapes workspace): ${p}")
-      p)))
+      (do
+        (var rp (real-path ReadDir p))
+        (if (|| (= rp workspace-real)
+                (starts_with? rp $"${workspace-real}/"))
+          p
+          (fail $"unsafe path rejected (resolves outside workspace): ${p}"))))))
 
-(fn denied-command? [cmd : Str]
-  (|| (contains? cmd "rm -rf")
-      (contains? cmd "rm -fr")))
+# --- raw-command classification: normal | destructive | catastrophic ---------
+# High-confidence substring/segment heuristics only; parsing arbitrary shell is
+# necessarily incomplete and this is not an OS sandbox (§8.5).
 
-(fn flag-enabled? [value : Str]
-  (var v (lower (trim value)))
-  (|| (= v "1")
-      (= v "true")
-      (= v "yes")
-      (= v "on")))
+(fn rm-recursive? [c : Str]
+  (|| (contains? c "rm -rf")
+      (|| (contains? c "rm -fr")
+          (|| (contains? c "rm -r ") (contains? c "rm -f -r")))))
+
+(var protected-root-tokens ["/" "/*" "~" "~/" "$HOME" "${HOME}" "." ".." ".git" ".git/"])
+
+(fn protected-target? [tok : Str]
+  (var hit (cell false))
+  ((to_stream protected-root-tokens)
+    ~ each (fn [t] (if (= t tok) (Cell/set hit true) nil)))
+  (|| (Cell/get hit)
+      (|| (= tok workspace-real) (= tok $"${workspace-real}/"))))
+
+# A recursive rm is at least destructive; targeting a protected root or a
+# top-level absolute directory (/usr, /etc, ...) is catastrophic.
+(fn classify-rm [cmd : Str] : Str
+  (var worst (cell "destructive"))
+  ((to_stream (split cmd " "))
+    ~ each (fn [raw]
+        (var tok (trim raw))
+        (if (= tok "")
+          nil
+          (if (protected-target? tok)
+            (Cell/set worst "catastrophic")
+            (if (&& (starts_with? tok "/")
+                    (<= ((split tok "/") ~ size) 2))
+              (Cell/set worst "catastrophic")
+              nil)))))
+  (Cell/get worst))
+
+# Split a command line on `&&`, `;`, and `|` so command-name patterns anchor at
+# the start of each simple command instead of matching anywhere (a `grep
+# shutdown src/` must stay normal).
+(fn command-segments [cmd : Str]
+  (var segs (cell []))
+  ((to_stream (split cmd "&&"))
+    ~ each (fn [a]
+        ((to_stream (split a ";"))
+          ~ each (fn [b]
+              ((to_stream (split b "|"))
+                ~ each (fn [c]
+                    (segs ~ Cell/set (append (segs ~ Cell/get) (trim c)))))))))
+  (Cell/get segs))
+
+(var catastrophic-command-starts
+  ["mkfs" "shutdown" "reboot" "poweroff" "halt" "init 0"])
+
+(fn segment-catastrophic? [seg : Str]
+  (var s (lower seg))
+  (var hit (cell false))
+  ((to_stream catastrophic-command-starts)
+    ~ each (fn [p] (if (starts_with? s p) (Cell/set hit true) nil)))
+  (|| (Cell/get hit)
+      (|| (contains? s ":(){")
+          (|| (contains? s " of=/dev/") (contains? s "drop database")))))
+
+# A SQL DELETE/UPDATE with no WHERE clause rewrites the whole table.
+(fn sql-unbounded? [s : Str]
+  (&& (! (contains? s "where"))
+      (|| (contains? s "delete from")
+          (&& (contains? s "update ") (contains? s " set ")))))
+
+(fn segment-destructive? [seg : Str]
+  (var s (lower seg))
+  (|| (contains? s "git reset --hard")
+      (|| (contains? s "git clean -fd")
+          (|| (contains? s "git push --force")
+              (|| (contains? s "git push -f")
+                  (|| (contains? seg "git branch -D")
+                      (|| (contains? s "drop table")
+                          (|| (contains? s "truncate table")
+                              (|| (contains? s "terraform destroy")
+                                  (|| (contains? s "kubectl delete namespace")
+                                      (|| (contains? s "kubectl delete ns ")
+                                          (|| (contains? s "kubectl delete cluster")
+                                              (sql-unbounded? s)))))))))))))
+
+(fn classify-command [cmd : Str] : Str
+  (var worst (cell "normal"))
+  (fn bump [level : Str]
+    (if (= level "catastrophic")
+      (Cell/set worst "catastrophic")
+      (if (&& (= level "destructive") (! (= (Cell/get worst) "catastrophic")))
+        (Cell/set worst "destructive")
+        nil)))
+  (if (rm-recursive? cmd) (bump (classify-rm cmd)) nil)
+  ((to_stream (command-segments cmd))
+    ~ each (fn [seg]
+        (if (segment-catastrophic? seg)
+          (bump "catastrophic")
+          (if (segment-destructive? seg) (bump "destructive") nil))))
+  (Cell/get worst))
 
 (fn approve? [tool : Str, detail : Str]
   (if (flag-enabled? approve-all)
@@ -116,104 +242,398 @@
           (set answer (lower (trim answer)))
           (|| (= answer "y") (= answer "yes")))))))
 
-# -----------------------------------------------------------------------------
-# Tools. Each is fn(args-map) -> Str, described to the model by tool-schemas.
-# -----------------------------------------------------------------------------
-
-(fn tool-read-file [args]
-  (read-text ReadDir (safe-path args/path)))
-
-(fn tool-write-file [args]
-  (if (approve? "write_file" args/path)
+# One explicit confirmation for a destructive command. EOF (no stdin, scripted
+# runs) denies — a destructive command never auto-approves.
+(fn confirm-destructive? [cmd : Str]
+  (close-user-input)
+  (print $"destructive command: ${(redact cmd)}\nrun it once? [y/N] ")
+  (var answer (read-line))
+  (if (= answer nil)
+    false
     (do
-      (write-text WriteDir (safe-path args/path) args/content)
-      $"wrote ${args/path}")
-    "denied by user policy"))
+      (set answer (lower (trim answer)))
+      (|| (= answer "y") (= answer "yes")))))
 
-(fn tool-edit-file [args]
-  (var path (safe-path args/path))
-  (var old-text args/old_text)
-  (var new-text args/new_text)
-  (if (= old-text "")
-    "error: old_text must not be empty"
-    (if (approve? "edit_file" args/path)
+# Injectable guard strategy. The CLI's defaults are the stdin confirmation and
+# the process-global event log; an embedding host (the gateway) must override
+# them — it has no terminal, so a synchronous stdin read would stall the
+# scheduler, and its confirmation/audit events belong in the per-session log.
+# run-tool-call points guard-emit at the current turn's sink around each
+# handler call; the guard runs synchronously before the handler's first await,
+# so concurrent session actors cannot interleave between set and use.
+(var guard-confirm (cell nil))   # nil -> confirm-destructive? (CLI stdin)
+(var guard-emit (cell nil))      # nil -> emit-event! (CLI global log)
+
+(fn set-guard-confirm [f]
+  (guard-confirm ~ Cell/set f))
+
+(fn guard-confirmed? [cmd : Str]
+  (var f (guard-confirm ~ Cell/get))
+  (if (present? f)
+    (f cmd)
+    (confirm-destructive? cmd)))
+
+(fn guard-emit! [type : Str, props]
+  (var f (guard-emit ~ Cell/get))
+  (if (present? f)
+    (f type props)
+    (emit-event! type props)))
+
+# -----------------------------------------------------------------------------
+# Authoritative event log (§9.2). Append-only, versioned, redacted at append.
+# One vocabulary shared by the transcript, /trace, the /repl session object,
+# tests, and the gateway: user-input model-item tool-call tool-result
+# agent-text text-delta turn-done tool-registered confirmation memory error.
+# -----------------------------------------------------------------------------
+
+(var agent-events (cell []))
+(var next-event-v (cell 1))
+(var current-turn (cell 0))
+(var event-subscriptions (cell []))
+(var event-echo (cell nil))     # (fn [line]) hook installed by the REPL loop
+# This process-global log is the embedded-CLI surface's own event log. The
+# gateway imports run-turn but owns a per-session log in the same vocabulary
+# (§12.1/§12.3), so it disables this one to avoid accumulating every session's
+# events in a single shared list across concurrent actor turns.
+(var events-enabled (cell true))
+
+(fn set-events-enabled [on : Bool]
+  (events-enabled ~ Cell/set on))
+
+# Redact recursively through every container an event value can hold — a
+# model-item's `content` is a list of maps, so stopping at maps would persist
+# a token echoed in assistant content (§8.5).
+(fn redact-any [v]
+  (match v
+    (when (s : Str) (redact s))
+    (when (m : Map)
       (do
-        (var text (read-text ReadDir path))
-        (var parts (split text old-text))
-        (var matches (- parts/~size 1))
-        (if (= matches 0)
-          "error: old_text not found"
-          (if (> matches 1)
-            $"error: old_text matched ${matches} times; provide a larger unique old_text"
-            (do
-              (write-text WriteDir path (join parts new-text))
-              $"edited ${args/path}"))))
-      "denied by user policy")))
+        (var out {})
+        (for [k mv] in m
+          (out ~ Map/put! k (redact-any mv)))
+        out))
+    (when (xs : List)
+      ((to_stream xs) ~ map redact-any ; ~ into []))
+    (else v)))
 
-(fn tool-list-dir [args]
-  (var p (if (= args/path void) "." args/path))
-  ((list-dir ReadDir (safe-path p)) ~ join "\n"))
+(fn first-line [s : Str] : Str
+  (var lines (split s "\n"))
+  (if (> lines/~size 1) $"${lines/0} ..." lines/0))
 
-(fn tool-run-shell [args]
-  (if (denied-command? args/command)
-    "denied by command policy"
-    (if (approve? "run_shell" args/command)
+(fn event-summary [e] : Str
+  (match e/type
+    (when "user-input"  (first-line e/text))
+    (when "agent-text"  (first-line e/text))
+    (when "text-delta"  (first-line e/text))
+    (when "turn-done"   (if (present? e/text) (first-line e/text) ""))
+    (when "model-item"  (if (present? e/item/type) e/item/type "item"))
+    (when "tool-call"   $"${e/name} ${(stringify e/args)}")
+    (when "tool-result"
       (do
-        (var r (await (exec-async Exec ^cmd "sh" ^args ["-c" args/command]
-                          ^dir workspace-root
-                          ^timeout-ms 10000 ^max-bytes 65536)))
-        (var tail (if r/timed-out "\n[timed out]" ""))
-        $"${r/stdout}${r/stderr}${tail}")
-      "denied by user policy")))
+        (var flag (if (= e/truncated true) " [truncated]" ""))
+        $"${e/name}${flag}: ${(first-line e/value)}"))
+    (when "confirmation" $"${e/risk} ${e/decision}: ${(first-line e/target)}")
+    (when "tool-registered" $"${e/name} (${e/risk})")
+    (when "memory"      (first-line e/text))
+    (when "error"       (first-line e/text))
+    (else "")))
 
-(fn tool-grep [args]
-  (var p (if (= args/path void) "." args/path))
-  (var r (await (exec-async Exec ^cmd "grep"
-                    ^args ["-rn" args/pattern (safe-path p)]
-                    ^dir workspace-root
-                    ^timeout-ms 10000 ^max-bytes 65536)))
-  (var tail (if r/timed-out "\n[timed out]" ""))
-  $"${r/stdout}${r/stderr}${tail}")
+(fn format-event [e] : Str
+  $"#${e/v} t${e/turn} ${e/type} ${(event-summary e)}")
 
-(var tools {})
-(tools ~ Map/put! "read_file" tool-read-file)
-(tools ~ Map/put! "write_file" tool-write-file)
-(tools ~ Map/put! "edit_file" tool-edit-file)
-(tools ~ Map/put! "list_dir" tool-list-dir)
-(tools ~ Map/put! "run_shell" tool-run-shell)
-(tools ~ Map/put! "grep" tool-grep)
+(fn subscribed? [type : Str]
+  (var hit (cell false))
+  ((to_stream (event-subscriptions ~ Cell/get))
+    ~ each (fn [t] (if (= t type) (Cell/set hit true) nil)))
+  (Cell/get hit))
 
-(var tool-schemas
-  [{^type "function" ^name "read_file"
-    ^description "Read a UTF-8 text file inside the workspace."
-    ^parameters {^type "object"
-                 ^properties {^path {^type "string"}}
-                 ^required ["path"]}}
-   {^type "function" ^name "write_file"
-    ^description "Write a UTF-8 text file inside the workspace."
-    ^parameters {^type "object"
-                 ^properties {^path {^type "string"} ^content {^type "string"}}
-                 ^required ["path" "content"]}}
-   {^type "function" ^name "edit_file"
-    ^description "Replace one exact text span in a UTF-8 text file inside the workspace."
-    ^parameters {^type "object"
-                 ^properties {^path {^type "string"}
-                              ^old_text {^type "string"}
-                              ^new_text {^type "string"}}
-                 ^required ["path" "old_text" "new_text"]}}
-   {^type "function" ^name "list_dir"
-    ^description "List directory entries inside the workspace."
-    ^parameters {^type "object" ^properties {^path {^type "string"}}}}
-   {^type "function" ^name "run_shell"
-    ^description "Run a shell command in the workspace (10s timeout)."
-    ^parameters {^type "object"
-                 ^properties {^command {^type "string"}}
-                 ^required ["command"]}}
-   {^type "function" ^name "grep"
-    ^description "Search files in the workspace with grep -rn."
-    ^parameters {^type "object"
-                 ^properties {^pattern {^type "string"} ^path {^type "string"}}
-                 ^required ["pattern"]}}])
+(fn echo-subscribed [e]
+  (if (&& (present? (event-echo ~ Cell/get)) (subscribed? e/type))
+    (do
+      (var f (event-echo ~ Cell/get))
+      (f (format-event e)))
+    nil))
+
+(fn emit-event! [type : Str, props]
+  (if (! (events-enabled ~ Cell/get))
+    nil
+    (do
+      (var v (next-event-v ~ Cell/get))
+      (next-event-v ~ Cell/set (+ v 1))
+      (var e {^v v ^turn (current-turn ~ Cell/get) ^type type})
+      (for [k pv] in props
+        (e ~ Map/put! k (redact-any pv)))
+      (agent-events ~ Cell/set (append (agent-events ~ Cell/get) e))
+      (echo-subscribed e)
+      e)))
+
+(fn begin-turn! []
+  (current-turn ~ Cell/set (+ (current-turn ~ Cell/get) 1)))
+
+# --- /trace: filters over the event log (type=, tool=, path=, turn=, from=,
+# to=; a bare token is shorthand for type=token) --------------------------------
+
+(fn event-matches? [e, f]
+  (var ok (cell true))
+  (if (present? f/type)
+    (if (= e/type f/type) nil (Cell/set ok false))
+    nil)
+  (if (present? f/tool)
+    (if (= e/name f/tool) nil (Cell/set ok false))
+    nil)
+  (if (present? f/turn)
+    (if (= $"${e/turn}" f/turn) nil (Cell/set ok false))
+    nil)
+  (if (present? f/from)
+    (if (>= e/v (parse_int f/from)) nil (Cell/set ok false))
+    nil)
+  (if (present? f/to)
+    (if (<= e/v (parse_int f/to)) nil (Cell/set ok false))
+    nil)
+  (if (present? f/path)
+    (do
+      (var p (cell ""))
+      (if (present? e/path) (Cell/set p e/path) nil)
+      (if (present? e/args)
+        (if (present? e/args/path) (Cell/set p e/args/path) nil)
+        nil)
+      (if (contains? (Cell/get p) f/path) nil (Cell/set ok false)))
+    nil)
+  (Cell/get ok))
+
+(fn parse-trace-filters [rest : Str]
+  (var f {})
+  ((to_stream (split (trim rest) " "))
+    ~ each (fn [raw]
+        (var tok (trim raw))
+        (if (= tok "")
+          nil
+          (do
+            (var kv (split tok "="))
+            (if (= kv/~size 2)
+              (f ~ Map/put! kv/0 kv/1)
+              (f ~ Map/put! "type" tok))))))
+  f)
+
+(fn trace-report [rest : Str] : Str
+  (var f (parse-trace-filters rest))
+  (var lines (cell []))
+  ((to_stream (agent-events ~ Cell/get))
+    ~ filter (fn [e] (event-matches? e f))
+    ; ~ each (fn [e]
+        (lines ~ Cell/set (append (lines ~ Cell/get) (format-event e)))))
+  (if (empty? (lines ~ Cell/get))
+    "no matching events"
+    (join (lines ~ Cell/get) "\n")))
+
+# Deny/confirm gate for run_shell and /sh-adjacent tool commands. Returns nil
+# when the command may run, or the denial text otherwise. Confirmation and
+# audit events go through the injected guard strategy so an embedding host
+# (gateway) gets them in its per-session log and never blocks on stdin.
+(fn guard-shell [cmd : Str]
+  (if (! (guard-enabled?))
+    nil
+    (match (classify-command cmd)
+      (when "catastrophic"
+        (do
+          (guard-emit! "confirmation"
+            {^risk "catastrophic" ^decision "deny" ^target cmd})
+          "denied by catastrophe guard (GENE_AGENT_GUARD=0 outside the session overrides)"))
+      (when "destructive"
+        (if (guard-confirmed? cmd)
+          (do
+            (guard-emit! "confirmation"
+              {^risk "destructive" ^decision "allow" ^target cmd})
+            nil)
+          (do
+            (guard-emit! "confirmation"
+              {^risk "destructive" ^decision "deny" ^target cmd})
+            "denied: destructive command was not confirmed")))
+      (else nil))))
+
+# -----------------------------------------------------------------------------
+# Typed tools (§6, slice A). One Tool declaration per tool is the single source
+# of truth: the registry entry, the model-facing JSON Schema (both wire
+# shapes), argument validation, and the risk class all derive from it. New
+# tools register live from /repl via (session ~ add-tool (Tool ...)).
+# -----------------------------------------------------------------------------
+
+(fn json-type-ok? [t : Str, v]
+  (match t
+    (when "string"  (match v (when (s : Str) true) (else false)))
+    (when "integer" (match v (when (i : Int) true) (else false)))
+    (when "boolean" (match v (when (b : Bool) true) (else false)))
+    (else true)))
+
+(type Tool
+  ^props {^name Str ^description Str ^risk Str ^params Any ^handler Any}
+
+  # The model-facing schema in the Responses wire shape.
+  (message schema [self]
+    (var props {})
+    (var required (cell []))
+    (for p in self/params
+      (var spec {^type p/type})
+      (if (present? p/doc)
+        (spec ~ Map/put! "description" p/doc)
+        nil)
+      (props ~ Map/put! p/name spec)
+      (if (= p/required true)
+        (required ~ Cell/set (append (required ~ Cell/get) p/name))
+        nil))
+    (var parameters {^type "object" ^properties props})
+    (if (empty? (required ~ Cell/get))
+      nil
+      (parameters ~ Map/put! "required" (required ~ Cell/get)))
+    {^type "function" ^name self/name
+     ^description self/description ^parameters parameters})
+
+  # nil when args satisfy the declaration, else a problem description.
+  (message validate-args [self, args]
+    (var problems (cell []))
+    (for p in self/params
+      (var v (args ~ Map/get p/name))
+      (if (= v void)
+        (if (= p/required true)
+          (problems ~ Cell/set (append (problems ~ Cell/get)
+            $"missing required argument ${p/name}"))
+          nil)
+        (if (json-type-ok? p/type v)
+          nil
+          (problems ~ Cell/set (append (problems ~ Cell/get)
+            $"argument ${p/name} must be a ${p/type}")))))
+    (if (empty? (problems ~ Cell/get))
+      nil
+      (join (problems ~ Cell/get) "; "))))
+
+(var tool-registry (cell {}))
+(var tool-names (cell []))
+
+(fn find-tool [name : Str]
+  ((tool-registry ~ Cell/get) ~ Map/get name))
+
+(fn register-tool! [t]
+  (var existing (find-tool t/name))
+  ((tool-registry ~ Cell/get) ~ Map/put! t/name t)
+  (if (= existing void)
+    (tool-names ~ Cell/set (append (tool-names ~ Cell/get) t/name))
+    nil)
+  (emit-event! "tool-registered" {^name t/name ^risk t/risk})
+  t)
+
+# Derived live so tools added/replaced from /repl reach the very next model
+# call without re-registration ceremony.
+(fn tool-schemas-now []
+  ((to_stream (tool-names ~ Cell/get))
+    ~ map (fn [n] ((find-tool n) ~ schema))
+    ; ~ into []))
+
+# Responses tool schemas are flat; chat nests them under ^function.
+(fn chat-tool-schemas-now []
+  ((to_stream (tool-schemas-now))
+    ~ map (fn [t] {^type "function"
+                   ^function {^name t/name
+                              ^description t/description
+                              ^parameters t/parameters}})
+    ; ~ into []))
+
+(register-tool! (Tool
+  ^name "read_file"
+  ^description "Read a UTF-8 text file inside the workspace."
+  ^risk "read"
+  ^params [{^name "path" ^type "string" ^required true
+            ^doc "workspace-relative file path"}]
+  ^handler (fn [args] (read-text ReadDir (safe-path args/path)))))
+
+(register-tool! (Tool
+  ^name "write_file"
+  ^description "Write a UTF-8 text file inside the workspace."
+  ^risk "write"
+  ^params [{^name "path" ^type "string" ^required true
+            ^doc "workspace-relative file path"}
+           {^name "content" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (if (approve? "write_file" args/path)
+      (do
+        (write-text WriteDir (safe-path args/path) args/content)
+        $"wrote ${args/path}")
+      "denied by user policy"))))
+
+(register-tool! (Tool
+  ^name "edit_file"
+  ^description "Replace one exact text span in a UTF-8 text file inside the workspace."
+  ^risk "write"
+  ^params [{^name "path" ^type "string" ^required true
+            ^doc "workspace-relative file path"}
+           {^name "old_text" ^type "string" ^required true
+            ^doc "exact text to replace; must match exactly once"}
+           {^name "new_text" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (var path (safe-path args/path))
+    (var old-text args/old_text)
+    (var new-text args/new_text)
+    (if (= old-text "")
+      "error: old_text must not be empty"
+      (if (approve? "edit_file" args/path)
+        (do
+          (var text (read-text ReadDir path))
+          (var parts (split text old-text))
+          (var matches (- parts/~size 1))
+          (if (= matches 0)
+            "error: old_text not found"
+            (if (> matches 1)
+              $"error: old_text matched ${matches} times; provide a larger unique old_text"
+              (do
+                (write-text WriteDir path (join parts new-text))
+                $"edited ${args/path}"))))
+        "denied by user policy")))))
+
+(register-tool! (Tool
+  ^name "list_dir"
+  ^description "List directory entries inside the workspace."
+  ^risk "read"
+  ^params [{^name "path" ^type "string" ^required false
+            ^doc "workspace-relative directory; defaults to the workspace root"}]
+  ^handler (fn [args]
+    (var p (if (= args/path void) "." args/path))
+    ((list-dir ReadDir (safe-path p)) ~ join "\n"))))
+
+(register-tool! (Tool
+  ^name "run_shell"
+  ^description "Run a shell command in the workspace (10s timeout)."
+  ^risk "execute"
+  ^params [{^name "command" ^type "string" ^required true
+            ^doc "command line passed to sh -c"}]
+  ^handler (fn [args]
+    (var denial (guard-shell args/command))
+    (if (present? denial)
+      denial
+      (if (approve? "run_shell" args/command)
+        (do
+          (var r (await (exec-async Exec ^cmd "sh" ^args ["-c" args/command]
+                            ^dir workspace-root
+                            ^timeout-ms 10000 ^max-bytes 65536)))
+          (var tail (if r/timed-out "\n[timed out]" ""))
+          {^text $"${r/stdout}${r/stderr}${tail}"
+           ^truncated (= r/truncated true)})
+        "denied by user policy")))))
+
+(register-tool! (Tool
+  ^name "grep"
+  ^description "Search files in the workspace with grep -rn."
+  ^risk "read"
+  ^params [{^name "pattern" ^type "string" ^required true}
+           {^name "path" ^type "string" ^required false
+            ^doc "workspace-relative directory or file; defaults to the workspace root"}]
+  ^handler (fn [args]
+    (var p (if (= args/path void) "." args/path))
+    (var r (await (exec-async Exec ^cmd "grep"
+                      ^args ["-rn" args/pattern (safe-path p)]
+                      ^dir workspace-root
+                      ^timeout-ms 10000 ^max-bytes 65536)))
+    (var tail (if r/timed-out "\n[timed out]" ""))
+    {^text $"${r/stdout}${r/stderr}${tail}"
+     ^truncated (= r/truncated true)})))
 
 # -----------------------------------------------------------------------------
 # Responses-API item helpers.
@@ -362,23 +782,80 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     ~ filter (fn [item] (= (response-item-kind item) ResponseItemKind/function_call))
     ; ~ into []))
 
+# Handlers may return a plain Str or {^text Str ^truncated Bool}; normalize to
+# the map shape so truncation always reaches the event log and the model. Any
+# other shape (nil, a number, a map without a Str ^text — easy to produce from
+# a /repl-registered tool) becomes a tool error instead of escaping into
+# redact/selectors and aborting the turn.
+(fn normalize-tool-result [res]
+  (match res
+    (when (s : Str) {^text s ^truncated false})
+    (when (m : Map)
+      (match m/text
+        (when (t : Str) {^text t ^truncated (= m/truncated true)})
+        (else {^text "error: tool returned an invalid result shape"
+               ^truncated false})))
+    (else {^text "error: tool returned an invalid result shape"
+           ^truncated false})))
+
 # Execute one function_call item, returning its function_call_output item.
-(fn run-tool-call [call]
+# `emit` is the event sink (§9.2): the CLI passes its process-global logger,
+# the gateway passes a per-session sink, so each session owns its own tool
+# trail. The declared param schema validates arguments before the handler runs.
+(fn run-tool-call [call, emit]
   (var name call/name)
-  (var handler (tools ~ Map/get name))
-  (var output
-    (if (= handler void)
-      $"error: unknown tool ${call/name}"
-      (try
-        (var args (parse call/arguments))
-        (handler args)
-      catch (OsError ^message m) $"error: ${m}"
-      catch (JsonError ^message m) $"error: bad tool arguments: ${m}"
-      catch * "error: tool failed")))
-  # Redact before the output re-enters the model transcript (§8.5): a tool
-  # like run_shell can echo the environment, and the raw API token must never
-  # leak back into the next request.
-  {^type "function_call_output" ^call_id call/call_id ^output (redact output)})
+  (var t (find-tool name))
+  (var args (cell nil))
+  (var parse-err (cell nil))
+  (try
+    (args ~ Cell/set (parse call/arguments))
+  catch (JsonError ^message m) (parse-err ~ Cell/set m))
+  (emit "tool-call"
+    {^id call/call_id ^name name
+     ^args (if (present? (parse-err ~ Cell/get))
+             call/arguments
+             (args ~ Cell/get))})
+  # The guard (called inside handlers) emits confirmation events through this
+  # turn's sink. Set synchronously here and cleared after the handler: the
+  # guard runs before the handler's first await, so interleaved sessions
+  # cannot observe each other's sink.
+  (guard-emit ~ Cell/set emit)
+  (var result
+    (if (= t void)
+      {^text $"error: unknown tool ${name}" ^truncated false}
+      (if (present? (parse-err ~ Cell/get))
+        {^text $"error: bad tool arguments: ${(parse-err ~ Cell/get)}"
+         ^truncated false}
+        # The model may send valid JSON that is not an object ([], null, "x").
+        # Check the top-level kind before field validation, which sends Map/get
+        # to the value, so a malformed response is a tool error, not a crash.
+        (match (args ~ Cell/get)
+          (when (m : Map)
+            (do
+              (var verr (t ~ validate-args m))
+              (if (present? verr)
+                {^text $"error: ${verr}" ^truncated false}
+                (do
+                  (var h t/handler)
+                  (try
+                    (normalize-tool-result (h m))
+                  catch (OsError ^message em)
+                    {^text $"error: ${em}" ^truncated false}
+                  catch *
+                    {^text "error: tool failed" ^truncated false})))))
+          (else
+            {^text "error: tool arguments must be a JSON object" ^truncated false})))))
+  (guard-emit ~ Cell/set nil)
+  (var truncated (= result/truncated true))
+  # Surface truncation in both the transcript and the model-visible output
+  # (§8.5), and redact before the output re-enters the model transcript: a
+  # tool like run_shell can echo the environment, and the raw API token must
+  # never leak back into the next request.
+  (var shown
+    (if truncated $"${result/text}\n[output truncated]" result/text))
+  (emit "tool-result"
+    {^id call/call_id ^name name ^value shown ^truncated truncated})
+  {^type "function_call_output" ^call_id call/call_id ^output (redact shown)})
 
 # -----------------------------------------------------------------------------
 # Transport. Live mode shells out to curl; demo mode uses a scripted closure.
@@ -531,18 +1008,6 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # and normalizes on the way in (choices/deltas -> items), so run-turn and the
 # tool loop are shared between both flavors.
 # -----------------------------------------------------------------------------
-
-(fn present? [v]
-  (! (|| (= v void) (= v nil))))
-
-# Responses tool schemas are flat; chat nests them under ^function.
-(var chat-tool-schemas
-  ((to_stream tool-schemas)
-    ~ map (fn [t] {^type "function"
-                   ^function {^name t/name
-                              ^description t/description
-                              ^parameters t/parameters}})
-    ; ~ into []))
 
 # Convert the item transcript into chat messages. A run of assistant text /
 # function_call items becomes ONE assistant message (content + tool_calls), so
@@ -724,14 +1189,14 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     (if (= api-flavor "chat")
       (stringify {^model model
                   ^messages (items-to-chat-messages input-items)
-                  ^tools chat-tool-schemas
+                  ^tools (chat-tool-schemas-now)
                   ^tool_choice "auto"
                   ^stream true})
       (stringify {^model model
                   ^store false
                   ^stream true
                   ^input input-items
-                  ^tools tool-schemas
+                  ^tools (tool-schemas-now)
                   ^tool_choice "auto"
                   ^parallel_tool_calls true})))
   (transport body render-stream))
@@ -740,24 +1205,39 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 
 # One turn: call the model; if it asked for tools, run them and recurse with the
 # outputs appended, else render the final text. `budget` bounds tool rounds so a
-# model that never stops calling tools cannot loop forever.
-(fn run-turn [transport, input-items, render, render-stream, budget]
+# model that never stops calling tools cannot loop forever. `emit` is the event
+# sink (§9.2): CLI passes its global logger, gateway passes a per-session sink.
+# `turn-done` fires once, at the outermost completion (each terminal branch
+# returns without recursing; the tool-call branch recurses and does not emit it).
+(fn run-turn [transport, input-items, render, render-stream, budget, emit]
   (var streamed (cell false))
   (var resp (call-model transport input-items
               (fn [text]
                 (Cell/set streamed true)
-                (render-stream text))))
+                # Redact at this choke point (transports also redact — belt
+                # and braces for any future transport) and emit the delta
+                # through the sink so /trace and subscriptions see text-delta
+                # events; the gateway sink skips them to avoid double-logging.
+                (var safe (redact text))
+                (emit "text-delta" {^text safe})
+                (render-stream safe))))
   (if (! (= resp/agent_error void))
     (do
+      (emit "error" {^text resp/agent_error})
       (render resp/agent_error)
+      (emit "turn-done" {})
       input-items)
     (do
+      (each (to_stream (response-output-items resp))
+        (fn [item] (emit "model-item" {^item item})))
       (var calls (response-calls resp))
       (if (empty? calls)
         (do
+          (emit "agent-text" {^text (response-text resp)})
           (if (Cell/get streamed)
             (render "")
             (render (redact (response-text resp))))
+          (emit "turn-done" {^text (response-text resp)})
           # Retain the final assistant message in the conversation so the next
           # turn can see what the agent just said (mirrors the tool-call path,
           # which already appends resp's output items).
@@ -765,29 +1245,26 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
         (if (<= budget 0)
           (do
             (render "[stopped: tool-call budget exhausted]")
+            (emit "turn-done" {})
             input-items)
           (do
-            (var outputs ((to_stream calls) ~ map run-tool-call ; ~ into []))
+            (var outputs ((to_stream calls) ~ map (fn [c] (run-tool-call c emit)) ; ~ into []))
             (each (to_stream calls) (fn [c]
               (render $"  · tool ${c/name} ${c/arguments}")))
             (run-turn transport
                       ((to_stream outputs) ~ into (append-all input-items (response-output-items resp)))
                       render
                       render-stream
-                      (- budget 1))))))))
-
-(fn append-all [xs, ys]
-  ((to_stream ys) ~ into xs))
-
-(fn append [xs, x]
-  ((to_stream [x]) ~ into xs))
+                      (- budget 1)
+                      emit)))))))
 
 # -----------------------------------------------------------------------------
 # Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
-# Store with three data records:
+# Store with four data records:
 #   config  — non-secret runtime config
 #   session — current interactive transcript and Responses-style items
 #   memory  — user-managed durable notes included in the system prompt
+#   events  — the versioned event log (§9.2) plus its version/turn counters
 # -----------------------------------------------------------------------------
 
 (var agent-store (cell nil))
@@ -876,7 +1353,19 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn save-agent-state [items, transcript, memory]
   (save-config)
   (state-put "memory" memory)
+  (state-put "events" {^events (agent-events ~ Cell/get)
+                       ^next-v (next-event-v ~ Cell/get)
+                       ^turn (current-turn ~ Cell/get)})
   (state-put "session" {^items items ^transcript transcript}))
+
+(fn restore-events []
+  (var saved (state-get "events" nil))
+  (if (= saved nil)
+    nil
+    (do
+      (agent-events ~ Cell/set saved/events)
+      (next-event-v ~ Cell/set saved/next-v)
+      (current-turn ~ Cell/set saved/turn))))
 
 (fn after-prefix [s : Str, prefix : Str] : Str
   (var parts (split s prefix))
@@ -916,12 +1405,15 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn run-demo []
   (println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set — running the offline demo.")
   (println "user> what's in this directory?")
+  (begin-turn!)
+  (emit-event! "user-input" {^text "what's in this directory?"})
   (var items [(system-item gene-system-prompt)
               (user-item "what's in this directory?")])
   (run-turn (demo-transport-for) items
     (fn [text] (println $"agent> ${text}"))
     ignore-stream-delta
-    max-tool-turns)
+    max-tool-turns
+    emit-event!)
   (println "Demo complete. Set OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN to go live."))
 
 (fn run-one-shot [task : Str]
@@ -935,6 +1427,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (var streaming (cell false))
   (var transport (if (= auth-token nil) (demo-transport-for) live-transport))
   (var memory (load-memory))
+  (begin-turn!)
+  (emit-event! "user-input" {^text task})
   (var result-items
     (run-turn transport
               (append (initial-items memory) (user-item task))
@@ -957,7 +1451,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                         (print "agent> ")
                         (Cell/set streaming true)))
                     (print text))))
-              max-tool-turns))
+              max-tool-turns
+              emit-event!))
   (save-agent-state result-items $"Gene AI agent - model ${model}\nuser> ${task}\n" memory)
   (if (Cell/get streaming)
     (println "")
@@ -972,7 +1467,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn append-transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
-(var input-status "Enter sends | /remember note | /memory | /status | /sh | /repl | /quit")
+(var input-status "Enter sends | /remember note | /memory | /status | /trace | /sh | /repl | /quit")
 
 (fn close-user-input []
   (if (stdin-tty?)
@@ -1045,9 +1540,15 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
       (println "")
       nil)
     (do
+      # Scripted (piped) /sh: unlike the interactive TTY loop, we read each
+      # line in Gene, so route it through the same catastrophe guard as
+      # model-issued run_shell (§8.5) before executing.
       (var running (cell true))
       (var line nil)
       (var r nil)
+      # Hoisted: re-`var` inside a while body is a duplicate binding on the
+      # second iteration, so allocate loop state once and `set` it.
+      (var denial nil)
       (while (Cell/get running)
         (print "sh> ")
         (set line (read-line))
@@ -1056,28 +1557,79 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
           (if (exit-word? line)
             (Cell/set running false)
             (do
-              (set r (exec Exec ^cmd shell ^args ["-lc" line] ^dir workspace-root
-                         ^timeout-ms 60000 ^max-bytes 400000))
-              (print (redact r/stdout))
-              (print (redact r/stderr))
-              (if r/timed-out
-                (println "[timed out]")
-                nil)))))
+              (set denial (guard-shell line))
+              (if (present? denial)
+                (println denial)
+                (do
+                  (set r (exec Exec ^cmd shell ^args ["-lc" line] ^dir workspace-root
+                             ^timeout-ms 60000 ^max-bytes 400000))
+                  (print (redact r/stdout))
+                  (print (redact r/stderr))
+                  (if r/timed-out
+                    (println "[timed out]")
+                    nil)))))))
       (println ""))))
 
-(fn run-session-repl [items, memory]
+# Stable live session object (§9.1). Projections are props holding the live
+# cells and registry; mutations go through messages so the session can keep
+# invariants (system-prompt memory refresh, persistence) and append an audit
+# event. `current-task` and `evidence` projections arrive with slice B.
+(type Session
+  ^props {^items Any ^transcript Any ^memory Any ^tools Any ^events Any
+          ^config Any ^workspace Any ^resume-requested Any}
+
+  # Register (or replace) a typed Tool; it reaches the next model call.
+  (message add-tool [self, t]
+    (register-tool! t)
+    $"tool ${t/name} registered")
+
+  # Durable note: memory list + system prompt + persisted state stay in sync.
+  (message remember [self, note : Str]
+    (self/memory ~ Cell/set (append (self/memory ~ Cell/get) note))
+    (self/items ~ Cell/set
+      (refresh-system-memory (self/items ~ Cell/get) (self/memory ~ Cell/get)))
+    (emit-event! "memory" {^text note})
+    (save-agent-state (self/items ~ Cell/get)
+                      (self/transcript ~ Cell/get)
+                      (self/memory ~ Cell/get))
+    $"remembered: ${note}")
+
+  # Echo future events of this type into the transcript as they are emitted.
+  (message subscribe [self, type]
+    (var t $"${type}")
+    (event-subscriptions ~ Cell/set
+      (append (event-subscriptions ~ Cell/get) t))
+    $"subscribed to ${t} events")
+
+  # Query the event log with the same filters as /trace.
+  (message trace [self, filters : Str]
+    (trace-report filters))
+
+  # Ask the agent to run another model turn on the current items (no new user
+  # input) right after the REPL exits — the add-a-tool-and-continue flow.
+  (message resume [self]
+    (self/resume-requested ~ Cell/set true)
+    "resume requested: exit the REPL (exit/quit) to continue the current turn"))
+
+# Returns true when the user asked to continue the turn after the REPL.
+(fn run-session-repl [items, transcript, memory]
   (close-user-input)
-  (var session {^items items
-                ^model model
-                ^workspace-root workspace-root
-                ^memory memory
-                ^config (config-snapshot)
-                ^tools tools
-                ^tool-schemas tool-schemas})
-  (var repl-env (env ^bindings {^session session}))
-  (println "Entering Gene REPL. session is available. Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
+  (var resume-flag (cell false))
+  (var session (Session ^items items
+                        ^transcript transcript
+                        ^memory memory
+                        ^tools tool-registry
+                        ^events agent-events
+                        ^config (config-snapshot)
+                        ^workspace workspace-real
+                        ^resume-requested resume-flag))
+  # classify-command is bound so the guard's classification of dangerous
+  # strings can be inspected (and tested) without ever executing them.
+  (var repl-env (env ^bindings {^session session ^Tool Tool
+                                ^classify-command classify-command}))
+  (println "Entering Gene REPL. `session` is bound: session/items session/events (session ~ add-tool (Tool ...)) (session ~ remember \"...\") (session ~ subscribe \"tool-call\") (session ~ trace \"type=tool-call\") (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run-repl-session repl-env ^interactive true)
-  nil)
+  (resume-flag ~ Cell/get))
 
 (fn run-repl []
   (init-agent-state)
@@ -1085,6 +1637,9 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (println $"Gene AI agent - model ${model}. Type /quit to exit.")
   (var memory (cell (load-memory)))
   (var saved (load-session))
+  (if (= saved nil)
+    nil
+    (restore-events))
   (var items
     (cell
       (if (= saved nil)
@@ -1098,6 +1653,9 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (var running (cell true))
   (var line nil)
   (var streaming (cell false))
+  # Subscribed event types echo into the transcript as they are emitted.
+  (event-echo ~ Cell/set
+    (fn [text] (render-agent-text transcript streaming $"[event] ${text}")))
   (if (! (= saved nil))
     (do
       (append-transcript transcript $"[restored session from ${agent-state-dir}]\n")
@@ -1130,7 +1688,24 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
             (if (= line "/sh")
               (run-shell-session)
               (if (= line "/repl")
-                (run-session-repl items memory)
+                (if (run-session-repl items transcript memory)
+                  (do
+                    # (session ~ resume): continue the current turn with the
+                    # (possibly reshaped) items — no new user input item.
+                    (Cell/set streaming false)
+                    (items ~ Cell/set
+                      (run-turn live-transport
+                                (items ~ Cell/get)
+                                (fn [text]
+                                  (render-agent-text transcript streaming text))
+                                (fn [text]
+                                  (render-agent-delta transcript streaming text))
+                                max-tool-turns
+                                emit-event!))
+                    (save-agent-state (items ~ Cell/get)
+                                      (transcript ~ Cell/get)
+                                      (memory ~ Cell/get)))
+                  nil)
                 (if (= line "/memory")
                   (do
                     (var sep "\n")
@@ -1172,21 +1747,32 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                               agent-state-dir))
                           (var item-count ((items ~ Cell/get) ~ size))
                           (var memory-count ((memory ~ Cell/get) ~ size))
+                          (var event-count ((agent-events ~ Cell/get) ~ size))
+                          (var guard-label (if (guard-enabled?) "on" "off"))
                           (render-agent-text transcript streaming
-                            $"state: ${state-label}\nmodel: ${model}\napi: ${api-flavor}\nitems: ${item-count}\nmemory: ${memory-count}"))
-                        (do
-                          (Cell/set streaming false)
-                          (Cell/set items
-                            (run-turn live-transport
-                                      (append (Cell/get items) (user-item line))
-                                      (fn [text]
-                                        (render-agent-text transcript streaming text))
-                                      (fn [text]
-                                        (render-agent-delta transcript streaming text))
-                                      max-tool-turns))
-                          (save-agent-state (items ~ Cell/get)
-                                            (transcript ~ Cell/get)
-                                            (memory ~ Cell/get)))))))))))))))
+                            $"state: ${state-label}\nmodel: ${model}\napi: ${api-flavor}\nitems: ${item-count}\nmemory: ${memory-count}\nevents: ${event-count}\nguard: ${guard-label}"))
+                        (if (|| (= line "/trace") (starts_with? line "/trace "))
+                          (render-agent-text transcript streaming
+                            (trace-report
+                              (if (= line "/trace")
+                                ""
+                                (after-prefix line "/trace "))))
+                          (do
+                            (Cell/set streaming false)
+                            (begin-turn!)
+                            (emit-event! "user-input" {^text line})
+                            (Cell/set items
+                              (run-turn live-transport
+                                        (append (Cell/get items) (user-item line))
+                                        (fn [text]
+                                          (render-agent-text transcript streaming text))
+                                        (fn [text]
+                                          (render-agent-delta transcript streaming text))
+                                        max-tool-turns
+                                        emit-event!))
+                            (save-agent-state (items ~ Cell/get)
+                                              (transcript ~ Cell/get)
+                                              (memory ~ Cell/get))))))))))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main [args]

@@ -29,8 +29,20 @@
 (import std/parse [parse_int])
 (import net/http [Server serve Response])
 (import [gene-system-prompt system-item user-item run-turn live-transport
-         demo-transport-for max-tool-turns append model auth-token]
+         demo-transport-for max-tool-turns append model auth-token
+         set-events-enabled redact-any set-guard-confirm]
         from "./ai_agent")
+
+# Each gateway session owns its own versioned event log (§12.1/§12.3), so turn
+# off the embedded CLI's process-global log the imported run-turn would
+# otherwise append every session's events to.
+(set-events-enabled false)
+
+# The gateway has no terminal: the CLI's stdin confirmation would block the
+# scheduler. Destructive commands are denied outright until a remote
+# confirmation surface ships (§12.8, optional slice-D work); the deny is
+# recorded as a confirmation event in the owning session's log.
+(set-guard-confirm (fn [cmd] false))
 (import db/sqlite [open : sqlite-open])
 (import store/sqlite [open : store-sqlite-open])
 (import store/fs [open : store-fs-open])
@@ -84,25 +96,42 @@
   (var items (cell (if (= saved nil)
                      [(system-item gene-system-prompt)]
                      saved/items)))
-  (fn push-event [type : Str, text : Str]
-    (next-v ~ Cell/set (+ (next-v ~ Cell/get) 1))
-    (var event {^v (next-v ~ Cell/get) ^type type ^text text})
+  (fn append-event [event]
     (events ~ Cell/set (append (events ~ Cell/get) event))
     (if (= on-event nil)
       nil
       (try (on-event event) catch * nil)))
+  (fn push-event [type : Str, text : Str]
+    (next-v ~ Cell/set (+ (next-v ~ Cell/get) 1))
+    (append-event {^v (next-v ~ Cell/get) ^type type ^text (redact-any text)}))
+  # Per-session structured sink for the turn loop (§12.1/§12.3): the same
+  # versioned events the CLI logs (tool-call/tool-result/model-item/error/
+  # turn-done) land in THIS session's log, redacted, so a persisted session
+  # keeps its full tool trail. agent-text/text-delta come from the render
+  # callbacks below, so the sink skips them to avoid double-logging.
+  (fn push-structured [type : Str, props]
+    (next-v ~ Cell/set (+ (next-v ~ Cell/get) 1))
+    (var event {^v (next-v ~ Cell/get) ^type type})
+    (for [k pv] in props
+      (event ~ Map/put! k (redact-any pv)))
+    (append-event event))
+  (fn emit-turn-event [type : Str, props]
+    (match type
+      (when "agent-text" nil)
+      (when "text-delta" nil)
+      (else (push-structured type props))))
   (var transport (if (= auth-token nil) (demo-transport-for) live-transport))
   (var turn-actor
     (actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx, state, text]
-        (push-event "user" text)
+        (push-event "user-input" text)
         (items ~ Cell/set
           (run-turn transport
                     (append (items ~ Cell/get) (user-item text))
-                    (fn [t] (if (= t "") nil (push-event "text" t)))
-                    (fn [d] (if (= d "") nil (push-event "text_delta" d)))
-                    max-tool-turns))
-        (push-event "turn_done" "")
+                    (fn [t] (if (= t "") nil (push-event "agent-text" t)))
+                    (fn [d] (if (= d "") nil (push-event "text-delta" d)))
+                    max-tool-turns
+                    emit-turn-event))
         (persist-session id items events next-v)
         (actor/continue state))))
   {^id id ^actor turn-actor ^events events ^next-v next-v})
@@ -122,7 +151,7 @@
 # Telegram channel (§12.6). An adapter task long-polls getUpdates; messages
 # from allowlisted chats route into per-chat sessions; replies stream back by
 # sendMessage plus size-throttled editMessageText, with a final edit on
-# turn_done. Every Telegram call is curl over os/exec-async, so the poll and
+# turn-done. Every Telegram call is curl over os/exec-async, so the poll and
 # the sends never block other sessions or the HTTP listener.
 # -----------------------------------------------------------------------------
 
@@ -161,16 +190,25 @@
 # (immutable), which mutable event maps are not.
 (var tg-outbox (channel ^capacity 1024))
 
+# Only the display-relevant event types reach Telegram; the structured tool
+# trail (tool-call/tool-result/model-item/...) stays in the session log but is
+# not mirrored to chat, so a tool-heavy turn does not flood the outbox.
+(fn tg-relevant? [type : Str]
+  (|| (= type "text-delta")
+      (|| (= type "agent-text") (= type "turn-done"))))
+
 (fn make-telegram-sender [chat-id]
   (fn [event]
-    (if (tg-outbox ~ Channel/try-send
-          (stringify {^chat_id chat-id ^event event}))
+    (if (! (tg-relevant? event/type))
       nil
-      (println $"telegram: outbox full, dropped event for chat ${chat-id}"))))
+      (if (tg-outbox ~ Channel/try-send
+            (stringify {^chat_id chat-id ^event event}))
+        nil
+        (println $"telegram: outbox full, dropped event for chat ${chat-id}")))))
 
 # Per-chat streaming state for the sender fiber: deltas accumulate into one
 # message edited every ~200 new characters (size-based throttle) and
-# finalized on turn_done; non-streamed lines go out as individual messages.
+# finalized on turn-done; non-streamed lines go out as individual messages.
 (var tg-chat-state {})
 
 (fn tg-state-for [chat-id]
@@ -189,7 +227,7 @@
   (var event entry/event)
   (var st (tg-state-for chat-id))
   (match event/type
-    (when "text_delta"
+    (when "text-delta"
       (st/pending ~ Cell/set $"${(st/pending ~ Cell/get)}${event/text}")
       (var text (st/pending ~ Cell/get))
       (if (= (st/sent-id ~ Cell/get) nil)
@@ -201,10 +239,10 @@
             (tg-edit-message chat-id (st/sent-id ~ Cell/get) text)
             (st/sent-len ~ Cell/set text/~size))
           nil)))
-    (when "text"
+    (when "agent-text"
       (tg-send-message chat-id event/text)
       nil)
-    (when "turn_done"
+    (when "turn-done"
       (var text (st/pending ~ Cell/get))
       (if (&& (! (= (st/sent-id ~ Cell/get) nil))
               (> text/~size (st/sent-len ~ Cell/get)))
@@ -390,10 +428,10 @@ function show(cls, text) {
   log.scrollTop = log.scrollHeight;
 }
 function render(ev) {
-  if (ev.type === 'user') { if (streaming) { show('text', '\n'); streaming = false; } show('user', 'you> ' + ev.text + '\n'); }
-  else if (ev.type === 'text_delta') { if (!streaming) { show('text', 'agent> '); streaming = true; } show('text', ev.text); }
-  else if (ev.type === 'text') { if (streaming) { show('text', '\n'); streaming = false; } show('text', 'agent> ' + ev.text + '\n'); }
-  else if (ev.type === 'turn_done') { if (streaming) { show('text', '\n'); streaming = false; } }
+  if (ev.type === 'user-input') { if (streaming) { show('text', '\n'); streaming = false; } show('user', 'you> ' + ev.text + '\n'); }
+  else if (ev.type === 'text-delta') { if (!streaming) { show('text', 'agent> '); streaming = true; } show('text', ev.text); }
+  else if (ev.type === 'agent-text') { if (streaming) { show('text', '\n'); streaming = false; } show('text', 'agent> ' + ev.text + '\n'); }
+  else if (ev.type === 'turn-done') { if (streaming) { show('text', '\n'); streaming = false; } }
 }
 function poll() {
   fetch('/api/sessions/' + sid + '/events?cursor=' + cursor, { headers: hdrs(false) })
