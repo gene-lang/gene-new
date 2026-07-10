@@ -1968,7 +1968,9 @@ Protocol-local derive:
 
 Generated declarations are placed in a compiler-owned overlay. Source modules are not mutated. Generated nodes receive provenance meta such as `@derived-by`, `@derived-for`, and `@derived-from`.
 
-Any module may declare an implementation for any protocol and receiver type; an impl may live anywhere, not only in the type's or protocol's module. **Implementations are global once their module is loaded:** when a module runs — which happens the first time it is imported — its impls register on the shared application root and become visible everywhere, including in modules that never imported the impl's defining module. Impls are not value bindings — they cannot be renamed or selectively imported; loading the defining module is what activates them. Coherence is global: at most one impl may exist for a given `(protocol, receiver)` pair, and a second conflicting impl is an ambiguity error raised when its module loads; a pair with no loaded impl is a missing-implementation error at the use site. Generated implementations follow the same rule, and MVP rejects overlapping generic implementations that could both apply to the same concrete receiver type. Because impls are global, they live for the application's lifetime: a long-running host that keeps defining new impls — a REPL, or repeated `eval` of impl-defining code — accumulates them until the process exits (reclamation waits on future module-unload support).
+Any module may declare an implementation for any protocol and receiver type; an impl may live anywhere, not only in the type's or protocol's module. **Module implementations are global after successful module activation:** while a module runs, its impls are staged in its module scope. At successful completion the complete batch is conflict-checked and published atomically to the shared application root. A failed or conflicting module publishes none of its staged impls. Once published, they are visible everywhere, including in modules that never imported the impl's defining module. Impls are not value bindings — they cannot be renamed or selectively imported; loading the defining module is what activates them. Coherence is global: at most one impl may exist for a given `(protocol, receiver)` pair; a pair with no active impl is a missing-implementation error at the use site. Generated module implementations follow the same rule, and MVP rejects overlapping generic implementations that could both apply to the same concrete receiver type.
+
+`eval` and Env-backed REPL units are the deliberate exception: their impls stay in the eval overlay and are never promoted to the application registry implicitly. A function or type retaining that overlay can dispatch through its impls, while unrelated scopes cannot. There is no public global-promotion operation in the MVP. Each successful application-level activation advances an impl-registry epoch; native/direct protocol-call optimization must guard that epoch (and deopt/re-resolve on mismatch) before it may cache an impl address across activation.
 
 MVP imposes no orphan restriction — an impl need not accompany its type or protocol, in the spirit of keeping the MVP simple. A future version may add one (for example, requiring a cross-module impl to live in the type's or the protocol's defining module) so that implementations cannot be silently activated by loading an unrelated module.
 
@@ -1988,15 +1990,15 @@ an extension of this section in `docs/core.md`.
 The exact rule for when an impl is visible for protocol-coherence lookup:
 
 ```text
-An impl activates the first time its defining module is loaded.
+An impl batch activates atomically when its defining module finishes loading.
 An active impl is visible in every module, regardless of whether
 that module imports the defining module (global coherence).
 Any import form that loads the defining module — bulk, selected,
 or `^as` — activates its impls; impls are not name-selected and
 cannot be aliased or renamed.
 At most one impl per `(protocol, receiver)` pair may be active; a
-second is an ambiguity error raised when the conflicting module
-loads. A pair with no active impl is a missing-implementation
+second makes the conflicting module activation fail without
+publishing any of that module's impls. A pair with no active impl is a missing-implementation
 error at the use site.
 Impls are not value bindings: they cannot be renamed, selectively
 imported, or re-exported. An import that binds no values still
@@ -2009,6 +2011,7 @@ impls globally; impl visibility cannot be imported on its own — it rides
 on module load; and impls cannot be re-exported because they are not
 bindings. Coherence is therefore global, not per-import: the same
 `(protocol, receiver)` pair resolves the same way in every module.
+Eval overlays are lexical and are not part of this module-global relation.
 Future versions may tighten this with `^private`, explicit export lists,
 an orphan rule, or finer-grained impl-import controls.
 
@@ -3136,7 +3139,7 @@ supplied Env
 optional parent module/namespace
 ```
 
-Evaluated declarations do not mutate the source module. They live in an overlay retained by returned functions, types, protocol impls, callbacks, or compiled artifacts.
+Evaluated declarations do not mutate the source module. They live in an overlay retained by returned functions, types, protocol impls, callbacks, or compiled artifacts. Impl declarations register only in that overlay: they are visible to code retaining it and do not alter the application-global impl registry.
 
 Thus:
 

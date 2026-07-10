@@ -292,6 +292,8 @@ type
     simpleCallScope*: bool
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
+    implOverlayRoot*: bool  # eval-local impls register here, never application-wide
+    implStageRoot*: bool    # module impls remain pending until atomic activation
     requiredImplTypes*: seq[Value]
     evalBudget*: EvalBudget
     ownsTasks*: bool

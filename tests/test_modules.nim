@@ -177,6 +177,29 @@ suite "modules — file imports":
         "(import from \"./json_ext_a\" ^as a) " &
         "(import from \"./json_ext_b\" ^as b)")
 
+  test "failed module activation does not publish earlier staged impls":
+    writeModule("base.gene",
+      "(protocol P (message value [self] : Str)) " &
+      "(type A ^props {}) (type B ^props {})")
+    writeModule("ext_a.gene",
+      "(import [P A B] from \"./base\") " &
+      "(impl P for B (message value [self] : Str \"existing\"))")
+    writeModule("ext_b.gene",
+      "(import [P A B] from \"./base\") " &
+      "(impl P for A (message value [self] : Str \"staged\")) " &
+      "(impl P for B (message value [self] : Str \"conflict\"))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource(
+      "(import [P A B] from \"./base\") " &
+      "(import from \"./ext_a\" ^as a)"), scope)
+    expect GeneError:
+      discard run(compileSource("(import from \"./ext_b\" ^as b)"), scope)
+    expect GeneError:
+      discard run(compileSource("((A) ~ P/value)"), scope)
+    check run(compileSource("((B) ~ P/value)"), scope).print() ==
+      "\"existing\""
+
   test "package-root-relative paths (/x and bare x)":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
     check runProgram("(import [pi] from \"/math\") pi").print() == "3"

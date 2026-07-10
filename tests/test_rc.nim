@@ -56,6 +56,11 @@ when defined(geneRcStats):
       check leakedManaged("(eval (quote (+ 1 2)) ^in (env))") == 0
       check leakedManaged("(eval (quote cap) " &
                           "^in (env ^capabilities {^cap [1]}))") == 0
+      check leakedManaged("(eval (quote (do " &
+                          "  (protocol P (message value [self] : Int)) " &
+                          "  (type T ^props {}) " &
+                          "  (impl P for T (message value [self] : Int 1)))) " &
+                          "^in (env))") == 0
 
     test "eval named functions are reclaimed when the result does not escape":
       check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
@@ -103,15 +108,14 @@ when defined(geneRcStats):
                           "  (var a (actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] 99))) " &
                           "  (a ~ actor/send 1))") == 0
-      # A case that defines `impl Send for Get` moved to the global-retention test
-      # below: under design §10 a user impl registers on the shared application
-      # root and lives for the app lifetime, so it is intentionally not reclaimed.
+      # A top-level `impl Send for Get` belongs in the global-retention test
+      # below. Eval impls, tested above, remain reclaimable overlays.
 
     test "impls are globally retained, not reclaimed with their scope (design §10)":
       # A protocol impl registers on the shared application root and lives for the
       # app's lifetime, so a program that defines one retains the impl and its
-      # receiver type. This is the MVP tradeoff for global impls — it accumulates
-      # in a long-running REPL/eval host — while everything else still reclaims.
+      # receiver type. Eval/Env REPL impls are overlay-local and do not take this
+      # path.
       check leakedManaged("(type Get ^props {^reply (ReplyTo Int)}) " &
                           "(impl Send for Get)") > 0                       # manual impl
       check leakedManaged("(protocol HasLabel " &

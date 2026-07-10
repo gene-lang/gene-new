@@ -266,6 +266,7 @@ type
     nativeGe: Value
     moduleCache: Table[string, Value]
     moduleLoading: HashSet[string]
+    implEpoch: uint64
     # Macro exports per loaded module (abs path -> name -> def). Filled when a
     # module compiles; consumed by importing modules' compilers so `(import
     # [m!] from "path")` expands at the importer's compile time (design §11).
@@ -5303,6 +5304,8 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.vars.clear()
   scope.varTypes.clear()
   scope.impls.setLen(0)
+  scope.implOverlayRoot = false
+  scope.implStageRoot = false
   scope.requiredImplTypes.setLen(0)
   scope.evalBudget =
     if parent != nil: parent.evalBudget
@@ -5631,6 +5634,8 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.varTypes.clear()
   if scope.impls.len != 0:
     scope.impls.setLen(0)
+  scope.implOverlayRoot = false
+  scope.implStageRoot = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
   if scope.ownsTasks:
@@ -5775,6 +5780,24 @@ proc validateCallableSignature(expected, actual: Value, label: string) =
   raise newException(GeneError,
     label & " has incompatible " & mismatch & locations)
 
+proc implRegistrationRoot(scope: Scope): Scope =
+  ## Eval overlays and module staging scopes are lexical roots for impl
+  ## registration. Ordinary program scopes register application-wide.
+  var s = scope
+  while s != nil:
+    if s.implOverlayRoot or s.implStageRoot:
+      return s
+    s = s.parent
+  result = scope
+  while result.parent != nil:
+    result = result.parent
+
+proc duplicateImplIn(scope: Scope, protocol, receiver: Value): bool =
+  for impl in scope.impls:
+    if same(impl.protocol, protocol) and same(impl.receiver, receiver):
+      return true
+  false
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   entries: sink seq[ImplMessage]) =
   if protocol.kind != vkProtocol:
@@ -5806,21 +5829,33 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
         "duplicate impl message: " & qualifiedMessageName(message))
   var s = scope
   while s != nil:
-    for impl in s.impls:
-      if same(impl.protocol, protocol) and same(impl.receiver, receiver):
-        raise newException(GeneError,
-          "duplicate visible impl " & protocol.protocolName &
-          " for " & receiver.typeName)
+    if s.duplicateImplIn(protocol, receiver):
+      raise newException(GeneError,
+        "duplicate visible impl " & protocol.protocolName &
+        " for " & receiver.typeName)
     s = s.parent
-  # Impls are global once their defining module is loaded (design §10): register
-  # on the chain root — the shared built-ins scope that every module scope chains
-  # to — so dispatch, which already walks to the root, finds the impl from any
-  # module without an import path to the impl's module.
-  var root = scope
+  let target = implRegistrationRoot(scope)
+  target.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
+                                messages: entries)
+  if not target.implOverlayRoot and not target.implStageRoot:
+    inc target.application().implEpoch
+
+proc activateStagedImpls(stage: Scope) =
+  if stage == nil or not stage.implStageRoot or stage.impls.len == 0:
+    return
+  var root = stage
   while root.parent != nil:
     root = root.parent
-  root.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
-                              messages: entries)
+  # Validate the whole batch before mutating the application registry.
+  for pending in stage.impls:
+    if root.duplicateImplIn(pending.protocol, pending.receiver):
+      raise newException(GeneError,
+        "duplicate visible impl " & pending.protocol.protocolName &
+        " for " & pending.receiver.typeName)
+  for pending in stage.impls:
+    root.impls.add pending
+  stage.impls.setLen(0)
+  inc root.application().implEpoch
 
 proc sameImplMessages(a, b: ProtocolImpl): bool =
   if a.messages.len != b.messages.len:
@@ -8532,6 +8567,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if env.kind != vkEnv:
             raise newException(GeneError, "eval ^in must be an Env")
           let evalScope = newScope(materializeEvalParent(env))
+          evalScope.implOverlayRoot = true
           evalScope.evalBudget = evalBudgetForPolicy(env.envPolicy, scope.evalBudget)
           let evalChunk =
             try:
@@ -10730,6 +10766,7 @@ proc runReplSessionForEnv*(env: Value,
   if env.kind != vkEnv:
     raise newException(GeneError, "repl/run expects an Env")
   let scope = newScope(materializeEvalParent(env))
+  scope.implOverlayRoot = true
   scope.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
   runReplSession(scope, readLine, writeOut, writeErr, options)
 
@@ -18192,6 +18229,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   app.moduleLoading.incl absPath
   let src = readFile(absPath)
   let modScope = newGlobalScope(app)
+  modScope.implStageRoot = true
   result = bindThisModule(modScope, splitFile(absPath).name, absPath)
   let savedDir = app.currentModuleDir
   app.currentModuleDir = parentDir(absPath)
@@ -18214,6 +18252,11 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     app.moduleMacros[absPath] = compiled.macroExports
     app.moduleSyntaxFns[absPath] = compiled.syntaxFnExports
     discard run(compiled.chunk, modScope)
+    activateStagedImpls(modScope)
+  except:
+    app.moduleMacros.del(absPath)
+    app.moduleSyntaxFns.del(absPath)
+    raise
   finally:
     app.currentModuleDir = savedDir
     app.moduleLoading.excl absPath
