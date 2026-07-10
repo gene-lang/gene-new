@@ -5702,24 +5702,105 @@ proc resolveImplMessage(scope: Scope, protocol: Value,
       spellings.join(", "))
   candidates[0]
 
+proc signatureTypeEqual(a, b: Value): bool =
+  ## Omitted annotations and explicit Any have the same boundary meaning.
+  let aAny = a.kind == vkNil or a.isSymbol("Any")
+  let bAny = b.kind == vkNil or b.isSymbol("Any")
+  (aAny and bAny) or equal(a, b)
+
+proc callableSignatureMismatch(expected, actual: Value): string =
+  if expected.kind != vkFunction or actual.kind != vkFunction:
+    return "callable category"
+  if expected.isSyntaxFn != actual.isSyntaxFn:
+    return "callable category (fn versus fn!)"
+  let expectedCode = expected.fnCode
+  let actualCode = actual.fnCode
+  if expectedCode == nil or actualCode == nil or
+      not (expectedCode of FunctionProto) or not (actualCode of FunctionProto):
+    return "callable implementation"
+  let e = FunctionProto(expectedCode)
+  let a = FunctionProto(actualCode)
+  if e.params.len != a.params.len or
+      e.requiredPositional != a.requiredPositional:
+    return "positional parameter shape"
+  if e.paramDefaults.len != a.paramDefaults.len:
+    return "positional default shape"
+  for i in 0 ..< e.paramDefaults.len:
+    if e.paramDefaults[i].optional != a.paramDefaults[i].optional:
+      return "positional default shape at parameter " & $(i + 1)
+  if e.paramTypes.len != a.paramTypes.len:
+    return "positional parameter types"
+  for i in 0 ..< e.paramTypes.len:
+    if not signatureTypeEqual(e.paramTypes[i], a.paramTypes[i]):
+      return "positional parameter type at parameter " & $(i + 1)
+  if (e.restParam.len != 0) != (a.restParam.len != 0):
+    return "rest parameter shape"
+  if e.namedParams.len != a.namedParams.len:
+    return "named parameter shape"
+  for i in 0 ..< e.namedParams.len:
+    let ep = e.namedParams[i]
+    let ap = a.namedParams[i]
+    if ep.arg != ap.arg:
+      return "named parameter name at parameter " & $(i + 1)
+    if ep.defaultValue.optional != ap.defaultValue.optional:
+      return "named parameter default shape for ^" & ep.arg
+    if not signatureTypeEqual(ep.typeExpr, ap.typeExpr):
+      return "named parameter type for ^" & ep.arg
+  if not signatureTypeEqual(e.returnType, a.returnType):
+    return "return type"
+  if expected.fnChecksErrors != actual.fnChecksErrors:
+    return "checked error row"
+  let expectedErrors = expected.fnErrorTypes
+  let actualErrors = actual.fnErrorTypes
+  if expectedErrors.len != actualErrors.len:
+    return "checked error row"
+  for i in 0 ..< expectedErrors.len:
+    if not equal(expectedErrors[i], actualErrors[i]):
+      return "checked error row"
+  ""
+
+proc validateCallableSignature(expected, actual: Value, label: string) =
+  let mismatch = callableSignatureMismatch(expected, actual)
+  if mismatch.len == 0:
+    return
+  let expectedProto = FunctionProto(expected.fnCode)
+  let actualProto = FunctionProto(actual.fnCode)
+  var locations = ""
+  let actualLoc = actualProto.sourceLoc.locationText()
+  let expectedLoc = expectedProto.sourceLoc.locationText()
+  if actualLoc.len > 0:
+    locations.add " at " & actualLoc
+  if expectedLoc.len > 0:
+    locations.add "; inherited/declaration at " & expectedLoc
+  raise newException(GeneError,
+    label & " has incompatible " & mismatch & locations)
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   entries: sink seq[ImplMessage]) =
   if protocol.kind != vkProtocol:
     raise newException(GeneError, "impl target must be a protocol")
   if receiver.kind != vkType:
     raise newException(GeneError, "impl receiver must be a type")
-  # Completeness is keyed by message identity: every message in the
-  # protocol's transitive closure must be provided exactly once
-  # (docs/core.md §3.2/§4).
+  # Completeness is keyed by message identity. An explicit impl establishes
+  # conformance; shared defaults fill only messages omitted by that impl.
   for message in protocol.protocolClosure:
     var count = 0
     for entry in entries:
       if entry.message.bits == message.bits:
         inc count
+        let signatureFn = message.protocolMessageSignatureFn
+        if signatureFn.kind != vkNil:
+          validateCallableSignature(signatureFn, entry.fn,
+            "impl " & protocol.protocolName & " for " & receiver.typeName &
+            " message " & qualifiedMessageName(message))
     if count == 0:
-      raise newException(GeneError,
-        "impl " & protocol.protocolName & " for " & receiver.typeName &
-        " is missing message: " & qualifiedMessageName(message))
+      let defaultFn = message.protocolMessageDefaultFn
+      if defaultFn.kind != vkNil:
+        entries.add ImplMessage(message: message, fn: defaultFn)
+      else:
+        raise newException(GeneError,
+          "impl " & protocol.protocolName & " for " & receiver.typeName &
+          " is missing message: " & qualifiedMessageName(message))
     if count > 1:
       raise newException(GeneError,
         "duplicate impl message: " & qualifiedMessageName(message))
@@ -5805,6 +5886,8 @@ proc scopeChainContains(scope, target: Scope): bool =
   false
 
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
+  if protocol.kind == vkProtocol and protocol.protocolUniversal:
+    return true
   if scope != nil and scope.hasVisibleImpl(protocol, typ):
     return true
   var t = typ
@@ -6519,6 +6602,8 @@ proc publishSpawnChunk(chunk: Chunk, seenScopes: var HashSet[pointer],
       for message in inline.messages:
         publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
   for proto in chunk.protocolProtos:
+    for message in proto.messages:
+      publishSpawnFunctionProto(message.fn, seenScopes, seenValues, seenChunks)
     publishSpawnFunctionProto(proto.deriveFn, seenScopes, seenValues, seenChunks)
   for proto in chunk.implProtos:
     for message in proto.messages:
@@ -6713,6 +6798,10 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     publishSpawnValue(value.protocolDeriveFn, seenScopes, seenValues, seenChunks)
   of vkProtocolMessage:
     publishSpawnValue(value.protocolMessageProtocol, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(value.protocolMessageSignatureFn, seenScopes, seenValues,
+                      seenChunks)
+    publishSpawnValue(value.protocolMessageDefaultFn, seenScopes, seenValues,
                       seenChunks)
   else:
     discard
@@ -7117,6 +7206,10 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
     typ = typ.typeParent
   matches.dedupeProtocolMatches()
   if matches.len == 0:
+    if protocol.protocolUniversal:
+      let defaultFn = message.protocolMessageDefaultFn
+      if defaultFn.kind != vkNil:
+        return defaultFn
     raise newException(GeneError,
       "missing impl " & protocol.protocolName & " for " & recvType.typeName)
   if matches.len > 1:
@@ -8493,6 +8586,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                  scope, message.fn.checksErrors,
                                  messageErrorTypes[i])
             messages[message.name] = functionForScopeStorage(fn, scope)
+          if parent.kind == vkType:
+            for name, messageFn in messages:
+              let inherited = parent.typeDirectMessage(name)
+              if inherited.kind != vkNil:
+                validateCallableSignature(inherited, messageFn,
+                  "type message " & proto.name & "/" & name)
           # The ctor error row compiles before the message rows, so it pops last.
           var ctorFn = NIL
           if proto.ctorFn != nil:
@@ -8599,13 +8698,31 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 raise newException(GeneError,
                   "protocol ^inherit entries must be protocols")
               parents[i] = parentProtocol
+          var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
+          if proto.messages.len > 0:
+            for i in countdown(proto.messages.len - 1, 0):
+              messageErrorTypes[i] =
+                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount,
+                                           scope)
           var deriveFn = NIL
           if proto.deriveFn != nil:
             deriveFn = newFunction(proto.deriveFn.name, proto.deriveFn.params,
                                    proto.deriveFn, scope)
             deriveFn = functionForScopeStorage(deriveFn, scope)
-          let protocol = newProtocol(proto.name, proto.messageNames, deriveFn,
-                                     parents)
+          var messageNames: seq[string]
+          var signatures: seq[Value]
+          var hasDefaults: seq[bool]
+          for i, message in proto.messages:
+            messageNames.add message.name
+            var fn = newFunction(message.fn.name, message.fn.params,
+                                 message.fn, scope, message.fn.checksErrors,
+                                 messageErrorTypes[i])
+            fn = functionForScopeStorage(fn, scope)
+            signatures.add fn
+            hasDefaults.add message.hasDefault
+          let protocol = newProtocol(proto.name, messageNames, deriveFn,
+                                     parents, signatures, hasDefaults,
+                                     proto.universal)
           # Message names are not bound in the enclosing scope (docs/core.md
           # §1, OQ-I): messages are reached via Protocol/name and sends.
           stack.add protocol

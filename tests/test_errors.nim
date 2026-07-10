@@ -130,9 +130,9 @@ suite "errors — checked rows":
                      "(fn f ^errors [NotError] [] 1)")
 
   test "impl message functions enforce checked rows":
-    ck "(protocol Run (message run [self])) " &
-       "(type Boom ^props {^message Str} ^impl [Error]) " &
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
+       "(protocol Run (message run ^errors [Boom] [self])) " &
        "(type Job ^props {}) " &
        "(impl Run for Job " &
        "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &

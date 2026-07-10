@@ -681,6 +681,7 @@ type
     name: string
     messages: OrderedTable[string, Value] # own messages, keyed by local name
     deriveFn: Value
+    universal: bool         # explicit ^universal conformance, never inferred
     parents: seq[Value]      # direct ^inherit parents (docs/core.md §3)
     closure: seq[Value]      # full transitive message closure, ancestors
                              # first, deduped by message identity; same-name
@@ -690,6 +691,8 @@ type
   ProtocolMessageData = ref object of GeneObjectData
     name: string
     protocolBits: uint64  # non-owning backreference to the owning Protocol
+    signatureFn: Value    # non-callable-by-contract function carrying the shape
+    hasDefault: bool      # signatureFn is also the shared default closure
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -1183,7 +1186,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     for val in d.closure:
       emit(val)
   of okProtocolMessage:
-    discard
+    let d = ProtocolMessageData(data)
+    emit(d.signatureFn)
   of okEnumVariant:
     let d = EnumVariantData(data)
     for val in d.payloadTypes:
@@ -1334,7 +1338,10 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.parents.setLen(0)
     d.closure.setLen(0)
   of okProtocolMessage:
-    ProtocolMessageData(data).protocolBits = 0
+    let d = ProtocolMessageData(data)
+    d.protocolBits = 0
+    clearValueSlot(d.signatureFn)
+    d.hasDefault = false
   of okEnumVariant:
     let d = EnumVariantData(data)
     d.enumBits = 0
@@ -3395,6 +3402,11 @@ proc protocolDeriveFn*(v: Value): Value =
     raise newException(FieldDefect, "value is not a Protocol")
   ProtocolData(objData(v)).deriveFn
 
+proc protocolUniversal*(v: Value): bool =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
+    raise newException(FieldDefect, "value is not a Protocol")
+  ProtocolData(objData(v)).universal
+
 proc protocolMessageName*(v: Value): lent string =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
     raise newException(FieldDefect, "value is not a ProtocolMessage")
@@ -3407,6 +3419,17 @@ proc protocolMessageProtocol*(v: Value): Value =
   if (bits shr TAG_SHIFT) >= MANAGED_MIN:
     rcRetain(bits)
   Value(bits: bits)
+
+proc protocolMessageSignatureFn*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+    raise newException(FieldDefect, "value is not a ProtocolMessage")
+  ProtocolMessageData(objData(v)).signatureFn
+
+proc protocolMessageDefaultFn*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+    raise newException(FieldDefect, "value is not a ProtocolMessage")
+  let d = ProtocolMessageData(objData(v))
+  if d.hasDefault: d.signatureFn else: NIL
 
 # ---------------------------------------------------------------------------
 # Constructors
@@ -4796,13 +4819,20 @@ proc typeDirectMessage*(v: Value, name: string): Value =
       t = NIL
   NIL
 
-proc newProtocolMessage*(protocol: Value, name: string): Value =
+proc newProtocolMessage*(protocol: Value, name: string,
+                         signatureFn: Value = NIL,
+                         hasDefault = false): Value =
   boxObject(ProtocolMessageData(objKind: okProtocolMessage,
                                 name: name,
-                                protocolBits: protocol.bits))
+                                protocolBits: protocol.bits,
+                                signatureFn: signatureFn,
+                                hasDefault: hasDefault))
 
 proc newProtocol*(name: string, messageNames: openArray[string],
-                  deriveFn: Value = NIL, parents: sink seq[Value] = @[]): Value =
+                  deriveFn: Value = NIL, parents: sink seq[Value] = @[],
+                  signatures: openArray[Value] = [],
+                  hasDefaults: openArray[bool] = [],
+                  universal = false): Value =
   ## `parents` are already-constructed ^inherit ancestors (docs/core.md §3).
   ## The message closure is flattened eagerly, ancestors first, deduped by
   ## message identity. A protocol message is identified by its defining
@@ -4825,13 +4855,23 @@ proc newProtocol*(name: string, messageNames: openArray[string],
         closure.add pmsg
   let data = ProtocolData(objKind: okProtocol, name: name,
                           messages: initOrderedTable[string, Value](),
-                          deriveFn: deriveFn, parents: parents,
+                          deriveFn: deriveFn, universal: universal,
+                          parents: parents,
                           closure: closure)
   let protocol = boxObject(data)
-  for messageName in messageNames:
-    let message = newProtocolMessage(protocol, messageName)
+  for i, messageName in messageNames:
+    let signatureFn = if i < signatures.len: signatures[i] else: NIL
+    let hasDefault = i < hasDefaults.len and hasDefaults[i]
+    let message = newProtocolMessage(protocol, messageName, signatureFn, hasDefault)
     data.messages[messageName] = message
     data.closure.add message
+  if universal:
+    for message in data.closure:
+      if protocolMessageDefaultFn(message).kind == vkNil:
+        raise newException(GeneError,
+          "universal protocol " & name &
+          " requires defaults for every message: " &
+          protocolMessageName(message))
   protocol
 
 proc protocolParents*(v: Value): lent seq[Value] =

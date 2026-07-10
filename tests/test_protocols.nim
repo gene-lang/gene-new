@@ -173,6 +173,21 @@ suite "protocols — declarations and dispatch":
        "((User ^name \"Ada\") ~ label)",
        "\"generated\""
 
+  test "deriving a child runs only the child's derive and emits one complete impl":
+    ck "(protocol A " &
+       "  (message a [self] : Str) " &
+       "  (derive [t req] " &
+       "    `(impl A for %t (message a [self] : Str \"ancestor\")))) " &
+       "(protocol B ^inherit [A] " &
+       "  (message b [self] : Str) " &
+       "  (derive [t req] " &
+       "    `(impl B for %t " &
+       "       (message a [self] : Str \"via-child\") " &
+       "       (message b [self] : Str \"child\")))) " &
+       "(type T ^props {} ^derive [B]) " &
+       "(var t (T)) [(t ~ A/a) (t ~ B/b)]",
+       "[\"via-child\" \"child\"]"
+
   test "protocol-local derive may only generate own impl declarations":
     expect GeneError:
       discard runStr("(protocol HasLabel " &
@@ -214,6 +229,49 @@ suite "protocols — declarations and dispatch":
       discard runStr("(protocol P (message a [self])) " &
                      "(type T ^props {}) " &
                      "(impl P for T (message a [self] 1) (message b [self] 2))")
+
+  test "protocol defaults fill an explicit impl but do not imply conformance":
+    ck "(protocol P " &
+       "  (message fallback [self] : Str \"default\") " &
+       "  (message chosen [self] : Str \"base\")) " &
+       "(type T ^props {}) " &
+       "(impl P for T (message chosen [self] : Str \"explicit\")) " &
+       "(var t (T)) [(t ~ fallback) (t ~ chosen)]",
+       "[\"default\" \"explicit\"]"
+    expect GeneError:
+      discard runStr("(protocol P (message fallback [self] : Str \"default\")) " &
+                     "(type T ^props {} ^impl [P])")
+    expect GeneError:
+      discard runStr("(protocol P (message fallback [self] : Str \"default\")) " &
+                     "(type T ^props {}) ((T) ~ fallback)")
+
+  test "inherited defaults fill one complete child impl":
+    ck "(protocol A (message a [self] : Str \"a\")) " &
+       "(protocol B ^inherit [A] (message b [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl B for T (message b [self] : Str \"b\")) " &
+       "(var t (T)) [(t ~ A/a) (t ~ B/b)]",
+       "[\"a\" \"b\"]"
+
+  test "universal conformance must be explicit and fully defaulted":
+    ck "(protocol P ^universal true (message value [self] : Int 7)) " &
+       "(type T ^props {} ^impl [P]) ((T) ~ P/value)",
+       "7"
+    expect GeneError:
+      discard runStr("(protocol P ^universal true (message value [self] : Int))")
+    expect GeneError:
+      discard runStr("(protocol P ^universal 1)")
+
+  test "impl signatures must match protocol message signatures":
+    expect GeneError:
+      discard runStr("(protocol P (message value [self x : Int] : Str)) " &
+                     "(type T ^props {}) " &
+                     "(impl P for T " &
+                     "  (message value [self x : Str] : Str \"x\"))")
+    expect GeneError:
+      discard runStr("(protocol P (message value [self] : Str)) " &
+                     "(type T ^props {}) " &
+                     "(impl P for T (message value [self] : Int 1))")
 
   test "deep recursion through a protocol message uses heap frames":
     # Message dispatch resolves to the receiver's impl at the call site and pushes
@@ -411,6 +469,22 @@ suite "types — type-direct messages and sends":
        "(var d (Dog ^name \"Rex\")) " &
        "[(d ~ speak) ((Animal ^name \"Generic\") ~ speak)]",
        "[\"woof\" \"generic\"]"
+
+  test "type-direct overrides preserve the inherited callable signature":
+    ck "(type A ^props {} (message value [self x : Int] : Int x)) " &
+       "(type B ^is A ^props {} " &
+       "  (message value [self x : Int] : Int (+ x 1))) " &
+       "((B) ~ value 2)",
+       "3"
+    expect GeneError:
+      discard runStr("(type A ^props {} " &
+                     "  (message value [self x : Int] : Int x)) " &
+                     "(type B ^is A ^props {} " &
+                     "  (message value [self x : Str] : Int 1))")
+    expect GeneError:
+      discard runStr("(type A ^props {} (message value [self] : Int 1)) " &
+                     "(type B ^is A ^props {} " &
+                     "  (message value [self] : Str \"x\"))")
 
   test "type-direct messages do not satisfy ^impl requirements":
     expect GeneError:

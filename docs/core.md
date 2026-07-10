@@ -1,6 +1,7 @@
 # Gene — Core Type & Protocol Model
 
-**Status:** consolidated design, ready for implementation planning.
+**Status:** normative for the implemented protocol/type-message surface;
+explicitly marked deferred sections are non-normative.
 **Scope:** protocols, messages, dispatch, protocol-local derivation, the two
 inheritance axes (type `^is` and protocol `^inherit`), type-direct messages,
 message resolution / `~` semantics, and dispatch on scalar/singleton
@@ -204,8 +205,8 @@ ancestor. It creates a new qualified message owned by the child protocol:
 ```
 
 `B/do_a` does not override `A/do_a`; both messages are in `B`'s closure and
-both must be implemented unless one is satisfied by a default or separate
-ancestor impl. There is still no override/MRO mechanism for protocol
+both must be implemented by the one complete `impl B`, unless one is
+satisfied by a default. There is still no override/MRO mechanism for protocol
 inheritance. If a default body or implementation needs one of the operations,
 it should call the qualified message (`A/do_a` or `B/do_a`) rather than rely
 on the simple name.
@@ -386,12 +387,11 @@ not override or replace the ancestor default. If a protocol closure contains
 both `A/do_x` and `B/do_x`, each message independently either has an explicit
 impl body, a default body, or a missing-message error.
 
-**Fully-defaulted protocols need no impl at all.** If every message in a
-protocol's transitive closure has a default, the base coherence rule in §1
-("zero visible impls is a missing-implementation error") gets one exception:
-zero visible impls is fine for that protocol, for any type — the defaults
-serve as the effective impl. `Node` (`docs/design.md §1.2-1.3`, "every value
-implements Node") is the existing example this generalizes. See §9.2.
+Defaults do **not** establish conformance. Even when every message has a
+default, a type needs an explicit `impl`; that declaration may have an empty
+body, and registration fills its dispatch entries from the shared defaults.
+This keeps empty/defaulted markers such as `Send` and `Error` from becoming
+accidentally universal. See §9.2 for the explicit universal opt-in.
 
 ---
 
@@ -411,15 +411,12 @@ implements Node") is the existing example this generalizes. See §9.2.
 (type T ^props {^name Str ^value Int} ^derive [B])
 ```
 
-`^derive [B]` runs **all of `B`'s ancestor derives first, in topological
-order, then `B`'s own derive** — equivalent to writing `^derive [A B]`. A
-type author writing `^derive [B]` means "give me everything `B` provides";
-requiring them to also list every ancestor would defeat the point of
-inheritance.
-
-`B`'s derive form cannot call `A`'s derive directly, but can assume `A`'s
-impl is already present by the time it runs — each derive form stays focused
-on its own messages.
+`^derive [B]` runs **only `B`'s derive form**. That form must emit one complete
+`impl B` covering `B`'s full inherited message closure; it may omit a message
+only when the message has a default (§5). Ancestor derives are not run
+implicitly, because the MVP deliberately has no partial-impl composition:
+running `A`'s derive separately would create an overlapping `impl A` instead
+of contributing entries to the one coherent `impl B`.
 
 Per-ancestor options are passed by listing the ancestor explicitly:
 
@@ -427,9 +424,9 @@ Per-ancestor options are passed by listing the ancestor explicitly:
 (type User ^derive [(A ^opt1 "x") (B ^opt2 "y")])
 ```
 
-Explicit listing always overrides automatic transitive expansion; `A`'s
-derive still runs first because it is a topological ancestor, regardless of
-list order.
+Explicit entries run in list order. Listing both `A` and `B` requests two
+separate complete impls and is subject to the ordinary overlap/ambiguity
+rules; it is not a way to compose a partial `impl B`.
 
 **Derive vs. default, restated:** default (§5) is a zero-codegen dispatch
 fallback for messages that don't need per-type knowledge; derive is opt-in,
@@ -506,7 +503,7 @@ to impl-based dispatch lookups. A type declaring `^impl [Renderable]` and
 also carrying a type-direct `render` message still needs an explicit `(impl
 Renderable T …)`; the type-direct message does not satisfy the protocol
 requirement. This keeps the two systems orthogonal: protocols are public
-contracts, type messages are private convenience.
+contracts, type messages are receiver-owned nominal behavior.
 
 ### Inheritance interaction
 
@@ -515,8 +512,11 @@ contracts, type messages are private convenience.
   `Dog`'s own message table, then `Animal`'s — most-derived wins.
   `(Dog/speak d)` and `(d ~ speak)` both reach `Animal/speak` if `Dog`
   doesn't define its own.
-- A child's same-named message shadows the parent's during that same walk —
-  first match wins. No MRO, no virtual dispatch, no error.
+- A child's same-named message overrides the parent's during that same walk —
+  first match wins. The override must preserve the inherited callable
+  category, positional/named/rest/default shape, parameter types, return type,
+  and checked-error row. An incompatible override is rejected at type
+  construction with both declaration locations.
 - Type-direct messages do not auto-create a protocol. If a caller needs a
   protocol for typed boundaries or multi-type dispatch, they write an
   explicit `protocol` + `impl`.
@@ -666,15 +666,21 @@ Consequences accepted with receiver-first:
 form and for tier-2 fallback, but this section supersedes it for unqualified
 sends.
 
-### 9.2 Universal / fully-defaulted protocols
+### 9.2 Explicit universal protocols
 
-A protocol whose entire message closure has default bodies (§5) needs no
-impl at all, for any type — `Node` is the existing example: every value
-already satisfies it structurally. No new tier is needed at the `~`
-resolution level for this: it lives entirely inside ordinary protocol
-dispatch (tier 1 above). When no impl is found for a type, dispatch falls
-through to the default instead of raising a missing-impl error, only when
-the protocol's whole closure is defaulted.
+Universality is never inferred from an empty or fully-defaulted closure. A
+protocol is universal only when declared with `^universal true`, and every
+message in its inherited closure must have a default. Dispatch may then use
+those defaults without a per-type impl:
+
+```gene
+(protocol Inspectable ^universal true
+  (message inspect [self] : Str (to-str self)))
+```
+
+Without the attribute, even a fully-defaulted protocol requires an explicit
+impl. `Node` in `docs/design.md §1.2-1.3` is a built-in type expression and
+namespace, not a protocol and not an exception to this rule.
 
 ### 9.3 Shadowing between the two tiers
 
@@ -754,6 +760,11 @@ implemented and stable, and sit at implementation-order item 13; base
   through a child protocol (`C/do_a` for an inherited unambiguous name)
   resolves through the closure; ambiguous spellings error with the candidate
   list
+- §5 and §9.2 — shared default closures fill omitted entries only after an
+  explicit impl establishes conformance; `^universal true` is the sole
+  no-impl opt-in and requires a fully-defaulted closure
+- §6 — deriving a protocol runs only that protocol's derive form, which must
+  emit one complete impl for the inherited closure
 - §7, §8 — type-direct messages: `compileType` scans `(message ...)` body
   forms into a per-type table (`TypeData.messages`), reached via qualified
   access (`Box/get`) and sends, walking `^is` with most-derived-wins
@@ -779,11 +790,6 @@ implemented and stable, and sit at implementation-order item 13; base
   system at all yet (`protocol` declarations take a simple symbol name, not
   a type-parameter list), so this is blocked on a larger generics feature,
   not just on inheritance (OQ-C)
-- §5 default message bodies (OQ-B) — and, since it depends on defaults,
-  §9.2 universal/fully-defaulted protocols defers with it
-- §6 transitive `^derive` — `ProtocolProto`/`applyProtocolDerive` don't yet
-  resolve or run ancestor derive forms before a child's own; `^derive [B]`
-  today only runs `B`'s own derive form
 - §9.1's compile-time resolution for statically-known receiver types, the
   shadowing lint (OQ-F), and inline caches for dynamic sends — all sends
   currently resolve dynamically at the call site
@@ -796,7 +802,7 @@ implemented and stable, and sit at implementation-order item 13; base
 | # | Question | Recommendation |
 |---|---|---|
 | OQ-A | Is partial impl composition (§3.6 — `impl B for T` omitting messages covered by a separately visible `impl A for T`) worth its coherence-checker complexity for the first slice? | Defer. Require `impl B for T` to restate its full transitive closure in the first cut; revisit once dispatch-table flattening (§4) is proven in production. This is the single highest-risk item in the design, and it's separable from everything else. |
-| OQ-B | Should default message bodies (§5), and the fully-defaulted-protocol relaxation they enable (§9.2), ship in the same slice as base inheritance? | No. Ship after §4 is stable. Coupling a second new completeness-checking path (defaults) to the first one (inheritance flattening) makes it harder to isolate bugs in either. Once added, implement as a dispatch-fallback (§5), not via the derive/overlay path. |
+| OQ-B | Should default message bodies (§5) ship in the same slice as base inheritance? | **Settled.** Defaults ship as shared dispatch fallbacks after closure flattening. They fill an explicit impl and never imply conformance; only `^universal true` permits no-impl dispatch. |
 | OQ-C | Generic protocol inheritance (§3.8): exact type-parameter match only, or allow specialization (`^inherit [(Container Int)]` under a still-generic child)? | Exact match only for MVP. Specialization introduces associated-type-like complexity that doesn't have a clear need yet; revisit if a concrete use case appears. |
 | OQ-D | Should the compiler warn or error on a redundant `^impl [A B]` when `B`'s closure already implies `A`? | Warn, not error. Redundant but harmless; a lint ("`A` is already implied by `B`") is enough. |
 | OQ-E | Defaults (§5) and derive (§6) both feed the impl-completeness checker at compile time. Should they be one compiler pass or two? | Keep them as two separate, ordered passes: resolve default-fallback dispatch entries as a dispatch-table concern (§4/§5), and run derive expansion as a separate codegen concern, with completeness-checking happening only after both have run. A single merged pass makes it harder to tell whether a missing-message error came from a broken default or a broken derive. |

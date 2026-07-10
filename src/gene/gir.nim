@@ -339,9 +339,15 @@ type
 
   ProtocolProto* = ref object
     name*: string
-    messageNames*: seq[string]
+    messages*: seq[ProtocolMessageProto]
     deriveFn*: FunctionProto
     parentCount*: int
+    universal*: bool
+
+  ProtocolMessageProto* = object
+    name*: string
+    fn*: FunctionProto       # declaration signature and optional default body
+    hasDefault*: bool
 
   ImplMessageProto* = object
     name*: string
@@ -922,10 +928,15 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
   if chunk.protocolProtos.len > 0:
     lines.add indent & "protocols:"
     for i, pp in chunk.protocolProtos:
+      var messageNames: seq[string]
+      for message in pp.messages:
+        messageNames.add message.name
       var desc = indent & "  [" & $i & "] " & pp.name &
-        " messages=" & formatNames(pp.messageNames)
+        " messages=" & formatNames(messageNames)
       if pp.deriveFn != nil:
         desc.add " derive=true"
+      if pp.universal:
+        desc.add " universal=true"
       lines.add desc
 
   if chunk.implProtos.len > 0:

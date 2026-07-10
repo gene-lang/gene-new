@@ -3894,6 +3894,14 @@ proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
                                           checksErrors = errorRow.checks,
                                           errorTypeCount = errorRow.count))
 
+proc protocolMessageHasDefault(node: Value): bool =
+  ## A protocol message declaration ends after its parameter vector and
+  ## optional return annotation. Any remaining form is its shared default body.
+  var bodyStart = 2
+  if bodyStart < node.body.len and node.body[bodyStart].isSymbol(":"):
+    bodyStart += 2
+  bodyStart < node.body.len
+
 proc compileType(c: var Compiler, node: Value) =
   ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]
   ##  (message name [self] ...) ...) —
@@ -4153,7 +4161,18 @@ proc compileProtocol(c: var Compiler, node: Value) =
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "protocol requires a name")
   let name = body[0].symVal
-  var messageNames: seq[string]
+  for key in node.props.keys:
+    if key notin ["inherit", "universal"]:
+      raise newException(GeneError,
+        "protocol got unexpected named argument: " & key)
+  let universal =
+    if node.props.hasKey("universal"):
+      if node.props["universal"].kind != vkBool:
+        raise newException(GeneError, "protocol ^universal must be Bool")
+      node.props["universal"].boolVal
+    else:
+      false
+  var messages: seq[ProtocolMessageProto]
   var seen = initTable[string, bool]()
   var deriveFn: FunctionProto
   for i in 1 ..< body.len:
@@ -4170,7 +4189,9 @@ proc compileProtocol(c: var Compiler, node: Value) =
     if seen.hasKey(message):
       raise newException(GeneError, "duplicate protocol message: " & message)
     seen[message] = true
-    messageNames.add message
+    let implProto = implMessageProto(c, body[i])
+    messages.add ProtocolMessageProto(name: message, fn: implProto.fn,
+                                      hasDefault: protocolMessageHasDefault(body[i]))
   var parentCount = 0
   if node.props.hasKey("inherit"):
     let parents = node.props["inherit"]
@@ -4185,9 +4206,10 @@ proc compileProtocol(c: var Compiler, node: Value) =
   # (docs/core.md §1, OQ-I): messages are reached via qualified access
   # (Protocol/name) and sends only.
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
-                                              messageNames: messageNames,
+                                              messages: messages,
                                               deriveFn: deriveFn,
-                                              parentCount: parentCount))
+                                              parentCount: parentCount,
+                                              universal: universal))
   discard c.emit(opMakeProtocol, idx)
   c.emitDefineBinding(name)
 
