@@ -51,7 +51,7 @@
             stdin_tty? read_line read_input refresh_input close_input
             Env Exec OsError])
 (import json [parse stringify JsonError])
-(import str [join split starts_with? ends_with? contains? lower trim])
+(import str [join split starts_with? ends_with? contains? lower trim byte_size])
 (import std/stream [to_stream map filter take into each])
 (import std/parse [parse_int])
 (import Fs [read_text write_text exists? remove list_dir real_path
@@ -89,6 +89,23 @@
 
 (fn flag_enabled? [value : Str]
   (["1" "true" "yes" "on"] ~ contains? (lower (trim value))))
+
+(fn positive_env_int [name : Str, fallback : Int] : Int
+  (try
+    (do
+      (var parsed (parse_int (get_env Env name $"${fallback}")))
+      (if (> parsed 0) parsed fallback))
+  catch * fallback))
+
+# Context limits are deliberately wire-size approximations rather than
+# provider-specific tokenizers. Four JSON bytes per token is shown as a rough
+# planning number; compaction itself is deterministic and item-structural.
+(var context_max_bytes
+  (positive_env_int "GENE_AGENT_CONTEXT_MAX_BYTES" 750000))
+(var context_max_items
+  (positive_env_int "GENE_AGENT_CONTEXT_MAX_ITEMS" 200))
+(var context_keep_turns
+  (positive_env_int "GENE_AGENT_CONTEXT_KEEP_TURNS" 8))
 
 (fn append_all [xs, ys]
   ((to_stream ys) ~ into xs))
@@ -287,7 +304,7 @@
 # One vocabulary shared by the transcript, /trace, the /repl session object,
 # tests, and the gateway: user_input model_item tool_call tool_result
 # agent_text text_delta turn_done tool_registered file_change check
-# confirmation memory error.
+# context_compacted confirmation memory error.
 # -----------------------------------------------------------------------------
 
 (var agent_events (cell []))
@@ -345,6 +362,8 @@
     (when "check"
       $"${e/scope} status=${e/status} ${e/duration_ms}ms: ${(first_line e/command)}")
     (when "confirmation" $"${e/risk} ${e/decision}: ${(first_line e/target)}")
+    (when "context_compacted"
+      $"${e/removed_turns} turns / ${e/removed_items} items removed; ${e/bytes_after} bytes retained")
     (when "tool_registered" $"${e/name} (${e/risk})")
     (when "memory"      (first_line e/text))
     (when "error"       (first_line e/text))
@@ -995,6 +1014,115 @@ State that broader behavior is unverified when no matching successful check ran.
     $"${gene_system_prompt}\n\nWorkspace instructions (root scope):\n${root_instruction_text}")
   nil)
 
+(fn approximate_bytes [value] : Int
+  (match value
+    (when (text : Str) (+ (byte_size text) 2))
+    (when (entries : Map)
+      (do
+        (var total (cell 2))
+        (for [key item] in entries
+          (do
+            (var key_text $"${key}")
+            (total ~ Cell/set
+              (+ (total ~ Cell/get)
+                 (byte_size key_text) 3 (approximate_bytes item)))))
+        (total ~ Cell/get)))
+    (when (values : List)
+      (do
+        (var total (cell 2))
+        (for item in values
+          (total ~ Cell/set
+            (+ (total ~ Cell/get) 1 (approximate_bytes item))))
+        (total ~ Cell/get)))
+    (else
+      (do
+        (var text $"${value}")
+        (byte_size text)))))
+
+(fn approximate_tokens [byte_count : Int] : Int
+  (/ (+ byte_count 3) 4))
+
+(fn context_turns [items]
+  (var turns (cell []))
+  (var current (cell []))
+  (for item in items
+    (if (== item/role "system")
+      nil
+      (if (== item/role "user")
+        (do
+          (if (! (empty? (current ~ Cell/get)))
+            (turns ~ Cell/set
+              (append (turns ~ Cell/get) (current ~ Cell/get)))
+            nil)
+          (current ~ Cell/set [item]))
+        (current ~ Cell/set (append (current ~ Cell/get) item)))))
+  (if (! (empty? (current ~ Cell/get)))
+    (turns ~ Cell/set (append (turns ~ Cell/get) (current ~ Cell/get)))
+    nil)
+  (turns ~ Cell/get))
+
+(fn context_system_items [items]
+  (var systems (cell []))
+  (for item in items
+    (if (&& (== item/role "system")
+            (!= item/context_summary true))
+      (systems ~ Cell/set (append (systems ~ Cell/get) item))
+      nil))
+  (systems ~ Cell/get))
+
+(fn context_stats [items, memory]
+  (var bytes (approximate_bytes items))
+  {^bytes bytes
+   ^approx_tokens (approximate_tokens bytes)
+   ^items (items ~ size)
+   ^retained_turns ((context_turns items) ~ size)
+   ^memory_items (memory ~ size)
+   ^memory_bytes (approximate_bytes memory)
+   ^max_bytes context_max_bytes
+   ^max_items context_max_items
+   ^keep_turns context_keep_turns
+   ^over_limit (|| (> bytes context_max_bytes)
+                    (> (items ~ size) context_max_items))})
+
+(fn compact_context [items, emit]
+  (var before (context_stats items []))
+  (if (!= before/over_limit true)
+    items
+    (do
+      (var turns (context_turns items))
+      (var turn_count (turns ~ size))
+      (var start
+        (if (> turn_count context_keep_turns)
+          (- turn_count context_keep_turns)
+          0))
+      (var compacted (cell (context_system_items items)))
+      (if (> start 0)
+        (compacted ~ Cell/set
+          (append (compacted ~ Cell/get)
+            {^role "system" ^^context_summary
+             ^content $"Context compacted: ${start} older turns were removed. Persistent memory, explicit remembered decisions, and workspace instructions remain in the preceding system content."}))
+        nil)
+      (repeat i in turn_count
+        (if (>= i start)
+          (compacted ~ Cell/set
+            (append_all (compacted ~ Cell/get) turns/%i))
+          nil))
+      (var result (compacted ~ Cell/get))
+      (var after (context_stats result []))
+      (var removed_items (- before/items after/items))
+      (if (> removed_items 0)
+        (emit "context_compacted"
+          {^bytes_before before/bytes
+           ^bytes_after after/bytes
+           ^items_before before/items
+           ^items_after after/items
+           ^removed_items removed_items
+           ^removed_turns start
+           ^retained_turns after/retained_turns
+           ^over_limit after/over_limit})
+        nil)
+      result)))
+
 (enum ResponseItemKind
   assistant_message
   function_call
@@ -1562,9 +1690,10 @@ State that broader behavior is unverified when no matching successful check ran.
 # sink (§9.2): CLI passes its global logger, gateway passes a per-session sink.
 # `turn_done` fires once, at the outermost completion (each terminal branch
 # returns without recursing; the tool_call branch recurses and does not emit it).
-(fn run_turn [transport, input_items, render, render_stream, budget, emit]
+(fn run_turn_ready [transport, input_items, render, render_stream, budget, emit]
+  (var active_items input_items)
   (var streamed (cell false))
-  (var resp (call_model transport input_items
+  (var resp (call_model transport active_items
               (fn [text]
                 (Cell/set streamed true)
                 # Redact at this choke point (transports also redact — belt
@@ -1579,7 +1708,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (emit "error" {^text resp/agent_error})
       (render resp/agent_error)
       (emit "turn_done" {})
-      input_items)
+      active_items)
     (do
       (each (to_stream (response_output_items resp))
         (fn [item] (emit "model_item" {^item item})))
@@ -1594,12 +1723,12 @@ State that broader behavior is unverified when no matching successful check ran.
           # Retain the final assistant message in the conversation so the next
           # turn can see what the agent just said (mirrors the tool_call path,
           # which already appends resp's output items).
-          (append_all input_items (response_output_items resp)))
+          (append_all active_items (response_output_items resp)))
         (if (<= budget 0)
           (do
             (render "[stopped: tool_call budget exhausted]")
             (emit "turn_done" {})
-            input_items)
+            active_items)
           (do
             # Execute tool handlers in this turn fiber. A lazy stream mapper
             # would own a separate generator continuation; cancelling the turn
@@ -1612,11 +1741,16 @@ State that broader behavior is unverified when no matching successful check ran.
                 (render $"  · tool ${c/name} ${c/arguments}")))
             (run_turn transport
                       ((to_stream (outputs ~ Cell/get))
-                        ~ into (append_all input_items (response_output_items resp)))
+                        ~ into (append_all active_items (response_output_items resp)))
                       render
                       render_stream
                       (- budget 1)
                       emit)))))))
+
+(fn run_turn [transport, input_items, render, render_stream, budget, emit]
+  (run_turn_ready transport
+                  (compact_context input_items emit)
+                  render render_stream budget emit))
 
 # Run a CLI turn as a first-class Task so the stable Session projection and
 # future input surfaces have one cancellation target. Gateway sessions use
@@ -1632,11 +1766,14 @@ State that broader behavior is unverified when no matching successful check ran.
   (fn tracked_emit [type : Str, props]
     (if (== type "turn_done") (terminal_emitted ~ Cell/set true) nil)
     (emit type props))
+  (var prepared_items (compact_context input_items tracked_emit))
+  (result ~ Cell/set prepared_items)
   (var task (spawn
     (try
       (do
         (result ~ Cell/set
-          (run_turn transport input_items render render_stream budget tracked_emit))
+          (run_turn_ready transport prepared_items render render_stream budget
+                          tracked_emit))
         (outcome ~ Cell/set "done"))
     catch {^message m}
       (do
@@ -1673,7 +1810,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 (tracked_emit "turn_done" {^failed true}))
               nil)
             (render $"[turn failed: ${(failure_text ~ Cell/get)}]")
-            input_items))
+            prepared_items))
         (else
           (do
             (if (! (terminal_emitted ~ Cell/get))
@@ -1685,7 +1822,7 @@ State that broader behavior is unverified when no matching successful check ran.
               (if (interrupted ~ Cell/get)
                 "[turn cancelled; enter steering to continue]"
                 "[turn cancelled]"))
-            input_items))))
+            prepared_items))))
   ensure
     (do
       (watching ~ Cell/set false)
@@ -1749,7 +1886,15 @@ State that broader behavior is unverified when no matching successful check ran.
    ^api_flavor api_flavor
    ^workspace_root workspace_root
    ^approve_all approve_all
-   ^max_tool_turns max_tool_turns})
+   ^max_tool_turns max_tool_turns
+   ^context_max_bytes context_max_bytes
+   ^context_max_items context_max_items
+   ^context_keep_turns context_keep_turns})
+
+(fn session_config_snapshot [items, memory]
+  (var config (config_snapshot))
+  (config ~ Map/put! "context" (context_stats items memory))
+  config)
 
 (fn save_config []
   (state_put "config" (config_snapshot)))
@@ -2085,7 +2230,8 @@ State that broader behavior is unverified when no matching successful check ran.
                         ^changes file_changes
                         ^evidence agent_evidence
                         ^instructions agent_instruction_records
-                        ^config (config_snapshot)
+                        ^config (session_config_snapshot (items ~ Cell/get)
+                                                        (memory ~ Cell/get))
                         ^workspace workspace_real
                         ^current_task active_turn_task
                         ^resume_requested resume_flag))
@@ -2213,14 +2359,17 @@ State that broader behavior is unverified when no matching successful check ran.
                             (if (== (agent_store ~ Cell/get) nil)
                               "off"
                               agent_state_dir))
-                          (var item_count ((items ~ Cell/get) ~ size))
-                          (var memory_count ((memory ~ Cell/get) ~ size))
+                          (var context
+                            (context_stats (items ~ Cell/get)
+                                           (memory ~ Cell/get)))
+                          (var item_count context/items)
+                          (var memory_count context/memory_items)
                           (var event_count ((agent_events ~ Cell/get) ~ size))
                           (var instruction_count
                             ((agent_instruction_records ~ Cell/get) ~ size))
                           (var guard_label (if (guard_enabled?) "on" "off"))
                           (render_agent_text transcript streaming
-                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\nitems: ${item_count}\nmemory: ${memory_count}\nevents: ${event_count}\ninstructions: ${instruction_count}\nguard: ${guard_label}"))
+                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nguard: ${guard_label}"))
                         (if (== line "/diff")
                           (render_agent_text transcript streaming (file_diff_report))
                           (if (|| (== line "/undo") (starts_with? line "/undo "))

@@ -212,6 +212,11 @@ proc biStrLower(args: openArray[Value]): Value {.nimcall.} =
   requireStr("str/lower", args[0])
   newStr(args[0].strVal.toLowerAscii())
 
+proc biStrByteSize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("str/byte_size", args)
+  requireStr("str/byte_size", args[0])
+  newInt(args[0].strVal.len)
+
 proc biStrStartsWith(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
@@ -5145,6 +5150,7 @@ proc registerStdlibNamespaces(root: Scope) =
   strScope.define("split", newNativeFn("str/split", biStrSplit))
   strScope.define("trim", newNativeFn("str/trim", biStrTrim))
   strScope.define("lower", newNativeFn("str/lower", biStrLower))
+  strScope.define("byte_size", newNativeFn("str/byte_size", biStrByteSize))
   strScope.define("starts_with?", newNativeFn("str/starts_with?",
                                               biStrStartsWith))
   strScope.define("ends_with?", newNativeFn("str/ends_with?", biStrEndsWith))

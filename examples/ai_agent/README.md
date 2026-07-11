@@ -48,6 +48,8 @@ Key environment variables (all optional beyond the auth token):
 | `GENE_AGENT_STATE=<dir>` | persist config/session/memory/events across restarts (`GENE_AGENT_RESUME=0` for a fresh session) |
 | `GENE_AGENT_GUARD=0` | disable the catastrophe guard (design.md §8.5) |
 | `GENE_LIBCURL=<path>` | override native libcurl discovery; curl(1) is used only if the library cannot load |
+| `GENE_AGENT_CONTEXT_MAX_BYTES`, `GENE_AGENT_CONTEXT_MAX_ITEMS` | approximate wire-size/item limits that trigger deterministic compaction |
+| `GENE_AGENT_CONTEXT_KEEP_TURNS` | complete recent turns retained during compaction (default 8) |
 
 Tools auto-approve (single-user posture); the guard denies catastrophic
 commands and asks once for destructive ones.

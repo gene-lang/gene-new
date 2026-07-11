@@ -3366,6 +3366,7 @@ suite "spec — stdlib namespaces from stdlib plan":
                "[(starts_with? \"hello\" \"he\") (ends_with? \"hello\" \"lo\") " &
                " (contains? \"hello\" \"xyz\")]",
                "[true true false]")
+    check_eval("(import str [byte_size]) (byte_size \"Aé\")", "3")
 
   test "html/escape neutralizes markup and quote characters":
     check_eval("(import html [escape]) " &

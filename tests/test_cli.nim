@@ -927,6 +927,91 @@ suite "cli — gene run":
     check restored.exitCode == 0
     check restored.output.count("check command status=") == 3
 
+  test "ai agent compacts context without splitting tool pairs and persists it":
+    buildGeneCli()
+    let stateDir = cliDir / "agent-context-state"
+    if dirExists(stateDir): removeDir(stateDir)
+    let tui = "./tui.gene"
+    let writer = "examples/ai_agent/context_compact_writer_test.gene"
+    let reader = "examples/ai_agent/context_compact_reader_test.gene"
+    defer:
+      for path in [writer, reader]:
+        if fileExists(path): removeFile(path)
+    writeFile(writer, """
+(import [compact_context init_agent_state save_agent_state emit_event!]
+        from "TUI_PATH")
+(var items
+  [{^role "system" ^content "instructions + remembered decision: keep API v2"}
+   {^role "user" ^content "old-intent"}
+   {^type "function_call" ^name "read_file" ^call_id "old-call" ^arguments "{}"}
+   {^type "function_call_output" ^call_id "old-call" ^output "old-out"}
+   {^type "message" ^role "assistant"
+    ^content [{^type "output_text" ^text "old-answer"}]}
+   {^role "user" ^content "recent-intent"}
+   {^type "function_call" ^name "read_file" ^call_id "new-call" ^arguments "{}"}
+   {^type "function_call_output" ^call_id "new-call" ^output "new-out"}
+   {^type "message" ^role "assistant"
+    ^content [{^type "output_text" ^text "recent-answer"}]}])
+(init_agent_state)
+(var compacted (compact_context items emit_event!))
+(save_agent_state compacted "saved" ["keep API v2"])
+(println "wrote")
+""".replace("TUI_PATH", tui))
+    writeFile(reader, """
+(import [init_agent_state load_session restore_events agent_events context_stats
+         config_snapshot]
+        from "TUI_PATH")
+(import json [stringify])
+(init_agent_state)
+(var saved (load_session))
+(restore_events)
+(println (stringify {^items saved/items
+                     ^events (agent_events ~ Cell/get)
+                     ^config (config_snapshot)
+                     ^stats (context_stats saved/items ["keep API v2"])}))
+""".replace("TUI_PATH", tui))
+    let contextEnv = "GENE_AGENT_STATE=" & shellQuote(stateDir) &
+      " GENE_AGENT_CONTEXT_MAX_BYTES=1 GENE_AGENT_CONTEXT_MAX_ITEMS=3 " &
+      "GENE_AGENT_CONTEXT_KEEP_TURNS=1 "
+    let wrote = execCmdOnce(contextEnv & shellQuote(geneExe) & " run " &
+                            shellQuote(writer))
+    if wrote.exitCode != 0:
+      checkpoint wrote.output
+    check wrote.exitCode == 0
+    let restoredContext = execCmdOnce(
+      "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
+      shellQuote(geneExe) & " run " & shellQuote(reader))
+    if restoredContext.exitCode != 0:
+      checkpoint restoredContext.output
+    check restoredContext.exitCode == 0
+    check "instructions + remembered decision: keep API v2" in restoredContext.output
+    check "recent-intent" in restoredContext.output
+    check "new-call" in restoredContext.output
+    check "new-out" in restoredContext.output
+    check "old-intent" notin restoredContext.output
+    check "old-call" notin restoredContext.output
+    check "old-out" notin restoredContext.output
+    check "\"type\":\"context_compacted\"" in restoredContext.output
+    check "\"removed_turns\":1" in restoredContext.output
+    check "\"retained_turns\":1" in restoredContext.output
+    check "\"bytes\":" in restoredContext.output
+    check "\"context_max_bytes\":750000" in restoredContext.output
+    check "\"context_max_items\":200" in restoredContext.output
+    check "\"context_keep_turns\":8" in restoredContext.output
+    let status = execCmdOnce(
+      "printf '/status\n/repl\nsession/config\nquit\n/quit\n' | " &
+      "env OPENAI_AUTH_TOKEN=dummy " &
+      "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
+      "GENE_AGENT_CONTEXT_MAX_BYTES=1234 GENE_AGENT_CONTEXT_MAX_ITEMS=12 " &
+      "GENE_AGENT_CONTEXT_KEEP_TURNS=2 " & shellQuote(geneExe) &
+      " run examples/ai_agent/tui.gene")
+    check status.exitCode == 0
+    check "context:" in status.output
+    check "context limits: 1234 bytes, 12 items, keep 2 turns" in status.output
+    check "memory: 1 items" in status.output
+    check "^context {^bytes" in status.output
+    check "^context_max_bytes 1234" in status.output
+
   test "ai agent loads hierarchical AGENTS instructions safely":
     buildGeneCli()
     let workspace = cliDir / "agents-workspace"

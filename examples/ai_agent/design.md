@@ -651,7 +651,7 @@ general plugin system.
 ### 9.2 Authoritative event log and `/trace`
 
 CLI and gateway share one append-only, versioned event vocabulary. Shipped
-types (`file-change` and `check` arrive with slice B's evidence work):
+types include attributable changes, verification checks, and compaction:
 
 ```gene
 {^v 1 ^type "user_input"  ^text "..."}
@@ -663,6 +663,9 @@ types (`file-change` and `check` arrive with slice B's evidence work):
 {^v 7 ^type "turn_done"   ^text "..."}          ; exactly one per turn
 {^v 8 ^type "confirmation" ^risk "destructive" ^decision "deny" ^target "..."}
 {^v 9 ^type "tool_registered" ^name "..." ^risk "read"}
+{^v 10 ^type "file_change" ^id 1 ^path "src/x.gene" ^op "edit" ...}
+{^v 11 ^type "check" ^command "nimble test" ^status 0 ^verified true ...}
+{^v 12 ^type "context_compacted" ^removed_turns 3 ^retained_turns 8 ...}
 ```
 
 `run-turn` and `run-tool-call` write through an explicit **emit sink**: the CLI
@@ -720,8 +723,8 @@ forward priority order.
    mutations (`add-tool`, `remember`, `subscribe`, `trace`, `resume`) (§9.1).
 3. **Done.** CLI and gateway emit one versioned event vocabulary — `user_input`,
    `model_item`, `tool_call`, `tool_result`, `agent_text`, `text_delta`,
-   `turn_done`, `tool_registered`, `confirmation`, `memory`, `error` (§9.2,
-   §12.3).
+   `turn_done`, `tool_registered`, `file_change`, `check`,
+   `context_compacted`, `confirmation`, `memory`, `error` (§9.2, §12.3).
 4. **Done.** `/trace` filters the log by `type`/`tool`/`path`/`turn`/`from`/`to`
    (a bare token is shorthand for `type=`); the `session` object exposes the
    same filters.
@@ -740,14 +743,18 @@ the same turn. It requires no MCP, worktrees, browser, native TLS, or subagents.
 
 Choose exact ordering from dogfood pain:
 
-- **Partial:** tracked turn Tasks, subprocess termination, `Session/cancel`,
-  gateway busy state, and `POST /api/sessions/:id/cancel` are shipped. Terminal
-  Ctrl-C cancellation and steering remain;
-- `/diff`, targeted `/undo`, and preservation of pre-existing changes;
-- structured command/test/benchmark evidence and explicit unverified claims;
-- context visibility and compaction when long sessions actually lose intent;
+- **Done:** tracked turn Tasks, subprocess termination, `Session/cancel`,
+  gateway busy state, `POST /api/sessions/:id/cancel`, and terminal Ctrl-C
+  cancellation/steering;
+- **Done:** `/diff`, targeted `/undo`, and preservation of pre-existing changes;
+- **Done:** structured command/test/benchmark evidence and explicit unverified
+  claims;
+- **Done:** approximate context visibility plus deterministic whole-turn
+  compaction preserving system/workspace instructions, remembered decisions,
+  recent turns, and tool-call/output integrity;
 - prompt/TUI improvements where the current UI causes friction;
-- hierarchical `AGENTS.md` loading for work outside the Gene repository.
+- **Done:** hierarchical `AGENTS.md` loading for work outside the Gene
+  repository.
 
 ### 10.4 Slice C — keep repeated workflows
 

@@ -175,6 +175,7 @@ String utilities needed by HTML and HTTP:
 - `split : Str, Str -> (List Str)`
 - `trim : Str -> Str`
 - `lower : Str -> Str`
+- `byte_size : Str -> Int` (UTF-8 bytes; allocation-free)
 - `starts_with? : Str, Str -> Bool`
 - `ends_with? : Str, Str -> Bool`
 - `contains? : Str, Str -> Bool`
