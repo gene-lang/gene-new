@@ -63,14 +63,14 @@ suite "protocols — declarations and dispatch":
 
   test "ToStr customizes display conversion":
     ck "(type User ^props {^name Str}) " &
-       "(impl ToStr for User (message to-str [self] : Str self/name)) " &
+       "(impl ToStr for User (message to_str [self] : Str self/name)) " &
        "(var user (User ^name \"Ada\")) " &
-       "[(to-str user) ($ \"hello \" user) $\"hi ${user}\"]",
+       "[(to_str user) ($ \"hello \" user) $\"hi ${user}\"]",
        "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
     ck "(type Bad ^props {}) " &
-       "(impl ToStr for Bad (message to-str [self] 1)) " &
-       "(try (to-str (Bad)) catch (TypeError ^where w) w)",
-       "\"ToStr/to-str\""
+       "(impl ToStr for Bad (message to_str [self] 1)) " &
+       "(try (to_str (Bad)) catch (TypeError ^where w) w)",
+       "\"ToStr/to_str\""
 
   test "namespace protocol messages find receiver-scope impls":
     ck "(ns model " &

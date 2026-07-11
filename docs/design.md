@@ -254,9 +254,9 @@ $"a ${x}"    => ($ "a " x)
 /user/name   => (select user name)
 x/user/name  => (x ~ (select user name))
 /user/%field => (select user %field)
-#[a b]       => (immutable-list a b)
-#{^a v}      => (immutable-prop-map ^a v)
-#(h ^p v x) => (immutable-node h ^p v x)
+#[a b]       => (immutable_list a b)
+#{^a v}      => (immutable_prop_map ^a v)
+#(h ^p v x) => (immutable_node h ^p v x)
 ```
 
 Reader literal/comment dispatch examples:
@@ -304,7 +304,7 @@ Slash is also the reader spelling for qualified names in static contexts such as
 
 ```gene
 (import std/stream [map, filter])       # built-in / already-loaded namespace path
-(import [map : stream-map] from "std/stream") # module path string
+(import [map : stream_map] from "std/stream") # module path string
 C/Int32
 Stream/next
 Color/red
@@ -521,13 +521,13 @@ result is a depth-one template you can store, pass, and force later.
 
 Force a deferred template with `eval`, naming the environment its holes resolve
 against. `eval` always requires an explicit `^in` and never captures caller
-locals (§11.1), so the environment is stated: `this-mod` carries the current
+locals (§11.1), so the environment is stated: `this_mod` carries the current
 module's bindings, and `^bindings` supplies values that are not module-level
 (such as function locals).
 
 ```gene
 (var name "Gene")
-(eval t ^in (env ^module this-mod))          # => (div "Gene")   ; module-level name
+(eval t ^in (env ^module this_mod))          # => (div "Gene")   ; module-level name
 (eval t ^in (env ^bindings {^name name}))    # => (div "Gene")   ; explicit value
 ```
 
@@ -602,7 +602,7 @@ Syntax calls use a `SyntaxCall` envelope:
   ^body  [Node...])
 
 (protocol SyntaxCallable
-  (message apply_syntax [callee : Self, call : SyntaxCall, caller-env : CallerEnv] : Any))
+  (message apply_syntax [callee : Self, call : SyntaxCall, caller_env : CallerEnv] : Any))
 ```
 
 `Fn`, `Type`, `Selector`, protocol messages, native functions, and user-defined callable values implement `Callable`. `Fn!` values created by `fn!` implement `SyntaxCallable`.
@@ -663,7 +663,7 @@ Message sends use `~`:
 expression callee that is an `Fn!`/`SyntaxCallable` is rejected immediately
 after the receiver/callee is resolved and before any remaining send argument
 is evaluated. The recoverable error is `CallKindError`, a subtype of
-`TypeError`, with `^where`, `^expected`, `^actual`, and `^actual-value`
+`TypeError`, with `^where`, `^expected`, `^actual`, and `^actual_value`
 diagnostics. Syntax callables are invoked only in ordinary call-head position;
 send syntax is never reinterpreted as a syntax call.
 
@@ -855,8 +855,8 @@ If an evaluated `%` segment is callable, it is used as a stage. If it is not cal
 Static symbol/string/index segments and explicit `key` wrappers are pure
 selector data. Callable stages, call-stage nodes, and `~message` path segments
 are executable/effectful. Effectful selectors are not serializable and must not
-be admitted to pure selector caches. Functional update APIs such as `assoc-in`
-and `update-in` accept only pure scalar/key segments and reject executable
+be admitted to pure selector caches. Functional update APIs such as `assoc_in`
+and `update_in` accept only pure scalar/key segments and reject executable
 stages before invoking them.
 
 Selector chains propagate `void`:
@@ -1085,8 +1085,8 @@ A type may additionally define one constructor with `ctor`:
   ^props {^x F64 ^y F64}
 
   (ctor [x : F64, y : F64]
-    (self ~ Node/set-prop! `x x)
-    (self ~ Node/set-prop! `y y)))
+    (self ~ Node/set_prop! `x x)
+    (self ~ Node/set_prop! `y y)))
 ```
 
 Constructor invocation uses `new`:
@@ -1111,8 +1111,8 @@ evaluate the type expression to a Type
 ```
 
 There is no `init` special form. The constructor mutates the pre-created `self`
-instance using explicit mutable node/type APIs such as `Node/set-prop!`,
-`Node/set-body!`, `Node/push-body!`, or future field-specific setters. The ctor
+instance using explicit mutable node/type APIs such as `Node/set_prop!`,
+`Node/set_body!`, `Node/push_body!`, or future field-specific setters. The ctor
 body result is ignored; construction returns the validated `self` instance unless
 the ctor raises a recoverable error or panics.
 
@@ -1123,9 +1123,9 @@ A constructor uses normal function-style argument matching:
   ^props {^name Str ^age Int ^active Bool}
 
   (ctor [name : Str, ^age : Int = 0, ^active : Bool = true]
-    (self ~ Node/set-prop! `name name)
-    (self ~ Node/set-prop! `age age)
-    (self ~ Node/set-prop! `active active)))
+    (self ~ Node/set_prop! `name name)
+    (self ~ Node/set_prop! `age age)
+    (self ~ Node/set_prop! `active active)))
 
 (new User "Ada" ^age 37)
 (User ^name "Ada" ^age 37 ^active true) # direct data construction
@@ -1140,7 +1140,7 @@ Constructors may declare checked errors:
   (ctor [n : Int]
     ^errors [ValidationError]
     (if (&& (>= n 0) (<= n 65535))
-      (self ~ Node/set-prop! `value n)
+      (self ~ Node/set_prop! `value n)
       (fail (ValidationError ^message "invalid port")))))
 
 (new Port 8080)
@@ -1174,8 +1174,8 @@ parent constructor is not called automatically:
   ^props {^breed Str}
 
   (ctor [name : Str, breed : Str]
-    (self ~ Node/set-prop! `name name)
-    (self ~ Node/set-prop! `breed breed)))
+    (self ~ Node/set_prop! `name name)
+    (self ~ Node/set_prop! `breed breed)))
 ```
 
 A partially constructed `self` carries an in-progress construction marker and
@@ -1184,8 +1184,8 @@ actor/channel transfer, global or container storage, native rooting, escaping
 closure capture, and error/panic publication. Transient helper returns remain
 inside the constructor's dynamic extent and cannot cross any durable boundary.
 Only the constructor's
-explicit node mutation operations (`Node/set-prop!`, `Node/set-body!`, and
-`Node/push-body!`) may target it; arbitrary receiver dispatch is rejected.
+explicit node mutation operations (`Node/set_prop!`, `Node/set_body!`, and
+`Node/push_body!`) may target it; arbitrary receiver dispatch is rejected.
 After schema validation succeeds, the marker is cleared before `new` returns.
 If construction fails, normal error unwinding and `ensure` cleanup run, and no
 partial instance is registered or exposed. A ctor's declared `^errors` form
@@ -2175,12 +2175,12 @@ Protocol-local derive:
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to-str self/name)))))
+         (to_str self/name)))))
 ```
 
 `derive` is a protocol-local compile-time special form. It receives the target `Type` value and the request node. It returns one or more declarations, usually an `impl`.
 
-Generated declarations are placed in a compiler-owned overlay. Source modules are not mutated. Generated nodes receive provenance meta such as `@derived-by`, `@derived-for`, and `@derived-from`.
+Generated declarations are placed in a compiler-owned overlay. Source modules are not mutated. Generated nodes receive provenance meta such as `@derived_by`, `@derived_for`, and `@derived_from`.
 
 Any module may declare an implementation for any protocol and receiver type; an impl may live anywhere, not only in the type's or protocol's module. **Module implementations are global after successful module activation:** while a module runs, its impls are staged in its module scope. At successful completion the complete batch is conflict-checked and published atomically to the shared application root. A failed or conflicting module publishes none of its staged impls. Once published, they are visible everywhere, including in modules that never imported the impl's defining module. Impls are not value bindings — they cannot be renamed or selectively imported; loading the defining module is what activates them. Coherence is global: at most one impl may exist for a given `(protocol, receiver)` pair; a pair with no active impl is a missing-implementation error at the use site. Generated module implementations follow the same rule, and MVP rejects overlapping generic implementations that could both apply to the same concrete receiver type.
 
@@ -2279,35 +2279,35 @@ This split avoids making full Lisp-style macros the default abstraction while st
 
 ```gene
 (fn! unless! [cond, body...]
-  (if (! (eval cond ^in caller-env))
-    (eval `(do %body...) ^in caller-env)
+  (if (! (eval cond ^in caller_env))
+    (eval `(do %body...) ^in caller_env)
     nil))
 ```
 
 A `fn!` value implements `SyntaxCallable` (§3). Its parameter vector matches the raw syntax nodes in the call envelope. Inside a `fn!` body, the implementation provides read-only bindings:
 
 ```text
-caller-env  CallerEnv   # borrowed; valid only during this syntax call
-syntax-call SyntaxCall  # the full raw call envelope, including props/site
+caller_env  CallerEnv   # borrowed; valid only during this syntax call
+syntax_call SyntaxCall  # the full raw call envelope, including props/site
 ```
 
-The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly with the live `caller-env`, or explicitly snapshot selected authority into a durable `Env`.
+The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly with the live `caller_env`, or explicitly snapshot selected authority into a durable `Env`.
 
 Like macros, names bound to `fn!` values should keep the `!` suffix by convention (`unless!`); this is not enforced.
 
-`caller-env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling a `fn!` implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
+`caller_env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling a `fn!` implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
 
-- `caller-env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
-- `caller-env` is a read-only view for name resolution. Code evaluated `^in caller-env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
+- `caller_env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
+- `caller_env` is a read-only view for name resolution. Code evaluated `^in caller_env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
 - `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
-- Durable capture is explicit: `(Env/snapshot caller-env ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
+- Durable capture is explicit: `(Env/snapshot caller_env ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
 - Because calling an unknown value may temporarily hand it your environment, security-sensitive code should type callees to exclude `Fn!`. A syntax callable evaluating untrusted syntax should first create a purpose-built snapshot and apply the evaluation policies described in §11.5.
 
 For example, this durable environment contains `config` but not `secret`:
 
 ```gene
 (fn! capture-config! []
-  (Env/snapshot caller-env ["config"]))
+  (Env/snapshot caller_env ["config"]))
 ```
 
 `fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and a fresh borrowed `CallerEnv`. The compilation cost model for this dispatch is specified in §3.
@@ -2351,7 +2351,7 @@ Macros are compile-time rewriters, not runtime values. This is stricter than spe
 Macros are module exports selected through top-level `from "path"` import lists and honor selection aliases:
 
 ```gene
-(import [when! : unless-not!] from "./control")
+(import [when! : unless_not!] from "./control")
 ```
 
 Because expansion happens while the importer compiles, a top-level
@@ -2391,7 +2391,7 @@ Protocol-local `derive` remains a controlled compile-time declaration generator.
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to-str self/name)))))
+         (to_str self/name)))))
 ```
 
 `derive` is not a general fexpr. It runs in the compiler's derivation phase and is allowed to add declarations to a compiler-owned overlay. Source modules are not mutated.
@@ -2468,11 +2468,11 @@ The core evaluation form is:
 Normal programs must supply `^in`. A REPL may use its current session environment implicitly. `eval` accepts a node, not source text. Parsing remains a separate operation:
 
 ```gene
-(var node (read-one "(+ 1 2)"))
+(var node (read_one "(+ 1 2)"))
 (eval node ^in e)
 ```
 
-A convenience `eval-string` function may compose parsing and evaluation, but it is not the primitive operation.
+A convenience `eval_string` function may compose parsing and evaluation, but it is not the primitive operation.
 
 `eval` uses the normal compilation pipeline rather than a second interpreter:
 
@@ -2527,11 +2527,11 @@ An evaluation policy may impose execution limits and privileged-feature controls
 ```gene
 (var policy
   (EvalPolicy
-    ^max-steps 1000000
-    ^max-memory-mb 128
-    ^timeout-ms 5000
-    ^allow-ffi false
-    ^allow-native-compile false))
+    ^max_steps 1000000
+    ^max_memory_mb 128
+    ^timeout_ms 5000
+    ^allow_ffi false
+    ^allow_native_compile false))
 
 (var e
   (env
@@ -2578,18 +2578,18 @@ Immutable containers support persistent functional updates with structural shari
 (var xs  #[1 2 3])
 (var xs2 (xs ~ List/assoc 1 20))
 
-(var user2 (assoc-in user /address/city "Raleigh"))
-(var user3 (update-in user /score (fn [x] (+ x 1))))
+(var user2 (assoc_in user /address/city "Raleigh"))
+(var user3 (update_in user /score (fn [x] (+ x 1))))
 ```
 
-`assoc-in` and `update-in` never mutate their input. They return a new root and preserve the root's mutable/immutable class unless an API explicitly requests another representation. Missing intermediate paths are errors unless the chosen operation explicitly permits construction. Writing `void` into a prop/map removes it; writing `void` into a list/body position stores `nil`.
+`assoc_in` and `update_in` never mutate their input. They return a new root and preserve the root's mutable/immutable class unless an API explicitly requests another representation. Missing intermediate paths are errors unless the chosen operation explicitly permits construction. Writing `void` into a prop/map removes it; writing `void` into a list/body position stores `nil`.
 
 Mutable containers use explicit mutating operations, conventionally named with `!`:
 
 ```gene
 (xs ~ List/set! 1 20)
 (m ~ Map/put! key value)
-(n ~ Node/set-prop! name value)
+(n ~ Node/set_prop! name value)
 ```
 
 Selectors remain read-only paths; Gene does not overload selector access with hidden mutation.
@@ -2627,12 +2627,12 @@ Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed 
 `AtomicCell` is the explicit shared-memory escape hatch:
 
 ```gene
-(var state (atomic-cell 0))
+(var state (atomic_cell 0))
 
 (state ~ AtomicCell/load)
 (state ~ AtomicCell/store 1)
 (state ~ AtomicCell/swap 2)
-(state ~ AtomicCell/compare-exchange 2 3)
+(state ~ AtomicCell/compare_exchange 2 3)
 ```
 
 Operations are linearizable. The runtime may use machine atomics for supported immediate types and a lock-backed representation for general Gene values. `AtomicCell T` may implement `Send` when `T` is sendable and the implementation provides the required GC barriers.
@@ -2648,7 +2648,7 @@ An immutable value is hashable only when every value participating in its struct
 Library operations may provide explicit conversion:
 
 ```gene
-(freeze-shallow value)
+(freeze_shallow value)
 (freeze value)       # recursive validation/freezing
 (thaw value)         # mutable copy
 ```
@@ -2743,8 +2743,8 @@ Conceptual operations:
 ```gene
 send      : [(Channel T), T] -> Nil ^errors [ChannelClosed]
 recv      : [(Channel T)] -> T ^errors [ChannelClosed]
-try-send  : [(Channel T), T] -> Bool
-try-recv  : [(Channel T)] -> (TryRecv T)
+try_send  : [(Channel T), T] -> Bool
+try_recv  : [(Channel T)] -> (TryRecv T)
 close     : [(Channel T)] -> Nil
 ```
 
@@ -2868,13 +2868,13 @@ Actor mailboxes are bounded by default.
 
 ```gene
 (counter ~ actor/send (Increment ^amount 5))
-(counter ~ actor/try-send (Increment ^amount 1))
+(counter ~ actor/try_send (Increment ^amount 1))
 ```
 
 Conceptual behavior:
 
 - `actor/send` suspends until mailbox capacity is available and raises `ActorClosed` if the actor has stopped;
-- `actor/try-send` returns immediately with `Bool`;
+- `actor/try_send` returns immediately with `Bool`;
 - a value must satisfy both the actor's message type and `Send` before entering the mailbox.
 
 Request/reply uses an explicit one-shot reply capability:
@@ -2915,7 +2915,7 @@ Long-lived actor trees use supervisors:
 (supervisor
   ^strategy restart
   ^events failures
-  ^dead-letter dead
+  ^dead_letter dead
   (actor/spawn
     ^init make-state
     ^handle worker-handler))
@@ -2927,29 +2927,29 @@ MVP supervision strategies:
 - `stop`: terminate the actor and close its mailbox;
 - `escalate`: report failure to the parent supervisor.
 
-`restart` supervisors accept a restart budget: `^max-restarts N` stops the
+`restart` supervisors accept a restart budget: `^max_restarts N` stops the
 actor instead of restarting once N restarts have been consumed, and
-`^within-ms W` makes that budget a sliding window — the count resets when W
+`^within_ms W` makes that budget a sliding window — the count resets when W
 milliseconds pass since the window opened. Omitted or non-positive values mean
-an unlimited budget; `^max-restarts` alone bounds restarts over the actor's
+an unlimited budget; `^max_restarts` alone bounds restarts over the actor's
 lifetime. Stopping on an exhausted budget behaves exactly like the `stop`
 strategy for the failing message.
 
 A recoverable error escaping an actor handler stops that actor and produces a failure event for its supervisor. A panic also terminates the actor/task and is escalated. Native memory corruption or an unsafe foreign crash remains process-fatal.
 
-MVP supervisors may be given `^events failure-channel`. The runtime emits
+MVP supervisors may be given `^events failure_channel`. The runtime emits
 `ActorFailure` values to that channel on actor handler failure without blocking
 the failing actor path. An event includes the actor reference, failed message,
 error value, display message, panic flag, and active supervisor strategy. A
-supervisor may also be given `^dead-letter channel`; when the primary event
+supervisor may also be given `^dead_letter channel`; when the primary event
 channel is closed, full, or rejects the event, the runtime attempts to write the
 same `ActorFailure` to the dead-letter channel. A full sink without an available
 fallback queues the failure in one application-owned FIFO with capacity 64 and
 retries when a channel receive frees space. The queue allocates no task or fiber
 per notification. On overflow the newest notification is dropped; a
-closed/rejected queued sink is also dropped. `Runtime/gc-stats` exposes
-`supervisor-retry-pending`, `supervisor-retry-capacity`,
-`supervisor-retry-high-water`, and `supervisor-retry-drops`. Failure handling
+closed/rejected queued sink is also dropped. `Runtime/gc_stats` exposes
+`supervisor_retry_pending`, `supervisor_retry_capacity`,
+`supervisor_retry_high_water`, and `supervisor_retry_drops`. Failure handling
 and the original actor error remain independent of notification delivery.
 
 Restart policy must define whether queued messages are retained, discarded, or moved to a dead-letter channel. The MVP default should discard the message that caused failure and retain later queued messages only for explicitly restartable actors.
@@ -2998,7 +2998,7 @@ MVP concurrency includes:
 - bounded typed `(Channel T)`;
 - `Send` boundary checks;
 - sequential typed actors with bounded mailboxes;
-- `send`, `try-send`, and request/reply;
+- `send`, `try_send`, and request/reply;
 - actor scope ownership and basic supervision.
 
 Deferred features include distributed actors, transparent remote references, work stealing across processes, selectable channel operations, ownership-transfer typing, transactional memory, reentrant actors, and stronger live-migration policies.
@@ -3214,14 +3214,14 @@ Rules:
 Each module body receives a compiler-provided lexical binding:
 
 ```gene
-this-mod : Module
+this_mod : Module
 ```
 
-`this-mod` is an ordinary read-only binding created by the module loader. It is not selector magic and is not imported from another module. It may be used with ordinary selectors and reflection helpers:
+`this_mod` is an ordinary read-only binding created by the module loader. It is not selector magic and is not imported from another module. It may be used with ordinary selectors and reflection helpers:
 
 ```gene
-this-mod/%declarations
-(this-mod ~ Module/path)
+this_mod/%declarations
+(this_mod ~ Module/path)
 ```
 
 Top-level execution rules:
@@ -3297,7 +3297,7 @@ Built-in / namespace imports:
 
 ```gene
 (import std/stream [map, filter, into])
-(import std/stream [map : stream-map, filter])
+(import std/stream [map : stream_map, filter])
 (import std/stream ^as stream)
 ```
 
@@ -3383,7 +3383,7 @@ specific cycle classes described above.
 A module exposes declarations as a stream:
 
 ```gene
-this-mod/%declarations
+this_mod/%declarations
 ```
 
 `declarations` is an ordinary imported/global function stage:
@@ -3395,9 +3395,9 @@ declarations : Module -> (Stream Node Never)
 Users can filter/map declarations with normal stream functions:
 
 ```gene
-(this-mod/%declarations
+(this_mod/%declarations
   ~ filter routed?
-  ; ~ map route-entry
+  ; ~ map route_entry
   ; ~ into {})
 ```
 
@@ -3426,7 +3426,7 @@ Module/meta
 Module/declarations
 ```
 
-`this-mod` is the module's loader-created binding for the current module value. Symbol resolution inside a module is otherwise explicit. A helper such as `resolve` should be defined as either runtime module/namespace binding lookup or compile-time module lookup; it is not implicit magic.
+`this_mod` is the module's loader-created binding for the current module value. Symbol resolution inside a module is otherwise explicit. A helper such as `resolve` should be defined as either runtime module/namespace binding lookup or compile-time module lookup; it is not implicit magic.
 
 ### 15.8 Eval integration
 
@@ -3935,7 +3935,7 @@ The v1 VM direction is retained and extended with mixed execution:
 - an M:N cooperative task scheduler with GC-aware suspension frames and worker-thread safepoints.
 
 Runtime diagnostics may expose read-only GC/RC counters such as
-`Runtime/gc-stats` so optimization and custom-GC work can be tested without
+`Runtime/gc_stats` so optimization and custom-GC work can be tested without
 exposing object layouts.
 
 `Any` uses dynamic representation. Type annotations enable optimization later: sealed layouts, unboxed fields, and specialized generic instantiations are post-MVP optimizations.
@@ -3980,7 +3980,7 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 4. Callable-first evaluator: `var`, `set`, `do`, `if`, `fn`, `Call`, `Callable`, and `~`.
 5. First-class `Env`: immutable binding maps, parent chains, module/import resolution, capability/policy fields, and tracing-GC integration.
 6. Native call foundation: `NativeFn`, opaque runtime API, native registration, rooting contract, and `gene_call`-style VM trampoline.
-7. Selectors and functional updates: `/...`, `(select ...)`, `%` stages, missing/`void`, `assoc-in`, and `update-in`.
+7. Selectors and functional updates: `/...`, `(select ...)`, `%` stages, missing/`void`, `assoc_in`, and `update_in`.
 8. Streams and generators: `(Stream T E)`, `yield`, `next`/`peek`/`has_next`, declaration streams, and parser stream shape.
 9. Cooperative task runtime: `(Task T E)`, `scope`, `spawn`, `await`, cancellation, timers, safepoints, and async-I/O suspension hooks.
 10. Pattern/destructuring engine: `match`, `var`, `for`, and `catch`.

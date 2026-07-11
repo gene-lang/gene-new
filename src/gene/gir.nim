@@ -113,7 +113,7 @@ type
     opCheckType
     opDeclareType
     opSyntaxCall  # pop raw call node + fn! callee, apply the syntax call (design §3/§11.1)
-    opSyntaxGuard # if the callee on top is a fn!, syntax-call the const node and jump
+    opSyntaxGuard # if the callee on top is a fn!, syntax_call the const node and jump
     opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
 
   Instruction* = object
@@ -503,23 +503,23 @@ proc formatNames(names: openArray[string]): string =
 proc formatNativeOp(op: NativeCompileOp): string =
   case op
   of ncoNone: "none"
-  of ncoIntIdentity: "int-identity"
-  of ncoIntAdd: "int-add"
-  of ncoIntSub: "int-sub"
-  of ncoIntMul: "int-mul"
-  of ncoI64Identity: "i64-identity"
-  of ncoI64Add: "i64-add"
-  of ncoI64Sub: "i64-sub"
-  of ncoI64Mul: "i64-mul"
-  of ncoF64Identity: "f64-identity"
-  of ncoF64Add: "f64-add"
-  of ncoF64Sub: "f64-sub"
-  of ncoF64Mul: "f64-mul"
+  of ncoIntIdentity: "int_identity"
+  of ncoIntAdd: "int_add"
+  of ncoIntSub: "int_sub"
+  of ncoIntMul: "int_mul"
+  of ncoI64Identity: "i64_identity"
+  of ncoI64Add: "i64_add"
+  of ncoI64Sub: "i64_sub"
+  of ncoI64Mul: "i64_mul"
+  of ncoF64Identity: "f64_identity"
+  of ncoF64Add: "f64_add"
+  of ncoF64Sub: "f64_sub"
+  of ncoF64Mul: "f64_mul"
 
 proc formatAotFrameKind(kind: AotFrameKind): string =
   case kind
   of afkNone: "none"
-  of afkTypedNative: "typed-native"
+  of afkTypedNative: "typed_native"
 
 proc formatTaskFrameKind(kind: TaskFrameKind): string =
   case kind
@@ -1707,7 +1707,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "") =
 
 proc emitExperimentalC*(chunk: Chunk): string =
   var lines = @[
-    "/* Gene experimental typed-native C backend.",
+    "/* Gene experimental typed_native C backend.",
     " * Emits fixed-representation functions and generated FFI adapter wrappers.",
     " */",
     "#include <stdbool.h>",

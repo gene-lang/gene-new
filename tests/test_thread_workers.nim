@@ -227,7 +227,7 @@ suite "threaded scheduler workers":
       expect GeneCancel:
         discard run(compileSource(
           "(scope " &
-          "  (var started (atomic-cell 0)) " &
+          "  (var started (atomic_cell 0)) " &
           "  (var t (spawn (do " &
           "    (started ~ AtomicCell/store 1) " &
           "    (var i 0) " &
@@ -276,14 +276,14 @@ suite "threaded scheduler workers":
       check run(compileSource(
         "(type Put ^props {^value Int}) " &
         "(impl Send for Put) " &
-        "(var seen (atomic-cell 0)) " &
+        "(var seen (atomic_cell 0)) " &
         "(var a (actor/spawn ^init (fn [] 0) " &
         "  ^handle (fn [ctx state msg] " &
         "    (var (Put ^value value) msg) " &
         "    (record-thread 1) " &
         "    (seen ~ AtomicCell/store value) " &
         "    (actor/continue value)))) " &
-        "(spawn (a ~ actor/try-send (Put ^value 42))) " &
+        "(spawn (a ~ actor/try_send (Put ^value 42))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
         "(seen ~ AtomicCell/load)"), scope).print() == "42"
@@ -310,7 +310,7 @@ suite "threaded scheduler workers":
   test "worker-candidate tasks share AtomicCell through CAS":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         "  (var counter (atomic-cell 0)) " &
+         "  (var counter (atomic_cell 0)) " &
          "  (fn inc_many [limit] " &
          "    (var i 0) " &
          "    (var stored false) " &
@@ -319,7 +319,7 @@ suite "threaded scheduler workers":
          "      (set stored false) " &
          "      (while (not stored) " &
          "        (set old (counter ~ AtomicCell/load)) " &
-         "        (set stored (counter ~ AtomicCell/compare-exchange old (+ old 1)))) " &
+         "        (set stored (counter ~ AtomicCell/compare_exchange old (+ old 1)))) " &
          "      (set i (+ i 1))) " &
          "    nil) " &
          "  (var a (spawn (inc_many 200))) " &
@@ -335,19 +335,19 @@ suite "threaded scheduler workers":
          "  (counter ~ AtomicCell/load))",
          "1600"
 
-  test "worker-candidate channel try-send respects capacity":
+  test "worker-candidate channel try_send respects capacity":
     withGeneWorkerSetting "8":
       ck "(scope " &
          "  (var ch (channel ^capacity 1)) " &
-         "  (var success (atomic-cell 0)) " &
+         "  (var success (atomic_cell 0)) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
          "    (while (not stored) " &
          "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (ch ~ Channel/try-send value) (mark_success) nil)) " &
+         "    (if (ch ~ Channel/try_send value) (mark_success) nil)) " &
          "  (var a (spawn (send_once 1))) " &
          "  (var b (spawn (send_once 2))) " &
          "  (var c (spawn (send_once 3))) " &
@@ -361,20 +361,20 @@ suite "threaded scheduler workers":
          "  (success ~ AtomicCell/load))",
          "1"
 
-  test "worker-candidate channel try-recv claims one item":
+  test "worker-candidate channel try_recv claims one item":
     withGeneWorkerSetting "8":
       ck "(scope " &
          "  (var ch (channel ^capacity 1)) " &
-         "  (var success (atomic-cell 0)) " &
+         "  (var success (atomic_cell 0)) " &
          "  (ch ~ Channel/send 99) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
          "    (while (not stored) " &
          "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
          "  (fn recv_once [] " &
-         "    (var got (ch ~ Channel/try-recv)) " &
+         "    (var got (ch ~ Channel/try_recv)) " &
          "    (match got " &
          "      (when TryRecv/empty nil) " &
          "      (when (TryRecv/value _) (mark_success)))) " &
@@ -391,22 +391,22 @@ suite "threaded scheduler workers":
          "  (success ~ AtomicCell/load))",
          "1"
 
-  test "worker-candidate try-recv may return its immutable tagged result":
+  test "worker-candidate try_recv may return its immutable tagged result":
     withGeneWorkerSetting "2":
       ck "(scope " &
          "  (var ch (channel ^capacity 1)) " &
          "  (ch ~ Channel/send 41) " &
-         "  (var result (await (spawn (ch ~ Channel/try-recv)))) " &
+         "  (var result (await (spawn (ch ~ Channel/try_recv)))) " &
          "  (match result " &
          "    (when (TryRecv/value n) (+ n 1)) " &
          "    (when TryRecv/empty 0)))",
          "42"
 
-  test "worker-candidate actor try-send respects mailbox capacity":
+  test "worker-candidate actor try_send respects mailbox capacity":
     withGeneWorkerSetting "8":
       ck "(scope " &
          "  (var gate (channel ^capacity 1)) " &
-         "  (var success (atomic-cell 0)) " &
+         "  (var success (atomic_cell 0)) " &
          "  (var a (actor/spawn ^mailbox 1 ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
          "      (gate ~ Channel/recv) " &
@@ -417,9 +417,9 @@ suite "threaded scheduler workers":
          "    (var old 0) " &
          "    (while (not stored) " &
          "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (a ~ actor/try-send value) (mark_success) nil)) " &
+         "    (if (a ~ actor/try_send value) (mark_success) nil)) " &
          "  (var t1 (spawn (send_once 1))) " &
          "  (var t2 (spawn (send_once 2))) " &
          "  (var t3 (spawn (send_once 3))) " &
@@ -473,8 +473,8 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic-cell 0)) " &
-        "  (var read-task (Fs/read-text-async Fs/ReadDir path)) " &
+        "  (var out (atomic_cell 0)) " &
+        "  (var read-task (Fs/read_text_async Fs/ReadDir path)) " &
         "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
         "  (await marker) " &
         "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
@@ -491,7 +491,7 @@ suite "threaded scheduler workers":
     scope.define("path", newStr(path))
     var src = "(scope "
     for i in 0 ..< burst:
-      src.add "(var t" & $i & " (Fs/read-text-async Fs/ReadDir path)) "
+      src.add "(var t" & $i & " (Fs/read_text_async Fs/ReadDir path)) "
     src.add "["
     for i in 0 ..< burst:
       if i > 0:
@@ -518,9 +518,9 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       withGeneAsyncIoQueueSetting "0":
         check run(compileSource(
-          "(try (await (Fs/read-text-async Fs/ReadDir path)) " &
+          "(try (await (Fs/read_text_async Fs/ReadDir path)) " &
           " catch {^message m} m)"), scope).print() ==
-          "\"Fs/read-text-async failed: async I/O queue full\""
+          "\"Fs/read_text_async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
     let path = getTempDir() / "gene-threaded-write-text-async-test.txt"
@@ -532,8 +532,8 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic-cell 0)) " &
-        "  (var write-task (Fs/write-text-async Fs/WriteDir path \"worker write\")) " &
+        "  (var out (atomic_cell 0)) " &
+        "  (var write-task (Fs/write_text_async Fs/WriteDir path \"worker write\")) " &
         "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
         "  (await marker) " &
         "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
@@ -552,8 +552,8 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic-cell 0)) " &
-        "  (var read-task (Net/tcp-read-text-async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+        "  (var out (atomic_cell 0)) " &
+        "  (var read-task (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
         "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
         "  (await marker) " &
         "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
@@ -573,8 +573,8 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic-cell 0)) " &
-        "  (var write-task (Net/tcp-write-text-async Net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
+        "  (var out (atomic_cell 0)) " &
+        "  (var write-task (Net/tcp_write_text_async Net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
         "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
         "  (await marker) " &
         "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
@@ -599,8 +599,8 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "1":
       check run(compileSource(
         "(scope " &
-        "  (var blocker (Net/tcp-read-text-async Net/Connect \"127.0.0.1\" port 64 1000)) " &
-        "  (var write-task (Fs/write-text-async Fs/WriteDir path \"cancelled write\")) " &
+        "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+        "  (var write-task (Fs/write_text_async Fs/WriteDir path \"cancelled write\")) " &
         "  (write-task ~ Task/cancel) " &
         "  (await blocker))"), scope).print() ==
         "\"worker release\""
@@ -631,11 +631,11 @@ suite "threaded scheduler workers":
       withGeneAsyncIoQueueSetting "1":
         check run(compileSource(
           "(scope " &
-          "  (var blocker (Net/tcp-read-text-async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+          "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
           "  (sleep 10) " &
-          "  (var cancelled (Fs/write-text-async Fs/WriteDir cancelledPath \"cancelled\")) " &
+          "  (var cancelled (Fs/write_text_async Fs/WriteDir cancelledPath \"cancelled\")) " &
           "  (cancelled ~ Task/cancel) " &
-          "  (var next (Fs/write-text-async Fs/WriteDir nextPath \"next\")) " &
+          "  (var next (Fs/write_text_async Fs/WriteDir nextPath \"next\")) " &
           "  [(await blocker) (try (await next) catch {^message m} m)])"),
           scope).print() == "[\"worker release\" nil]"
     joinThread(serverThread)
@@ -682,8 +682,8 @@ suite "threaded scheduler workers":
       ck "(scope " &
          "  (type Get ^props {^reply (ReplyTo Int)}) " &
          "  (impl Send for Get) " &
-         "  (var reply_cell (atomic-cell nil)) " &
-         "  (var success (atomic-cell 0)) " &
+         "  (var reply_cell (atomic_cell nil)) " &
+         "  (var success (atomic_cell 0)) " &
          "  (var gate (channel ^capacity 1)) " &
          "  (var a (actor/spawn ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
@@ -700,7 +700,7 @@ suite "threaded scheduler workers":
          "    (var old 0) " &
          "    (while (not stored) " &
          "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare-exchange old (+ old 1))))) " &
+         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
          "    (try (do ((reply_cell ~ AtomicCell/load) ~ ReplyTo/send value) " &
          "             (mark_success)) " &
@@ -790,7 +790,7 @@ suite "threaded scheduler workers":
         "    (var value (gate ~ Channel/recv)) " &
         "    (reply ~ ReplyTo/send value) " &
         "    (actor/continue state)))) " &
-        "(var pending (a ~ actor/ask ^timeout-ms 5 " &
+        "(var pending (a ~ actor/ask ^timeout_ms 5 " &
         "  (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
@@ -810,7 +810,7 @@ suite "threaded scheduler workers":
          "      (var value (gate ~ Channel/recv)) " &
          "      (reply ~ ReplyTo/send value) " &
          "      (actor/continue state)))) " &
-         "  (var pending (a ~ actor/ask ^timeout-ms 5 " &
+         "  (var pending (a ~ actor/ask ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
          "  (try (await pending) catch (ActorError ^message m) m))",
          "\"actor/ask timed out\""

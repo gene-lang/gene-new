@@ -221,11 +221,11 @@ proc print*(v: Value): string =
   of vkEnv:
     "(env)"
   of vkCallerEnv:
-    "(caller-env)"
+    "(caller_env)"
   of vkCell:
     "(cell)"
   of vkAtomicCell:
-    "(atomic-cell)"
+    "(atomic_cell)"
   of vkStream:
     "(stream)"
   of vkTask:
@@ -242,9 +242,9 @@ proc print*(v: Value): string =
     "(reply-to)"
   of vkCPtr:
     let base =
-      if v.cPtrOwned: "c-owned-ptr"
-      elif v.cPtrMutable: "c-ptr"
-      else: "c-const-ptr"
+      if v.cPtrOwned: "c_owned_ptr"
+      elif v.cPtrMutable: "c_ptr"
+      else: "c_const_ptr"
     if v.cPtrClosed:
       "(" & base & " closed)"
     elif v.cPtrIsNull:

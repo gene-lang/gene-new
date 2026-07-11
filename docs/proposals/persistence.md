@@ -1,7 +1,7 @@
 # Gene Persistence & Reload — Design
 
 Status: **controlled-stop MVP implemented** (stages 1-4: `Store` protocol,
-`store/sqlite`, gateway migration, `Fs/make-dir`/`Fs/remove`, and `store/fs`).
+`store/sqlite`, gateway migration, `Fs/make_dir`/`Fs/remove`, and `store/fs`).
 Crash/power-loss hardening remains deferred to §7 / stage 5. Date:
 2026-07-09.
 
@@ -55,11 +55,11 @@ path on anything process-bound. Persistence inherits serde's security posture
 wholesale: no capability round-trips, `serde/read` never loads a module named
 by a payload, restore hooks stay off unless explicitly enabled.
 
-**`serde-state`/`serde-restore` (stage 5) are the per-type reload primitive.**
+**`serde_state`/`serde_restore` (stage 5) are the per-type reload primitive.**
 A type owning a transient resource implements them to save only its durable
 fields and re-derive the resource on load — the canonical "drop the socket,
 keep the host, reconnect on load." Persistence is their motivating use case.
-(Reload runs `serde-restore`, i.e. user code, so it is gated — see §3.)
+(Reload runs `serde_restore`, i.e. user code, so it is gated — see §3.)
 
 ## 3. The `Store` — a durable key→value log over serde
 
@@ -70,12 +70,12 @@ their own namespaces, mirroring `db/sqlite/open` (review: no ambiguous
 `(open fs …)` selector-vs-capability form):
 
 ```gene
-(import store/sqlite [open : store-open])
-(var s (store-open db))                     ; layered over an existing Db conn
+(import store/sqlite [open : store_open])
+(var s (store_open db))                     ; layered over an existing Db conn
 
 ;; or, filesystem:
-(import store/fs [open : store-open])
-(var s (store-open fs ^root ".state"))      ; fs : Fs/ReadWriteDir capability
+(import store/fs [open : store_open])
+(var s (store_open fs ^root ".state"))      ; fs : Fs/ReadWriteDir capability
 
 (s ~ put key value)          ; ^mode data|full (default data)
 (s ~ get key)                ; raises StoreError ^kind missing on absence
@@ -101,23 +101,23 @@ Decisions, several from review:
 - **`^mode data|full`, on the store, overridable per call** — the store's own
   option, *not* an overload of `SerdePolicy` (shipped serde has read-policies
   only; `write` takes none, and there is no `data-only` policy field):
-  - `data` (default) → `serde/write-data` / `serde/read-data`. Pure data,
+  - `data` (default) → `serde/write_data` / `serde/read_data`. Pure data,
     no reference resolution, no code execution. This is the safe default and
     what the gateway needs.
   - `full` → `serde/write` / `serde/read`. Allows typed refs and instances;
     the application must have loaded the defining modules first (§5).
-- **Restore hooks are off by default, even in `full` mode.** `serde-restore`
+- **Restore hooks are off by default, even in `full` mode.** `serde_restore`
   executes user code; making that the default for every `get` would turn a
   tampered state file or db row into an implicit execution trigger. Opt in
-  explicitly with `(s ~ get key ^policy (SerdePolicy ^allow-restore true))`,
+  explicitly with `(s ~ get key ^policy (SerdePolicy ^allow_restore true))`,
   or set a trusted-state policy at `open` — for the app's own state directory
   it controls, never for a store fed external input.
 - **Read `^policy` (a `SerdePolicy`) passes through to `serde/read*`** for
-  resource limits and `^allow-restore`. Writes take no policy (serde has no
+  resource limits and `^allow_restore`. Writes take no policy (serde has no
   write policy); `^mode` is the only write knob.
 - **`StoreError ^kind ^key ^message`** with a stable kind so callers branch
   without parsing messages: `missing`, `serde` (encode/decode failed), `io`
-  (backend failure), `closed`, `invalid-key`, `corrupt` (record unreadable).
+  (backend failure), `closed`, `invalid_key`, `corrupt` (record unreadable).
 - **Backends** implement the `Store` protocol:
   - `store/sqlite` — a table `(key text primary key, data text)` over an
     existing `db/sqlite` connection (review: take a `Db`, not a path — keeps
@@ -133,7 +133,7 @@ backend swap, not a rewrite. That is the payoff of one format.
 
 ## 4. Filesystem backend (controlled-stop MVP)
 
-A store is a directory; each record is one file holding one `serde-v1`
+A store is a directory; each record is one file holding one `serde_v1`
 envelope. Flat, **not** a directory tree (the prior repo's removed model):
 
 ```
@@ -144,8 +144,8 @@ envelope. Flat, **not** a directory tree (the prior repo's removed model):
 
 - **Key → filename** via `url/encode_component` (in stdlib), reversibly, so
   keys may contain `/`, `:`, spaces, unicode without escaping the directory,
-  and `keys` is `Fs/list-dir` + url-decode. Empty keys are rejected
-  (`StoreError ^kind invalid-key`) — an empty key would produce a bare
+  and `keys` is `Fs/list_dir` + url-decode. Empty keys are rejected
+  (`StoreError ^kind invalid_key`) — an empty key would produce a bare
   `.gene` file.
 - **No reserved names, no marker files** — a record is just a file. (The prior
   model's permanent `_genetype`-key-collision gap cannot occur.)
@@ -154,24 +154,24 @@ envelope. Flat, **not** a directory tree (the prior repo's removed model):
   (editor backups, files from other tools, future temp files) is ignored, not
   an error — a store directory is not assumed pristine. A separate
   `store/fs/audit` for surfacing unrecognized files can follow.
-- **Reads/writes** are `Fs/read-text`/`Fs/write-text` + `serde`. **MVP uses a
+- **Reads/writes** are `Fs/read_text`/`Fs/write_text` + `serde`. **MVP uses a
   plain write** — acceptable because a controlled stop lets the `put`
   complete before exit. Atomic replace (temp+rename+fsync) is the §7
   crash-hardening upgrade, not required here.
 
 ### 4.1 Runtime gap (small, for the fs backend)
 
-Today `Fs/*` is only `read-text`/`write-text`/`list-dir` (+ async). The
+Today `Fs/*` is only `read_text`/`write_text`/`list_dir` (+ async). The
 controlled-stop fs store needs two new `Fs/WriteDir`-gated natives beside
 them in `src/gene/stdlib.nim`:
 
 | New native | For |
 |---|---|
-| `Fs/make-dir` (mkdir -p) | create the store directory on `open` |
+| `Fs/make_dir` (mkdir -p) | create the store directory on `open` |
 | `Fs/remove` | `delete` / `clear` a record |
 
-`Fs/exists?` is convenient but optional (a failed `read-text` already signals
-absence). The shipped `Fs/make-dir`/`Fs/remove` follow the existing broad
+`Fs/exists?` is convenient but optional (a failed `read_text` already signals
+absence). The shipped `Fs/make_dir`/`Fs/remove` follow the existing broad
 `Fs/*` path semantics; `store/fs` keeps record paths confined by composing the
 caller-chosen root with a URL-encoded key that contains no path separators.
 `Fs/rename` and the atomic-write native belong to §7. The **sqlite backend
@@ -204,7 +204,7 @@ Reload is an application pattern with three obligations; there is no magic
    actor, reattach the Telegram sender hook, resume the id sequence) is the
    worked example.
 
-**Save-state shape.** `serde-state` (stage 5) should return a **data-bucket**
+**Save-state shape.** `serde_state` (stage 5) should return a **data-bucket**
 value (review #9): keeping hook state pure data makes reload simpler, safer,
 and easier to migrate, and avoids identity-ref/module-order surprises inside
 restore state. Types that genuinely need refs in their state use `full` mode
@@ -221,7 +221,7 @@ its turn reloads sensibly:
 ```gene
 (s ~ put (str "pending:" id) input)        ; 1. record the accepted input
 ;; ... process the turn ...
-(s ~ put (str "session:" id) new-state)    ; 2. record the result
+(s ~ put (str "session:" id) new_state)    ; 2. record the result
 (s ~ delete (str "pending:" id))           ; 3. clear the marker
 ```
 
@@ -240,7 +240,7 @@ of the controlled-stop MVP and gathered here for when it is built:
   `fsync` temp → `rename` over target → `fsync` the parent directory. Without
   the directory `fsync` the rename may not be durable across power loss; the
   unique temp name avoids concurrent writers clobbering one staging file.
-  New natives: `Fs/write-text-atomic`, `Fs/rename` (same-directory-confined
+  New natives: `Fs/write_text_atomic`, `Fs/rename` (same-directory-confined
   when used for commit).
 - **Delete durability**: unlink + `fsync` the parent directory.
 - **Stale-temp recovery**: `open`/`keys` ignore recognized temp files; an
@@ -260,7 +260,7 @@ one that needs this work.
 ## 8. Migrating the gateway (the first consumer)
 
 `examples/ai_agent/gateway.gene` milestone 11 already persists sessions to sqlite
-by hand (`write-data`/`read-data` + `insert or replace`). It becomes the
+by hand (`write_data`/`read_data` + `insert or replace`). It becomes the
 reference `Store` consumer:
 
 - `GENE_GATEWAY_DB=path` → `store/sqlite/open` over the `db/sqlite`
@@ -286,7 +286,7 @@ existing databases keep loading, and bespoke persistence code retires.
   independent (§6); `store ~ transaction` is later.
 - Automatic checkpoint-on-mutation — save timing is the app's call (§5.1).
 - Concurrent multi-process access, file locking, replication.
-- Schema migration of persisted records (serde's `^schema-version` reserves
+- Schema migration of persisted records (serde's `^schema_version` reserves
   the space; a store-level migration hook can follow).
 - Encryption at rest.
 
@@ -300,7 +300,7 @@ existing databases keep loading, and bespoke persistence code retires.
    reopen-after-close, restore-off-by-default.
 2. **Migrate the gateway** onto `store/sqlite` in `data` mode (§8) — proves
    the interface, keeps existing DBs loading, adds the resume flag.
-3. **Fs primitives.** `Fs/make-dir` + `Fs/remove` (+ optional `Fs/exists?`),
+3. **Fs primitives.** `Fs/make_dir` + `Fs/remove` (+ optional `Fs/exists?`),
    `Fs/WriteDir`-gated, path-confined (§4.1). Spec tests incl. path-escape
    rejection.
 4. **`store/fs`.** The directory backend: url-encoded keys, plain writes,
@@ -308,7 +308,7 @@ existing databases keep loading, and bespoke persistence code retires.
    plus fs-specifics (invalid/empty keys, junk-file tolerance, path escape).
    Gateway gains `GENE_GATEWAY_STATE` for fully file-backed operation.
 5. **Crash hardening (§7), when needed.** Atomic writes, `Fs/rename` +
-   `Fs/write-text-atomic`, directory `fsync`, stale-temp recovery, corruption
+   `Fs/write_text_atomic`, directory `fsync`, stale-temp recovery, corruption
    detection, a kill/power-loss test harness. Independent of stages 1–4.
 
 Each stage lands with the repo's gates (`nimble test`/`spec`/`perf`/`wasm`);

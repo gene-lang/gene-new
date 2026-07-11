@@ -2033,7 +2033,7 @@ suite "types — function boundaries":
       discard runStr("(type Byte ^props {^value U8}) (Byte ^value 256)")
 
   test "C ABI scalar annotations are explicit checked boundaries":
-    ck "C/Int32", "(c-abi-type Int32)"
+    ck "C/Int32", "(c_abi_type Int32)"
     ck "(fn f [x : C/Int32] x) [(f -2147483648) (f 2147483647)]",
        "[-2147483648 2147483647]"
     ck "(fn f [x : C/UInt8] x) [(f 0) (f 255)]", "[0 255]"
@@ -2061,11 +2061,11 @@ suite "types — function boundaries":
                               newSym("C/Char")))
 
     check run(compileSource("((fn [p : (C/Ptr C/Char)] p) p)"),
-              scope).print() == "(c-ptr)"
+              scope).print() == "(c_ptr)"
     check run(compileSource("((fn [p : (C/ConstPtr C/Char)] p) constp)"),
-              scope).print() == "(c-const-ptr)"
+              scope).print() == "(c_const_ptr)"
     check run(compileSource("((fn [p : (C/ConstPtr C/Char)] p) p)"),
-              scope).print() == "(c-ptr)"
+              scope).print() == "(c_ptr)"
     check run(compileSource("((fn [p : (C/NullablePtr C/Char)] true) nil)"),
               scope).print() == "true"
     check run(compileSource("((fn [p : (C/OwnedPtr C/Char)] true) owned)"),
@@ -2119,7 +2119,7 @@ suite "types — function boundaries":
   test "Buffer annotations check Gene-owned typed storage":
     ck "(var b (buffer [1 2 3])) " &
        "[(Buffer/len b) (Buffer/get b 0) (Buffer/get b -1) " &
-       "(Buffer/to_list b) (Buffer/elem-type b)]",
+       "(Buffer/to_list b) (Buffer/elem_type b)]",
        "[3 1 3 [1 2 3] Int]"
     ck "(var b (buffer C/UInt8 [1 2])) " &
        "[(Buffer/set! b 1 255) (Buffer/to_list b) " &
@@ -2142,7 +2142,7 @@ suite "types — function boundaries":
               scope).print() == "(buffer C/Char 2)"
 
   test "FFI load capability gates runtime library loading":
-    ck "Ffi/Load", "(ffi-type Load)"
+    ck "Ffi/Load", "(ffi_type Load)"
 
     let scope = newGlobalScope()
     scope.define("native", newFfiLoadCapability())
@@ -2313,7 +2313,7 @@ suite "types — function boundaries":
         check run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"GENE_NEW_TEST_ENV_UNSET\")"),
-                  scope).print() == "(c-const-ptr null)"
+                  scope).print() == "(c_const_ptr null)"
       if symAddr(handle, "getenv") != nil and symAddr(handle, "strlen") != nil:
         let envPtr = run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &
                                        "  (quote (C/NullableConstPtr C/Char))) " &
@@ -2351,7 +2351,7 @@ suite "types — function boundaries":
                                     "  [(quote (C/ConstPtr C/Char)) C/Int C/Size] " &
                                     "  (quote (C/NullableConstPtr C/Char))) " &
                                     " env-ptr 0 1)"),
-                      scope).print() == "(c-const-ptr null)"
+                      scope).print() == "(c_const_ptr null)"
             expect GeneError:
               discard run(compileSource("((ffi/bind lib \"memchr\" " &
                                         "  [(quote (C/ConstPtr C/Char)) C/Int C/Size] " &
@@ -2362,11 +2362,11 @@ suite "types — function boundaries":
         check run(compileSource("((ffi/bind lib \"strchr\" [C/CStr C/Int] " &
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"abc\" 98)"),
-                  scope).print() == "(c-const-ptr)"
+                  scope).print() == "(c_const_ptr)"
         check run(compileSource("((ffi/bind lib \"strchr\" [C/CStr C/Int] " &
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"abc\" 120)"),
-                  scope).print() == "(c-const-ptr null)"
+                  scope).print() == "(c_const_ptr null)"
       if symAddr(handle, "malloc") != nil and symAddr(handle, "free") != nil:
         let allocated = run(compileSource(
           "((ffi/bind lib \"malloc\" [C/Size] " &
@@ -3885,7 +3885,7 @@ suite "types — function boundaries":
                                   cast[pointer](ffiTestSizeEqual), lib,
                                   @[newSym("C/Size"), newSym("C/Size")],
                                   newSym("C/Bool")))
-      scope.define("int-add",
+      scope.define("int_add",
                    newFfiCallable("ffiTestIntAdd", "ffiTestIntAdd",
                                   cast[pointer](ffiTestIntAdd), lib,
                                   @[newSym("C/Int"), newSym("C/Int")],
@@ -6189,9 +6189,9 @@ suite "types — function boundaries":
       check run(compileSource("(int-unary-diff 4)"), scope).print() == "-2"
       check run(compileSource("(int-positive? 4)"), scope).print() == "true"
       check run(compileSource("(int-positive? -1)"), scope).print() == "false"
-      check run(compileSource("(int-ptr 4)"), scope).print() == "(c-ptr)"
+      check run(compileSource("(int-ptr 4)"), scope).print() == "(c_ptr)"
       check run(compileSource("(int-ptr 0)"), scope).print() ==
-        "(c-ptr null)"
+        "(c_ptr null)"
       check run(compileSource("(long-ulong 4)"), scope).print() == "6"
       check run(compileSource("(long-i32 4)"), scope).print() == "9"
       check run(compileSource("(long-i16 4)"), scope).print() == "10"
@@ -6313,9 +6313,9 @@ suite "types — function boundaries":
       check doubleKind.kind == vkString
       check doubleKind.strVal == "positive-double"
       check run(compileSource("(double-ptr 4.5)"), scope).print() ==
-        "(c-ptr)"
+        "(c_ptr)"
       check run(compileSource("(double-ptr -1.5)"), scope).print() ==
-        "(c-ptr null)"
+        "(c_ptr null)"
       check run(compileSource("(float-ulong 4.5)"), scope).print() == "6"
       check run(compileSource("(float-i32 4.5)"), scope).print() == "9"
       check run(compileSource("(float-i16 4.5)"), scope).print() == "10"
@@ -6338,9 +6338,9 @@ suite "types — function boundaries":
       check floatKind.kind == vkString
       check floatKind.strVal == "positive-float"
       check run(compileSource("(float-ptr 4.5)"), scope).print() ==
-        "(c-ptr)"
+        "(c_ptr)"
       check run(compileSource("(float-ptr -1.5)"), scope).print() ==
-        "(c-ptr null)"
+        "(c_ptr null)"
       check run(compileSource("(size-add-uint 20 22)"), scope).print() == "43"
       check run(compileSource("(size-add-i32 20 22)"), scope).print() == "47"
       check run(compileSource("(size-add-i16 20 22)"), scope).print() == "48"
@@ -6372,7 +6372,7 @@ suite "types — function boundaries":
       when sizeof(csize_t) < 8:
         expect GeneError:
           discard run(compileSource("(size-inc 4294967296)"), scope)
-      check run(compileSource("(int-add 20 22)"), scope).print() == "42"
+      check run(compileSource("(int_add 20 22)"), scope).print() == "42"
       check run(compileSource("(int-add-uint 20 22)"), scope).print() == "43"
       check run(compileSource("(int-add-i32 20 22)"), scope).print() == "47"
       check run(compileSource("(int-add-i16 20 22)"), scope).print() == "48"
@@ -6402,7 +6402,7 @@ suite "types — function boundaries":
       check negativeIntPairKind.kind == vkString
       check negativeIntPairKind.strVal == "negative-int-pair"
       expect GeneError:
-        discard run(compileSource("(int-add 1 2147483648)"), scope)
+        discard run(compileSource("(int_add 1 2147483648)"), scope)
       check run(compileSource("(double-add 1.25 2.5)"), scope).print() == "3.75"
       check run(compileSource("(double-double-uint 1.25 2.5)"),
                 scope).print() == "4"
@@ -6724,9 +6724,9 @@ suite "types — function boundaries":
       expect GeneError:
         discard run(compileSource("(cstr-bounded-len \"abc\" -1)"), scope)
       check run(compileSource("(cstr-ptr-if-len \"abc\" 3)"), scope).print() ==
-        "(c-const-ptr)"
+        "(c_const_ptr)"
       check run(compileSource("(cstr-ptr-if-len \"abc\" 0)"), scope).print() ==
-        "(c-const-ptr null)"
+        "(c_const_ptr null)"
       check run(compileSource("(cstr-long \"abc\")"), scope).print() == "-2"
       check run(compileSource("(cstr-i16 \"abc\")"), scope).print() == "4"
       check run(compileSource("(cstr-short \"abc\")"), scope).print() == "5"
@@ -6863,9 +6863,9 @@ suite "types — function boundaries":
       check copied.cPtrAddress == cast[pointer](addr copyDst[0])
       check copyDst == [uint8(68), uint8(69), uint8(70)]
       check run(compileSource("(ptr-if-len copy-dst 3)"), scope).print() ==
-        "(c-ptr)"
+        "(c_ptr)"
       check run(compileSource("(ptr-if-len copy-dst 0)"), scope).print() ==
-        "(c-ptr null)"
+        "(c_ptr null)"
       check run(compileSource("(ptr-len copy-dst 3)"), scope).print() == "3"
       check run(compileSource("(ptr-len nil 3)"), scope).print() == "0"
       check run(compileSource("(ptr-len-i32 copy-dst 3)"),

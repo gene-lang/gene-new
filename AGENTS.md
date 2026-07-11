@@ -37,6 +37,16 @@ through source text without benchmark evidence.
 Keep dependencies minimal. Do not add new runtime or benchmark dependencies
 unless explicitly requested.
 
+Naming convention: every user-facing name — builtins, namespace members,
+protocol messages, recognized props, policy fields, serde control tags, and
+implicit bindings such as `this_mod` and `caller_env` — uses `snake_case`
+(underscores), never hyphens. `-` remains a legal symbol character for user
+code, but registered names must not contain it; the "naming convention" suite
+in `tests/spec_runner.nim` walks the global scope and fails on any hyphenated
+registration. Wire-format strings that are not Gene names (HTTP header names
+such as `content-type`, MIME types, charset tokens) keep their protocol
+spelling. Examples and docs model the same `snake_case` style for local names.
+
 When touching the NaN-boxed value layer:
 
 - Keep `sizeof(Value) == sizeof(uint64)`.

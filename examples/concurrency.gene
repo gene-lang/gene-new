@@ -18,7 +18,7 @@
 #                        bounded, typed (Channel T)
 #   - (actor/spawn ^init init-fn ^handle handle-fn)
 #                        long-lived stateful actor (ActorRef T)
-#   - (send / recv / close / try-send / try-recv) on channel values
+#   - (send / recv / close / try_send / try_recv) on channel values
 #   - (cell x)            mutable identity-holding value (Cell)
 #
 # All concurrency primitives used here are MVP-stable and exercised by
@@ -185,11 +185,11 @@
 # -----------------------------------------------------------------------------
 (println "5. actors")
 
-(fn counter-handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int)
+(fn counter_handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int)
   (actor/continue (+ state msg)))
 
 (var counter : (ActorRef Int)
-  (actor/spawn ^init (fn [] 0) ^handle counter-handle))
+  (actor/spawn ^init (fn [] 0) ^handle counter_handle))
 
 (println "   - sequential processing — ordering is preserved per-actor")
 (counter ~ actor/send 2)
@@ -202,18 +202,18 @@
 (type Counter ^props {^reply (ReplyTo Int)})
 (impl Send for Counter)
 
-(fn ask-handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
+(fn ask_handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
   (match msg
     (when (Counter ^reply reply)
       (reply ~ ReplyTo/send state)
       (actor/continue state))))
 
-(var ask-counter : (ActorRef Counter)
-  (actor/spawn ^init (fn [] 41) ^handle ask-handle))
+(var ask_counter : (ActorRef Counter)
+  (actor/spawn ^init (fn [] 41) ^handle ask_handle))
 
-(var reply-task
-  (ask-counter ~ actor/ask (fn [reply] (Counter ^reply reply))))
-(println "     actor/ask current state:" (await reply-task))
+(var reply_task
+  (ask_counter ~ actor/ask (fn [reply] (Counter ^reply reply))))
+(println "     actor/ask current state:" (await reply_task))
 
 (println "")
 
@@ -228,9 +228,9 @@
 # -----------------------------------------------------------------------------
 (println "6. supervisor / restart")
 
-(var failure-events (channel ^capacity 4))
+(var failure_events (channel ^capacity 4))
 
-(supervisor ^strategy restart ^events failure-events
+(supervisor ^strategy restart ^events failure_events
   (var counter
     (actor/spawn ^init (fn [] 10)
       ^handle (fn [ctx state msg]
@@ -242,7 +242,7 @@
   (spawn (counter ~ actor/send 5))
   (spawn (counter ~ actor/send 0))
   (sleep 1)
-  (var event (failure-events ~ Channel/recv))
+  (var event (failure_events ~ Channel/recv))
   (var snap (counter ~ actor/snapshot))
   (println "     restarted state (now):" snap/state)
   (println "     actor failure event received"))
@@ -257,22 +257,22 @@
 # -----------------------------------------------------------------------------
 (println "7. supervisor / stop")
 
-(supervisor ^strategy stop ^events failure-events
+(supervisor ^strategy stop ^events failure_events
   (var stoptest
     (actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx state msg]
         (if (== msg 0)
           (fail (Boom ^message "bad"))
           (actor/continue (+ state msg))))))
-  (var first-send
-    (try (do (stoptest ~ actor/send 0) "first-send")
+  (var first_send
+    (try (do (stoptest ~ actor/send 0) "first_send")
       catch (Boom ^message m) m))
   (sleep 1)                                           # let failure propagate
-  (var post-failure
+  (var post_failure
     (try (do (stoptest ~ actor/send 99) "second-send")
       catch (ActorClosed ^message m) m))
-  (println "   - first send (failure trapped):" first-send)
-  (println "   - post-failure send:" post-failure))
+  (println "   - first send (failure trapped):" first_send)
+  (println "   - post_failure send:" post_failure))
 
 (println "")
 (println "== done ==")

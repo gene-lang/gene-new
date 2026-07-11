@@ -32,13 +32,13 @@ when defined(geneRcStats):
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0
 
-    test "Runtime/gc-stats exposes live managed count":
+    test "Runtime/gc_stats exposes live managed count":
       let scope = newGlobalScope()
-      let stats = run(compileSource("(Runtime/gc-stats)"), scope)
+      let stats = run(compileSource("(Runtime/gc_stats)"), scope)
       check stats.kind == vkMap
-      check stats.mapEntries["rc-stats?"].boolVal
-      check stats.mapEntries["live-managed"].kind == vkInt
-      check stats.mapEntries["live-managed"].intVal >= 0
+      check stats.mapEntries["rc_stats?"].boolVal
+      check stats.mapEntries["live_managed"].kind == vkInt
+      check stats.mapEntries["live_managed"].intVal >= 0
 
     test "transient anonymous closures are reclaimed":
       check leakedManaged("((fn [] (fn [] 1)))") == 0
@@ -67,17 +67,17 @@ when defined(geneRcStats):
 
     test "borrowed caller environments and snapshots are reclaimed":
       check leakedManaged(
-        "(fn! inspect! [] (eval (quote 1) ^in caller-env)) (inspect!)") == 0
+        "(fn! inspect! [] (eval (quote 1) ^in caller_env)) (inspect!)") == 0
       check leakedManaged(
-        "(fn! reject! [] (try [caller-env] catch * nil)) (reject!)") == 0
+        "(fn! reject! [] (try [caller_env] catch * nil)) (reject!)") == 0
       check leakedManaged(
         "(var x 1) " &
-        "(fn! snapshot! [] (Env/snapshot caller-env [\"x\"])) " &
+        "(fn! snapshot! [] (Env/snapshot caller_env [\"x\"])) " &
         "(snapshot!)") == 0
 
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
-      check leakedManaged("(var s (read-all \"(a) (b)\")) (s ~ Stream/next)") == 0
+      check leakedManaged("(var s (read_all \"(a) (b)\")) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (to_stream [1 2 3])) (s ~ Stream/next)") == 0
       check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
       check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0

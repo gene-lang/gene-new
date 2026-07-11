@@ -15,7 +15,7 @@ flagship example. Full design, roadmap, and architecture: [design.md](design.md)
 ```bash
 nimble build   # from the repo root
 
-# Offline demo — no network or key; drives the full tool-call loop:
+# Offline demo — no network or key; drives the full tool_call loop:
 bin/gene run examples/ai_agent/tui.gene
 
 # Live against the Codex/ChatGPT Responses backend:

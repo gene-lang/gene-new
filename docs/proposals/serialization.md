@@ -7,7 +7,7 @@ policy-gated hooks and resource limits, narrowed value refs, reserved
 version/package slots). Date: 2026-07-09.
 
 The body below matches the shipped implementation (stages 1–6). Two points
-that read as forward-looking are called out where they occur: `serde-state`
+that read as forward-looking are called out where they occur: `serde_state`
 returning data-only is a recommended convention not yet enforced by the
 writer (§7), and `SerdeMigrate` / `^package` / `^version` are reserved slots
 (§5, §7). Everything else describes what the code does.
@@ -50,29 +50,29 @@ The design leans on machinery that exists and is spec-tested today:
 ## 2. Format: versioned Gene text, with reserved-head escaping
 
 Serialized output is ordinary Gene source, wrapped in a version envelope.
-Control tags are **dash-named plain symbols** (`serde-v1`, `serde-float`, …)
+Control tags are **dash-named plain symbols** (`serde_v1`, `serde_float`, …)
 rather than slash-named — a slash token reads back as a `(path …)` node, so a
 slash-headed tag would not survive a print/read cycle. (The `serde/…` names
-that appear as *functions* below — `serde/write`, `serde/read-data` — are
+that appear as *functions* below — `serde/write`, `serde/read_data` — are
 ordinary namespace imports and keep their slash; only *control tags inside the
 serialized text* are dash-named.)
 
 ```gene
-(serde-v1
+(serde_v1
   {^session "tg-42"
    ^items [{^role "user" ^content "hello"} ...]})
 ```
 
-- One top-level `serde-v1` node; its single child is the payload. Future
+- One top-level `serde_v1` node; its single child is the payload. Future
   format changes bump the head symbol — readers dispatch on it.
 - The payload parses with the ordinary reader; `serde/read*` is the reader
   plus a validating walk and (for `read`) reference resolution. A human can
   read, diff, and edit the output; `bin/gene fmt` normalizes it.
 - Encoding is UTF-8 text. Binary efficiency is a non-goal (§11).
 
-**Reserved heads and the escape rule.** Inside a `serde-v1` envelope, every
+**Reserved heads and the escape rule.** Inside a `serde_v1` envelope, every
 node head in the `serde-*` symbol namespace is a control tag. Ordinary user
-data may legitimately contain nodes with such heads — `(serde-inst 1 2)` is a
+data may legitimately contain nodes with such heads — `(serde_inst 1 2)` is a
 perfectly valid Gene node — so without an escape rule, arbitrary nodes would
 not round-trip. The rule:
 
@@ -80,11 +80,11 @@ not round-trip. The rule:
 > emitted in escaped form:
 >
 > ```gene
-> (serde-data-node ^head serde-inst ^props {...} child1 child2 ...)
+> (serde_data_node ^head serde_inst ^props {...} child1 child2 ...)
 > ```
 >
-> applied recursively — a user node whose head is `serde-data-node` escapes
-> the same way. When deserializing, `serde-data-node` reconstructs the
+> applied recursively — a user node whose head is `serde_data_node` escapes
+> the same way. When deserializing, `serde_data_node` reconstructs the
 > original node; any *other* unescaped `serde-*` head is either a control tag
 > defined by this spec or a `SerdeError` ("unknown serde control tag").
 
@@ -97,14 +97,14 @@ domain, so the format defines canonical forms for the values plain decimal
 text cannot express:
 
 ```gene
-(serde-float "nan")
-(serde-float "+inf")
-(serde-float "-inf")
-(serde-float "-0.0")
+(serde_float "nan")
+(serde_float "+inf")
+(serde_float "-inf")
+(serde_float "-0.0")
 ```
 
 (If the reader later grows literals for these, the serializer can switch to
-them inside a new envelope version; `serde-float` remains readable.)
+them inside a new envelope version; `serde_float` remains readable.)
 
 ## 3. Three buckets
 
@@ -134,12 +134,12 @@ Bucket 3, some entries gene-new-specific:
 | Native handles (`db` connections, `CPtr`/`CSlice`, buffers, FFI libraries, HTTP servers) | Process-bound resources. Types owning them can opt into reconstruction hooks (§7). |
 | Unmarked module-level mutable state | Not referenceable (§7's narrowing) and not meaningfully snapshottable without owner cooperation. |
 
-## 4. Data serdes (`serde/write-data` / `serde/read-data`)
+## 4. Data serdes (`serde/write_data` / `serde/read_data`)
 
 The data bucket accepts:
 
 - scalars: `nil`, `void`, booleans, ints (including big ints), floats
-  (including specials via `serde-float`), chars, immutable strings, symbols,
+  (including specials via `serde_float`), chars, immutable strings, symbols,
   bytes;
 - time values: dates, times, datetimes, timezones, durations;
 - ranges;
@@ -163,15 +163,15 @@ Notes and deliberate decisions:
 - **Cells are not data** (§3). This keeps the round-trip guarantee honest:
 
   ```gene
-  (= v (read-data (write-data v)))   ; structural equality, ALL data values
+  (= v (read_data (write_data v)))   ; structural equality, ALL data values
   ```
 
   holds for every bucket-1 value with no exceptions — the guarantee is the
   primary spec-test axis, and identity-equality values would falsify it.
-- **`read-data` resolves nothing and constructs nothing typed.** It accepts
+- **`read_data` resolves nothing and constructs nothing typed.** It accepts
   exactly the data subset; every unescaped `serde-*` control tag other than
-  the envelope, `serde-float`, and `serde-data-node` — all refs, `serde-inst`,
-  `serde-snapshot-cell` — is a `SerdeError`. Mechanically: `read-data` is the
+  the envelope, `serde_float`, and `serde_data_node` — all refs, `serde_inst`,
+  `serde_snapshot_cell` — is a `SerdeError`. Mechanically: `read_data` is the
   reader, the escape decoder, and a whitelist walk.
 - **Cycles are an error** (`SerdeError`, with the cycle path). The MVP does
   not emit shared-structure labels; if a real need appears,
@@ -187,13 +187,13 @@ Definition-like values serialize as reference nodes carrying two coordinates
 (plus reserved slots for future package identity):
 
 ```gene
-(serde-type-ref     ^module "examples/geometry" ^path "Point")
-(serde-protocol-ref ^module "examples/geometry" ^path "Drawable")
-(serde-fn-ref       ^module "examples/geometry" ^path "area")
-(serde-enum-ref     ^module "examples/agent"    ^path "SseEventKind")
-(serde-variant-ref  ^module "examples/agent"    ^path "SseEventKind/completed")
-(serde-ns-ref       ^module "examples/stdweb"   ^path "routes")
-(serde-value-ref    ^module "examples/config"   ^path "DEFAULT-LIMITS")
+(serde_type_ref     ^module "examples/geometry" ^path "Point")
+(serde_protocol_ref ^module "examples/geometry" ^path "Drawable")
+(serde_fn_ref       ^module "examples/geometry" ^path "area")
+(serde_enum_ref     ^module "examples/agent"    ^path "SseEventKind")
+(serde_variant_ref  ^module "examples/agent"    ^path "SseEventKind/completed")
+(serde_ns_ref       ^module "examples/stdweb"   ^path "routes")
+(serde_value_ref    ^module "examples/config"   ^path "DEFAULT-LIMITS")
 ```
 
 - `^module` is the **package-root-relative source path** without extension —
@@ -201,8 +201,8 @@ Definition-like values serialize as reference nodes carrying two coordinates
   machines and absent for built-ins:
 
   ```gene
-  (serde-type-ref ^path "Str")            ; builtin — always resolvable
-  (serde-fn-ref   ^path "str/join")
+  (serde_type_ref ^path "Str")            ; builtin — always resolvable
+  (serde_fn_ref   ^path "str/join")
   ```
 
 - `^path` is the namespace path inside the module (nested namespaces join
@@ -219,7 +219,7 @@ on the `Application`, built **lazily on the first `serde/write` that needs a
 ref** — builtins walked once, each cached module walked once, results memoized
 — so module load and the dispatch path pay nothing when serde is unused. The
 index records types, protocols, enums, enum variants, functions, namespaces,
-and (for `serde-value-ref`, §7) module-level typed-instance bindings. Values
+and (for `serde_value_ref`, §7) module-level typed-instance bindings. Values
 defined at the REPL, inside function bodies, or anonymously are never in a
 module scope and so have no origin — they cannot be referenced. A type created
 at runtime can still have its *instances* serialized *if the type itself is
@@ -230,7 +230,7 @@ design-intended path (config files reference library types, not the running
 script's own).
 
 Enum **variants** are first-class values here (unlike the old design's enum
-members): `(serde-variant-ref ^path "Kind/completed")` resolves through the
+members): `(serde_variant_ref ^path "Kind/completed")` resolves through the
 enum, and enum *payload-carrying* values — `(Result/ok 42)` style nodes —
 serialize as instance nodes (§7) whose head is a variant ref.
 
@@ -242,7 +242,7 @@ top-level code**, so deserializing untrusted bytes would be arbitrary code
 execution, and even trusted payloads should not exercise ambient authority.
 The rule that "every new host power is a capability value" applies:
 
-- `serde/read-data` never resolves references — pure data in, pure data out.
+- `serde/read_data` never resolves references — pure data in, pure data out.
   It is the default and covers the primary use cases (§10).
 - `serde/read` resolves references **only against already-loaded modules**
   (the module cache) plus built-ins. A ref to an unloaded module raises
@@ -255,13 +255,13 @@ The rule that "every new host power is a capability value" applies:
   capability value (e.g. `Module/Load`), not by a bare flag:
 
   ```gene
-  (serde/read text ^load module-load-cap ^import ["a/b"])   ; post-MVP shape
+  (serde/read text ^load module_load_cap ^import ["a/b"])   ; post-MVP shape
   ```
 
   There is no "auto-import whatever the payload mentions" mode, ever.
 - **Restore hooks are policy-gated** (§7): plain `serde/read` performs only
   reference resolution and direct typed-data construction — it executes no
-  user code. `^allow-restore` opts trusted callers into `serde-restore`.
+  user code. `^allow_restore` opts trusted callers into `serde_restore`.
 - Deserialized payloads can never contain capability values (§3), so a
   payload cannot smuggle authority regardless of resolver policy.
 
@@ -274,13 +274,13 @@ violations, and version-envelope mismatches are all `SerdeError` with
 
 An instance of a user type serializes as an **instance node**: the canonical
 `(T ...)` form with the head replaced by a ref, props/body recursively
-serialized, and a reserved schema-version slot:
+serialized, and a reserved schema_version slot:
 
 ```gene
-(serde-inst (serde-type-ref ^module "examples/geometry" ^path "Point")
+(serde_inst (serde_type_ref ^module "examples/geometry" ^path "Point")
   ^x 10.0 ^y 20.0)
 
-(serde-inst ^schema-version 2 <type-ref> ...)   ; reserved; absent means 1
+(serde_inst ^schema_version 2 <type_ref> ...)   ; reserved; absent means 1
 ```
 
 Deserialization resolves the head and applies **direct typed-data
@@ -289,49 +289,49 @@ but *does not run `ctor`* (and never `new`). This is exactly the semantics
 design.md prescribes for representing "the value that exists, not the process
 that produced it". No blind property copying: field validation runs, unknown
 fields are rejected, required fields are enforced. Schema migration is a
-non-goal for v1; the `^schema-version` slot plus a named future hook
+non-goal for v1; the `^schema_version` slot plus a named future hook
 (`SerdeMigrate`, dispatched before construction) reserve the space so old
 payloads remain diagnosable rather than silently mis-read.
 
 **Hooks, for types whose state is not their fields.** These are two
 **type-direct messages** (not a `Serde` protocol — dispatch works both ways
-and needs no protocol/impl ceremony). `serde-state` is an instance message;
-`serde-restore` is dispatched on the *type object*:
+and needs no protocol/impl ceremony). `serde_state` is an instance message;
+`serde_restore` is dispatched on the *type object*:
 
 ```gene
 (type Conn ^props {^host Str ^live Bool}
   # Return this instance's persistent state (should be a data-bucket value).
-  (message serde-state [self] {^host self/host})
-  # Reconstruct from that state, dispatched on the type: (Conn ~ serde-restore s).
-  (message serde-restore [state] (Conn ^host state/host ^live true)))
+  (message serde_state [self] {^host self/host})
+  # Reconstruct from that state, dispatched on the type: (Conn ~ serde_restore s).
+  (message serde_restore [state] (Conn ^host state/host ^live true)))
 ```
 
-- A type with a `serde-state` message serializes as
-  `(serde-hooked <type-ref> (serde-state self))` and deserializes via
-  `(T ~ serde-restore state)` — the place to drop transient fields (sockets,
+- A type with a `serde_state` message serializes as
+  `(serde_hooked <type_ref> (serde_state self))` and deserializes via
+  `(T ~ serde_restore state)` — the place to drop transient fields (sockets,
   caches) and re-derive them.
-- **`serde-restore` executes user code, so it is off by default.** Plain
-  `serde/read` raises `SerdeError` on a `serde-hooked` payload;
-  `^policy (SerdePolicy ^allow-restore true)` enables it for trusted persisted
+- **`serde_restore` executes user code, so it is off by default.** Plain
+  `serde/read` raises `SerdeError` on a `serde_hooked` payload;
+  `^policy (SerdePolicy ^allow_restore true)` enables it for trusted persisted
   state. Untrusted input should never enable it — direct field construction is
   the safe path.
-- Types with no `serde-state` message get the default field-wise behavior; if
+- Types with no `serde_state` message get the default field-wise behavior; if
   any field value is bucket-3, serialization fails with the field's path.
-- **Recommendation, not yet enforced:** `serde-state` should return a
+- **Recommendation, not yet enforced:** `serde_state` should return a
   **data-bucket** value. The writer currently emits hook state through the
   full writer (so refs/instances could appear inside it), but keeping hook
   state pure data is simpler, safer, and easier to migrate; a type needing
   refs in its state should use a `full`-mode record directly instead.
 
 **Cell snapshots (full `write` only).** `serde/write` may emit
-`(serde-snapshot-cell v)` for a cell it encounters, and `serde/read`
+`(serde_snapshot_cell v)` for a cell it encounters, and `serde/read`
 reconstructs a fresh cell around the deserialized contents. This is
 explicitly *outside* the equality guarantee (identity is not preserved, and
 sharing is not preserved — two references to one cell become two cells) and
-is rejected by `read-data`. Payload authors who care should model state as
+is rejected by `read_data`. Payload authors who care should model state as
 data instead.
 
-**Named-value references, narrowed to an explicit marker.** `serde-value-ref`
+**Named-value references, narrowed to an explicit marker.** `serde_value_ref`
 (identity semantics: read-back yields the module's own object) is *not* emitted
 for arbitrary module-level bindings — a module global may be mutable state, a
 native handle, or a cache, and a broad ref mechanism would smuggle identity
@@ -350,39 +350,39 @@ fails with a clear error.
 
 ## 8. Resource limits (`SerdePolicy`)
 
-`read-data` on a network payload is an attack surface even with no code
+`read_data` on a network payload is an attack surface even with no code
 execution: big ints, byte literals, deep nesting, and giant containers all
 cost resources at parse time. Both readers take a policy with
 conservative-by-default screws, the generalization of `json/parse`'s existing
 depth cap:
 
 ```gene
-(serde/read-data text ^policy (SerdePolicy
-  ^max-bytes   10485760    ; input size — the real pre-parse memory bound
-  ^max-nodes   100000      ; total values constructed
-  ^max-depth   1000        ; nesting
-  ^max-symbols 10000))     ; distinct symbols in the constructed value (see note)
+(serde/read_data text ^policy (SerdePolicy
+  ^max_bytes   10485760    ; input size — the real pre-parse memory bound
+  ^max_nodes   100000      ; total values constructed
+  ^max_depth   1000        ; nesting
+  ^max_symbols 10000))     ; distinct symbols in the constructed value (see note)
 
 (serde/read text ^policy (SerdePolicy
   ...as above...
-  ^allow-restore false))   ; §7; module loading is a capability, not a flag (§6)
+  ^allow_restore false))   ; §7; module loading is a capability, not a flag (§6)
 ```
 
 Defaults are generous enough that trusted local use (config files, the
 gateway's own sqlite rows) never notices them; network-facing callers tighten
 them. Exceeding any limit is a `SerdeError` naming the limit.
 
-**`max-symbols` caveat (implementation reality).** Gene interns symbols in a
+**`max_symbols` caveat (implementation reality).** Gene interns symbols in a
 process-lifetime global table (`newSym`, `src/gene/types.nim`), and the reader
-interns *during* `readAll` — before `serde`'s walk runs. So `max-symbols`,
+interns *during* `readAll` — before `serde`'s walk runs. So `max_symbols`,
 which is enforced while decoding the already-parsed value, bounds the distinct
 symbols in the *constructed value* but does **not** prevent a payload from
-having already grown the global intern table at parse time. **`max-bytes` is
+having already grown the global intern table at parse time. **`max_bytes` is
 the real defense against interning-DoS**: a payload can introduce at most
-~`max-bytes/2` distinct symbol lexemes, so bounding input size bounds intern
-growth. To make `max-symbols` a true pre-intern cap, serde would need a
+~`max_bytes/2` distinct symbol lexemes, so bounding input size bounds intern
+growth. To make `max_symbols` a true pre-intern cap, serde would need a
 symbol-counting reader/token policy that runs before `newSym` — a future
-refinement; today, set `max-bytes` for untrusted input and treat `max-symbols`
+refinement; today, set `max_bytes` for untrusted input and treat `max_symbols`
 as a structural cap, not an interning-DoS guard.
 
 ## 9. API surface
@@ -390,41 +390,41 @@ as a structural cap, not an interning-DoS guard.
 A `serde` namespace in `src/gene/stdlib.nim`, beside `json`:
 
 ```gene
-(import serde [write-data read-data write read data? SerdeError SerdePolicy])
+(import serde [write_data read_data write read data? SerdeError SerdePolicy])
 
-(serde/write-data value)                 ; -> Str (data bucket only)
-(serde/read-data text)                   ; -> Any (no resolution, no hooks)
-(serde/read-data text ^policy p)
+(serde/write_data value)                 ; -> Str (data bucket only)
+(serde/read_data text)                   ; -> Any (no resolution, no hooks)
+(serde/read_data text ^policy p)
 (serde/write value)                      ; -> Str (data + refs + instances
-                                         ;         + snapshot-cells)
+                                         ;         + snapshot_cells)
 (serde/read text)                        ; -> Any (resolve vs loaded modules;
                                          ;         no user code executed)
-(serde/read text ^policy p)              ; may enable ^allow-restore
+(serde/read text ^policy p)              ; may enable ^allow_restore
 (serde/data? value)                      ; -> Bool
 ```
 
-Round-trip guarantee: `(= v (read-data (write-data v)))` under structural
+Round-trip guarantee: `(= v (read_data (write_data v)))` under structural
 equality for **every** data-bucket value — no exceptions, which is exactly
 why cells are not in the bucket and reserved heads are escaped.
 
 ## 10. Driving use cases (in implementation order)
 
 1. **Gateway persistence (ai-agent §12 milestone 11).** Session transcripts
-   and event logs are pure data (maps/lists/strings/ints). `write-data` into
-   a sqlite TEXT column via the existing `db/sqlite` backend; `read-data` on
+   and event logs are pure data (maps/lists/strings/ints). `write_data` into
+   a sqlite TEXT column via the existing `db/sqlite` backend; `read_data` on
    gateway restart. Needs only §4 — this is why data serdes ships first.
 2. **Send-safe messaging.** Replace the gateway's JSON-string channel
    workaround; any mutable-map payload crosses channels/actors as
-   `(write-data v)`.
+   `(write_data v)`.
 3. **Actor state snapshots.** `actor/snapshot` already exposes state as a
-   value; `write-data` makes it durable, enabling stop/restore across
+   value; `write_data` makes it durable, enabling stop/restore across
    process restarts for actors whose state is data.
 4. **Typed instances and refs** (§5–§7) as the config/document story: read a
    `.gene` data file whose nodes reconstruct as typed instances with
    validation but without executing arbitrary code.
 5. **Application persistence & resume.** The durable-store and crash-resume
    layer above this format — `serde/write`/`read` are its encode/decode, the
-   §7 `serde-state`/`serde-restore` hooks are its per-type resume primitive.
+   §7 `serde_state`/`serde_restore` hooks are its per-type resume primitive.
    Designed in docs/proposals/persistence.md.
 
 ## 11. Non-goals (first version)
@@ -433,8 +433,8 @@ why cells are not in the bucket and reserved heads are escaped.
 - Closure/generator/continuation serialization (would require the fiber
   continuation format, which is deliberately private).
 - Shared-structure/cycle preservation (error now; labels are a compatible
-  later extension inside `serde-v1`).
-- Schema migration hooks (`^schema-version` and `SerdeMigrate` reserve the
+  later extension inside `serde_v1`).
+- Schema migration hooks (`^schema_version` and `SerdeMigrate` reserve the
   space).
 - Package/version identity in refs (`^package`/`^version` reserved).
 - Module loading during `read` (post-MVP, and only behind a module-load
@@ -444,11 +444,11 @@ why cells are not in the bucket and reserved heads are escaped.
 
 ## 12. Staged plan
 
-1. **`serde` data core, complete.** `write-data`/`read-data`/`data?` +
+1. **`serde` data core, complete.** `write_data`/`read_data`/`data?` +
    `SerdeError` + `SerdePolicy` limits, implemented as a validating walk over
    the existing printer/reader (no forked grammar). Includes from day one:
-   reserved-head escaping (`serde-data-node`), float specials
-   (`serde-float`), cycle detection, and mechanical rejection of all other
+   reserved-head escaping (`serde_data_node`), float specials
+   (`serde_float`), cycle detection, and mechanical rejection of all other
    control tags. Spec tests: round-trip per kind (symbols, chars, sets,
    dates/times/timezones/durations, ranges, regex source+flags, bytes, big
    ints, nested mutable containers, `void`, float specials, **nodes with
@@ -463,11 +463,11 @@ why cells are not in the bucket and reserved heads are escaped.
    (`^package`/`^version` reserved), no-code-execution property.
 4. **Typed instances via direct construction.** No hooks. Spec tests: ctor
    is *not* run on read-back; field validation failures surface as
-   `SerdeError`; `^schema-version` accepted and exposed.
-5. **`Serde` hooks behind policy.** `serde-state`/`serde-restore`
-   (type-receiver dispatch), `^allow-restore` gating, `serde-snapshot-cell`
+   `SerdeError`; `^schema_version` accepted and exposed.
+5. **`Serde` hooks behind policy.** `serde_state`/`serde_restore`
+   (type-receiver dispatch), `^allow_restore` gating, `serde_snapshot_cell`
    in full write. Spec tests: hooks refused without policy; transient-field
-   reconstruction; snapshot-cell excluded from `read-data`.
+   reconstruction; snapshot-cell excluded from `read_data`.
 6. **Narrowed value refs.** `SerdeRef` marker protocol + qualification rules
    (§7). Spec tests: mutable/unmarked globals refuse to ref; identity
    semantics for qualified constants.

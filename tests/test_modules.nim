@@ -57,21 +57,21 @@ suite "modules — file imports":
       "[(macros ~ Stream/has_next) decl/value]").print() ==
       "[false 7]"
 
-  test "file modules receive a this-mod binding":
+  test "file modules receive a this_mod binding":
     writeModule("self.gene",
       "(var x 9) " &
-      "(var ds (filter (declarations this-mod) (fn [d] (== d/name \"x\")))) " &
+      "(var ds (filter (declarations this_mod) (fn [d] (== d/name \"x\")))) " &
       "(var decl (ds ~ Stream/next)) " &
       "(var seen decl/value)")
     check runProgram("(import [seen] from \"./self\") seen").print() == "9"
 
-  test "this-mod exposes module reflection helpers":
+  test "this_mod exposes module reflection helpers":
     writeModule("selfpath.gene",
       "(var marker 42) " &
-      "(var root (this-mod ~ Module/root_namespace)) " &
-      "(var reflected [(this-mod ~ Module/name) " &
-      "                (this-mod ~ Module/path) " &
-      "                (== root this-mod) " &
+      "(var root (this_mod ~ Module/root_namespace)) " &
+      "(var reflected [(this_mod ~ Module/name) " &
+      "                (this_mod ~ Module/path) " &
+      "                (== root this_mod) " &
       "                (/marker root)])")
     let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
     check reflected.listItems[0].strVal == "selfpath"
@@ -83,8 +83,8 @@ suite "modules — file imports":
   test "mod metadata persists on the module value":
     writeModule("meta.gene",
       "(mod renamed @doc \"module docs\") " &
-      "(var reflected [(this-mod ~ Module/name) " &
-      "                (/doc (this-mod ~ Module/meta))])")
+      "(var reflected [(this_mod ~ Module/name) " &
+      "                (/doc (this_mod ~ Module/meta))])")
     check runProgram("(import [reflected] from \"./meta\") reflected").print() ==
       "[\"renamed\" \"module docs\"]"
 
@@ -271,7 +271,7 @@ suite "modules — built-in identity and scope hygiene":
       "(var ds (filter (declarations m) (fn [d] (== d/name \"map\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
     check runProgram("(import from \"./decls2\" ^as m) " &
-      "(var ds (filter (declarations m) (fn [d] (== d/name \"this-mod\")))) " &
+      "(var ds (filter (declarations m) (fn [d] (== d/name \"this_mod\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":
@@ -279,10 +279,10 @@ suite "modules — built-in identity and scope hygiene":
     expect GeneError:
       discard runProgram("(import [map] from \"./decls2\")")
 
-  test "selected imports cannot pull this-mod out of a module":
+  test "selected imports cannot pull this_mod out of a module":
     writeModule("decls3.gene", "(var only-me 1)")
     expect GeneError:
-      discard runProgram("(import [this-mod] from \"./decls3\")")
+      discard runProgram("(import [this_mod] from \"./decls3\")")
 
 suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":
@@ -326,7 +326,7 @@ suite "modules — namespace-path imports and mod":
   test "explicit mod names the current module root":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "implicit")
-    check run(compileSource("(mod explicit) this-mod"), scope).print() ==
+    check run(compileSource("(mod explicit) this_mod"), scope).print() ==
       "(mod explicit)"
 
 suite "modules — Env imports":

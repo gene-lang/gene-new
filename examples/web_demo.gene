@@ -13,7 +13,7 @@
 #   - ^impl requests manual protocol impls; ^derive invokes protocol-local derive.
 # =============================================================================
 
-(mod web-demo
+(mod web_demo
   @doc "HTML is just nodes; routes are discovered with selectors and streams")
 
 (import net/http [Request Response serve])
@@ -36,7 +36,7 @@
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to-str self/name)))))
+         (to_str self/name)))))
 
 (protocol ToHtml
   (message to_html [self : Self] : Node))
@@ -205,7 +205,7 @@
       void)))
 
 (var routes : (Map Str Fn)
-  (this-mod/%declarations/%to_stream
+  (this_mod/%declarations/%to_stream
     ~ filter routed?
     ; ~ map route_entry
     ; ~ into {}))
@@ -218,7 +218,7 @@
   (var [k, v] pair)
   (if (== v void)
     ""
-    $" ${(to-str k)}=\"${(escape (to-str v))}\""))
+    $" ${(to_str k)}=\"${(escape (to_str v))}\""))
 
 (fn render_attrs [n : Node] : Str
   (n/%props/%to_pairs_stream
@@ -233,7 +233,7 @@
     ; ~ join ""))
 
 (fn render_node [n : Node] : Str
-  (var tag (to-str (n ~ head)))
+  (var tag (to_str (n ~ head)))
   ($ "<" tag (render_attrs n) ">"
      (render_children n)
      "</" tag ">"))
@@ -245,7 +245,7 @@
     (when (n : Node)
       (render_node n))
     (else
-      (escape (to-str x)))))
+      (escape (to_str x)))))
 
 # -----------------------------------------------------------------------------
 # The app is pure ordinary code. Request validation is a gradual typed boundary.

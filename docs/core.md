@@ -215,8 +215,8 @@ on the simple name.
 ### 3.5 Subtyping is structural from the impl
 
 ```gene
-(fn print-a [x : A] (println (x ~ A/do_a)))
-(print-a t)   # t : T, and T implements C, which inherits A
+(fn print_a [x : A] (println (x ~ A/do_a)))
+(print_a t)   # t : T, and T implements C, which inherits A
 ```
 
 Writing `impl C for T` is the only declaration needed; it implies `T` satisfies
@@ -402,12 +402,12 @@ accidentally universal. See §9.2 for the explicit universal opt-in.
 (protocol A
   (message do_a [self : Self] : Any)
   (derive [t req]
-    `(impl A for %t (message do_a [self] (to-str self/name)))))
+    `(impl A for %t (message do_a [self] (to_str self/name)))))
 
 (protocol B ^inherit [A]
   (message do_b [self : Self] : Any)
   (derive [t req]
-    `(impl B for %t (message do_b [self] (to-str self/value)))))
+    `(impl B for %t (message do_b [self] (to_str self/value)))))
 
 (type T ^props {^name Str ^value Int} ^derive [B])
 ```
@@ -676,7 +676,7 @@ those defaults without a per-type impl:
 
 ```gene
 (protocol Inspectable ^universal true
-  (message inspect [self] : Str (to-str self)))
+  (message inspect [self] : Str (to_str self)))
 ```
 
 Without the attribute, even a fully-defaulted protocol requires an explicit

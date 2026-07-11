@@ -816,22 +816,22 @@ proc tokenize(r: var Reader) =
 proc tokenKindName*(kind: TokenKind): string =
   case kind
   of tkEof: "eof"
-  of tkLParen: "l-paren"
-  of tkRParen: "r-paren"
-  of tkLBracket: "l-bracket"
-  of tkRBracket: "r-bracket"
-  of tkLBrace: "l-brace"
-  of tkRBrace: "r-brace"
-  of tkHashMapStart: "hash-map-start"
-  of tkHashLParen: "hash-l-paren"
-  of tkHashLBracket: "hash-l-bracket"
-  of tkHashLBrace: "hash-l-brace"
+  of tkLParen: "l_paren"
+  of tkRParen: "r_paren"
+  of tkLBracket: "l_bracket"
+  of tkRBracket: "r_bracket"
+  of tkLBrace: "l_brace"
+  of tkRBrace: "r_brace"
+  of tkHashMapStart: "hash_map_start"
+  of tkHashLParen: "hash_l_paren"
+  of tkHashLBracket: "hash_l_bracket"
+  of tkHashLBrace: "hash_l_brace"
   of tkCaret: "caret"
-  of tkCaretCaret: "caret-caret"
+  of tkCaretCaret: "caret_caret"
   of tkAt: "at"
-  of tkAtAt: "at-at"
+  of tkAtAt: "at_at"
   of tkTilde: "tilde"
-  of tkDotDotDot: "dot-dot-dot"
+  of tkDotDotDot: "dot_dot_dot"
   of tkString: "string"
   of tkBytes: "bytes"
   of tkRegex: "regex"
@@ -1232,7 +1232,7 @@ proc parseForm(r: var Reader, inList = false): Value =
   r.skipDatumComments()
   let tok = r.next()
   if r.options.maxDepth > 0 and r.parseDepth > r.options.maxDepth:
-    r.raiseReadErrorAt(tok, "reader max-depth exceeded (" &
+    r.raiseReadErrorAt(tok, "reader max_depth exceeded (" &
                        $r.options.maxDepth & ")")
   inc r.parseDepth
   defer: dec r.parseDepth

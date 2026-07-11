@@ -66,7 +66,7 @@ participates in equality or hashing.
   static and dynamic selector/slash-path access,
   functional selector updates, namespaces with qualified access and reflection,
   file-based modules (`import … from "path"`) with a load-once cache, cycle
-  detection, and `this-mod` introspection binding,
+  detection, and `this_mod` introspection binding,
   pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
   node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
   loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
@@ -85,14 +85,14 @@ participates in equality or hashing.
   explicit runtime FFI library loading through `ffi/open` and opaque
   `Ffi/Library` handles,
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
-  `lex-all`/`read-one`/`read-all` with `Token`, `LexError`, and `ParseError`,
+  `lex_all`/`read_one`/`read_all` with `Token`, `LexError`, and `ParseError`,
   a first typed native-compilation prototype for simple two-argument `Int`,
   `I64`, and `F64` arithmetic functions through the normal dynamic entry
   adapter, plus experimental C emission for selected fixed-representation
   typed functions with direct typed calls, selective generic
   monomorphization manifests, direct protocol-call dependency metadata,
   typed-module AOT manifests, non-suspending native frame descriptors for
-  selected AOT functions, mixed typed-native/bytecode recoverable-error frame
+  selected AOT functions, mixed typed_native/bytecode recoverable-error frame
   traces, and task-frame lowering manifests for resumable functions,
   generated `ffi/fn` adapter wrappers for supported C ABI declarations,
   including pointer-plus-length `C/Slice`/`Buffer` data views, plus `ffi/struct`,
@@ -109,20 +109,20 @@ participates in equality or hashing.
   entrypoint invocation, line-oriented
   `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
   and built-ins
-  (`+ - * / < > <= >= = same? hash not $ to-str head props body meta assoc-in
-  update-in panic cell Cell/get Cell/set Cell/swap Cell/update atomic-cell
-  AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare-exchange
+  (`+ - * / < > <= >= = same? hash not $ to_str head props body meta assoc_in
+  update_in panic cell Cell/get Cell/set Cell/swap Cell/update atomic_cell
+  AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare_exchange
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
   Module/root_namespace Module/name Module/path Module/meta Module/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
-  Stream/next Stream/close Task/cancel Task/detach Fs/read-text-async
-  Fs/write-text-async Net/tcp-read-text-async Net/tcp-write-text-async sleep
+  Stream/next Stream/close Task/cancel Task/detach Fs/read_text_async
+  Fs/write_text_async Net/tcp_read_text_async Net/tcp_write_text_async sleep
   print println`).
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
   Functions containing `yield` return lazy streams.
 
-  The typed-native C backend remains experimental. The FFI MVP surface is more
+  The typed_native C backend remains experimental. The FFI MVP surface is more
   concrete: generated `ffi/fn` wrappers are emitted for supported ABI shapes
   instead of placeholder skeletons, and dynamic `ffi/bind` covers scalar,
   C-string, pointer, pointer-plus-length slice/buffer, and owned-pointer release
@@ -137,9 +137,9 @@ participates in equality or hashing.
 > to run without waiting for a timer deadline.
 > `Channel/send`/`Channel/recv`, timers, and actor mailbox backpressure suspend
 > and resume the whole task by capturing its heap frame stack. `actor/ask
-> ^timeout-ms N` fails the pending request with `ActorError` if no reply arrives
+> ^timeout_ms N` fails the pending request with `ActorError` if no reply arrives
 > before the timer. `supervisor ^events ch` emits `ActorFailure` events for actor
-> handler failures, supports optional `^dead-letter ch` fallback when the primary
+> handler failures, supports optional `^dead_letter ch` fallback when the primary
 > event sink is closed, full, or rejects the event, and queues retryable delivery
 > when a full sink has no available fallback.
 > Spawned fibers publish their captured scope/value graph so threaded builds use
@@ -170,11 +170,11 @@ participates in equality or hashing.
 > Native code can create external-pending tasks and settle them later through
 > rooted completion, failure, or cancellation hooks; root `await` treats those
 > tasks as external progress rather than scheduler deadlock, which is the first
-> async-I/O suspension hook for file/network/native operation backends. `Fs/read-text-async`
-> and `Fs/write-text-async` return tasks and, in threaded atomicArc builds with
+> async-I/O suspension hook for file/network/native operation backends. `Fs/read_text_async`
+> and `Fs/write_text_async` return tasks and, in threaded atomicArc builds with
 > workers enabled, perform text file I/O on the worker lane while the awaiting
-> Gene task is suspended. `Net/tcp-read-text-async` and
-> `Net/tcp-write-text-async` use the same path for bounded TCP connect/read and
+> Gene task is suspended. `Net/tcp_read_text_async` and
+> `Net/tcp_write_text_async` use the same path for bounded TCP connect/read and
 > connect/write operations with explicit `Net/Connect` authority. The worker
 > async-I/O queue is bounded by `GENE_ASYNC_IO_MAX_QUEUE` (default 1024); a full
 > queue returns a failed task so producers receive an explicit backpressure
@@ -281,7 +281,7 @@ weak captured-scope edges. Direct mutable Cell/Env reference cycles (e.g. a
 self-referential `cell`) are reclaimed by a conservative trial-deletion pass, and
 Env-bound closures use weak local captures that are strengthened when the Env
 escapes. Symbols are interned to immediate ids. Build with
-`-d:geneRcStats` to expose `liveManaged` and `Runtime/gc-stats` for
+`-d:geneRcStats` to expose `liveManaged` and `Runtime/gc_stats` for
 retain/release auditing. Values crossing `Send` boundaries are marked as
 published; in threaded builds, manual-RC heap objects switch to atomic
 retain/release after that marker while thread-local objects stay on the

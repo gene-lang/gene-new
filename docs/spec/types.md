@@ -20,4 +20,4 @@ containers”.
 - Single nominal inheritance preserves parent field schemas. Type-direct
   overrides preserve the inherited callable signature exactly in the MVP.
 - Persistent updates return a new root; `!` operations mutate only mutable
-  containers. `freeze` is deep, `freeze-shallow` is shallow, and `thaw` is deep.
+  containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.

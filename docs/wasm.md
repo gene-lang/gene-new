@@ -64,7 +64,7 @@ Mapping each hostile dependency to its wasm reality:
 | `dynlib` | FFI (`ffi/open`), db/curl/curses backends | **none** — no dynamic loading | **none** |
 | `net` | `Net/tcp-*-async`, `net/http` server | no BSD sockets (fetch/WebSocket only) | no listening sockets; limited connect |
 | `osproc`, `posix` | `os/exec` (agent `run_shell`) | **none** — no subprocess | **none** |
-| `os` (env, fs) | `os/get-env`, `Fs/*` | virtual FS + bridged env | real files + env |
+| `os` (env, fs) | `os/get_env`, `Fs/*` | virtual FS + bridged env | real files + env |
 | `locks`, `cpuinfo`, threads | atomicArc worker lane | needs COOP/COEP + special flags | no threads (preview 1) |
 | `monotimes`, `times` | scheduler timers | ok (bridged clock) | ok |
 
@@ -180,9 +180,9 @@ namespaces register.
 | clock / random | JS imports | WASI `clock_time_get` / `random_get` |
 | async | Promise via §A.5 completion ABI | **none** (preview 1 has no event loop) |
 
-Correcting the blanket "keep `Fs/*` / `os/get-env`" in the source map below:
+Correcting the blanket "keep `Fs/*` / `os/get_env`" in the source map below:
 **the browser MVP excludes filesystem and env** unless the JS loader explicitly
-provides them, so `Fs/*` and `os/get-env` register only in `geneWasmWasi`. The
+provides them, so `Fs/*` and `os/get_env` register only in `geneWasmWasi`. The
 browser profile is pure language + the §A.4 eval ABI, nothing that touches a
 disk or an environment it does not have.
 
@@ -324,7 +324,7 @@ Implemented:
 Optional, for the size/clarity optimization only (not required, §A.2):
 
 - gate `dynlib`/`net`/`osproc` imports and their namespace registrations behind
-  `when not defined(geneWasm)`; register `os/get-env` and `Fs/*` only under a
+  `when not defined(geneWasm)`; register `os/get_env` and `Fs/*` only under a
   WASI profile, not the browser profile (§A.4.1).
 - new `src/gene/wasm.nim` (Target B only) — the wasmtime dynlib backend,
   `include`d by vm.nim beside the db/os/json code, same as `stdlib.nim`.

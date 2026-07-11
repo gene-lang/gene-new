@@ -72,7 +72,7 @@ static void gene_curses_restore_termios(void) {
 static void gene_curses_restore_display(void) {
   if (isatty(STDOUT_FILENO)) {
     /* DECSTBM (\033[r) homes the cursor as a side effect, so wrap it in
-       DECSC/DECRC (\0337/\0338); otherwise output after close-input lands at
+       DECSC/DECRC (\0337/\0338); otherwise output after close_input lands at
        the top of the screen and overwrites existing content. */
     const char *seq = "\033[?2004l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338";
     write(STDOUT_FILENO, seq, sizeof("\033[?2004l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338") - 1);
@@ -329,8 +329,8 @@ include ./http_server
 
 # --- os: environment, subprocess, and line input (examples/ai_agent/design.md §3,§6) ---
 #
-# Host authority is capability-gated exactly like Fs/Net: `os/get-env` needs an
-# `Os/Env` value and `os/exec`/`os/exec-stdio` need `Os/Exec`, so a launcher can
+# Host authority is capability-gated exactly like Fs/Net: `os/get_env` needs an
+# `Os/Env` value and `os/exec`/`os/exec_stdio` need `Os/Exec`, so a launcher can
 # hand out env+file access without shell access. Errors are the typed `OsError`.
 
 proc raiseOsError(message: string, scope: Scope) =
@@ -354,17 +354,17 @@ proc requireOsExec(name: string, value: Value, scope: Scope) =
 proc biOsGetEnv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len notin 2..3:
     raise newException(GeneError,
-      "os/get-env expects (Os/Env, name) or (Os/Env, name, default), got " &
+      "os/get_env expects (Os/Env, name) or (Os/Env, name, default), got " &
       $args.len & " arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsEnv("os/get-env", args[0], scope)
-  requireStr("os/get-env name", args[1])
+  requireOsEnv("os/get_env", args[0], scope)
+  requireStr("os/get_env name", args[1])
   if existsEnv(args[1].strVal):
     newStr(getEnv(args[1].strVal))
   elif args.len == 3:
     args[2]
   else:
-    raiseOsError("os/get-env: environment variable not set: " &
+    raiseOsError("os/get_env: environment variable not set: " &
                  args[1].strVal, scope)
     NIL
 
@@ -380,10 +380,10 @@ const osExecDefaultOutputCap = 1024 * 1024
 const osExecPollMs = 5
 
 proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## Run a subprocess and return {^status ^stdout ^stderr ^timed-out}.
+  ## Run a subprocess and return {^status ^stdout ^stderr ^timed_out}.
   ## `^cmd` is the program, `^args` a list of Str arguments (no shell parsing
-  ## unless the caller passes a shell explicitly), `^timeout-ms` bounds the run,
-  ## and captured output is truncated at `^max-bytes`. Never uses a shell to
+  ## unless the caller passes a shell explicitly), `^timeout_ms` bounds the run,
+  ## and captured output is truncated at `^max_bytes`. Never uses a shell to
   ## split the command, so injection through argument values is not possible.
   if args.len != 1:
     raise newException(GeneError,
@@ -410,8 +410,8 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
         for item in v.listItems:
           requireStr("os/exec ^args item", item)
           procArgs.add item.strVal
-      of "timeout-ms": timeoutMs = int(requireInt64("os/exec ^timeout-ms", v))
-      of "max-bytes": maxBytes = int(requireInt64("os/exec ^max-bytes", v))
+      of "timeout_ms": timeoutMs = int(requireInt64("os/exec ^timeout_ms", v))
+      of "max_bytes": maxBytes = int(requireInt64("os/exec ^max_bytes", v))
       of "dir":
         requireStr("os/exec ^dir", v)
         workdir = v.strVal
@@ -499,22 +499,22 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   props["status"] = newInt(exitCode)
   props["stdout"] = newStr(outText)
   props["stderr"] = newStr(errText)
-  props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
-  props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+  props["stdout_truncated"] = if outTruncated: TRUE else: FALSE
+  props["stderr_truncated"] = if errTruncated: TRUE else: FALSE
   props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
-  props["timed-out"] = if timedOut: TRUE else: FALSE
+  props["timed_out"] = if timedOut: TRUE else: FALSE
   newMap(props)
 
 proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Run a subprocess like os/exec, but invoke optional callbacks as output
-  ## arrives: ^stdout receives raw chunks and ^stdout-line receives complete
+  ## arrives: ^stdout receives raw chunks and ^stdout_line receives complete
   ## stdout lines without the trailing newline. The final return value keeps the
   ## same captured-output shape as os/exec.
   if args.len != 1:
     raise newException(GeneError,
-      "os/exec-stream expects the Os/Exec capability plus named arguments")
+      "os/exec_stream expects the Os/Exec capability plus named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsExec("os/exec-stream", args[0], scope)
+  requireOsExec("os/exec_stream", args[0], scope)
   var cmd = ""
   var cmdSet = false
   var procArgs: seq[string]
@@ -529,30 +529,30 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       let v = call[].namedValues[i]
       case name
       of "cmd":
-        requireStr("os/exec-stream ^cmd", v)
+        requireStr("os/exec_stream ^cmd", v)
         cmd = v.strVal
         cmdSet = true
       of "args":
         if v.kind != vkList:
-          raiseOsError("os/exec-stream ^args must be a List of Str", scope)
+          raiseOsError("os/exec_stream ^args must be a List of Str", scope)
         for item in v.listItems:
-          requireStr("os/exec-stream ^args item", item)
+          requireStr("os/exec_stream ^args item", item)
           procArgs.add item.strVal
-      of "timeout-ms": timeoutMs = int(requireInt64("os/exec-stream ^timeout-ms", v))
-      of "max-bytes": maxBytes = int(requireInt64("os/exec-stream ^max-bytes", v))
+      of "timeout_ms": timeoutMs = int(requireInt64("os/exec_stream ^timeout_ms", v))
+      of "max_bytes": maxBytes = int(requireInt64("os/exec_stream ^max_bytes", v))
       of "dir":
-        requireStr("os/exec-stream ^dir", v)
+        requireStr("os/exec_stream ^dir", v)
         workdir = v.strVal
       of "stdout":
         stdoutCb = v
-      of "stdout-line":
+      of "stdout_line":
         stdoutLineCb = v
       of "stderr":
         stderrCb = v
       else:
-        raiseOsError("os/exec-stream got unexpected named argument: " & name, scope)
+        raiseOsError("os/exec_stream got unexpected named argument: " & name, scope)
   if not cmdSet or cmd.len == 0:
-    raiseOsError("os/exec-stream requires a non-empty ^cmd", scope)
+    raiseOsError("os/exec_stream requires a non-empty ^cmd", scope)
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
 
@@ -561,7 +561,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     process = startProcess(cmd, workingDir = workdir, args = procArgs,
                            options = {poUsePath})
   except OSError as e:
-    raiseOsError("os/exec-stream could not start '" & cmd & "': " & e.msg, scope)
+    raiseOsError("os/exec_stream could not start '" & cmd & "': " & e.msg, scope)
 
   var outText = ""
   var errText = ""
@@ -648,10 +648,10 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       props["status"] = newInt(exitCode)
       props["stdout"] = newStr(outText)
       props["stderr"] = newStr(errText)
-      props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
-      props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+      props["stdout_truncated"] = if outTruncated: TRUE else: FALSE
+      props["stderr_truncated"] = if errTruncated: TRUE else: FALSE
       props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
-      props["timed-out"] = if timedOut: TRUE else: FALSE
+      props["timed_out"] = if timedOut: TRUE else: FALSE
       return newMap(props)
     else:
       var exitCode = process.waitForExit(if timeoutMs >= 0: timeoutMs else: -1)
@@ -668,10 +668,10 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       props["status"] = newInt(exitCode)
       props["stdout"] = newStr(outText)
       props["stderr"] = newStr(errText)
-      props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
-      props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
+      props["stdout_truncated"] = if outTruncated: TRUE else: FALSE
+      props["stderr_truncated"] = if errTruncated: TRUE else: FALSE
       props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
-      props["timed-out"] = if timedOut: TRUE else: FALSE
+      props["timed_out"] = if timedOut: TRUE else: FALSE
       return newMap(props)
   except:
     if process.running:
@@ -686,9 +686,9 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   ## `os/exec` would break interactive behavior.
   if args.len != 1:
     raise newException(GeneError,
-      "os/exec-stdio expects the Os/Exec capability plus named arguments")
+      "os/exec_stdio expects the Os/Exec capability plus named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsExec("os/exec-stdio", args[0], scope)
+  requireOsExec("os/exec_stdio", args[0], scope)
   var cmd = ""
   var cmdSet = false
   var procArgs: seq[string]
@@ -698,28 +698,28 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       let v = call[].namedValues[i]
       case name
       of "cmd":
-        requireStr("os/exec-stdio ^cmd", v)
+        requireStr("os/exec_stdio ^cmd", v)
         cmd = v.strVal
         cmdSet = true
       of "args":
         if v.kind != vkList:
-          raiseOsError("os/exec-stdio ^args must be a List of Str", scope)
+          raiseOsError("os/exec_stdio ^args must be a List of Str", scope)
         for item in v.listItems:
-          requireStr("os/exec-stdio ^args item", item)
+          requireStr("os/exec_stdio ^args item", item)
           procArgs.add item.strVal
       of "dir":
-        requireStr("os/exec-stdio ^dir", v)
+        requireStr("os/exec_stdio ^dir", v)
         workdir = v.strVal
       else:
-        raiseOsError("os/exec-stdio got unexpected named argument: " & name, scope)
+        raiseOsError("os/exec_stdio got unexpected named argument: " & name, scope)
   if not cmdSet or cmd.len == 0:
-    raiseOsError("os/exec-stdio requires a non-empty ^cmd", scope)
+    raiseOsError("os/exec_stdio requires a non-empty ^cmd", scope)
   var process: Process
   try:
     process = startProcess(cmd, workingDir = workdir, args = procArgs,
                            options = {poUsePath, poParentStreams})
   except OSError as e:
-    raiseOsError("os/exec-stdio could not start '" & cmd & "': " & e.msg, scope)
+    raiseOsError("os/exec_stdio could not start '" & cmd & "': " & e.msg, scope)
   # system(3) semantics: the child owns the terminal, so Ctrl-C must reach the
   # child (and whatever it runs), not kill this process while it waits.
   when defined(posix):
@@ -736,7 +736,7 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         discard sigaction(SIGINT, oldInt, nil)
     process.close()
 
-# --- os/exec-async + os/exec-stream-async: subprocess on a dedicated thread ---
+# --- os/exec_async + os/exec_stream_async: subprocess on a dedicated thread ---
 #
 # The synchronous exec natives block the scheduler thread, freezing every
 # fiber (and the net/http event loop) for the duration of the child — the
@@ -948,11 +948,11 @@ when compileOption("threads"):
               props["status"] = newInt(ctx.resultStatus)
               props["stdout"] = newStr(consumeSharedExecText(ctx.resultStdout))
               props["stderr"] = newStr(consumeSharedExecText(ctx.resultStderr))
-              props["stdout-truncated"] = newBool(ctx.resultStdoutTruncated)
-              props["stderr-truncated"] = newBool(ctx.resultStderrTruncated)
+              props["stdout_truncated"] = newBool(ctx.resultStdoutTruncated)
+              props["stderr_truncated"] = newBool(ctx.resultStderrTruncated)
               props["truncated"] = newBool(ctx.resultStdoutTruncated or
                                              ctx.resultStderrTruncated)
-              props["timed-out"] = newBool(ctx.resultTimedOut)
+              props["timed_out"] = newBool(ctx.resultTimedOut)
               if tryCompleteTask(task, newMap(props)):
                 wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
           else:
@@ -1202,18 +1202,18 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
         for item in v.listItems:
           requireStr(name & " ^args item", item)
           procArgs.add item.strVal
-      of "timeout-ms":
-        timeoutMs = int(requireInt64(name & " ^timeout-ms", v))
-      of "max-bytes":
-        maxBytes = int(requireInt64(name & " ^max-bytes", v))
+      of "timeout_ms":
+        timeoutMs = int(requireInt64(name & " ^timeout_ms", v))
+      of "max_bytes":
+        maxBytes = int(requireInt64(name & " ^max_bytes", v))
       of "dir":
         requireStr(name & " ^dir", v)
         workdir = v.strVal
-      of "stdout-chan":
+      of "stdout_chan":
         if not wantChan:
-          raiseOsError(name & " got unexpected named argument: stdout-chan",
+          raiseOsError(name & " got unexpected named argument: stdout_chan",
                        scope)
-        requireChannel(name & " ^stdout-chan", v)
+        requireChannel(name & " ^stdout_chan", v)
         lineChan = v
       else:
         raiseOsError(name & " got unexpected named argument: " & argName,
@@ -1223,7 +1223,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
   if wantChan and lineChan.kind == vkNil:
-    raiseOsError(name & " requires ^stdout-chan (a Channel of stdout lines)",
+    raiseOsError(name & " requires ^stdout_chan (a Channel of stdout lines)",
                  scope)
   when compileOption("threads"):
     if scope == nil or scope.application == nil:
@@ -1281,17 +1281,17 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
 proc biOsExecAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## os/exec contract, but returns a Task settled off-thread: the scheduler
   ## keeps running fibers while the child executes. Await for the result map.
-  biOsExecAsyncImpl("os/exec-async", false, args, call)
+  biOsExecAsyncImpl("os/exec_async", false, args, call)
 
 proc biOsExecStreamAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## os/exec-async plus live stdout lines: each complete line (CR stripped) is
-  ## sent to ^stdout-chan as it arrives; the channel is closed when the child
+  ## os/exec_async plus live stdout lines: each complete line (CR stripped) is
+  ## sent to ^stdout_chan as it arrives; the channel is closed when the child
   ## exits, then the Task settles with the captured result map.
-  biOsExecAsyncImpl("os/exec-stream-async", true, args, call)
+  biOsExecAsyncImpl("os/exec_stream_async", true, args, call)
 
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
-    raise newException(GeneError, "os/stdin-tty? takes no arguments")
+    raise newException(GeneError, "os/stdin_tty? takes no arguments")
   when defined(posix):
     if isatty(STDIN_FILENO) != 0: TRUE else: FALSE
   else:
@@ -1303,7 +1303,7 @@ proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
   ## Read one line from stdin; returns nil at EOF. No capability: reading the
   ## program's own stdin is not host authority the way env/exec/files are.
   if args.len != 0:
-    raise newException(GeneError, "os/read-line takes no arguments")
+    raise newException(GeneError, "os/read_line takes no arguments")
   try:
     newStr(stdin.readLine())
   except EOFError:
@@ -1319,7 +1319,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       cSaveTermios()
       cSetLocale()
       if cInitscr() == nil:
-        raise newException(GeneError, "os/read-input could not initialize ncurses")
+        raise newException(GeneError, "os/read_input could not initialize ncurses")
       cursesInputActive = true
       cursesColorsReady = false
       cursesPasteReady = false
@@ -1672,9 +1672,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
 proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Read one submitted input string. On a TTY this uses a small ncurses editor;
-  ## in pipes it falls back to read-line so scripts and tests stay deterministic.
+  ## in pipes it falls back to read_line so scripts and tests stay deterministic.
   if args.len != 0:
-    raise newException(GeneError, "os/read-input expects named arguments only")
+    raise newException(GeneError, "os/read_input expects named arguments only")
   var prompt = ""
   var status = ""
   var output = ""
@@ -1685,25 +1685,25 @@ proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       let v = call[].namedValues[i]
       case name
       of "prompt":
-        requireStr("os/read-input ^prompt", v)
+        requireStr("os/read_input ^prompt", v)
         prompt = v.strVal
       of "status":
-        requireStr("os/read-input ^status", v)
+        requireStr("os/read_input ^status", v)
         status = v.strVal
       of "output":
-        requireStr("os/read-input ^output", v)
+        requireStr("os/read_input ^output", v)
         output = v.strVal
       of "multiline":
         if v.kind != vkBool:
-          raise newException(GeneError, "os/read-input ^multiline must be Bool")
+          raise newException(GeneError, "os/read_input ^multiline must be Bool")
         multiline = v.boolVal
       of "persistent":
         if v.kind != vkBool:
-          raise newException(GeneError, "os/read-input ^persistent must be Bool")
+          raise newException(GeneError, "os/read_input ^persistent must be Bool")
         persistent = v.boolVal
       else:
         raise newException(GeneError,
-          "os/read-input got unexpected named argument: " & name)
+          "os/read_input got unexpected named argument: " & name)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if isatty(STDIN_FILENO) != 0:
       return readCursesInput(prompt, status, output, multiline, persistent)
@@ -1714,9 +1714,9 @@ proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 
 proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Redraw the ncurses input surface without reading. This lets a program using
-  ## persistent os/read-input repaint streamed output between prompts.
+  ## persistent os/read_input repaint streamed output between prompts.
   if args.len != 0:
-    raise newException(GeneError, "os/refresh-input expects named arguments only")
+    raise newException(GeneError, "os/refresh_input expects named arguments only")
   var prompt = ""
   var status = ""
   var output = ""
@@ -1725,17 +1725,17 @@ proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nim
       let v = call[].namedValues[i]
       case name
       of "prompt":
-        requireStr("os/refresh-input ^prompt", v)
+        requireStr("os/refresh_input ^prompt", v)
         prompt = v.strVal
       of "status":
-        requireStr("os/refresh-input ^status", v)
+        requireStr("os/refresh_input ^status", v)
         status = v.strVal
       of "output":
-        requireStr("os/refresh-input ^output", v)
+        requireStr("os/refresh_input ^output", v)
         output = v.strVal
       else:
         raise newException(GeneError,
-          "os/refresh-input got unexpected named argument: " & name)
+          "os/refresh_input got unexpected named argument: " & name)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if isatty(STDIN_FILENO) != 0:
       openCursesInput()
@@ -1747,7 +1747,7 @@ proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc biOsCloseInput(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
-    raise newException(GeneError, "os/close-input takes no arguments")
+    raise newException(GeneError, "os/close_input takes no arguments")
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     closeCursesInput()
   NIL
@@ -1798,55 +1798,55 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/read-text expects (Fs/ReadDir, path)")
+    raise newException(GeneError, "Fs/read_text expects (Fs/ReadDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("Fs/read-text", args[0])
-  requireStr("Fs/read-text path", args[1])
+  requireFsReadDir("Fs/read_text", args[0])
+  requireStr("Fs/read_text path", args[1])
   try:
     newStr(readFile(args[1].strVal))
   except IOError as e:
-    raiseOsError("Fs/read-text: " & e.msg, scope)
+    raiseOsError("Fs/read_text: " & e.msg, scope)
     NIL
 
 proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
-    raise newException(GeneError, "Fs/write-text expects (Fs/WriteDir, path, text)")
+    raise newException(GeneError, "Fs/write_text expects (Fs/WriteDir, path, text)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("Fs/write-text", args[0])
-  requireStr("Fs/write-text path", args[1])
-  requireStr("Fs/write-text text", args[2])
+  requireFsWriteDir("Fs/write_text", args[0])
+  requireStr("Fs/write_text path", args[1])
+  requireStr("Fs/write_text text", args[2])
   try:
     writeFile(args[1].strVal, args[2].strVal)
   except IOError as e:
-    raiseOsError("Fs/write-text: " & e.msg, scope)
+    raiseOsError("Fs/write_text: " & e.msg, scope)
   NIL
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/list-dir expects (Fs/ReadDir, path)")
+    raise newException(GeneError, "Fs/list_dir expects (Fs/ReadDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("Fs/list-dir", args[0])
-  requireStr("Fs/list-dir path", args[1])
+  requireFsReadDir("Fs/list_dir", args[0])
+  requireStr("Fs/list_dir path", args[1])
   if not dirExists(args[1].strVal):
-    raiseOsError("Fs/list-dir: not a directory: " & args[1].strVal, scope)
+    raiseOsError("Fs/list_dir: not a directory: " & args[1].strVal, scope)
   var names: seq[Value]
   try:
     for kind, path in walkDir(args[1].strVal, relative = true):
       names.add newStr(path)
   except OSError as e:
-    raiseOsError("Fs/list-dir: " & e.msg, scope)
+    raiseOsError("Fs/list_dir: " & e.msg, scope)
   newList(names)
 
 proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/make-dir expects (Fs/WriteDir, path)")
+    raise newException(GeneError, "Fs/make_dir expects (Fs/WriteDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("Fs/make-dir", args[0])
-  requireStr("Fs/make-dir path", args[1])
+  requireFsWriteDir("Fs/make_dir", args[0])
+  requireStr("Fs/make_dir path", args[1])
   try:
     createDir(args[1].strVal)
   except OSError as e:
-    raiseOsError("Fs/make-dir: " & e.msg, scope)
+    raiseOsError("Fs/make_dir: " & e.msg, scope)
   NIL
 
 proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -1871,10 +1871,10 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   ## must resolve to (and be checked against) where it would actually write,
   ## not treated as an ordinary in-workspace name.
   if args.len != 2:
-    raise newException(GeneError, "Fs/real-path expects (Fs/ReadDir, path)")
+    raise newException(GeneError, "Fs/real_path expects (Fs/ReadDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("Fs/real-path", args[0])
-  requireStr("Fs/real-path path", args[1])
+  requireFsReadDir("Fs/real_path", args[0])
+  requireStr("Fs/real_path path", args[1])
   var p = if args[1].strVal.len > 0: args[1].strVal else: "."
   try:
     # Follow a chain of final symlinks whose target may not exist (a dangling
@@ -1904,7 +1904,7 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
       resolved = resolved / tail[i]
     newStr(normalizedPath(resolved))
   except OSError as e:
-    raiseOsError("Fs/real-path: " & e.msg, scope)
+    raiseOsError("Fs/real_path: " & e.msg, scope)
     NIL
 
 # --- json: parse and stringify over Gene value kinds (examples/ai_agent/design.md §5) ---
@@ -2161,20 +2161,20 @@ proc biJsonStringify(args: openArray[Value], call: ptr NativeCall): Value {.nimc
 
 # --- serde: Gene-text serialization, data core -------------------------------
 #
-# Stage 1 of docs/proposals/serialization.md: write-data / read-data / data?
+# Stage 1 of docs/proposals/serialization.md: write_data / read_data / data?
 # over the data bucket, riding the canonical printer/reader. Serialized text is
-# a (serde-v1 <payload>) envelope of ordinary Gene source. Control tags are
-# dash-named plain symbols (serde-v1, serde-float, serde-sym, serde-map,
-# serde-set, serde-range, serde-timezone, serde-duration, serde-data-node):
+# a (serde_v1 <payload>) envelope of ordinary Gene source. Control tags are
+# underscore-named plain symbols (serde_v1, serde_float, serde_sym, serde_map,
+# serde_set, serde_range, serde_timezone, serde_duration, serde_data_node):
 # slash tokens read back as (path ...) nodes, so slash-headed tags would not
 # survive a print/read cycle. The design doc's serde/* names refer to these.
 #
-# Round-trip guarantee: (= v (read-data (write-data v))) under structural
+# Round-trip guarantee: (= v (read_data (write_data v))) under structural
 # equality for every data-bucket value. Everything that would falsify it is
 # either escaped (reserved heads, non-rereadable symbols and map keys, float
 # specials) or rejected (cells and other identity/process-bound values).
 
-const serdeReservedPrefix = "serde-"
+const serdeReservedPrefix = "serde_"
 const serdeDefaultMaxBytes = 10_485_760
 const serdeDefaultMaxNodes = 100_000
 const serdeDefaultMaxDepth = 1_000
@@ -2185,13 +2185,13 @@ type SerdePolicyLimits = object
   maxNodes: int
   maxDepth: int
   maxSymbols: int
-  allowRestore: bool   # serde-hooked serde-restore runs user code; off by default
+  allowRestore: bool   # serde_hooked serde_restore runs user code; off by default
 
 type SerdeWriter = object
   sb: string
   scope: Scope
   app: Application                  # nil unless allowRefs (origin resolution)
-  allowRefs: bool                   # serde/write emits refs; write-data errors
+  allowRefs: bool                   # serde/write emits refs; write_data errors
   path: seq[string]
   onPath: HashSet[uint64]           # container identities on the current path
   symCache: Table[string, bool]     # symbol text -> re-reads verbatim
@@ -2200,7 +2200,7 @@ type SerdeWriter = object
 type SerdeReader = object
   scope: Scope
   app: Application                  # nil unless resolveRefs
-  resolveRefs: bool                 # serde/read resolves refs; read-data errors
+  resolveRefs: bool                 # serde/read resolves refs; read_data errors
   limits: SerdePolicyLimits
   nodes: int
   symbols: HashSet[string]
@@ -2257,7 +2257,7 @@ proc serdeSymbolRereads(w: var SerdeWriter, s: string): bool =
 
 proc serdePropKeyUsable(w: var SerdeWriter, k: string): bool =
   ## A prop key is emitted as `^key` only if that text reads back to the same
-  ## single-entry map. Otherwise the whole container uses the serde-map escape.
+  ## single-entry map. Otherwise the whole container uses the serde_map escape.
   if k in w.keyCache:
     return w.keyCache[k]
   if serdeFastBareName(k):
@@ -2431,8 +2431,8 @@ proc serdeMapKeysUsable(w: var SerdeWriter, entries: PropTable): bool =
 
 proc serdeEmitEscapedMap(w: var SerdeWriter, entries: PropTable,
                          immutable: bool) =
-  ## (serde-map <immutable> [k1 v1 k2 v2 ...]) — keys as strings.
-  w.sb.add "(serde-map "
+  ## (serde_map <immutable> [k1 v1 k2 v2 ...]) — keys as strings.
+  w.sb.add "(serde_map "
   w.sb.add (if immutable: "true" else: "false")
   w.sb.add " ["
   var first = true
@@ -2477,37 +2477,37 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
   of vkFloat:
     let f = v.floatVal
     if f != f:
-      w.sb.add "(serde-float \"nan\")"
+      w.sb.add "(serde_float \"nan\")"
     elif f == Inf:
-      w.sb.add "(serde-float \"+inf\")"
+      w.sb.add "(serde_float \"+inf\")"
     elif f == NegInf:
-      w.sb.add "(serde-float \"-inf\")"
+      w.sb.add "(serde_float \"-inf\")"
     elif f == 0.0 and 1.0 / f == NegInf:
-      w.sb.add "(serde-float \"-0.0\")"
+      w.sb.add "(serde_float \"-0.0\")"
     else:
       w.sb.add print(v)
   of vkSymbol:
     if serdeSymbolRereads(w, v.symVal):
       w.sb.add v.symVal
     else:
-      w.sb.add "(serde-sym "
+      w.sb.add "(serde_sym "
       serdeEmitStrLit(w, v.symVal)
       w.sb.add ')'
   of vkTimezone:
-    w.sb.add "(serde-timezone "
+    w.sb.add "(serde_timezone "
     w.sb.add (if v.timezoneHasOffset: "true " else: "false ")
     w.sb.add $v.timezoneOffsetMinutes & " "
     serdeEmitStrLit(w, v.timezoneName)
     w.sb.add ')'
   of vkDuration:
-    w.sb.add "(serde-duration " & $v.durationMicroseconds & ")"
+    w.sb.add "(serde_duration " & $v.durationMicroseconds & ")"
   of vkRange:
-    w.sb.add "(serde-range " & $v.rangeStart & " " & $v.rangeStop & " " &
+    w.sb.add "(serde_range " & $v.rangeStart & " " & $v.rangeStop & " " &
              $v.rangeStep & " " &
              (if v.rangeInclusive: "true" else: "false") & ")"
   of vkSet:
     serdeEnterContainer(w, v)
-    w.sb.add "(serde-set"
+    w.sb.add "(serde_set"
     for i, it in v.setItems:
       w.sb.add ' '
       w.path.add $i
@@ -2552,8 +2552,8 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
       serdeLeaveContainer(w, v)
       return
     if serdeNodeNeedsEscape(w, v):
-      # (serde-data-node <immutable> <head> <props-map> <meta-map> <child>*)
-      w.sb.add "(serde-data-node "
+      # (serde_data_node <immutable> <head> <props-map> <meta-map> <child>*)
+      w.sb.add "(serde_data_node "
       w.sb.add (if v.nodeImmutable: "true " else: "false ")
       w.path.add "head"
       serdeEmit(w, v.head)
@@ -2595,20 +2595,20 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     serdeLeaveContainer(w, v)
   of vkType:
     if v.isEnumType:
-      serdeEmitDefRef(w, v, "serde-enum-ref", "enum")
+      serdeEmitDefRef(w, v, "serde_enum_ref", "enum")
     else:
-      serdeEmitDefRef(w, v, "serde-type-ref", "type")
+      serdeEmitDefRef(w, v, "serde_type_ref", "type")
   of vkProtocol:
-    serdeEmitDefRef(w, v, "serde-protocol-ref", "protocol")
+    serdeEmitDefRef(w, v, "serde_protocol_ref", "protocol")
   of vkEnumVariant:
-    serdeEmitDefRef(w, v, "serde-variant-ref", "enum variant")
+    serdeEmitDefRef(w, v, "serde_variant_ref", "enum variant")
   of vkNamespace:
-    serdeEmitDefRef(w, v, "serde-ns-ref", "namespace")
+    serdeEmitDefRef(w, v, "serde_ns_ref", "namespace")
   of vkNativeFn:
-    serdeEmitDefRef(w, v, "serde-fn-ref", "native function")
+    serdeEmitDefRef(w, v, "serde_fn_ref", "native function")
   of vkFunction:
     if w.allowRefs and serdeOriginOf(w, v).found:
-      serdeEmitDefRef(w, v, "serde-fn-ref", "function")
+      serdeEmitDefRef(w, v, "serde_fn_ref", "function")
     elif w.allowRefs:
       raiseSerdeError(w.scope,
         "functions with captured scope do not serialize (only module-level " &
@@ -2620,8 +2620,8 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
   of vkCell:
     if w.allowRefs:
       # Snapshot only, and OUTSIDE the round-trip equality guarantee: identity
-      # and sharing are not preserved (design §7). read-data still rejects it.
-      w.sb.add "(serde-snapshot-cell "
+      # and sharing are not preserved (design §7). read_data still rejects it.
+      w.sb.add "(serde_snapshot_cell "
       w.path.add "cell"
       serdeEmit(w, cellValue(v))
       discard w.path.pop()
@@ -2651,13 +2651,13 @@ proc serdeTypeIsSerdeRef(scope: Scope, typ: Value): bool =
   typeImplementsProtocol(scope, typ, proto)
 
 proc serdeEmitInst(w: var SerdeWriter, v: Value) =
-  ## A typed instance: (serde-inst <head-ref> <props-serde-map> [body...]).
+  ## A typed instance: (serde_inst <head-ref> <props-serde-map> [body...]).
   ## Read-back uses direct typed-data construction (never ctor), so the head
   ## must be a resolvable type or enum variant.
   ##
   ## A module-level instance of a SerdeRef-marked type serializes by identity
-  ## (serde-value-ref); a type with a `serde-state` type-direct message
-  ## serializes its state (serde-hooked, ^allow-restore on read); otherwise
+  ## (serde_value_ref); a type with a `serde_state` type-direct message
+  ## serializes its state (serde_hooked, ^allow_restore on read); otherwise
   ## fields (design §7).
   if not w.allowRefs:
     raiseSerdeError(w.scope,
@@ -2667,13 +2667,13 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
     if w.app.serdeValueOrigins.hasKey(v.bits) and
         serdeTypeIsSerdeRef(w.scope, v.head):
       let o = w.app.serdeValueOrigins[v.bits]
-      serdeEmitRef(w, "serde-value-ref", o.module, o.path)
+      serdeEmitRef(w, "serde_value_ref", o.module, o.path)
       return
   if v.head.kind == vkType:
-    let stateFn = typeDirectMessage(v.head, "serde-state")
+    let stateFn = typeDirectMessage(v.head, "serde_state")
     if stateFn.kind != vkNil:
       let state = applyCall(stateFn, [v], NamedArgs(), w.scope)
-      w.sb.add "(serde-hooked "
+      w.sb.add "(serde_hooked "
       w.path.add "type"
       serdeEmit(w, v.head)
       discard w.path.pop()
@@ -2686,9 +2686,9 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
   if v.head.kind == vkEnumVariant and v.props.len > 0:
     raiseSerdeError(w.scope,
       "enum-variant value unexpectedly carries props", w.path)
-  w.sb.add "(serde-inst "
+  w.sb.add "(serde_inst "
   w.path.add "type"
-  serdeEmit(w, v.head)              # emits serde-type-ref / serde-variant-ref
+  serdeEmit(w, v.head)              # emits serde_type_ref / serde_variant_ref
   discard w.path.pop()
   w.sb.add ' '
   serdeEmitEscapedMap(w, v.props, false)
@@ -2710,14 +2710,14 @@ proc selectorIsSerializableData(v: Value): bool =
     of vkInt, vkSymbol, vkString:
       discard
     of vkNode:
-      if segment.head.isSymbol("selector-key") and segment.body.len == 1:
+      if segment.head.isSymbol("selector_key") and segment.body.len == 1:
         if not serdeDataValueP(segment.body[0]):
           return false
       elif segment.isSelector:
         if not selectorIsSerializableData(segment):
           return false
       else:
-        # call-stage and arbitrary node stages execute behavior.
+        # call_stage and arbitrary node stages execute behavior.
         return false
     else:
       # Callable stages execute behavior and retain runtime authority.
@@ -2807,7 +2807,7 @@ proc serdeDataValueP(v: Value): bool =
 
 proc serdeWriteDataText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope)
-  w.sb.add "(serde-v1 "
+  w.sb.add "(serde_v1 "
   serdeEmit(w, v)
   w.sb.add ')'
   w.sb
@@ -2815,7 +2815,7 @@ proc serdeWriteDataText(v: Value, scope: Scope): string =
 proc serdeWriteFullText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope, allowRefs: true,
                       app: application(scope))
-  w.sb.add "(serde-v1 "
+  w.sb.add "(serde_v1 "
   serdeEmit(w, v)
   w.sb.add ')'
   w.sb
@@ -2856,12 +2856,12 @@ proc serdeLimitsFrom(policy: Value, scope: Scope): SerdePolicyLimits =
                              allowRestore: false)
   if policy.kind == vkNil or policy.kind == vkVoid:
     return
-  result.maxBytes = serdePolicyInt(policy, "max-bytes", result.maxBytes, scope)
-  result.maxNodes = serdePolicyInt(policy, "max-nodes", result.maxNodes, scope)
-  result.maxDepth = serdePolicyInt(policy, "max-depth", result.maxDepth, scope)
-  result.maxSymbols = serdePolicyInt(policy, "max-symbols",
+  result.maxBytes = serdePolicyInt(policy, "max_bytes", result.maxBytes, scope)
+  result.maxNodes = serdePolicyInt(policy, "max_nodes", result.maxNodes, scope)
+  result.maxDepth = serdePolicyInt(policy, "max_depth", result.maxDepth, scope)
+  result.maxSymbols = serdePolicyInt(policy, "max_symbols",
                                      result.maxSymbols, scope)
-  result.allowRestore = serdePolicyBool(policy, "allow-restore",
+  result.allowRestore = serdePolicyBool(policy, "allow_restore",
                                         result.allowRestore, scope)
 
 proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value
@@ -2869,16 +2869,16 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value
 proc serdeCountValue(r: var SerdeReader, depth: int) =
   inc r.nodes
   if r.nodes > r.limits.maxNodes:
-    raiseSerdeError(r.scope, "payload exceeds max-nodes (" &
+    raiseSerdeError(r.scope, "payload exceeds max_nodes (" &
                     $r.limits.maxNodes & ")", r.path)
   if depth > r.limits.maxDepth:
-    raiseSerdeError(r.scope, "payload exceeds max-depth (" &
+    raiseSerdeError(r.scope, "payload exceeds max_depth (" &
                     $r.limits.maxDepth & ")", r.path)
 
 proc serdeCountSymbol(r: var SerdeReader, s: string) =
   r.symbols.incl s
   if r.symbols.len > r.limits.maxSymbols:
-    raiseSerdeError(r.scope, "payload exceeds max-symbols (" &
+    raiseSerdeError(r.scope, "payload exceeds max_symbols (" &
                     $r.limits.maxSymbols & ")", r.path)
 
 proc serdeBodyLen(r: var SerdeReader, v: Value, tag: string, n: int) =
@@ -2984,19 +2984,19 @@ proc serdeLookupRefPath(r: var SerdeReader, startScope: Scope,
 proc serdeResolveRef(r: var SerdeReader, v: Value, tag: string): Value =
   if not r.resolveRefs:
     raiseSerdeError(r.scope,
-      tag & " requires serde/read (serde/read-data accepts pure data only)",
+      tag & " requires serde/read (serde/read_data accepts pure data only)",
       r.path)
   let coords = serdeRefCoords(r, v, tag)
   let startScope = serdeResolveModuleScope(r, coords.module)
   let resolved = serdeLookupRefPath(r, startScope, coords.module, coords.path)
   let ok =
     case tag
-    of "serde-type-ref": resolved.kind == vkType and not resolved.isEnumType
-    of "serde-enum-ref": resolved.kind == vkType and resolved.isEnumType
-    of "serde-protocol-ref": resolved.kind == vkProtocol
-    of "serde-variant-ref": resolved.kind == vkEnumVariant
-    of "serde-ns-ref": resolved.kind == vkNamespace
-    of "serde-fn-ref": resolved.kind in {vkFunction, vkNativeFn}
+    of "serde_type_ref": resolved.kind == vkType and not resolved.isEnumType
+    of "serde_enum_ref": resolved.kind == vkType and resolved.isEnumType
+    of "serde_protocol_ref": resolved.kind == vkProtocol
+    of "serde_variant_ref": resolved.kind == vkEnumVariant
+    of "serde_ns_ref": resolved.kind == vkNamespace
+    of "serde_fn_ref": resolved.kind in {vkFunction, vkNativeFn}
     else: false
   if not ok:
     raiseSerdeError(r.scope, tag & " resolved to a " & $resolved.kind &
@@ -3008,116 +3008,116 @@ proc serdeResolveValueRef(r: var SerdeReader, v: Value): Value =
   ## module's own object (design §7 identity semantics).
   if not r.resolveRefs:
     raiseSerdeError(r.scope,
-      "serde-value-ref requires serde/read (serde/read-data accepts pure " &
+      "serde_value_ref requires serde/read (serde/read_data accepts pure " &
       "data only)", r.path)
-  let coords = serdeRefCoords(r, v, "serde-value-ref")
+  let coords = serdeRefCoords(r, v, "serde_value_ref")
   let startScope = serdeResolveModuleScope(r, coords.module)
   serdeLookupRefPath(r, startScope, coords.module, coords.path)
 
 proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
                         depth: int): Value =
   case tag
-  of "serde-type-ref", "serde-enum-ref", "serde-protocol-ref",
-     "serde-variant-ref", "serde-ns-ref", "serde-fn-ref":
+  of "serde_type_ref", "serde_enum_ref", "serde_protocol_ref",
+     "serde_variant_ref", "serde_ns_ref", "serde_fn_ref":
     return serdeResolveRef(r, v, tag)
-  of "serde-value-ref":
+  of "serde_value_ref":
     return serdeResolveValueRef(r, v)
   else: discard
   case tag
-  of "serde-float":
+  of "serde_float":
     serdeBodyLen(r, v, tag, 1)
     if v.body[0].kind != vkString:
-      raiseSerdeError(r.scope, "serde-float expects a Str", r.path)
+      raiseSerdeError(r.scope, "serde_float expects a Str", r.path)
     case v.body[0].strVal
     of "nan": newFloat(NaN)
     of "+inf": newFloat(Inf)
     of "-inf": newFloat(NegInf)
     of "-0.0": newFloat(-0.0)
     else:
-      raiseSerdeError(r.scope, "unknown serde-float value: " &
+      raiseSerdeError(r.scope, "unknown serde_float value: " &
                       v.body[0].strVal, r.path)
       NIL
-  of "serde-sym":
+  of "serde_sym":
     serdeBodyLen(r, v, tag, 1)
     if v.body[0].kind != vkString:
-      raiseSerdeError(r.scope, "serde-sym expects a Str", r.path)
+      raiseSerdeError(r.scope, "serde_sym expects a Str", r.path)
     serdeCountSymbol(r, v.body[0].strVal)
     newSym(v.body[0].strVal)
-  of "serde-set":
+  of "serde_set":
     if v.props.len > 0 or v.meta.len > 0:
-      raiseSerdeError(r.scope, "serde-set expects no props", r.path)
+      raiseSerdeError(r.scope, "serde_set expects no props", r.path)
     var items: seq[Value]
     for i, it in v.body:
       r.path.add $i
       let item = serdeDecode(r, it, depth + 1)
       if not isHashStable(item):
         raiseSerdeError(r.scope,
-          "serde-set element is not hash-stable", r.path)
+          "serde_set element is not hash-stable", r.path)
       for existing in items:
         if equal(existing, item):
           raiseSerdeError(r.scope,
-            "serde-set contains a duplicate element", r.path)
+            "serde_set contains a duplicate element", r.path)
       items.add item
       discard r.path.pop()
     newSet(items)
-  of "serde-range":
+  of "serde_range":
     serdeBodyLen(r, v, tag, 4)
     for i in 0 .. 2:
       if v.body[i].kind != vkInt:
-        raiseSerdeError(r.scope, "serde-range expects Int bounds", r.path)
+        raiseSerdeError(r.scope, "serde_range expects Int bounds", r.path)
     if v.body[3].kind != vkBool:
-      raiseSerdeError(r.scope, "serde-range expects a Bool inclusive flag",
+      raiseSerdeError(r.scope, "serde_range expects a Bool inclusive flag",
                       r.path)
     try:
       newRange(v.body[0].intVal, v.body[1].intVal, v.body[2].intVal,
                v.body[3].boolVal)
     except GeneError as e:
-      raiseSerdeError(r.scope, "serde-range: " & e.msg, r.path)
+      raiseSerdeError(r.scope, "serde_range: " & e.msg, r.path)
       NIL
-  of "serde-timezone":
+  of "serde_timezone":
     serdeBodyLen(r, v, tag, 3)
     if v.body[0].kind != vkBool or v.body[1].kind != vkInt or
         v.body[2].kind != vkString:
       raiseSerdeError(r.scope,
-        "serde-timezone expects (Bool Int Str)", r.path)
+        "serde_timezone expects (Bool Int Str)", r.path)
     try:
       newTimezone(v.body[0].boolVal, int(v.body[1].intVal), v.body[2].strVal)
     except GeneError as e:
-      raiseSerdeError(r.scope, "serde-timezone: " & e.msg, r.path)
+      raiseSerdeError(r.scope, "serde_timezone: " & e.msg, r.path)
       NIL
-  of "serde-duration":
+  of "serde_duration":
     serdeBodyLen(r, v, tag, 1)
     if v.body[0].kind != vkInt:
-      raiseSerdeError(r.scope, "serde-duration expects an Int", r.path)
+      raiseSerdeError(r.scope, "serde_duration expects an Int", r.path)
     newDuration(v.body[0].intVal)
-  of "serde-map":
+  of "serde_map":
     serdeBodyLen(r, v, tag, 2)
     if v.body[0].kind != vkBool or v.body[1].kind != vkList:
       raiseSerdeError(r.scope,
-        "serde-map expects (Bool [k v ...])", r.path)
+        "serde_map expects (Bool [k v ...])", r.path)
     let items = v.body[1].listItems
     if items.len mod 2 != 0:
-      raiseSerdeError(r.scope, "serde-map expects an even k/v list", r.path)
+      raiseSerdeError(r.scope, "serde_map expects an even k/v list", r.path)
     var entries = initOrderedTable[string, Value]()
     var i = 0
     while i < items.len:
       if items[i].kind != vkString:
-        raiseSerdeError(r.scope, "serde-map keys must be Str", r.path)
+        raiseSerdeError(r.scope, "serde_map keys must be Str", r.path)
       let key = items[i].strVal
       if entries.hasKey(key):
-        raiseSerdeError(r.scope, "serde-map duplicate key: " & key, r.path)
+        raiseSerdeError(r.scope, "serde_map duplicate key: " & key, r.path)
       r.path.add key
       entries[key] = serdeDecode(r, items[i + 1], depth + 1)
       discard r.path.pop()
       inc i, 2
     newMap(entries, immutable = v.body[0].boolVal)
-  of "serde-data-node":
+  of "serde_data_node":
     if v.body.len < 4 or v.props.len > 0 or v.meta.len > 0:
       raiseSerdeError(r.scope,
-        "serde-data-node expects (Bool head props meta child*)", r.path)
+        "serde_data_node expects (Bool head props meta child*)", r.path)
     if v.body[0].kind != vkBool:
       raiseSerdeError(r.scope,
-        "serde-data-node expects a Bool immutable flag", r.path)
+        "serde_data_node expects a Bool immutable flag", r.path)
     r.path.add "head"
     let head = serdeDecode(r, v.body[1], depth + 1)
     discard r.path.pop()
@@ -3129,7 +3129,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     discard r.path.pop()
     if propsVal.kind != vkMap or metaVal.kind != vkMap:
       raiseSerdeError(r.scope,
-        "serde-data-node props/meta must decode to maps", r.path)
+        "serde_data_node props/meta must decode to maps", r.path)
     var children: seq[Value]
     for i in 4 ..< v.body.len:
       r.path.add $(i - 4)
@@ -3143,24 +3143,24 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       meta[k] = val
     newNode(head, props = props, body = children, meta = meta,
             immutable = v.body[0].boolVal)
-  of "serde-inst":
+  of "serde_inst":
     if not r.resolveRefs:
       raiseSerdeError(r.scope,
-        "serde-inst requires serde/read (serde/read-data accepts pure data " &
+        "serde_inst requires serde/read (serde/read_data accepts pure data " &
         "only)", r.path)
     for k, val in v.props:
-      if k == "schema-version":
+      if k == "schema_version":
         if val.kind != vkInt:
           raiseSerdeError(r.scope,
-            "serde-inst ^schema-version must be an Int", r.path)
+            "serde_inst ^schema_version must be an Int", r.path)
       else:
         raiseSerdeError(r.scope,
-          "serde-inst has unsupported prop ^" & k, r.path)
+          "serde_inst has unsupported prop ^" & k, r.path)
     if v.meta.len > 0:
-      raiseSerdeError(r.scope, "serde-inst takes no meta", r.path)
+      raiseSerdeError(r.scope, "serde_inst takes no meta", r.path)
     if v.body.len != 3:
       raiseSerdeError(r.scope,
-        "serde-inst expects (head-ref props body)", r.path)
+        "serde_inst expects (head-ref props body)", r.path)
     r.path.add "type"
     let head = serdeDecode(r, v.body[0], depth + 1)
     discard r.path.pop()
@@ -3171,9 +3171,9 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     let bodyVal = serdeDecode(r, v.body[2], depth + 1)
     discard r.path.pop()
     if propsVal.kind != vkMap:
-      raiseSerdeError(r.scope, "serde-inst props must decode to a map", r.path)
+      raiseSerdeError(r.scope, "serde_inst props must decode to a map", r.path)
     if bodyVal.kind != vkList:
-      raiseSerdeError(r.scope, "serde-inst body must decode to a list", r.path)
+      raiseSerdeError(r.scope, "serde_inst body must decode to a list", r.path)
     if head.kind == vkType:
       var na: NamedArgs
       for k, val in propsVal.mapEntries:
@@ -3182,7 +3182,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       try:
         constructTypedInstance(head, bodyVal.listItems, na)
       except GeneError as e:
-        raiseSerdeError(r.scope, "serde-inst construct: " & e.msg, r.path)
+        raiseSerdeError(r.scope, "serde_inst construct: " & e.msg, r.path)
         NIL
     elif head.kind == vkEnumVariant:
       if propsVal.mapEntries.len > 0:
@@ -3191,49 +3191,49 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       try:
         applyCall(head, bodyVal.listItems, NamedArgs())
       except GeneError as e:
-        raiseSerdeError(r.scope, "serde-inst variant: " & e.msg, r.path)
+        raiseSerdeError(r.scope, "serde_inst variant: " & e.msg, r.path)
         NIL
     else:
-      raiseSerdeError(r.scope, "serde-inst head resolved to a " &
+      raiseSerdeError(r.scope, "serde_inst head resolved to a " &
         $head.kind & ", not a type or variant", r.path)
       NIL
-  of "serde-snapshot-cell":
+  of "serde_snapshot_cell":
     if not r.resolveRefs:
       raiseSerdeError(r.scope,
-        "serde-snapshot-cell requires serde/read (serde/read-data accepts " &
+        "serde_snapshot_cell requires serde/read (serde/read_data accepts " &
         "pure data only)", r.path)
     serdeBodyLen(r, v, tag, 1)
     r.path.add "cell"
     let inner = serdeDecode(r, v.body[0], depth + 1)
     discard r.path.pop()
     newCell(inner)
-  of "serde-hooked":
+  of "serde_hooked":
     if not r.resolveRefs:
       raiseSerdeError(r.scope,
-        "serde-hooked requires serde/read (serde/read-data accepts pure " &
+        "serde_hooked requires serde/read (serde/read_data accepts pure " &
         "data only)", r.path)
     if not r.limits.allowRestore:
       raiseSerdeError(r.scope,
-        "serde-hooked requires ^policy (SerdePolicy ^allow-restore true) — " &
+        "serde_hooked requires ^policy (SerdePolicy ^allow_restore true) — " &
         "restore hooks execute user code during deserialization", r.path)
     if v.props.len > 0 or v.meta.len > 0 or v.body.len != 2:
-      raiseSerdeError(r.scope, "serde-hooked expects (type-ref state)", r.path)
+      raiseSerdeError(r.scope, "serde_hooked expects (type-ref state)", r.path)
     r.path.add "type"
     let head = serdeDecode(r, v.body[0], depth + 1)
     discard r.path.pop()
     if head.kind != vkType:
-      raiseSerdeError(r.scope, "serde-hooked head must be a type", r.path)
+      raiseSerdeError(r.scope, "serde_hooked head must be a type", r.path)
     r.path.add "state"
     let state = serdeDecode(r, v.body[1], depth + 1)
     discard r.path.pop()
-    let restoreFn = typeDirectMessage(head, "serde-restore")
+    let restoreFn = typeDirectMessage(head, "serde_restore")
     if restoreFn.kind == vkNil:
       raiseSerdeError(r.scope, "type " & head.typeName &
-        " has a serde-state message but no serde-restore", r.path)
+        " has a serde_state message but no serde_restore", r.path)
     try:
       applyCall(restoreFn, [state], NamedArgs(), r.scope)
     except GeneError as e:
-      raiseSerdeError(r.scope, "serde-restore: " & e.msg, r.path)
+      raiseSerdeError(r.scope, "serde_restore: " & e.msg, r.path)
       NIL
   else:
     raiseSerdeError(r.scope, "unknown serde control tag: " & tag, r.path)
@@ -3303,7 +3303,7 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
     NIL
 
 proc biSerdeWriteData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("serde/write-data", args)
+  requireOne("serde/write_data", args)
   let scope = if call == nil: nil else: call[].dispatchScope
   newStr(serdeWriteDataText(args[0], scope))
 
@@ -3315,7 +3315,7 @@ proc serdeReadEnvelope(name, text: string, scope: Scope, policy: Value,
                        resolveRefs: bool): Value =
   let limits = serdeLimitsFrom(policy, scope)
   if text.len > limits.maxBytes:
-    raiseSerdeError(scope, "payload exceeds max-bytes (" &
+    raiseSerdeError(scope, "payload exceeds max_bytes (" &
                     $limits.maxBytes & ")")
   var forms: seq[Value]
   try:
@@ -3325,18 +3325,18 @@ proc serdeReadEnvelope(name, text: string, scope: Scope, policy: Value,
   except ReadError as e:
     raiseSerdeError(scope, "parse: " & e.msg)
   if forms.len != 1 or forms[0].kind != vkNode:
-    raiseSerdeError(scope, "expected a single (serde-v1 ...) envelope")
+    raiseSerdeError(scope, "expected a single (serde_v1 ...) envelope")
   let envelope = forms[0]
-  if envelope.head.kind != vkSymbol or envelope.head.symVal != "serde-v1":
+  if envelope.head.kind != vkSymbol or envelope.head.symVal != "serde_v1":
     if envelope.head.kind == vkSymbol and
         envelope.head.symVal.startsWith(serdeReservedPrefix):
       raiseSerdeError(scope, "unsupported serde envelope version: " &
                       envelope.head.symVal)
-    raiseSerdeError(scope, "expected a (serde-v1 ...) envelope")
+    raiseSerdeError(scope, "expected a (serde_v1 ...) envelope")
   if envelope.body.len != 1 or envelope.props.len > 0 or
       envelope.meta.len > 0:
     raiseSerdeError(scope,
-      "serde-v1 envelope expects exactly one payload form")
+      "serde_v1 envelope expects exactly one payload form")
   var r = SerdeReader(scope: scope, limits: limits,
                       resolveRefs: resolveRefs,
                       app: (if resolveRefs: application(scope) else: nil))
@@ -3345,8 +3345,8 @@ proc serdeReadEnvelope(name, text: string, scope: Scope, policy: Value,
 proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError,
-      "serde/read-data expects a Str plus optional ^policy")
-  requireStr("serde/read-data", args[0])
+      "serde/read_data expects a Str plus optional ^policy")
+  requireStr("serde/read_data", args[0])
   let scope = if call == nil: nil else: call[].dispatchScope
   var policy = NIL
   if call != nil:
@@ -3356,8 +3356,8 @@ proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimc
         policy = call[].namedValues[i]
       else:
         raiseSerdeError(scope,
-          "serde/read-data got unexpected named argument: " & name)
-  serdeReadEnvelope("serde/read-data", args[0].strVal, scope, policy,
+          "serde/read_data got unexpected named argument: " & name)
+  serdeReadEnvelope("serde/read_data", args[0].strVal, scope, policy,
                     resolveRefs = false)
 
 proc biSerdeWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -3928,10 +3928,10 @@ proc storeModeText(scope: Scope, value: Value, fallback = "data"): string =
   of vkSymbol: result = value.symVal
   of vkString: result = value.strVal
   else:
-    raiseStoreError(scope, "invalid-key",
+    raiseStoreError(scope, "invalid_key",
       "store ^mode expects data or full")
   if result != "data" and result != "full":
-    raiseStoreError(scope, "invalid-key",
+    raiseStoreError(scope, "invalid_key",
       "store ^mode expects data or full, got " & result)
 
 proc storeModeOf(store: Value, scope: Scope): string =
@@ -3943,16 +3943,16 @@ proc storePolicyOf(store: Value): Value =
 
 proc storeValidateKey(scope: Scope, key: string) =
   if key.len == 0:
-    raiseStoreError(scope, "invalid-key", "store key must not be empty", key)
+    raiseStoreError(scope, "invalid_key", "store key must not be empty", key)
 
 proc storeSqlIdent(scope: Scope, ident, label: string): string =
   if ident.len == 0:
-    raiseStoreError(scope, "invalid-key", label & " must not be empty")
+    raiseStoreError(scope, "invalid_key", label & " must not be empty")
   if ident[0] notin {'A'..'Z', 'a'..'z', '_'}:
-    raiseStoreError(scope, "invalid-key", "invalid SQL identifier for " & label)
+    raiseStoreError(scope, "invalid_key", "invalid SQL identifier for " & label)
   for c in ident:
     if c notin {'A'..'Z', 'a'..'z', '0'..'9', '_'}:
-      raiseStoreError(scope, "invalid-key",
+      raiseStoreError(scope, "invalid_key",
         "invalid SQL identifier for " & label)
   ident
 
@@ -4007,7 +4007,7 @@ proc storeWriteMode(store: Value, call: ptr NativeCall, scope: Scope): string =
     result = storeModeText(scope, named.getArg("mode"), result)
   for name in named.names:
     if name != "mode":
-      raiseStoreError(scope, "invalid-key",
+      raiseStoreError(scope, "invalid_key",
         "store/put got unexpected named argument: " & name)
 
 proc storeSqliteDb(store: Value, scope: Scope): pointer =
@@ -4016,8 +4016,8 @@ proc storeSqliteDb(store: Value, scope: Scope): pointer =
 
 proc storeSqliteTable(store: Value): tuple[tableName, keyColumn, dataColumn: string] =
   (store.props["table"].strVal,
-   store.props["key-column"].strVal,
-   store.props["data-column"].strVal)
+   store.props["key_column"].strVal,
+   store.props["data_column"].strVal)
 
 proc storeSqliteEnsureSchema(db: pointer, tableName, keyColumn,
                              dataColumn: string, scope: Scope) =
@@ -4035,29 +4035,29 @@ proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.ni
       named.getArg("table")); named.getArg("table").strVal) else: storeDefaultTable),
     "table")
   let keyColumn = storeSqlIdent(scope,
-    (if named.hasArg("key-column"): (requireStr("store/sqlite/open ^key-column",
-      named.getArg("key-column")); named.getArg("key-column").strVal)
-     else: storeDefaultKeyColumn), "key-column")
+    (if named.hasArg("key_column"): (requireStr("store/sqlite/open ^key_column",
+      named.getArg("key_column")); named.getArg("key_column").strVal)
+     else: storeDefaultKeyColumn), "key_column")
   let dataColumn = storeSqlIdent(scope,
-    (if named.hasArg("data-column"): (requireStr("store/sqlite/open ^data-column",
-      named.getArg("data-column")); named.getArg("data-column").strVal)
-     else: storeDefaultDataColumn), "data-column")
+    (if named.hasArg("data_column"): (requireStr("store/sqlite/open ^data_column",
+      named.getArg("data_column")); named.getArg("data_column").strVal)
+     else: storeDefaultDataColumn), "data_column")
   let mode = if named.hasArg("mode"):
       storeModeText(scope, named.getArg("mode"))
     else:
       "data"
   let policy = storeNamedOr(named, "policy", NIL)
   for name in named.names:
-    if name notin ["table", "key-column", "data-column", "mode", "policy"]:
-      raiseStoreError(scope, "invalid-key",
+    if name notin ["table", "key_column", "data_column", "mode", "policy"]:
+      raiseStoreError(scope, "invalid_key",
         "store/sqlite/open got unexpected named argument: " & name)
   storeSqliteEnsureSchema(sqliteHandle("store/sqlite/open", args[0], scope),
                           tableName, keyColumn, dataColumn, scope)
   var props = initOrderedTable[string, Value]()
   props["db"] = args[0]
   props["table"] = newStr(tableName)
-  props["key-column"] = newStr(keyColumn)
-  props["data-column"] = newStr(dataColumn)
+  props["key_column"] = newStr(keyColumn)
+  props["data_column"] = newStr(dataColumn)
   props["mode"] = newSym(mode)
   props["policy"] = policy
   props["closed"] = newCell(FALSE)
@@ -4099,7 +4099,7 @@ proc biStoreGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let named = storeNamed(call)
   for name in named.names:
     if name notin ["mode", "policy", "default"]:
-      raiseStoreError(scope, "invalid-key",
+      raiseStoreError(scope, "invalid_key",
         "Store/get got unexpected named argument: " & name, key)
   let opts = storeReadModePolicy(args[0], call, scope)
   var text = ""
@@ -4241,7 +4241,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   requireFsWriteDir("store/fs/open", args[0])
   let named = storeNamed(call)
   if not named.hasArg("root"):
-    raiseStoreError(scope, "invalid-key", "store/fs/open requires ^root")
+    raiseStoreError(scope, "invalid_key", "store/fs/open requires ^root")
   let rootVal = named.getArg("root")
   requireStr("store/fs/open ^root", rootVal)
   let root = rootVal.strVal
@@ -4252,7 +4252,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   let policy = storeNamedOr(named, "policy", NIL)
   for name in named.names:
     if name notin ["root", "mode", "policy"]:
-      raiseStoreError(scope, "invalid-key",
+      raiseStoreError(scope, "invalid_key",
         "store/fs/open got unexpected named argument: " & name)
   try:
     createDir(root)
@@ -4398,10 +4398,10 @@ proc registerStdlibNamespaces(root: Scope) =
   httpScope.define("stop", newNativeCallFn("http/stop", biHttpStop))
   httpScope.define("status", newNativeCallFn("http/status", biHttpStatus))
   httpScope.define("route", newNativeCallFn("http/route", biHttpRoute))
-  httpScope.define("actor-pool", newNativeCallFn("http/actor-pool",
+  httpScope.define("actor_pool", newNativeCallFn("http/actor_pool",
                                                  biHttpActorPool))
-  httpScope.define("supervisor-policy",
-                   newNativeCallFn("http/supervisor-policy",
+  httpScope.define("supervisor_policy",
+                   newNativeCallFn("http/supervisor_policy",
                                    biHttpSupervisorPolicy))
   httpScope.define("bytes", newNativeCallFn("http/bytes", biHttpBytes,
                                             acceptsNamed = false))
@@ -4592,21 +4592,21 @@ proc registerStdlibNamespaces(root: Scope) =
   let osScope = newScope(root)
   osScope.define("Env", newCapability("Os/Env"))
   osScope.define("Exec", newCapability("Os/Exec"))
-  osScope.define("get-env", newNativeCallFn("os/get-env", biOsGetEnv,
+  osScope.define("get_env", newNativeCallFn("os/get_env", biOsGetEnv,
                  acceptsNamed = false))
   osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
                  acceptsNamed = false))
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
-  osScope.define("exec-stream", newNativeCallFn("os/exec-stream", biOsExecStream))
-  osScope.define("exec-stdio", newNativeCallFn("os/exec-stdio", biOsExecStdio))
-  osScope.define("exec-async", newNativeCallFn("os/exec-async", biOsExecAsync))
-  osScope.define("exec-stream-async",
-                 newNativeCallFn("os/exec-stream-async", biOsExecStreamAsync))
-  osScope.define("stdin-tty?", newNativeFn("os/stdin-tty?", biOsStdinTty))
-  osScope.define("read-line", newNativeFn("os/read-line", biOsReadLine))
-  osScope.define("read-input", newNativeCallFn("os/read-input", biOsReadInput))
-  osScope.define("refresh-input", newNativeCallFn("os/refresh-input", biOsRefreshInput))
-  osScope.define("close-input", newNativeFn("os/close-input", biOsCloseInput))
+  osScope.define("exec_stream", newNativeCallFn("os/exec_stream", biOsExecStream))
+  osScope.define("exec_stdio", newNativeCallFn("os/exec_stdio", biOsExecStdio))
+  osScope.define("exec_async", newNativeCallFn("os/exec_async", biOsExecAsync))
+  osScope.define("exec_stream_async",
+                 newNativeCallFn("os/exec_stream_async", biOsExecStreamAsync))
+  osScope.define("stdin_tty?", newNativeFn("os/stdin_tty?", biOsStdinTty))
+  osScope.define("read_line", newNativeFn("os/read_line", biOsReadLine))
+  osScope.define("read_input", newNativeCallFn("os/read_input", biOsReadInput))
+  osScope.define("refresh_input", newNativeCallFn("os/refresh_input", biOsRefreshInput))
+  osScope.define("close_input", newNativeFn("os/close_input", biOsCloseInput))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))
 
@@ -4620,18 +4620,18 @@ proc registerStdlibNamespaces(root: Scope) =
   # agent file tools need.
   let fsNs = root.vars.getOrDefault("Fs", VOID)
   if fsNs.kind == vkNamespace:
-    fsNs.nsScope.define("read-text",
-      newNativeCallFn("Fs/read-text", biFsReadTextSync, acceptsNamed = false))
-    fsNs.nsScope.define("write-text",
-      newNativeCallFn("Fs/write-text", biFsWriteTextSync, acceptsNamed = false))
-    fsNs.nsScope.define("list-dir",
-      newNativeCallFn("Fs/list-dir", biFsListDir, acceptsNamed = false))
-    fsNs.nsScope.define("make-dir",
-      newNativeCallFn("Fs/make-dir", biFsMakeDir, acceptsNamed = false))
+    fsNs.nsScope.define("read_text",
+      newNativeCallFn("Fs/read_text", biFsReadTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("write_text",
+      newNativeCallFn("Fs/write_text", biFsWriteTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("list_dir",
+      newNativeCallFn("Fs/list_dir", biFsListDir, acceptsNamed = false))
+    fsNs.nsScope.define("make_dir",
+      newNativeCallFn("Fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",
       newNativeCallFn("Fs/remove", biFsRemove, acceptsNamed = false))
-    fsNs.nsScope.define("real-path",
-      newNativeCallFn("Fs/real-path", biFsRealPath, acceptsNamed = false))
+    fsNs.nsScope.define("real_path",
+      newNativeCallFn("Fs/real_path", biFsRealPath, acceptsNamed = false))
 
   # json: parse/stringify over Gene value kinds (examples/ai_agent/design.md §5).
   let jsonScope = newScope(root)
@@ -4646,11 +4646,11 @@ proc registerStdlibNamespaces(root: Scope) =
   # serde: Gene-text serialization data core (docs/proposals/serialization.md
   # stage 1).
   let serdeScope = newScope(root)
-  serdeScope.define("write-data",
-    newNativeCallFn("serde/write-data", biSerdeWriteData,
+  serdeScope.define("write_data",
+    newNativeCallFn("serde/write_data", biSerdeWriteData,
                     acceptsNamed = false))
-  serdeScope.define("read-data",
-    newNativeCallFn("serde/read-data", biSerdeReadData))
+  serdeScope.define("read_data",
+    newNativeCallFn("serde/read_data", biSerdeReadData))
   serdeScope.define("write",
     newNativeCallFn("serde/write", biSerdeWrite, acceptsNamed = false))
   serdeScope.define("read",
@@ -4663,11 +4663,11 @@ proc registerStdlibNamespaces(root: Scope) =
     TypeField(name: name, optional: true, typeExpr: newSym("Int"),
               scope: root)
   let serdePolicyType = newType("SerdePolicy", NIL,
-                                @[intField("max-bytes"),
-                                  intField("max-nodes"),
-                                  intField("max-depth"),
-                                  intField("max-symbols"),
-                                  TypeField(name: "allow-restore",
+                                @[intField("max_bytes"),
+                                  intField("max_nodes"),
+                                  intField("max_depth"),
+                                  intField("max_symbols"),
+                                  TypeField(name: "allow_restore",
                                             optional: true,
                                             typeExpr: newSym("Bool"),
                                             scope: root)],

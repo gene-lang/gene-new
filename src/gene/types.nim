@@ -311,8 +311,8 @@ type
     actorFailureStrategy*: ActorFailureStrategy
     supervisorEvents*: Value
     supervisorDeadLetters*: Value
-    actorMaxRestarts*: int      # supervisor ^max-restarts; <= 0 unlimited
-    actorRestartWindowMs*: int  # supervisor ^within-ms; <= 0 lifetime
+    actorMaxRestarts*: int      # supervisor ^max_restarts; <= 0 unlimited
+    actorRestartWindowMs*: int  # supervisor ^within_ms; <= 0 lifetime
     ownedActors*: seq[Value]
 
   ## Runtime call metadata for envelope-aware native functions. Positional
@@ -496,7 +496,7 @@ type
   AtomicCellData = ref object of CellData
     ## Inherits CellData's layout (cycleRefs/value) so the shared cycle-
     ## tracking code below keeps working unchanged; adds the lock that makes
-    ## load/store/swap/compare-exchange linearizable (design Section 12.3).
+    ## load/store/swap/compare_exchange linearizable (design Section 12.3).
     lock: Lock
 
   StreamPullResult* = object
@@ -2885,7 +2885,7 @@ proc actorRestartInit*(v: Value): Value =
     result = data.restartInit
 
 proc actorConsumeRestartBudget*(v: Value): bool =
-  ## Take one restart permission under the actor's ^max-restarts/^within-ms
+  ## Take one restart permission under the actor's ^max_restarts/^within_ms
   ## policy (async-http-server proposal §18.5). False means the budget is
   ## exhausted and the actor must stop instead of restarting. Failure-path
   ## only; never called on message hot paths.

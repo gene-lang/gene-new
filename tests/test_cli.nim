@@ -264,7 +264,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
 
-(serve (Server ^host "127.0.0.1" ^port 8987) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8987) handle ^max_requests 2)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -349,7 +349,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
 
-(serve (Server ^host "127.0.0.1" ^port 8991) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8991) handle ^max_requests 2)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -431,7 +431,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body (chunks req/body))))
 
-(serve (Server ^host "127.0.0.1" ^port 8993) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8993) handle ^max_requests 1)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -478,16 +478,16 @@ suite "cli — gene run":
     check "ran-normal" in ran.output
 
   test "ai agent classifier flags the real worst-case strings without executing them":
-    ## Review #1: exercise classify-command on the REAL catastrophic spellings
+    ## Review #1: exercise classify_command on the REAL catastrophic spellings
     ## through /repl (pure classification — nothing is executed), so the
     ## dangerous strings never sit in an executable path.
     buildGeneCli()
     let command = "printf '/repl\\n" &
-      "(classify-command \"rm -rf /\")\\n" &
-      "(classify-command \"rm -rf $HOME\")\\n" &
-      "(classify-command \"shutdown -h now\")\\n" &
-      "(classify-command \"git reset --hard HEAD~1\")\\n" &
-      "(classify-command \"npm test\")\\n" &
+      "(classify_command \"rm -rf /\")\\n" &
+      "(classify_command \"rm -rf $HOME\")\\n" &
+      "(classify_command \"shutdown -h now\")\\n" &
+      "(classify_command \"git reset --hard HEAD~1\")\\n" &
+      "(classify_command \"npm test\")\\n" &
       "quit\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
@@ -497,9 +497,9 @@ suite "cli — gene run":
     check "\"destructive\"" in ran.output
     check "\"normal\"" in ran.output
 
-  test "ai agent survives non-object tool arguments and logs turn-done":
+  test "ai agent survives non-object tool arguments and logs turn_done":
     ## Review #5/#6: valid JSON that is not an object ([]) must become a tool
-    ## error, not a crashed turn; and the CLI must log exactly the turn-done
+    ## error, not a crashed turn; and the CLI must log exactly the turn_done
     ## boundary event the vocabulary declares. A fake endpoint sends list_dir
     ## with arguments "[]" on turn 1, then a plain answer on turn 2.
     buildGeneCli()
@@ -539,7 +539,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body (if (== (Cell/get hits) 1) turn1 turn2))))
 
-(serve (Server ^host "127.0.0.1" ^port 8971) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8971) handle ^max_requests 2)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -560,7 +560,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let command = "printf 'go\\n/trace type=turn-done\\n/trace type=tool-result\\n/quit\\n' | " &
+    let command = "printf 'go\\n/trace type=turn_done\\n/trace type=tool_result\\n/quit\\n' | " &
                   "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
                   "OPENAI_AUTH_TOKEN=dummy " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8971/v1 OPENAI_MODEL=fake-chat " &
@@ -571,8 +571,8 @@ suite "cli — gene run":
     check "agent> done" in ran.output
     # #5: the non-object args produced a tool error, not an exception.
     check "tool arguments must be a JSON object" in ran.output
-    # #6: the CLI logged the turn-done boundary event.
-    check "turn-done" in ran.output
+    # #6: the CLI logged the turn_done boundary event.
+    check "turn_done" in ran.output
 
   test "ai agent converts an invalid tool result shape into a tool error":
     ## Review #6: a /repl-registered handler returning nil (or any non-Str,
@@ -625,7 +625,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
 
-(serve (Server ^host "127.0.0.1" ^port 8969) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8969) handle ^max_requests 2)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -647,7 +647,7 @@ suite "cli — gene run":
             raise
           sleep(50)
     let script = "printf '/repl\\n" &
-      "(session ~ add-tool (Tool ^name \"badres\" ^description \"demo\" " &
+      "(session ~ add_tool (Tool ^name \"badres\" ^description \"demo\" " &
       "^risk \"read\" ^params [] ^handler (fn [a] nil)))\\n" &
       "(session ~ resume)\\nexit\\n/quit\\n' | " &
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
@@ -716,7 +716,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
 
-(serve (Server ^host "127.0.0.1" ^port 8994) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8994) handle ^max_requests 2)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -748,21 +748,21 @@ suite "cli — gene run":
     check "verdict: guard-blocked" in ran.output
 
   test "ai agent trace lists tool registration and turn events":
-    ## Slice A (§9.2/§10.2): every tool registers as a tool-registered event
+    ## Slice A (§9.2/§10.2): every tool registers as a tool_registered event
     ## and /trace filters the versioned log. /status surfaces the guard state
     ## and event count.
     buildGeneCli()
-    let command = "printf '/trace type=tool-registered\\n/status\\n/quit\\n' | " &
+    let command = "printf '/trace type=tool_registered\\n/status\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                   "CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
-    check "tool-registered read_file (read)" in ran.output
-    check "tool-registered run_shell (execute)" in ran.output
+    check "tool_registered read_file (read)" in ran.output
+    check "tool_registered run_shell (execute)" in ran.output
     check "guard: on" in ran.output
 
-  test "ai agent repl add-tool plus resume exposes the new tool to the model":
+  test "ai agent repl add_tool plus resume exposes the new tool to the model":
     ## Slice A signature demo (§9.1/§10.2): a typed tool registered live in
     ## /repl reaches the model on the resumed turn. The fake endpoint answers
     ## the first turn as plain text, then on the resume turn reports whether a
@@ -807,7 +807,7 @@ suite "cli — gene run":
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
 
-(serve (Server ^host "127.0.0.1" ^port 8992) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8992) handle ^max_requests 2)
 """)
     let server = startProcess(geneExe, args = ["run", fixture],
                               options = {poUsePath, poStdErrToStdOut})
@@ -829,7 +829,7 @@ suite "cli — gene run":
             raise
           sleep(50)
     let script = "printf 'go\\n/repl\\n" &
-      "(session ~ add-tool (Tool ^name \"ping\" ^description \"demo\" " &
+      "(session ~ add_tool (Tool ^name \"ping\" ^description \"demo\" " &
       "^risk \"read\" ^params [] ^handler (fn [a] \"pong\")))\\n" &
       "(session ~ resume)\\nexit\\n/quit\\n' | " &
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
@@ -871,7 +871,7 @@ suite "cli — gene run":
                {^choices [{^index 0 ^delta {^content "answer"}}]}
                {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])))
 
-(serve (Server ^host "127.0.0.1" ^port 8988) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8988) handle ^max_requests 2)
 """)
     let endpointProc = startProcess(geneExe, args = ["run", endpoint],
                                     options = {poUsePath, poStdErrToStdOut})
@@ -939,7 +939,7 @@ suite "cli — gene run":
         let body = gwCurl("'http://127.0.0.1:8989/api/sessions/" & sid &
                           "/events?cursor=" & $cursor & "'")
         result.add body
-        if "turn-done" in result:
+        if "turn_done" in result:
           return
         for piece in body.split("\"v\":"):
           let numEnd = piece.find(',')
@@ -948,7 +948,7 @@ suite "cli — gene run":
               cursor = max(cursor, parseInt(piece[0 ..< numEnd]))
             except ValueError:
               discard
-      checkpoint "timed out waiting for turn-done: " & result
+      checkpoint "timed out waiting for turn_done: " & result
       check false
 
     let s1Events = waitTurnDone("s1")
@@ -956,7 +956,7 @@ suite "cli — gene run":
     let elapsedMs = (getMonoTime() - t0).inMilliseconds
 
     # Streaming deltas arrived as events for both sessions.
-    check "text-delta" in s1Events
+    check "text_delta" in s1Events
     check "slow " in s1Events
     check "answer" in s2Events
     # Concurrency: serial turns would take >= 1800ms against a 900ms
@@ -974,7 +974,7 @@ suite "cli — gene run":
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body "data: [DONE]\n\n"))
-(serve (Server ^host "127.0.0.1" ^port 8972) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8972) handle ^max_requests 1)
 """)
     let endpointProc = startProcess(geneExe, args = ["run", endpoint],
                                     options = {poUsePath, poStdErrToStdOut})
@@ -1036,12 +1036,12 @@ suite "cli — gene run":
     while getMonoTime() < doneDeadline:
       events = curl(
         "'http://127.0.0.1:8973/api/sessions/s1/events?cursor=0'").output
-      if "turn-done" in events:
+      if "turn_done" in events:
         break
       sleep(20)
     check "turn cancelled" in events
     check "\"cancelled\":true" in events
-    check "turn-done" in events
+    check "turn_done" in events
     check (getMonoTime() - started).inMilliseconds < 2000
 
   test "agent gateway persists sessions across restarts":
@@ -1087,7 +1087,7 @@ suite "cli — gene run":
           $cursor & "'")
         if ran.exitCode == 0:
           result = ran.output
-          if "turn-done" in result:
+          if "turn_done" in result:
             return
         sleep(200)
       checkpoint "turn never completed: " & result
@@ -1106,8 +1106,8 @@ suite "cli — gene run":
     check "list_dir tool" in firstTurn
     # Slice A / review #2: the per-session log carries the full tool trail, not
     # just streamed text — the demo transport invokes list_dir.
-    check "tool-call" in firstTurn
-    check "tool-result" in firstTurn
+    check "tool_call" in firstTurn
+    check "tool_result" in firstTurn
     gw.terminate()
     discard gw.waitForExit()
     gw.close()
@@ -1125,8 +1125,8 @@ suite "cli — gene run":
     check "\"v\":1" in restored.output
     check "list it" in restored.output
     check "list_dir tool" in restored.output
-    check "tool-call" in restored.output
-    check "tool-result" in restored.output
+    check "tool_call" in restored.output
+    check "tool_result" in restored.output
     # Highest version in the restored log (robust to per-turn event count).
     var maxV = 0
     for piece in restored.output.split("\"v\":"):
@@ -1170,7 +1170,7 @@ suite "cli — gene run":
 (fn append-out [entry]
   (outbox ~ Cell/set ((to_stream [entry]) ~ into (outbox ~ Cell/get))))
 
-(fn json-response [value]
+(fn json_response [value]
   (Response ^status 200
             ^headers {^content-type "application/json"}
             ^body (stringify value)))
@@ -1180,10 +1180,10 @@ suite "cli — gene run":
     (if (served-updates ~ Cell/get)
       (do
         (sleep 400)
-        (json-response {^ok true ^result []}))
+        (json_response {^ok true ^result []}))
       (do
         (served-updates ~ Cell/set true)
-        (json-response
+        (json_response
           {^ok true
            ^result [{^update_id 1
                      ^message {^message_id 10
@@ -1199,17 +1199,17 @@ suite "cli — gene run":
         (next-mid ~ Cell/set (+ (next-mid ~ Cell/get) 1))
         (append-out {^method "sendMessage" ^chat_id payload/chat_id
                      ^text payload/text ^message_id (next-mid ~ Cell/get)})
-        (json-response {^ok true
+        (json_response {^ok true
                         ^result {^message_id (next-mid ~ Cell/get)}}))
       (if (contains? req/path "/editMessageText")
         (do
           (var payload (parse req/body))
           (append-out {^method "editMessageText" ^chat_id payload/chat_id
                        ^message_id payload/message_id ^text payload/text})
-          (json-response {^ok true ^result true}))
+          (json_response {^ok true ^result true}))
         (if (== req/path "/outbox")
-          (json-response {^outbox (outbox ~ Cell/get)})
-          (json-response {^ok false ^description "unknown method"}))))))
+          (json_response {^outbox (outbox ~ Cell/get)})
+          (json_response {^ok false ^description "unknown method"}))))))
 
 (serve (Server ^host "127.0.0.1" ^port 8994) handle)
 """)
@@ -1271,7 +1271,7 @@ suite "cli — gene run":
       "curl -sS --max-time 5 " &
       "'http://127.0.0.1:8995/api/sessions/tg-42/events?cursor=0'")
     check events.exitCode == 0
-    check "turn-done" in events.output
+    check "turn_done" in events.output
 
   test "invalid main return is a boundary TypeError":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")
@@ -1512,7 +1512,7 @@ suite "cli — gene parse/fmt/compile":
     check "twice!" notin ran.output
     check "Panic:" notin ran.output
 
-  test "compile target c prints experimental typed-native C":
+  test "compile target c prints experimental typed_native C":
     let path = writeCliProgram("compile_c_subject.gene",
       "(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
       "(ffi/fn strlen ^library libc ^symbol \"strlen\" [s : C/CStr] : C/Size) " &
@@ -1558,10 +1558,10 @@ suite "cli — gene parse/fmt/compile":
 (protocol Drawable (message draw [self : Self] : Str))
 (fn area [p : Point] : Int (* p/x p/y))
 (type Counter ^props {^n Int}
-  (ctor [start] (println "COUNTER-CTOR-RAN") (self ~ Node/set-prop! `n start)))
+  (ctor [start] (println "COUNTER-CTOR-RAN") (self ~ Node/set_prop! `n start)))
 (type Conn ^props {^host Str ^live Bool}
-  (message serde-state [self] {^host self/host})
-  (message serde-restore [state] (Conn ^host state/host ^live true)))
+  (message serde_state [self] {^host self/host})
+  (message serde_restore [state] (Conn ^host state/host ^live true)))
 (type Registry ^props {^label Str})
 (impl SerdeRef for Registry)
 (var REGISTRY (Registry ^label "the-one"))
@@ -1572,7 +1572,7 @@ suite "cli — gene parse/fmt/compile":
 (type Widget ^props {^n Int})
 """)
     let prog = writeCliProgram("serde_refs.gene", """
-(import serde [write read write-data SerdePolicy SerdeError])
+(import serde [write read write_data SerdePolicy SerdeError])
 (import str [contains? join])
 (import [Point Line Shape Result Drawable area Counter Conn REGISTRY] from "./serde_geometry")
 (fn check [label ok] (println (join [label (if ok "ok" "FAIL")] " ")))
@@ -1587,9 +1587,9 @@ suite "cli — gene parse/fmt/compile":
 (var a3 (read (write imported-area)))
 (check "fn-alias" (== 30 (a3 (Point ^x 5 ^y 6))))
 (var t (write Point))
-(check "ref-shape" (&& (contains? t "serde-type-ref") (contains? t "Point")))
+(check "ref-shape" (&& (contains? t "serde_type_ref") (contains? t "Point")))
 (check "no-exec"
-  (try (do (read "(serde-v1 (serde-type-ref ^module \"serde-sidefx\" ^path \"Widget\"))") false)
+  (try (do (read "(serde_v1 (serde_type_ref ^module \"serde-sidefx\" ^path \"Widget\"))") false)
        catch (SerdeError ^message m) (contains? m "not loaded")))
 # stage 4: typed instances via direct construction
 (var p (Point ^x 3 ^y 4))
@@ -1599,29 +1599,29 @@ suite "cli — gene parse/fmt/compile":
      (read (write (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))))))
 (check "inst-variant-payload" (== (Result/ok 42) (read (write (Result/ok 42)))))
 (check "inst-wd-reject"
-  (try (do (write-data p) false) catch (SerdeError ^message m) (contains? m "not data")))
+  (try (do (write_data p) false) catch (SerdeError ^message m) (contains? m "not data")))
 (check "inst-unknown-field"
-  (try (do (read "(serde-v1 (serde-inst (serde-type-ref ^module \"serde_geometry\" ^path \"Point\") (serde-map false [\"x\" 1 \"y\" 2 \"z\" 9]) []))") false)
+  (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Point\") (serde_map false [\"x\" 1 \"y\" 2 \"z\" 9]) []))") false)
        catch (SerdeError ^message m) (contains? m "no field")))
 # ctor must NOT run on read-back (new runs it once, printing the marker)
 (var c (new Counter 7))
 (var c2 (read (write c)))
 (check "inst-no-ctor" (&& (== c c2) (== 7 c2/n)))
-# stage 5: Serde hooks behind ^allow-restore
+# stage 5: Serde hooks behind ^allow_restore
 (var conn (Conn ^host "db" ^live false))
 (var ht (write conn))
-(check "hooked-form" (&& (contains? ht "serde-hooked") (! (contains? ht "live"))))
+(check "hooked-form" (&& (contains? ht "serde_hooked") (! (contains? ht "live"))))
 (check "hooked-no-allow"
-  (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow-restore")))
-(var conn2 (read ht ^policy (SerdePolicy ^allow-restore true)))
+  (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow_restore")))
+(var conn2 (read ht ^policy (SerdePolicy ^allow_restore true)))
 (check "hooked-restore" (&& (== "db" conn2/host) (== true conn2/live)))
-# stage 6: SerdeRef module singleton -> identity value-ref
-(check "value-ref-form" (contains? (write REGISTRY) "serde-value-ref"))
+# stage 6: SerdeRef module singleton -> identity value_ref
+(check "value-ref-form" (contains? (write REGISTRY) "serde_value_ref"))
 (var reg2 (read (write REGISTRY)))
-(reg2 ~ Node/set-prop! `marker 99)
+(reg2 ~ Node/set_prop! `marker 99)
 (check "value-ref-identity" (== 99 REGISTRY/marker))
-# a non-SerdeRef module instance serializes by value, not as a value-ref
-(check "plain-by-value" (! (contains? (write (Point ^x 1 ^y 2)) "value-ref")))
+# a non-SerdeRef module instance serializes by value, not as a value_ref
+(check "plain-by-value" (! (contains? (write (Point ^x 1 ^y 2)) "value_ref")))
 """)
     let ran = runGene(["run", prog])
     check ran.exitCode == 0
@@ -1672,7 +1672,7 @@ suite "cli — gene doc":
       "- helper : Fn",
       "- main : Fn"
     ]
-    check "this-mod" notin ran.output
+    check "this_mod" notin ran.output
 
   test "prints namespace declarations recursively":
     let path = writeCliProgram("doc_namespaces.gene",

@@ -15,5 +15,5 @@ channel suites in `tests/spec_runner.nim` and `tests/test_vm.nim`.
   cleanup leaves that upstream resumable. Early close/break/error closes it.
 - Channels are bounded FIFO queues. Close rejects future sends and permits
   buffered draining before `ChannelClosed`.
-- `try-recv` returns `TryRecv/empty` or `#(TryRecv/value payload)`, preserving
+- `try_recv` returns `TryRecv/empty` or `#(TryRecv/value payload)`, preserving
   empty, `void`, `nil`, and ordinary payloads as distinct states.

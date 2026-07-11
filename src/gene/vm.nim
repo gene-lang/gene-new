@@ -930,7 +930,7 @@ proc isSelector(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("select")
 
 proc isSelectorKeySegment(v: Value): bool =
-  v.kind == vkNode and v.head.isSymbol("selector-key") and v.body.len == 1
+  v.kind == vkNode and v.head.isSymbol("selector_key") and v.body.len == 1
 
 proc requireNums(name: string, args: openArray[Value]) =
   for a in args:
@@ -1253,8 +1253,8 @@ proc requireAtomicCell(name: string, value: Value) =
     raise newException(GeneError, name & " expects an AtomicCell")
 
 proc biAtomicCell(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("atomic-cell", args)
-  rejectCallerEnvEscape("atomic-cell construction", args[0])
+  requireOne("atomic_cell", args)
+  rejectCallerEnvEscape("atomic_cell construction", args[0])
   newAtomicCell(args[0])
 
 proc biAtomicCellLoad(args: openArray[Value]): Value {.nimcall.} =
@@ -1283,9 +1283,9 @@ proc biAtomicCellSwap(args: openArray[Value]): Value {.nimcall.} =
 proc biAtomicCellCompareExchange(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "AtomicCell/compare-exchange expects 3 arguments, got " & $args.len)
-  requireAtomicCell("AtomicCell/compare-exchange", args[0])
-  rejectCallerEnvEscape("AtomicCell/compare-exchange", args[2])
+      "AtomicCell/compare_exchange expects 3 arguments, got " & $args.len)
+  requireAtomicCell("AtomicCell/compare_exchange", args[0])
+  rejectCallerEnvEscape("AtomicCell/compare_exchange", args[2])
   # Compare and swap happen under one lock acquisition, avoiding the
   # check-then-set race a separate load+same?+store would have.
   if atomicCellCompareExchange(args[0], args[1], args[2], same):
@@ -1419,14 +1419,14 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 
 proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Channel/try-send expects 2 arguments, got " & $args.len)
-  requireChannel("Channel/try-send", args[0])
+    raise newException(GeneError, "Channel/try_send expects 2 arguments, got " & $args.len)
+  requireChannel("Channel/try_send", args[0])
   let state = args[0].channelSendState()
   if state.closed or state.full:
     return FALSE
   let scope = if call == nil: nil else: call[].dispatchScope
   let pushed = args[0].tryPushChannel(checkedChannelSendItem(args[0], args[1],
-                                             "Channel/try-send item", scope))
+                                             "Channel/try_send item", scope))
   if not pushed.pushed:
     return FALSE
   wakeChannelWaiters(args[0], wakeSenders = false)  # a new value may wake a parked receiver
@@ -1434,7 +1434,7 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc nativeChannelTrySend*(channel, item: Value, scope: Scope = nil): bool =
   withScopedScheduler(scope):
-    requireChannel("native channel try-send", channel)
+    requireChannel("native channel try_send", channel)
     let state = channel.channelSendState()
     if state.closed or state.full:
       return false
@@ -1478,7 +1478,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         if retry.closed or not retry.empty:
           continue
         when compileOption("threads"):
-          # A dedicated-thread native op (os/exec-stream-async) may still feed
+          # A dedicated-thread native op (os/exec_stream_async) may still feed
           # or close this channel; poll instead of raising.
           if externalNativeOpsPending():
             os.sleep(1)
@@ -1496,7 +1496,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 proc tryRecvVariant(scope: Scope, name: string): Value =
   if scope == nil:
     raise newException(GeneError,
-      "Channel/try-recv requires a runtime scope")
+      "Channel/try_recv requires a runtime scope")
   var root = scope
   while root.parent != nil:
     root = root.parent
@@ -1514,14 +1514,14 @@ proc tryRecvValue(scope: Scope, item: Value): Value =
   newNode(scope.tryRecvVariant("value"), body = @[item], immutable = true)
 
 proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("Channel/try-recv", args)
-  requireChannel("Channel/try-recv", args[0])
+  requireOne("Channel/try_recv", args)
+  requireChannel("Channel/try_recv", args[0])
   pollOsExecAsyncCompletions()
   let scope = if call == nil: nil else: call[].dispatchScope
   let popped = args[0].tryPopChannel()
   if not popped.popped:
     return tryRecvEmpty(scope)
-  let item = checkedChannelItem(args[0], popped.item, "Channel/try-recv item",
+  let item = checkedChannelItem(args[0], popped.item, "Channel/try_recv item",
                                 scope)
   wakeChannelWaiters(args[0], wakeSenders = true)  # freed space may wake a parked sender
   drainSupervisorFailures()
@@ -1529,7 +1529,7 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc nativeChannelTryRecv*(channel: Value, scope: Scope): Value =
   withScopedScheduler(scope):
-    requireChannel("native channel try-recv", channel)
+    requireChannel("native channel try_recv", channel)
     let popped = channel.tryPopChannel()
     if not popped.popped:
       return tryRecvEmpty(scope)
@@ -1605,7 +1605,7 @@ proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
                             panic: bool): Value =
   var props = initOrderedTable[string, Value]()
   props["actor"] = actor
-  props["failed-message"] = failedMessage
+  props["failed_message"] = failedMessage
   props["message"] = newStr(message)
   props["error"] = errorValue
   props["panic"] = if panic: TRUE else: FALSE
@@ -1803,14 +1803,14 @@ proc actorAskTimeoutArg(call: ptr NativeCall): int64 =
   if call == nil:
     return
   for name in call[].namedNames:
-    if name != "timeout-ms":
+    if name != "timeout_ms":
       raise newException(GeneError,
         "actor/ask got unexpected named argument: " & name)
-  let index = nativeNamedIndex(call, "timeout-ms")
+  let index = nativeNamedIndex(call, "timeout_ms")
   if index >= 0:
-    result = requireInt64("actor/ask timeout-ms", call[].namedValues[index])
+    result = requireInt64("actor/ask timeout_ms", call[].namedValues[index])
     if result < 0:
-      raise newException(GeneError, "actor/ask timeout-ms must be non-negative")
+      raise newException(GeneError, "actor/ask timeout_ms must be non-negative")
 
 proc actorMailboxArg(call: ptr NativeCall): int =
   result = 16
@@ -2000,14 +2000,14 @@ proc biActorSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "actor/try-send expects 2 arguments, got " & $args.len)
-  requireActor("actor/try-send", args[0])
+    raise newException(GeneError, "actor/try_send expects 2 arguments, got " & $args.len)
+  requireActor("actor/try_send", args[0])
   let state = args[0].actorSendState()
   if state.closed or state.full:
     return FALSE
   let scope = actorDispatchScope(call)
   let pushed = args[0].tryPushActorMessage(checkedActorMessage(args[0], args[1],
-                                               "actor/try-send message", scope),
+                                               "actor/try_send message", scope),
                                              workerAllowed = true)
   if not pushed.pushed:
     return FALSE
@@ -2016,7 +2016,7 @@ proc biActorTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 
 proc nativeActorTrySend*(actor, message: Value, scope: Scope = nil): bool =
   withScopedScheduler(scope):
-    requireActor("native actor try-send", actor)
+    requireActor("native actor try_send", actor)
     let state = actor.actorSendState()
     if state.closed or state.full:
       return false
@@ -2428,19 +2428,19 @@ proc readFormsFromString(name: string, value: Value, scope: Scope): seq[Value] =
     raiseReaderError(name, e.msg, "ParseError", scope)
 
 proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("read-one", args)
+  requireOne("read_one", args)
   let scope = if call == nil: nil else: call.dispatchScope
-  let forms = readFormsFromString("read-one", args[0], scope)
+  let forms = readFormsFromString("read_one", args[0], scope)
   if forms.len == 0:
     return NIL
   if forms.len > 1:
-    raise newException(GeneError, "read-one expects one form, got " & $forms.len)
+    raise newException(GeneError, "read_one expects one form, got " & $forms.len)
   forms[0]
 
 proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("read-all", args)
+  requireOne("read_all", args)
   let scope = if call == nil: nil else: call.dispatchScope
-  newStream(readFormsFromString("read-all", args[0], scope))
+  newStream(readFormsFromString("read_all", args[0], scope))
 
 proc tokenValue(token: Token, tokenType: Value): Value =
   var props = initOrderedTable[string, Value]()
@@ -2451,9 +2451,9 @@ proc tokenValue(token: Token, tokenType: Value): Value =
   newNode(tokenType, props = props, immutable = true)
 
 proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("lex-all", args)
+  requireOne("lex_all", args)
   if args[0].kind != vkString:
-    raise newException(GeneError, "lex-all expects a Str")
+    raise newException(GeneError, "lex_all expects a Str")
   let scope = if call == nil: nil else: call.dispatchScope
   let tokenType = builtInTypeHead(scope, "Token")
   var tokens: seq[Value]
@@ -2461,7 +2461,7 @@ proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     for token in lexAll(args[0].strVal):
       tokens.add token.tokenValue(tokenType)
   except ReadError as e:
-    raiseReaderError("lex-all", e.msg, "LexError", scope)
+    raiseReaderError("lex_all", e.msg, "LexError", scope)
   newTypedStream(tokens, tokenType, newSym("Never"), scope)
 
 proc requireRangeArgCount(name: string, args: openArray[Value]) =
@@ -2961,7 +2961,7 @@ proc thawValue(value: Value): Value =
     value
 
 proc biFreezeShallow(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("freeze-shallow", args)
+  requireOne("freeze_shallow", args)
   case args[0].kind
   of vkList:
     newList(copyItems(args[0].listItems), immutable = true)
@@ -2993,7 +2993,7 @@ proc biThaw(args: openArray[Value]): Value {.nimcall.} =
 
 proc biSelectorKey(args: openArray[Value]): Value {.nimcall.} =
   requireOne("key", args)
-  newNode(newSym("selector-key"), body = @[args[0]])
+  newNode(newSym("selector_key"), body = @[args[0]])
 
 proc keySegment(name: string, segment: Value): string =
   case segment.kind
@@ -3064,13 +3064,13 @@ proc declarationKind*(value: Value): string =
 proc exportedBinding(ns: Value, name: string): Value =
   if ns.kind != vkNamespace:
     return VOID
-  if ns.nsIsModuleRoot and name == "this-mod":
+  if ns.nsIsModuleRoot and name == "this_mod":
     return VOID
   ns.nsScope.vars.getOrDefault(name, VOID)
 
 proc namespaceDeclarationNodes(ns: Value): seq[Value] =
   for name in sortedBindingNames(ns.nsScope):
-    if ns.nsIsModuleRoot and name == "this-mod":
+    if ns.nsIsModuleRoot and name == "this_mod":
       continue
     let value = ns.nsScope.vars[name]
     var props = initOrderedTable[string, Value]()
@@ -3160,8 +3160,8 @@ proc evalPolicyProp(policy: Value, name: string): Value =
 
 proc validateEvalPolicyPropName(name: string) =
   case name
-  of "max-steps", "max-memory-mb", "timeout-ms",
-     "allow-ffi", "allow-native-compile":
+  of "max_steps", "max_memory_mb", "timeout_ms",
+     "allow_ffi", "allow_native_compile":
     discard
   else:
     raise newException(GeneError,
@@ -3210,11 +3210,11 @@ proc evalPolicyMaxSteps(policy: Value): int64 =
   if policy.kind notin {vkMap, vkNode}:
     raise newException(GeneError, "env ^policy must be a map or node")
   validateEvalPolicyPropNames(policy)
-  rejectUnsupportedEvalLimit(policy, "max-memory-mb")
-  rejectUnsupportedEvalLimit(policy, "timeout-ms")
-  validateEvalPolicyFlag(policy, "allow-ffi")
-  validateEvalPolicyFlag(policy, "allow-native-compile")
-  evalPolicyNonNegativeInt(policy, "max-steps")
+  rejectUnsupportedEvalLimit(policy, "max_memory_mb")
+  rejectUnsupportedEvalLimit(policy, "timeout_ms")
+  validateEvalPolicyFlag(policy, "allow_ffi")
+  validateEvalPolicyFlag(policy, "allow_native_compile")
+  evalPolicyNonNegativeInt(policy, "max_steps")
 
 proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
   let maxSteps = evalPolicyMaxSteps(policy)
@@ -3301,7 +3301,7 @@ proc newSelectorCallStage(callee: Value, args: openArray[Value]): Value =
   body.add callee
   for arg in args:
     body.add arg
-  newNode(newSym("call-stage"), body = body)
+  newNode(newSym("call_stage"), body = body)
 
 proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
   if args.len == 1:
@@ -3519,15 +3519,15 @@ proc updateAt(name: string, target: Value, path: openArray[Value],
 
 proc biAssocIn(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
-    raise newException(GeneError, "assoc-in expects 3 arguments, got " & $args.len)
-  let path = selectorPath("assoc-in", args[1])
-  assocAt("assoc-in", args[0], path, 0, args[2])
+    raise newException(GeneError, "assoc_in expects 3 arguments, got " & $args.len)
+  let path = selectorPath("assoc_in", args[1])
+  assocAt("assoc_in", args[0], path, 0, args[2])
 
 proc biUpdateIn(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
-    raise newException(GeneError, "update-in expects 3 arguments, got " & $args.len)
-  let path = selectorPath("update-in", args[1])
-  updateAt("update-in", args[0], path, 0, args[2])
+    raise newException(GeneError, "update_in expects 3 arguments, got " & $args.len)
+  let path = selectorPath("update_in", args[1])
+  updateAt("update_in", args[0], path, 0, args[2])
 
 proc requireList(name: string, value: Value) =
   if value.kind != vkList:
@@ -3912,29 +3912,29 @@ proc biRegexSplit(args: openArray[Value]): Value {.nimcall.} =
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "Node/set-prop! expects 3 arguments, got " & $args.len)
-  requireNode("Node/set-prop!", args[0])
-  rejectCallerEnvEscape("Node/set-prop!", args[2])
-  args[0].setNodeProp(keySegment("Node/set-prop!", args[1]), args[2])
+      "Node/set_prop! expects 3 arguments, got " & $args.len)
+  requireNode("Node/set_prop!", args[0])
+  rejectCallerEnvEscape("Node/set_prop!", args[2])
+  args[0].setNodeProp(keySegment("Node/set_prop!", args[1]), args[2])
   args[2]
 
 proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Node/set-body! expects 2 arguments, got " & $args.len)
-  requireNode("Node/set-body!", args[0])
+      "Node/set_body! expects 2 arguments, got " & $args.len)
+  requireNode("Node/set_body!", args[0])
   if args[1].kind != vkList:
-    raise newException(GeneError, "Node/set-body! expects a List")
-  rejectCallerEnvEscape("Node/set-body!", args[1])
+    raise newException(GeneError, "Node/set_body! expects a List")
+  rejectCallerEnvEscape("Node/set_body!", args[1])
   args[0].setNodeBody(args[1].listItems)
   args[1]
 
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Node/push-body! expects 2 arguments, got " & $args.len)
-  requireNode("Node/push-body!", args[0])
-  rejectCallerEnvEscape("Node/push-body!", args[1])
+      "Node/push_body! expects 2 arguments, got " & $args.len)
+  requireNode("Node/push_body!", args[0])
+  rejectCallerEnvEscape("Node/push_body!", args[1])
   args[0].pushNodeBody(args[1])
   args[1]
 
@@ -3947,7 +3947,7 @@ proc requireDeviceBuffer(name: string, value: Value) =
     raise newException(GeneError, name & " expects a Device/Buffer")
 
 proc bufferTypeExprArg(name: string, value: Value): Value =
-  if value.kind == vkNode and value.head.isSymbol("c-abi-type") and
+  if value.kind == vkNode and value.head.isSymbol("c_abi_type") and
       value.body.len == 1 and value.body[0].kind == vkSymbol:
     return newSym("C/" & value.body[0].symVal)
   case value.kind
@@ -4046,8 +4046,8 @@ proc biBufferToList(args: openArray[Value]): Value {.nimcall.} =
   newList(copyItems(args[0].bufferItems))
 
 proc biBufferElemType(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Buffer/elem-type", args)
-  requireBuffer("Buffer/elem-type", args[0])
+  requireOne("Buffer/elem_type", args)
+  requireBuffer("Buffer/elem_type", args[0])
   let elemType = args[0].bufferElemType
   if elemType.kind == vkNil: newSym("Any") else: elemType
 
@@ -4062,7 +4062,7 @@ proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     raiseTypeError("Device/buffer backend", "Str", args[1],
                    if call == nil: nil else: call.dispatchScope)
   let scope = if call == nil: nil else: call.dispatchScope
-  let elemType = closeTypeExpr(bufferTypeExprArg("Device/buffer elem-type", args[2]),
+  let elemType = closeTypeExpr(bufferTypeExprArg("Device/buffer elem_type", args[2]),
                                scope)
   let rawLen = requireInt64("Device/buffer length", args[3])
   if rawLen < 0 or rawLen > int64(high(int)):
@@ -4080,8 +4080,8 @@ proc biDeviceBufferBackend(args: openArray[Value]): Value {.nimcall.} =
   newStr(args[0].deviceBufferBackend)
 
 proc biDeviceBufferElemType(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Device/Buffer/elem-type", args)
-  requireDeviceBuffer("Device/Buffer/elem-type", args[0])
+  requireOne("Device/Buffer/elem_type", args)
+  requireDeviceBuffer("Device/Buffer/elem_type", args[0])
   let elemType = args[0].deviceBufferElemType
   if elemType.kind == vkNil: newSym("Any") else: elemType
 
@@ -4093,17 +4093,17 @@ proc displayStr(v: Value, scope: Scope = nil): string =
     let protocol = builtinBinding(scope, "ToStr")
     if protocol.kind == vkProtocol and
         scope.typeImplementsProtocol(v.head, protocol):
-      let message = protocol.protocolMessages["to-str"]
+      let message = protocol.protocolMessages["to_str"]
       let implFn = resolveProtocolMessage(scope, message, v)
       var callArgs = [v]
       let rendered = applyCall(implFn, callArgs, NamedArgs(), scope)
       if rendered.kind != vkString:
-        raiseTypeError("ToStr/to-str", "Str", rendered, scope)
+        raiseTypeError("ToStr/to_str", "Str", rendered, scope)
       return rendered.strVal
   print(v)
 
 proc biToStr(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("to-str", args)
+  requireOne("to_str", args)
   let scope = if call == nil: nil else: call.dispatchScope
   newStr(displayStr(args[0], scope))
 
@@ -4420,14 +4420,14 @@ proc completedReadTextTask(path: string): Value =
   try:
     newCompletedTask(newStr(readFile(path)))
   except CatchableError as e:
-    newFailedTask("Fs/read-text-async failed: " & e.msg)
+    newFailedTask("Fs/read_text_async failed: " & e.msg)
 
 proc completedWriteTextTask(path, text: string): Value =
   try:
     writeFile(path, text)
     newCompletedTask(NIL)
   except CatchableError as e:
-    newFailedTask("Fs/write-text-async failed: " & e.msg)
+    newFailedTask("Fs/write_text_async failed: " & e.msg)
 
 proc tcpReadText(host: string, port, maxBytes, timeoutMs: int): string =
   let socket = newSocket()
@@ -4442,7 +4442,7 @@ proc completedTcpReadTextTask(host: string, port, maxBytes,
   try:
     newCompletedTask(newStr(tcpReadText(host, port, maxBytes, timeoutMs)))
   except CatchableError as e:
-    newFailedTask("Net/tcp-read-text-async failed: " & e.msg)
+    newFailedTask("Net/tcp_read_text_async failed: " & e.msg)
 
 proc tcpWriteText(host: string, port: int, text: string, timeoutMs: int) =
   let socket = newSocket()
@@ -4458,7 +4458,7 @@ proc completedTcpWriteTextTask(host: string, port: int, text: string,
     tcpWriteText(host, port, text, timeoutMs)
     newCompletedTask(NIL)
   except CatchableError as e:
-    newFailedTask("Net/tcp-write-text-async failed: " & e.msg)
+    newFailedTask("Net/tcp_write_text_async failed: " & e.msg)
 
 proc asyncIoQueueFullTask(name: string): Value =
   newFailedTask(name & " failed: async I/O queue full")
@@ -4466,9 +4466,9 @@ proc asyncIoQueueFullTask(name: string): Value =
 proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Fs/read-text-async expects 2 arguments, got " & $args.len)
-  requireFsReadDir("Fs/read-text-async", args[0])
-  requireString("Fs/read-text-async path", args[1])
+      "Fs/read_text_async expects 2 arguments, got " & $args.len)
+  requireFsReadDir("Fs/read_text_async", args[0])
+  requireString("Fs/read_text_async path", args[1])
   let path = args[1].strVal
   let task = newExternalTask()
   case enqueueAsyncReadText(path, task)
@@ -4477,15 +4477,15 @@ proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedReadTextTask(path)
   of aioQueueFull:
-    asyncIoQueueFullTask("Fs/read-text-async")
+    asyncIoQueueFullTask("Fs/read_text_async")
 
 proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "Fs/write-text-async expects 3 arguments, got " & $args.len)
-  requireFsWriteDir("Fs/write-text-async", args[0])
-  requireString("Fs/write-text-async path", args[1])
-  requireString("Fs/write-text-async text", args[2])
+      "Fs/write_text_async expects 3 arguments, got " & $args.len)
+  requireFsWriteDir("Fs/write_text_async", args[0])
+  requireString("Fs/write_text_async path", args[1])
+  requireString("Fs/write_text_async text", args[2])
   let path = args[1].strVal
   let text = args[2].strVal
   let task = newExternalTask()
@@ -4495,19 +4495,19 @@ proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedWriteTextTask(path, text)
   of aioQueueFull:
-    asyncIoQueueFullTask("Fs/write-text-async")
+    asyncIoQueueFullTask("Fs/write_text_async")
 
 proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 5:
     raise newException(GeneError,
-      "Net/tcp-read-text-async expects 5 arguments, got " & $args.len)
-  requireNetConnect("Net/tcp-read-text-async", args[0])
-  requireString("Net/tcp-read-text-async host", args[1])
+      "Net/tcp_read_text_async expects 5 arguments, got " & $args.len)
+  requireNetConnect("Net/tcp_read_text_async", args[0])
+  requireString("Net/tcp_read_text_async host", args[1])
   let host = args[1].strVal
-  let port = requirePort("Net/tcp-read-text-async port", args[2])
-  let maxBytes = requirePositiveInt("Net/tcp-read-text-async max-bytes",
+  let port = requirePort("Net/tcp_read_text_async port", args[2])
+  let maxBytes = requirePositiveInt("Net/tcp_read_text_async max_bytes",
                                     args[3])
-  let timeoutMs = requirePositiveInt("Net/tcp-read-text-async timeout-ms",
+  let timeoutMs = requirePositiveInt("Net/tcp_read_text_async timeout_ms",
                                      args[4])
   let task = newExternalTask()
   case enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs, task)
@@ -4516,19 +4516,19 @@ proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedTcpReadTextTask(host, port, maxBytes, timeoutMs)
   of aioQueueFull:
-    asyncIoQueueFullTask("Net/tcp-read-text-async")
+    asyncIoQueueFullTask("Net/tcp_read_text_async")
 
 proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 5:
     raise newException(GeneError,
-      "Net/tcp-write-text-async expects 5 arguments, got " & $args.len)
-  requireNetConnect("Net/tcp-write-text-async", args[0])
-  requireString("Net/tcp-write-text-async host", args[1])
+      "Net/tcp_write_text_async expects 5 arguments, got " & $args.len)
+  requireNetConnect("Net/tcp_write_text_async", args[0])
+  requireString("Net/tcp_write_text_async host", args[1])
   let host = args[1].strVal
-  let port = requirePort("Net/tcp-write-text-async port", args[2])
-  requireString("Net/tcp-write-text-async text", args[3])
+  let port = requirePort("Net/tcp_write_text_async port", args[2])
+  requireString("Net/tcp_write_text_async text", args[3])
   let text = args[3].strVal
-  let timeoutMs = requirePositiveInt("Net/tcp-write-text-async timeout-ms",
+  let timeoutMs = requirePositiveInt("Net/tcp_write_text_async timeout_ms",
                                      args[4])
   let task = newExternalTask()
   case enqueueAsyncTcpWriteText(host, port, text, timeoutMs, task)
@@ -4537,27 +4537,27 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedTcpWriteTextTask(host, port, text, timeoutMs)
   of aioQueueFull:
-    asyncIoQueueFullTask("Net/tcp-write-text-async")
+    asyncIoQueueFullTask("Net/tcp_write_text_async")
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
-    raise newException(GeneError, "Runtime/gc-stats expects no arguments")
+    raise newException(GeneError, "Runtime/gc_stats expects no arguments")
   var entries = initOrderedTable[string, Value]()
-  entries["live-managed"] = newInt(managedLiveCount())
-  entries["rc-stats?"] =
+  entries["live_managed"] = newInt(managedLiveCount())
+  entries["rc_stats?"] =
     when defined(geneRcStats):
       TRUE
     else:
       FALSE
   let scheduler = currentScheduler()
   withSchedulerLock(scheduler):
-    entries["supervisor-retry-pending"] =
+    entries["supervisor_retry_pending"] =
       newInt(scheduler.supervisorRetries.len - scheduler.supervisorRetryHead)
-    entries["supervisor-retry-capacity"] =
+    entries["supervisor_retry_capacity"] =
       newInt(supervisorFailureRetryCapacity)
-    entries["supervisor-retry-high-water"] =
+    entries["supervisor_retry_high_water"] =
       newInt(scheduler.supervisorRetryHighWater)
-    entries["supervisor-retry-drops"] =
+    entries["supervisor_retry_drops"] =
       newIntFromDecimal($scheduler.supervisorRetryDrops)
   newMap(entries, immutable = true)
 
@@ -4573,10 +4573,10 @@ proc biCPtrClosed(args: openArray[Value]): Value {.nimcall.} =
   newBool(args[0].cPtrClosed)
 
 proc cAbiTypeValue(name: string): Value =
-  newNode(newSym("c-abi-type"), body = @[newSym(name)])
+  newNode(newSym("c_abi_type"), body = @[newSym(name)])
 
 proc ffiTypeValue(name: string): Value =
-  newNode(newSym("ffi-type"), body = @[newSym(name)])
+  newNode(newSym("ffi_type"), body = @[newSym(name)])
 
 proc runReplSessionForEnv*(env: Value,
                            readLine: ReplReadLine,
@@ -4661,7 +4661,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SyntaxCall", syntaxCallType)
   let callableProtocol = newProtocol("Callable", ["apply"])
   result.define("Callable", callableProtocol)
-  let toStrProtocol = newProtocol("ToStr", ["to-str"])
+  let toStrProtocol = newProtocol("ToStr", ["to_str"])
   result.define("ToStr", toStrProtocol)
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
@@ -4757,7 +4757,7 @@ proc buildBuiltins(app: Application): Scope =
                              @[
                                TypeField(name: "actor", optional: false,
                                          typeExpr: newSym("Any"), scope: result),
-                               TypeField(name: "failed-message", optional: false,
+                               TypeField(name: "failed_message", optional: false,
                                          typeExpr: newSym("Any"), scope: result),
                                TypeField(name: "message", optional: false,
                                          typeExpr: newSym("Str"), scope: result),
@@ -4798,13 +4798,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
   result.define("new", newNativeCallFn("new", biNew))
-  result.define("to-str", newNativeCallFn("to-str", biToStr,
+  result.define("to_str", newNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
   result.define("chars", newNativeFn("chars", biChars))
   result.define("bytes", newNativeFn("bytes", biBytes))
   result.define("graphemes", newNativeFn("graphemes", biGraphemes))
   result.define("$", newNativeCallFn("$", biDollar, acceptsNamed = false))
-  result.define("freeze-shallow", newNativeFn("freeze-shallow", biFreezeShallow))
+  result.define("freeze_shallow", newNativeFn("freeze_shallow", biFreezeShallow))
   result.define("freeze", newNativeFn("freeze", biFreeze))
   result.define("thaw", newNativeFn("thaw", biThaw))
   result.define("key", newNativeFn("key", biSelectorKey))
@@ -4870,8 +4870,8 @@ proc buildBuiltins(app: Application): Scope =
   durationScope.define("seconds", newNativeFn("Duration/seconds", biDurationSeconds))
   result.define("Duration", newNamespace("Duration", durationScope))
   result.define("Set", newNativeFn("Set", biSet))
-  result.define("set-has?", newNativeFn("set-has?", biSetHas))
-  result.define("set-size", newNativeFn("set-size", biSetSize))
+  result.define("set_has?", newNativeFn("set_has?", biSetHas))
+  result.define("set_size", newNativeFn("set_size", biSetSize))
   result.define("size", newNativeFn("size", biListSize))
   result.define("empty?", newNativeFn("empty?", biListEmpty))
   result.define("first", newNativeFn("first", biListFirst))
@@ -4886,10 +4886,10 @@ proc buildBuiltins(app: Application): Scope =
   mapScope.define("put!", newNativeFn("Map/put!", biMapPutBang))
   result.define("Map", newNamespace("Map", mapScope))
   let nodeScope = newScope(result)
-  nodeScope.define("set-prop!", newNativeFn("Node/set-prop!", biNodeSetPropBang))
-  nodeScope.define("set-body!", newNativeFn("Node/set-body!", biNodeSetBodyBang))
-  nodeScope.define("push-body!",
-                   newNativeFn("Node/push-body!", biNodePushBodyBang))
+  nodeScope.define("set_prop!", newNativeFn("Node/set_prop!", biNodeSetPropBang))
+  nodeScope.define("set_body!", newNativeFn("Node/set_body!", biNodeSetBodyBang))
+  nodeScope.define("push_body!",
+                   newNativeFn("Node/push_body!", biNodePushBodyBang))
   result.define("Node", newNamespace("Node", nodeScope))
   let bufferScope = newScope(result)
   bufferScope.define("len", newNativeFn("Buffer/len", biBufferLen))
@@ -4897,7 +4897,7 @@ proc buildBuiltins(app: Application): Scope =
   bufferScope.define("set!", newNativeCallFn("Buffer/set!", biBufferSetBang,
                                              acceptsNamed = false))
   bufferScope.define("to_list", newNativeFn("Buffer/to_list", biBufferToList))
-  bufferScope.define("elem-type", newNativeFn("Buffer/elem-type", biBufferElemType))
+  bufferScope.define("elem_type", newNativeFn("Buffer/elem_type", biBufferElemType))
   result.define("Buffer", newNamespace("Buffer", bufferScope))
   let deviceScope = newScope(result)
   deviceScope.define("Compute", newCapability("Device/Compute"))
@@ -4909,8 +4909,8 @@ proc buildBuiltins(app: Application): Scope =
   deviceBufferScope.define("backend",
                            newNativeFn("Device/Buffer/backend",
                                        biDeviceBufferBackend))
-  deviceBufferScope.define("elem-type",
-                           newNativeFn("Device/Buffer/elem-type",
+  deviceBufferScope.define("elem_type",
+                           newNativeFn("Device/Buffer/elem_type",
                                        biDeviceBufferElemType))
   deviceScope.define("Buffer", newNamespace("Device/Buffer", deviceBufferScope))
   result.define("Device", newNamespace("Device", deviceScope))
@@ -4919,25 +4919,25 @@ proc buildBuiltins(app: Application): Scope =
                          newNativeFn("Capability/name", biCapabilityName))
   result.define("Capability", newNamespace("Capability", capabilityScope))
   let runtimeScope = newScope(result)
-  runtimeScope.define("gc-stats",
-                      newNativeFn("Runtime/gc-stats", biRuntimeGcStats))
+  runtimeScope.define("gc_stats",
+                      newNativeFn("Runtime/gc_stats", biRuntimeGcStats))
   result.define("Runtime", newNamespace("Runtime", runtimeScope))
   let fsScope = newScope(result)
   fsScope.define("ReadDir", newCapability("Fs/ReadDir"))
   fsScope.define("WriteDir", newCapability("Fs/WriteDir"))
   fsScope.define("ReadWriteDir", newCapability("Fs/ReadWriteDir"))
-  fsScope.define("read-text-async", newNativeFn("Fs/read-text-async",
+  fsScope.define("read_text_async", newNativeFn("Fs/read_text_async",
                                                 biFsReadTextAsync))
-  fsScope.define("write-text-async", newNativeFn("Fs/write-text-async",
+  fsScope.define("write_text_async", newNativeFn("Fs/write_text_async",
                                                  biFsWriteTextAsync))
   result.define("Fs", newNamespace("Fs", fsScope))
   let netScope = newScope(result)
   netScope.define("Connect", newCapability("Net/Connect"))
-  netScope.define("tcp-read-text-async",
-                  newNativeFn("Net/tcp-read-text-async",
+  netScope.define("tcp_read_text_async",
+                  newNativeFn("Net/tcp_read_text_async",
                               biNetTcpReadTextAsync))
-  netScope.define("tcp-write-text-async",
-                  newNativeFn("Net/tcp-write-text-async",
+  netScope.define("tcp_write_text_async",
+                  newNativeFn("Net/tcp_write_text_async",
                               biNetTcpWriteTextAsync))
   result.define("Net", newNamespace("Net", netScope))
   result.define("cell", newNativeFn("cell", biCell))
@@ -4947,13 +4947,13 @@ proc buildBuiltins(app: Application): Scope =
   cellScope.define("swap", newNativeFn("Cell/swap", biCellSwap))
   cellScope.define("update", newNativeFn("Cell/update", biCellUpdate))
   result.define("Cell", newNamespace("Cell", cellScope))
-  result.define("atomic-cell", newNativeFn("atomic-cell", biAtomicCell))
+  result.define("atomic_cell", newNativeFn("atomic_cell", biAtomicCell))
   let atomicCellScope = newScope(result)
   atomicCellScope.define("load", newNativeFn("AtomicCell/load", biAtomicCellLoad))
   atomicCellScope.define("store", newNativeFn("AtomicCell/store", biAtomicCellStore))
   atomicCellScope.define("swap", newNativeFn("AtomicCell/swap", biAtomicCellSwap))
-  atomicCellScope.define("compare-exchange",
-    newNativeFn("AtomicCell/compare-exchange", biAtomicCellCompareExchange))
+  atomicCellScope.define("compare_exchange",
+    newNativeFn("AtomicCell/compare_exchange", biAtomicCellCompareExchange))
   result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
   let cScope = newScope(result)
   cScope.define("close", newNativeFn("C/close", biCPtrClose))
@@ -4998,12 +4998,12 @@ proc buildBuiltins(app: Application): Scope =
   let channelScope = newScope(result)
   channelScope.define("send", newNativeCallFn("Channel/send", biChannelSend,
                                              acceptsNamed = false))
-  channelScope.define("try-send", newNativeCallFn("Channel/try-send",
+  channelScope.define("try_send", newNativeCallFn("Channel/try_send",
                                                  biChannelTrySend,
                                                  acceptsNamed = false))
   channelScope.define("recv", newNativeCallFn("Channel/recv", biChannelRecv,
                                              acceptsNamed = false))
-  channelScope.define("try-recv", newNativeCallFn("Channel/try-recv",
+  channelScope.define("try_recv", newNativeCallFn("Channel/try_recv",
                                                  biChannelTryRecv,
                                                  acceptsNamed = false))
   channelScope.define("close", newNativeCallFn("Channel/close", biChannelClose,
@@ -5013,7 +5013,7 @@ proc buildBuiltins(app: Application): Scope =
   actorScope.define("spawn", newNativeCallFn("actor/spawn", biActorSpawn))
   actorScope.define("send", newNativeCallFn("actor/send", biActorSend,
                                            acceptsNamed = false))
-  actorScope.define("try-send", newNativeCallFn("actor/try-send",
+  actorScope.define("try_send", newNativeCallFn("actor/try_send",
                                                biActorTrySend,
                                                acceptsNamed = false))
   actorScope.define("ask", newNativeCallFn("actor/ask", biActorAsk))
@@ -5047,11 +5047,11 @@ proc buildBuiltins(app: Application): Scope =
                                             acceptsNamed = false))
   envScope.define("snapshot", newNativeFn("Env/snapshot", biEnvSnapshot))
   result.define("Env", newNamespace("Env", envScope))
-  result.define("read-one", newNativeCallFn("read-one", biReadOne,
+  result.define("read_one", newNativeCallFn("read_one", biReadOne,
                                             acceptsNamed = false))
-  result.define("read-all", newNativeCallFn("read-all", biReadAll,
+  result.define("read_all", newNativeCallFn("read_all", biReadAll,
                                             acceptsNamed = false))
-  result.define("lex-all", newNativeCallFn("lex-all", biLexAll,
+  result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
   result.define("to_stream", newNativeFn("to_stream", biToStream))
   result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
@@ -5065,8 +5065,8 @@ proc buildBuiltins(app: Application): Scope =
   streamScope.define("next", newNativeFn("Stream/next", biStreamNext))
   streamScope.define("close", newNativeFn("Stream/close", biStreamClose))
   result.define("Stream", newNamespace("Stream", streamScope))
-  result.define("assoc-in", newNativeFn("assoc-in", biAssocIn))
-  result.define("update-in", newNativeFn("update-in", biUpdateIn))
+  result.define("assoc_in", newNativeFn("assoc_in", biAssocIn))
+  result.define("update_in", newNativeFn("update_in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
   result.define("sleep", newNativeFn("sleep", biSleep))
   result.define("print", newNativeFn("print", biPrint))
@@ -5178,10 +5178,10 @@ proc loadNativeFast(scope: Scope, kind: NativeFastKind, name: string): Value =
 proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
   ## Create the first-class module value for a module root scope. The root
   ## namespace owns declarations; the Module value carries identity, path, and
-  ## metadata and is exposed through the compiler-provided `this-mod` binding.
+  ## metadata and is exposed through the compiler-provided `this_mod` binding.
   let root = newNamespace(name, scope, path, moduleRoot = true)
   result = newModule(name, root, path)
-  scope.define("this-mod", result)
+  scope.define("this_mod", result)
 
 # ---------------------------------------------------------------------------
 # Module loading (design §15.4/§15.6)
@@ -6513,7 +6513,7 @@ proc namedCaptureSendable(fnScope, visibleScope: Scope, name: string,
   if not fnScope.lookupOptional(name, captured):
     return false
   if mode == csmWorker and captured.kind == vkNativeFn and
-      captured.nativeFnName in ["os/exec-async", "os/exec-stream-async"]:
+      captured.nativeFnName in ["os/exec_async", "os/exec_stream_async"]:
     # Dedicated exec jobs retain Task/Channel ORC objects in a root-lane
     # registry; constructing that ownership graph on a worker would perform
     # non-atomic GC_ref/GC_unref operations on the wrong lane.
@@ -7836,7 +7836,7 @@ proc appendNativeTrace(e: ref GeneError, calleeName: string,
                        proto: FunctionProto) =
   let kind =
     if proto.nativeOp != ncoNone or proto.aotFrameKind == afkTypedNative:
-      "typed-native"
+      "typed_native"
     else:
       "native"
   appendTraceFrames(e, [stackFrameValue(calleeName, kind)])
@@ -9264,7 +9264,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           continue
         of opSetModuleName:
           var module: Value
-          if scope.lookupOptional("this-mod", module):
+          if scope.lookupOptional("this_mod", module):
             if module.kind == vkModule:
               module.setModuleName(inst[].name)
               if inst[].intArg >= 0 and inst[].intArg < chunk.constants.len:
@@ -9746,7 +9746,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # on top as the first positional argument.
           let receiver = stack.pop()
           if receiver.nodeConstructing and inst[].name notin
-              ["Node/set-prop!", "Node/set-body!", "Node/push-body!"]:
+              ["Node/set_prop!", "Node/set_body!", "Node/push_body!"]:
             raise newException(GeneError,
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
@@ -10738,26 +10738,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           for optionName in inst[].names:
             case optionName
             of "events": hasEvents = true
-            of "dead-letter": hasDeadLetters = true
-            of "max-restarts": hasMaxRestarts = true
-            of "within-ms": hasWithinMs = true
+            of "dead_letter": hasDeadLetters = true
+            of "max_restarts": hasMaxRestarts = true
+            of "within_ms": hasWithinMs = true
             else: discard
-          # Options were compiled events → dead-letter → max-restarts →
-          # within-ms; pop in reverse.
+          # Options were compiled events → dead_letter → max_restarts →
+          # within_ms; pop in reverse.
           let withinMs =
             if hasWithinMs:
-              int(requireInt64("supervisor ^within-ms", stack.pop()))
+              int(requireInt64("supervisor ^within_ms", stack.pop()))
             else:
               0
           let maxRestarts =
             if hasMaxRestarts:
-              int(requireInt64("supervisor ^max-restarts", stack.pop()))
+              int(requireInt64("supervisor ^max_restarts", stack.pop()))
             else:
               0
           let deadLetterSink =
             if hasDeadLetters:
               let sink = stack.pop()
-              requireChannel("supervisor ^dead-letter", sink)
+              requireChannel("supervisor ^dead_letter", sink)
               sink
             else:
               NIL
@@ -11766,7 +11766,7 @@ proc runFiber(f: Fiber) =
             raise
           return
         if not actorConsumeRestartBudget(actor):
-          # ^max-restarts within ^within-ms exhausted (§18.5): stop instead
+          # ^max_restarts within ^within_ms exhausted (§18.5): stop instead
           # of thrashing through restarts.
           closeActorAndCancelMailbox(actor)
           if not askSettled:
@@ -11935,7 +11935,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Fs/read-text-async failed: " & e.msg):
+                       "Fs/read_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
     of aioWriteText:
       try:
@@ -11944,7 +11944,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Fs/write-text-async failed: " & e.msg):
+                       "Fs/write_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
     of aioTcpReadText:
       try:
@@ -11956,7 +11956,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Net/tcp-read-text-async failed: " & e.msg):
+                       "Net/tcp_read_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
     of aioTcpWriteText:
       try:
@@ -11965,7 +11965,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Net/tcp-write-text-async failed: " & e.msg):
+                       "Net/tcp_write_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
@@ -12470,7 +12470,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
 proc typeExprLabel(expr: Value): string =
   if expr.kind == vkNil:
     return "Any"
-  if expr.kind == vkNode and expr.head.isSymbol("c-abi-type") and
+  if expr.kind == vkNode and expr.head.isSymbol("c_abi_type") and
       expr.body.len == 1 and expr.body[0].kind == vkSymbol:
     return "C/" & expr.body[0].symVal
   if expr.kind == vkNode and expr.head.isSymbol("path"):
@@ -12851,7 +12851,7 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
   props["actual"] = newStr($value.kind)
-  props["actual-value"] = value
+  props["actual_value"] = value
   var head = newSym("TypeError")
   var typeError: Value
   if scope != nil and scope.lookupOptional("TypeError", typeError) and
@@ -12872,7 +12872,7 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
   props["actual"] = newStr(actual)
-  props["actual-value"] = value
+  props["actual_value"] = value
   var head = newSym("CallKindError")
   var callKindError: Value
   if scope != nil and scope.lookupOptional("CallKindError", callKindError) and
@@ -13590,7 +13590,7 @@ proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
   false
 
 proc isSelectorCallStage(v: Value): bool =
-  v.kind == vkNode and v.head.isSymbol("call-stage") and v.body.len > 0
+  v.kind == vkNode and v.head.isSymbol("call_stage") and v.body.len > 0
 
 proc lookupIndex(items: openArray[Value], rawIndex: int64): Value =
   var idx = rawIndex
@@ -18455,7 +18455,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
   ## generators or ^errors — those stay with the caller.
   let positional = callee.fnParams
   let requiredPositional = proto.requiredPositionalCount()
-  # fn! binds caller-env and syntax-call as implicit leading parameters;
+  # fn! binds caller_env and syntax_call as implicit leading parameters;
   # arity diagnostics must count only the user-visible syntax parameters.
   let implicit = if proto.isSyntaxFn: 2 else: 0
   template arityHead(): string =
@@ -18706,8 +18706,8 @@ proc syntaxCallEnvelope(scope: Scope, node: Value): Value =
 
 proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value =
   ## Apply a fn! (design §3 step 4): the callee receives the unevaluated
-  ## prop/body syntax nodes and the caller environment. `caller-env` and
-  ## `syntax-call` bind as implicit leading parameters.
+  ## prop/body syntax nodes and the caller environment. `caller_env` and
+  ## `syntax_call` bind as implicit leading parameters.
   if not callee.isSyntaxFn:
     raise newException(GeneError,
       "syntax call site expects a fn! value, got " & $callee.kind)

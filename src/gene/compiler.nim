@@ -2451,7 +2451,7 @@ proc compileVar(c: var Compiler, node: Value) =
       c.emitDeclareType(body[0].symVal, body[2])
     if body[0].symVal == "self":
       c.selfAvailable = true
-    # Direct aliases of fn! values keep syntax-call sites (design §11.1):
+    # Direct aliases of fn! values keep syntax_call sites (design §11.1):
     # (var g unless!) or (var g (fn! [..] ..)).
     if body.len > valueIndex and
         ((body[valueIndex].kind == vkSymbol and
@@ -2523,8 +2523,8 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
 
 proc compileFnBang(c: var Compiler, node: Value) =
   ## (fn! name [params] body...) — runtime fexpr / syntax callable (design
-  ## §3/§11.1). Parameters bind raw syntax nodes; `caller-env` and
-  ## `syntax-call` arrive as implicit leading parameters at syntax-call time,
+  ## §3/§11.1). Parameters bind raw syntax nodes; `caller_env` and
+  ## `syntax_call` arrive as implicit leading parameters at syntax_call time,
   ## so the body resolves them like ordinary locals.
   let body = node.body
   var idx = 0
@@ -2543,7 +2543,7 @@ proc compileFnBang(c: var Compiler, node: Value) =
     # (childCompiler copies the table).
     c.syntaxFnNames[name] = true
   let errorRow = compileErrorRow(c, node)
-  var params = @[newSym("caller-env"), newSym("syntax-call")]
+  var params = @[newSym("caller_env"), newSym("syntax_call")]
   for item in body[idx].listItems:
     params.add item
   let proto = buildFunctionProto(c, name, newList(params), body, idx + 1,
@@ -3041,7 +3041,7 @@ proc compileImport(c: var Compiler, node: Value) =
       discard c.reserveLocal(sel.local)
   # Cross-module fn! names (design §3/§11.1): the values import as ordinary
   # runtime bindings above; the name set keeps the importer's call sites on
-  # the syntax-call path. Registered after reserveLocal, which clears names.
+  # the syntax_call path. Registered after reserveLocal, which clears names.
   if spec.fromModule and c.importedSyntaxFnSets.hasKey(spec.modulePath):
     let exported = c.importedSyntaxFnSets[spec.modulePath]
     for sel in spec.selections:
@@ -3904,8 +3904,8 @@ proc compileTaskScope(c: var Compiler, node: Value) =
 
 proc compileSupervisor(c: var Compiler, node: Value) =
   for key in node.props.keys:
-    if key notin ["strategy", "events", "dead-letter", "max-restarts",
-                  "within-ms"]:
+    if key notin ["strategy", "events", "dead_letter", "max_restarts",
+                  "within_ms"]:
       raise newException(GeneError,
         "supervisor got unexpected named argument: " & key)
   if not node.props.hasKey("strategy"):
@@ -3919,7 +3919,7 @@ proc compileSupervisor(c: var Compiler, node: Value) =
       "unsupported supervisor strategy: " & strategy)
   # Options are compiled in a fixed order; opSupervisor pops them in reverse.
   var optionNames: seq[string]
-  for option in ["events", "dead-letter", "max-restarts", "within-ms"]:
+  for option in ["events", "dead_letter", "max_restarts", "within_ms"]:
     if node.props.hasKey(option):
       compileExpr(c, node.props[option])
       optionNames.add option
@@ -4645,7 +4645,7 @@ proc compileFormsWithMacros*(forms: openArray[Value],
   ## macro exports of its `from "path"` dependencies available (keyed by the
   ## raw path string), and return this unit's own macro definitions — imported
   ## macros are usable but not re-exported. fn! names travel the same way so
-  ## importers keep syntax-call sites (design §3/§11.1); the fn! values remain
+  ## importers keep syntax_call sites (design §3/§11.1); the fn! values remain
   ## ordinary runtime bindings.
   var c = Compiler(chunk: newChunk(), allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),

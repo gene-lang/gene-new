@@ -7,7 +7,7 @@ manual-vs-generated coherence, but without the declaration overlay or
 provenance meta. `docs/design.md` (§2, §3, §11, §11.1, §15) is the
 authoritative surface; §4.2 and §5.2–§5.4 below have been revised to match the
 shipped semantics — notably static fn! call-site tracking with guarded
-expression heads, and a read-only `caller-env`.  
+expression heads, and a read-only `caller_env`.  
 **Scope:** user-defined syntax extension, runtime fexprs, and compile-time templates  
 **Decision:** use `fn!` for fexprs and `macro` for compile-time templates.
 
@@ -77,7 +77,7 @@ A fexpr receives unevaluated argument syntax and an explicit caller environment.
 Gene spelling:
 
 ```gene
-(fn! name [syntax-params...]
+(fn! name [syntax_params...]
   body...)
 ```
 
@@ -85,8 +85,8 @@ Example:
 
 ```gene
 (fn! when! [cond, body...]
-  (if (eval cond ^in caller-env)
-    (eval `(do %body...) ^in caller-env)
+  (if (eval cond ^in caller_env)
+    (eval `(do %body...) ^in caller_env)
     nil))
 ```
 
@@ -116,7 +116,7 @@ A macro transforms syntax before normal compilation continues.
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to-str self/name)))))
+         (to_str self/name)))))
 ```
 
 ---
@@ -221,26 +221,26 @@ Conceptual `SyntaxCall`:
 Inside a `fn!`, Gene provides a lexical binding:
 
 ```gene
-caller-env : CallerEnv
+caller_env : CallerEnv
 ```
 
-`caller-env` is a **borrowed, read-only view** of the caller's evaluation environment
+`caller_env` is a **borrowed, read-only view** of the caller's evaluation environment
 (design §11.1). It resolves the caller's lexical bindings, imports, module
 namespace, and core built-ins, and it can be passed to `eval`. Code evaluated
-`^in caller-env` cannot create, rebind, or `set` bindings in the caller's
+`^in caller_env` cannot create, rebind, or `set` bindings in the caller's
 scope — declarations made by an evaluated unit live in that unit's own
 overlay. Mutable values reachable through caller bindings (`Cell`, buffers,
 actors) can still be mutated; the view is read-only, not deep-frozen. The view
 cannot escape the syntax call through returns, containers, closures, tasks,
-serialization, or `Send` boundaries. Use `(Env/snapshot caller-env ["name" ...])`
+serialization, or `Send` boundaries. Use `(Env/snapshot caller_env ["name" ...])`
 to create a durable `Env` containing only explicitly selected bindings.
 
 Example:
 
 ```gene
 (fn! unless! [cond, body...]
-  (if (not (eval cond ^in caller-env))
-    (eval `(do %body...) ^in caller-env)
+  (if (not (eval cond ^in caller_env))
+    (eval `(do %body...) ^in caller_env)
     nil))
 ```
 
@@ -261,7 +261,7 @@ parameters bind whole values only — the intended future form
 
 ```gene
 (fn! second! [[_, value]]
-  (eval value ^in caller-env))
+  (eval value ^in caller_env))
 ```
 
 does not compile yet; destructure inside the body with `var`/`match` instead.
@@ -269,7 +269,7 @@ does not compile yet; destructure inside the body with `var`/`match` instead.
 Named syntax parameters are allowed:
 
 ```gene
-(fn! with-timeout! [expr, ^ms timeout]
+(fn! with_timeout! [expr, ^ms timeout]
   ...)
 ```
 
@@ -307,16 +307,16 @@ with a recoverable error rather than mis-evaluating its arguments:
 
 A fexpr can evaluate only with the `Env` values it has.
 
-The common case uses `caller-env`:
+The common case uses `caller_env`:
 
 ```gene
-(eval node ^in caller-env)
+(eval node ^in caller_env)
 ```
 
 But a fexpr may evaluate in a restricted environment:
 
 ```gene
-(eval node ^in sandbox-env)
+(eval node ^in sandbox_env)
 ```
 
 This makes fexprs compatible with Gene’s authority model. No ambient filesystem, network, subprocess, FFI, or native-compilation authority is granted unless present in the selected `Env`.
@@ -329,13 +329,13 @@ If it evaluates syntax, the result is the result of `eval`:
 
 ```gene
 (fn! do1! [x]
-  (eval x ^in caller-env))
+  (eval x ^in caller_env))
 ```
 
 If it builds data, it may return data directly:
 
 ```gene
-(fn! quote-node! [x]
+(fn! quote_node! [x]
   x)
 ```
 
@@ -364,7 +364,7 @@ Most DSLs and custom control flow should use `fn!` instead.
 
 ```gene
 (macro name [params...]
-  template-expr)
+  template_expr)
 ```
 
 MVP restriction:
@@ -425,7 +425,7 @@ This differs from `fn!`, which creates a normal runtime value.
 Macros are module exports, but only for compile-time use.
 
 ```gene
-(import [when! : unless-not!] from "./control")
+(import [when! : unless_not!] from "./control")
 ```
 
 Rules:
@@ -446,7 +446,7 @@ Runtime fexprs do not have these restrictions because they are ordinary values.
 
 ### 6.6 Hygiene
 
-MVP macro hygiene is fresh-name based.
+MVP macro hygiene is fresh_name based.
 
 When a template introduces a binder in a recognized binding form, the compiler rewrites that introduced name to a fresh internal symbol.
 
@@ -485,7 +485,7 @@ A macro captures caller names only by unquoting caller-provided syntax.
 Example:
 
 ```gene
-(macro bind-user-name! [name]
+(macro bind_user_name! [name]
   `(var %name "Alice"))
 ```
 
@@ -532,8 +532,8 @@ Use `derive` when:
 
 ```gene
 (fn! when! [cond, body...]
-  (if (eval cond ^in caller-env)
-    (eval `(do %body...) ^in caller-env)
+  (if (eval cond ^in caller_env)
+    (eval `(do %body...) ^in caller_env)
     nil))
 ```
 
@@ -549,20 +549,20 @@ Usage:
 
 ```gene
 (fn! assert! [cond, ^message msg = "assertion failed"]
-  (if (eval cond ^in caller-env)
+  (if (eval cond ^in caller_env)
     true
     (panic msg)))
 ```
 
-### 8.3 Fexpr `with-resource!`
+### 8.3 Fexpr `with_resource!`
 
 ```gene
-(fn! with-resource! [binding, body...]
+(fn! with_resource! [binding, body...]
   (match binding
     (when [name init]
-      (var value (eval init ^in caller-env))
+      (var value (eval init ^in caller_env))
       (try
-        (eval `(do (var %name %value) %body...) ^in caller-env)
+        (eval `(do (var %name %value) %body...) ^in caller_env)
       ensure
         (value ~ Closeable/close)))))
 ```
@@ -581,7 +581,7 @@ The generated `if` is type-checked and compiled as if it appeared in the source.
 ### 8.5 Template macro introducing a local
 
 ```gene
-(macro with-temp! [value, body...]
+(macro with_temp! [value, body...]
   `(do
      (var tmp %value)
      %body...))
@@ -598,7 +598,7 @@ The introduced `tmp` is hygienically fresh in MVP.
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to-str self/name)))))
+         (to_str self/name)))))
 ```
 
 ---
@@ -610,7 +610,7 @@ The introduced `tmp` is hygienically fresh in MVP.
 A fexpr receives caller syntax and may evaluate it explicitly:
 
 ```gene
-(eval syntax-node ^in caller-env)
+(eval syntax-node ^in caller_env)
 ```
 
 This preserves Gene’s authority model:
@@ -675,12 +675,12 @@ Spec-locked in `tests/spec_runner.nim` ("spec — macros from design",
 "spec — macros across modules"):
 
 ```text
-- `(macro name [params...] template-expr)`;
+- `(macro name [params...] template_expr)`;
 - syntax-node arguments;
 - syntax-pattern parameter matching (incl. typed patterns);
 - rest and named syntax parameters, syntax defaults;
 - template/quasiquote expansion;
-- fresh-name hygiene for recognized introduced binders (var, fn, and
+- fresh_name hygiene for recognized introduced binders (var, fn, and
   pattern binders such as match);
 - top-level `from "path"` macro imports, aliases, no re-export;
 - compile-artifact/runtime-initialization cache separation and phase-specific
@@ -696,11 +696,11 @@ design", "spec — fn! across modules"), with the §4.2/§5.2/§5.4 MVP notes:
 ```text
 - `SyntaxCall` value (^named, ^site, raw body nodes);
 - `fn!` definition form, named and anonymous;
-- read-only borrowed CallerEnv binding (plus syntax-call), as implicit leading
+- read-only borrowed CallerEnv binding (plus syntax_call), as implicit leading
   parameters;
 - guarded dynamic/Any call sites before argument evaluation; fused sites only
   for callees proven ordinary (SyntaxCallable stays conceptual — see §5.1);
-- explicit eval through live `caller-env`, and named durable `Env/snapshot`;
+- explicit eval through live `caller_env`, and named durable `Env/snapshot`;
 - tests for lazy args, named syntax args, borrowed authority/escape rejection,
   durable snapshots, and fn! value aliasing.
 ```
@@ -752,15 +752,15 @@ fn!, and cross-module suites); this section is kept as the readable inventory.
 
 ```gene
 (fn! eval1! [x]
-  (eval x ^in caller-env))
+  (eval x ^in caller_env))
 
 (eval1! (+ 1 2)) # => 3
 ```
 
 ```gene
 (var x 10)
-(fn! quote-syntax! [x] x)
-(quote-syntax! (+ x 1)) # => (+ x 1)
+(fn! quote_syntax! [x] x)
+(quote_syntax! (+ x 1)) # => (+ x 1)
 ```
 
 ### 12.2 Macro templates
@@ -799,8 +799,8 @@ m! # error: macro cannot be used as value
 Alias:
 
 ```gene
-(import [when! : if-true!] from "./control")
-(if-true! true 1)
+(import [when! : if_true!] from "./control")
+(if_true! true 1)
 ```
 
 Not re-exported by default:

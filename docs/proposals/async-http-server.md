@@ -1,14 +1,14 @@
 # Gene Async HTTP Server Design
 
-**Status:** Phases 1–2 (§21) implemented — event-loop serve, task-per-request
-dispatch, bounded admission (`^max-connections`, `^max-in-flight`,
-`^max-body-bytes` → 413, `^request-timeout-ms` → 504, `^overload-response`),
-status metrics; actor-pool dispatch with native-created `ReplyTo` (double send
+**Status:** Phases 1–2 (§21) implemented — event-loop serve, task_per_request
+dispatch, bounded admission (`^max_connections`, `^max_in_flight`,
+`^max_body_bytes` → 413, `^request_timeout_ms` → 504, `^overload_response`),
+status metrics; actor_pool dispatch with native-created `ReplyTo` (double send
 raises `ReplyAlreadySent`), mailbox overload → overload response,
-`^supervision (supervisor-policy ^strategy ^max-restarts ^within-ms ^events
-^dead-letter)` with restart rate limiting (§18.5); Phase 3 complete
-(`^routes` table with `:param` path captures into `req/params`, `^on-error`
-mapper, `^access-log`/`^error-log`/`^redact-headers` §17, meta-based route
+`^supervision (supervisor_policy ^strategy ^max_restarts ^within_ms ^events
+^dead_letter)` with restart rate limiting (§18.5); Phase 3 complete
+(`^routes` table with `:param` path captures into `req/params`, `^on_error`
+mapper, `^access_log`/`^error_log`/`^redact_headers` §17, meta-based route
 discovery §8 — declaration records carry source `@meta` as node meta and a
 `^value` prop, so the §8 pattern works as user code with `d/value` instead of
 the Namespace/lookup dance). Remaining: Phase 4 WebSocket, Phase 5 hardening.
@@ -39,8 +39,8 @@ native async socket/server runtime
 Actors remain central, but they should not be the only request dispatch mechanism. A fixed actor worker pool is useful for stateful or CPU-bound serialized routes, but it caps request concurrency at the number of workers and can cause head-of-line blocking if handlers await I/O. Therefore:
 
 ```text
-task-per-request is the default dispatch model
-actor-pool dispatch is explicit and deliberate
+task_per_request is the default dispatch model
+actor_pool dispatch is explicit and deliberate
 ```
 
 This follows the best lessons from Erlang/Elixir and Akka:
@@ -77,8 +77,8 @@ Recommended direction:
 Long-term public API:
 
 ```gene
-(server ~ Http/serve ^handler handle-request)
-(server ~ Http/start ^handler handle-request)
+(server ~ Http/serve ^handler handle_request)
+(server ~ Http/start ^handler handle_request)
 (server ~ Http/stop)
 (server ~ Http/status)
 ```
@@ -122,7 +122,7 @@ Preferred forms:
 ```gene
 (fn main [args : (List Str), ^server : Http/Server] : Int
   (server ~ Http/serve
-    ^handler handle-request)
+    ^handler handle_request)
   0)
 ```
 
@@ -136,7 +136,7 @@ or, when the application creates the listener:
       ^port 8080))
 
   (server ~ Http/serve
-    ^handler handle-request)
+    ^handler handle_request)
 
   0)
 ```
@@ -179,8 +179,8 @@ Application
         │
         ├── dispatcher
         │     ├── route lookup
-        │     ├── task-per-request dispatch
-        │     ├── optional actor-pool dispatch
+        │     ├── task_per_request dispatch
+        │     ├── optional actor_pool dispatch
         │     └── status/metrics
         │
         └── Gene application layer
@@ -202,16 +202,16 @@ Each accepted request runs in its own Gene task.
 
 ```gene
 (server ~ Http/serve
-  ^dispatch task-per-request
-  ^max-in-flight 5000
-  ^request-timeout-ms 30000
-  ^handler handle-request)
+  ^dispatch task_per_request
+  ^max_in_flight 5000
+  ^request_timeout_ms 30000
+  ^handler handle_request)
 ```
 
 Handler shape:
 
 ```gene
-(fn handle-request [req : Http/Request] : Http/Response
+(fn handle_request [req : Http/Request] : Http/Response
   (match [req/method req/path]
     (when ["GET" "/"]
       (Http/text 200 "hello"))
@@ -237,11 +237,11 @@ A fixed actor pool is useful when handlers must own private state, serialize acc
 
 ```gene
 (server ~ Http/serve
-  ^dispatch (actor-pool
+  ^dispatch (actor_pool
     ^workers 8
     ^mailbox 1024
-    ^init make-worker-state
-    ^handle request-worker))
+    ^init make_worker_state
+    ^handle request_worker))
 ```
 
 Properties:
@@ -269,7 +269,7 @@ Qualified as `Http/RequestMsg` when imported through `net/http`.
 Handler shape:
 
 ```gene
-(fn request-worker
+(fn request_worker
   [ctx : (ActorContext Http/RequestMsg),
    state : AppState,
    msg : Http/RequestMsg]
@@ -296,15 +296,15 @@ Actor-pool handlers should avoid long awaits. If a handler needs asynchronous wo
 Later, routes may choose dispatch explicitly:
 
 ```gene
-(server ~ Http/serve-routes
+(server ~ Http/serve_routes
   ^routes [
     (route ^method "GET"  ^path "/"       ^handler home)
-    (route ^method "POST" ^path "/state"  ^dispatch stateful-pool ^handler update-state)
-    (route ^method "GET"  ^path "/report" ^dispatch cpu-pool      ^handler report)
+    (route ^method "POST" ^path "/state"  ^dispatch stateful_pool ^handler update_state)
+    (route ^method "GET"  ^path "/report" ^dispatch cpu_pool      ^handler report)
   ])
 ```
 
-This lets most routes use task-per-request while a few routes use actors for serialized state.
+This lets most routes use task_per_request while a few routes use actors for serialized state.
 
 ---
 
@@ -374,7 +374,7 @@ MVP representation:
 is not sendable (design §13.3), so declaring `^impl [Send]` on a mutable-list
 alias would assert something false of its values; frozen lists derive `Send`
 from their (sendable) elements. The native runtime constructs header lists
-frozen, and `with-header` returns a new frozen list.
+frozen, and `with_header` returns a new frozen list.
 
 Semantics:
 
@@ -391,7 +391,7 @@ Helpers:
 ```gene
 (headers ~ Http/header "content-type")   # first value or void
 (headers ~ Http/headers "set-cookie")    # list/stream of all values
-(headers ~ Http/with-header "cache-control" "no-store")
+(headers ~ Http/with_header "cache-control" "no-store")
 ```
 
 ---
@@ -442,7 +442,7 @@ wired by closure capture — safe here because `App` is `Send` and closures are
 sendable when all captured values are (design §13.3):
 
 ```gene
-(var app (App ^users users ^db db-pool))
+(var app (App ^users users ^db db_pool))
 
 (server ~ Http/serve
   ^handler (fn [req] (handle req app)))
@@ -456,7 +456,7 @@ Prefer extensible route nodes over positional tuples:
 #[
   (route ^method "GET"  ^path "/"        ^handler home)
   (route ^method "GET"  ^path "/health"  ^handler health)
-  (route ^method "POST" ^path "/users"   ^handler create-user)
+  (route ^method "POST" ^path "/users"   ^handler create_user)
 ]
 ```
 
@@ -469,7 +469,7 @@ Short tuple route entries may be accepted as convenience:
 ]
 ```
 
-The canonical route-entry shape should be the node form.
+The canonical route_entry shape should be the node form.
 
 ---
 
@@ -489,19 +489,19 @@ Router construction:
 (fn routed? [decl]
   (not (= decl/%meta/route void)))
 
-(fn route-entry [ns decl]
+(fn route_entry [ns decl]
   (var r decl/%meta/route)
   (route
     ^method  r/method
     ^path    r/path
     ^handler (ns ~ Namespace/lookup decl/0)))
 
-(var app-ns (this-mod ~ Module/root_namespace))
+(var app_ns (this_mod ~ Module/root_namespace))
 
 (var routes
-  (this-mod/%declarations
+  (this_mod/%declarations
     ~ filter routed?
-    ; ~ map (fn [decl] (route-entry app-ns decl))
+    ; ~ map (fn [decl] (route_entry app_ns decl))
     ; ~ into #[]))
 ```
 
@@ -528,11 +528,11 @@ Recommended limits:
 
 ```gene
 (server ~ Http/serve
-  ^max-connections 10000
-  ^max-in-flight 5000
-  ^max-body-bytes 10485760
-  ^request-timeout-ms 30000
-  ^overload-response (Http/text 503 "busy")
+  ^max_connections 10000
+  ^max_in_flight 5000
+  ^max_body_bytes 10485760
+  ^request_timeout_ms 30000
+  ^overload_response (Http/text 503 "busy")
   ^handler handle)
 ```
 
@@ -540,14 +540,14 @@ Backpressure points:
 
 | Boundary | Limit | Failure behavior |
 |---|---:|---|
-| accepted sockets | `^max-connections` | refuse/close connection |
-| in-flight requests | `^max-in-flight` | 503 / overload response |
-| request body | `^max-body-bytes` | 413 Payload Too Large |
+| accepted sockets | `^max_connections` | refuse/close connection |
+| in-flight requests | `^max_in_flight` | 503 / overload response |
+| request body | `^max_body_bytes` | 413 Payload Too Large |
 | task dispatch | scheduler/admission limit | 503 / overload response |
 | actor pool mailbox | `^mailbox` | immediate 503 by default |
 | response write buffer | per-connection write limit | close slow client |
 
-For MVP actor-pool overload, prefer immediate `actor/try-send` failure -> 503. Timed actor send is optional future runtime surface, not required for the first server.
+For MVP actor_pool overload, prefer immediate `actor/try_send` failure -> 503. Timed actor send is optional future runtime surface, not required for the first server.
 
 ---
 
@@ -572,7 +572,7 @@ Rules:
 - response writing occurs in the native server, not inside the actor/task handler.
 ```
 
-A task-per-request handler returns a response directly. An actor-pool handler replies through `ReplyTo`.
+A task_per_request handler returns a response directly. An actor_pool handler replies through `ReplyTo`.
 
 Timeout behavior:
 
@@ -614,13 +614,13 @@ A default error mapper can be supplied:
 ```gene
 (server ~ Http/serve
   ^handler handle
-  ^on-error error-to-response)
+  ^on_error error_to_response)
 ```
 
 Example:
 
 ```gene
-(fn error-to-response [err : Error] : Http/Response
+(fn error_to_response [err : Error] : Http/Response
   (match err
     (when (NotFound ^path p)
       (Http/text 404 $"not found: ${p}"))
@@ -641,12 +641,12 @@ creates internally:
 
 ```gene
 (server ~ Http/serve
-  ^supervision (supervisor-policy
+  ^supervision (supervisor_policy
     ^strategy restart
-    ^max-restarts 10
-    ^within-ms 60000
+    ^max_restarts 10
+    ^within_ms 60000
     ^events failures
-    ^dead-letter dead)
+    ^dead_letter dead)
   ^handler handle)
 ```
 
@@ -697,7 +697,7 @@ later phase:
 ```
 
 Handlers that need not care can call a `(Http/body-bytes req)` helper that
-materializes either representation (subject to `^max-body-bytes`).
+materializes either representation (subject to `^max_body_bytes`).
 
 Rules:
 
@@ -747,8 +747,8 @@ Messages:
 Commands:
 
 ```gene
-(conn ~ Ws/send-text "hello")
-(conn ~ Ws/send-bytes bytes)
+(conn ~ Ws/send_text "hello")
+(conn ~ Ws/send_bytes bytes)
 (conn ~ Ws/close ^code 1000 ^reason "bye")
 ```
 
@@ -815,13 +815,13 @@ Shared application state should be behind actors or explicitly thread-safe nativ
 If using an actor pool with per-worker state, avoid opening a separate DB pool in every worker unless intended. Prefer:
 
 ```gene
-(var db-pool (Db/open-pool config))
+(var db_pool (Db/open_pool config))
 
 (server ~ Http/serve
-  ^dispatch (actor-pool
+  ^dispatch (actor_pool
     ^workers 8
-    ^init (fn [] (WorkerState ^db db-pool))
-    ^handle worker-handle))
+    ^init (fn [] (WorkerState ^db db_pool))
+    ^handle worker_handle))
 ```
 
 `Db/Pool` must be a thread-safe/sendable native handle by construction.
@@ -847,9 +847,9 @@ Logging hook:
 
 ```gene
 (server ~ Http/serve
-  ^access-log access-log
-  ^error-log error-log
-  ^redact-headers #["authorization" "cookie" "set-cookie"]
+  ^access_log access_log
+  ^error_log error_log
+  ^redact_headers #["authorization" "cookie" "set-cookie"]
   ^handler handle)
 ```
 
@@ -885,33 +885,33 @@ proposal names it.
 The server runtime needs first-class admission controls and status metrics:
 
 ```text
-max-connections
-max-in-flight
-max-body-bytes
-request-timeout-ms
+max_connections
+max_in_flight
+max_body_bytes
+request_timeout_ms
 overload counters
 active/queued counts
 ```
 
 ### 18.4 Server-owned pool introspection
 
-If actor-pool dispatch is enabled, the server may inspect its own pool queue depths for status and load balancing. This does not expose general actor mailbox introspection to user code.
+If actor_pool dispatch is enabled, the server may inspect its own pool queue depths for status and load balancing. This does not expose general actor mailbox introspection to user code.
 
 ### 18.5 Supervisor restart rate limiting
 
 Add restart policy fields:
 
 ```gene
-^max-restarts 10
-^within-ms 60000
+^max_restarts 10
+^within_ms 60000
 ```
 
 ### 18.6 Optional future timed send
 
-MVP can use immediate `try-send` for overload behavior. Timed send is optional future runtime surface:
+MVP can use immediate `try_send` for overload behavior. Timed send is optional future runtime surface:
 
 ```gene
-(actor/send ref msg ^timeout-ms 5)
+(actor/send ref msg ^timeout_ms 5)
 ```
 
 Do not require timed send for the first async HTTP implementation.
@@ -971,13 +971,13 @@ The app image remains the canonical deployable program representation. The stand
 
 ## 21. Implementation plan
 
-### Phase 1: task-per-request HTTP
+### Phase 1: task_per_request HTTP
 
 - `Http/Server` capability/listener.
 - Native accept/read/write loop.
 - Materialized `Http/Request` with `Bytes` body and limits.
 - `Http/Response` and helper constructors.
-- `Http/serve` with `^dispatch task-per-request`.
+- `Http/serve` with `^dispatch task_per_request`.
 - Bounded admission and overload responses.
 - Basic status metrics.
 
@@ -989,10 +989,10 @@ capability), and switches `main` to injected `Net/Listen`/`Http/Server` values
 once the launcher mechanism exists. The API shape does not change — only who
 constructs the capability.
 
-### Phase 2: actor-pool dispatch
+### Phase 2: actor_pool dispatch
 
 - `Http/RequestMsg` and native-created `ReplyTo`.
-- Explicit actor-pool dispatch mode.
+- Explicit actor_pool dispatch mode.
 - Bounded actor mailboxes.
 - Failure events and dead-letter support.
 - Supervisor restart limits.
@@ -1001,7 +1001,7 @@ constructs the capability.
 
 - Route node table.
 - Method/path matching.
-- Meta-based route discovery from `this-mod/%declarations`.
+- Meta-based route discovery from `this_mod/%declarations`.
 - Error mapper.
 - Access/error logging with redaction.
 
@@ -1043,15 +1043,15 @@ For most applications:
     (Http/listen net ^host "0.0.0.0" ^port 8080))
 
   (server ~ Http/serve
-    ^dispatch task-per-request
-    ^max-in-flight 5000
-    ^request-timeout-ms 30000
+    ^dispatch task_per_request
+    ^max_in_flight 5000
+    ^request_timeout_ms 30000
     ^handler handle)
 
   0)
 ```
 
-Use actor-pool dispatch only when the route deliberately needs serialized actor-owned state or bounded CPU concurrency.
+Use actor_pool dispatch only when the route deliberately needs serialized actor-owned state or bounded CPU concurrency.
 
 ---
 
@@ -1062,9 +1062,9 @@ The accepted architecture should be:
 ```text
 native async HTTP edge
 + bounded admission
-+ task-per-request default
++ task_per_request default
 + actors for shared/session/serialized state
-+ explicit actor-pool dispatch when desired
++ explicit actor_pool dispatch when desired
 + capability-shaped server/listener API
 + net/http as the canonical namespace
 + native-created ReplyTo for bridging to actors

@@ -24,7 +24,7 @@
 # converts nodes to HTML text at the response boundary.
 # =============================================================================
 
-(mod todo-app
+(mod todo_app
   @doc "SQLite-backed TODO list with an HTML page and a JSON API")
 
 (import html [escape])
@@ -110,7 +110,7 @@
   (var [k, v] pair)
   (if (== v void)
     ""
-    $" ${(to-str k)}=\"${(escape (to-str v))}\""))
+    $" ${(to_str k)}=\"${(escape (to_str v))}\""))
 
 (fn render_attrs [n : Node] : Str
   (n/%props/%to_pairs_stream
@@ -128,7 +128,7 @@
   (|| (== tag "input") (== tag "br") (== tag "hr") (== tag "meta")))
 
 (fn render_node [n : Node] : Str
-  (var tag (to-str (n ~ head)))
+  (var tag (to_str (n ~ head)))
   (var open ($ "<" tag (render_attrs n) ">"))
   (if (void_tag? tag)
     open
@@ -141,7 +141,7 @@
     (when (n : Node)
       (render_node n))
     (else
-      (escape (to-str x)))))
+      (escape (to_str x)))))
 
 (var css """
   body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}

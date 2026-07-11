@@ -1,7 +1,7 @@
-## E2E tests for the net/http event-loop server (task-per-request dispatch).
+## E2E tests for the net/http event-loop server (task_per_request dispatch).
 ##
 ## Each test starts the gene CLI as a child process running `serve` with
-## `^max-requests` for self-termination, then talks to it over raw blocking
+## `^max_requests` for self-termination, then talks to it over raw blocking
 ## client sockets. The concurrency test is the core contract: a handler parked
 ## in `sleep` must not stall other requests.
 
@@ -83,7 +83,7 @@ suite "net/http server e2e":
       (sleep 800)
       (text "slow-done"))
     (else (text "fast-done"))))
-(serve (Server ^host "127.0.0.1" ^port 8181) handle ^max-requests 2)
+(serve (Server ^host "127.0.0.1" ^port 8181) handle ^max_requests 2)
 """)
     defer: (p.terminate(); p.close())
     let slow = httpConnect(8181)
@@ -104,7 +104,7 @@ suite "net/http server e2e":
 (import net/http [Server serve text])
 (fn handle [req]
   (text req/params/a))
-(serve (Server ^host "127.0.0.1" ^port 8182) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8182) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
     let s = httpConnect(8182)
@@ -121,7 +121,7 @@ suite "net/http server e2e":
 (import net/http [Server serve text])
 (fn handle [req]
   (text ($ req/method ":" req/params/k ":" req/body)))
-(serve (Server ^host "127.0.0.1" ^port 8183) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8183) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
     let s = httpConnect(8183)
@@ -135,7 +135,7 @@ suite "net/http server e2e":
     let p = startHttpServer("bad.gene", """
 (import net/http [Server serve text])
 (fn handle [req] (text "unreachable"))
-(serve (Server ^host "127.0.0.1" ^port 8184) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8184) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
     let s = httpConnect(8184)
@@ -147,20 +147,20 @@ suite "net/http server e2e":
     let p = startHttpServer("boom.gene", """
 (import net/http [Server serve text])
 (fn handle [req] (no-such-function))
-(serve (Server ^host "127.0.0.1" ^port 8185) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8185) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
     check statusLine(httpGet(8185, "/")) ==
       "HTTP/1.1 500 Internal Server Error"
 
-  test "slow handler answers 504 after request-timeout-ms":
+  test "slow handler answers 504 after request_timeout_ms":
     let p = startHttpServer("late.gene", """
 (import net/http [Server serve text])
 (fn handle [req]
   (sleep 10000)
   (text "late"))
 (serve (Server ^host "127.0.0.1" ^port 8186) handle
-  ^max-requests 1 ^request-timeout-ms 300)
+  ^max_requests 1 ^request_timeout_ms 300)
 """)
     defer: (p.terminate(); p.close())
     let t0 = getMonoTime()
@@ -168,14 +168,14 @@ suite "net/http server e2e":
     check statusLine(resp) == "HTTP/1.1 504 Gateway Timeout"
     check (getMonoTime() - t0).inMilliseconds < 5000
 
-  test "requests beyond max-in-flight answer 503":
+  test "requests beyond max_in_flight answer 503":
     let p = startHttpServer("busy.gene", """
 (import net/http [Server serve text])
 (fn handle [req]
   (sleep 900)
   (text "done"))
 (serve (Server ^host "127.0.0.1" ^port 8187) handle
-  ^max-requests 2 ^max-in-flight 1)
+  ^max_requests 2 ^max_in_flight 1)
 """)
     defer: (p.terminate(); p.close())
     let slow = httpConnect(8187)
@@ -190,7 +190,7 @@ suite "net/http server e2e":
     let p = startHttpServer("bighead.gene", """
 (import net/http [Server serve text])
 (fn handle [req] (text "unreachable"))
-(serve (Server ^host "127.0.0.1" ^port 8188) handle ^max-requests 1)
+(serve (Server ^host "127.0.0.1" ^port 8188) handle ^max_requests 1)
 """)
     defer: (p.terminate(); p.close())
     let s = httpConnect(8188)
@@ -198,12 +198,12 @@ suite "net/http server e2e":
     s.send("GET / HTTP/1.1\r\nx-pad: " & repeat('a', 40 * 1024) & "\r\n\r\n")
     check statusLine(readAllHttp(s)) == "HTTP/1.1 400 Bad Request"
 
-  test "declared body beyond max-body-bytes answers 413":
+  test "declared body beyond max_body_bytes answers 413":
     let p = startHttpServer("bigbody.gene", """
 (import net/http [Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8189) handle
-  ^max-requests 1 ^max-body-bytes 16)
+  ^max_requests 1 ^max_body_bytes 16)
 """)
     defer: (p.terminate(); p.close())
     let s = httpConnect(8189)
@@ -229,17 +229,17 @@ suite "net/http server e2e":
   (var r d/%meta/route)
   (route ^method r/method ^path r/path ^handler d/value))
 (var routes
-  ((map (filter (this-mod ~ Module/declarations) routed?) route-entry)
+  ((map (filter (this_mod ~ Module/declarations) routed?) route-entry)
    ~ into []))
 (serve (Server ^host "127.0.0.1" ^port 8194)
-  ^max-requests 2
+  ^max_requests 2
   ^routes routes)
 """)
     defer: (p.terminate(); p.close())
     check bodyOf(httpGet(8194, "/")) == "home-discovered"
     check bodyOf(httpGet(8194, "/job/j7")) == "job-j7"
 
-  test "access-log records responses with redacted headers; error-log records failures":
+  test "access_log records responses with redacted headers; error_log records failures":
     let p = startHttpServer("logs.gene", """
 (import net/http [Server serve text])
 (var access-entries (cell nil))
@@ -258,9 +258,9 @@ suite "net/http server e2e":
                  ":auth=" last/headers/authorization
                  ":err=" (if (== last-err nil) "none" last-err/message)))))))
 (serve (Server ^host "127.0.0.1" ^port 8193) handle
-  ^max-requests 3
-  ^access-log on-access
-  ^error-log on-error-log)
+  ^max_requests 3
+  ^access_log on-access
+  ^error_log on-error-log)
 """)
     defer: (p.terminate(); p.close())
     # Request 1 carries a secret header; request 2 reads its access record.
@@ -284,7 +284,7 @@ suite "net/http server e2e":
   (text ($ "job:" req/params/id ":verbose=" req/params/verbose)))
 (fn home [req] (text "home"))
 (serve (Server ^host "127.0.0.1" ^port 8192)
-  ^max-requests 3
+  ^max_requests 3
   ^routes [
     (route ^method "GET" ^path "/" ^handler home)
     (route ^method "GET" ^path "/job/:id" ^handler job-handler)
@@ -296,9 +296,9 @@ suite "net/http server e2e":
     check bodyOf(httpGet(8192, "/job/j-42?verbose=1")) == "job:j-42:verbose=1"
     check statusLine(httpGet(8192, "/nope")) == "HTTP/1.1 404 Not Found"
 
-  test "actor-pool ^supervision restarts workers and emits failure events":
+  test "actor_pool ^supervision restarts workers and emits failure events":
     let p = startHttpServer("pool.gene", """
-(import net/http [Server serve text actor-pool supervisor-policy RequestMsg])
+(import net/http [Server serve text actor_pool supervisor_policy RequestMsg])
 (type Boom ^props {^message Str} ^impl [Error])
 (impl Error for Boom)
 (var failures (channel ^capacity 8))
@@ -308,7 +308,7 @@ suite "net/http server e2e":
   (if (== req/path "/boom")
     (fail (Boom ^message "worker boom"))
     (do
-      (var ev (failures ~ Channel/try-recv))
+      (var ev (failures ~ Channel/try_recv))
       (match ev
         (when TryRecv/empty
           (reply ~ ReplyTo/send (text "no-failures")))
@@ -316,11 +316,11 @@ suite "net/http server e2e":
           (reply ~ ReplyTo/send (text ($ "saw:" failure/message)))))
       (actor/continue state))))
 (serve (Server ^host "127.0.0.1" ^port 8191)
-  ^max-requests 2
-  ^dispatch (actor-pool ^workers 1 ^mailbox 4
+  ^max_requests 2
+  ^dispatch (actor_pool ^workers 1 ^mailbox 4
              ^init worker-init ^handle worker-handle)
-  ^supervision (supervisor-policy ^strategy `restart
-                ^max-restarts 5 ^within-ms 60000
+  ^supervision (supervisor_policy ^strategy `restart
+                ^max_restarts 5 ^within_ms 60000
                 ^events failures))
 """)
     defer: (p.terminate(); p.close())
@@ -332,15 +332,15 @@ suite "net/http server e2e":
     check statusLine(follow) == "HTTP/1.1 200 OK"
     check bodyOf(follow).startsWith("saw:")
 
-  test "custom overload-response answers admission overflow":
+  test "custom overload_response answers admission overflow":
     let p = startHttpServer("busy-custom.gene", """
 (import net/http [Server serve text])
 (fn handle [req]
   (sleep 900)
   (text "done"))
 (serve (Server ^host "127.0.0.1" ^port 8190) handle
-  ^max-requests 2 ^max-in-flight 1
-  ^overload-response (text 503 "busy"))
+  ^max_requests 2 ^max_in_flight 1
+  ^overload_response (text 503 "busy"))
 """)
     defer: (p.terminate(); p.close())
     let slow = httpConnect(8190)

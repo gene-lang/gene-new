@@ -13,7 +13,7 @@ Implementation status:
   typed `UrlError`) — implemented; spec-tested.
 - Phase 3 (`net/http` blocking server: `serve`, `Request`/`Response`/`Server`
   types, `text`/`html`/`json`/`redirect`/`not_found` helpers, `HttpError`,
-  `^max-requests` for tests) — implemented; `examples/todo_app.gene` is the
+  `^max_requests` for tests) — implemented; `examples/todo_app.gene` is the
   end-to-end proof (HTML page + JSON API). Deviations from this plan: response
   construction uses helpers or `(Response ^status N ^body s)` because type
   constructors take named fields only; `cookie`/`set_cookie`/`static_file` are
@@ -34,12 +34,12 @@ Implementation status:
   cost.
 - Phase 5 (`web/router` etc.) — not started.
 - `serde` (Gene-text serialization) — stages 1–6 implemented:
-  `serde/write-data`/`read-data`/`data?`, full `serde/write`/`read`,
+  `serde/write_data`/`read_data`/`data?`, full `serde/write`/`read`,
   typed refs/instances, policy-gated restore hooks, `SerdeRef`,
   `SerdeError`, and `SerdePolicy`, per docs/proposals/serialization.md.
 - `store` (durable serde-backed persistence) — controlled-stop MVP
   implemented: shared `Store` protocol, `StoreError`, `store/sqlite`,
-  `store/fs`, and `Fs/make-dir`/`Fs/remove`, per
+  `store/fs`, and `Fs/make_dir`/`Fs/remove`, per
   docs/proposals/persistence.md.
 
 ## Goals
@@ -116,7 +116,7 @@ Expose node anatomy and module introspection:
 
 Acceptance:
 
-- `this-mod/%declarations` returns declaration nodes as a stream.
+- `this_mod/%declarations` returns declaration nodes as a stream.
 - Route discovery can filter function declarations by `@route` metadata.
 
 ### `std/parse`
@@ -198,7 +198,7 @@ Acceptance:
 ### `net/http`
 
 The server is single-process and cooperative: a non-blocking event loop on the
-scheduler thread with task-per-request handler fibers (originally a blocking
+scheduler thread with task_per_request handler fibers (originally a blocking
 accept loop; upgraded per `docs/proposals/async-http-server.md` Phase 1). The
 API stays capability-shaped so richer backends can replace it.
 
@@ -230,7 +230,7 @@ Functions:
 
 - `serve : Server, Fn -> Nil ^errors [HttpError]`
 
-`serve` runs a readiness-driven event loop with **task-per-request dispatch**
+`serve` runs a readiness-driven event loop with **task_per_request dispatch**
 (the first slice of `docs/proposals/async-http-server.md`): each parsed
 request runs the handler as a scheduler fiber settling a pending `Task`, so a
 handler that `sleep`s/`await`s parks without stalling other connections.
@@ -239,17 +239,17 @@ Non-fiber callables fall back to an inline call. Connections are
 
 Named arguments to `serve` (all optional):
 
-- `^max-requests Int` — serve N connections then return (tests/embedding);
-- `^max-connections Int` — accept cap; excess connections are shed (default 1024);
-- `^max-in-flight Int` — concurrent dispatched handlers; excess answers the
+- `^max_requests Int` — serve N connections then return (tests/embedding);
+- `^max_connections Int` — accept cap; excess connections are shed (default 1024);
+- `^max_in_flight Int` — concurrent dispatched handlers; excess answers the
   overload response (default 256);
-- `^max-body-bytes Int` — declared request bodies beyond this answer
+- `^max_body_bytes Int` — declared request bodies beyond this answer
   `413 Payload Too Large`; negative disables the cap (default 10485760);
-- `^request-timeout-ms Int` — overdue handlers answer `504 Gateway Timeout`
+- `^request_timeout_ms Int` — overdue handlers answer `504 Gateway Timeout`
   and the still-running task is orphaned (default 30000);
-- `^drain-timeout-ms Int` — graceful-stop drain window for in-flight
+- `^drain_timeout_ms Int` — graceful-stop drain window for in-flight
   requests after `(stop server)` (default 5000);
-- `^overload-response Response` — what admission-limit rejections answer
+- `^overload_response Response` — what admission-limit rejections answer
   instead of the default `503 Service Unavailable` (rendered once at serve
   start, e.g. `(text 503 "busy")`);
 - `^handler Fn` — the handler as a named argument instead of positional;
@@ -258,30 +258,30 @@ Named arguments to `serve` (all optional):
   exclusive with a handler). Paths may contain `:name` segments — `/job/:id`
   captures the segment into `req/params` (a path capture wins over a
   same-named query key); first matching route wins;
-- `^on-error Fn` — maps a handler's recoverable error value to a `Response`
+- `^on_error Fn` — maps a handler's recoverable error value to a `Response`
   (panics and cancellations stay generic 500s);
-- `^dispatch task-per-request | (actor-pool ...)` — dispatch mode;
-  `(actor-pool ^workers N ^mailbox N ^init fn ^handle fn)` runs requests as
+- `^dispatch task_per_request | (actor_pool ...)` — dispatch mode;
+  `(actor_pool ^workers N ^mailbox N ^init fn ^handle fn)` runs requests as
   `RequestMsg` values on a fixed worker-actor pool; full mailboxes answer the
   overload response (note: a bare symbol evaluates as a lookup, so quote the
-  mode — `` ^dispatch `task-per-request ``);
-- `^supervision (supervisor-policy ...)` — worker-pool supervision
-  (actor-pool dispatch only): `` (supervisor-policy ^strategy `restart
-  ^max-restarts 10 ^within-ms 60000 ^events chan ^dead-letter chan) ``.
+  mode — `` ^dispatch `task_per_request ``);
+- `^supervision (supervisor_policy ...)` — worker-pool supervision
+  (actor_pool dispatch only): `` (supervisor_policy ^strategy `restart
+  ^max_restarts 10 ^within_ms 60000 ^events chan ^dead_letter chan) ``.
   Strategy `restart` (default) rebuilds worker state with ^init under the
   restart budget; `stop` closes the failing worker. Worker failures emit
-  `ActorFailure` values to `^events`/`^dead-letter` channels without
+  `ActorFailure` values to `^events`/`^dead_letter` channels without
   blocking the failure path;
-- `^access-log Fn` — called once per chosen response with an
+- `^access_log Fn` — called once per chosen response with an
   `(AccessLog ^method ^path ^status ^ms ^headers)` record; header values
-  named by `^redact-headers` are replaced with `"[redacted]"` (defaults:
+  named by `^redact_headers` are replaced with `"[redacted]"` (defaults:
   authorization, cookie, set-cookie). A failing log fn goes to stderr and
   never breaks serving;
-- `^error-log Fn` — called on handler errors/panics with an
-  `(ErrorLog ^method ^path ^message ^panic)` record, before any ^on-error
+- `^error_log Fn` — called on handler errors/panics with an
+  `(ErrorLog ^method ^path ^message ^panic)` record, before any ^on_error
   mapping; same never-break-serving contract;
-- `^redact-headers List` — header names (case-insensitive) whose values
-  never reach access-log records.
+- `^redact_headers List` — header names (case-insensitive) whose values
+  never reach access_log records.
 
 Stalled request reads answer `408 Request Timeout`; malformed requests and
 oversized headers answer `400 Bad Request` as before.

@@ -7,7 +7,7 @@
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
-##   gene compile --target c <file> print experimental typed-native C
+##   gene compile --target c <file> print experimental typed_native C
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
@@ -26,7 +26,7 @@ proc usage() =
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
-  echo "  gene compile --target c <file.gene> print experimental typed-native C"
+  echo "  gene compile --target c <file.gene> print experimental typed_native C"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
   echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
 
@@ -279,7 +279,7 @@ proc cmdCompileC(path: string) =
 
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   for name in scope.vars.keys:
-    if includeThisModule or name != "this-mod":
+    if includeThisModule or name != "this_mod":
       result.add name
   result.sort()
 

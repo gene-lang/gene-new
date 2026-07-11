@@ -57,7 +57,7 @@ actual lexical surface (src/gene/reader.nim):
 
 **Editing** (language configuration): `#` line-comment toggling, `#< >#`
 block comments, bracket matching/auto-closing for `()[]{}` and `"`, and a
-word pattern matching Gene symbols (so double-click selects `read-text`,
+word pattern matching Gene symbols (so double-click selects `read_text`,
 not just `read`).
 
 ## Settings

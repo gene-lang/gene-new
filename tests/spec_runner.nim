@@ -5,7 +5,7 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[algorithm, monotimes, os, sequtils, strutils, tables, times, unittest]
+import std/[algorithm, monotimes, os, sequtils, sets, strutils, tables, times, unittest]
 
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
@@ -381,10 +381,10 @@ suite "spec — macros from design":
                "[1 100]")
 
 suite "spec — fn! runtime fexprs from design (§3/§11.1)":
-  test "fn! receives raw syntax and evaluates through caller-env":
+  test "fn! receives raw syntax and evaluates through caller_env":
     check_eval("(fn! unless! [cond, body...] " &
-               "  (if (! (eval cond ^in caller-env)) " &
-               "    (eval `(do %body...) ^in caller-env) " &
+               "  (if (! (eval cond ^in caller_env)) " &
+               "    (eval `(do %body...) ^in caller_env) " &
                "    nil)) " &
                "(var x 10) " &
                "[(unless! (> x 5) \"small\") (unless! (< x 5) \"not-small\")]",
@@ -397,8 +397,8 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
                "(hit ~ Cell/get)",
                "0")
 
-  test "syntax-call carries the raw envelope including site":
-    check_eval("(fn! probe! [a b] syntax-call) " &
+  test "syntax_call carries the raw envelope including site":
+    check_eval("(fn! probe! [a b] syntax_call) " &
                "(probe! foo (bar 1))",
                "((type SyntaxCall) ^named {} ^site (probe! foo (bar 1)) " &
                "foo (bar 1))")
@@ -471,55 +471,55 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
     check_eval("(fn! q! [e] e) q!", "(fn! q!)")
 
   test "fn! arity errors count only syntax parameters":
-    # caller-env and syntax-call bind as implicit leading parameters but must
+    # caller_env and syntax_call bind as implicit leading parameters but must
     # not surface in arity diagnostics.
     check_eval("(fn! q! [e] e) (try (q!) catch (Error ^message m) m)",
                "\"fn! 'q!' expects 1..1 syntax argument(s), got 0\"")
 
-  test "caller-env is borrowed and explicit snapshots are durable":
+  test "caller_env is borrowed and explicit snapshots are durable":
     check_eval("(var x 41) " &
-               "(fn! capture! [] (Env/snapshot caller-env [\"x\"])) " &
+               "(fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
                "(var saved (capture!)) (eval (quote (+ x 1)) ^in saved)",
                "42")
     check_eval("(var x 1) (var secret 9) " &
-               "(fn! capture! [] (Env/snapshot caller-env [\"x\"])) " &
+               "(fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
                "(var saved (capture!)) " &
                "(try (eval (quote secret) ^in saved) catch * \"absent\")",
                "\"absent\"")
-    check_eval("(fn! type! [] (var e : CallerEnv caller-env) \"ok\") " &
+    check_eval("(fn! type! [] (var e : CallerEnv caller_env) \"ok\") " &
                "(type!)",
                "\"ok\"")
 
-  test "caller-env escape boundaries reject borrowed authority":
-    check_eval("(fn! leak! [] caller-env) " &
+  test "caller_env escape boundaries reject borrowed authority":
+    check_eval("(fn! leak! [] caller_env) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] [caller-env]) " &
+    check_eval("(fn! leak! [] [caller_env]) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] (cell caller-env)) " &
+    check_eval("(fn! leak! [] (cell caller_env)) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
-    check_eval("(var leaked nil) (fn! leak! [] (set leaked caller-env)) " &
+    check_eval("(var leaked nil) (fn! leak! [] (set leaked caller_env)) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller-env))) " &
+    check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller_env))) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] (fail caller-env)) " &
+    check_eval("(fn! leak! [] (fail caller_env)) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] (scope (spawn caller-env))) " &
+    check_eval("(fn! leak! [] (scope (spawn caller_env))) " &
                "(try (leak!) catch * \"blocked\")",
                "\"blocked\"")
     check_eval("(import serde [write SerdeError]) " &
                "(fn! leak! [] " &
-               "  (try (write caller-env) catch (SerdeError) \"blocked\")) " &
+               "  (try (write caller_env) catch (SerdeError) \"blocked\")) " &
                "(leak!)",
                "\"blocked\"")
     check_eval("(var ch (channel ^capacity 1)) " &
                "(fn! leak! [] " &
-               "  (try (ch ~ Channel/send caller-env) " &
+               "  (try (ch ~ Channel/send caller_env) " &
                "   catch (TypeError ^expected e) e)) " &
                "(leak!)",
                "\"Send\"")
@@ -528,7 +528,7 @@ suite "spec — typed native compilation prototype from design":
   test "simple typed Int arithmetic can use a native direct op":
     let chunk = compileSource("(fn add [x : Int y : Int] : Int (+ x y))")
     check chunk.functions[0].nativeOp == ncoIntAdd
-    check "native=int-add" in chunk.disassemble()
+    check "native=int_add" in chunk.disassemble()
     check_eval("(fn add [x : Int y : Int] : Int (+ x y)) (add 20 22)",
                "42")
     check_eval("(fn add [x : Int y : Int] : Int (+ x y)) " &
@@ -538,7 +538,7 @@ suite "spec — typed native compilation prototype from design":
                "(fn add [x : Int y : Int] : Int (+ x y)) " &
                "(try (outer) catch (TypeError ^trace t) " &
                "  [t/0/name t/0/kind t/1/name t/1/kind])",
-               "[\"add\" \"typed-native\" \"outer\" \"bytecode\"]")
+               "[\"add\" \"typed_native\" \"outer\" \"bytecode\"]")
 
   test "fixed representation functions expose an experimental C backend":
     let chunk = compileSource("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
@@ -564,9 +564,9 @@ suite "spec — typed native compilation prototype from design":
     check chunk.functions[1].aotExpr.kind != vkNil
     check chunk.functions[0].aotFrameKind == afkTypedNative
     check not chunk.functions[0].aotFrameCanSuspend
-    check "aot=c frame=typed-native" in chunk.disassemble()
+    check "aot=c frame=typed_native" in chunk.disassemble()
     check "typed-module-aot:" in chunk.disassemble()
-    check "add64 repr=I64 arity=2 frame=typed-native" in chunk.disassemble()
+    check "add64 repr=I64 arity=2 frame=typed_native" in chunk.disassemble()
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneNativeFrameInfo" in c
     check "typedef struct GeneAotModuleFunction" in c
@@ -929,11 +929,11 @@ suite "spec — strings from design":
     let s = "e\u0301x"
     check_eval("(graphemes \"" & s & "\")", "[\"e\u0301\" \"x\"]")
 
-  test "dollar interpolation calls to-str-style display conversion":
+  test "dollar interpolation calls to_str-style display conversion":
     check_eval("(var name \"Ada\") $\"hello ${name}\"", "\"hello Ada\"")
     check_eval("$\"sum = $(+ 1 2)\"", "\"sum = 3\"")
     check_eval("(type User ^props {^name Str}) " &
-               "(impl ToStr for User (message to-str [self] : Str self/name)) " &
+               "(impl ToStr for User (message to_str [self] : Str self/name)) " &
                "(var user (User ^name \"Ada\")) " &
                "$\"hello ${user}\"",
                "\"hello Ada\"")
@@ -945,7 +945,7 @@ suite "spec — hashable collections and bytes from design":
                "[0x4869 0x4869 0x4869]")
 
   test "Set deduplicates hash-stable values in insertion order":
-    check_eval("[(Set 1 2 1) (set-has? (Set \"a\" \"b\") \"b\")]",
+    check_eval("[(Set 1 2 1) (set_has? (Set \"a\" \"b\") \"b\")]",
                "[(Set 1 2) true]")
     check_eval("(try (Set [1]) catch (TypeError ^expected e) e)",
                "\"HashStable\"")
@@ -992,7 +992,7 @@ suite "spec — equality and identity from design":
                "\"hash expects a hash-stable value\"")
 
   test "freeze helpers make mutability explicit":
-    check_eval("[(freeze-shallow [1 [2]]) " &
+    check_eval("[(freeze_shallow [1 [2]]) " &
                " (freeze [1 {^a [2]}]) " &
                " (thaw (freeze [1 {^a [2]}]))]",
                "[#[1 [2]] #[1 #{^a #[2]}] [1 {^a [2]}]]")
@@ -1008,7 +1008,7 @@ suite "spec — equality and identity from design":
   test "Send validation traverses node metadata":
     expect GeneError:
       discard run(compileSource(
-        "(var n (freeze-shallow `(x @state %(cell 1)))) " &
+        "(var n (freeze_shallow `(x @state %(cell 1)))) " &
         "(var ch (channel ^capacity 1)) (ch ~ send n)"),
         newGlobalScope())
 
@@ -1048,7 +1048,7 @@ suite "spec — numeric boundaries from design":
     check_eval("(fn double [x : F64] 1) (double 1e39)", "1")
 
   test "C ABI scalar annotations are explicit range checked boundaries":
-    check_eval("C/Int32", "(c-abi-type Int32)")
+    check_eval("C/Int32", "(c_abi_type Int32)")
     check_eval("(fn int32 [x : C/Int32] x) " &
                "[(int32 -2147483648) (int32 2147483647)]",
                "[-2147483648 2147483647]")
@@ -1077,9 +1077,9 @@ suite "spec — numeric boundaries from design":
                               newSym("C/Char")))
 
     check run(compileSource("((fn [p : (C/Ptr C/Char)] p) ptr)"),
-              scope).print() == "(c-ptr)"
+              scope).print() == "(c_ptr)"
     check run(compileSource("((fn [p : (C/ConstPtr C/Char)] p) const_ptr)"),
-              scope).print() == "(c-const-ptr)"
+              scope).print() == "(c_const_ptr)"
     check run(compileSource("((fn [p : (C/NullablePtr C/Char)] true) nil)"),
               scope).print() == "true"
     check run(compileSource("((fn [p : (C/OwnedPtr C/Char)] true) owned)"),
@@ -1127,11 +1127,11 @@ suite "spec — numeric boundaries from design":
   test "Device buffers are opaque native-compute handles":
     check_eval("(var b (Device/buffer Device/Compute \"mock\" C/Int64 4)) " &
                "[(Device/Buffer/backend b) " &
-               " (Device/Buffer/elem-type b) " &
+               " (Device/Buffer/elem_type b) " &
                " (Device/Buffer/len b) " &
                " ((fn [buf : Device/Buffer] (Device/Buffer/len buf)) b) " &
                " ((fn [buf : (Device/Buffer C/Int64)] " &
-               "    (Device/Buffer/elem-type buf)) b) " &
+               "    (Device/Buffer/elem_type buf)) b) " &
                " b]",
                "[\"mock\" C/Int64 4 4 C/Int64 (device-buffer mock C/Int64 4)]")
     expect GeneError:
@@ -1143,7 +1143,7 @@ suite "spec — numeric boundaries from design":
                "\"(Device/Buffer F64)\"")
 
   test "FFI runtime loading requires explicit authority":
-    check_eval("Ffi/Load", "(ffi-type Load)")
+    check_eval("Ffi/Load", "(ffi_type Load)")
     let scope = newGlobalScope()
     scope.define("native", newFfiLoadCapability())
     check run(compileSource("((fn [cap : Ffi/Load] cap) native)"),
@@ -1182,17 +1182,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
                "  (ctor [x : F64, y : F64] " &
-               "    (self ~ Node/set-prop! `x x) " &
-               "    (self ~ Node/set-prop! `y y))) " &
+               "    (self ~ Node/set_prop! `x x) " &
+               "    (self ~ Node/set_prop! `y y))) " &
                "(var p (new Point 10.0 20.0)) [p/x p/y]",
                "[10.0 20.0]")
 
   test "ctor uses function-style argument matching with named defaults":
     check_eval("(type User ^props {^name Str ^age Int ^active Bool} " &
                "  (ctor [name : Str, ^age : Int = 0, ^active : Bool = true] " &
-               "    (self ~ Node/set-prop! `name name) " &
-               "    (self ~ Node/set-prop! `age age) " &
-               "    (self ~ Node/set-prop! `active active))) " &
+               "    (self ~ Node/set_prop! `name name) " &
+               "    (self ~ Node/set_prop! `age age) " &
+               "    (self ~ Node/set_prop! `active active))) " &
                "(var u (new User \"Ada\" ^age 37)) [u/name u/age u/active]",
                "[\"Ada\" 37 true]")
 
@@ -1202,7 +1202,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type Port ^props {^value Int} " &
                "  (ctor [n : Int] ^errors [ValidationError] " &
                "    (if (&& (>= n 0) (<= n 65535)) " &
-               "      (self ~ Node/set-prop! `value n) " &
+               "      (self ~ Node/set_prop! `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
                "(var ok (new Port 8080)) " &
                "[(try (new Port 99999) catch (ValidationError ^message m) m) " &
@@ -1214,18 +1214,18 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (new Bad) catch * \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
-               "  (ctor [] (self ~ Node/set-prop! `a 1) " &
-               "           (self ~ Node/set-prop! `zzz 9))) " &
+               "  (ctor [] (self ~ Node/set_prop! `a 1) " &
+               "           (self ~ Node/set_prop! `zzz 9))) " &
                "(try (new Sneaky) catch * \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
-               "  (ctor [] (self ~ Node/set-prop! `a \"nope\"))) " &
+               "  (ctor [] (self ~ Node/set_prop! `a \"nope\"))) " &
                "(try (new Typed) catch (TypeError ^where w) w)",
                "\"field 'a' for Typed\"")
 
   test "(T ...) is direct data construction and never runs the ctor":
     check_eval("(type Port2 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ Node/set-prop! `value (* n 2)))) " &
+               "  (ctor [n : Int] (self ~ Node/set_prop! `value (* n 2)))) " &
                "(var direct (Port2 ^value 8080)) " &
                "(var made (new Port2 8080)) " &
                "[direct/value made/value]",
@@ -1233,11 +1233,11 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "direct construction still schema-validates on a ctor type":
     check_eval("(type Port3 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ Node/set-prop! `value n))) " &
+               "  (ctor [n : Int] (self ~ Node/set_prop! `value n))) " &
                "(try (Port3 ^value \"nope\") catch (TypeError ^where w) w)",
                "\"field 'value' for Port3\"")
     check_eval("(type Port4 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ Node/set-prop! `value n))) " &
+               "  (ctor [n : Int] (self ~ Node/set_prop! `value n))) " &
                "(try (Port4) catch * \"missing field\")",
                "\"missing field\"")
 
@@ -1252,16 +1252,16 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(type Animal ^props {^name Str}) " &
                "(type Dog ^is Animal ^props {^breed Str} " &
                "  (ctor [name : Str, breed : Str] " &
-               "    (self ~ Node/set-prop! `name name) " &
-               "    (self ~ Node/set-prop! `breed breed))) " &
+               "    (self ~ Node/set_prop! `name name) " &
+               "    (self ~ Node/set_prop! `breed breed))) " &
                "(var d (new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
                "[\"Rex\" \"Lab\"]")
 
   test "ctor fills body fields through mutable node APIs":
     check_eval("(type Pair ^body [Int Int] " &
                "  (ctor [a : Int, b : Int] " &
-               "    (self ~ Node/push-body! a) " &
-               "    (self ~ Node/push-body! b))) " &
+               "    (self ~ Node/push_body! a) " &
+               "    (self ~ Node/push_body! b))) " &
                "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
@@ -1276,17 +1276,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked self) " &
-               "    (self ~ Node/set-prop! `x 1))) " &
+               "    (self ~ Node/set_prop! `x 1))) " &
                "[(try (new T) catch * \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(var box (cell nil)) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (box ~ Cell/set self) " &
-               "    (self ~ Node/set-prop! `x 1))) " &
+               "    (self ~ Node/set_prop! `x 1))) " &
                "[(try (new T) catch * \"blocked\") (box ~ Cell/get)]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
-               "  (ctor [] [self] (self ~ Node/set-prop! `x 1))) " &
+               "  (ctor [] [self] (self ~ Node/set_prop! `x 1))) " &
                "(try (new T) catch * \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
@@ -1301,31 +1301,31 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked (fn [] self)) " &
-               "    (self ~ Node/set-prop! `x 1))) " &
+               "    (self ~ Node/set_prop! `x 1))) " &
                "[(try (new T) catch * \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (message inspect [self] self/x) " &
                "  (ctor [] (self ~ inspect) " &
-               "    (self ~ Node/set-prop! `x 1))) " &
+               "    (self ~ Node/set_prop! `x 1))) " &
                "(try (new T) catch * \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] (spawn self) " &
-               "    (self ~ Node/set-prop! `x 1))) " &
+               "    (self ~ Node/set_prop! `x 1))) " &
                "(try (new T) catch * \"blocked\")",
                "\"blocked\"")
     check_eval("(var ch (channel ^capacity 1)) " &
                "(type T ^props {^x Int} ^impl [Send] " &
                "  (ctor [] (ch ~ Channel/send self) " &
-               "    (self ~ Node/set-prop! `x 1))) " &
+               "    (self ~ Node/set_prop! `x 1))) " &
                "(impl Send for T) " &
                "(try (new T) catch * \"blocked\")",
                "\"blocked\"")
 
   test "successful construction clears the publication guard":
     check_eval("(type T ^props {^x Int} ^impl [Send] " &
-               "  (ctor [] (self ~ Node/set-prop! `x 1))) " &
+               "  (ctor [] (self ~ Node/set_prop! `x 1))) " &
                "(impl Send for T) " &
                "(var ch (channel ^capacity 1)) (var value (new T)) " &
                "(ch ~ Channel/send value) " &
@@ -1843,12 +1843,12 @@ suite "spec — cells from design":
                "[0 10 10 21 21]")
 
 suite "spec — atomic cells from design":
-  test "AtomicCell load, store, swap, and compare-exchange are explicit mutation":
-    check_eval("(var state (atomic-cell 0)) " &
+  test "AtomicCell load, store, swap, and compare_exchange are explicit mutation":
+    check_eval("(var state (atomic_cell 0)) " &
                "[(state ~ AtomicCell/load) " &
                " (state ~ AtomicCell/store 1) " &
                " (state ~ AtomicCell/swap 2) " &
-               " (state ~ AtomicCell/compare-exchange 2 3) " &
+               " (state ~ AtomicCell/compare_exchange 2 3) " &
                " (state ~ AtomicCell/load)]",
                "[0 1 1 true 3]")
 
@@ -1863,7 +1863,7 @@ suite "spec — mutable containers from design":
                "(var mm {^a 1}) " &
                "(mm ~ Map/put! \"b\" 3) " &
                "(var n (quote (user ^name \"Ada\"))) " &
-               "(n ~ Node/set-prop! \"name\" \"Bob\") " &
+               "(n ~ Node/set_prop! \"name\" \"Bob\") " &
                "[xs xs2 ys m m2 (mm ~ Map/get \"b\") (n ~ /name)]",
                "[#[1 2 3] #[1 20 3] [9 2] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
 
@@ -2205,14 +2205,14 @@ suite "spec — streams from design":
                "[d/%meta/doc d/kind (== v/%meta/doc void)]",
                "[\"hi\" \"Fn\" true]")
 
-  test "this-mod exposes the current module declaration stream":
+  test "this_mod exposes the current module declaration stream":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "spec")
     check run(compileSource("(var x 9) " &
-                            "(var ds (filter (this-mod ~ Module/declarations) " &
+                            "(var ds (filter (this_mod ~ Module/declarations) " &
                             "  (fn [d] (== d/name \"x\")))) " &
                             "(var decl (ds ~ Stream/next)) " &
-                            "[(/value decl) (this-mod ~ Module/path)]"),
+                            "[(/value decl) (this_mod ~ Module/path)]"),
               scope).print() == "[9 nil]"
 
 suite "spec — structured tasks from design":
@@ -2414,32 +2414,32 @@ suite "spec — bounded channels from design":
                "  (await t))",
                "\"channel is closed\"")
 
-  test "try-send and try-recv expose non-suspending channel checks":
+  test "try_send and try_recv expose non-suspending channel checks":
     check_eval("(var ch (channel ^capacity 1)) " &
-               "[(ch ~ Channel/try-send 1) " &
-               " (ch ~ Channel/try-send 2) " &
+               "[(ch ~ Channel/try_send 1) " &
+               " (ch ~ Channel/try_send 2) " &
                " (ch ~ Channel/recv) " &
-               " (match (ch ~ Channel/try-recv) " &
+               " (match (ch ~ Channel/try_recv) " &
                "   (when TryRecv/empty true) " &
                "   (when (TryRecv/value _) false))]",
                "[true false 1 true]")
 
-  test "try-recv tags empty and preserves Void and Nil payloads":
+  test "try_recv tags empty and preserves Void and Nil payloads":
     check_eval("(var ch (channel ^capacity 3)) " &
-               "(var empty (ch ~ Channel/try-recv)) " &
+               "(var empty (ch ~ Channel/try_recv)) " &
                "(ch ~ Channel/send void) " &
                "(ch ~ Channel/send nil) " &
                "(ch ~ Channel/send 9) " &
                "[(match empty (when TryRecv/empty `empty)) " &
-               " (match (ch ~ Channel/try-recv) " &
+               " (match (ch ~ Channel/try_recv) " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch ~ Channel/try-recv) " &
+               " (match (ch ~ Channel/try_recv) " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch ~ Channel/try-recv) " &
+               " (match (ch ~ Channel/try_recv) " &
                "   (when (TryRecv/value v) v))]",
                "[empty void nil 9]")
     check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
-               "  (ch ~ Channel/try-recv)) " &
+               "  (ch ~ Channel/try_recv)) " &
                "(match (poll (channel)) (when TryRecv/empty true))",
                "true")
 
@@ -2493,7 +2493,7 @@ suite "spec — actors from design":
                "(out ~ Cell/get)",
                "7")
 
-  test "actor try-send returns immediately":
+  test "actor try_send returns immediately":
     check_eval("(var gate (channel ^capacity 1)) " &
                "(var seen (cell 0)) " &
                "(var a (actor/spawn ^init (fn [] 0) " &
@@ -2501,7 +2501,7 @@ suite "spec — actors from design":
                "    (gate ~ Channel/recv) " &
                "    (seen ~ Cell/set msg) " &
                "    (actor/continue msg)))) " &
-               "(var before [(a ~ actor/try-send 7) (seen ~ Cell/get)]) " &
+               "(var before [(a ~ actor/try_send 7) (seen ~ Cell/get)]) " &
                "(gate ~ Channel/send 1) " &
                "(sleep 0) " &
                "before",
@@ -2641,7 +2641,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(var pending (actor/ask ^timeout-ms 5 counter (fn [reply] (Get ^reply reply)))) " &
+               "(var pending (actor/ask ^timeout_ms 5 counter (fn [reply] (Get ^reply reply)))) " &
                "(var err (try (await pending) catch (ActorError ^message m) m)) " &
                "(ch ~ Channel/send 7) " &
                "[err (sleep 1) (out ~ Cell/get)]",
@@ -2658,7 +2658,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(var pending (actor/ask ^timeout-ms 5 counter " &
+               "(var pending (actor/ask ^timeout_ms 5 counter " &
                "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
                "(var err (try (await pending) catch (ActorError ^message m) m)) " &
                "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
@@ -2737,19 +2737,19 @@ suite "spec — actors from design":
     check_eval("(var a (scope " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "(a ~ actor/try-send 1)",
+               "(a ~ actor/try_send 1)",
                "false")
     check_eval("(scope " &
                "  (var a (scope " &
                "    (actor/spawn ^init (fn [] 0) " &
                "      ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "  (a ~ actor/try-send 1))",
+               "  (a ~ actor/try_send 1))",
                "false")
 
-  test "restart budget stops the actor when max-restarts is exhausted":
+  test "restart budget stops the actor when max_restarts is exhausted":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
-               "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 60000 " &
+               "(supervisor ^strategy restart ^max_restarts 1 ^within_ms 60000 " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (fail (Boom ^message \"boom\"))))) " &
                "  (a ~ actor/send 1) " &   # restart consumes the budget
@@ -2758,11 +2758,11 @@ suite "spec — actors from design":
                "  [second third])",
                "[\"boom\" \"actor is closed\"]")
 
-  test "restart budget window resets after within-ms":
+  test "restart budget window resets after within_ms":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
                "(var seen (cell 0)) " &
-               "(supervisor ^strategy restart ^max-restarts 1 ^within-ms 50 " &
+               "(supervisor ^strategy restart ^max_restarts 1 ^within_ms 50 " &
                "  (var a (actor/spawn ^init (fn [] 10) " &
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
@@ -2814,7 +2814,7 @@ suite "spec — actors from design":
                "      (set tries 100))) " &
                "  [(seen ~ Cell/get) " &
                "   (match event " &
-               "     (when (ActorFailure ^failed-message failed " &
+               "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^panic p ^strategy s) " &
                "       [failed m p s]))])",
@@ -2824,7 +2824,7 @@ suite "spec — actors from design":
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 2)) " &
                "(events ~ Channel/send \"busy\") " &
-               "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+               "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
@@ -2834,7 +2834,7 @@ suite "spec — actors from design":
                "  (var busy (events ~ Channel/recv)) " &
                "  [busy " &
                "   (match event " &
-               "     (when (ActorFailure ^failed-message failed " &
+               "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^strategy s) " &
                "       [failed m s]))])",
@@ -2845,7 +2845,7 @@ suite "spec — actors from design":
                "(var dead (channel ^capacity 1)) " &
                "(events ~ Channel/send \"busy\") " &
                "(dead ~ Channel/send \"dead-busy\") " &
-               "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+               "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
@@ -2856,7 +2856,7 @@ suite "spec — actors from design":
                "  (var busy (events ~ Channel/recv)) " &
                "  [busy dead-busy " &
                "   (match event " &
-               "     (when (ActorFailure ^failed-message failed " &
+               "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
                "                         ^strategy s) " &
                "       [failed m s]))])",
@@ -2866,7 +2866,7 @@ suite "spec — actors from design":
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
                "(events ~ Channel/close) " &
-               "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+               "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
@@ -2874,7 +2874,7 @@ suite "spec — actors from design":
                "  (sleep 1) " &
                "  (var event (dead ~ Channel/recv)) " &
                "  (match event " &
-               "    (when (ActorFailure ^failed-message failed " &
+               "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
                "                        ^strategy s) " &
                "      [failed m s])))",
@@ -2883,7 +2883,7 @@ suite "spec — actors from design":
                "(impl Error for Boom) " &
                "(var events : (Channel Int) (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
-               "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+               "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
@@ -2891,7 +2891,7 @@ suite "spec — actors from design":
                "  (sleep 1) " &
                "  (var event (dead ~ Channel/recv)) " &
                "  (match event " &
-               "    (when (ActorFailure ^failed-message failed " &
+               "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
                "                        ^strategy s) " &
                "      [failed m s])))",
@@ -2903,7 +2903,7 @@ suite "spec — actors from design":
                "(events ~ Channel/close) " &
                "(dead ~ Channel/close) " &
                "(var seen (cell 0)) " &
-               "(supervisor ^strategy restart ^events events ^dead-letter dead " &
+               "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
@@ -2919,7 +2919,7 @@ suite "spec — actors from design":
     check_eval("(var a (supervisor ^strategy stop " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "(a ~ actor/try-send 1)",
+               "(a ~ actor/try_send 1)",
                "false")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -2950,7 +2950,7 @@ suite "spec — actors from design":
                "(var event (parent-events ~ Channel/recv)) " &
                "[outcome " &
                " (match event " &
-               "   (when (ActorFailure ^failed-message failed " &
+               "   (when (ActorFailure ^failed_message failed " &
                "                       ^error (Boom ^message m) " &
                "                       ^strategy s) " &
                "     [failed m s]))]",
@@ -3027,43 +3027,43 @@ suite "spec — Env and eval from design":
                "\"Send\"")
 
   test "runtime GC stats expose optimization diagnostics":
-    check_eval("(var stats (Runtime/gc-stats)) " &
-               "[stats/live-managed stats/rc-stats?]",
+    check_eval("(var stats (Runtime/gc_stats)) " &
+               "[stats/live_managed stats/rc_stats?]",
                "[0 false]")
 
   test "eval policy can limit execution steps":
-    check_eval("(type EvalPolicy ^props {^max-steps Int " &
-               "                         ^allow-ffi? Bool " &
-               "                         ^allow-native-compile? Bool}) " &
-               "(var p (EvalPolicy ^max-steps 20 " &
-               "                   ^allow-ffi false " &
-               "                   ^allow-native-compile false)) " &
+    check_eval("(type EvalPolicy ^props {^max_steps Int " &
+               "                         ^allow_ffi? Bool " &
+               "                         ^allow_native_compile? Bool}) " &
+               "(var p (EvalPolicy ^max_steps 20 " &
+               "                   ^allow_ffi false " &
+               "                   ^allow_native_compile false)) " &
                "(eval (quote (+ 1 2)) ^in (env ^policy p))",
                "3")
     check_eval("(try (eval (quote (while true nil)) " &
-               "           ^in (env ^policy {^max-steps 20})) " &
+               "           ^in (env ^policy {^max_steps 20})) " &
                "catch {^message m} m)",
                "\"eval max steps exceeded\"")
     expect GeneError:
-      discard run(compileSource("(env ^policy {^max-memory-mb 128})"),
+      discard run(compileSource("(env ^policy {^max_memory_mb 128})"),
                   newGlobalScope())
     expect GeneError:
-      discard run(compileSource("(env ^policy {^allow-ffi true})"),
+      discard run(compileSource("(env ^policy {^allow_ffi true})"),
                   newGlobalScope())
 
 suite "spec — parser helpers from design":
-  test "read-one feeds eval and read-all returns a stream":
-    check_eval("(eval (read-one \"(+ 1 2)\") ^in (env))", "3")
-    check_eval("(var s (read-all \"(a) (b 2)\")) " &
+  test "read_one feeds eval and read_all returns a stream":
+    check_eval("(eval (read_one \"(+ 1 2)\") ^in (env))", "3")
+    check_eval("(var s (read_all \"(a) (b 2)\")) " &
                "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
                "[(a) (b 2) false]")
 
-  test "lex-all exposes a token stream":
+  test "lex_all exposes a token stream":
     check_eval("(fn first-token [s : (Stream Token Never)] (s ~ Stream/next)) " &
-               "(var t (first-token (lex-all \"(+ 1)\"))) " &
+               "(var t (first-token (lex_all \"(+ 1)\"))) " &
                "(var k t/kind) (var x t/lexeme) " &
                "(var l t/line) (var c t/col) [k x l c]",
-               "[l-paren \"(\" 1 1]")
+               "[l_paren \"(\" 1 1]")
 
 suite "spec — modules from design":
   test "explicit mod declarations are top-level and unique":
@@ -3078,7 +3078,7 @@ suite "spec — modules from design":
   test "explicit mod names the current module root":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "implicit")
-    check run(compileSource("(mod app) this-mod"), scope).print() == "(mod app)"
+    check run(compileSource("(mod app) this_mod"), scope).print() == "(mod app)"
 
   test "duplicate bindings in one namespace are rejected":
     expect GeneError:
@@ -3226,15 +3226,15 @@ suite "spec — macros across modules (design §11/§15)":
 suite "spec — fn! across modules (design §11.1/§15)":
   # fn! values import as ordinary runtime bindings; the exported name set
   # travels to the importer's compiler so call sites keep raw syntax.
-  test "imported fn! names keep syntax-call sites":
+  test "imported fn! names keep syntax_call sites":
     let dir = getTempDir() / "gene_spec_fnbang_modules"
     removeDir(dir)
     createDir(dir)
     writeFile(dir / "flib.gene",
       "(mod flib)\n" &
       "(fn! unless! [cond, body...]\n" &
-      "  (if (! (eval cond ^in caller-env))\n" &
-      "    (eval `(do %body...) ^in caller-env)\n" &
+      "  (if (! (eval cond ^in caller_env))\n" &
+      "    (eval `(do %body...) ^in caller_env)\n" &
       "    nil))\n")
     writeFile(dir / "fuse.gene",
       "(import [unless!] from \"./flib\")\n" &
@@ -3464,77 +3464,77 @@ suite "spec — store persistence protocol":
                "[(s ~ get \"session:tg/42\") " &
                " (s ~ keys) " &
                " (try (s ~ put \"\" 1) catch (StoreError ^kind k) k)]",
-               "[{^x 1} [\"session:tg/42\"] invalid-key]")
+               "[{^x 1} [\"session:tg/42\"] invalid_key]")
 
 suite "spec — os and json from ai-agent plan":
-  test "os/get-env reads, defaults, and errors under Os/Env":
-    check_eval("(import os [get-env env? Env]) " &
+  test "os/get_env reads, defaults, and errors under Os/Env":
+    check_eval("(import os [get_env env? Env]) " &
                "[(env? Env \"GENE_SPEC_UNSET_XYZ\") " &
-               " (get-env Env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
+               " (get_env Env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
                "[nil \"fallback\"]")
-    check_eval("(import os [get-env Env OsError]) " &
-               "(try (get-env Env \"GENE_SPEC_UNSET_XYZ\") " &
+    check_eval("(import os [get_env Env OsError]) " &
+               "(try (get_env Env \"GENE_SPEC_UNSET_XYZ\") " &
                "catch (OsError ^message _) \"unset\")",
                "\"unset\"")
 
-  test "os/get-env rejects a non-Os/Env capability":
-    check_eval("(import os [get-env OsError]) " &
-               "(try (get-env Net/Connect \"HOME\") " &
+  test "os/get_env rejects a non-Os/Env capability":
+    check_eval("(import os [get_env OsError]) " &
+               "(try (get_env Net/Connect \"HOME\") " &
                "catch (OsError ^message _) \"denied\")",
                "\"denied\"")
 
   test "os/exec runs a program, captures output, and enforces timeout":
     check_eval("(import os [exec Exec]) " &
                "(var r (exec Exec ^cmd \"echo\" ^args [\"hi\"])) " &
-               "[r/status r/timed-out]",
+               "[r/status r/timed_out]",
                "[0 false]")
     check_eval("(import os [exec Exec]) " &
-               "(var r (exec Exec ^cmd \"sleep\" ^args [\"5\"] ^timeout-ms 150)) " &
-               "r/timed-out",
+               "(var r (exec Exec ^cmd \"sleep\" ^args [\"5\"] ^timeout_ms 150)) " &
+               "r/timed_out",
                "true")
     check_eval("(import os [exec Exec]) " &
-               "(var r (exec Exec ^cmd \"printf\" ^args [\"abcdef\"] ^max-bytes 3)) " &
-               "[r/stdout r/stdout-truncated r/truncated]",
+               "(var r (exec Exec ^cmd \"printf\" ^args [\"abcdef\"] ^max_bytes 3)) " &
+               "[r/stdout r/stdout_truncated r/truncated]",
                "[\"abc\" true true]")
 
-  test "os/exec-stream invokes stdout callbacks while retaining captured output":
-    check_eval("(import os [exec-stream Exec]) " &
+  test "os/exec_stream invokes stdout callbacks while retaining captured output":
+    check_eval("(import os [exec_stream Exec]) " &
                "(import std/stream [to_stream into]) " &
                "(var seen (cell [])) " &
-               "(var r (exec-stream Exec ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
-               "                    ^stdout-line (fn [line] " &
+               "(var r (exec_stream Exec ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
+               "                    ^stdout_line (fn [line] " &
                "                      (seen ~ Cell/set ((to_stream [line]) ~ into (seen ~ Cell/get)))))) " &
                "[r/status r/stdout (seen ~ Cell/get)]",
                "[0 \"a\\nb\\n\" [\"a\" \"b\"]]")
 
-  test "os/exec-stdio runs with parent streams and returns status":
-    check_eval("(import os [exec-stdio Exec]) " &
-               "(exec-stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
+  test "os/exec_stdio runs with parent streams and returns status":
+    check_eval("(import os [exec_stdio Exec]) " &
+               "(exec_stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
                "7")
 
-  test "os/exec-async settles a task off-thread with the exec result map":
-    check_eval("(import os [exec-async Exec]) " &
-               "(var r (await (exec-async Exec ^cmd \"echo\" ^args [\"hi\"]))) " &
-               "[r/status r/timed-out]",
+  test "os/exec_async settles a task off-thread with the exec result map":
+    check_eval("(import os [exec_async Exec]) " &
+               "(var r (await (exec_async Exec ^cmd \"echo\" ^args [\"hi\"]))) " &
+               "[r/status r/timed_out]",
                "[0 false]")
-    check_eval("(import os [exec-async Exec]) " &
-               "(var r (await (exec-async Exec ^cmd \"sleep\" ^args [\"5\"] " &
-               "                          ^timeout-ms 150))) " &
-               "r/timed-out",
+    check_eval("(import os [exec_async Exec]) " &
+               "(var r (await (exec_async Exec ^cmd \"sleep\" ^args [\"5\"] " &
+               "                          ^timeout_ms 150))) " &
+               "r/timed_out",
                "true")
-    check_eval("(import os [exec-async Exec]) " &
+    check_eval("(import os [exec_async Exec]) " &
                "(var status 1) " &
                "(repeat 20 " &
-               "  (set status ((await (exec-async Exec ^cmd \"true\")) ~ /status))) " &
+               "  (set status ((await (exec_async Exec ^cmd \"true\")) ~ /status))) " &
                "status",
                "0")
 
-  test "os/exec-stream-async feeds stdout lines through a channel then closes it":
-    check_eval("(import os [exec-stream-async Exec]) " &
+  test "os/exec_stream_async feeds stdout lines through a channel then closes it":
+    check_eval("(import os [exec_stream_async Exec]) " &
                "(import std/stream [to_stream into]) " &
                "(var ch (channel ^capacity 8)) " &
-               "(var t (exec-stream-async Exec ^cmd \"printf\" " &
-               "         ^args [\"a\\nb\\n\"] ^stdout-chan ch)) " &
+               "(var t (exec_stream_async Exec ^cmd \"printf\" " &
+               "         ^args [\"a\\nb\\n\"] ^stdout_chan ch)) " &
                "(var seen (cell [])) (var line nil) " &
                "(try (loop (set line (ch ~ Channel/recv)) " &
                "  (seen ~ Cell/set ((to_stream [line]) ~ into (seen ~ Cell/get)))) " &
@@ -3545,11 +3545,11 @@ suite "spec — os and json from ai-agent plan":
 
   test "Task/cancel terminates an async exec child and closes its channel":
     let started = getMonoTime()
-    check_eval("(import os [exec-stream-async Exec]) " &
+    check_eval("(import os [exec_stream_async Exec]) " &
                "(scope " &
                "  (var ch (channel ^capacity 1)) " &
-               "  (var t (exec-stream-async Exec ^cmd \"sleep\" ^args [\"2\"] " &
-               "           ^stdout-chan ch)) " &
+               "  (var t (exec_stream_async Exec ^cmd \"sleep\" ^args [\"2\"] " &
+               "           ^stdout_chan ch)) " &
                "  (spawn (do (sleep 50) (t ~ Task/cancel))) " &
                "  (try (loop (ch ~ Channel/recv)) " &
                "    catch (ChannelClosed) \"closed\"))",
@@ -3560,13 +3560,13 @@ suite "spec — os and json from ai-agent plan":
     # The whole point of the async variants (examples/ai_agent/design.md §12.9 gap 1):
     # fibers must make progress during a subprocess. The snapshot is taken
     # right after the await — a blocking exec would leave it at 0.
-    check_eval("(import os [exec-async Exec]) " &
+    check_eval("(import os [exec_async Exec]) " &
                "(var ticks (cell 0)) " &
                "(var during (cell 0)) " &
                "(scope " &
                "  (spawn (repeat 5 (do (sleep 20) " &
                "    (ticks ~ Cell/set (+ (ticks ~ Cell/get) 1))))) " &
-               "  (var r (await (exec-async Exec ^cmd \"sleep\" ^args [\"0.3\"]))) " &
+               "  (var r (await (exec_async Exec ^cmd \"sleep\" ^args [\"0.3\"]))) " &
                "  (during ~ Cell/set (ticks ~ Cell/get))) " &
                "(during ~ Cell/get)",
                "5")
@@ -3579,17 +3579,17 @@ suite "spec — os and json from ai-agent plan":
     let path = dir / "note.txt"
     let made = dir / "made"
     let removable = dir / "remove-me.txt"
-    check_eval("(import Fs [read-text write-text list-dir make-dir remove " &
+    check_eval("(import Fs [read_text write_text list_dir make_dir remove " &
                "ReadDir WriteDir]) " &
-               "(write-text WriteDir " & geneString(path) & " \"hello\") " &
-               "(write-text WriteDir " & geneString(removable) & " \"bye\") " &
-               "(make-dir WriteDir " & geneString(made) & ") " &
+               "(write_text WriteDir " & geneString(path) & " \"hello\") " &
+               "(write_text WriteDir " & geneString(removable) & " \"bye\") " &
+               "(make_dir WriteDir " & geneString(made) & ") " &
                "(remove WriteDir " & geneString(removable) & ") " &
-               "[(read-text ReadDir " & geneString(path) & ") " &
-               " (list-dir ReadDir " & geneString(dir) & ")]",
+               "[(read_text ReadDir " & geneString(path) & ") " &
+               " (list_dir ReadDir " & geneString(dir) & ")]",
                "[\"hello\" [\"made\" \"note.txt\"]]")
 
-  test "Fs/real-path resolves an existing file and a not-yet-created path":
+  test "Fs/real_path resolves an existing file and a not-yet-created path":
     ## examples/ai_agent/design.md §8.5: workspace confinement resolves real paths before
     ## the containment check. An existing file and a to-be-created file under
     ## the same directory must resolve to sibling absolute paths, so a `..`
@@ -3600,18 +3600,18 @@ suite "spec — os and json from ai-agent plan":
     createDir(dir)
     let path = dir / "here.txt"
     writeFile(path, "x")
-    check_eval("(import Fs [real-path write-text ReadDir WriteDir]) " &
+    check_eval("(import Fs [real_path write_text ReadDir WriteDir]) " &
                "(import str [starts_with?]) " &
-               "(var base (real-path ReadDir " & geneString(dir) & ")) " &
-               "(var direct (real-path ReadDir " & geneString(path) & ")) " &
-               "(var detour (real-path ReadDir " &
+               "(var base (real_path ReadDir " & geneString(dir) & ")) " &
+               "(var direct (real_path ReadDir " & geneString(path) & ")) " &
+               "(var detour (real_path ReadDir " &
                geneString(dir / "sub" / ".." / "new.txt") & ")) " &
-               "[(== direct (real-path ReadDir " & geneString(dir & "/here.txt") & ")) " &
+               "[(== direct (real_path ReadDir " & geneString(dir & "/here.txt") & ")) " &
                " (starts_with? direct base) " &
                " (starts_with? detour base)]",
                "[true true true]")
 
-  test "Fs/real-path follows a dangling final symlink to its real target":
+  test "Fs/real_path follows a dangling final symlink to its real target":
     ## examples/ai_agent/design.md §8.5: a workspace symlink whose target does not exist
     ## yet must still resolve to (and be confined against) where a write would
     ## land, not be treated as an ordinary in-workspace name — otherwise a
@@ -3627,11 +3627,11 @@ suite "spec — os and json from ai-agent plan":
     createSymlink(outside / "new-file", ws / "escape")
     # Compare against the resolved outside dir (getTempDir may itself sit under
     # a symlink, e.g. macOS /var -> /private/var), so both sides are real paths.
-    check_eval("(import Fs [real-path ReadDir]) " &
+    check_eval("(import Fs [real_path ReadDir]) " &
                "(import str [starts_with?]) " &
-               "(var base (real-path ReadDir " & geneString(ws) & ")) " &
-               "(var outside-real (real-path ReadDir " & geneString(outside) & ")) " &
-               "(var rp (real-path ReadDir " & geneString(ws / "escape") & ")) " &
+               "(var base (real_path ReadDir " & geneString(ws) & ")) " &
+               "(var outside-real (real_path ReadDir " & geneString(outside) & ")) " &
+               "(var rp (real_path ReadDir " & geneString(ws / "escape") & ")) " &
                "[(starts_with? rp base) (starts_with? rp outside-real)]",
                "[false true]")
 
@@ -3705,92 +3705,92 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
 
 suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
   test "scalars and containers round-trip under structural equality":
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(var v {^a 1 ^b [1 2.5 \"x\" true nil void] " &
                "        ^c {^nested \"y\"} ^d 'q' ^e 0x0aff " &
                "        ^f 123456789012345678901234567890}) " &
-               "(== v (read-data (write-data v)))",
+               "(== v (read_data (write_data v)))",
                "true")
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(import str [contains?]) " &
                "(var v #[1 #{^k 2} [3]]) " &
-               "(var rt (read-data (write-data v))) " &
-               "[(== v rt) (contains? (write-data rt) \"#[1 #{\")]",
+               "(var rt (read_data (write_data v))) " &
+               "[(== v rt) (contains? (write_data rt) \"#[1 #{\")]",
                "[true true]")
 
   test "dates, times, ranges, sets, durations, timezones round-trip":
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(var v [2026-07-08 12:30:05 2026-07-08T12:30:05Z " &
                "        (range 1 10 2) (Set 1 2 3) (duration 1500000) " &
                "        (timezone 120 \"CEST\")]) " &
-               "(== v (read-data (write-data v)))",
+               "(== v (read_data (write_data v)))",
                "true")
 
   test "regexes round-trip as source plus flags":
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(var v #\"ab+c\"i) " &
-               "(== v (read-data (write-data v)))",
+               "(== v (read_data (write_data v)))",
                "true")
 
   test "nodes round-trip including props, meta, children, immutability":
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(var v `(p @m 1 ^x 2 \"c\" [3])) " &
-               "(== v (read-data (write-data v)))",
+               "(== v (read_data (write_data v)))",
                "true")
 
   test "reserved serde heads in user data are escaped and round-trip":
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(import str [contains?]) " &
-               "(var evil `(serde-float \"nan\")) " &
-               "(var text (write-data evil)) " &
-               "[(contains? text \"serde-data-node\") " &
-               " (== evil (read-data text))]",
+               "(var evil `(serde_float \"nan\")) " &
+               "(var text (write_data evil)) " &
+               "[(contains? text \"serde_data_node\") " &
+               " (== evil (read_data text))]",
                "[true true]")
-    check_eval("(import serde [write-data read-data]) " &
-               "(var evil2 `(serde-data-node 1)) " &
-               "(== evil2 (read-data (write-data evil2)))",
+    check_eval("(import serde [write_data read_data]) " &
+               "(var evil2 `(serde_data_node 1)) " &
+               "(== evil2 (read_data (write_data evil2)))",
                "true")
 
-  test "float specials use canonical serde-float forms":
-    check_eval("(import serde [write-data read-data]) " &
+  test "float specials use canonical serde_float forms":
+    check_eval("(import serde [write_data read_data]) " &
                "(import str [contains?]) " &
-               "(var nanv (read-data \"(serde-v1 (serde-float \\\"nan\\\"))\")) " &
-               "(var back (write-data nanv)) " &
-               "[(contains? back \"serde-float\") " &
+               "(var nanv (read_data \"(serde_v1 (serde_float \\\"nan\\\"))\")) " &
+               "(var back (write_data nanv)) " &
+               "[(contains? back \"serde_float\") " &
                " (!= nanv nanv)]",   # NaN != NaN
                "[true true]")
-    check_eval("(import serde [write-data read-data]) " &
-               "(var inf (read-data \"(serde-v1 (serde-float \\\"+inf\\\"))\")) " &
-               "(== inf (read-data (write-data inf)))",
+    check_eval("(import serde [write_data read_data]) " &
+               "(var inf (read_data \"(serde_v1 (serde_float \\\"+inf\\\"))\")) " &
+               "(== inf (read_data (write_data inf)))",
                "true")
 
   test "symbols that do not re-read verbatim are escaped":
-    check_eval("(import serde [write-data read-data]) " &
+    check_eval("(import serde [write_data read_data]) " &
                "(import str [contains?]) " &
-               "(var s (read-data \"(serde-v1 (serde-sym \\\"a/b\\\"))\")) " &
-               "(var text (write-data s)) " &
-               "[(contains? text \"serde-sym\") " &
-               " (== s (read-data text))]",
+               "(var s (read_data \"(serde_v1 (serde_sym \\\"a/b\\\"))\")) " &
+               "(var text (write_data s)) " &
+               "[(contains? text \"serde_sym\") " &
+               " (== s (read_data text))]",
                "[true true]")
 
-  test "maps with non-literal keys use the serde-map escape":
-    check_eval("(import serde [write-data read-data]) " &
+  test "maps with non-literal keys use the serde_map escape":
+    check_eval("(import serde [write_data read_data]) " &
                "(import str [contains?]) " &
                "(var m {}) (m ~ Map/put! \"weird key\" 1) " &
-               "(var text (write-data m)) " &
-               "[(contains? text \"serde-map\") " &
-               " (== m (read-data text))]",
+               "(var text (write_data m)) " &
+               "[(contains? text \"serde_map\") " &
+               " (== m (read_data text))]",
                "[true true]")
 
   test "cells and capabilities are rejected with clear errors":
-    check_eval("(import serde [write-data SerdeError]) " &
+    check_eval("(import serde [write_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (write-data [1 (cell 2)]) " &
+               "(try (write_data [1 (cell 2)]) " &
                "catch (SerdeError ^message m) " &
                "  [(contains? m \"at 1:\") (contains? m \"not data\")])",
                "[true true]")
-    check_eval("(import serde [write-data SerdeError]) " &
-               "(try (write-data {^net Net/Connect}) " &
+    check_eval("(import serde [write_data SerdeError]) " &
+               "(try (write_data {^net Net/Connect}) " &
                "catch (SerdeError ^path p) p)",
                "\"net\"")
 
@@ -3798,98 +3798,98 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
     check_eval("(import serde [data?]) " &
                "[(data? [1 {^a 2}]) (data? (cell 1)) (data? (fn [] 1))]",
                "[true false false]")
-    check_eval("(import serde [write-data data?]) " &
-               "[(try (write-data 1 ^policy nil) catch * \"rejected\") " &
+    check_eval("(import serde [write_data data?]) " &
+               "[(try (write_data 1 ^policy nil) catch * \"rejected\") " &
                " (try (data? 1 ^policy nil) catch * \"rejected\")]",
                "[\"rejected\" \"rejected\"]")
 
   test "serde rejects executable selectors and traverses node metadata":
-    check_eval("(import serde [data? write-data read-data SerdeError]) " &
+    check_eval("(import serde [data? write_data read_data SerdeError]) " &
                "(var pure /name) " &
                "(var executable (select %(map /name))) " &
-               "[(data? pure) (== pure (read-data (write-data pure))) " &
+               "[(data? pure) (== pure (read_data (write_data pure))) " &
                " (data? executable) " &
-               " (try (write-data executable) catch (SerdeError) \"rejected\") " &
+               " (try (write_data executable) catch (SerdeError) \"rejected\") " &
                " (data? `(x @state %(cell 1)))]",
                "[true true false \"rejected\" false]")
 
   test "cycles are detected with a path":
-    check_eval("(import serde [write-data SerdeError]) " &
+    check_eval("(import serde [write_data SerdeError]) " &
                "(import str [contains?]) " &
                "(var m {}) (m ~ Map/put! \"self\" m) " &
-               "(try (write-data m) " &
+               "(try (write_data m) " &
                "catch (SerdeError ^message msg) (contains? msg \"cycle\"))",
                "true")
 
   test "policy limits are enforced and named":
-    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+    check_eval("(import serde [read_data SerdeError SerdePolicy]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 [[[[1]]]])\" " &
-               "               ^policy (SerdePolicy ^max-depth 2)) " &
-               "catch (SerdeError ^message m) (contains? m \"max-depth\"))",
+               "(try (read_data \"(serde_v1 [[[[1]]]])\" " &
+               "               ^policy (SerdePolicy ^max_depth 2)) " &
+               "catch (SerdeError ^message m) (contains? m \"max_depth\"))",
                "true")
-    let deep = "(serde-v1 " & repeat("[", 20) & "1" & repeat("]", 20) & ")"
-    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+    let deep = "(serde_v1 " & repeat("[", 20) & "1" & repeat("]", 20) & ")"
+    check_eval("(import serde [read_data SerdeError SerdePolicy]) " &
                "(import str [contains?]) " &
-               "(try (read-data " & geneString(deep) &
-               "               ^policy (SerdePolicy ^max-depth 2)) " &
+               "(try (read_data " & geneString(deep) &
+               "               ^policy (SerdePolicy ^max_depth 2)) " &
                "catch (SerdeError ^message m) " &
-               "  (&& (contains? m \"parse\") (contains? m \"max-depth\")))",
+               "  (&& (contains? m \"parse\") (contains? m \"max_depth\")))",
                "true")
-    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+    check_eval("(import serde [read_data SerdeError SerdePolicy]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 [1 2 3 4 5])\" " &
-               "               ^policy (SerdePolicy ^max-nodes 3)) " &
-               "catch (SerdeError ^message m) (contains? m \"max-nodes\"))",
+               "(try (read_data \"(serde_v1 [1 2 3 4 5])\" " &
+               "               ^policy (SerdePolicy ^max_nodes 3)) " &
+               "catch (SerdeError ^message m) (contains? m \"max_nodes\"))",
                "true")
-    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+    check_eval("(import serde [read_data SerdeError SerdePolicy]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 [a b c])\" " &
-               "               ^policy (SerdePolicy ^max-symbols 2)) " &
-               "catch (SerdeError ^message m) (contains? m \"max-symbols\"))",
+               "(try (read_data \"(serde_v1 [a b c])\" " &
+               "               ^policy (SerdePolicy ^max_symbols 2)) " &
+               "catch (SerdeError ^message m) (contains? m \"max_symbols\"))",
                "true")
-    check_eval("(import serde [read-data SerdeError SerdePolicy]) " &
+    check_eval("(import serde [read_data SerdeError SerdePolicy]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 nil)\" " &
-               "               ^policy (SerdePolicy ^max-bytes 5)) " &
-               "catch (SerdeError ^message m) (contains? m \"max-bytes\"))",
+               "(try (read_data \"(serde_v1 nil)\" " &
+               "               ^policy (SerdePolicy ^max_bytes 5)) " &
+               "catch (SerdeError ^message m) (contains? m \"max_bytes\"))",
                "true")
 
   test "envelope versioning is enforced":
-    check_eval("(import serde [read-data SerdeError]) " &
+    check_eval("(import serde [read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v2 nil)\") " &
+               "(try (read_data \"(serde_v2 nil)\") " &
                "catch (SerdeError ^message m) " &
                "  (contains? m \"unsupported serde envelope\"))",
                "true")
-    check_eval("(import serde [read-data SerdeError]) " &
-               "(try (read-data \"[1 2]\") " &
+    check_eval("(import serde [read_data SerdeError]) " &
+               "(try (read_data \"[1 2]\") " &
                "catch (SerdeError ^message _) \"no-envelope\")",
                "\"no-envelope\"")
 
   test "unknown control tags and malformed shapes are rejected":
-    check_eval("(import serde [read-data SerdeError]) " &
+    check_eval("(import serde [read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 (serde-bogus 1))\") " &
-               "catch (SerdeError ^message m) (contains? m \"serde-bogus\"))",
+               "(try (read_data \"(serde_v1 (serde_bogus 1))\") " &
+               "catch (SerdeError ^message m) (contains? m \"serde_bogus\"))",
                "true")
-    check_eval("(import serde [read-data SerdeError]) " &
-               "(try (read-data \"(serde-v1 (serde-range 1 2))\") " &
+    check_eval("(import serde [read_data SerdeError]) " &
+               "(try (read_data \"(serde_v1 (serde_range 1 2))\") " &
                "catch (SerdeError ^message _) \"bad-range\")",
                "\"bad-range\"")
-    check_eval("(import serde [read-data SerdeError]) " &
+    check_eval("(import serde [read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 (serde-map false [\\\"a\\\" 1 \\\"a\\\" 2]))\") " &
+               "(try (read_data \"(serde_v1 (serde_map false [\\\"a\\\" 1 \\\"a\\\" 2]))\") " &
                "catch (SerdeError ^message m) (contains? m \"duplicate key\"))",
                "true")
-    check_eval("(import serde [read-data SerdeError]) " &
+    check_eval("(import serde [read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 (serde-set 1 1))\") " &
+               "(try (read_data \"(serde_v1 (serde_set 1 1))\") " &
                "catch (SerdeError ^message m) (contains? m \"duplicate\"))",
                "true")
-    check_eval("(import serde [read-data SerdeError]) " &
+    check_eval("(import serde [read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data \"(serde-v1 (serde-set [1]))\") " &
+               "(try (read_data \"(serde_v1 (serde_set [1]))\") " &
                "catch (SerdeError ^message m) (contains? m \"hash-stable\"))",
                "true")
 
@@ -3906,28 +3906,28 @@ suite "spec — serde references (stage 3)":
     check_eval("(import serde [write]) " &
                "(import str [contains?]) " &
                "(var t (write str/join)) " &
-               "[(contains? t \"serde-fn-ref\") (contains? t \"str/join\") " &
+               "[(contains? t \"serde_fn_ref\") (contains? t \"str/join\") " &
                " (contains? t \"^module\")]",
                "[true true false]")
 
-  test "write-data refuses references":
-    check_eval("(import serde [write-data SerdeError]) " &
+  test "write_data refuses references":
+    check_eval("(import serde [write_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (write-data str/join) " &
+               "(try (write_data str/join) " &
                "catch (SerdeError ^message m) (contains? m \"not data\"))",
                "true")
 
-  test "read-data refuses reference tags":
-    check_eval("(import serde [write read-data SerdeError]) " &
+  test "read_data refuses reference tags":
+    check_eval("(import serde [write read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data (write str/join)) " &
+               "(try (read_data (write str/join)) " &
                "catch (SerdeError ^message m) (contains? m \"serde/read\"))",
                "true")
 
   test "unresolved module reference errors without loading":
     check_eval("(import serde [read SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read \"(serde-v1 (serde-type-ref ^module \\\"no/such\\\" " &
+               "(try (read \"(serde_v1 (serde_type_ref ^module \\\"no/such\\\" " &
                "^path \\\"X\\\"))\") " &
                "catch (SerdeError ^message m) (contains? m \"not loaded\"))",
                "true")
@@ -3935,7 +3935,7 @@ suite "spec — serde references (stage 3)":
   test "reserved ref props are rejected":
     check_eval("(import serde [read SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read \"(serde-v1 (serde-type-ref ^package \\\"p\\\" " &
+               "(try (read \"(serde_v1 (serde_type_ref ^package \\\"p\\\" " &
                "^path \\\"X\\\"))\") " &
                "catch (SerdeError ^message m) (contains? m \"reserved\"))",
                "true")
@@ -3943,7 +3943,7 @@ suite "spec — serde references (stage 3)":
   test "a reference resolving to the wrong kind errors":
     check_eval("(import serde [read SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read \"(serde-v1 (serde-type-ref ^path \\\"str/join\\\"))\") " &
+               "(try (read \"(serde_v1 (serde_type_ref ^path \\\"str/join\\\"))\") " &
                "catch (SerdeError ^message m) (contains? m \"not the expected kind\"))",
                "true")
 
@@ -3953,22 +3953,22 @@ suite "spec — serde references (stage 3)":
                "[(c2 ~ Cell/get) (!= c c2)]",
                "[41 true]")
 
-  test "write-data refuses cells; read-data refuses snapshot-cells":
-    check_eval("(import serde [write-data SerdeError]) " &
+  test "write_data refuses cells; read_data refuses snapshot-cells":
+    check_eval("(import serde [write_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (write-data (cell 1)) " &
+               "(try (write_data (cell 1)) " &
                "catch (SerdeError ^message m) (contains? m \"not data\"))",
                "true")
-    check_eval("(import serde [write read-data SerdeError]) " &
+    check_eval("(import serde [write read_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (read-data (write (cell 1))) " &
-               "catch (SerdeError ^message m) (contains? m \"read-data\"))",
+               "(try (read_data (write (cell 1))) " &
+               "catch (SerdeError ^message m) (contains? m \"read_data\"))",
                "true")
 
   test "atomic cells never serialize":
     check_eval("(import serde [write SerdeError]) " &
                "(import str [contains?]) " &
-               "(try (write (atomic-cell 1)) " &
+               "(try (write (atomic_cell 1)) " &
                "catch (SerdeError ^message m) (contains? m \"atomic\"))",
                "true")
 
@@ -4015,3 +4015,29 @@ suite "spec — documentation contract":
         if referenced.endsWith(".gene") or referenced.endsWith(".md"):
           check fileExists(referenced)
         at = max(stop, at + 1)
+
+suite "spec — naming convention":
+  test "registered names use underscores, never hyphens":
+    # The stdlib naming convention is snake_case. Walk every binding reachable
+    # from the global scope (namespaces recursively, protocol message names)
+    # and reject any registered name containing a hyphen. Wire-format strings
+    # (HTTP header names, MIME types) are not bindings and stay untouched.
+    var offenders: seq[string]
+    var seen: HashSet[uint64]
+    var stack = @[("", newGlobalScope())]
+    while stack.len > 0:
+      let (prefix, scope) = stack.pop()
+      if scope == nil:
+        continue
+      for name, v in scope.vars:
+        let qual = if prefix.len > 0: prefix & "/" & name else: name
+        if '-' in name:
+          offenders.add qual
+        if v.kind == vkNamespace and not seen.containsOrIncl(v.bits):
+          stack.add((qual, v.nsScope))
+        elif v.kind == vkProtocol and not seen.containsOrIncl(v.bits):
+          for msgName, _ in v.protocolMessages:
+            if '-' in msgName:
+              offenders.add qual & "/" & msgName
+    sort(offenders)
+    check offenders == newSeq[string]()

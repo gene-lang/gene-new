@@ -27,5 +27,5 @@ ordinary runtime callable.
 Expression paths resolve their base lexically and select later segments;
 declaration/import/type contexts resolve qualified names statically. Static
 scalar/key selector segments are pure. Callable, call-stage, and send segments
-are executable: they are non-serializable and invalid for `assoc-in` and
-`update-in`. Strict missing lookup raises `SelectorMissing` with `^segment`.
+are executable: they are non-serializable and invalid for `assoc_in` and
+`update_in`. Strict missing lookup raises `SelectorMissing` with `^segment`.

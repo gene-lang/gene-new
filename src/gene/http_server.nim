@@ -4,10 +4,10 @@
 # VM internals directly: fibers, the non-sleeping scheduler probes, actor
 # mailboxes, and ReplyTo. Dispatch models:
 #
-#   task-per-request (default) — each parsed request runs the handler as a
+#   task_per_request (default) — each parsed request runs the handler as a
 #     scheduler fiber settling a pending Task; a handler that sleeps/awaits
 #     parks without stalling other connections.
-#   actor-pool (explicit)      — requests become RequestMsg values dispatched
+#   actor_pool (explicit)      — requests become RequestMsg values dispatched
 #     round-robin to a fixed pool of worker actors with bounded mailboxes and
 #     native-created ReplyTo; full mailboxes answer 503.
 
@@ -209,7 +209,7 @@ type
     listening: bool         # listener socket is live
     serving: bool           # event loop currently running
     stopRequested: bool
-    workers: int            # actor-pool size (0 for task-per-request)
+    workers: int            # actor_pool size (0 for task_per_request)
     # status counters
     acceptedConnections: int
     completedRequests: int  # responses produced from handler results
@@ -331,7 +331,7 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
 
 proc biHttpStop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (stop server) — request a graceful stop: the serve loop stops accepting,
-  ## drains in-flight requests up to ^drain-timeout-ms, then returns. Valid on
+  ## drains in-flight requests up to ^drain_timeout_ms, then returns. Valid on
   ## a Server value produced by listen (before or during serve).
   requireOne("http/stop", args)
   let scope = if call == nil: nil else: call[].dispatchScope
@@ -404,11 +404,11 @@ proc biHttpRoute(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   newNode(newSym("Route"), props = props)
 
 proc biHttpActorPool(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## (actor-pool ^workers 8 ^mailbox 64 ^init make-state ^handle worker-fn)
+  ## (actor_pool ^workers 8 ^mailbox 64 ^init make-state ^handle worker-fn)
   ## — dispatch-mode configuration for serve's ^dispatch.
   if args.len != 0:
     raise newException(GeneError,
-      "http/actor-pool expects named arguments only")
+      "http/actor_pool expects named arguments only")
   var workers = httpDefaultPoolWorkers
   var mailbox = httpDefaultPoolMailbox
   var initFn = NIL
@@ -417,14 +417,14 @@ proc biHttpActorPool(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     for name in call[].namedNames:
       if name notin ["workers", "mailbox", "init", "handle"]:
         raise newException(GeneError,
-          "http/actor-pool got unexpected named argument: " & name)
+          "http/actor_pool got unexpected named argument: " & name)
     let wIndex = nativeNamedIndex(call, "workers")
     if wIndex >= 0:
-      workers = int(requireInt64("http/actor-pool workers",
+      workers = int(requireInt64("http/actor_pool workers",
                                  call[].namedValues[wIndex]))
     let mIndex = nativeNamedIndex(call, "mailbox")
     if mIndex >= 0:
-      mailbox = int(requireInt64("http/actor-pool mailbox",
+      mailbox = int(requireInt64("http/actor_pool mailbox",
                                  call[].namedValues[mIndex]))
     let iIndex = nativeNamedIndex(call, "init")
     if iIndex >= 0:
@@ -433,12 +433,12 @@ proc biHttpActorPool(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     if hIndex >= 0:
       handleFn = call[].namedValues[hIndex]
   if workers < 1:
-    raise newException(GeneError, "http/actor-pool workers must be >= 1")
+    raise newException(GeneError, "http/actor_pool workers must be >= 1")
   if mailbox < 1:
-    raise newException(GeneError, "http/actor-pool mailbox must be >= 1")
+    raise newException(GeneError, "http/actor_pool mailbox must be >= 1")
   if initFn.kind == vkNil or handleFn.kind == vkNil:
     raise newException(GeneError,
-      "http/actor-pool requires ^init and ^handle")
+      "http/actor_pool requires ^init and ^handle")
   var props = initOrderedTable[string, Value]()
   props["workers"] = newInt(workers)
   props["mailbox"] = newInt(mailbox)
@@ -447,13 +447,13 @@ proc biHttpActorPool(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   newNode(newSym("ActorPool"), props = props)
 
 proc biHttpSupervisorPolicy(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## (supervisor-policy ^strategy `restart ^max-restarts 10 ^within-ms 60000
-  ##  ^events failures ^dead-letter dead) — worker-pool supervision
+  ## (supervisor_policy ^strategy `restart ^max_restarts 10 ^within_ms 60000
+  ##  ^events failures ^dead_letter dead) — worker-pool supervision
   ## configuration for serve's ^supervision (proposal §12). The server owns
   ## the supervision; this value only carries the policy.
   if args.len != 0:
     raise newException(GeneError,
-      "http/supervisor-policy expects named arguments only")
+      "http/supervisor_policy expects named arguments only")
   var strategy = "restart"
   var maxRestarts = 0
   var withinMs = 0
@@ -461,10 +461,10 @@ proc biHttpSupervisorPolicy(args: openArray[Value], call: ptr NativeCall): Value
   var deadLetter = NIL
   if call != nil:
     for name in call[].namedNames:
-      if name notin ["strategy", "max-restarts", "within-ms", "events",
-                     "dead-letter"]:
+      if name notin ["strategy", "max_restarts", "within_ms", "events",
+                     "dead_letter"]:
         raise newException(GeneError,
-          "http/supervisor-policy got unexpected named argument: " & name)
+          "http/supervisor_policy got unexpected named argument: " & name)
     let sIndex = nativeNamedIndex(call, "strategy")
     if sIndex >= 0:
       let sVal = call[].namedValues[sIndex]
@@ -474,32 +474,32 @@ proc biHttpSupervisorPolicy(args: openArray[Value], call: ptr NativeCall): Value
         strategy = sVal.strVal
       else:
         raise newException(GeneError,
-          "http/supervisor-policy ^strategy must be a name")
-    let mIndex = nativeNamedIndex(call, "max-restarts")
+          "http/supervisor_policy ^strategy must be a name")
+    let mIndex = nativeNamedIndex(call, "max_restarts")
     if mIndex >= 0:
-      maxRestarts = int(requireInt64("http/supervisor-policy max-restarts",
+      maxRestarts = int(requireInt64("http/supervisor_policy max_restarts",
                                      call[].namedValues[mIndex]))
-    let wIndex = nativeNamedIndex(call, "within-ms")
+    let wIndex = nativeNamedIndex(call, "within_ms")
     if wIndex >= 0:
-      withinMs = int(requireInt64("http/supervisor-policy within-ms",
+      withinMs = int(requireInt64("http/supervisor_policy within_ms",
                                   call[].namedValues[wIndex]))
     let eIndex = nativeNamedIndex(call, "events")
     if eIndex >= 0:
       events = call[].namedValues[eIndex]
-      requireChannel("http/supervisor-policy ^events", events)
-    let dIndex = nativeNamedIndex(call, "dead-letter")
+      requireChannel("http/supervisor_policy ^events", events)
+    let dIndex = nativeNamedIndex(call, "dead_letter")
     if dIndex >= 0:
       deadLetter = call[].namedValues[dIndex]
-      requireChannel("http/supervisor-policy ^dead-letter", deadLetter)
+      requireChannel("http/supervisor_policy ^dead_letter", deadLetter)
   if strategy notin ["restart", "stop"]:
     raise newException(GeneError,
-      "http/supervisor-policy ^strategy must be restart or stop")
+      "http/supervisor_policy ^strategy must be restart or stop")
   var props = initOrderedTable[string, Value]()
   props["strategy"] = newStr(strategy)
-  props["max-restarts"] = newInt(maxRestarts)
-  props["within-ms"] = newInt(withinMs)
+  props["max_restarts"] = newInt(maxRestarts)
+  props["within_ms"] = newInt(withinMs)
   props["events"] = events
-  props["dead-letter"] = deadLetter
+  props["dead_letter"] = deadLetter
   newNode(newSym("SupervisorPolicy"), props = props)
 
 type
@@ -605,7 +605,7 @@ type
     cursor: int
 
 proc dispatchHttpHandler(handler, request: Value, scope: Scope): Value =
-  ## Run the handler for one request, task-per-request style. A plain Gene
+  ## Run the handler for one request, task_per_request style. A plain Gene
   ## function becomes a scheduler fiber settling a pending Task (mirrors
   ## makeActorFiber/spawnFiber), so a handler that awaits/sleeps parks without
   ## stalling the server loop. Other callables (natives, generators) fall back
@@ -625,7 +625,7 @@ proc dispatchHttpHandler(handler, request: Value, scope: Scope): Value =
 proc dispatchHttpToPool(pool: HttpActorPool, request: Value,
                         scope: Scope): tuple[task: Value, overloaded: bool] =
   ## Wrap the request in a RequestMsg with a native-created ReplyTo and
-  ## try-send it round-robin across the pool. Every worker full => overload.
+  ## try_send it round-robin across the pool. Every worker full => overload.
   ##
   ## The message intentionally bypasses checkedActorMessage's Send validation:
   ## Request values carry (mutable) header/param maps, and this native edge is
@@ -654,15 +654,15 @@ proc dispatchHttpToPool(pool: HttpActorPool, request: Value,
   (NIL, true)
 
 proc httpSpawnPool(config, policy: Value, scope: Scope): HttpActorPool =
-  ## Spawn the worker actors for an actor-pool dispatch config. Workers
+  ## Spawn the worker actors for an actor_pool dispatch config. Workers
   ## default to restart supervision: a failed handler produces a failure
   ## event path via the actor runtime and the worker state is rebuilt with
-  ## ^init. A ^supervision (supervisor-policy ...) value overrides the
-  ## strategy and adds restart budget and failure-event/dead-letter channels
+  ## ^init. A ^supervision (supervisor_policy ...) value overrides the
+  ## strategy and adds restart budget and failure-event/dead_letter channels
   ## (proposal §12).
   let props = config.props
-  let workers = int(requireInt64("actor-pool workers", props["workers"]))
-  let mailbox = int(requireInt64("actor-pool mailbox", props["mailbox"]))
+  let workers = int(requireInt64("actor_pool workers", props["workers"]))
+  let mailbox = int(requireInt64("actor_pool mailbox", props["mailbox"]))
   let initFn = props["init"]
   let handleFn = props["handle"]
   var failureStrategy = afsRestart
@@ -674,14 +674,14 @@ proc httpSpawnPool(config, policy: Value, scope: Scope): HttpActorPool =
     let p = policy.props
     if p.hasKey("strategy") and p["strategy"].strVal == "stop":
       failureStrategy = afsStop
-    if p.hasKey("max-restarts"):
-      maxRestarts = int(p["max-restarts"].intVal)
-    if p.hasKey("within-ms"):
-      withinMs = int(p["within-ms"].intVal)
+    if p.hasKey("max_restarts"):
+      maxRestarts = int(p["max_restarts"].intVal)
+    if p.hasKey("within_ms"):
+      withinMs = int(p["within_ms"].intVal)
     if p.hasKey("events"):
       events = p["events"]
-    if p.hasKey("dead-letter"):
-      deadLetters = p["dead-letter"]
+    if p.hasKey("dead_letter"):
+      deadLetters = p["dead_letter"]
   let restartInit =
     if failureStrategy == afsRestart: initFn else: NIL
   result = HttpActorPool()
@@ -702,7 +702,7 @@ proc closeHttpPool(pool: HttpActorPool) =
     closeActorAndCancelMailbox(worker)
 
 proc httpErrorFallbackNode(task: Value): Value =
-  ## Error value for the ^on-error mapper: the task's error value when the
+  ## Error value for the ^on_error mapper: the task's error value when the
   ## handler failed with one, else an (Error ^message ...) node — the same
   ## shape catch clauses see for message-only errors.
   if task.taskHasErrorValue:
@@ -730,7 +730,7 @@ type
     hasTaskDeadline: bool
     writeBuf: string
     writePos: int
-    started: MonoTime       # accept time, for access-log latency
+    started: MonoTime       # accept time, for access_log latency
     reqMethod: string       # parsed request line, for logging ("" until
     reqPath: string         #   a request parses)
     reqHeaders: Value       # parsed headers map, for redacted logging
@@ -738,7 +738,7 @@ type
 proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (serve server handler) / (serve server ^handler h) /
   ## (serve server ^routes [...]) — run the event loop on this task until
-  ## ^max-requests is reached or (stop server) drains it.
+  ## ^max_requests is reached or (stop server) drains it.
   if args.len notin [1, 2]:
     raise newException(GeneError,
       "http/serve expects (Server, handler), got " & $args.len & " arguments")
@@ -764,11 +764,11 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   var redactHeaders: Value = NIL
   if call != nil:
     for name in call[].namedNames:
-      if name notin ["max-requests", "max-connections", "max-in-flight",
-                     "max-body-bytes", "request-timeout-ms",
-                     "drain-timeout-ms", "handler", "routes", "on-error",
-                     "dispatch", "overload-response", "supervision",
-                     "access-log", "error-log", "redact-headers"]:
+      if name notin ["max_requests", "max_connections", "max_in_flight",
+                     "max_body_bytes", "request_timeout_ms",
+                     "drain_timeout_ms", "handler", "routes", "on_error",
+                     "dispatch", "overload_response", "supervision",
+                     "access_log", "error_log", "redact_headers"]:
         raise newException(GeneError,
           "http/serve got unexpected named argument: " & name)
     template namedInt(name: string, target: var int) =
@@ -782,21 +782,21 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         let index = nativeNamedIndex(call, name)
         if index >= 0:
           target = call[].namedValues[index]
-    namedInt("max-requests", maxRequests)
-    namedInt("max-connections", maxConnections)
-    namedInt("max-in-flight", maxInFlight)
-    namedInt("max-body-bytes", maxBodyBytes)
-    namedInt("request-timeout-ms", requestTimeoutMs)
-    namedInt("drain-timeout-ms", drainTimeoutMs)
+    namedInt("max_requests", maxRequests)
+    namedInt("max_connections", maxConnections)
+    namedInt("max_in_flight", maxInFlight)
+    namedInt("max_body_bytes", maxBodyBytes)
+    namedInt("request_timeout_ms", requestTimeoutMs)
+    namedInt("drain_timeout_ms", drainTimeoutMs)
     namedVal("handler", handler)
     namedVal("routes", routes)
-    namedVal("on-error", onError)
+    namedVal("on_error", onError)
     namedVal("dispatch", dispatchConfig)
-    namedVal("overload-response", overloadResponse)
+    namedVal("overload_response", overloadResponse)
     namedVal("supervision", supervisionPolicy)
-    namedVal("access-log", accessLog)
-    namedVal("error-log", errorLog)
-    namedVal("redact-headers", redactHeaders)
+    namedVal("access_log", accessLog)
+    namedVal("error_log", errorLog)
+    namedVal("redact_headers", redactHeaders)
   var poolConfig: Value = NIL
   if dispatchConfig.kind != vkNil:
     if dispatchConfig.kind == vkNode and
@@ -804,11 +804,11 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         dispatchConfig.props.hasKey("handle"):
       poolConfig = dispatchConfig
     elif dispatchConfig.kind == vkSymbol and
-        dispatchConfig.symVal == "task-per-request":
+        dispatchConfig.symVal == "task_per_request":
       discard   # the default
     else:
-      raiseHttpError("http/serve ^dispatch expects task-per-request or an " &
-                     "(actor-pool ...) value", scope)
+      raiseHttpError("http/serve ^dispatch expects task_per_request or an " &
+                     "(actor_pool ...) value", scope)
   var routeEntries: seq[HttpRouteEntry]
   let usingRoutes = routes.kind != vkNil
   if usingRoutes:
@@ -816,22 +816,22 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       raiseHttpError("http/serve takes either a handler or ^routes, not both",
                      scope)
     if poolConfig.kind != vkNil:
-      raiseHttpError("http/serve ^dispatch actor-pool replaces the handler; " &
+      raiseHttpError("http/serve ^dispatch actor_pool replaces the handler; " &
                      "route inside the pool's ^handle", scope)
     routeEntries = httpParseRouteEntries(routes, scope)
   elif handler.kind == vkNil and poolConfig.kind == vkNil:
     raiseHttpError("http/serve requires a handler, ^routes, or an " &
-                   "actor-pool ^dispatch", scope)
+                   "actor_pool ^dispatch", scope)
   if supervisionPolicy.kind != vkNil:
     if poolConfig.kind == vkNil:
-      raiseHttpError("http/serve ^supervision requires an actor-pool " &
-                     "^dispatch; task-per-request failures go through " &
-                     "^on-error", scope)
+      raiseHttpError("http/serve ^supervision requires an actor_pool " &
+                     "^dispatch; task_per_request failures go through " &
+                     "^on_error", scope)
     if supervisionPolicy.kind != vkNode or
         not supervisionPolicy.props.hasKey("strategy"):
       raiseHttpError("http/serve ^supervision expects a " &
-                     "(supervisor-policy ...) value", scope)
-  # ^overload-response customizes what 503 paths answer (proposal §9). Render
+                     "(supervisor_policy ...) value", scope)
+  # ^overload_response customizes what 503 paths answer (proposal §9). Render
   # the wire bytes once up front: overload handling must stay allocation-light
   # and a bad response value should fail serve, not the overloaded request.
   var overloadWire = simpleHttpWirePayload(503, "Service Unavailable")
@@ -840,15 +840,15 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     let wire = responseWireParts(overloadResponse, scope)
     overloadStatus = wire.status
     overloadWire = httpWirePayload(wire.status, wire.body, wire.headers)
-  # §17 logging: ^redact-headers names whose values never reach access-log
+  # §17 logging: ^redact_headers names whose values never reach access_log
   # records. Defaults per the proposal.
   var redactedHeaderNames = @["authorization", "cookie", "set-cookie"]
   if redactHeaders.kind != vkNil:
     if redactHeaders.kind != vkList:
-      raiseHttpError("http/serve ^redact-headers expects a List of Str", scope)
+      raiseHttpError("http/serve ^redact_headers expects a List of Str", scope)
     redactedHeaderNames = @[]
     for item in redactHeaders.listItems:
-      requireStr("http/serve redact-headers entry", item)
+      requireStr("http/serve redact_headers entry", item)
       redactedHeaderNames.add item.strVal.toLowerAscii()
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     # Resolve the server runtime: reuse a listen-created listener, or bind
@@ -928,9 +928,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       try:
         discard applyCall(accessLog, [record], NamedArgs(), scope)
       except GeneError as e:
-        stderr.writeLine "http/serve access-log error: " & e.msg
+        stderr.writeLine "http/serve access_log error: " & e.msg
       except GenePanic as e:
-        stderr.writeLine "http/serve access-log panic: " & e.msg
+        stderr.writeLine "http/serve access_log panic: " & e.msg
 
     proc logError(conn: HttpConn, message: string, panic: bool) =
       ## §17 error log: handler errors/panics as ErrorLog records; same
@@ -946,9 +946,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       try:
         discard applyCall(errorLog, [record], NamedArgs(), scope)
       except GeneError as e:
-        stderr.writeLine "http/serve error-log error: " & e.msg
+        stderr.writeLine "http/serve error_log error: " & e.msg
       except GenePanic as e:
-        stderr.writeLine "http/serve error-log panic: " & e.msg
+        stderr.writeLine "http/serve error_log panic: " & e.msg
 
     proc tryFlush(conn: HttpConn): bool =
       ## Flush as much of the response as the socket accepts. True when the
@@ -1001,7 +1001,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     proc httpTaskResponsePayload(conn: HttpConn):
         tuple[payload: string, status: int] =
       ## Wire payload for a settled handler task. Failed tasks go through the
-      ## ^on-error mapper when one is configured; panics and cancellation stay
+      ## ^on_error mapper when one is configured; panics and cancellation stay
       ## generic 500s (stderr diagnostics preserved from the old server).
       let task = conn.task
       if task.taskHasPanic:
@@ -1025,9 +1025,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             return (httpWirePayload(wire.status, wire.body, wire.headers),
                     wire.status)
           except GeneError as e:
-            stderr.writeLine "http/serve on-error mapper error: " & e.msg
+            stderr.writeLine "http/serve on_error mapper error: " & e.msg
           except GenePanic as e:
-            stderr.writeLine "http/serve on-error mapper panic: " & e.msg
+            stderr.writeLine "http/serve on_error mapper panic: " & e.msg
         stderr.writeLine "http/serve handler error: " & task.taskErrorMsg
         inc rt.failedRequests
         return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
