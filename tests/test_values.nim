@@ -58,7 +58,7 @@ suite "value — NaN boxing":
     check x.bits == y.bits
 
   test "heap values preserve structure":
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     props["name"] = newStr("Ada")
     let n = newNode(newSym("user"), props = props, body = @[newInt(1)])
     check n.kind == vkNode
@@ -75,8 +75,8 @@ suite "value — NaN boxing":
 
 suite "value — equality":
   test "structural equality is meta-blind":
-    var metaA = initOrderedTable[string, Value]()
-    var metaB = initOrderedTable[string, Value]()
+    var metaA = initPropTable()
+    var metaB = initPropTable()
     metaA["line"] = newInt(1)
     metaB["line"] = newInt(2)
     let a = newNode(newSym("x"), body = @[newInt(1)], meta = metaA)
@@ -92,8 +92,8 @@ suite "value — equality":
     check not same(newList(@[newInt(1)]), newList(@[newInt(1)]))
 
   test "hash is meta-blind and restricted to stable values":
-    var metaA = initOrderedTable[string, Value]()
-    var metaB = initOrderedTable[string, Value]()
+    var metaA = initPropTable()
+    var metaB = initPropTable()
     metaA["line"] = newInt(1)
     metaB["line"] = newInt(2)
     let a = newNode(newSym("x"), body = @[newInt(1)], meta = metaA,
@@ -120,7 +120,7 @@ suite "value — reference counting":
   # structures; it catches double-frees/corruption always, and (under
   # -d:geneRcStats) proves retain/release balance to zero.
   proc buildDrop() =
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     props["name"] = newStr("a-heap-allocated-string")
     let shared = newStr("shared")              # aliased -> refCount 2
     let n = newNode(newSym("user"), props = props,

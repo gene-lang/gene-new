@@ -208,9 +208,28 @@ proc retainedCopy*(src: Value): Value {.inline.} =
 
 type
   ## Props and meta are symbol-keyed ordered maps. Keys are the bare symbol
-  ## text (without the leading `^`/`@`). Order is preserved for deterministic
-  ## printing per design Section 18.
-  PropTable* = OrderedTable[string, Value]
+  ## text (without the leading `^`/`@`), stored as interned symbol ids —
+  ## `PropMap ^is (Map Sym Any)` (design §1.3), so the key id space is the
+  ## symbol intern table and a symbol Value's payload is directly a key id.
+  ## Insertion order is preserved for deterministic printing (design §18).
+  ##
+  ## Representation: an insertion-ordered entry vector, linear-scanned by
+  ## int32 id while small; past `propSpillThreshold` a side index handles
+  ## lookup. String-keyed procs mirror the std Table API so existing call
+  ## sites keep working; they intern through the shared symbol table.
+  ## Note: interned key ids are never reclaimed, so keying a long-lived map
+  ## by unbounded distinct strings grows the intern table — use `HashMap`
+  ## ({{...}}) for arbitrary-key data (revisit with the planned arena work).
+  PropEntry* = object
+    keyId: int32
+    val: Value
+
+  PropTable* = object
+    data: seq[PropEntry]
+    # Empty until data.len exceeds propSpillThreshold; when active it maps
+    # every key id to its data position. A plain value (not ref) so copied
+    # tables — detached snapshots — never share index state.
+    index: Table[int32, int]
 
   # Managed heap objects. Manually allocated (alloc0 / dealloc); each begins with
   # a refCount header used by retain/release.
@@ -723,6 +742,169 @@ var
   internedNames: Table[string, string]  # deduped prop-key strings
   internLock: Lock
 initLock(internLock)
+
+proc internSymbolId(v: string): int32 =
+  acquire(internLock)
+  try:
+    var id = symbolIds.getOrDefault(v, -1)
+    if id < 0:
+      id = symbolNames.len
+      symbolNames.add v
+      symbolIds[v] = id
+    result = int32(id)
+  finally:
+    release(internLock)
+
+proc lookupSymbolId(v: string): int32 =
+  ## Lookup-only probe: -1 when the text was never interned, so misses
+  ## (hasKey on an absent key) do not grow the intern table.
+  acquire(internLock)
+  try:
+    result = int32(symbolIds.getOrDefault(v, -1))
+  finally:
+    release(internLock)
+
+# ---------------------------------------------------------------------------
+# PropTable operations (symbol-id keyed, insertion-ordered)
+# ---------------------------------------------------------------------------
+
+const propSpillThreshold = 16
+
+proc propKeyId*(key: string): int32 {.inline.} =
+  ## Intern `key` and return its symbol id (also the PropTable key id).
+  internSymbolId(key)
+
+proc propKeyText*(id: int32): lent string {.inline.} =
+  ## Key id back to text. Ids are append-only, matching `symVal`'s
+  ## unlocked-read posture.
+  symbolNames[int(id)]
+
+proc initPropTable*(initialSize = 0): PropTable {.inline.} =
+  ## Zero state is a valid empty table; kept for std-Table-style call sites.
+  discard initialSize
+
+proc len*(t: PropTable): int {.inline.} = t.data.len
+
+proc rebuildPropIndex(t: var PropTable) =
+  t.index.clear()
+  for i in 0 ..< t.data.len:
+    t.index[t.data[i].keyId] = i
+
+proc findId*(t: PropTable, id: int32): int {.inline.} =
+  ## Entry position for a key id, or -1.
+  if t.index.len > 0:
+    result = t.index.getOrDefault(id, -1)
+  else:
+    for i in 0 ..< t.data.len:
+      if t.data[i].keyId == id: return i
+    result = -1
+
+proc hasId*(t: PropTable, id: int32): bool {.inline.} =
+  t.findId(id) >= 0
+
+proc getById*(t: PropTable, id: int32): lent Value {.inline.} =
+  let i = t.findId(id)
+  if i < 0:
+    raise newException(KeyError, "key not found: " & propKeyText(id))
+  t.data[i].val
+
+proc getOrDefaultById*(t: PropTable, id: int32): Value {.inline.} =
+  let i = t.findId(id)
+  if i >= 0: t.data[i].val else: Value()
+
+proc getOrDefaultById*(t: PropTable, id: int32, default: Value): Value {.inline.} =
+  let i = t.findId(id)
+  if i >= 0: t.data[i].val else: default
+
+proc tryGetById*(t: PropTable, id: int32, val: var Value): bool {.inline.} =
+  ## Presence-exact lookup (a stored nil Value is distinguishable from miss).
+  let i = t.findId(id)
+  if i < 0: return false
+  val = t.data[i].val
+  true
+
+proc lookupPropKeyId*(key: string): int32 {.inline.} =
+  ## Lookup-only key-id probe: -1 when `key` was never interned (a miss for
+  ## every PropTable), without growing the intern table.
+  lookupSymbolId(key)
+
+proc putById*(t: var PropTable, id: int32, v: sink Value) =
+  let i = t.findId(id)
+  if i >= 0:
+    t.data[i].val = v          # update in place; insertion order unchanged
+  else:
+    t.data.add PropEntry(keyId: id, val: v)
+    if t.index.len > 0:
+      t.index[id] = t.data.high
+    elif t.data.len > propSpillThreshold:
+      t.rebuildPropIndex()
+
+proc delById*(t: var PropTable, id: int32) =
+  let i = t.findId(id)
+  if i < 0: return
+  t.data.delete(i)             # preserves insertion order
+  if t.index.len > 0:
+    if t.data.len <= propSpillThreshold div 2:
+      t.index.clear()
+    else:
+      t.rebuildPropIndex()
+
+# String-keyed shims mirroring the std Table API.
+
+proc hasKey*(t: PropTable, key: string): bool =
+  if t.data.len == 0: return false
+  let id = lookupSymbolId(key)
+  id >= 0 and t.hasId(id)
+
+proc contains*(t: PropTable, key: string): bool {.inline.} =
+  t.hasKey(key)
+
+proc `[]`*(t: PropTable, key: string): lent Value =
+  let id = lookupSymbolId(key)
+  let i = if id < 0: -1 else: t.findId(id)
+  if i < 0:
+    raise newException(KeyError, "key not found: " & key)
+  t.data[i].val
+
+proc `[]=`*(t: var PropTable, key: string, v: sink Value) {.inline.} =
+  t.putById(propKeyId(key), v)
+
+proc getOrDefault*(t: PropTable, key: string): Value =
+  if t.data.len == 0: return Value()
+  let id = lookupSymbolId(key)
+  if id < 0: Value() else: t.getOrDefaultById(id)
+
+proc getOrDefault*(t: PropTable, key: string, default: Value): Value =
+  if t.data.len == 0: return default
+  let id = lookupSymbolId(key)
+  if id < 0: return default
+  let i = t.findId(id)
+  if i >= 0: t.data[i].val else: default
+
+proc del*(t: var PropTable, key: string) =
+  if t.data.len == 0: return
+  let id = lookupSymbolId(key)
+  if id >= 0: t.delById(id)
+
+iterator pairs*(t: PropTable): (string, Value) =
+  for i in 0 ..< t.data.len:
+    yield (symbolNames[int(t.data[i].keyId)], t.data[i].val)
+
+iterator idPairs*(t: PropTable): (int32, Value) =
+  for i in 0 ..< t.data.len:
+    yield (t.data[i].keyId, t.data[i].val)
+
+iterator keys*(t: PropTable): string =
+  for i in 0 ..< t.data.len:
+    yield symbolNames[int(t.data[i].keyId)]
+
+iterator values*(t: PropTable): Value =
+  for i in 0 ..< t.data.len:
+    yield t.data[i].val
+
+iterator mvalues*(t: var PropTable): var Value =
+  for i in 0 ..< t.data.len:
+    yield t.data[i].val
 
 # ---------------------------------------------------------------------------
 # Low-level box helpers
@@ -1241,7 +1423,7 @@ proc clearObjectEdges(data: GeneObjectData) =
   of okModule:
     let d = ModuleData(data)
     clearValueSlot(d.root)
-    d.meta = initOrderedTable[string, Value]()
+    d.meta = initPropTable()
   of okBigInt:
     discard
   of okBytes:
@@ -1954,6 +2136,13 @@ proc symVal*(v: Value): lent string =
   if v.tagOf != SYMBOL_TAG:
     raise newException(FieldDefect, "value is not a Symbol")
   symbolNames[int(v.bits and PAYLOAD_MASK)]
+
+proc symbolId*(v: Value): int32 {.inline.} =
+  ## A symbol's interned id — directly a PropTable key id (design §1.3:
+  ## PropMap keys are symbols). No lock, no string.
+  if v.tagOf != SYMBOL_TAG:
+    raise newException(FieldDefect, "value is not a Symbol")
+  int32(v.bits and PAYLOAD_MASK)
 
 proc listItems*(v: Value): lent seq[Value] =
   if v.tagOf != LIST_TAG:
@@ -3849,16 +4038,7 @@ proc newChar*(r: Rune): Value {.inline.} =
   mkImm(CHAR_TAG, uint64(int32(r)) and 0xffffffff'u64)
 
 proc newSym*(v: string): Value =
-  acquire(internLock)
-  try:
-    var id = symbolIds.getOrDefault(v, -1)
-    if id < 0:
-      id = symbolNames.len
-      symbolNames.add v
-      symbolIds[v] = id
-    result = mkImm(SYMBOL_TAG, uint64(id))
-  finally:
-    release(internLock)
+  mkImm(SYMBOL_TAG, uint64(internSymbolId(v)))
 
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
@@ -3878,12 +4058,12 @@ proc withoutVoidEntries(entries: sink PropTable): PropTable =
       break
   if not hasVoid:
     return entries
-  result = initOrderedTable[string, Value]()
+  result = initPropTable()
   for key, val in entries:
     if val.kind != vkVoid:
       result[key] = val
 
-proc newMap*(entries: sink PropTable = initOrderedTable[string, Value](),
+proc newMap*(entries: sink PropTable = initPropTable(),
              immutable = false): Value =
   let p = createObj(GeneMap)
   p.refCount = 1
@@ -3981,9 +4161,9 @@ proc newDuration*(microseconds: int64): Value =
   boxObject(DurationData(objKind: okDuration, microseconds: microseconds))
 
 proc newNode*(head: Value,
-              props: sink PropTable = initOrderedTable[string, Value](),
+              props: sink PropTable = initPropTable(),
               body: sink seq[Value] = @[],
-              meta: sink PropTable = initOrderedTable[string, Value](),
+              meta: sink PropTable = initPropTable(),
               immutable = false,
               constructing = false): Value =
   let p = createObj(GeneNode)
@@ -4077,7 +4257,7 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
         break
     if not changed:
       return v
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     for key, val in v.mapEntries:
       entries[key] = weakenScopeFunctions(val, owner)
     newMap(entries, v.mapImmutable)
@@ -4131,13 +4311,13 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
           break
     if not changed:
       return v
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     for key, val in v.props:
       props[key] = weakenScopeFunctions(val, owner)
     var body: seq[Value]
     for item in v.body:
       body.add weakenScopeFunctions(item, owner)
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     for key, val in v.meta:
       meta[key] = weakenScopeFunctions(val, owner)
     newNode(weakenedHead, props = props, body = body, meta = meta,
@@ -4190,7 +4370,7 @@ proc escapeWeakFunctions*(v: Value): Value =
         break
     if not changed:
       return v
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     for key, val in v.mapEntries:
       entries[key] = escapeWeakFunctions(val)
     newMap(entries, v.mapImmutable)
@@ -4244,13 +4424,13 @@ proc escapeWeakFunctions*(v: Value): Value =
           break
     if not changed:
       return v
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     for key, val in v.props:
       props[key] = escapeWeakFunctions(val)
     var body: seq[Value]
     for item in v.body:
       body.add escapeWeakFunctions(item)
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     for key, val in v.meta:
       meta[key] = escapeWeakFunctions(val)
     newNode(escapedHead, props = props, body = body, meta = meta,
@@ -4795,7 +4975,7 @@ proc newNamespace*(name: string, scope: Scope, modulePath = "",
                           moduleRoot: moduleRoot, modulePath: modulePath))
 
 proc newModule*(name: string, root: Value, path = "",
-                meta: sink PropTable = initOrderedTable[string, Value]()): Value =
+                meta: sink PropTable = initPropTable()): Value =
   if root.kind != vkNamespace:
     raise newException(FieldDefect, "module root is not a Namespace")
   boxObject(ModuleData(objKind: okModule, name: name, path: path, root: root,
@@ -5081,7 +5261,7 @@ proc propsOf*(v: Value): PropTable =
   case v.kind
   of vkNode: v.props
   of vkMap: v.mapEntries
-  else: initOrderedTable[string, Value]()
+  else: initPropTable()
 
 proc bodyOf*(v: Value): seq[Value] =
   case v.kind
@@ -5091,7 +5271,7 @@ proc bodyOf*(v: Value): seq[Value] =
 
 proc metaOf*(v: Value): PropTable =
   if v.kind == vkNode: v.meta
-  else: initOrderedTable[string, Value]()
+  else: initPropTable()
 
 # ---------------------------------------------------------------------------
 # Truthiness (design Section 1.6): false, nil, void are falsy.

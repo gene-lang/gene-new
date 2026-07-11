@@ -36,7 +36,7 @@ proc httpNamespaceBinding(scope: Scope, name: string): Value =
   httpNs.nsScope.vars.getOrDefault(name, VOID)
 
 proc raiseHttpError(message: string, scope: Scope) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var e: ref GeneError
   new(e)
@@ -66,9 +66,9 @@ proc httpStatusText(code: int): string =
 
 proc newHttpResponseValue(scope: Scope, status: int, body: string,
                           contentType: string): Value =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["status"] = newInt(status)
-  var headers = initOrderedTable[string, Value]()
+  var headers = initPropTable()
   headers["content-type"] = newStr(contentType)
   props["headers"] = newMap(headers)
   let head = httpNamespaceBinding(scope, "Response")
@@ -129,7 +129,7 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
   if qMark >= 0:
     path = target[0 ..< qMark]
     query = target[qMark + 1 .. ^1]
-  var headers = initOrderedTable[string, Value]()
+  var headers = initPropTable()
   var contentLength = 0
   for i in 1 ..< lines.len:
     let line = lines[i]
@@ -152,12 +152,12 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope):
   if buf.len < bodyStart + contentLength:
     return (hpsNeedMore, VOID)
   let body = buf[bodyStart ..< bodyStart + contentLength]
-  var params: OrderedTable[string, Value]
+  var params: PropTable
   try:
     params = parseQueryEntries(query, scope)
   except GeneError:
     return (hpsBad, VOID)   # malformed percent escape is the client's fault
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["method"] = newStr(httpMethod)
   props["path"] = newStr(path)
   props["query"] = newStr(query)
@@ -318,7 +318,7 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let listener = httpBindListener(host, port, scope)
     let rt = registerHttpRuntime(host, port, listener, listening = true)
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     props["host"] = newStr(host)
     props["port"] = newInt(port)
     props["listener"] = newInt(rt.id)
@@ -351,7 +351,7 @@ proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   if rt == nil:
     raiseHttpError("http/status expects a Server value from http/listen",
                    scope)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["host"] = newStr(rt.host)
   props["port"] = newInt(rt.port)
   props["serving"] = newBool(rt.serving)
@@ -397,7 +397,7 @@ proc biHttpRoute(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       handlerVal = call[].namedValues[hIndex]
   if pathVal.kind == vkNil or handlerVal.kind == vkNil:
     raise newException(GeneError, "http/route requires ^path and ^handler")
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["method"] = methodVal
   props["path"] = pathVal
   props["handler"] = handlerVal
@@ -439,7 +439,7 @@ proc biHttpActorPool(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   if initFn.kind == vkNil or handleFn.kind == vkNil:
     raise newException(GeneError,
       "http/actor_pool requires ^init and ^handle")
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["workers"] = newInt(workers)
   props["mailbox"] = newInt(mailbox)
   props["init"] = initFn
@@ -494,7 +494,7 @@ proc biHttpSupervisorPolicy(args: openArray[Value], call: ptr NativeCall): Value
   if strategy notin ["restart", "stop"]:
     raise newException(GeneError,
       "http/supervisor_policy ^strategy must be restart or stop")
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["strategy"] = newStr(strategy)
   props["max_restarts"] = newInt(maxRestarts)
   props["within_ms"] = newInt(withinMs)
@@ -638,7 +638,7 @@ proc dispatchHttpToPool(pool: HttpActorPool, request: Value,
   # skips Send validation on this native single-producer edge — same
   # rationale as the request direction below.
   let reply = newReplyTo(task = task, relaxedSend = true)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["req"] = request
   props["reply"] = reply
   let head = httpNamespaceBinding(scope, "RequestMsg")
@@ -707,7 +707,7 @@ proc httpErrorFallbackNode(task: Value): Value =
   ## shape catch clauses see for message-only errors.
   if task.taskHasErrorValue:
     return task.taskErrorValue
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(task.taskErrorMsg)
   newNode(newSym("Error"), props = props)
 
@@ -911,13 +911,13 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## breaks serving.
       if accessLog.kind == vkNil:
         return
-      var props = initOrderedTable[string, Value]()
+      var props = initPropTable()
       props["method"] = newStr(conn.reqMethod)
       props["path"] = newStr(conn.reqPath)
       props["status"] = newInt(status)
       props["ms"] = newInt(int((getMonoTime() - conn.started).inMilliseconds))
       if conn.reqHeaders.kind == vkMap:
-        var redacted = initOrderedTable[string, Value]()
+        var redacted = initPropTable()
         for key, val in conn.reqHeaders.mapEntries:
           if key in redactedHeaderNames:
             redacted[key] = newStr("[redacted]")
@@ -937,7 +937,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## never-break-serving contract as the access log.
       if errorLog.kind == vkNil:
         return
-      var props = initOrderedTable[string, Value]()
+      var props = initPropTable()
       props["method"] = newStr(conn.reqMethod)
       props["path"] = newStr(conn.reqPath)
       props["message"] = newStr(message)
@@ -1057,7 +1057,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         if match.params.len != 0:
           # ":name" captures join query params in req/params; a path capture
           # wins over a same-named query key.
-          var merged = initOrderedTable[string, Value]()
+          var merged = initPropTable()
           let existing = request.props["params"]
           if existing.kind == vkMap:
             for key, val in existing.mapEntries:
@@ -1371,9 +1371,9 @@ proc biHttpRedirect(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     raise newException(GeneError,
       "http/redirect expects (location) or (status, location), got " &
       $args.len & " arguments")
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["status"] = newInt(status)
-  var headers = initOrderedTable[string, Value]()
+  var headers = initPropTable()
   headers["location"] = location
   props["headers"] = newMap(headers)
   let head = httpNamespaceBinding(scope, "Response")

@@ -7,16 +7,17 @@
 ## Mutable/immutable representation does not affect equality (e.g. [1 2 3]
 ## equals #[1 2 3]).
 
-import std/[tables, hashes, sets]
+import std/[hashes, sets]
 import ./types
 
 proc equal*(a, b: Value): bool
 
 proc tablesEqual(a, b: PropTable): bool =
   if a.len != b.len: return false
-  for k, va in a:
-    if not b.hasKey(k): return false
-    if not equal(va, b[k]): return false
+  for id, va in a.idPairs:
+    var vb: Value
+    if not b.tryGetById(id, vb): return false
+    if not equal(va, vb): return false
   true
 
 proc setContains(items: openArray[Value], needle: Value): bool =
@@ -76,7 +77,7 @@ proc equal*(a, b: Value): bool =
   of vkDuration:
     a.durationMicroseconds == b.durationMicroseconds
   of vkChar:   int32(a.charVal) == int32(b.charVal)
-  of vkSymbol: a.symVal == b.symVal
+  of vkSymbol: a.bits == b.bits   # interned: same text <=> same id
   of vkList:
     if a.listItems.len != b.listItems.len: return false
     for i in 0 ..< a.listItems.len:
@@ -182,13 +183,13 @@ proc hash*(v: Value): Hash =
   of vkDuration:
     h = h !& hash(v.durationMicroseconds)
   of vkChar:   h = h !& hash(int32(v.charVal))
-  of vkSymbol: h = h !& hash(v.symVal)
+  of vkSymbol: h = h !& hash(v.bits)   # interned: id determines identity
   of vkList:
     for it in v.listItems: h = h !& hash(it)
   of vkMap:
     var acc: Hash = 0
-    for k, val in v.mapEntries:
-      acc = acc xor (hash(k) !& hash(val))   # order-independent
+    for id, val in v.mapEntries.idPairs:
+      acc = acc xor (hash(id) !& hash(val))   # order-independent
     h = h !& acc
   of vkSet:
     var acc: Hash = 0
@@ -204,8 +205,8 @@ proc hash*(v: Value): Hash =
     h = h !& hash(v.head)
     for it in v.body: h = h !& hash(it)
     var acc: Hash = 0
-    for k, val in v.props:
-      acc = acc xor (hash(k) !& hash(val))
+    for id, val in v.props.idPairs:
+      acc = acc xor (hash(id) !& hash(val))
     h = h !& acc
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
@@ -247,7 +248,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
   of vkMap:
     if not v.mapImmutable:
       return false
-    for _, val in v.mapEntries:
+    for val in v.mapEntries.values:
       if not isHashStable(val, seen):
         return false
     true
@@ -268,7 +269,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
       return false
     if not isHashStable(v.head, seen):
       return false
-    for _, val in v.props:
+    for val in v.props.values:
       if not isHashStable(val, seen):
         return false
     for item in v.body:

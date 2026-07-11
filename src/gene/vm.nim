@@ -31,6 +31,23 @@ type
     interactive*: bool
     prompt*: string
 
+# Pre-interned PropTable key ids for the computed Node projection names on
+# the selector hot path (design §5 static lookup). Interned lazily on first
+# use: module-init-time interning crashes under Emscripten (wasm32) where
+# NimMain's global-init ordering interacts badly with the table allocator.
+var
+  nodeHeadKeyId = int32(-2)
+  nodePropsKeyId = int32(-2)
+  nodeBodyKeyId = int32(-2)
+  nodeMetaKeyId = int32(-2)
+
+proc ensureNodeProjectionKeyIds() {.inline.} =
+  if nodeHeadKeyId == -2:
+    nodeHeadKeyId = propKeyId("head")
+    nodePropsKeyId = propKeyId("props")
+    nodeBodyKeyId = propKeyId("body")
+    nodeMetaKeyId = propKeyId("meta")
+
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/volatile
 
@@ -1315,7 +1332,7 @@ proc requireChannel(name: string, value: Value) =
     raise newException(GeneError, name & " expects a Channel")
 
 proc raiseChannelClosed(scope: Scope) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr("channel is closed")
   var head = newSym("ChannelClosed")
   var closedType: Value
@@ -1552,7 +1569,7 @@ proc requireActor(name: string, value: Value) =
     raise newException(GeneError, name & " expects an ActorRef")
 
 proc raiseActorClosed(scope: Scope) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr("actor is closed")
   var head = newSym("ActorClosed")
   var closedType: Value
@@ -1570,7 +1587,7 @@ proc raiseReplyAlreadySent(scope: Scope) =
   ## ReplyTo is single-use (design §13.5); a second send is the programming
   ## error named ReplyAlreadySent (async-http-server proposal §18.2).
   const message = "reply has already been sent"
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var head = newSym("ReplyAlreadySent")
   var sentType: Value
@@ -1585,7 +1602,7 @@ proc raiseReplyAlreadySent(scope: Scope) =
   raise e
 
 proc actorErrorValue(scope: Scope, message: string): Value =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var head = newSym("ActorError")
   var actorError: Value
@@ -1603,7 +1620,7 @@ proc actorFailureStrategyName(strategy: ActorFailureStrategy): string =
 proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
                             message: string, errorValue: Value,
                             panic: bool): Value =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["actor"] = actor
   props["failed_message"] = failedMessage
   props["message"] = newStr(message)
@@ -2103,7 +2120,7 @@ proc biActorSnapshot(args: openArray[Value]): Value {.nimcall.} =
   let snapshot = actor.actorSnapshotFields()
   if not snapshot.idle:
     raise newException(GeneError, "actor/snapshot requires an idle actor")
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["state"] = snapshot.state
   props["mailbox"] = newInt(snapshot.mailbox)
   props["closed"] = newBool(snapshot.closed)
@@ -2389,7 +2406,7 @@ proc scopeCarriesConstruction(scope: Scope): bool {.noinline.} =
   scopeCarriesConstruction(scope, seenValues, seenScopes)
 
 proc raiseEndOfStream() =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr("end of stream")
   var e: ref GeneError
   new(e)
@@ -2410,7 +2427,7 @@ proc builtInTypeHead(scope: Scope, name: string): Value =
 
 proc raiseReaderError(name, message, typeName: string, scope: Scope) =
   let fullMessage = name & ": " & message
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(fullMessage)
   var e: ref GeneError
   new(e)
@@ -2443,7 +2460,7 @@ proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   newStream(readFormsFromString("read_all", args[0], scope))
 
 proc tokenValue(token: Token, tokenType: Value): Value =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["kind"] = newSym(token.kind.tokenKindName)
   props["lexeme"] = newStr(token.lexeme)
   props["line"] = newInt(int64(token.line))
@@ -2846,7 +2863,7 @@ proc copyItems(items: openArray[Value]): seq[Value] =
     result[i] = item
 
 proc copyEntries(entries: PropTable): PropTable =
-  result = initOrderedTable[string, Value]()
+  result = initPropTable()
   for key, val in entries:
     result[key] = val
 
@@ -2854,12 +2871,12 @@ proc freezeValue(value: Value): Value
 proc thawValue(value: Value): Value
 
 proc freezeEntries(entries: PropTable): PropTable =
-  result = initOrderedTable[string, Value]()
+  result = initPropTable()
   for key, val in entries:
     result[key] = freezeValue(val)
 
 proc thawEntries(entries: PropTable): PropTable =
-  result = initOrderedTable[string, Value]()
+  result = initPropTable()
   for key, val in entries:
     result[key] = thawValue(val)
 
@@ -3073,13 +3090,13 @@ proc namespaceDeclarationNodes(ns: Value): seq[Value] =
     if ns.nsIsModuleRoot and name == "this_mod":
       continue
     let value = ns.nsScope.vars[name]
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     props["name"] = newStr(name)
     props["kind"] = newStr(declarationKind(value))
     props["value"] = value
     # Declaration meta (@route ... on the source form) becomes real node
     # meta on the record, so decl/%meta/route works (proposal §8).
-    var declMeta = initOrderedTable[string, Value]()
+    var declMeta = initPropTable()
     if value.kind == vkFunction and value.fnCode != nil and
         value.fnCode of FunctionProto:
       let proto = FunctionProto(value.fnCode)
@@ -3100,7 +3117,7 @@ proc biDeclarations(args: openArray[Value]): Value {.nimcall.} =
 proc biNamespaceBindings(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Namespace/bindings", args)
   requireNamespace("Namespace/bindings", args[0])
-  var entries = initOrderedTable[string, Value]()
+  var entries = initPropTable()
   for name in sortedBindingNames(args[0].nsScope):
     entries[name] = args[0].nsScope.vars[name]
   newMap(entries)
@@ -3465,7 +3482,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
           return newNode(value, props, body, meta, target.nodeImmutable)
         of "props":
           if value.kind == vkVoid:
-            props = initOrderedTable[string, Value]()
+            props = initPropTable()
           elif value.kind == vkMap:
             props = copyEntries(value.mapEntries)
           else:
@@ -3479,7 +3496,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
             raise newException(GeneError, name & " /body expects a list value")
         of "meta":
           if value.kind == vkVoid:
-            meta = initOrderedTable[string, Value]()
+            meta = initPropTable()
           elif value.kind == vkMap:
             meta = copyEntries(value.mapEntries)
           else:
@@ -3718,7 +3735,7 @@ proc regexMatchValue(reVal: Value, s: string, start: int,
       namedEntries.add HashMapEntry(key: newStr(name), val: groups[index])
 
   let endExclusive = regexEndExclusive(found.first, found.last)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["text"] = newStr(regexSlice(s, found.first, found.last))
   props["groups"] = newList(groups, immutable = true)
   props["named"] = newHashMap(namedEntries)
@@ -4542,7 +4559,7 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "Runtime/gc_stats expects no arguments")
-  var entries = initOrderedTable[string, Value]()
+  var entries = initPropTable()
   entries["live_managed"] = newInt(managedLiveCount())
   entries["rc_stats?"] =
     when defined(geneRcStats):
@@ -5263,7 +5280,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
               binds: var Table[string, Value]): bool
 
 proc metaAsMap(target: Value): Value =
-  var entries = initOrderedTable[string, Value]()
+  var entries = initPropTable()
   if target.kind == vkNode:
     for key, val in target.meta:
       entries[key] = val
@@ -6831,7 +6848,7 @@ proc cloneForCapturedSnapshot(value: Value,
     if changed: newList(items, immutable = value.listImmutable)
     else: value
   of vkMap:
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     var changed = false
     for key, item in value.mapEntries:
       let cloned = cloneForCapturedSnapshot(item, scopeMap)
@@ -6842,9 +6859,9 @@ proc cloneForCapturedSnapshot(value: Value,
     else: value
   of vkNode:
     let clonedHead = cloneForCapturedSnapshot(value.head, scopeMap)
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     var body: seq[Value]
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     var changed = clonedHead.bits != value.head.bits
     for key, item in value.props:
       let cloned = cloneForCapturedSnapshot(item, scopeMap)
@@ -7461,7 +7478,7 @@ proc awaitTaskValue(task: Value): Value =
     task.clearTaskPayload()
 
 proc raiseMatchError(scope: Scope, message: string) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var head = newSym("MatchError")
   var matchError: Value
@@ -7476,7 +7493,7 @@ proc raiseMatchError(scope: Scope, message: string) =
   raise e
 
 proc raiseCompileError(scope: Scope, message: string) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var head = newSym("CompileError")
   var compileError: Value
@@ -7782,7 +7799,7 @@ proc attachSourceLoc(e: ref GeneError, loc: SourceLoc) =
     e.errVal = e.errVal.withSourceLocProps(loc)
 
 proc stackFrameValue(name, kind: string, loc = SourceLoc()): Value =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["name"] = newStr(name)
   props["kind"] = newStr(kind)
   if loc.hasSourceLoc:
@@ -8911,7 +8928,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
               values[i] = stack.pop()
-          var entries = initOrderedTable[string, Value]()
+          var entries = initPropTable()
           for i, key in inst[].names:
             if values[i].kind != vkVoid:
               rejectCallerEnvEscape("map construction", values[i])
@@ -8933,7 +8950,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if proto.bodyCount > 0:
             for i in countdown(proto.bodyCount - 1, 0):
               bodyParts[i] = stack.pop()
-          var props = initOrderedTable[string, Value]()
+          var props = initPropTable()
           if proto.propNames.len > 0:
             var propValues = newSeq[Value](proto.propNames.len)
             for i in countdown(proto.propNames.len - 1, 0):
@@ -8941,7 +8958,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             for i, key in proto.propNames:
               if propValues[i].kind != vkVoid:
                 props[key] = propValues[i]
-          var meta = initOrderedTable[string, Value]()
+          var meta = initPropTable()
           if proto.metaNames.len > 0:
             var metaValues = newSeq[Value](proto.metaNames.len)
             for i in countdown(proto.metaNames.len - 1, 0):
@@ -11017,7 +11034,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let errVal =
             if err.hasErrVal: err.errVal
             else:
-              var props = initOrderedTable[string, Value]()
+              var props = initPropTable()
               props["message"] = newStr(err.msg)
               newNode(newSym("Error"), props = props)
           var caught = false
@@ -12812,10 +12829,10 @@ proc substituteTypeParams(expr: Value, bindings: Table[string, Value],
       return bindings.getOrDefault(expr.symVal, newSym("Any"))
     expr
   of vkNode:
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     for key, value in expr.props:
       props[key] = substituteTypeParams(value, bindings, typeParams)
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     for key, value in expr.meta:
       meta[key] = substituteTypeParams(value, bindings, typeParams)
     var body: seq[Value]
@@ -12830,7 +12847,7 @@ proc substituteTypeParams(expr: Value, bindings: Table[string, Value],
       items.add substituteTypeParams(item, bindings, typeParams)
     newList(items, expr.listImmutable)
   of vkMap:
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     for key, value in expr.mapEntries:
       entries[key] = substituteTypeParams(value, bindings, typeParams)
     newMap(entries, expr.mapImmutable)
@@ -12846,7 +12863,7 @@ proc instantiateTypeExpr(expr: Value, bindings: Table[string, Value],
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   let message = where & " expected " & expected & ", got " & $value.kind
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
@@ -12867,7 +12884,7 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope) =
   let message = where & " expected " & expected & ", got " & actual
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
@@ -13137,7 +13154,7 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         return newSym("Device/" & expr.body[1].symVal)
     let closedHead = closeTypeExpr(expr.head, scope)
     var changed = closedHead.bits != expr.head.bits
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     for key, value in expr.props:
       let closed = closeTypeExpr(value, scope)
       props[key] = closed
@@ -13149,7 +13166,7 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       body.add closed
       if closed.bits != item.bits:
         changed = true
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     for key, value in expr.meta:
       let closed = closeTypeExpr(value, scope)
       meta[key] = closed
@@ -13171,7 +13188,7 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
     if changed: newList(items, expr.listImmutable) else: expr
   of vkMap:
     var changed = false
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     for key, value in expr.mapEntries:
       let closed = closeTypeExpr(value, scope)
       entries[key] = closed
@@ -13620,20 +13637,31 @@ proc staticLookup(target, segment: Value): Value =
     else:
       VOID
   of vkSymbol, vkString:
-    let key = if segment.kind == vkSymbol: segment.symVal else: segment.strVal
+    # A symbol segment's payload is directly a PropTable key id — no string,
+    # no intern-table probe. A string segment probes lookup-only: an
+    # un-interned key text cannot be present in any PropTable.
+    let keyId = if segment.kind == vkSymbol: segment.symbolId
+                else: lookupPropKeyId(segment.strVal)
+    template key: string =
+      (if segment.kind == vkSymbol: segment.symVal else: segment.strVal)
     case target.kind
     of vkMap:
-      target.mapEntries.getOrDefault(key, VOID)
+      if keyId < 0: VOID
+      else: target.mapEntries.getOrDefaultById(keyId, VOID)
     of vkNode:
-      let prop = target.props.getOrDefault(key, VOID)
+      let prop =
+        if keyId < 0: VOID
+        else: target.props.getOrDefaultById(keyId, VOID)
       if prop.kind != vkVoid:
         prop
+      elif keyId < 0:
+        VOID
       else:
-        case key
-        of "head": target.head
-        of "props": newMap(target.props)
-        of "body": newList(target.body)
-        of "meta": newMap(target.meta)
+        ensureNodeProjectionKeyIds()
+        if keyId == nodeHeadKeyId: target.head
+        elif keyId == nodePropsKeyId: newMap(target.props)
+        elif keyId == nodeBodyKeyId: newList(target.body)
+        elif keyId == nodeMetaKeyId: newMap(target.meta)
         else: VOID
     of vkList:
       VOID
@@ -13710,7 +13738,7 @@ proc selectorStrict(selector: Value): bool =
 
 proc raiseSelectorMissing(segment: Value) =
   let message = "selector lookup failed at segment: " & segment.print()
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   props["segment"] = segment
   var head = newSym("SelectorMissing")
@@ -18384,7 +18412,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
     "': [" & paramLabels.join(",") & "] -> " & returnLabel)
 
 proc callNamedMap(named: NamedArgs): Value =
-  var entries = initOrderedTable[string, Value]()
+  var entries = initPropTable()
   for i, name in named.names:
     let value = named.valueAt(i)
     if value.kind != vkVoid:
@@ -18393,7 +18421,7 @@ proc callNamedMap(named: NamedArgs): Value =
 
 proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
                   site: Value = NIL): Value =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["named"] = callNamedMap(named)
   if site.kind != vkNil:
     props["site"] = site
@@ -18693,8 +18721,8 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc syntaxCallEnvelope(scope: Scope, node: Value): Value =
   ## SyntaxCall envelope (design §3): the raw prop/body syntax nodes of the
   ## call plus the site, mirroring the ordinary Call envelope shape.
-  var props = initOrderedTable[string, Value]()
-  var named = initOrderedTable[string, Value]()
+  var props = initPropTable()
+  var named = initPropTable()
   for key, value in node.props:
     named[key] = value
   props["named"] = newMap(named)
@@ -18844,7 +18872,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       body.add adaptBoundary("body field " & $i & " for " &
                              callee.typeName, restType.typeExpr, args[i],
                              fieldScope)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   for f in fields:
     if named.hasArg(f.name):
       let value = named.getArg(f.name)

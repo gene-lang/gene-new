@@ -43,7 +43,7 @@ proc main() =
 
   let nodeHead = newSym("item")
   bench("value.node.construct_access", 250_000, i):
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     props["id"] = newInt(i)
     let n = newNode(nodeHead, props = props, body = @[newInt(i)])
     checksum = checksum + n.props["id"].intVal + n.body[0].intVal

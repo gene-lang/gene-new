@@ -999,7 +999,7 @@ proc containsPipeSlot(value: Value): bool =
 proc replacePipeSlot(value, replacement: Value): Value
 
 proc replacePipeSlot(entries: PropTable, replacement: Value): PropTable =
-  result = initOrderedTable[string, Value]()
+  result = initPropTable()
   for key, value in entries:
     result[key] = replacePipeSlot(value, replacement)
 
@@ -1061,8 +1061,8 @@ proc finishPipeSegment(head: Value, props: PropTable, body: seq[Value],
 
 proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var head = NIL
-  var props = initOrderedTable[string, Value]()
-  var meta = initOrderedTable[string, Value]()
+  var props = initPropTable()
+  var meta = initPropTable()
   var body = newSeq[Value]()
 
   var first = true
@@ -1117,8 +1117,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       discard r.next()
       let prevNode = finishPipeSegment(head, props, body, meta, immutable, inPipe)
       head = prevNode
-      props = initOrderedTable[string, Value]()
-      meta = initOrderedTable[string, Value]()
+      props = initPropTable()
+      meta = initPropTable()
       body = @[]
       first = false
       inPipe = true
@@ -1142,7 +1142,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     result = newNode(head, props, body, meta, immutable)
 
 proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
-  var items = initOrderedTable[string, Value]()
+  var items = initPropTable()
   while true:
     r.skipDatumComments()
     let k = r.peekKind()

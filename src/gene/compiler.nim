@@ -1379,7 +1379,7 @@ proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
 proc expandMacroQuasiMap(source: PropTable, env: Table[string, Value],
                          depth: int, c: var Compiler,
                          hygiene: var Table[string, string]): PropTable =
-  result = initOrderedTable[string, Value]()
+  result = initPropTable()
   for key, item in source:
     result[key] = expandMacroQuasi(item, env, depth, c, hygiene)
 
@@ -1404,10 +1404,10 @@ proc expandMacroDoNode(node: Value, env: Table[string, Value], depth: int,
 proc expandMacroQuasiNodeParts(node: Value, env: Table[string, Value],
                                depth: int, c: var Compiler,
                                hygiene: var Table[string, string]): Value =
-  var meta = initOrderedTable[string, Value]()
+  var meta = initPropTable()
   for key, item in node.meta:
     meta[key] = expandMacroQuasi(item, env, depth, c, hygiene)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   for key, item in node.props:
     props[key] = expandMacroQuasi(item, env, depth, c, hygiene)
   let head =
@@ -1465,7 +1465,7 @@ proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
         items.add expandMacroQuasi(item, env, depth, c, hygiene)
     newList(items, value.listImmutable)
   of vkMap:
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     for key, item in value.mapEntries:
       entries[key] = expandMacroQuasi(item, env, depth, c, hygiene)
     newMap(entries, value.mapImmutable)
@@ -1502,7 +1502,7 @@ proc macroTemplateValue(expr: Value, env: Table[string, Value],
   expr
 
 proc macroMetaAsMap(target: Value): Value =
-  var entries = initOrderedTable[string, Value]()
+  var entries = initPropTable()
   if target.kind == vkNode:
     for key, val in target.meta:
       entries[key] = val
@@ -3061,7 +3061,7 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
   if node.body.len == 0 or node.body[0].kind != vkSymbol:
     raise newException(GeneError, "mod requires a name")
   c.seenModDecl = true
-  var meta = initOrderedTable[string, Value]()
+  var meta = initPropTable()
   for key, val in node.meta:
     meta[key] = val
   discard c.emit(opSetModuleName, c.chunk.addConst(newMap(meta)),
@@ -3230,7 +3230,7 @@ proc compileQuasiquote(c: var Compiler, node: Value) =
   compileQuasiTemplate(c, node.body[0], 1)
 
 proc selectorLiteral(parts: openArray[Value],
-                     props: OrderedTable[string, Value]): Value =
+                     props: PropTable): Value =
   var body = newSeq[Value](parts.len)
   for i, part in parts:
     body[i] = part

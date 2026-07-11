@@ -92,7 +92,7 @@ proc cmdRepl(useCurses = false) =
 proc argsValue(args: openArray[string]): Value =
   # Preserve positional argv compatibility through node body indexes while
   # exposing the whole shell argument tail for future script-level parsing.
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["raw"] = newStr(args.join(" "))
   var values = newSeq[Value](args.len)
   for i, arg in args:
@@ -141,7 +141,7 @@ proc splitMainInvocation(raw: openArray[string]): tuple[args: seq[string],
 
 proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   let message = "main return expected Nil or Int, got " & $value.kind
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr("main return")
   props["expected"] = newStr("Nil or Int")
@@ -159,7 +159,7 @@ proc raiseMainReturnTypeError(scope: Scope, value: Value) =
 
 proc raiseMainReturnRangeError(scope: Scope) =
   let message = "main return Int must fit in int64"
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr("main return")
   props["expected"] = newStr("int64-range Int")

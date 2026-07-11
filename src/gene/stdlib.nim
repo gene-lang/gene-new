@@ -240,7 +240,7 @@ proc urlEncodeComponent(s: string): string =
       result.add toHex(ord(c), 2)
 
 proc raiseUrlError(message: string, scope: Scope) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var e: ref GeneError
   new(e)
@@ -283,7 +283,7 @@ proc biUrlDecodeComponent(args: openArray[Value], call: ptr NativeCall): Value {
   newStr(urlDecodeComponent(args[0].strVal, plusIsSpace = false, scope))
 
 proc parseQueryEntries(query: string,
-                       scope: Scope): OrderedTable[string, Value] =
+                       scope: Scope): PropTable =
   if query.len == 0:
     return
   for pair in query.split('&'):
@@ -334,7 +334,7 @@ include ./http_server
 # hand out env+file access without shell access. Errors are the typed `OsError`.
 
 proc raiseOsError(message: string, scope: Scope) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var e: ref GeneError
   new(e)
@@ -495,7 +495,7 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     appendCapped(outText, outTruncated, process.outputStream.readAll())
     appendCapped(errText, errTruncated, process.errorStream.readAll())
     process.close()
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["status"] = newInt(exitCode)
   props["stdout"] = newStr(outText)
   props["stderr"] = newStr(errText)
@@ -644,7 +644,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       drainAvailable(outFd, handleStdoutChunk)
       drainAvailable(errFd, handleStderrChunk)
       finishStdoutLine()
-      var props = initOrderedTable[string, Value]()
+      var props = initPropTable()
       props["status"] = newInt(exitCode)
       props["stdout"] = newStr(outText)
       props["stderr"] = newStr(errText)
@@ -664,7 +664,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       handleStdoutChunk(allOut)
       handleStderrChunk(allErr)
       finishStdoutLine()
-      var props = initOrderedTable[string, Value]()
+      var props = initPropTable()
       props["status"] = newInt(exitCode)
       props["stdout"] = newStr(outText)
       props["stderr"] = newStr(errText)
@@ -944,7 +944,7 @@ when compileOption("threads"):
               if tryFailTask(task, failure):
                 wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
             else:
-              var props = initOrderedTable[string, Value]()
+              var props = initPropTable()
               props["status"] = newInt(ctx.resultStatus)
               props["stdout"] = newStr(consumeSharedExecText(ctx.resultStdout))
               props["stderr"] = newStr(consumeSharedExecText(ctx.resultStderr))
@@ -1917,7 +1917,7 @@ type JsonParser = object
   scope: Scope
 
 proc raiseJsonError(p: var JsonParser, message: string) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr("json/parse: " & message & " at offset " & $p.pos)
   var e: ref GeneError
   new(e)
@@ -1927,7 +1927,7 @@ proc raiseJsonError(p: var JsonParser, message: string) =
   raise e
 
 proc raiseJsonValueError(scope: Scope, message: string) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var e: ref GeneError
   new(e)
@@ -2029,7 +2029,7 @@ proc parseJsonValue(p: var JsonParser, depth: int): Value =
   case c
   of '{':
     inc p.pos
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     jsonSkipWs(p)
     if p.pos < p.input.len and p.input[p.pos] == '}':
       inc p.pos
@@ -2213,7 +2213,7 @@ proc raiseSerdeError(scope: Scope, message: string, path: seq[string] = @[]) =
   var full = message
   if path.len > 0:
     full = "at " & serdePathText(path) & ": " & message
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(full)
   props["path"] = newStr(serdePathText(path))
   var e: ref GeneError
@@ -3098,7 +3098,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     let items = v.body[1].listItems
     if items.len mod 2 != 0:
       raiseSerdeError(r.scope, "serde_map expects an even k/v list", r.path)
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     var i = 0
     while i < items.len:
       if items[i].kind != vkString:
@@ -3135,10 +3135,10 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       r.path.add $(i - 4)
       children.add serdeDecode(r, v.body[i], depth + 1)
       discard r.path.pop()
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     for k, val in propsVal.mapEntries:
       props[k] = val
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     for k, val in metaVal.mapEntries:
       meta[k] = val
     newNode(head, props = props, body = children, meta = meta,
@@ -3256,7 +3256,7 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
       discard r.path.pop()
     newList(items, immutable = v.listImmutable)
   of vkMap:
-    var entries = initOrderedTable[string, Value]()
+    var entries = initPropTable()
     for k, val in v.mapEntries:
       r.path.add k
       entries[k] = serdeDecode(r, val, depth + 1)
@@ -3280,12 +3280,12 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
     r.path.add "head"
     let head = serdeDecode(r, v.head, depth + 1)
     discard r.path.pop()
-    var props = initOrderedTable[string, Value]()
+    var props = initPropTable()
     for k, val in v.props:
       r.path.add k
       props[k] = serdeDecode(r, val, depth + 1)
       discard r.path.pop()
-    var meta = initOrderedTable[string, Value]()
+    var meta = initPropTable()
     for k, val in v.meta:
       r.path.add k
       meta[k] = serdeDecode(r, val, depth + 1)
@@ -3394,7 +3394,7 @@ proc biSerdeRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 # backend-agnostic.
 
 proc raiseDbError(message: string, scope: Scope) =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["message"] = newStr(message)
   var e: ref GeneError
   new(e)
@@ -3563,7 +3563,7 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
   while true:
     let rc = gSqliteApi.step(stmt)
     if rc == SQLITE_ROW:
-      var entries = initOrderedTable[string, Value]()
+      var entries = initPropTable()
       for i in 0 ..< gSqliteApi.columnCount(stmt):
         entries[$gSqliteApi.columnName(stmt, i)] = sqliteColumnValue(stmt, i)
       result.rows.add newMap(entries)
@@ -3606,7 +3606,7 @@ proc biSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
       type CloseProc = proc(p: pointer): cint {.cdecl.}
       discard cast[CloseProc](gSqliteApi.closeAddr)(db)
     raiseDbError("sqlite/open: " & msg, scope)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["handle"] = newCForeignOwnedPtr(db, gSqliteApi.closeAddr)
   props["backend"] = newStr("sqlite")
   props["path"] = args[0]
@@ -3823,7 +3823,7 @@ proc pgRun(conn: Value, sql: string, params: openArray[Value], where: string,
   case gPgApi.resultStatus(res)
   of PGRES_TUPLES_OK:
     for r in 0 ..< gPgApi.ntuples(res):
-      var entries = initOrderedTable[string, Value]()
+      var entries = initPropTable()
       for c in 0 ..< gPgApi.nfields(res):
         entries[$gPgApi.fname(res, c)] = pgCellValue(res, r, c)
       result.rows.add newMap(entries)
@@ -3847,7 +3847,7 @@ proc biPostgresOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     type FinishProc = proc(p: pointer) {.cdecl.}
     cast[FinishProc](gPgApi.finishAddr)(db)
     raiseDbError("postgres/open: " & msg, scope)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["handle"] = newCForeignOwnedPtr(db, gPgApi.finishAddr)
   props["backend"] = newStr("postgres")
   let head = builtInTypeHead(scope, "PostgresDb")
@@ -3900,7 +3900,7 @@ const storeDefaultKeyColumn = "key"
 const storeDefaultDataColumn = "data"
 
 proc raiseStoreError(scope: Scope, kind, message: string, key = "") =
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["kind"] = newSym(kind)
   props["message"] = newStr(message)
   if key.len > 0:
@@ -4053,7 +4053,7 @@ proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.ni
         "store/sqlite/open got unexpected named argument: " & name)
   storeSqliteEnsureSchema(sqliteHandle("store/sqlite/open", args[0], scope),
                           tableName, keyColumn, dataColumn, scope)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["db"] = args[0]
   props["table"] = newStr(tableName)
   props["key_column"] = newStr(keyColumn)
@@ -4258,7 +4258,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     createDir(root)
   except OSError as e:
     raiseStoreError(scope, "io", "store/fs/open: " & e.msg)
-  var props = initOrderedTable[string, Value]()
+  var props = initPropTable()
   props["fs"] = args[0]
   props["root"] = newStr(root)
   props["mode"] = newSym(mode)
