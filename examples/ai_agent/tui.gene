@@ -134,8 +134,9 @@
 
 (fn rm-recursive? [c : Str]
   (|| (contains? c "rm -rf")
-      (|| (contains? c "rm -fr")
-          (|| (contains? c "rm -r ") (contains? c "rm -f -r")))))
+      (contains? c "rm -fr")
+      (contains? c "rm -r ")
+      (contains? c "rm -f -r")))
 
 (var protected-root-tokens ["/" "/*" "~" "~/" "$HOME" "${HOME}" "." ".." ".git" ".git/"])
 
@@ -183,8 +184,9 @@
   ((to_stream catastrophic-command-starts)
     ~ each (fn [p] (if (starts_with? s p) (Cell/set hit true) nil)))
   (|| (Cell/get hit)
-      (|| (contains? s ":(){")
-          (|| (contains? s " of=/dev/") (contains? s "drop database")))))
+      (contains? s ":(){")
+      (contains? s " of=/dev/")
+      (contains? s "drop database")))
 
 # A SQL DELETE/UPDATE with no WHERE clause rewrites the whole table.
 (fn sql-unbounded? [s : Str]
@@ -195,17 +197,17 @@
 (fn segment-destructive? [seg : Str]
   (var s (lower seg))
   (|| (contains? s "git reset --hard")
-      (|| (contains? s "git clean -fd")
-          (|| (contains? s "git push --force")
-              (|| (contains? s "git push -f")
-                  (|| (contains? seg "git branch -D")
-                      (|| (contains? s "drop table")
-                          (|| (contains? s "truncate table")
-                              (|| (contains? s "terraform destroy")
-                                  (|| (contains? s "kubectl delete namespace")
-                                      (|| (contains? s "kubectl delete ns ")
-                                          (|| (contains? s "kubectl delete cluster")
-                                              (sql-unbounded? s)))))))))))))
+      (contains? s "git clean -fd")
+      (contains? s "git push --force")
+      (contains? s "git push -f")
+      (contains? seg "git branch -D")
+      (contains? s "drop table")
+      (contains? s "truncate table")
+      (contains? s "terraform destroy")
+      (contains? s "kubectl delete namespace")
+      (contains? s "kubectl delete ns ")
+      (contains? s "kubectl delete cluster")
+      (sql-unbounded? s)))
 
 (fn classify-command [cmd : Str] : Str
   (var worst (cell "normal"))
@@ -675,7 +677,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   `(loop ...)`, `(repeat n ...)`, `(repeat i in n ...)`,
   `(for item in items ...)`, and `match` with `(when pattern ...)` and
   `(else ...)`.
-  Boolean operators are `(&& a b)`, `(|| a b)`, and `(! a)`.
+  Boolean operators are `(&& a b ...)`, `(|| a b ...)`, and `(! a)`.
 - Recoverable errors use `(try body catch (ErrorType ^field name) recovery
   ensure cleanup)`. Use `fail` for recoverable errors and `panic` only for fatal
   bugs.
