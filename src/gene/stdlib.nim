@@ -1439,9 +1439,15 @@ proc cCurlGetinfoPtr(fn, handle: pointer, option: cint,
                      value: pointer): cint
   {.importc: "gene_curl_getinfo_ptr", nodecl.}
 
-proc raiseHttpClientError(message: string, scope: Scope) =
+proc raiseHttpClientError(message: string, scope: Scope,
+                          kind = "usage") =
+  ## `^kind "unavailable"` marks libcurl load/init failures — the only errors
+  ## a caller should treat as "fall back to curl(1)". Everything else
+  ## (`"usage"`: authority, argument, and option mistakes) must surface so a
+  ## typo cannot silently reroute every request to the subprocess transport.
   var props = initPropTable()
   props["message"] = newStr(message)
+  props["kind"] = newStr(kind)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -1454,14 +1460,16 @@ proc loadCurlApi(scope: Scope) =
     return
   when defined(emscripten) or defined(geneWasm):
     raiseHttpClientError("net/http_client is unavailable in WebAssembly; use " &
-                         "the host fetch bridge", scope)
+                         "the host fetch bridge", scope,
+                         kind = "unavailable")
   else:
     var lib: LibHandle
     let override = getEnv("GENE_LIBCURL")
     if override.len > 0:
       lib = loadLib(override)
       if lib == nil:
-        raiseHttpClientError("could not load GENE_LIBCURL=" & override, scope)
+        raiseHttpClientError("could not load GENE_LIBCURL=" & override, scope,
+                             kind = "unavailable")
     else:
       for candidate in curlLibCandidates:
         lib = loadLib(candidate)
@@ -1469,13 +1477,14 @@ proc loadCurlApi(scope: Scope) =
           break
     if lib == nil:
       raiseHttpClientError("could not load libcurl; set GENE_LIBCURL to its path",
-                           scope)
+                           scope, kind = "unavailable")
     template sym(name: string): pointer =
       block:
         let address = symAddr(lib, name)
         if address == nil:
           unloadLib(lib)
-          raiseHttpClientError("libcurl is missing symbol " & name, scope)
+          raiseHttpClientError("libcurl is missing symbol " & name, scope,
+                               kind = "unavailable")
         address
     var api: CurlApi
     api.globalInit = cast[typeof(api.globalInit)](sym"curl_global_init")
@@ -1490,7 +1499,8 @@ proc loadCurlApi(scope: Scope) =
     api.slistFreeAll = cast[typeof(api.slistFreeAll)](sym"curl_slist_free_all")
     if api.globalInit(CurlGlobalDefault) != CurlOk:
       unloadLib(lib)
-      raiseHttpClientError("curl_global_init failed", scope)
+      raiseHttpClientError("curl_global_init failed", scope,
+                           kind = "unavailable")
     api.lib = lib
     gCurlApi = api
 

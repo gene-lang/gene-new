@@ -110,6 +110,14 @@ error, lifetime, and streaming contracts differ:
 `effective_url`, `truncated`, and `headers_truncated`. Non-2xx HTTP statuses are
 ordinary response data. Setup and transport failures fail the task.
 
+Synchronous setup problems raise `HttpClientError` with a `^kind` prop:
+`"unavailable"` means libcurl could not be loaded/initialized — the only case
+a caller should treat as "fall back to another transport" — while `"usage"`
+marks authority, argument, and option mistakes that must surface. Transport
+failures after the transfer starts fail the returned task and do not carry
+the `HttpClientError` type, so a fallback path can never replay a partially
+consumed stream.
+
 `stream` returns `{^task ^channel}`. The channel carries raw response chunks
 and closes before the task settles. Native callbacks only copy bytes into
 bounded shared buffers; channel delivery, SSE framing, and JSON parsing happen

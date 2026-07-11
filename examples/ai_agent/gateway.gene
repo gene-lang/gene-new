@@ -85,7 +85,7 @@
         {^items (items ~ Cell/get)
          ^events (events ~ Cell/get)
          ^next_v (next_v ~ Cell/get)})
-    catch * (println $"persist failed for session ${id}"))))
+    catch _ (println $"persist failed for session ${id}"))))
 
 # on_event: nil, or (fn [event] ...) called after each event is logged — how
 # push surfaces (Telegram) mirror the log without polling it. It runs inside
@@ -103,7 +103,7 @@
     (events ~ Cell/set (append (events ~ Cell/get) event))
     (if (== on_event nil)
       nil
-      (try (on_event event) catch * nil)))
+      (try (on_event event) catch _ nil)))
   (fn push_event [type : Str, text : Str]
     (next_v ~ Cell/set (+ (next_v ~ Cell/get) 1))
     (append_event {^v (next_v ~ Cell/get) ^type type ^text (redact_any text)}))
@@ -136,7 +136,7 @@
         (do
           (await task)
           (outcome ~ Cell/set "done"))
-      catch *
+      catch _
         (outcome ~ Cell/set "failed"))
     ensure
       (do
@@ -209,7 +209,7 @@
                         ^body body ^timeout_ms 30000 ^max_bytes 400000)))
       {^status 0 ^stdout response/body ^stderr ""
        ^http_status response/status ^truncated response/truncated})
-  catch (HttpClientError ^message _)
+  catch (HttpClientError ^kind "unavailable")
     (await (exec_async Exec ^cmd "curl"
               ^args ["-sS" "-X" "POST" url
                      "-H" "Content-Type: application/json" "-d" body]
@@ -223,7 +223,7 @@
       (var r (tg_call "sendMessage" {^chat_id chat_id ^text text}))
       (var resp (parse r/stdout))
       (if (== resp/ok true) resp/result/message_id nil)
-    catch * nil)))
+    catch _ nil)))
 
 (fn tg_edit_message [chat_id, message_id, text : Str]
   (if (|| (== message_id nil) (== text ""))
@@ -231,7 +231,7 @@
     (do
       (try (tg_call "editMessageText"
                     {^chat_id chat_id ^message_id message_id ^text text})
-      catch * nil)
+      catch _ nil)
       nil)))
 
 # Outbound path. Session events are mirrored to Telegram through a queue: the
@@ -311,7 +311,7 @@
     (set entry (tg_outbox ~ Channel/recv))
     (try
       (tg_dispatch entry)
-    catch * nil)))
+    catch _ nil)))
 
 (fn tg_chat_allowed? [chat_id] : Bool
   (if (== tg_allowed "*")
@@ -373,7 +373,7 @@
   (loop
     (try
       (telegram_poll_once offset)
-    catch * (sleep 2000))))
+    catch _ (sleep 2000))))
 
 # -----------------------------------------------------------------------------
 # HTTP API.
@@ -452,7 +452,7 @@
         nil
         (try
           (set cursor (parse_int req/params/cursor))
-        catch * nil))
+        catch _ nil))
       (var out (cell (events_after s cursor)))
       (var waited (cell 0))
       (while (&& (empty? (out ~ Cell/get)) (< (waited ~ Cell/get) 200))
@@ -570,7 +570,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (if (> n (session_seq ~ Cell/get))
         (session_seq ~ Cell/set n)
         nil)
-    catch * nil)
+    catch _ nil)
     nil))
 
 (fn restore_sessions []
@@ -585,7 +585,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (sessions ~ Map/put! id (make_session id hook saved))
       (restore_session_id_seq id)
       (count ~ Cell/set (+ (count ~ Cell/get) 1))
-    catch * (println $"failed to restore session ${id}")))
+    catch _ (println $"failed to restore session ${id}")))
   (count ~ Cell/get))
 
 (fn finish_gateway_store [label : Str]

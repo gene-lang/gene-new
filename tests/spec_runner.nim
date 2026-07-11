@@ -463,13 +463,13 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
     check_eval("(fn f [self y ^x] [self y x]) ([1] ~ f ^x 2 3)",
                "[[1] 3 2]")
     check_eval("(fn! q! [x] x) (var side 0) " &
-               "(try ([1] ~ q! (set side 1)) catch * side)",
+               "(try ([1] ~ q! (set side 1)) catch _ side)",
                "0")
     check_eval("(fn! q! [^x] x) (var side 0) " &
-               "(try ([1] ~ q! ^x (set side 1)) catch * side)",
+               "(try ([1] ~ q! ^x (set side 1)) catch _ side)",
                "0")
     check_eval("(fn! q! [x] x) (var side 0) " &
-               "(try ([1] ~ (do q!) (set side 1)) catch * side)",
+               "(try ([1] ~ (do q!) (set side 1)) catch _ side)",
                "0")
     check_eval("(fn! q! [x] x) " &
                "(try ([1] ~ q! 1) " &
@@ -494,7 +494,7 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
     check_eval("(var x 1) (var secret 9) " &
                "(fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
                "(var saved (capture!)) " &
-               "(try (eval (quote secret) ^in saved) catch * \"absent\")",
+               "(try (eval (quote secret) ^in saved) catch _ \"absent\")",
                "\"absent\"")
     check_eval("(fn! type! [] (var e : CallerEnv caller_env) \"ok\") " &
                "(type!)",
@@ -502,25 +502,25 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
 
   test "caller_env escape boundaries reject borrowed authority":
     check_eval("(fn! leak! [] caller_env) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(fn! leak! [] [caller_env]) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(fn! leak! [] (cell caller_env)) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var leaked nil) (fn! leak! [] (set leaked caller_env)) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller_env))) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(fn! leak! [] (fail caller_env)) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(fn! leak! [] (scope (spawn caller_env))) " &
-               "(try (leak!) catch * \"blocked\")",
+               "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(import serde [write SerdeError]) " &
                "(fn! leak! [] " &
@@ -1221,12 +1221,12 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "new validates the completed instance against the schema":
     check_eval("(type Bad ^props {^v Int} (ctor [] nil)) " &
-               "(try (new Bad) catch * \"required field unset\")",
+               "(try (new Bad) catch _ \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
                "  (ctor [] (self ~ Node/set_prop! `a 1) " &
                "           (self ~ Node/set_prop! `zzz 9))) " &
-               "(try (new Sneaky) catch * \"unknown field\")",
+               "(try (new Sneaky) catch _ \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
                "  (ctor [] (self ~ Node/set_prop! `a \"nope\"))) " &
@@ -1248,14 +1248,14 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "\"field 'value' for Port3\"")
     check_eval("(type Port4 ^props {^value Int} " &
                "  (ctor [n : Int] (self ~ Node/set_prop! `value n))) " &
-               "(try (Port4) catch * \"missing field\")",
+               "(try (Port4) catch _ \"missing field\")",
                "\"missing field\"")
 
   test "new without a ctor falls back to direct schema mapping":
     check_eval("(type Plain ^props {^name Str ^age Int}) " &
                "(var p (new Plain ^name \"Ada\" ^age 37)) [p/name p/age]",
                "[\"Ada\" 37]")
-    check_eval("(try (new 5) catch * \"not a type\")",
+    check_eval("(try (new 5) catch _ \"not a type\")",
                "\"not a type\"")
 
   test "child ctor covers inherited schema; parent ctor is not chained":
@@ -1275,7 +1275,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
-               "(try (new Solo) catch * \"body count\")",
+               "(try (new Solo) catch _ \"body count\")",
                "\"body count\"")
 
   test "a type defines at most one ctor":
@@ -1287,22 +1287,22 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked self) " &
                "    (self ~ Node/set_prop! `x 1))) " &
-               "[(try (new T) catch * \"blocked\") leaked]",
+               "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(var box (cell nil)) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (box ~ Cell/set self) " &
                "    (self ~ Node/set_prop! `x 1))) " &
-               "[(try (new T) catch * \"blocked\") (box ~ Cell/get)]",
+               "[(try (new T) catch _ \"blocked\") (box ~ Cell/get)]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] [self] (self ~ Node/set_prop! `x 1))) " &
-               "(try (new T) catch * \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
                "  (ctor [] (fail self))) " &
                "(impl Error for T) " &
-               "(try (new T) catch (T) \"leaked\" catch * \"blocked\")",
+               "(try (new T) catch (T) \"leaked\" catch _ \"blocked\")",
                "\"blocked\"")
     expect GeneError:
       discard run(compileSource(
@@ -1312,25 +1312,25 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked (fn [] self)) " &
                "    (self ~ Node/set_prop! `x 1))) " &
-               "[(try (new T) catch * \"blocked\") leaked]",
+               "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (message inspect [self] self/x) " &
                "  (ctor [] (self ~ inspect) " &
                "    (self ~ Node/set_prop! `x 1))) " &
-               "(try (new T) catch * \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] (spawn self) " &
                "    (self ~ Node/set_prop! `x 1))) " &
-               "(try (new T) catch * \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var ch (channel ^capacity 1)) " &
                "(type T ^props {^x Int} ^impl [Send] " &
                "  (ctor [] (ch ~ Channel/send self) " &
                "    (self ~ Node/set_prop! `x 1))) " &
                "(impl Send for T) " &
-               "(try (new T) catch * \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
 
   test "successful construction clears the publication guard":
@@ -3432,6 +3432,20 @@ suite "spec — net/http_client native client contract":
                "   (str/contains? m \"http:// or https://\"))",
                "true")
 
+  test "setup errors carry ^kind so fallbacks match only unavailability":
+    # Usage mistakes (bad args/authority) are ^kind "usage" and must not be
+    # confused with libcurl load failures (^kind "unavailable"): the agent's
+    # curl(1) fallback catches only the latter.
+    check_eval("(import net/http_client [Http request HttpClientError]) " &
+               "(try (request Http ^url \"file:///x\") false " &
+               " catch (HttpClientError ^kind k) (== k \"usage\"))",
+               "true")
+    check_eval("(import net/http_client [Http request HttpClientError]) " &
+               "(try (request Http ^url \"file:///x\") false " &
+               " catch (HttpClientError ^kind \"unavailable\") \"fallback\" " &
+               " catch (HttpClientError ^kind \"usage\") \"surfaced\")",
+               geneString("surfaced"))
+
 suite "spec — public curses terminal contract":
   test "owned Screen API is importable and non-TTY open is typed":
     check_eval("(import curses [open close dimensions draw read_input " &
@@ -3462,7 +3476,7 @@ suite "spec — db protocol from stdlib plan":
                "(c ~ exec \"create table t (x text)\") " &
                "(try (c ~ transaction (fn [d] " &
                "  (d ~ execute \"insert into t(x) values (?)\" \"doomed\") " &
-               "  (fail \"abort\"))) catch * nil) " &
+               "  (fail \"abort\"))) catch _ nil) " &
                "(c ~ transaction (fn [d] " &
                "  (d ~ execute \"insert into t(x) values (?)\" \"kept\"))) " &
                "(c ~ query \"select x from t\")",
@@ -3884,8 +3898,8 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                "[(data? [1 {^a 2}]) (data? (cell 1)) (data? (fn [] 1))]",
                "[true false false]")
     check_eval("(import serde [write_data data?]) " &
-               "[(try (write_data 1 ^policy nil) catch * \"rejected\") " &
-               " (try (data? 1 ^policy nil) catch * \"rejected\")]",
+               "[(try (write_data 1 ^policy nil) catch _ \"rejected\") " &
+               " (try (data? 1 ^policy nil) catch _ \"rejected\")]",
                "[\"rejected\" \"rejected\"]")
 
   test "serde rejects executable selectors and traverses node metadata":

@@ -98,7 +98,7 @@
     (do
       (var parsed (parse_int (get_env Env name $"${fallback}")))
       (if (> parsed 0) parsed fallback))
-  catch * fallback))
+  catch _ fallback))
 
 # Context limits are deliberately wire-size approximations rather than
 # provider-specific tokenizers. Four JSON bytes per token is shown as a rough
@@ -1172,7 +1172,7 @@ State that broader behavior is unverified when no matching successful check ran.
     []
     (try
       ((to_stream resp/output) ~ into [])
-    catch * [])))
+    catch _ [])))
 
 # Joined output_text parts of one assistant message item.
 (fn message_item_text [item] : Str
@@ -1269,7 +1269,7 @@ State that broader behavior is unverified when no matching successful check ran.
                     {^text $"error: ${em}" ^truncated false}
                   catch {^message em}
                     {^text $"error: ${em}" ^truncated false}
-                  catch *
+                  catch _
                     {^text "error: tool failed" ^truncated false})))))
           (else
             {^text "error: tool arguments must be a JSON object" ^truncated false})))))
@@ -1344,7 +1344,7 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn exec_http_lines [url, headers, body, curl_args, timeout_ms, on_line]
   (try
     (exec_native_http_lines url headers body timeout_ms on_line)
-  catch (HttpClientError ^message _)
+  catch (HttpClientError ^kind "unavailable")
     (exec_curl_lines curl_args timeout_ms on_line)))
 
 (fn api_error_text [resp]
@@ -1782,7 +1782,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (do
         (failure_text ~ Cell/set m)
         (outcome ~ Cell/set "failed"))
-    catch *
+    catch _
       (outcome ~ Cell/set "failed")
     ensure
       (done ~ Channel/close))))
@@ -1858,7 +1858,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (agent_store ~ Cell/set (store_open ReadWriteDir ^root agent_state_dir))
     catch (StoreError ^message m)
       (println $"agent state disabled: ${m}")
-    catch *
+    catch _
       (println "agent state disabled: could not open store"))))
 
 (fn state_put [key : Str, value]
@@ -1868,7 +1868,7 @@ State that broader behavior is unverified when no matching successful check ran.
       ((agent_store ~ Cell/get) ~ put key value)
     catch (StoreError ^message m)
       (println $"agent state save failed (${key}): ${m}")
-    catch *
+    catch _
       (println $"agent state save failed (${key})"))))
 
 (fn state_get [key : Str, default]
@@ -1880,7 +1880,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (do
         (println $"agent state load failed (${key}): ${m}")
         default)
-    catch *
+    catch _
       default)))
 
 (fn config_snapshot []
@@ -1972,7 +1972,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (undo_file_change! nil)
     (try
       (undo_file_change! (parse_int (trim (after_prefix line "/undo "))))
-    catch *
+    catch _
       "usage: /undo [change-id]")))
 
 # -----------------------------------------------------------------------------
