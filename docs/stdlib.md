@@ -79,6 +79,8 @@ Initial modules should be available through namespace imports:
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
 (import net/http_client [Http request stream HttpClientError])
+(import curses [Screen open close dimensions draw read_input refresh_input
+                next_event CursesError])
 (import sqlite [Database Statement Row SqliteError])
 ```
 
@@ -114,6 +116,36 @@ bounded shared buffers; channel delivery, SSE framing, and JSON parsing happen
 on the scheduler thread. Cancelling the task aborts the transfer. URLs are
 restricted to `http://` and `https://`, header newlines are rejected, and
 libcurl's default peer/hostname verification is not disabled.
+
+### `curses`
+
+The POSIX terminal API uses an explicitly owned `Screen`:
+
+```gene
+(import curses [open close dimensions draw next_event])
+
+(var screen (open))
+(try
+  (do
+    (draw screen ^output "agent> ready" ^status "waiting" ^input "")
+    (var size (dimensions screen))
+    (var event (await (next_event screen))))
+  ensure
+    (close screen))
+```
+
+`open` requires a TTY and permits one live screen. `close` is idempotent and
+restores terminal modes; callers should still use `ensure`. `draw` is a
+non-variadic, color-coded full-screen renderer. `dimensions` returns
+`{^rows ^cols}`. `next_event` returns a cancellable `Task` and reports text as
+complete UTF-8 strings plus named enter, edit, navigation, EOF, and resize
+events. Scheduler polling uses non-blocking `getch`, so waiting for a key does
+not stop other tasks.
+
+`read_input` provides the shared multiline editor with bracketed-paste and
+Unicode support; `refresh_input` redraws it while retaining screen ownership.
+Terminal failures raise `CursesError`. The older `os/read_input`,
+`os/refresh_input`, and `os/close_input` names remain compatibility wrappers.
 
 ## Phase 1: Core Utility Modules
 

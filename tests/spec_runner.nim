@@ -3432,6 +3432,14 @@ suite "spec — net/http_client native client contract":
                "   (str/contains? m \"http:// or https://\"))",
                "true")
 
+suite "spec — public curses terminal contract":
+  test "owned Screen API is importable and non-TTY open is typed":
+    check_eval("(import curses [open close dimensions draw read_input " &
+               "refresh_input next_event Screen CursesError]) " &
+               "(try (open) false " &
+               " catch (CursesError ^message m) (str/contains? m \"TTY\"))",
+               "true")
+
 suite "spec — db protocol from stdlib plan":
   test "sqlite backend covers CRUD, typed params, and typed rows":
     check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &

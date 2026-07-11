@@ -48,8 +48,11 @@
 (import os [get_env env? exec exec_async exec_stream_async exec_stdio
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms
-            stdin_tty? read_line read_input refresh_input close_input
+            stdin_tty? read_line
             Env Exec OsError])
+(import curses [open : curses_open close : curses_close
+                read_input : curses_read_input
+                refresh_input : curses_refresh_input Screen CursesError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? ends_with? contains? lower trim byte_size])
 (import std/stream [to_stream map filter take into each])
@@ -2058,25 +2061,36 @@ State that broader behavior is unverified when no matching successful check ran.
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
 (var input_status "Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
+(var user_screen (cell nil))
+
+(fn ensure_user_screen []
+  (if (== (user_screen ~ Cell/get) nil)
+    (user_screen ~ Cell/set (curses_open))
+    nil)
+  (user_screen ~ Cell/get))
 
 (fn close_user_input []
-  (if (stdin_tty?)
-    (close_input)
+  (if (!= (user_screen ~ Cell/get) nil)
+    (do
+      (curses_close (user_screen ~ Cell/get))
+      (user_screen ~ Cell/set nil))
     nil))
 
 (fn read_user_input [transcript]
   (if (stdin_tty?)
-    (read_input ^prompt "" ^multiline true
-                ^persistent true
-                ^output (Cell/get transcript)
-                ^status input_status)
+    (curses_read_input (ensure_user_screen)
+                       ^prompt "" ^multiline true
+                       ^output (Cell/get transcript)
+                       ^status input_status)
     (do
       (print "you> ")
       (read_line))))
 
 (fn refresh_user_input [transcript]
   (if (stdin_tty?)
-    (refresh_input ^prompt "" ^output (Cell/get transcript) ^status input_status)
+    (curses_refresh_input (ensure_user_screen)
+                          ^prompt "" ^output (Cell/get transcript)
+                          ^status input_status)
     nil))
 
 (fn render_agent_delta [transcript streaming text]

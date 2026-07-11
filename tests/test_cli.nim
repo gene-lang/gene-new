@@ -1,6 +1,8 @@
 import std/[monotimes, net, os, osproc, streams, strutils, times, unittest]
 when defined(posix):
   import std/posix
+when defined(macosx):
+  const SigWinch = 28
 import gene/[repl, vm]
 
 let cliDir = getTempDir() / "gene_cli_tests"
@@ -1316,6 +1318,109 @@ suite "cli — gene run":
       check "^type \"check\"" in events
       check "^cancelled true" in events
       check events.count("^kind \"cancelled\"") == 1
+
+  test "public curses events are cancellable, Unicode-safe, and resize-aware":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_events.gene", """
+(import curses [open close dimensions next_event])
+(import json [stringify])
+(var screen (open))
+(try
+  (do
+    (var dims (dimensions screen))
+    (var abandoned (next_event screen))
+    (abandoned ~ Task/cancel)
+    (sleep 50)
+    (var text_event (await (next_event screen)))
+    (var resize_event (await (next_event screen)))
+    (close screen)
+    (println $"CURSES-EVENTS:${(stringify {^dims dims
+                                           ^text text_event
+                                           ^resize resize_event})}"))
+  ensure
+    (close screen))
+""")
+      let pidFile = cliDir / "curses_events.pid"
+      let outputFile = cliDir / "curses_events.out"
+      removeFile(pidFile)
+      removeFile(outputFile)
+      let inner = "echo $$ > " & shellQuote(pidFile) &
+                  "; exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      let pidDeadline = getMonoTime() + initDuration(seconds = 3)
+      while not fileExists(pidFile) and getMonoTime() < pidDeadline: sleep(10)
+      check fileExists(pidFile)
+      sleep(200)
+      terminal.inputStream.write("é")
+      terminal.inputStream.flush()
+      sleep(200)
+      check kill(Pid(parseInt(readFile(pidFile).strip())), SigWinch) == 0
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "CURSES-EVENTS:" in output
+      check "\"type\":\"text\"" in output
+      check "\"text\":\"é\"" in output
+      check "\"type\":\"resize\"" in output
+      check "\"rows\":" in output
+      check "\"cols\":" in output
+      check "\e[?1049l" in output
+
+  test "public curses editor handles resize and bracketed Unicode paste":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_paste.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input (read_input screen ^prompt "" ^multiline true))
+    (close screen)
+    (println $"CURSES-PASTE:${input}"))
+  ensure
+    (close screen))
+""")
+      let pidFile = cliDir / "curses_paste.pid"
+      let outputFile = cliDir / "curses_paste.out"
+      removeFile(pidFile)
+      removeFile(outputFile)
+      let inner = "echo $$ > " & shellQuote(pidFile) &
+                  "; exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      let pidDeadline = getMonoTime() + initDuration(seconds = 3)
+      while not fileExists(pidFile) and getMonoTime() < pidDeadline: sleep(10)
+      check fileExists(pidFile)
+      sleep(200)
+      check kill(Pid(parseInt(readFile(pidFile).strip())), SigWinch) == 0
+      sleep(100)
+      terminal.inputStream.write("\e[200~hello\né\e[201~\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "CURSES-PASTE:hello\né" in output.replace("\r\n", "\n")
+      check "\e[?1049l" in output
 
   test "agent gateway runs concurrent sessions over the async transport":
     ## Milestone 8 e2e (examples/ai_agent/design.md §12): a slow fake chat endpoint

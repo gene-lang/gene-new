@@ -481,6 +481,7 @@ proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 # Drive the scheduler until the given task settles, or raise on deadlock.
 proc pumpUntilDone(task: Value)
 proc pollHttpClientCompletions()
+proc pollCursesInputCompletions()
 proc pollOsExecAsyncCompletions()
 
 # Actor message processing runs each handler as a scheduler fiber. scheduleActor

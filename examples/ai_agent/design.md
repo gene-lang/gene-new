@@ -9,16 +9,19 @@ authoritative versioned event log with `/trace`, and an extended catastrophe
 guard (realpath-confined paths, normal/destructive/catastrophic command
 classification, surfaced truncation). Slice B now includes terminal and
 gateway cancellation/steering, attributable `/diff` + targeted `/undo`,
-structured verification evidence, and hierarchical `AGENTS.md` loading.
-Native libcurl is the default outbound transport. The full public TUI, MCP,
+structured verification evidence, hierarchical `AGENTS.md` loading, and the
+owned public `curses` API used by the agent prompt. Native libcurl is the
+default outbound transport. The richer scrollback TUI, MCP,
 worktrees, browser automation, and general multi-agent orchestration are
 optional later work, not prerequisites.**
 Date: 2026-07-11.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get_env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
-timeout + output caps, `exec_stream` with stdout callbacks, `read_line`,
-`read_input`/`refresh_input`/`close_input`), `Fs/read_text`/`Fs/write_text`/
+timeout + output caps, `exec_stream` with stdout callbacks, `read_line`, and
+legacy input compatibility helpers), the public `curses` namespace (`Screen`,
+lifecycle, dimensions, drawing, editor, and cancellable `next_event`),
+`Fs/read_text`/`Fs/write_text`/
 `Fs/list_dir`/`Fs/real_path`, the `json` namespace (`parse`/`stringify`/
 `JsonError`), `net/http_client` (native async libcurl request/stream), and the
 agent itself — a streaming Responses-API loop over native HTTP with a curl(1)
@@ -159,7 +162,7 @@ Pure stdlib / runtime pieces (no new authority):
 |---|---|---|---|
 | JSON parse / serialize | API request + response bodies | **implemented** | §5 |
 | TLS transport code | native HTTP client | **implemented** through dynamically loaded libcurl | §4 |
-| Terminal UI (curses) | the TUI | **partial** — prompt layout + repaint helper exist; full scrollback controls pending | §7 |
+| Terminal UI (curses) | the TUI | **implemented safe API + prompt** — richer scrollback controls remain optional | §7 |
 
 What already exists and is directly reusable:
 
@@ -382,56 +385,55 @@ passes through argument validation and then the narrow catastrophe guard in
 
 ## 7. Terminal UI via curses (§7)
 
-A native `curses` namespace backed by `libncurses` via dynlib — again the
-`db/sqlite` pattern. ncurses' variadic `printw` is avoided by binding the
-non-variadic primitives:
+A native `curses` namespace backed by linked `libncurses`. ncurses' variadic
+`printw` is avoided by binding non-variadic primitives:
 
 - lifecycle: `initscr`, `endwin`, `cbreak`, `noecho`, `keypad`, `curs_set`,
   `start_color`, `init_pair`;
 - drawing: `waddstr`/`mvwaddstr` (non-variadic, unlike `printw`), `wattron`/
   `wattroff`, `wclear`, `wrefresh`, `wmove`, `getmaxyx` (via `getmaxx`/
   `getmaxy`);
-- input: `wgetch`. For a responsive UI without blocking the scheduler, set
-  `nodelay`/`timeout` and poll `wgetch` from a Gene task on the worker lane, or
-  drive input from the async-I/O lane so the streaming response and keystrokes
-  interleave through `await`/`Channel`.
+- input: `wgetch`, polled with `timeout(0)` by the scheduler so streaming work
+  and keystrokes interleave without blocking.
 
-Gene-facing surface (a thin, safe layer over the raw binding):
+The shipped Gene-facing surface is a thin, safe layer over the raw binding:
 
 ```gene
-(import curses [Screen with-screen add-line refresh read-key])
-(with-screen (fn [scr]
-  (add-line scr "you> hello")
-  (refresh scr)
-  (var key (read-key scr))))
+(import curses [Screen open close dimensions draw next_event])
+(var screen (open))
+(try
+  (do
+    (draw screen ^output "agent> ready" ^input "" ^status "waiting")
+    (var key (await (next_event screen))))
+  ensure
+    (close screen))
 ```
 
-`with-screen` wraps `initscr`/`endwin` so the terminal is always restored, even
-on error (the same `ensure`-based cleanup discipline as `db` connection close).
-Window handles are owned C pointers wired to `endwin`/`delwin`, matching the db
-`^handle` ownership model.
+`Screen` makes terminal ownership explicit. `close` is idempotent and callers
+use `ensure`, matching the cleanup discipline of db connections. `draw` is a
+non-variadic color-coded renderer, `dimensions` reports live rows/columns, and
+`next_event` returns a cancellable `Task`. It preserves FIFO ordering,
+assembles complete UTF-8 text events, and reports `KEY_RESIZE` as resize.
 
-Curses is the largest single piece; it can trail the rest. The current agent uses
-a narrow `os/read_input` helper for the prompt: on a TTY it opens a small
+The agent uses the public `curses/read_input` editor: on a TTY it opens a small
 ncurses editor with multiline input and bracketed paste support, and in pipes it
 falls back to `read_line` so scripted tests stay deterministic. The helper owns
 a fixed layout:
 color-coded scrollback/output above a `─` separator, one or more promptless input
 rows above a second `─` separator, and a status line at the bottom. The agent
-adds a short `─` separator before each user turn in the scrollback, uses
-`read_input` persistently across prompts to avoid terminal-mode flicker, and
-calls `close_input` before handing control to `/sh`, `/repl`, EOF, or process
-exit. `close_input` restores echo/cbreak/keypad/cursor state before leaving
+adds a short `─` separator before each user turn in the scrollback, owns one
+`Screen` persistently across prompts to avoid terminal-mode flicker, and calls
+`curses/close` before handing control to `/sh`, `/repl`, EOF, or process exit.
+`close` restores echo/cbreak/keypad/cursor state before leaving
 ncurses. Inside those subsessions Ctrl-C stops the running command/eval or
 clears a partially typed line instead of killing the agent: the interactive
 repl installs a SIGINT handler that arms a VM interrupt (surfaced as a
 catchable "interrupted" error), and `/sh` traps INT in the shell loop while
 `os/exec_stdio` ignores it in the parent, system(3)-style. Interrupting an
-in-flight model response through the embedded terminal is still part of
-daily-driver slice B (§10); gateway and programmable-session cancellation are
-shipped. A full `curses`
-namespace and scrollable transcript TUI remain optional later work, pulled
-forward only when the current prompt is the limiting daily-use problem.
+in-flight model response and steering its continuation are shipped (§10). A
+more elaborate scrollable transcript TUI remains optional; the reusable
+lifecycle, editor, drawing, resize, and asynchronous input layer is public and
+covered by PTY tests.
 
 ## 8. Capabilities and the launcher (§8)
 
@@ -989,7 +991,7 @@ This is not a general approval workflow.
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
 | 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
 | 4 | `crypto/hmac-sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
-| 5 | Non-blocking TUI input | live TUI updates while typing | render between turns | `nodelay` `wgetch` (§7) |
+| 5 | ~~**Non-blocking TUI input**~~ — **closed**: public cancellable `curses/next_event` polls `getch` without blocking the scheduler and emits UTF-8/resize events | — | — | shipped in `src/gene/stdlib.nim` + PTY tests (§7) |
 
 Gap 1 was the single load-bearing piece: it converts the agent from "one
 blocking conversation" to "N concurrent sessions" and was prerequisite to

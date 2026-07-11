@@ -160,7 +160,7 @@ static void gene_turn_interrupt_end(void) {
     KeyHome = 262
     KeyEnd = 360
     KeyNcursesEnter = 343
-    KeyShiftEnter = 410
+    KeyResize = 410
     ColorGreen = 2
     ColorCyan = 6
     ColorWhite = 7
@@ -172,6 +172,10 @@ static void gene_turn_interrupt_end(void) {
   var cursesInputActive = false
   var cursesColorsReady = false
   var cursesPasteReady = false
+  var cursesScreenNextId = 1
+  var cursesScreenActiveId = 0
+  var cursesEventText = ""
+  var cursesEventTextExpected = 0
 
 proc biStrJoin(args: openArray[Value]): Value {.nimcall.} =
   if args.len notin 1..2:
@@ -1009,6 +1013,7 @@ when compileOption("threads"):
         else:
           inc i
     pollHttpClientCompletions()
+    pollCursesInputCompletions()
 
   proc runOsExecAsyncJob(jobPtr: pointer) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -1213,6 +1218,7 @@ when compileOption("threads"):
 else:
   proc pollOsExecAsyncCompletions() =
     pollHttpClientCompletions()
+    pollCursesInputCompletions()
 
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        args: openArray[Value],
@@ -2440,11 +2446,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             return NIL
           of KeyEnter, KeyReturn, KeyNcursesEnter:
             return newStr(input)
-          of KeyShiftEnter:
-            if multiline:
-              insertCharAt(input, cursor, '\n')
-            else:
-              discard beep()
+          of KeyResize:
+            discard
           of KeyBackspace, 127, 8:
             if cursor > 0:
               input.delete(cursor - 1 .. cursor - 1)
@@ -2482,40 +2485,40 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       if not persistent:
         closeCursesInput()
 
-proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## Read one submitted input string. On a TTY this uses a small ncurses editor;
-  ## in pipes it falls back to read_line so scripts and tests stay deterministic.
-  if args.len != 0:
-    raise newException(GeneError, "os/read_input expects named arguments only")
+proc readInputNative(name: string, call: ptr NativeCall,
+                     persistentDefault, persistentFixed: bool): Value =
   var prompt = ""
   var status = ""
   var output = ""
   var multiline = true
-  var persistent = false
+  var persistent = persistentDefault
   if call != nil:
-    for i, name in call[].namedNames:
+    for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
-      case name
+      case argName
       of "prompt":
-        requireStr("os/read_input ^prompt", v)
+        requireStr(name & " ^prompt", v)
         prompt = v.strVal
       of "status":
-        requireStr("os/read_input ^status", v)
+        requireStr(name & " ^status", v)
         status = v.strVal
       of "output":
-        requireStr("os/read_input ^output", v)
+        requireStr(name & " ^output", v)
         output = v.strVal
       of "multiline":
         if v.kind != vkBool:
-          raise newException(GeneError, "os/read_input ^multiline must be Bool")
+          raise newException(GeneError, name & " ^multiline must be Bool")
         multiline = v.boolVal
       of "persistent":
+        if persistentFixed:
+          raise newException(GeneError,
+            name & " owns its Screen and does not accept ^persistent")
         if v.kind != vkBool:
-          raise newException(GeneError, "os/read_input ^persistent must be Bool")
+          raise newException(GeneError, name & " ^persistent must be Bool")
         persistent = v.boolVal
       else:
         raise newException(GeneError,
-          "os/read_input got unexpected named argument: " & name)
+          name & " got unexpected named argument: " & argName)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if isatty(STDIN_FILENO) != 0:
       return readCursesInput(prompt, status, output, multiline, persistent)
@@ -2524,30 +2527,36 @@ proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     stdout.flushFile()
   biOsReadLine([])
 
-proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## Redraw the ncurses input surface without reading. This lets a program using
-  ## persistent os/read_input repaint streamed output between prompts.
+proc biOsReadInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Compatibility wrapper for the public curses/read_input editor.
   if args.len != 0:
-    raise newException(GeneError, "os/refresh_input expects named arguments only")
+    raise newException(GeneError, "os/read_input expects named arguments only")
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if cursesScreenActiveId != 0:
+      raise newException(GeneError,
+        "os/read_input cannot borrow an owned curses/Screen")
+  readInputNative("os/read_input", call, false, false)
+
+proc refreshInputNative(name: string, call: ptr NativeCall): Value =
   var prompt = ""
   var status = ""
   var output = ""
   if call != nil:
-    for i, name in call[].namedNames:
+    for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
-      case name
+      case argName
       of "prompt":
-        requireStr("os/refresh_input ^prompt", v)
+        requireStr(name & " ^prompt", v)
         prompt = v.strVal
       of "status":
-        requireStr("os/refresh_input ^status", v)
+        requireStr(name & " ^status", v)
         status = v.strVal
       of "output":
-        requireStr("os/refresh_input ^output", v)
+        requireStr(name & " ^output", v)
         output = v.strVal
       else:
         raise newException(GeneError,
-          "os/refresh_input got unexpected named argument: " & name)
+          name & " got unexpected named argument: " & argName)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if isatty(STDIN_FILENO) != 0:
       openCursesInput()
@@ -2557,12 +2566,283 @@ proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nim
       drawCursesInput(prompt, statusText, output, "", 0)
   NIL
 
+proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Compatibility wrapper for curses/refresh_input.
+  if args.len != 0:
+    raise newException(GeneError, "os/refresh_input expects named arguments only")
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if cursesScreenActiveId != 0:
+      raise newException(GeneError,
+        "os/refresh_input cannot borrow an owned curses/Screen")
+  refreshInputNative("os/refresh_input", call)
+
 proc biOsCloseInput(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/close_input takes no arguments")
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if cursesScreenActiveId != 0:
+      raise newException(GeneError,
+        "os/close_input cannot close an owned curses/Screen")
     closeCursesInput()
   NIL
+
+# --- curses: public owned terminal surface ----------------------------------
+
+proc raiseCursesError(message: string, scope: Scope) =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  var error: ref GeneError
+  new(error)
+  error.msg = message
+  error.errVal = newNode(builtInTypeHead(scope, "CursesError"), props = props)
+  error.hasErrVal = true
+  raise error
+
+proc cursesScreenId(name: string, screen: Value, scope: Scope,
+                    requireOpen = true): int =
+  if screen.kind != vkNode or screen.head.kind != vkType or
+      screen.head.typeName != "CursesScreen":
+    raiseCursesError(name & " expects a curses/Screen", scope)
+  let id = screen.props.getOrDefault("id", VOID)
+  let closed = screen.props.getOrDefault("closed", VOID)
+  if id.kind != vkInt or closed.kind != vkCell:
+    raiseCursesError(name & " received an invalid curses/Screen", scope)
+  if requireOpen and closed.cellValue.isTruthy:
+    raiseCursesError(name & ": Screen is closed", scope)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if requireOpen and
+        (cursesScreenActiveId != int(id.intVal) or not cursesInputActive):
+      raiseCursesError(name & ": Screen does not own the active terminal",
+                       scope)
+  int(id.intVal)
+
+proc biCursesOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 0 or (call != nil and call[].namedNames.len != 0):
+    raise newException(GeneError, "curses/open takes no arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if isatty(STDIN_FILENO) == 0:
+      raiseCursesError("curses/open requires a TTY", scope)
+    if cursesScreenActiveId != 0:
+      raiseCursesError("curses/open: a Screen is already open", scope)
+    try:
+      openCursesInput()
+    except GeneError as error:
+      raiseCursesError("curses/open: " & error.msg, scope)
+    let id = cursesScreenNextId
+    inc cursesScreenNextId
+    cursesScreenActiveId = id
+    var props = initPropTable()
+    props["id"] = newInt(id)
+    props["closed"] = newCell(FALSE)
+    newNode(builtInTypeHead(scope, "CursesScreen"), props = props)
+  else:
+    raiseCursesError("curses is unavailable on this platform", scope)
+    NIL
+
+proc biCursesClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("curses/close", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let id = cursesScreenId("curses/close", args[0], scope, requireOpen = false)
+  let closed = args[0].props["closed"]
+  if closed.cellValue.isTruthy:
+    return NIL
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if cursesScreenActiveId != id:
+      raiseCursesError("curses/close: Screen does not own the active terminal",
+                       scope)
+    closeCursesInput()
+    cursesScreenActiveId = 0
+    cursesEventText.setLen(0)
+    cursesEventTextExpected = 0
+  closed.setCellValue(TRUE)
+  NIL
+
+proc biCursesDimensions(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("curses/dimensions", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard cursesScreenId("curses/dimensions", args[0], scope)
+  var props = initPropTable()
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    props["rows"] = newInt(max(1, int(LINES)))
+    props["cols"] = newInt(max(1, int(COLS)))
+  else:
+    props["rows"] = newInt(0)
+    props["cols"] = newInt(0)
+  newMap(props)
+
+proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("curses/draw", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard cursesScreenId("curses/draw", args[0], scope)
+  var prompt = ""
+  var status = ""
+  var output = ""
+  var input = ""
+  var cursor = -1
+  if call != nil:
+    for i, name in call[].namedNames:
+      let value = call[].namedValues[i]
+      case name
+      of "prompt":
+        requireStr("curses/draw ^prompt", value)
+        prompt = value.strVal
+      of "status":
+        requireStr("curses/draw ^status", value)
+        status = value.strVal
+      of "output":
+        requireStr("curses/draw ^output", value)
+        output = value.strVal
+      of "input":
+        requireStr("curses/draw ^input", value)
+        input = value.strVal
+      of "cursor":
+        cursor = int(requireInt64("curses/draw ^cursor", value))
+      else:
+        raiseCursesError("curses/draw got unexpected named argument: " & name,
+                         scope)
+  if cursor < 0:
+    cursor = input.len
+  cursor = min(cursor, input.len)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    drawCursesInput(prompt, status, output, input, cursor)
+  NIL
+
+proc biCursesReadInput(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("curses/read_input", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard cursesScreenId("curses/read_input", args[0], scope)
+  readInputNative("curses/read_input", call, true, true)
+
+proc biCursesRefreshInput(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("curses/refresh_input", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard cursesScreenId("curses/refresh_input", args[0], scope)
+  refreshInputNative("curses/refresh_input", call)
+
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  type CursesEventPending {.acyclic.} = ref object
+    taskOwner: Value
+    screenOwner: Value
+    schedulerPtr: pointer
+    screenId: int
+
+  var cursesEventPending: seq[CursesEventPending]
+
+  proc cursesEvent(ch: int, text = ""): Value =
+    var props = initPropTable()
+    props["code"] = newInt(ch)
+    props["rows"] = newInt(max(1, int(LINES)))
+    props["cols"] = newInt(max(1, int(COLS)))
+    if text.len > 0:
+      props["type"] = newStr("text")
+      props["text"] = newStr(text)
+      return newMap(props)
+    case ch
+    of KeyResize: props["type"] = newStr("resize")
+    of KeyCtrlD: props["type"] = newStr("eof")
+    of KeyEnter, KeyReturn, KeyNcursesEnter: props["type"] = newStr("enter")
+    of KeyBackspace, 127, 8: props["type"] = newStr("backspace")
+    of KeyDelete: props["type"] = newStr("delete")
+    of KeyLeft: props["type"] = newStr("left")
+    of KeyRight: props["type"] = newStr("right")
+    of KeyHome: props["type"] = newStr("home")
+    of KeyEnd: props["type"] = newStr("end")
+    of KeyEsc: props["type"] = newStr("escape")
+    else:
+      if ch >= 0 and ch <= 255:
+        props["type"] = newStr("text")
+        props["text"] = newStr($char(ch))
+      else:
+        props["type"] = newStr("unknown")
+    newMap(props)
+
+  proc pollCursesInputCompletions() =
+    if cursesEventPending.len == 0:
+      return
+    var i = 0
+    while i < cursesEventPending.len:
+      let pending {.cursor.} = cursesEventPending[i]
+      let task = pending.taskOwner
+      var remove = false
+      var consumedInput = false
+      if task.taskCancelled:
+        remove = true
+      elif cursesScreenActiveId != pending.screenId or not cursesInputActive:
+        if tryFailTask(task, "curses/next_event: Screen is closed"):
+          wakeTaskWaitersIn(cast[SchedulerState](pending.schedulerPtr), task)
+        remove = true
+      else:
+        timeout(0)
+        let ch = getch()
+        timeout(-1)
+        if ch != CursesErr:
+          consumedInput = true
+          var event = NIL
+          if ch >= 0 and ch <= 255:
+            let byte = char(ch)
+            if cursesEventText.len > 0:
+              cursesEventText.add byte
+              if cursesEventText.len >= cursesEventTextExpected:
+                event = cursesEvent(ch, cursesEventText)
+                cursesEventText.setLen(0)
+                cursesEventTextExpected = 0
+            else:
+              let expected =
+                if ch < 0x80: 1
+                elif ch < 0xE0: 2
+                elif ch < 0xF0: 3
+                else: 4
+              if expected == 1:
+                event = cursesEvent(ch, $byte)
+              else:
+                cursesEventText = $byte
+                cursesEventTextExpected = expected
+          else:
+            cursesEventText.setLen(0)
+            cursesEventTextExpected = 0
+            event = cursesEvent(ch)
+          if event.kind != vkNil:
+            if tryCompleteTask(task, event):
+              wakeTaskWaitersIn(cast[SchedulerState](pending.schedulerPtr), task)
+            remove = true
+      if remove:
+        endExternalNativeOp()
+        cursesEventPending.delete(i)
+      else:
+        inc i
+      # Preserve request ordering and keep a partial UTF-8 sequence attached
+      # to the oldest pending reader.
+      if consumedInput:
+        return
+
+  proc biCursesNextEvent(args: openArray[Value],
+                         call: ptr NativeCall): Value {.nimcall.} =
+    requireOne("curses/next_event", args)
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let id = cursesScreenId("curses/next_event", args[0], scope)
+    if scope == nil or scope.application == nil:
+      raiseCursesError("curses/next_event requires a scheduler scope", scope)
+    let task = newExternalTask()
+    let pending = CursesEventPending(screenId: id)
+    pending.taskOwner = retainedCopy(task)
+    pending.screenOwner = retainedCopy(args[0])
+    pending.schedulerPtr = cast[pointer](schedulerForScope(scope))
+    cursesEventPending.add pending
+    beginExternalNativeOp()
+    task
+else:
+  proc pollCursesInputCompletions() =
+    discard
+
+  proc biCursesNextEvent(args: openArray[Value],
+                         call: ptr NativeCall): Value {.nimcall.} =
+    let scope = if call == nil: nil else: call[].dispatchScope
+    raiseCursesError("curses/next_event is unavailable on this platform", scope)
+    NIL
 
 # --- repl: reusable interactive evaluator ---
 
@@ -5113,6 +5393,7 @@ proc registerStdlibNamespaces(root: Scope) =
     root.define(name, result)
     root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
   let osError = defineErrorType("OsError")
+  let cursesError = defineErrorType("CursesError")
   let httpClientError = defineErrorType("HttpClientError")
   let jsonError = defineErrorType("JsonError")
   let serdeError = defineErrorType("SerdeError")
@@ -5448,6 +5729,33 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("close_input", newNativeFn("os/close_input", biOsCloseInput))
   osScope.define("OsError", osError)
   root.define("os", newNamespace("os", osScope))
+
+  # Public owned terminal surface. `os/read_input` remains a compatibility
+  # wrapper; new code owns a Screen explicitly and closes it from ensure.
+  let cursesScreenType = newType("CursesScreen", NIL,
+    @[TypeField(name: "id", optional: false, typeExpr: newSym("Int"),
+                scope: root),
+      TypeField(name: "closed", optional: false, typeExpr: newSym("Any"),
+                scope: root)], @[], root)
+  root.define("CursesScreen", cursesScreenType)
+  let cursesScope = newScope(root)
+  cursesScope.define("Screen", cursesScreenType)
+  cursesScope.define("CursesError", cursesError)
+  cursesScope.define("open", newNativeCallFn("curses/open", biCursesOpen))
+  cursesScope.define("close", newNativeCallFn("curses/close", biCursesClose,
+                                               acceptsNamed = false))
+  cursesScope.define("dimensions",
+    newNativeCallFn("curses/dimensions", biCursesDimensions,
+                    acceptsNamed = false))
+  cursesScope.define("draw", newNativeCallFn("curses/draw", biCursesDraw))
+  cursesScope.define("read_input",
+    newNativeCallFn("curses/read_input", biCursesReadInput))
+  cursesScope.define("refresh_input",
+    newNativeCallFn("curses/refresh_input", biCursesRefreshInput))
+  cursesScope.define("next_event",
+    newNativeCallFn("curses/next_event", biCursesNextEvent,
+                    acceptsNamed = false))
+  root.define("curses", newNamespace("curses", cursesScope))
 
   # repl: shared declaration-persistent REPL loop used by the CLI wrapper and
   # interactive programs that need a scoped sub-REPL.
