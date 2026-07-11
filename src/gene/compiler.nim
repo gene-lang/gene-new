@@ -1063,11 +1063,37 @@ proc isParamTerminator(s: string): bool =
 proc isRestParam(s: string): bool =
   s.len > 3 and s.endsWith("...")
 
-proc splitOptionalName(s: string): tuple[name: string, optional: bool] =
-  if s.len > 1 and s.endsWith("?"):
-    (s[0 .. ^2], true)
+proc typeExprAdmitsNil(expr: Value): bool =
+  ## True when a type expression *explicitly* admits nil — `T?`, `(? ...)`,
+  ## `Nil`, or a union with a nil-admitting alternative. Such a type marks an
+  ## optional prop-schema field or named parameter (omitted binds nil).
+  ## `Any` is gradual slack, not an optionality marker: an `Any` field stays
+  ## required, which keeps "required but dynamic" expressible.
+  case expr.kind
+  of vkSymbol:
+    let s = expr.symVal
+    s == "Nil" or (s.len > 1 and s.endsWith("?"))
+  of vkNode:
+    if expr.head.isSymbol("?"):
+      true
+    elif expr.head.isSymbol("|"):
+      for item in expr.body:
+        if typeExprAdmitsNil(item): return true
+      false
+    else:
+      false
   else:
-    (s, false)
+    false
+
+proc rejectOptionalSuffix(s, what, hint: string): string =
+  ## `?`-suffixed declaration names are gone: optionality moved to the type
+  ## (`^due T?`, not `^due? T`). Loud error so old code cannot silently mean
+  ## "a field literally named due?".
+  if s.len > 1 and s.endsWith("?"):
+    raise newException(GeneError,
+      what & " '" & s & "' may not end in '?'; optionality moved to the " &
+      "type: " & hint)
+  s
 
 proc parseParamAdornment(c: Compiler, items: openArray[Value],
                          i: var int): ParamAdornment =
@@ -1113,24 +1139,26 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise newException(GeneError, "named parameter requires a name")
-      var argSpec = splitOptionalName(items[i].symVal)
-      if argSpec.name.len == 0:
+      let arg = rejectOptionalSuffix(items[i].symVal, "named parameter",
+        "write `^" & items[i].symVal[0 .. ^2] &
+        " : T?` — a nil-admitting type is optional (omitted binds nil)")
+      if arg.len == 0:
         raise newException(GeneError, "named parameter requires a name")
-      let arg = argSpec.name
       inc i
       var local = arg
       if i < items.len:
         let maybeLocal = items[i].symbolText
         if not maybeLocal.isParamTerminator and maybeLocal notin [":", "="]:
-          let localSpec = splitOptionalName(maybeLocal)
-          local = localSpec.name
+          local = rejectOptionalSuffix(maybeLocal, "named parameter local",
+            "annotate the named parameter with a nil-admitting type instead")
           if local.len == 0:
             raise newException(GeneError, "named parameter local requires a name")
-          if localSpec.optional:
-            argSpec.optional = true
           inc i
       var adornment = c.parseParamAdornment(items, i)
-      if argSpec.optional:
+      if not adornment.defaultValue.optional and
+          typeExprAdmitsNil(adornment.typeExpr):
+        # ^name : T? — optional named parameter; omitted binds nil (the
+        # defaultChunk stays nil, so the runtime default is NIL).
         adornment.defaultValue.optional = true
       result.named.add NamedParam(arg: arg, local: local,
                                   typeExpr: adornment.typeExpr,
@@ -1151,18 +1179,22 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
         if i < items.len and items[i].symbolText in [":", "="]:
           raise newException(GeneError, "rest parameter cannot have an annotation or default")
       else:
-        let spec = splitOptionalName(s)
-        if spec.name.len == 0:
+        # Positional parameters stay positional: a nil-admitting type does
+        # not make one optional (that would change call arity for signatures
+        # with a nilable middle argument). Optional positionals use a
+        # default, e.g. `x : Int? = nil`.
+        let name = rejectOptionalSuffix(s, "parameter",
+          "use a default (`" & s[0 .. ^2] &
+          " : T? = nil`) for an optional positional parameter")
+        if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
         var adornment = c.parseParamAdornment(items, i)
-        if spec.optional:
-          adornment.defaultValue.optional = true
         if adornment.defaultValue.optional:
           sawOptionalPositional = true
         elif sawOptionalPositional:
           raise newException(GeneError, "required positional parameter cannot follow an optional positional parameter")
-        result.positional.add spec.name
+        result.positional.add name
         result.positionalTypes.add adornment.typeExpr
         result.positionalDefaults.add adornment.defaultValue
         continue
@@ -1176,9 +1208,6 @@ proc macroTypedPattern(pattern, typeExpr: Value): Value =
     raise newException(GeneError,
       "macro parameter type annotation requires a binding name")
   newNode(pattern, body = @[newSym(":"), typeExpr])
-
-proc implicitMacroDefault(): MacroDefault =
-  MacroDefault(optional: true)
 
 proc macroDefaultExpr(expr: Value): MacroDefault =
   MacroDefault(optional: true, hasExpr: true, defaultExpr: expr)
@@ -1246,12 +1275,12 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise newException(GeneError, "named parameter requires a name")
-      let argSpec = splitOptionalName(items[i].symVal)
-      if argSpec.name.len == 0:
+      let arg = rejectOptionalSuffix(items[i].symVal, "named parameter",
+        "use a default (`^" & items[i].symVal[0 .. ^2] &
+        " = nil`) for an optional macro/fn! parameter")
+      if arg.len == 0:
         raise newException(GeneError, "named parameter requires a name")
-      var defaultValue =
-        if argSpec.optional: implicitMacroDefault() else: MacroDefault()
-      let arg = argSpec.name
+      var defaultValue = MacroDefault()
       inc i
       var pattern = newSym(arg)
       if i < items.len:
@@ -1260,13 +1289,12 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
         if not maybePattern.isMacroNamedTerminator and
             maybeSymbol notin [":", "="]:
           if maybePattern.kind == vkSymbol:
-            let localSpec = splitOptionalName(maybePattern.symVal)
-            if localSpec.name.len == 0:
+            let localName = rejectOptionalSuffix(maybePattern.symVal,
+              "named parameter local", "use a default `= nil` instead")
+            if localName.len == 0:
               raise newException(GeneError,
                 "named parameter local requires a name")
-            if localSpec.optional:
-              defaultValue = implicitMacroDefault()
-            pattern = newSym(localSpec.name)
+            pattern = newSym(localName)
           else:
             pattern = maybePattern
           inc i
@@ -1298,12 +1326,13 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
           raise newException(GeneError,
             "rest parameter cannot have an annotation or default")
       else:
-        let spec = splitOptionalName(s)
-        if spec.name.len == 0:
+        let name = rejectOptionalSuffix(s, "parameter",
+          "use a default (`" & s[0 .. ^2] &
+          " = nil`) for an optional macro/fn! parameter")
+        if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
-        var defaultValue =
-          if spec.optional: implicitMacroDefault() else: MacroDefault()
-        var pattern = newSym(spec.name)
+        var defaultValue = MacroDefault()
+        var pattern = newSym(name)
         inc i
         let adornment = parseMacroFlatAdornment(items, i, pattern)
         if adornment.defaultValue.optional:
@@ -4128,12 +4157,15 @@ proc compileType(c: var Compiler, node: Value) =
     if schema.kind != vkMap:
       raise newException(GeneError, "type ^props must be a map")
     for key, _ in schema.mapEntries:
-      if key.endsWith("?"):
-        fields.add TypeField(name: key[0 .. ^2], optional: true,
-                             typeExpr: schema.mapEntries[key])
-      else:
-        fields.add TypeField(name: key, optional: false,
-                             typeExpr: schema.mapEntries[key])
+      discard rejectOptionalSuffix(key, "type field",
+        "write `^" & (if key.len > 1: key[0 .. ^2] else: key) &
+        " T?` — a nil-admitting type marks the field optional")
+      # A field whose type explicitly admits nil (T?, (? T), (| ... Nil))
+      # may be omitted at construction; absent reads as void. `Any` stays
+      # required — gradual slack is not an optionality marker.
+      fields.add TypeField(name: key,
+                           optional: typeExprAdmitsNil(schema.mapEntries[key]),
+                           typeExpr: schema.mapEntries[key])
   var bodyFields: seq[TypeBodyField]
   if node.props.hasKey("body"):
     bodyFields = parseTypeBodySchema(node.props["body"])

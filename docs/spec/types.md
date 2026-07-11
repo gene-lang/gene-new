@@ -2,14 +2,21 @@
 
 **Status:** normative and implemented. Executable coverage:
 `tests/spec_runner.nim`, suites “nominal types”, “direct construction, new, and
-ctor”, “typed variable boundaries”, “numeric boundaries”, and “mutable
-containers”.
+ctor”, “typed variable boundaries”, “numeric boundaries”, “mutable
+containers”, and “optionality lives on the type, not the key”.
 
 - `Any` is the gradual top; `Never` is the bottom. `Nil` and `Void` are
   ordinary singleton types. Type expressions use the canonical constructors
   exercised by the spec suite.
 - `(T ...)` performs closed-schema data construction and never runs `ctor`.
   `(new T ...)` runs the ctor when present, otherwise the same schema mapping.
+- Optionality lives on the type: a prop-schema field or named parameter whose
+  type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
+  omitted. An absent field reads as `void`; an omitted named parameter binds
+  `nil`; explicit `^a nil` stores a present nil, distinguishable by pattern.
+  `Any` fields stay required. Positional parameters are optional only via
+  defaults. Declaration names ending in `?` are compile errors with a
+  rewrite hint.
 - Ctor construction pre-creates `self` with an in-progress marker. Until
   validation succeeds, it cannot be stored in
   globals/containers/cells, captured by escaping closures, spawned, sent, used

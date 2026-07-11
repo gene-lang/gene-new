@@ -226,7 +226,7 @@ x...         # spread/gather
 'c'          # Char
 "s" $"a ${x}" # strings and interpolation
 x : T        # annotation
-^due? T      # optional prop schema
+^due T?      # optional prop schema: nil-admitting type => omissible
 _            # wildcard / ignore
 name!        # convention for visible syntax behavior (`fn!`, `macro`) and mutation ops (§11/§12)
 (a; b; c)    # pipe: pure reader head-folding
@@ -247,7 +247,6 @@ Canonical forms:
 %x           => (unquote x)
 x...         => (... x)
 $"a ${x}"    => ($ "a " x)
-^due? T      => ^due (? T)
 (a; b c; d)  => (((a) b c) d)
 (x ~ f a)    # preserved as read; resolved receiver-first at compile/dispatch
              # time (docs/core.md §9) — not a reader rewrite to (f x a)
@@ -379,8 +378,8 @@ element        = prop_entry | meta_entry | form ;
 prop_entry     = prop_value | prop_flag ;
 meta_entry     = meta_value | meta_flag ;
 map_entry      = map_value | prop_flag ;
-prop_value     = "^", symbol, [ "?" ], spacing, form ;
-map_value      = "^", symbol, [ "?" ], spacing, [ ":", spacing ], form ;
+prop_value     = "^", symbol, spacing, form ;
+map_value      = "^", symbol, spacing, [ ":", spacing ], form ;
 prop_flag      = "^^", symbol ;
 meta_value     = "@", symbol, spacing, form ;
 meta_flag      = "@@", symbol ;
@@ -595,7 +594,7 @@ Ordinary calls use a `Call` envelope:
 
 ```gene
 (type Call
-  ^props {^named PropMap ^site? Node}
+  ^props {^named PropMap ^site Node?}
   ^body  [Any...])
 
 (protocol Callable
@@ -606,7 +605,7 @@ Syntax calls use a `SyntaxCall` envelope:
 
 ```gene
 (type SyntaxCall
-  ^props {^named PropMap ^site? Node}
+  ^props {^named PropMap ^site Node?}
   ^body  [Node...])
 
 (protocol SyntaxCallable
@@ -750,11 +749,19 @@ name : T = default        # positional parameter
 x...                      # gather rest positional args
 ```
 
-`= default` makes the parameter optional. `?` means optional without default:
+`= default` makes the parameter optional. A named parameter whose type
+explicitly admits nil (`T?`, `(? T)`, or a union containing `Nil`) is also
+optional; when omitted, the local binds `nil` — falsy and inside its own
+annotation:
 
 ```gene
-^width? : Int # omitted argument binds local width to void
+^width : Int? # omitted argument binds local width to nil
 ```
+
+Positional parameters stay positional: a nilable type does not change call
+arity, so an optional positional parameter uses a default (`x : Int? = nil`).
+Declaration names may not end in `?` — `^width? : Int` is a compile error
+pointing at the `^width : Int?` spelling.
 
 Comma is a separator in parameter, binding, and pattern vectors. It is not a general expression separator. Commas are optional where whitespace already separates vector elements, but the formatter should choose one consistent style.
 
@@ -1663,8 +1670,12 @@ Int)` must supply exactly the declared number of arguments; arguments are
 erased from runtime enum identity. Generic nominal record declarations are not
 accepted yet.
 
-Schemas are closed for props. A field name ending in `?` may be omitted, while
-body schemas admit one final repeated field as `[A B T...]`. Open/rest prop
+Schemas are closed for props. A field whose type explicitly admits nil
+(`T?`, `(? T)`, or a union containing `Nil`) may be omitted; an absent
+field reads as `void` (falsy), while an explicit `^a nil` stores a
+present nil (pattern-distinguishable). `Any` is gradual slack, not an
+optionality marker: an `Any` field stays required. Field names may not
+end in `?`. Body schemas admit one final repeated field as `[A B T...]`. Open/rest prop
 schemas and named type aliases are reserved for a later extension; the compiler
 rejects `^rest`, `^open`, `^alias`, and `(type (Name T) ...)` rather than
 silently assigning them semantics. Named unions therefore repeat their union

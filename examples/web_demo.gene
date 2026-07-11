@@ -47,7 +47,7 @@
 
 (type MenuItem
   @doc "one drink on the menu"
-  ^props {^name Str ^price Int ^tag Str ^featured? Bool}
+  ^props {^name Str ^price Int ^tag Str ^featured Bool?}
   ^impl [ToHtml]
   ^derive [Clone ToJson HasLabel])
 

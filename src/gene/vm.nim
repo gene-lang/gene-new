@@ -12351,7 +12351,9 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   if defaultValue.defaultChunk != nil:
     run(defaultValue.defaultChunk, scope)
   else:
-    VOID
+    # Optional without an explicit default: `^name : T?`. Binding nil (not
+    # void) keeps the binding inside its own nil-admitting annotation.
+    NIL
 
 proc checkedAddI64(a, b: int64, outValue: var int64): bool {.inline.} =
   if (b > 0 and a > high(int64) - b) or

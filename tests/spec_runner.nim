@@ -358,7 +358,7 @@ suite "spec — macros from design":
     check_eval("(macro named-default! [^value v = (+ 2 3)] `%v) " &
                "[(named-default!) (named-default! ^value 8)]",
                "[5 8]")
-    check_eval("(macro optional! [x?] `%x) (optional!)", "void")
+    check_eval("(macro optional! [x = nil] `%x) (optional!)", "nil")
     expect GeneError:
       discard compileSource("(macro bad! [x = 1 y] `%y)")
 
@@ -1406,7 +1406,7 @@ suite "spec — typed variable boundaries from design":
                "(fn invoke [f : Callable] (f 2)) " &
                "(invoke (AddN ^n 3))",
                "5")
-    # The Call envelope exposes the source call site (design §3 `^site? Node`).
+    # The Call envelope exposes the source call site (design §3 `^site Node?`).
     check_eval("(type Probe ^props {}) " &
                "(impl Callable for Probe (message apply [self call] call/site)) " &
                "(var p (Probe)) (p 1 2)",
@@ -1881,10 +1881,45 @@ suite "spec — void normalization from design":
   test "void does not persist in prop storage":
     check_eval("[{^a void ^b 1} " &
                " (quote (x ^a void ^b 1)) " &
-               " (do (type T ^props {^a? Int}) " &
+               " (do (type T ^props {^a Int?}) " &
                "     (var t (T ^a void)) " &
                "     t/a)]",
                "[{^b 1} (x ^b 1) void]")
+
+suite "spec — optionality lives on the type, not the key":
+  test "a nil-admitting field type is omissible and nilable":
+    check_eval("(type T ^props {^a Str?}) " &
+               "(var t (T)) [(if t/a 1 0) t/a]", "[0 void]")
+    check_eval("(type T ^props {^a Str?}) (T ^a nil)",
+               "((type T) ^a nil)")
+    check_eval("(type T ^props {^a (? Str)}) (T)", "((type T))")
+    check_eval("(type T ^props {^a (| Str Nil)}) (T)", "((type T))")
+  test "present nil and absent stay distinguishable by pattern":
+    check_eval("(type T ^props {^a Str?}) " &
+               "(fn has_a [t] (match t (when (T ^a x) true) (else false))) " &
+               "[(has_a (T ^a nil)) (has_a (T))]",
+               "[true false]")
+  test "Any stays a required field — gradual slack is not optionality":
+    check_eval("(type T ^props {^a Any}) " &
+               "(try (T) catch {^message m} m)",
+               geneString("missing required field 'a' for T"))
+  test "an omitted nil-admitting named parameter binds nil":
+    check_eval("(fn f [^w : Int?] [(if w 1 0) w]) (f)", "[0 nil]")
+    check_eval("(fn f [^w : Int?] w) (f ^w 3)", "3")
+  test "positional parameters stay positional under nilable types":
+    check_eval("(fn f [a : Str?, b : Int] (if a b (- 0 b))) (f nil 5)", "-5")
+    check_eval("(fn f [x : Int? = nil, y : Str = \"d\"] (if x \"x\" y)) (f)",
+               geneString("d"))
+  test "?-suffixed declaration names are loud errors with hints":
+    for source in ["(type T ^props {^a? Str})",
+                   "(fn f [^w? : Int] nil)",
+                   "(fn f [x?] nil)",
+                   "(macro m! [^a? x] `x)"]:
+      try:
+        discard run(compileSource(source), newGlobalScope())
+        check false
+      except GeneError as e:
+        check "optionality moved to the type" in e.msg
 
 suite "spec — streams from design":
   test "streams expose pull operations":
@@ -3043,8 +3078,8 @@ suite "spec — Env and eval from design":
 
   test "eval policy can limit execution steps":
     check_eval("(type EvalPolicy ^props {^max_steps Int " &
-               "                         ^allow_ffi? Bool " &
-               "                         ^allow_native_compile? Bool}) " &
+               "                         ^allow_ffi Bool? " &
+               "                         ^allow_native_compile Bool?}) " &
                "(var p (EvalPolicy ^max_steps 20 " &
                "                   ^allow_ffi false " &
                "                   ^allow_native_compile false)) " &

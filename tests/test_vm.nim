@@ -482,17 +482,23 @@ suite "compiler — GIR emission":
     check sawListSplice
 
   test "emits optional and default parameter specs":
-    let fnChunk = compileSource("(fn f [x y? ^scale = (+ x 1)] [x y scale])")
+    let fnChunk = compileSource(
+      "(fn f [x, y : Int? = nil, ^scale = (+ x 1), ^opt : Str?] [x y scale opt])")
     let proto = fnChunk.functions[0]
     check proto.params == @["x", "y"]
     check proto.paramDefaults.len == 2
     check proto.paramDefaults[0].optional == false
     check proto.paramDefaults[1].optional == true
-    check proto.paramDefaults[1].defaultChunk == nil
-    check proto.namedParams.len == 1
+    check proto.paramDefaults[1].defaultChunk != nil
+    check proto.namedParams.len == 2
     check proto.namedParams[0].arg == "scale"
     check proto.namedParams[0].defaultValue.optional == true
     check proto.namedParams[0].defaultValue.defaultChunk != nil
+    # ^opt : Str? — nil-admitting type: optional with no default chunk;
+    # the runtime binds nil when the argument is omitted.
+    check proto.namedParams[1].arg == "opt"
+    check proto.namedParams[1].defaultValue.optional == true
+    check proto.namedParams[1].defaultValue.defaultChunk == nil
     check proto.requiredPositional == 1
     check not proto.simpleCall
 
@@ -801,7 +807,7 @@ suite "vm — macros":
     ck "(macro named-default! [^value v = (+ 2 3)] `%v) " &
        "[(named-default!) (named-default! ^value 8)]",
        "[5 8]"
-    ck "(macro optional! [x?] `%x) (optional!)", "void"
+    ck "(macro optional! [x = nil] `%x) (optional!)", "nil"
     expect GeneError:
       discard compileSource("(macro bad! [x = 1 y] `%y)")
 
@@ -1081,9 +1087,9 @@ suite "vm — rest parameters":
        "[1 9 [2 3]]"
 
 suite "vm — optional and default parameters":
-  test "omitted optional positional parameters bind void":
-    ck "(var f (fn [x?] x)) (f)", "void"
-    ck "(var f (fn [x?] x)) (f 7)", "7"
+  test "optional positional parameters use defaults":
+    ck "(var f (fn [x : Int? = nil] x)) (f)", "nil"
+    ck "(var f (fn [x : Int? = nil] x)) (f 7)", "7"
   test "positional defaults are evaluated at call time":
     ck "(var f (fn [x = 4] x)) (f)", "4"
     ck "(var f (fn [x = 4] x)) (f 9)", "9"
@@ -1091,9 +1097,9 @@ suite "vm — optional and default parameters":
     ck "(var f (fn [x y = (+ x 1)] y)) (f 4)", "5"
   test "defaults see the call-time captured scope":
     ck "(var base 1) (var f (fn [x = base] x)) (set base 2) (f)", "2"
-  test "optional named parameters bind void when omitted":
-    ck "(var f (fn [^width?] width)) (f)", "void"
-    ck "(var f (fn [^width?] width)) (f ^width 8)", "8"
+  test "optional named parameters bind nil when omitted":
+    ck "(var f (fn [^width : Int?] width)) (f)", "nil"
+    ck "(var f (fn [^width : Int?] width)) (f ^width 8)", "8"
   test "named defaults are evaluated at call time":
     ck "(var f (fn [base ^width = (+ base 1)] width)) (f 4)", "5"
     ck "(var f (fn [base ^width = (+ base 1)] width)) (f ^width 10 4)", "10"
@@ -1396,8 +1402,8 @@ suite "vm — env and eval":
     ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max_steps 20}))",
        "3"
     ck "(type EvalPolicy ^props {^max_steps Int " &
-       "                         ^allow_ffi? Bool " &
-       "                         ^allow_native_compile? Bool}) " &
+       "                         ^allow_ffi Bool? " &
+       "                         ^allow_native_compile Bool?}) " &
        "(var p (EvalPolicy ^max_steps 20 " &
        "                   ^allow_ffi false " &
        "                   ^allow_native_compile false)) " &
