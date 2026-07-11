@@ -704,7 +704,8 @@ type
 
   TypeField* = object
     name*: string
-    optional*: bool       # `^name?` — may be omitted at construction
+    nameId*: int32        # interned id of `name`; normalized by newType
+    optional*: bool       # nil-admitting type — may be omitted at construction
     typeExpr*: Value      # annotation syntax, or NIL for `Any`
     scope*: Scope         # strong only for future escaped-field anchoring
     weakScope*: pointer   # defining scope for scope-owned field metadata
@@ -5083,6 +5084,10 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
         raise newException(GeneError,
           "type " & name & " redeclares inherited field: " & f.name)
     var owned = f
+    # Normalize the cached key id here so every construction site (compiler,
+    # stdlib type registrations, runtime types) flows through one funnel and
+    # runtime construction/validation can trust `nameId` unconditionally.
+    owned.nameId = propKeyId(owned.name)
     if owned.scope == nil and owned.weakScope == nil:
       owned.weakScope = cast[pointer](scope)
     fields.add owned

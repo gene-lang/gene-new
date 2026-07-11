@@ -18775,26 +18775,27 @@ proc validateConstructedInstance(typ, instance: Value) =
   let fields = typ.typeFields
   let fallbackScope = typ.typeScope
   for f in fields:
-    if instance.props.hasKey(f.name):
+    var stored: Value
+    if instance.props.tryGetById(f.nameId, stored):
       let fieldScope = f.typeFieldScope(fallbackScope)
       let adapted = adaptBoundary("field '" & f.name & "' for " & typeName,
-                                  f.typeExpr, instance.props[f.name],
-                                  fieldScope)
+                                  f.typeExpr, stored, fieldScope)
       instance.setNodeProp(f.name, adapted)
     elif not f.optional:
       raise newException(GeneError,
         "ctor for " & typeName & " left required field '" & f.name & "' unset")
-  var propNames: seq[string]
-  for key, _ in instance.props:
-    propNames.add key
-  for key in propNames:
+  var propIds: seq[int32]
+  for id, _ in instance.props.idPairs:
+    propIds.add id
+  for id in propIds:
     var known = false
     for f in fields:
-      if f.name == key:
+      if f.nameId == id:
         known = true
         break
     if not known:
-      raise newException(GeneError, typeName & " has no field '" & key & "'")
+      raise newException(GeneError,
+        typeName & " has no field '" & propKeyText(id) & "'")
   let bodyFields = typ.typeBodyFields
   let bodyLen = instance.body.len
   var restBody = -1
@@ -18876,17 +18877,19 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
                              fieldScope)
   var props = initPropTable()
   for f in fields:
-    if named.hasArg(f.name):
-      let value = named.getArg(f.name)
+    let argIdx = named.argIndex(f.name)
+    if argIdx >= 0:
+      let value = named.valueAt(argIdx)
       if value.kind == vkVoid:
         if not f.optional:
           raise newException(GeneError,
             "missing required field '" & f.name & "' for " & callee.typeName)
       else:
         let fieldScope = f.typeFieldScope(callee.typeScope)
-        props[f.name] = adaptBoundary("field '" & f.name & "' for " &
-                                      callee.typeName, f.typeExpr, value,
-                                      fieldScope)
+        props.putById(f.nameId,
+                      adaptBoundary("field '" & f.name & "' for " &
+                                    callee.typeName, f.typeExpr, value,
+                                    fieldScope))
     elif not f.optional:
       raise newException(GeneError,
         "missing required field '" & f.name & "' for " & callee.typeName)
@@ -18897,7 +18900,8 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         known = true
         break
     if not known:
-      raise newException(GeneError, callee.typeName & " has no field '" & key & "'")
+      raise newException(GeneError,
+        callee.typeName & " has no field '" & key & "'")
   newNode(callee, props = props, body = body)
 
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
