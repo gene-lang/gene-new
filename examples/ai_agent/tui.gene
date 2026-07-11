@@ -6,8 +6,8 @@
 #     OpenAI-compatible Chat Completions endpoint (MiniMax, DeepSeek, vLLM,
 #     api.openai.com, ...) configured entirely from the environment. Streaming
 #     in both modes.
-#   * Transport is `curl` shelled out through os/exec_stream_async, so a model
-#     call never blocks the scheduler (the gateway runs sessions concurrently).
+#   * Transport is native libcurl through net/http_client (curl(1) is a
+#     discovery fallback), so model calls never block the scheduler.
 #   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
 #     each declared ONCE as a typed Tool value — the model-facing JSON schema,
 #     argument validation, risk class, and handler all derive from that single
@@ -51,11 +51,12 @@
             stdin_tty? read_line read_input refresh_input close_input
             Env Exec OsError])
 (import json [parse stringify JsonError])
-(import str [join split starts_with? contains? lower trim])
+(import str [join split starts_with? ends_with? contains? lower trim])
 (import std/stream [to_stream map filter take into each])
 (import std/parse [parse_int])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
+(import net/http_client [Http stream HttpClientError])
 (import store/fs [open : store_open StoreError])
 (import repl [run : run_repl_session])
 
@@ -1154,11 +1155,9 @@ State that broader behavior is unverified when no matching successful check ran.
   {^type "function_call_output" ^call_id call/call_id ^output (redact shown)})
 
 # -----------------------------------------------------------------------------
-# Transport. Live mode shells out to curl; demo mode uses a scripted closure.
-# Both take a request-body string and return a parsed Responses map.
-# curl runs on a dedicated thread (os/exec_stream_async) with stdout lines
-# drained from a channel, so the scheduler — other sessions, the gateway's
-# HTTP loop — stays live during a model call (examples/ai_agent/design.md §12.9 gap 1).
+# Transport. Live mode uses the native libcurl-backed net/http_client; curl(1)
+# remains a packaging bootstrap only when libcurl cannot be loaded. Both paths
+# run off the scheduler and present complete lines to the SSE parser.
 # -----------------------------------------------------------------------------
 
 (fn exec_curl_lines [curl_args, timeout_ms, on_line]
@@ -1177,6 +1176,45 @@ State that broader behavior is unverified when no matching successful check ran.
       (await t))
   ensure
     (t ~ Task/cancel)))
+
+(fn feed_http_chunk [pending, chunk : Str, on_line]
+  (var parts (split $"${(pending ~ Cell/get)}${chunk}" "\n"))
+  (var count (parts ~ size))
+  (var last (- count 1))
+  (if (> count 1)
+    (repeat i in last
+      (if (ends_with? parts/%i "\r")
+        (on_line ((split parts/%i "\r")/%0))
+        (on_line parts/%i)))
+    nil)
+  (pending ~ Cell/set parts/%last))
+
+(fn exec_native_http_lines [url, headers, body, timeout_ms, on_line]
+  (var transfer
+    (stream Http ^method "POST" ^url url ^headers headers ^body body
+                 ^timeout_ms timeout_ms ^max_bytes 4000000
+                 ^channel_capacity 256 ^max_pending_bytes 1000000))
+  (var pending (cell ""))
+  (try
+    (do
+      (try
+        (loop
+          (feed_http_chunk pending (transfer/channel ~ Channel/recv) on_line))
+      catch (ChannelClosed) nil)
+      (if (!= (pending ~ Cell/get) "")
+        (on_line (pending ~ Cell/get))
+        nil)
+      (var response (await transfer/task))
+      {^status 0 ^stdout response/body ^stderr ""
+       ^http_status response/status ^truncated response/truncated})
+  ensure
+    (transfer/task ~ Task/cancel)))
+
+(fn exec_http_lines [url, headers, body, curl_args, timeout_ms, on_line]
+  (try
+    (exec_native_http_lines url headers body timeout_ms on_line)
+  catch (HttpClientError ^message _)
+    (exec_curl_lines curl_args timeout_ms on_line)))
 
 (fn api_error_text [resp]
   (var status (if (== resp/status void) "?" resp/status))
@@ -1264,17 +1302,26 @@ State that broader behavior is unverified when no matching successful check ran.
   (var output_text (cell ""))
   (var final (cell nil))
   (var saw_sse (cell false))
+  (var request_headers
+    [$"Authorization: Bearer ${auth_token}"
+     "Content-Type: application/json"
+     "Accept: text/event-stream"])
   (var curl_args ["-sS" "-N" "-X" "POST" $"${base}/responses"
                   "-H" $"Authorization: Bearer ${auth_token}"
                   "-H" "Content-Type: application/json"
                   "-H" "Accept: text/event-stream"])
   (if (== base codex_base)
-    (set curl_args (append_all curl_args
-      ["-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
-       "-H" "originator: codex_cli_rs"]))
+    (do
+      (set request_headers (append_all request_headers
+        ["User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
+         "originator: codex_cli_rs"]))
+      (set curl_args (append_all curl_args
+        ["-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
+         "-H" "originator: codex_cli_rs"])))
     nil)
   (set curl_args (append_all curl_args ["-d" body]))
-  (var r (exec_curl_lines curl_args 60000
+  (var r (exec_http_lines $"${base}/responses" request_headers body
+               curl_args 60000
                (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
@@ -1282,7 +1329,7 @@ State that broader behavior is unverified when no matching successful check ran.
                    nil)
                  (sse_handle_line line output output_text final render_stream))))
   (if (!= r/status 0)
-    {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
+    {^agent_error (redact $"HTTP transport failed (${r/status}): ${r/stderr}")}
     (do
       (var resp
         (if (Cell/get saw_sse)
@@ -1455,13 +1502,18 @@ State that broader behavior is unverified when no matching successful check ran.
   (var callmax (cell 0))
   (var err (cell nil))
   (var saw_sse (cell false))
-  (var r (exec_curl_lines
+  (var chat_headers
+    [$"Authorization: Bearer ${auth_token}"
+     "Content-Type: application/json"
+     "Accept: text/event-stream"])
+  (var curl_args
                ["-sS" "-N" "-X" "POST" $"${base}/chat/completions"
                 "-H" $"Authorization: Bearer ${auth_token}"
                 "-H" "Content-Type: application/json"
                 "-H" "Accept: text/event-stream"
-                "-d" body]
-               120000
+                "-d" body])
+  (var r (exec_http_lines $"${base}/chat/completions" chat_headers body
+               curl_args 120000
                (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
@@ -1472,7 +1524,7 @@ State that broader behavior is unverified when no matching successful check ran.
                    nil
                    (chat_handle_payload payload text calls callmax err render_stream)))))
   (if (!= r/status 0)
-    {^agent_error (redact $"curl failed (${r/status}): ${r/stderr}")}
+    {^agent_error (redact $"HTTP transport failed (${r/status}): ${r/stderr}")}
     (if (present? (Cell/get err))
       {^agent_error (redact (Cell/get err))}
       (if (Cell/get saw_sse)

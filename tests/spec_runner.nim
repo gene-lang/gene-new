@@ -3418,6 +3418,19 @@ suite "spec — net/http surface from stdlib plan":
                "catch (HttpError ^message _) \"bad server\")",
                "\"bad server\"")
 
+suite "spec — net/http_client native client contract":
+  test "client authority and entry points are importable":
+    check_eval("(import net/http_client [Http request stream HttpClientError]) " &
+               "[(Http ~ Capability/name)]",
+               "[\"Net/Http\"]")
+
+  test "client rejects non-http URL schemes before starting work":
+    check_eval("(import net/http_client [Http request HttpClientError]) " &
+               "(try (request Http ^url \"file:///etc/passwd\") false " &
+               " catch (HttpClientError ^message m) " &
+               "   (str/contains? m \"http:// or https://\"))",
+               "true")
+
 suite "spec — db protocol from stdlib plan":
   test "sqlite backend covers CRUD, typed params, and typed rows":
     check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
@@ -3537,6 +3550,7 @@ suite "spec — os and json from ai-agent plan":
                "(var r (exec Exec ^cmd \"sleep\" ^args [\"5\"] ^timeout_ms 150)) " &
                "r/timed_out",
                "true")
+
     check_eval("(import os [exec Exec]) " &
                "(var r (exec Exec ^cmd \"printf\" ^args [\"abcdef\"] ^max_bytes 3)) " &
                "[r/stdout r/stdout_truncated r/truncated]",

@@ -12,3 +12,4 @@ include test_native_api
 include test_cli
 include test_lsp
 include test_http_server
+include test_http_client

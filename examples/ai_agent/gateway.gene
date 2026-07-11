@@ -4,8 +4,8 @@
 #
 # One long-running process that owns every conversation. Sessions are actors
 # (mailbox = per-session turn ordering; the scheduler runs sessions
-# concurrently because model calls and tools ride os/exec-*-async on
-# dedicated threads). Surfaces are thin HTTP+JSON clients:
+# concurrently because model calls and tools ride native worker-backed tasks).
+# Surfaces are thin HTTP+JSON clients:
 #
 #   POST /api/sessions                     -> {"id": "s1"}
 #   GET  /api/sessions                     -> {"sessions": [...]}
@@ -28,6 +28,7 @@
 (import std/stream [to_stream filter each into])
 (import std/parse [parse_int])
 (import net/http [Server serve Response])
+(import net/http_client [Http request HttpClientError])
 (import [gene_system_prompt system_item user_item run_turn live_transport
          demo_transport_for max_tool_turns append model auth_token
          set_events_enabled redact_any set_guard_confirm]
@@ -193,16 +194,26 @@
 # Telegram channel (§12.6). An adapter task long-polls getUpdates; messages
 # from allowlisted chats route into per-chat sessions; replies stream back by
 # sendMessage plus size-throttled editMessageText, with a final edit on
-# turn_done. Every Telegram call is curl over os/exec_async, so the poll and
-# the sends never block other sessions or the HTTP listener.
+# turn_done. Calls use the native async HTTP client; curl(1) remains only as a
+# bootstrap fallback when libcurl cannot be loaded.
 # -----------------------------------------------------------------------------
 
 (fn tg_call [method : Str, payload]
-  (await (exec_async Exec ^cmd "curl"
-            ^args ["-sS" "-X" "POST" $"${tg_base}/bot${tg_token}/${method}"
-                   "-H" "Content-Type: application/json"
-                   "-d" (stringify payload)]
-            ^timeout_ms 30000 ^max_bytes 400000)))
+  (var url $"${tg_base}/bot${tg_token}/${method}")
+  (var body (stringify payload))
+  (try
+    (do
+      (var response
+        (await (request Http ^method "POST" ^url url
+                        ^headers ["Content-Type: application/json"]
+                        ^body body ^timeout_ms 30000 ^max_bytes 400000)))
+      {^status 0 ^stdout response/body ^stderr ""
+       ^http_status response/status ^truncated response/truncated})
+  catch (HttpClientError ^message _)
+    (await (exec_async Exec ^cmd "curl"
+              ^args ["-sS" "-X" "POST" url
+                     "-H" "Content-Type: application/json" "-d" body]
+              ^timeout_ms 30000 ^max_bytes 400000))))
 
 (fn tg_send_message [chat_id, text : Str]
   # returns the sent message_id, or nil

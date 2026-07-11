@@ -7,21 +7,22 @@ now shipped too: typed tool declarations (one `Tool` value derives handler +
 schema + validation + risk), a stable live `/repl` `session` object, an
 authoritative versioned event log with `/trace`, and an extended catastrophe
 guard (realpath-confined paths, normal/destructive/catastrophic command
-classification, surfaced truncation). Slice B has started with tracked turn
-Tasks, subprocess cancellation, the programmable `Session/cancel` message,
-and `POST /api/sessions/:id/cancel`; terminal Ctrl-C cancellation and steering
-remain. Native libcurl, the full TUI, MCP,
+classification, surfaced truncation). Slice B now includes terminal and
+gateway cancellation/steering, attributable `/diff` + targeted `/undo`,
+structured verification evidence, and hierarchical `AGENTS.md` loading.
+Native libcurl is the default outbound transport. The full public TUI, MCP,
 worktrees, browser automation, and general multi-agent orchestration are
 optional later work, not prerequisites.**
-Date: 2026-07-10.
+Date: 2026-07-11.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get_env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
 timeout + output caps, `exec_stream` with stdout callbacks, `read_line`,
 `read_input`/`refresh_input`/`close_input`), `Fs/read_text`/`Fs/write_text`/
 `Fs/list_dir`/`Fs/real_path`, the `json` namespace (`parse`/`stringify`/
-`JsonError`), and the agent itself — a streaming Responses-API loop over a
-`curl` subprocess, the §8.5 catastrophe guard (realpath-confined workspace
+`JsonError`), `net/http_client` (native async libcurl request/stream), and the
+agent itself — a streaming Responses-API loop over native HTTP with a curl(1)
+bootstrap fallback, the §8.5 catastrophe guard (realpath-confined workspace
 paths, normal/destructive/catastrophic command classification with hard stops
 for host-destroying commands and one confirmation for destructive-but-intended
 ones, timeout/output caps with surfaced truncation, secret redaction; routine
@@ -33,8 +34,8 @@ versioned event log (§9.2) that `/trace`
 queries and the `/repl` `session` object exposes, plus optional `store/fs`
 state persistence for non-secret config, the interactive session, memory, and
 the event log. An offline demo transport keeps the loop runnable (and verified)
-with no network or key. The native libcurl client, full scrollback TUI, and
-launcher capability injection remain available later but do not gate the
+with no network or key. The full scrollback TUI and launcher capability
+injection remain available later but do not gate the
 signature Gene experience.
 
 This document specifies a live, programmable AI coding agent written in Gene:
@@ -86,11 +87,10 @@ Chat Completions is the compatibility shape for third-party endpoints, and is
 implemented as an adapter over the same item vocabulary (see Backends above).
 (Migration guide: https://platform.openai.com/docs/guides/migrate-to-responses.)
 
-**Packaging target, not current priority:** a single self-contained binary with
-native TLS and a native full-screen UI remains attractive, but replacing
-working `curl(1)`/prompt infrastructure is scheduled only when it produces a
-visible daily-driver benefit. The next slice is the programmable-agent surface
-in §10.
+**Current transport:** `net/http_client` now dynamically loads libcurl and runs
+requests off the scheduler, including bounded streaming and cancellation. The
+agent uses it by default; `curl(1)` remains only as a bootstrap fallback when
+libcurl cannot be loaded. A public native full-screen UI remains future work.
 
 The goal of this doc is to make the build *actionable against the real
 runtime*. Each subsystem below states what exists in this repo today, what is
@@ -149,7 +149,7 @@ Host capabilities (gated authority):
 | Capability | Needed for | Status today | Section |
 |---|---|---|---|
 | Env var read (`Os/Env`) | API token, model, base URL | **implemented** | §3 |
-| Outbound HTTPS (`Net/Connect`) | call the API | **partial** — capability exists, but transport is plaintext-TCP-only | §4 |
+| Outbound HTTPS (`Net/Http`) | call the API | **implemented** through `net/http_client` + libcurl | §4 |
 | Subprocess (`Os/Exec`) | `run_shell`, `grep`, bootstrap `curl` | **implemented** | §6 |
 | File read/write/list (`Fs/*`) | file tools | **implemented** — sync + async helpers | §6 |
 
@@ -158,7 +158,7 @@ Pure stdlib / runtime pieces (no new authority):
 | Piece | Needed for | Status today | Section |
 |---|---|---|---|
 | JSON parse / serialize | API request + response bodies | **implemented** | §5 |
-| TLS transport code | ride on `Net/Connect` | **missing** (native client) | §4 |
+| TLS transport code | native HTTP client | **implemented** through dynamically loaded libcurl | §4 |
 | Terminal UI (curses) | the TUI | **partial** — prompt layout + repaint helper exist; full scrollback controls pending | §7 |
 
 What already exists and is directly reusable:
@@ -230,41 +230,35 @@ root scope, or injected by a launcher (see §8).
 The API is HTTPS with `Authorization: Bearer <token>` and JSON request bodies.
 For a good UX the Responses API streams (`"stream": true` yields SSE
 `data: {json}` events for `response.output_text.delta`, `response.completed`,
-etc.). The current agent supports this through `curl -N` launched by
-`os/exec_stream`: stdout_line callbacks parse SSE lines and repaint the
-ncurses prompt as text deltas arrive. This is still a bootstrap transport; it
-does not replace the native HTTPS client planned below.
+etc.). The current agent uses `net/http_client/stream`: libcurl callback bytes
+cross a bounded native buffer into a Gene channel, where scheduler-thread code
+frames SSE lines and repaints the ncurses prompt. `curl -N` through
+`os/exec_stream_async` remains only as a library-discovery fallback.
 
 The runtime's networking is **plaintext TCP only** (`Net/tcp_read_text_async` /
-`Net/tcp_write_text_async` in `src/gene/vm.nim`), with no TLS. Three ways to get
-HTTPS, in order of recommendation:
+`Net/tcp_write_text_async` in `src/gene/vm.nim`) remains plaintext-only. HTTPS
+is supplied separately by the first option below:
 
-1. **libcurl native namespace (recommended native option).**
-   Add `net/http-client` backed by libcurl loaded via dynlib, mirroring the
+1. **libcurl native namespace (implemented).**
+   `net/http_client` is backed by libcurl loaded via dynlib, mirroring the
    `db/sqlite` bindings:
    - candidates `libcurl.4.dylib` / `libcurl.so.4` (present on macOS via the
      dyld cache and on typical Linux); `GENE_LIBCURL` override like
      `GENE_LIBPQ`;
    - bind `curl_easy_init`, `curl_easy_setopt`, `curl_easy_perform`,
-     `curl_slist_append`, `curl_easy_cleanup`. `curl_easy_setopt` is variadic in
-     C, but each call passes exactly one trailing argument, so the Nim binding
-     declares one concrete `{.cdecl.}` proc type per value shape
-     (`setoptStr`, `setoptLong`, `setoptPtr`, `setoptFn`) and casts the *same*
-     `curl_easy_setopt` symbol to each. (This differs from the sqlite bindings,
-     which cast several *distinct* symbols — `sqlite3_bind_int64`,
-     `sqlite3_bind_text`, … — to typed procs; the shared idea is a typed Nim
-     proc per C call shape, not multiple symbols.)
-   - run `curl_easy_perform` on the worker-backed async-I/O lane (the same queue
-     that serves `Fs/*-async` and `Net/tcp-*-async`), so `await` on the request
-     task does not block the scheduler.
-   - **streaming callback — concurrency boundary (must be specified).** Streaming
+     `curl_slist_append`, `curl_easy_cleanup`. `curl_easy_setopt`/`getinfo` are
+     variadic; small typed C shims make the real variadic calls per value shape.
+     This is required on AArch64, where casting the symbol to a fixed-signature
+     Nim proc passes trailing arguments with the wrong ABI.
+   - run `curl_easy_perform` on a bounded persistent worker pool, so `await` on
+     the request task does not block the scheduler.
+   - **streaming callback — concurrency boundary.** Streaming
      uses `CURLOPT_WRITEFUNCTION`, a `{.cdecl.}` callback that curl invokes on
      the worker/perform thread. That callback **must not run any Gene code, walk
      VM state, or allocate managed values** — the VM is not reentrant from an
      arbitrary native thread. It may only copy the received bytes into a
-     lock-protected buffer, or hand them to a bounded `Channel` through the
-     runtime's rooted, thread-attached native path
-     (`geneAttachThread` + a rooted channel send, per `src/gene/native_api.nim`).
+     lock-protected bounded buffer. Scheduler polling materializes Gene strings
+     and sends them through the rooted bounded `Channel`.
      SSE framing and JSON decoding of each event happen on the *scheduler*
      thread, in the Gene coroutine that drains the channel with `Channel/recv`.
      This keeps the native/VM boundary inside the machinery that already exists
@@ -290,10 +284,9 @@ returns the same shape and also invokes callbacks as stdout arrives.
 
 - **Bootstrap:** `os/exec_stream` + `curl -N` gives visible Responses SSE text
   deltas without adding TLS code to Gene.
-- **Optional native client:** replace the subprocess with libcurl when
-  packaging, cancellation, WebSockets, or measured performance justifies it;
-  expose a scheduler-friendly stream/channel API so cancellation and
-  worker-thread boundaries are explicit.
+- **Native client:** `net/http_client` is now the default agent transport;
+  cancellation and worker-thread boundaries are explicit. The subprocess path
+  remains only for installations where libcurl discovery fails.
 - **Future general subprocess API:** a long-lived `os/spawn` with stdin/stdout
   handles or channels may still be useful, but is not needed for the current
   agent.
@@ -302,13 +295,14 @@ Both transports present the same non-streaming Gene API; only the native client
 adds `stream`:
 
 ```gene
-(import net/http-client [request Http])         ; optional native client
-(var resp (request http ^method "POST" ^url url ^headers hs ^body json-body))
+(import net/http_client [request Http])
+(var resp (await (request Http ^method "POST" ^url url ^headers hs ^body json-body)))
 ; resp => {^status Int ^body Str}
 
-(import net/http-client [stream])               ; optional native client
-(var ch (stream http ^method "POST" ^url url ^headers hs ^body json-body))
-; ch => Channel of SSE event payloads (Str), drained with Channel/recv
+(import net/http_client [stream Http])
+(var transfer (stream Http ^method "POST" ^url url ^headers hs ^body json-body))
+; transfer/channel => bounded Channel of raw Str chunks, drained with Channel/recv
+; transfer/task => cancellable Task yielding the final response map
 ```
 
 ## 5. JSON (§5)
@@ -775,8 +769,8 @@ Choose exact ordering from dogfood pain:
   transport, authentication, and lifecycle surface.
 - Add browser/visual automation only when frontend work becomes frequent.
 - Extend TUI/web/chat surfaces only when they improve the author's workflow.
-- Replace `curl` with native libcurl when packaging, cancellation, WebSockets,
-  or performance provides a user-visible reason.
+- Extend the native client only when proxy controls, certificate pinning,
+  WebSockets, or measured performance provides a user-visible reason.
 
 There is no obligation to complete slice D. A personal agent with typed tools,
 live state, queryable events, reliable edits, and excellent Gene support is
@@ -821,11 +815,11 @@ product.
 ```
                        ┌───────────────────────────────┐
   ┌──────────┐  HTTP   │            gateway            │
-  │ TUI      │◄───────►│                               │   curl (async)
+  │ TUI      │◄───────►│                               │   libcurl (async)
   ├──────────┤  +JSON  │  session actors (one per      │◄───────────────► model
   │ Web UI   │◄───────►│  conversation): events,       │   Responses/chat APIs
   ├──────────┤ cursor  │  turn loop, typed tools,      │
-  │ Telegram │◄──long──│  catastrophe guard            │   curl (async, long-poll)
+  │ Telegram │◄──long──│  catastrophe guard            │   libcurl (async, long-poll)
   ├──────────┤  poll   │                               │◄───────────────► api.telegram.org
   │ Slack    │◄───────►│  event log per session,       │
   └──────────┘         │  sqlite persistence (m11)     │
@@ -925,11 +919,11 @@ a string in the Gene source. Session switcher reads `GET /api/sessions`.
 ### 12.6 Telegram channel (implemented, milestone 9)
 
 The cheapest remote surface, and deliberately the first: it needs **outbound
-HTTPS only**, which the curl transport already provides. As shipped in
+HTTPS only**, which the native HTTP transport provides. As shipped in
 `examples/ai_agent/gateway.gene`:
 
 - an adapter task long-polls `getUpdates` (`timeout=50`, offset cursor) via
-  `os/exec_async`;
+  `net/http_client/request` (curl(1) is the library-discovery fallback);
 - updates route to sessions keyed by `chat.id` (`tg-<chat-id>`, also visible
   to the HTTP API and web UI); unknown chat ids are dropped unless listed in
   `TELEGRAM_ALLOWED_CHAT_IDS` (single-user posture; `*` allows all);
@@ -954,15 +948,15 @@ Two integration modes, both requiring runtime work — hence optional slice-D
 work:
 
 1. **Socket Mode** (preferred; outbound-only like Telegram): needs a
-   WebSocket client over TLS — blocked on optional native networking work
-   (§4, slice D).
+   WebSocket framing/upgrade support over the native TLS-capable client —
+   blocked on optional WebSocket work (§4, slice D).
 2. **Events API**: inbound webhooks to the gateway → needs public HTTPS
    exposure (tunnel) + request signing (`X-Slack-Signature`,
    HMAC-SHA256) → needs a small `crypto` namespace (12.9 gap 4), plus the
    3-second-ack/retry discipline.
 
 Outbound (`chat.postMessage`, throttled `chat.update` for streaming) works
-over curl today. Sessions key by `(channel, thread_ts)` so each Slack thread
+over native HTTP today. Sessions key by `(channel, thread_ts)` so each Slack thread
 is a conversation.
 
 ### 12.8 Rare destructive confirmations across surfaces

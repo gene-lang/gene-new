@@ -18,6 +18,11 @@ Implementation status:
   construction uses helpers or `(Response ^status N ^body s)` because type
   constructors take named fields only; `cookie`/`set_cookie`/`static_file` are
   not implemented yet.
+- `net/http_client` — implemented as a capability-gated, dynamically loaded
+  libcurl client. `request` returns a cancellable `Task`; `stream` returns a
+  task plus a bounded channel of raw response chunks. TLS certificate
+  verification remains enabled by libcurl. There is no link-time dependency;
+  `GENE_LIBCURL` overrides library discovery.
 - Phase 4 (databases) — implemented beyond the original SQLite-only plan: a
   shared `Db` protocol (`exec`/`query`/`query_one`/`execute`/`transaction`/
   `close`/`closed?`) in the `db` namespace with `db/sqlite` and `db/postgres`
@@ -56,7 +61,8 @@ Implementation status:
 ## Non-Goals
 
 - Full package management, registries, or dependency solving.
-- A production async HTTP stack with TLS and HTTP/2.
+- A production async HTTP *server* stack with TLS and HTTP/2. The client can
+  negotiate either through libcurl.
 - ORM/query builder abstraction over SQL.
 - Browser client framework or reactive frontend runtime.
 - Cross-database compatibility.
@@ -72,12 +78,42 @@ Initial modules should be available through namespace imports:
 (import str [join split starts_with? ends_with? trim])
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
+(import net/http_client [Http request stream HttpClientError])
 (import sqlite [Database Statement Row SqliteError])
 ```
 
 For MVP, these may be built-in namespaces registered by the runtime. File-backed
 stdlib modules can replace or wrap those namespaces later, but source programs
 should not need to change.
+
+### `net/http_client`
+
+The native client is separate from the server namespace because its authority,
+error, lifetime, and streaming contracts differ:
+
+```gene
+(import net/http_client [Http request stream])
+
+(var response
+  (await (request Http ^method "POST" ^url "https://example.test/api"
+                  ^headers {^content-type "application/json"}
+                  ^body "{}" ^timeout_ms 30000 ^max_bytes 4000000)))
+
+(var transfer
+  (stream Http ^url "https://example.test/events"
+               ^channel_capacity 256 ^max_pending_bytes 1000000))
+```
+
+`request` returns `Task`; its value has `status`, normalized `headers`, `body`,
+`effective_url`, `truncated`, and `headers_truncated`. Non-2xx HTTP statuses are
+ordinary response data. Setup and transport failures fail the task.
+
+`stream` returns `{^task ^channel}`. The channel carries raw response chunks
+and closes before the task settles. Native callbacks only copy bytes into
+bounded shared buffers; channel delivery, SSE framing, and JSON parsing happen
+on the scheduler thread. Cancelling the task aborts the transfer. URLs are
+restricted to `http://` and `https://`, header newlines are rejected, and
+libcurl's default peer/hostname verification is not disabled.
 
 ## Phase 1: Core Utility Modules
 

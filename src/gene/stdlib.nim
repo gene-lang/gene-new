@@ -1003,6 +1003,7 @@ when compileOption("threads"):
           osExecAsyncPending.setLen(last)
         else:
           inc i
+    pollHttpClientCompletions()
 
   proc runOsExecAsyncJob(jobPtr: pointer) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -1206,7 +1207,7 @@ when compileOption("threads"):
 
 else:
   proc pollOsExecAsyncCompletions() =
-    discard
+    pollHttpClientCompletions()
 
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        args: openArray[Value],
@@ -1323,6 +1324,749 @@ proc biOsExecStreamAsync(args: openArray[Value], call: ptr NativeCall): Value {.
   ## sent to ^stdout_chan as it arrives; the channel is closed when the child
   ## exits, then the Task settles with the captured result map.
   biOsExecAsyncImpl("os/exec_stream_async", true, args, call)
+
+# --- net/http_client: native libcurl client ---------------------------------
+#
+# libcurl owns TLS, certificate verification, redirects, proxies, and HTTP
+# framing. The perform call runs on a persistent worker. Its callbacks only
+# copy bytes into explicitly shared native buffers; Gene strings/maps/channels
+# are created and touched exclusively by pollHttpClientCompletions on the
+# scheduler thread.
+
+when defined(macosx):
+  const curlLibCandidates = ["libcurl.4.dylib", "/usr/lib/libcurl.4.dylib",
+                             "libcurl.dylib"]
+elif defined(windows):
+  const curlLibCandidates = ["libcurl.dll", "curl.dll"]
+else:
+  const curlLibCandidates = ["libcurl.so.4", "libcurl.so"]
+
+const
+  CurlGlobalDefault = 3.clong
+  CurlOk = 0.cint
+  CurlWriteError = 23.cint
+  CurlOperationTimedOut = 28.cint
+  CurlAbortedByCallback = 42.cint
+  CurlOptWriteData = 10001.cint
+  CurlOptUrl = 10002.cint
+  CurlOptWriteFunction = 20011.cint
+  CurlOptPostFields = 10015.cint
+  CurlOptHttpHeader = 10023.cint
+  CurlOptHeaderData = 10029.cint
+  CurlOptCustomRequest = 10036.cint
+  CurlOptNoProgress = 43.cint
+  CurlOptFollowLocation = 52.cint
+  CurlOptNoSignal = 99.cint
+  CurlOptCaInfo = 10065.cint
+  CurlOptAcceptEncoding = 10102.cint
+  CurlOptTimeoutMs = 155.cint
+  CurlOptHeaderFunction = 20079.cint
+  CurlOptXferInfoData = 10057.cint
+  CurlOptXferInfoFunction = 20219.cint
+  CurlOptPostFieldSizeLarge = 30120.cint
+  CurlInfoEffectiveUrl = 0x100001.cint
+  CurlInfoResponseCode = 0x200002.cint
+  HttpDefaultTimeoutMs = 60_000
+  HttpDefaultMaxBytes = 4_000_000
+  HttpDefaultPendingBytes = 1_000_000
+  HttpHeaderMaxBytes = 256_000
+  HttpHardMaxBytes = 64 * 1024 * 1024
+  HttpHardPendingBytes = 16 * 1024 * 1024
+
+type
+  CurlApi = object
+    lib: LibHandle
+    globalInit: proc(flags: clong): cint {.cdecl.}
+    easyInit: proc(): pointer {.cdecl.}
+    easyCleanup: proc(handle: pointer) {.cdecl.}
+    easyPerform: proc(handle: pointer): cint {.cdecl.}
+    easyStrerror: proc(code: cint): cstring {.cdecl.}
+    setoptAddr: pointer
+    getinfoAddr: pointer
+    slistAppend: proc(list: pointer, value: cstring): pointer {.cdecl.}
+    slistFreeAll: proc(list: pointer) {.cdecl.}
+
+var gCurlApi: CurlApi
+
+# AArch64 (notably Apple Silicon) gives variadic arguments a different ABI
+# treatment from fixed-signature arguments. Calling curl_easy_setopt/getinfo by
+# casting the variadic symbol directly to a fixed Nim proc therefore appears to
+# work but passes corrupt values. These tiny C shims make the actual variadic
+# call in C while keeping every Nim call site typed by value shape.
+{.emit: """
+typedef int (*gene_curl_vararg_fn)(void *, int, ...);
+static int gene_curl_setopt_str(void *fn, void *h, int o, const char *v) {
+  return ((gene_curl_vararg_fn)fn)(h, o, v);
+}
+static int gene_curl_setopt_long(void *fn, void *h, int o, long v) {
+  return ((gene_curl_vararg_fn)fn)(h, o, v);
+}
+static int gene_curl_setopt_off(void *fn, void *h, int o, long long v) {
+  return ((gene_curl_vararg_fn)fn)(h, o, v);
+}
+static int gene_curl_setopt_ptr(void *fn, void *h, int o, void *v) {
+  return ((gene_curl_vararg_fn)fn)(h, o, v);
+}
+static int gene_curl_getinfo_ptr(void *fn, void *h, int o, void *v) {
+  return ((gene_curl_vararg_fn)fn)(h, o, v);
+}
+""".}
+
+proc cCurlSetoptStr(fn, handle: pointer, option: cint,
+                    value: cstring): cint
+  {.importc: "gene_curl_setopt_str", nodecl.}
+proc cCurlSetoptLong(fn, handle: pointer, option: cint,
+                     value: clong): cint
+  {.importc: "gene_curl_setopt_long", nodecl.}
+proc cCurlSetoptOff(fn, handle: pointer, option: cint,
+                    value: int64): cint
+  {.importc: "gene_curl_setopt_off", nodecl.}
+proc cCurlSetoptPtr(fn, handle: pointer, option: cint,
+                    value: pointer): cint
+  {.importc: "gene_curl_setopt_ptr", nodecl.}
+proc cCurlGetinfoPtr(fn, handle: pointer, option: cint,
+                     value: pointer): cint
+  {.importc: "gene_curl_getinfo_ptr", nodecl.}
+
+proc raiseHttpClientError(message: string, scope: Scope) =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, "HttpClientError"), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc loadCurlApi(scope: Scope) =
+  if gCurlApi.lib != nil:
+    return
+  when defined(emscripten) or defined(geneWasm):
+    raiseHttpClientError("net/http_client is unavailable in WebAssembly; use " &
+                         "the host fetch bridge", scope)
+  else:
+    var lib: LibHandle
+    let override = getEnv("GENE_LIBCURL")
+    if override.len > 0:
+      lib = loadLib(override)
+      if lib == nil:
+        raiseHttpClientError("could not load GENE_LIBCURL=" & override, scope)
+    else:
+      for candidate in curlLibCandidates:
+        lib = loadLib(candidate)
+        if lib != nil:
+          break
+    if lib == nil:
+      raiseHttpClientError("could not load libcurl; set GENE_LIBCURL to its path",
+                           scope)
+    template sym(name: string): pointer =
+      block:
+        let address = symAddr(lib, name)
+        if address == nil:
+          unloadLib(lib)
+          raiseHttpClientError("libcurl is missing symbol " & name, scope)
+        address
+    var api: CurlApi
+    api.globalInit = cast[typeof(api.globalInit)](sym"curl_global_init")
+    api.easyInit = cast[typeof(api.easyInit)](sym"curl_easy_init")
+    api.easyCleanup = cast[typeof(api.easyCleanup)](sym"curl_easy_cleanup")
+    api.easyPerform = cast[typeof(api.easyPerform)](sym"curl_easy_perform")
+    api.easyStrerror = cast[typeof(api.easyStrerror)](sym"curl_easy_strerror")
+    let setoptAddress = sym"curl_easy_setopt"
+    api.setoptAddr = setoptAddress
+    api.getinfoAddr = sym"curl_easy_getinfo"
+    api.slistAppend = cast[typeof(api.slistAppend)](sym"curl_slist_append")
+    api.slistFreeAll = cast[typeof(api.slistFreeAll)](sym"curl_slist_free_all")
+    if api.globalInit(CurlGlobalDefault) != CurlOk:
+      unloadLib(lib)
+      raiseHttpClientError("curl_global_init failed", scope)
+    api.lib = lib
+    gCurlApi = api
+
+when compileOption("threads"):
+  type
+    SharedHttpBuffer = object
+      data: pointer
+      len: int
+      cap: int
+      allocated: int
+    HttpClientCtx = object
+      httpMethod: SharedExecText
+      url: SharedExecText
+      body: SharedExecText
+      caFile: SharedExecText
+      headers: ptr SharedExecArg
+      taskBits: uint64
+      chunkChanBits: uint64
+      schedulerPtr: pointer
+      timeoutMs: int
+      maxBytes: int
+      maxPendingBytes: int
+      responseBody: SharedHttpBuffer
+      responseHeaders: SharedHttpBuffer
+      responseTruncated: bool
+      headersTruncated: bool
+      responseStatus: int
+      effectiveUrl: SharedExecText
+      chunkLock: Lock
+      chunkHead: ptr SharedExecLine
+      chunkTail: ptr SharedExecLine
+      queuedBytes: int
+      streamGone: bool
+      bufferOverflow: bool
+      resultFailed: bool
+      resultFailure: SharedExecText
+      resultCancelled: bool
+      resultTimedOut: bool
+      cancelRequested: bool
+      workerDone: bool
+    HttpClientPending {.acyclic.} = ref object
+      ctx: ptr HttpClientCtx
+      taskOwner: Value
+      channelOwner: Value
+
+  const httpClientMaxWorkers = 16
+  var httpClientLock: Lock
+  var httpClientCond: Cond
+  var httpClientQueue: seq[pointer]
+  var httpClientThreads: seq[ref Thread[void]]
+  var httpClientIdle = 0
+  var httpClientStarting = 0
+  var httpClientPending: seq[HttpClientPending]
+  var httpClientPendingCount = 0
+  initLock(httpClientLock)
+  initCond(httpClientCond)
+
+  proc freeHttpBuffer(buffer: var SharedHttpBuffer) =
+    if buffer.data != nil:
+      deallocShared(buffer.data)
+    buffer = SharedHttpBuffer()
+
+  proc consumeHttpBuffer(buffer: var SharedHttpBuffer): string =
+    if buffer.len > 0:
+      result = newString(buffer.len)
+      copyMem(addr result[0], buffer.data, buffer.len)
+    freeHttpBuffer(buffer)
+
+  proc appendHttpBuffer(buffer: var SharedHttpBuffer, source: pointer,
+                        size: int): int {.inline.} =
+    if size <= 0 or buffer.len >= buffer.cap:
+      return 0
+    result = min(size, buffer.cap - buffer.len)
+    let needed = buffer.len + result
+    if needed > buffer.allocated:
+      var nextCapacity = max(16_384, buffer.allocated * 2)
+      if nextCapacity < needed:
+        nextCapacity = needed
+      nextCapacity = min(nextCapacity, buffer.cap)
+      buffer.data = reallocShared(buffer.data, nextCapacity)
+      buffer.allocated = nextCapacity
+    copyMem(cast[pointer](cast[uint](buffer.data) + uint(buffer.len)),
+            source, result)
+    inc buffer.len, result
+
+  proc httpWriteCallback(data: pointer, size, count: csize_t,
+                         userData: pointer): csize_t {.cdecl, gcsafe.} =
+    let ctx = cast[ptr HttpClientCtx](userData)
+    if size != 0 and count > high(csize_t) div size:
+      return 0
+    let total = size * count
+    if total > csize_t(high(int)):
+      return 0
+    let copied = appendHttpBuffer(ctx.responseBody, data, int(total))
+    if copied < int(total):
+      ctx.responseTruncated = true
+    if copied > 0 and ctx.chunkChanBits != 0 and
+        not atomicLoadN(addr ctx.streamGone, ATOMIC_ACQUIRE):
+      let node = cast[ptr SharedExecLine](allocShared0(sizeof(SharedExecLine)))
+      node.text.data = allocShared0(copied)
+      node.text.len = copied
+      copyMem(node.text.data, data, copied)
+      withLock ctx.chunkLock:
+        if ctx.queuedBytes + copied > ctx.maxPendingBytes:
+          if node.text.data != nil:
+            deallocShared(node.text.data)
+          deallocShared(node)
+          ctx.bufferOverflow = true
+          return 0
+        if ctx.chunkTail == nil:
+          ctx.chunkHead = node
+          ctx.chunkTail = node
+        else:
+          ctx.chunkTail.next = node
+          ctx.chunkTail = node
+        inc ctx.queuedBytes, copied
+    total
+
+  proc httpHeaderCallback(data: pointer, size, count: csize_t,
+                          userData: pointer): csize_t {.cdecl, gcsafe.} =
+    let ctx = cast[ptr HttpClientCtx](userData)
+    if size != 0 and count > high(csize_t) div size:
+      return 0
+    let total = size * count
+    if total > csize_t(high(int)):
+      return 0
+    let copied = appendHttpBuffer(ctx.responseHeaders, data, int(total))
+    if copied < int(total):
+      ctx.headersTruncated = true
+    total
+
+  proc httpProgressCallback(userData: pointer, dlTotal, dlNow, ulTotal,
+                            ulNow: int64): cint {.cdecl, gcsafe.} =
+    let ctx = cast[ptr HttpClientCtx](userData)
+    if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE): 1 else: 0
+
+  proc freeHttpClientCtx(ctx: ptr HttpClientCtx) =
+    if ctx == nil:
+      return
+    discard consumeSharedExecText(ctx.httpMethod)
+    discard consumeSharedExecText(ctx.url)
+    discard consumeSharedExecText(ctx.body)
+    discard consumeSharedExecText(ctx.caFile)
+    discard consumeSharedExecText(ctx.effectiveUrl)
+    discard consumeSharedExecText(ctx.resultFailure)
+    freeHttpBuffer(ctx.responseBody)
+    freeHttpBuffer(ctx.responseHeaders)
+    freeSharedExecLines(ctx.chunkHead)
+    var header = ctx.headers
+    while header != nil:
+      let next = header.next
+      if header.text.data != nil:
+        deallocShared(header.text.data)
+      deallocShared(header)
+      header = next
+    deinitLock(ctx.chunkLock)
+    deallocShared(ctx)
+
+  proc parseCurlHeaders(raw: string): PropTable =
+    result = initPropTable()
+    for rawLine in raw.splitLines:
+      let line = rawLine.strip(chars = {'\r', ' ', '\t'})
+      if line.startsWith("HTTP/"):
+        result = initPropTable()
+      elif line.len > 0:
+        let separator = line.find(':')
+        if separator > 0:
+          let name = line[0 ..< separator].strip.toLowerAscii
+          let value = line[separator + 1 .. ^1].strip
+          if result.hasKey(name):
+            result[name] = newStr(result[name].strVal & ", " & value)
+          else:
+            result[name] = newStr(value)
+
+  proc pollHttpClientCompletions() =
+    # Every scheduler safepoint reaches this probe through the existing async
+    # exec poll. Keep the unused-client path lock-free so ordinary VM workloads
+    # do not acquire a new global lock.
+    if atomicLoadN(addr httpClientPendingCount, ATOMIC_ACQUIRE) == 0:
+      return
+    withLock httpClientLock:
+      var i = 0
+      while i < httpClientPending.len:
+        let pending {.cursor.} = httpClientPending[i]
+        let ctx = pending.ctx
+        var task {.cursor.}: Value
+        task.bits = ctx.taskBits
+        let cancelled = task.taskCancelled or ctx.resultCancelled
+        if task.taskCancelled:
+          atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
+        var head, tail: ptr SharedExecLine
+        withLock ctx.chunkLock:
+          head = ctx.chunkHead
+          tail = ctx.chunkTail
+          ctx.chunkHead = nil
+          ctx.chunkTail = nil
+          ctx.queuedBytes = 0
+        var channelBlocked = false
+        if cancelled:
+          freeSharedExecLines(head)
+          head = nil
+        elif ctx.chunkChanBits != 0:
+          var channel {.cursor.}: Value
+          channel.bits = ctx.chunkChanBits
+          while head != nil:
+            let chunk = consumeSharedExecText(head.text)
+            let pushed = channel.tryPushChannel(newStr(chunk))
+            if pushed.closed:
+              atomicStoreN(addr ctx.streamGone, true, ATOMIC_RELEASE)
+              freeSharedExecLines(head)
+              head = nil
+              break
+            if not pushed.pushed:
+              head.text = sharedExecText(chunk)
+              channelBlocked = true
+              break
+            let consumed = head
+            head = head.next
+            deallocShared(consumed)
+            wakeChannelWaitersIn(cast[SchedulerState](ctx.schedulerPtr), channel,
+                                 wakeSenders = false)
+        if head != nil:
+          var bytes = 0
+          var node = head
+          while node != nil:
+            inc bytes, node.text.len
+            node = node.next
+          withLock ctx.chunkLock:
+            tail.next = ctx.chunkHead
+            ctx.chunkHead = head
+            if ctx.chunkTail == nil:
+              ctx.chunkTail = tail
+            inc ctx.queuedBytes, bytes
+        let workerDone = atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE)
+        if workerDone and not channelBlocked:
+          var channel {.cursor.}: Value
+          channel.bits = ctx.chunkChanBits
+          if ctx.chunkChanBits != 0:
+            closeChannel(channel)
+            let scheduler = cast[SchedulerState](ctx.schedulerPtr)
+            wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = false)
+            wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = true)
+          if not cancelled and not task.taskCancelled:
+            if ctx.resultFailed:
+              let failure = consumeSharedExecText(ctx.resultFailure)
+              if tryFailTask(task, failure):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+            else:
+              var response = initPropTable()
+              response["status"] = newInt(ctx.responseStatus)
+              response["headers"] =
+                newMap(parseCurlHeaders(consumeHttpBuffer(ctx.responseHeaders)))
+              response["body"] = newStr(consumeHttpBuffer(ctx.responseBody))
+              response["effective_url"] =
+                newStr(consumeSharedExecText(ctx.effectiveUrl))
+              response["truncated"] = newBool(ctx.responseTruncated)
+              response["headers_truncated"] = newBool(ctx.headersTruncated)
+              if tryCompleteTask(task, newMap(response)):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+          endExternalNativeOp()
+          pending.ctx = nil
+          freeHttpClientCtx(ctx)
+          let last = httpClientPending.high
+          if i != last:
+            httpClientPending[i] = move httpClientPending[last]
+          httpClientPending.setLen(last)
+          discard atomicFetchSub(addr httpClientPendingCount, 1,
+                                 ATOMIC_ACQ_REL)
+        else:
+          inc i
+
+  proc runHttpClientJob(jobPtr: pointer) {.gcsafe.} =
+    {.cast(gcsafe).}:
+      let ctx = cast[ptr HttpClientCtx](jobPtr)
+      template fail(message: string) =
+        ctx.resultFailed = true
+        ctx.resultFailure = sharedExecText("net/http_client: " & message)
+      if atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+        ctx.resultCancelled = true
+        return
+      let httpMethod = readSharedExecText(ctx.httpMethod)
+      let url = readSharedExecText(ctx.url)
+      let body = readSharedExecText(ctx.body)
+      let caFile = readSharedExecText(ctx.caFile)
+      let easy = gCurlApi.easyInit()
+      if easy == nil:
+        fail("curl_easy_init failed")
+        return
+      var headerList: pointer
+      try:
+        template setopt(call: untyped, label: string) =
+          if call != CurlOk:
+            fail("could not set " & label)
+            return
+        setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptUrl, url.cstring), "URL")
+        setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptCustomRequest,
+                              httpMethod.cstring),
+               "method")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptNoSignal, 1),
+               "no-signal")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptFollowLocation, 1),
+               "redirects")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptTimeoutMs,
+                               ctx.timeoutMs.clong),
+               "timeout")
+        setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptAcceptEncoding, ""),
+               "content decoding")
+        if caFile.len > 0:
+          setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptCaInfo,
+                                caFile.cstring), "CA file")
+        setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptWriteFunction,
+                              cast[pointer](httpWriteCallback)), "write callback")
+        setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptWriteData, ctx),
+               "write data")
+        setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptHeaderFunction,
+                              cast[pointer](httpHeaderCallback)), "header callback")
+        setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptHeaderData, ctx),
+               "header data")
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptNoProgress, 0),
+               "progress")
+        setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptXferInfoFunction,
+                              cast[pointer](httpProgressCallback)),
+               "progress callback")
+        setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptXferInfoData, ctx),
+               "progress data")
+        if body.len > 0:
+          setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptPostFields,
+                                ctx.body.data),
+                 "request body")
+          setopt(cCurlSetoptOff(gCurlApi.setoptAddr, easy,
+                                CurlOptPostFieldSizeLarge, body.len.int64),
+                 "request body size")
+        var header = ctx.headers
+        while header != nil:
+          let text = readSharedExecText(header.text)
+          let nextList = gCurlApi.slistAppend(headerList, text.cstring)
+          if nextList == nil:
+            fail("could not allocate request headers")
+            return
+          headerList = nextList
+          header = header.next
+        if headerList != nil:
+          setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptHttpHeader,
+                                headerList),
+                 "request headers")
+        let code = gCurlApi.easyPerform(easy)
+        if code != CurlOk:
+          if code == CurlAbortedByCallback and
+              atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE):
+            ctx.resultCancelled = true
+          else:
+            ctx.resultTimedOut = code == CurlOperationTimedOut
+            let detail = if ctx.bufferOverflow:
+                "stream buffer exceeded its configured byte cap"
+              elif gCurlApi.easyStrerror(code) == nil:
+                "libcurl error " & $code
+              else:
+                $gCurlApi.easyStrerror(code)
+            fail(detail)
+          return
+        var status: clong
+        if cCurlGetinfoPtr(gCurlApi.getinfoAddr, easy, CurlInfoResponseCode,
+                           addr status) != CurlOk:
+          fail("could not read response status")
+          return
+        ctx.responseStatus = int(status)
+        var effective: cstring
+        if cCurlGetinfoPtr(gCurlApi.getinfoAddr, easy, CurlInfoEffectiveUrl,
+                           addr effective) == CurlOk and
+            effective != nil:
+          ctx.effectiveUrl = sharedExecText($effective)
+        else:
+          ctx.effectiveUrl = sharedExecText(url)
+      except CatchableError as e:
+        fail(e.msg)
+      finally:
+        if headerList != nil:
+          gCurlApi.slistFreeAll(headerList)
+        gCurlApi.easyCleanup(easy)
+
+  proc httpClientWorkerMain() {.thread.} =
+    {.cast(gcsafe).}:
+      while true:
+        var jobPtr: pointer
+        withLock httpClientLock:
+          while httpClientQueue.len == 0:
+            inc httpClientIdle
+            wait(httpClientCond, httpClientLock)
+            dec httpClientIdle
+          jobPtr = httpClientQueue[0]
+          httpClientQueue.delete(0)
+        runHttpClientJob(jobPtr)
+        let ctx = cast[ptr HttpClientCtx](jobPtr)
+        atomicStoreN(addr ctx.workerDone, true, ATOMIC_RELEASE)
+
+  proc enqueueHttpClientJob(jobPtr: pointer) =
+    var needThread = false
+    withLock httpClientLock:
+      httpClientQueue.add(jobPtr)
+      if httpClientIdle == 0 and
+          httpClientThreads.len + httpClientStarting < httpClientMaxWorkers:
+        needThread = true
+        inc httpClientStarting
+      else:
+        signal(httpClientCond)
+    if needThread:
+      var thread: ref Thread[void]
+      new(thread)
+      try:
+        createThread(thread[], httpClientWorkerMain)
+        withLock httpClientLock:
+          dec httpClientStarting
+          httpClientThreads.add thread
+      except:
+        var removed = false
+        withLock httpClientLock:
+          dec httpClientStarting
+          for i in 0 ..< httpClientQueue.len:
+            if httpClientQueue[i] == jobPtr:
+              httpClientQueue.delete(i)
+              removed = true
+              break
+        if removed:
+          raise
+
+else:
+  proc pollHttpClientCompletions() =
+    discard
+
+proc validHttpMethod(httpMethod: string): bool =
+  if httpMethod.len == 0:
+    return false
+  for ch in httpMethod:
+    if not (ch in {'A'..'Z', 'a'..'z', '0'..'9', '-', '_'}):
+      return false
+  true
+
+proc biHttpClientStart(name: string, streaming: bool,
+                       args: openArray[Value], call: ptr NativeCall): Value =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1 or args[0].kind != vkCapability or
+      args[0].capabilityName != "Net/Http":
+    raiseHttpClientError(name & " expects Http authority", scope)
+  var httpMethod = "GET"
+  var url = ""
+  var headers: seq[string]
+  var body = ""
+  var caFile = ""
+  var timeoutMs = HttpDefaultTimeoutMs
+  var maxBytes = HttpDefaultMaxBytes
+  var pendingBytes = HttpDefaultPendingBytes
+  var channelCapacity = 256
+  if call != nil:
+    for i, argName in call[].namedNames:
+      let value = call[].namedValues[i]
+      case argName
+      of "method":
+        requireStr(name & " ^method", value)
+        httpMethod = value.strVal
+      of "url":
+        requireStr(name & " ^url", value)
+        url = value.strVal
+      of "headers":
+        case value.kind
+        of vkMap:
+          for headerName, headerValue in value.mapEntries:
+            requireStr(name & " ^headers value", headerValue)
+            headers.add headerName & ": " & headerValue.strVal
+        of vkList:
+          for item in value.listItems:
+            requireStr(name & " ^headers item", item)
+            headers.add item.strVal
+        else:
+          raiseHttpClientError(name & " ^headers must be a Map or List of Str",
+                               scope)
+      of "body":
+        requireStr(name & " ^body", value)
+        body = value.strVal
+      of "ca_file":
+        requireStr(name & " ^ca_file", value)
+        caFile = value.strVal
+      of "timeout_ms":
+        timeoutMs = int(requireInt64(name & " ^timeout_ms", value))
+      of "max_bytes":
+        maxBytes = int(requireInt64(name & " ^max_bytes", value))
+      of "max_pending_bytes":
+        if not streaming:
+          raiseHttpClientError(name & " got unexpected named argument: " & argName,
+                               scope)
+        pendingBytes = int(requireInt64(name & " ^max_pending_bytes", value))
+      of "channel_capacity":
+        if not streaming:
+          raiseHttpClientError(name & " got unexpected named argument: " & argName,
+                               scope)
+        channelCapacity = int(requireInt64(name & " ^channel_capacity", value))
+      else:
+        raiseHttpClientError(name & " got unexpected named argument: " & argName,
+                             scope)
+  if not validHttpMethod(httpMethod):
+    raiseHttpClientError(name & " ^method contains invalid characters", scope)
+  if not (url.startsWith("http://") or url.startsWith("https://")):
+    raiseHttpClientError(name & " ^url must use http:// or https://", scope)
+  if timeoutMs <= 0 or maxBytes <= 0 or pendingBytes <= 0 or channelCapacity <= 0:
+    raiseHttpClientError(name & " limits must be positive", scope)
+  if timeoutMs > 86_400_000 or maxBytes > HttpHardMaxBytes or
+      pendingBytes > HttpHardPendingBytes or channelCapacity > 65_536:
+    raiseHttpClientError(name & " limits exceed the native client safety cap",
+                         scope)
+  if url.len > 16_384 or body.len > HttpHardMaxBytes or caFile.len > 4096:
+    raiseHttpClientError(name & " request data exceeds the native client safety cap",
+                         scope)
+  if headers.len > 256:
+    raiseHttpClientError(name & " accepts at most 256 headers", scope)
+  for header in headers:
+    if header.len > 65_536:
+      raiseHttpClientError(name & " header exceeds 65536 bytes", scope)
+    if '\r' in header or '\n' in header:
+      raiseHttpClientError(name & " rejects newline characters in headers", scope)
+  loadCurlApi(scope)
+  when compileOption("threads"):
+    if scope == nil or scope.application == nil:
+      raiseHttpClientError(name & " requires a scheduler scope", scope)
+    pollHttpClientCompletions()
+    let task = newExternalTask()
+    let channel = if streaming: newChannel(channelCapacity) else: NIL
+    markSharedValue(task)
+    if streaming:
+      markSharedValue(channel)
+    let ctx = cast[ptr HttpClientCtx](allocShared0(sizeof(HttpClientCtx)))
+    ctx.httpMethod = sharedExecText(httpMethod)
+    ctx.url = sharedExecText(url)
+    ctx.body = sharedExecText(body)
+    ctx.caFile = sharedExecText(caFile)
+    ctx.taskBits = task.bits
+    ctx.chunkChanBits = if streaming: channel.bits else: 0'u64
+    ctx.schedulerPtr = cast[pointer](schedulerForScope(scope))
+    ctx.timeoutMs = timeoutMs
+    ctx.maxBytes = maxBytes
+    ctx.maxPendingBytes = pendingBytes
+    ctx.responseBody.cap = maxBytes
+    ctx.responseHeaders.cap = HttpHeaderMaxBytes
+    initLock(ctx.chunkLock)
+    var headerTail: ptr SharedExecArg
+    for header in headers:
+      let node = cast[ptr SharedExecArg](allocShared0(sizeof(SharedExecArg)))
+      node.text = sharedExecText(header)
+      if headerTail == nil:
+        ctx.headers = node
+      else:
+        headerTail.next = node
+      headerTail = node
+    let pending = HttpClientPending(ctx: ctx)
+    pending.taskOwner = retainedCopy(task)
+    pending.channelOwner = retainedCopy(channel)
+    withLock httpClientLock:
+      httpClientPending.add pending
+      discard atomicFetchAdd(addr httpClientPendingCount, 1, ATOMIC_RELEASE)
+    beginExternalNativeOp()
+    try:
+      enqueueHttpClientJob(ctx)
+    except CatchableError as e:
+      endExternalNativeOp()
+      withLock httpClientLock:
+        httpClientPending.setLen(httpClientPending.len - 1)
+        discard atomicFetchSub(addr httpClientPendingCount, 1,
+                               ATOMIC_ACQ_REL)
+      pending.ctx = nil
+      freeHttpClientCtx(ctx)
+      raiseHttpClientError(name & " could not start worker: " & e.msg, scope)
+    if streaming:
+      var streamResult = initPropTable()
+      streamResult["task"] = task
+      streamResult["channel"] = channel
+      newMap(streamResult)
+    else:
+      task
+  else:
+    raiseHttpClientError(name & " requires a threaded runtime build", scope)
+    NIL
+
+proc biHttpClientRequest(args: openArray[Value],
+                         call: ptr NativeCall): Value {.nimcall.} =
+  biHttpClientStart("net/http_client/request", false, args, call)
+
+proc biHttpClientStream(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+  biHttpClientStart("net/http_client/stream", true, args, call)
 
 proc biOsBeginInterrupt(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -4364,6 +5108,7 @@ proc registerStdlibNamespaces(root: Scope) =
     root.define(name, result)
     root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
   let osError = defineErrorType("OsError")
+  let httpClientError = defineErrorType("HttpClientError")
   let jsonError = defineErrorType("JsonError")
   let serdeError = defineErrorType("SerdeError")
   # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
@@ -4488,8 +5233,17 @@ proc registerStdlibNamespaces(root: Scope) =
                                                 biHttpNotFound,
                                                 acceptsNamed = false))
   httpScope.define("HttpError", root.vars["HttpError"])
+  let httpClientScope = newScope(root)
+  httpClientScope.define("Http", newCapability("Net/Http"))
+  httpClientScope.define("request",
+    newNativeCallFn("net/http_client/request", biHttpClientRequest))
+  httpClientScope.define("stream",
+    newNativeCallFn("net/http_client/stream", biHttpClientStream))
+  httpClientScope.define("HttpClientError", httpClientError)
   let netLowerScope = newScope(root)
   netLowerScope.define("http", newNamespace("net/http", httpScope))
+  netLowerScope.define("http_client",
+                       newNamespace("net/http_client", httpClientScope))
   root.define("net", newNamespace("net", netLowerScope))
 
   # db: shared protocol + error type; sqlite/postgres backends implement it.
