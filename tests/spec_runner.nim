@@ -3588,6 +3588,21 @@ suite "spec — os and json from ai-agent plan":
                "[(seen ~ Cell/get) r/stdout r/status]",
                "[[\"a\" \"b\"] \"a\\nb\\n\" 0]")
 
+  test "os turn interrupt polling is scoped and consumptive":
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      check_eval("(import os [begin_interrupt take_interrupt end_interrupt]) " &
+                 "[(begin_interrupt) (take_interrupt) (end_interrupt)]",
+                 "[true false nil]")
+    else:
+      check_eval("(import os [begin_interrupt take_interrupt end_interrupt]) " &
+                 "[(begin_interrupt) (take_interrupt) (end_interrupt)]",
+                 "[false false nil]")
+
+  test "os/monotonic_ms is nondecreasing":
+    check_eval("(import os [monotonic_ms]) " &
+               "(var a (monotonic_ms)) (sleep 2) (>= (monotonic_ms) a)",
+               "true")
+
   test "Task/cancel terminates an async exec child and closes its channel":
     let started = getMonoTime()
     check_eval("(import os [exec_stream_async Exec]) " &
@@ -3624,15 +3639,17 @@ suite "spec — os and json from ai-agent plan":
     let path = dir / "note.txt"
     let made = dir / "made"
     let removable = dir / "remove-me.txt"
-    check_eval("(import Fs [read_text write_text list_dir make_dir remove " &
+    check_eval("(import Fs [read_text write_text exists? list_dir make_dir remove " &
                "ReadDir WriteDir]) " &
                "(write_text WriteDir " & geneString(path) & " \"hello\") " &
                "(write_text WriteDir " & geneString(removable) & " \"bye\") " &
                "(make_dir WriteDir " & geneString(made) & ") " &
                "(remove WriteDir " & geneString(removable) & ") " &
                "[(read_text ReadDir " & geneString(path) & ") " &
+               " (exists? ReadDir " & geneString(path) & ") " &
+               " (exists? ReadDir " & geneString(removable) & ") " &
                " (list_dir ReadDir " & geneString(dir) & ")]",
-               "[\"hello\" [\"made\" \"note.txt\"]]")
+               "[\"hello\" true false [\"made\" \"note.txt\"]]")
 
   test "Fs/real_path resolves an existing file and a not-yet-created path":
     ## examples/ai_agent/design.md §8.5: workspace confinement resolves real paths before

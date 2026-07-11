@@ -1,4 +1,6 @@
-import std/[monotimes, net, os, osproc, strutils, times, unittest]
+import std/[monotimes, net, os, osproc, streams, strutils, times, unittest]
+when defined(posix):
+  import std/posix
 import gene/[repl, vm]
 
 let cliDir = getTempDir() / "gene_cli_tests"
@@ -762,6 +764,291 @@ suite "cli — gene run":
     check "tool_registered run_shell (execute)" in ran.output
     check "guard: on" in ran.output
 
+  test "ai agent diff and targeted undo preserve unowned edits":
+    buildGeneCli()
+    let workspace = cliDir / "agent-attribution-workspace"
+    if dirExists(workspace):
+      removeDir(workspace)
+    createDir(workspace)
+    writeFile(workspace / "dirty.txt", "user-before\n")
+    writeFile(workspace / "safe.txt", "safe-before\n")
+    writeFile(workspace / "untouched.txt", "keep-me\n")
+
+    let fixture = writeCliProgram("file_change_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [stringify])
+(import str [join])
+(import std/stream [to_stream map into])
+(var hits (cell 0))
+(fn sse_body [chunks]
+  (var lines ((to_stream chunks)
+    ~ map (fn [c] $"data: ${(stringify c)}") ; ~ into []))
+  (var joined (join lines "\n\n"))
+  $"${joined}\n\ndata: [DONE]\n\n")
+(var tool_turn
+  [{^choices [{^index 0 ^delta {^role "assistant" ^tool_calls
+    [{^index 0 ^id "fc1" ^type "function"
+      ^function {^name "edit_file"
+                 ^arguments "{\"path\":\"dirty.txt\",\"old_text\":\"user-before\\n\",\"new_text\":\"agent-owned\\n\"}"}}
+     {^index 1 ^id "fc2" ^type "function"
+      ^function {^name "write_file"
+                 ^arguments "{\"path\":\"new.txt\",\"content\":\"new-content\\n\"}"}}
+     {^index 2 ^id "fc3" ^type "function"
+      ^function {^name "edit_file"
+                 ^arguments "{\"path\":\"safe.txt\",\"old_text\":\"safe-before\\n\",\"new_text\":\"safe-agent\\n\"}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+(var done_turn
+  [{^choices [{^index 0 ^delta {^content "files changed"}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+(fn handle [req]
+  (hits ~ Cell/set (+ (hits ~ Cell/get) 1))
+  (Response ^status 200 ^headers {^content-type "text/event-stream"}
+            ^body (sse_body (if (== (hits ~ Cell/get) 1)
+                              tool_turn done_turn))))
+(serve (Server ^host "127.0.0.1" ^port 8966) handle ^max_requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8966), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+
+    let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
+    let input = "go\n/diff\n/sh\nprintf external > dirty.txt\nexit\n" &
+                "/undo 1\n/undo 3\n/undo 2\n/diff\n" &
+                "/trace type=file_change\n/quit\n"
+    let command = "cd " & shellQuote(workspace) & " && printf " &
+      shellQuote(input) & " | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+      "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
+      "OPENAI_BASE_URL=http://127.0.0.1:8966/v1 OPENAI_MODEL=fake-chat " &
+      shellQuote(geneExe) & " run " & shellQuote(tui)
+    let ran = execCmdOnce(command)
+    check ran.exitCode == 0
+    check "change #1 edit dirty.txt (pre-existing file)" in ran.output
+    check "change #2 write new.txt (new file)" in ran.output
+    check "refused: dirty.txt changed after agent change #1" in ran.output
+    check "undid change #3 (safe.txt)" in ran.output
+    check "undid change #2 (new.txt)" in ran.output
+    check "file_change #1 edit: dirty.txt" in ran.output
+    check "file_change undo #3: safe.txt" in ran.output
+    check readFile(workspace / "dirty.txt") == "external"
+    check readFile(workspace / "safe.txt") == "safe-before\n"
+    check readFile(workspace / "untouched.txt") == "keep-me\n"
+    check not fileExists(workspace / "new.txt")
+
+  test "ai agent records structured command evidence and restores it":
+    buildGeneCli()
+    let stateDir = cliDir / "agent-evidence-state"
+    if dirExists(stateDir): removeDir(stateDir)
+    let fixture = writeCliProgram("evidence_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [stringify])
+(import str [join])
+(import std/stream [to_stream map into])
+(var hits (cell 0))
+(fn sse_body [chunks]
+  (var lines ((to_stream chunks)
+    ~ map (fn [c] $"data: ${(stringify c)}") ; ~ into []))
+  (var joined (join lines "\n\n"))
+  $"${joined}\n\ndata: [DONE]\n\n")
+(var calls
+  [{^choices [{^index 0 ^delta {^role "assistant" ^tool_calls
+    [{^index 0 ^id "ev1" ^type "function"
+      ^function {^name "run_shell" ^arguments "{\"command\":\"printf checked\"}"}}
+     {^index 1 ^id "ev2" ^type "function"
+      ^function {^name "run_shell" ^arguments "{\"command\":\"exit 7\"}"}}
+     {^index 2 ^id "ev3" ^type "function"
+      ^function {^name "run_shell" ^arguments "{\"command\":\"yes x | head -c 70000\"}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+(var done
+  [{^choices [{^index 0 ^delta {^content "checks complete"}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+(fn handle [req]
+  (hits ~ Cell/set (+ (hits ~ Cell/get) 1))
+  (Response ^status 200 ^headers {^content-type "text/event-stream"}
+            ^body (sse_body (if (== (hits ~ Cell/get) 1) calls done))))
+(serve (Server ^host "127.0.0.1" ^port 8965) handle ^max_requests 2)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running: server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8965), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline: raise
+          sleep(50)
+    let command = "printf '/repl\n(session/evidence ~ Cell/get)\nquit\n" &
+      "go\n/trace type=check\n/repl\n(session/evidence ~ Cell/get)\n" &
+      "quit\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+      "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
+      "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
+      "OPENAI_BASE_URL=http://127.0.0.1:8965/v1 OPENAI_MODEL=fake-chat " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    check ran.exitCode == 0
+    check "gene> []" in ran.output
+    check "check command status=0" in ran.output
+    check "check command status=7" in ran.output
+    check "^^truncated" in ran.output
+    check "^^verified" in ran.output
+    check "^verified false" in ran.output
+    let stored = readFile(stateDir / "events.gene")
+    check stored.count("^type \"check\"") == 3
+    check "^duration_ms" in stored
+
+    let restored = execCmdOnce(
+      "printf '/trace type=check\n/quit\n' | " &
+      "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+      "OPENAI_AUTH_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    check restored.exitCode == 0
+    check restored.output.count("check command status=") == 3
+
+  test "ai agent loads hierarchical AGENTS instructions safely":
+    buildGeneCli()
+    let workspace = cliDir / "agents-workspace"
+    let outside = cliDir / "agents-outside"
+    for dir in [workspace, outside]:
+      if dirExists(dir): removeDir(dir)
+      createDir(dir)
+    createDir(workspace / "sub")
+    createDir(workspace / "sibling")
+    createDir(workspace / "huge")
+    writeFile(workspace / "AGENTS.md", "ROOT_INSTRUCTION\n")
+    writeFile(workspace / "sub" / "AGENTS.md", "CHILD_INSTRUCTION\n")
+    writeFile(workspace / "sibling" / "AGENTS.md", "SIBLING_INSTRUCTION\n")
+    writeFile(workspace / "huge" / "AGENTS.md",
+              "HUGE_INSTRUCTION\n" & repeat('x', 33000))
+    writeFile(workspace / "huge" / "target.txt", "huge-content\n")
+    var deep = workspace
+    for i in 1..9:
+      deep = deep / ("d" & $i)
+      createDir(deep)
+      if i == 8: writeFile(deep / "AGENTS.md", "DEPTH8_INSTRUCTION\n")
+      if i == 9: writeFile(deep / "AGENTS.md", "DEPTH9_INSTRUCTION\n")
+    writeFile(deep / "target.txt", "deep-content\n")
+    writeFile(outside / "AGENTS.md", "OUTSIDE_INSTRUCTION\n")
+    writeFile(outside / "secret.txt", "outside-secret\n")
+    createSymlink(outside, workspace / "escape")
+    for i in 1..6: removeFile("tmp/agents-req-" & $i & ".json")
+
+    let fixture = writeCliProgram("agents_endpoint.gene", """
+(import net/http [Server serve Response])
+(import Fs [write_text WriteDir])
+(import json [stringify])
+(import str [join])
+(import std/stream [to_stream map into])
+(var hits (cell 0))
+(fn sse_body [chunks]
+  (var lines ((to_stream chunks)
+    ~ map (fn [c] $"data: ${(stringify c)}") ; ~ into []))
+  (var joined (join lines "\n\n"))
+  $"${joined}\n\ndata: [DONE]\n\n")
+(fn tool_turn [id : Str, name : Str, arguments : Str]
+  [{^choices [{^index 0 ^delta {^role "assistant" ^tool_calls
+      [{^index 0 ^id id ^type "function"
+        ^function {^name name ^arguments arguments}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+(var final_turn
+  [{^choices [{^index 0 ^delta {^content "instructions verified"}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+(fn handle [req]
+  (hits ~ Cell/set (+ (hits ~ Cell/get) 1))
+  (var n (hits ~ Cell/get))
+  (write_text WriteDir $"tmp/agents-req-${n}.json" req/body)
+  (var chunks
+    (match n
+      (when 1 (tool_turn "a1" "write_file"
+        "{\"path\":\"sub/target.txt\",\"content\":\"created\\n\"}"))
+      (when 2 (tool_turn "a2" "write_file"
+        "{\"path\":\"sub/target.txt\",\"content\":\"created\\n\"}"))
+      (when 3 (tool_turn "a3" "read_file"
+        "{\"path\":\"huge/target.txt\"}"))
+      (when 4 (tool_turn "a4" "read_file"
+        "{\"path\":\"d1/d2/d3/d4/d5/d6/d7/d8/d9/target.txt\"}"))
+      (when 5 (tool_turn "a5" "read_file"
+        "{\"path\":\"escape/secret.txt\"}"))
+      (else final_turn)))
+  (Response ^status 200 ^headers {^content-type "text/event-stream"}
+            ^body (sse_body chunks)))
+(serve (Server ^host "127.0.0.1" ^port 8964) handle ^max_requests 6)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running: server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8964), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline: raise
+          sleep(50)
+    let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
+    let command = "cd " & shellQuote(workspace) &
+      " && printf 'go\n/status\n/repl\n(session/instructions ~ Cell/get)\n" &
+      "quit\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+      "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
+      "OPENAI_BASE_URL=http://127.0.0.1:8964/v1 OPENAI_MODEL=fake-chat " &
+      shellQuote(geneExe) & " run " & shellQuote(tui)
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0 or not fileExists(workspace / "sub" / "target.txt"):
+      checkpoint ran.output
+    check ran.exitCode == 0
+    check fileExists(workspace / "sub" / "target.txt")
+    if fileExists(workspace / "sub" / "target.txt"):
+      check readFile(workspace / "sub" / "target.txt") == "created\n"
+    let req1 = readFile("tmp/agents-req-1.json")
+    let req2 = readFile("tmp/agents-req-2.json")
+    let req3 = readFile("tmp/agents-req-3.json")
+    let req4 = readFile("tmp/agents-req-4.json")
+    let req5 = readFile("tmp/agents-req-5.json")
+    let req6 = readFile("tmp/agents-req-6.json")
+    check "ROOT_INSTRUCTION" in req1
+    check "CHILD_INSTRUCTION" notin req1
+    check req2.find("ROOT_INSTRUCTION") < req2.find("CHILD_INSTRUCTION")
+    check "SIBLING_INSTRUCTION" notin req2
+    check "write deferred" in req2
+    check "wrote sub/target.txt" in req3
+    check "HUGE_INSTRUCTION" notin req4
+    check "huge-content" in req4
+    check "DEPTH8_INSTRUCTION" in req5
+    check "DEPTH9_INSTRUCTION" notin req5
+    check "OUTSIDE_INSTRUCTION" notin req6
+    check "unsafe path rejected" in req6
+    check "instructions: 3" in ran.output
+    check "AGENTS.md" in ran.output
+    check "sub/AGENTS.md" in ran.output
+
   test "ai agent repl add_tool plus resume exposes the new tool to the model":
     ## Slice A signature demo (§9.1/§10.2): a typed tool registered live in
     ## /repl reaches the model on the resumed turn. The fake endpoint answers
@@ -839,6 +1126,111 @@ suite "cli — gene run":
     let ran = execCmdOnce(script)
     check ran.exitCode == 0
     check "verdict: ping-visible" in ran.output
+
+  test "ai agent SIGINT cancels a model turn and accepts steering":
+    when defined(posix):
+      buildGeneCli()
+      let commandStarted = "tmp/interrupt-command-started"
+      removeFile(commandStarted)
+      let endpoint = writeCliProgram("interrupt_chat_endpoint.gene", """
+(import net/http [Server serve Response])
+(var hits (cell 0))
+(fn handle [req]
+  (hits ~ Cell/set (+ (hits ~ Cell/get) 1))
+  (var n (hits ~ Cell/get))
+  (var body
+    (if (== n 1)
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_cancel_1\",\"type\":\"function\",\"function\":{\"name\":\"run_shell\",\"arguments\":\"{\\\"command\\\":\\\"touch tmp/interrupt-command-started; sleep 5\\\"}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+      "data: {\"choices\":[{\"delta\":{\"content\":\"steered\"}}]}\n\ndata: [DONE]\n\n"))
+  (Response ^status 200 ^headers {^content-type "text/event-stream"} ^body body))
+(serve (Server ^host "127.0.0.1" ^port 8968) handle ^max_requests 2)
+""")
+      let endpointProc = startProcess(geneExe, args = ["run", endpoint],
+                                      options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if endpointProc.running:
+          endpointProc.terminate()
+        endpointProc.close()
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8968), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+
+      let stateDir = cliDir / "interrupt-state"
+      if dirExists(stateDir): removeDir(stateDir)
+      let agentArgs = ["-u", "CODEX_ACCESS_TOKEN", "-u", "OPENAI_API_KEY",
+                       "OPENAI_AUTH_TOKEN=dummy",
+                       "OPENAI_BASE_URL=http://127.0.0.1:8968/v1",
+                       "OPENAI_API=chat", "OPENAI_MODEL=fake-chat",
+                       "GENE_AGENT_STATE=" & stateDir,
+                       geneExe, "run", "examples/ai_agent/tui.gene"]
+      let pidFile = cliDir / "interrupt_agent.pid"
+      let outputFile = cliDir / "interrupt_agent.out"
+      removeFile(pidFile)
+      removeFile(outputFile)
+      let agentProc =
+        when defined(macosx):
+          var inner = "echo $$ > " & shellQuote(pidFile) & "; exec /usr/bin/env"
+          for arg in agentArgs: inner.add " " & shellQuote(arg)
+          let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                        shellQuote(inner) & " > " & shellQuote(outputFile) &
+                        " 2>&1"
+          startProcess("/bin/sh", args = ["-c", command],
+                       options = {poUsePath, poStdErrToStdOut})
+        else:
+          startProcess("/usr/bin/env", args = agentArgs,
+                       options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if agentProc.running: agentProc.terminate()
+        agentProc.close()
+      let inputStream = agentProc.inputStream
+      inputStream.write("wait\n")
+      inputStream.flush()
+      let hitDeadline = getMonoTime() + initDuration(seconds = 5)
+      while not fileExists(commandStarted) and getMonoTime() < hitDeadline: sleep(10)
+      check fileExists(commandStarted)
+      let interruptedAt = getMonoTime()
+      when defined(macosx):
+        let pidDeadline = getMonoTime() + initDuration(seconds = 3)
+        while not fileExists(pidFile) and getMonoTime() < pidDeadline: sleep(10)
+        check fileExists(pidFile)
+        check kill(Pid(parseInt(readFile(pidFile).strip())), SIGINT) == 0
+      else:
+        check kill(Pid(agentProc.processID), SIGINT) == 0
+      let eventsFile = stateDir / "events.gene"
+      let cancelDeadline = getMonoTime() + initDuration(seconds = 2)
+      var cancellationPersisted = false
+      while getMonoTime() < cancelDeadline and not cancellationPersisted:
+        if fileExists(eventsFile):
+          cancellationPersisted = "cancelled" in readFile(eventsFile)
+        if not cancellationPersisted: sleep(10)
+      check cancellationPersisted
+      check (getMonoTime() - interruptedAt).inMilliseconds < 2000
+      inputStream.write("steer now\n/trace tool=run_shell\n/trace type=check\n/trace type=turn_done\n/quit\n")
+      inputStream.flush()
+      inputStream.close()
+      let exitCode = agentProc.waitForExit(8000)
+      let output =
+        when defined(macosx): readFile(outputFile)
+        else: agentProc.outputStream.readAll()
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "turn cancelled; enter steering to continue" in output
+      check "agent> steered" in output
+      check "tool_call run_shell" in output
+      check "check command status=nil" in output
+      let events = readFile(eventsFile)
+      check "^type \"check\"" in events
+      check "^cancelled true" in events
+      check events.count("^kind \"cancelled\"") == 1
 
   test "agent gateway runs concurrent sessions over the async transport":
     ## Milestone 8 e2e (examples/ai_agent/design.md §12): a slow fake chat endpoint
@@ -967,13 +1359,14 @@ suite "cli — gene run":
 
   test "agent gateway cancellation stops an in-flight model turn":
     buildGeneCli()
+    let commandStarted = "tmp/gateway-cancel-command-started"
+    removeFile(commandStarted)
     let endpoint = writeCliProgram("cancel_chat_endpoint.gene", """
 (import net/http [Server serve Response])
 (fn handle [req]
-  (sleep 5000)
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
-            ^body "data: [DONE]\n\n"))
+            ^body "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"gw_cancel\",\"type\":\"function\",\"function\":{\"name\":\"run_shell\",\"arguments\":\"{\\\"command\\\":\\\"touch tmp/gateway-cancel-command-started; sleep 5\\\"}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"))
 (serve (Server ^host "127.0.0.1" ^port 8972) handle ^max_requests 1)
 """)
     let endpointProc = startProcess(geneExe, args = ["run", endpoint],
@@ -1028,6 +1421,10 @@ suite "cli — gene run":
       if not busy:
         sleep(20)
     check busy
+    let commandDeadline = getMonoTime() + initDuration(seconds = 5)
+    while not fileExists(commandStarted) and getMonoTime() < commandDeadline:
+      sleep(10)
+    check fileExists(commandStarted)
     check "\"ok\":true" in curl(
       "-X POST http://127.0.0.1:8973/api/sessions/s1/cancel").output
 
@@ -1041,6 +1438,8 @@ suite "cli — gene run":
       sleep(20)
     check "turn cancelled" in events
     check "\"cancelled\":true" in events
+    check "\"type\":\"check\"" in events
+    check "\"tool\":\"run_shell\"" in events
     check "turn_done" in events
     check (getMonoTime() - started).inMilliseconds < 2000
 

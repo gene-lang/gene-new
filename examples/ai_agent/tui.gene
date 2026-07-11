@@ -45,12 +45,17 @@
 (mod ai_agent
   @doc "a terminal coding agent over the OpenAI Responses API")
 
-(import os [get_env env? exec exec_async exec_stream_async exec_stdio stdin_tty? read_line read_input refresh_input close_input Env Exec OsError])
+(import os [get_env env? exec exec_async exec_stream_async exec_stdio
+            begin_interrupt take_interrupt end_interrupt
+            monotonic_ms
+            stdin_tty? read_line read_input refresh_input close_input
+            Env Exec OsError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? contains? lower trim])
-(import std/stream [to_stream map filter into each])
+(import std/stream [to_stream map filter take into each])
 (import std/parse [parse_int])
-(import Fs [read_text write_text list_dir real_path ReadDir WriteDir ReadWriteDir])
+(import Fs [read_text write_text exists? remove list_dir real_path
+            ReadDir WriteDir ReadWriteDir])
 (import store/fs [open : store_open StoreError])
 (import repl [run : run_repl_session])
 
@@ -118,15 +123,16 @@
 # workspace cannot point writes/reads outside it (§8.5).
 (fn safe_path [p : Str] : Str
   (if (starts_with? p "/")
-    (fail $"unsafe path rejected (absolute): ${p}")
+    (fail (OsError ^message $"unsafe path rejected (absolute): ${p}"))
     (if (contains? p "..")
-      (fail $"unsafe path rejected (escapes workspace): ${p}")
+      (fail (OsError ^message $"unsafe path rejected (escapes workspace): ${p}"))
       (do
         (var rp (real_path ReadDir p))
         (if (|| (== rp workspace_real)
                 (starts_with? rp $"${workspace_real}/"))
           p
-          (fail $"unsafe path rejected (resolves outside workspace): ${p}"))))))
+          (fail (OsError
+            ^message $"unsafe path rejected (resolves outside workspace): ${p}")))))))
 
 # --- raw-command classification: normal | destructive | catastrophic ---------
 # High-confidence substring/segment heuristics only; parsing arbitrary shell is
@@ -279,10 +285,12 @@
 # Authoritative event log (§9.2). Append-only, versioned, redacted at append.
 # One vocabulary shared by the transcript, /trace, the /repl session object,
 # tests, and the gateway: user_input model_item tool_call tool_result
-# agent_text text_delta turn_done tool_registered confirmation memory error.
+# agent_text text_delta turn_done tool_registered file_change check
+# confirmation memory error.
 # -----------------------------------------------------------------------------
 
 (var agent_events (cell []))
+(var agent_evidence (cell []))
 (var next_event_v (cell 1))
 (var current_turn (cell 0))
 (var event_subscriptions (cell []))
@@ -329,6 +337,12 @@
       (do
         (var flag (if (== e/truncated true) " [truncated]" ""))
         $"${e/name}${flag}: ${(first_line e/value)}"))
+    (when "file_change"
+      (if (present? e/undo_of)
+        $"undo #${e/undo_of}: ${e/path}"
+        $"#${e/id} ${e/op}: ${e/path}"))
+    (when "check"
+      $"${e/scope} status=${e/status} ${e/duration_ms}ms: ${(first_line e/command)}")
     (when "confirmation" $"${e/risk} ${e/decision}: ${(first_line e/target)}")
     (when "tool_registered" $"${e/name} (${e/risk})")
     (when "memory"      (first_line e/text))
@@ -351,6 +365,9 @@
       (f (format_event e)))
     nil))
 
+(fn evidence_event? [e]
+  (|| (== e/type "file_change") (== e/type "check")))
+
 (fn emit_event! [type : Str, props]
   (if (! (events_enabled ~ Cell/get))
     nil
@@ -361,11 +378,206 @@
       (for [k pv] in props
         (e ~ Map/put! k (redact_any pv)))
       (agent_events ~ Cell/set (append (agent_events ~ Cell/get) e))
+      (if (evidence_event? e)
+        (agent_evidence ~ Cell/set (append (agent_evidence ~ Cell/get) e))
+        nil)
       (echo_subscribed e)
       e)))
 
 (fn begin_turn! []
   (current_turn ~ Cell/set (+ (current_turn ~ Cell/get) 1)))
+
+# Successful file tools record exact before/after snapshots. `/undo` restores
+# one operation only when the current file still equals that operation's after
+# snapshot, so pre-existing or later edits are never erased by inference.
+(var file_changes (cell []))
+(var next_file_change_id (cell 1))
+
+(fn file_snapshot [path : Str]
+  (if (exists? ReadDir path)
+    {^exists true ^text (read_text ReadDir path)}
+    {^exists false ^text ""}))
+
+(fn content_identity [text : Str]
+  {^hash (hash text) ^bytes (size (bytes text))})
+
+(fn emit_owned_event! [sink, type : Str, props]
+  (if (present? sink) (sink type props) (emit_event! type props)))
+
+(fn record_file_change! [sink, op : Str, path : Str, before, after]
+  (var id (next_file_change_id ~ Cell/get))
+  (next_file_change_id ~ Cell/set (+ id 1))
+  (var change {^id id ^op op ^path path
+               ^before_exists before/exists ^before before/text
+               ^after_exists after/exists ^after after/text
+               ^undone false})
+  (file_changes ~ Cell/set (append (file_changes ~ Cell/get) change))
+  (var before_id (content_identity before/text))
+  (var after_id (content_identity after/text))
+  (emit_owned_event! sink "file_change"
+    {^id id ^op op ^path path
+     ^before_exists before/exists ^before_hash before_id/hash
+     ^before_bytes before_id/bytes
+     ^after_exists after/exists ^after_hash after_id/hash
+     ^after_bytes after_id/bytes})
+  change)
+
+(fn active_file_changes []
+  ((to_stream (file_changes ~ Cell/get))
+    ~ filter (fn [c] (! (== c/undone true)))
+    ; ~ into []))
+
+(fn diff_lines [prefix : Str, text : Str]
+  (var lines (split text "\n"))
+  (var shown
+    ((take (to_stream lines) 40)
+      ~ map (fn [line] $"${prefix}${line}")
+      ; ~ into []))
+  (var body (join shown "\n"))
+  (if (> lines/~size 40)
+    $"${body}\n${prefix}[... ${lines/~size} lines total]"
+    body))
+
+(fn format_file_change [c]
+  (var origin (if c/before_exists "pre-existing file" "new file"))
+  (var before_diff (diff_lines "- " c/before))
+  (var after_diff (diff_lines "+ " c/after))
+  $"change #${c/id} ${c/op} ${c/path} (${origin})\n--- before\n${before_diff}\n+++ after\n${after_diff}")
+
+(fn file_diff_report []
+  (var changes (active_file_changes))
+  (if (empty? changes)
+    "no attributable file changes"
+    (join ((to_stream changes) ~ map format_file_change ; ~ into [])
+          "\n\n")))
+
+(fn find_file_change [wanted]
+  (var found (cell nil))
+  ((to_stream (file_changes ~ Cell/get))
+    ~ each (fn [c]
+        (if (&& (! (== c/undone true))
+                (|| (== wanted nil) (== c/id wanted)))
+          (found ~ Cell/set c)
+          nil)))
+  (found ~ Cell/get))
+
+(fn undo_file_change! [wanted]
+  (var c (find_file_change wanted))
+  (if (== c nil)
+    (if (== wanted nil) "nothing to undo" $"no active file change #${wanted}")
+    (do
+      (var path (safe_path c/path))
+      (var current (file_snapshot path))
+      (if (|| (!= current/exists c/after_exists)
+              (!= current/text c/after))
+        $"refused: ${c/path} changed after agent change #${c/id}; current content was preserved"
+        (do
+          (if c/before_exists
+            (write_text WriteDir path c/before)
+            (remove WriteDir path))
+          (c ~ Map/put! "undone" true)
+          (var undo_id (next_file_change_id ~ Cell/get))
+          (next_file_change_id ~ Cell/set (+ undo_id 1))
+          (emit_event! "file_change"
+            {^id undo_id ^op "undo" ^path c/path ^undo_of c/id
+             ^before_exists c/after_exists ^after_exists c/before_exists})
+          $"undid change #${c/id} (${c/path})")))))
+
+# Hierarchical AGENTS.md instructions are loaded only along a target path, not
+# by scanning the whole workspace. This keeps startup bounded and gives the
+# exact parent-to-child precedence for the file or directory being touched.
+(var agent_instruction_records (cell []))
+(var loaded_instruction_paths (cell []))
+(var instruction_bytes (cell 0))
+(var max_instruction_depth 8)
+(var max_instruction_file_bytes 32768)
+(var max_instruction_total_bytes 65536)
+
+(fn instruction_loaded? [source : Str]
+  ((loaded_instruction_paths ~ Cell/get) ~ contains? source))
+
+(fn load_instruction_file [scope : Str, source : Str]
+  (if (instruction_loaded? source)
+    nil
+    (do
+      (loaded_instruction_paths ~ Cell/set
+        (append (loaded_instruction_paths ~ Cell/get) source))
+      (var safe (safe_path source))
+      (if (! (exists? ReadDir safe))
+        nil
+        (try
+          (do
+            (var text (read_text ReadDir safe))
+            (var bytes_count (size (bytes text)))
+            (if (> bytes_count max_instruction_file_bytes)
+              {^scope scope ^source source ^skipped "file exceeds byte cap"
+               ^bytes bytes_count}
+              (if (> (+ (instruction_bytes ~ Cell/get) bytes_count)
+                     max_instruction_total_bytes)
+                {^scope scope ^source source ^skipped "total byte cap reached"
+                 ^bytes bytes_count}
+                (do
+                  (instruction_bytes ~ Cell/set
+                    (+ (instruction_bytes ~ Cell/get) bytes_count))
+                  (var record {^scope scope ^source source
+                               ^text text ^bytes bytes_count})
+                  (agent_instruction_records ~ Cell/set
+                    (append (agent_instruction_records ~ Cell/get) record))
+                  record))))
+        catch (OsError ^message _)
+          {^scope scope ^source source ^skipped "unreadable"})))))
+
+(fn ensure_agents_for_path [path : Str, include_leaf : Bool]
+  (var before_paths (loaded_instruction_paths ~ Cell/get))
+  (load_instruction_file "." "AGENTS.md")
+  (var parts (split path "/"))
+  (var count
+    (if (== path ".") 0
+      (if include_leaf parts/~size (- parts/~size 1))))
+  (if (> count max_instruction_depth) (set count max_instruction_depth) nil)
+  (var scope_cell (cell "."))
+  (repeat i in count
+    (do
+      (scope_cell ~ Cell/set
+        (if (== (scope_cell ~ Cell/get) ".")
+          parts/%i
+          $"${(scope_cell ~ Cell/get)}/${parts/%i}"))
+      (load_instruction_file (scope_cell ~ Cell/get)
+        $"${(scope_cell ~ Cell/get)}/AGENTS.md")))
+  (var records (agent_instruction_records ~ Cell/get))
+  ((to_stream records)
+    ~ filter (fn [r] (! (before_paths ~ contains? r/source)))
+    ; ~ into []))
+
+(fn instruction_applies? [record, path : Str]
+  (|| (== record/scope ".")
+      (== path record/scope)
+      (starts_with? path $"${record/scope}/")))
+
+(fn effective_agent_instructions [path : Str]
+  ((to_stream (agent_instruction_records ~ Cell/get))
+    ~ filter (fn [r]
+        (&& (== r/skipped void) (instruction_applies? r path)))
+    ; ~ into []))
+
+(fn format_instruction_records [records]
+  (if (empty? records)
+    ""
+    (join
+      ((to_stream records)
+        ~ map (fn [r] $"[${r/source} scope=${r/scope}]\n${r/text}")
+        ; ~ into [])
+      "\n\n")))
+
+(fn newly_loaded_instruction_text [path : Str, include_leaf : Bool]
+  (var newly (ensure_agents_for_path path include_leaf))
+  (format_instruction_records
+    ((to_stream newly) ~ filter (fn [r] (== r/skipped void)) ; ~ into [])))
+
+# Root instructions are part of the first model request. Nested instructions
+# enter through the first tool result for that subtree; mutating tools defer
+# that first operation so the model must retry after seeing them.
+(ensure_agents_for_path "__root_probe__" false)
 
 # --- /trace: filters over the event log (type=, tool=, path=, turn=, from=,
 # to=; a bare token is shorthand for type=token) --------------------------------
@@ -542,13 +754,53 @@
   ensure
     (task ~ Task/cancel)))
 
+(fn command_scope [command : Str] : Str
+  (var c (lower (trim command)))
+  (if (starts_with? c "nimble test")
+    "test"
+    (if (starts_with? c "nimble spec")
+      "spec"
+      (if (starts_with? c "nimble perf")
+        "benchmark"
+        (if (starts_with? c "nimble wasm") "wasm" "command")))))
+
+(fn emit_check! [sink, tool : Str, command : Str, started : Int, result]
+  (var status (if (== result nil) nil result/status))
+  (var timed_out (if (== result nil) false (== result/timed_out true)))
+  (var truncated (if (== result nil) false (== result/truncated true)))
+  (emit_owned_event! sink "check"
+    {^tool tool ^command command ^scope (command_scope command)
+     ^status status ^duration_ms (- (monotonic_ms) started)
+     ^timed_out timed_out ^truncated truncated
+     ^cancelled (== result nil)
+     ^verified (&& (!= result nil) (== status 0) (! timed_out))}))
+
+(fn run_checked_exec [sink, tool : Str, command : Str, task]
+  (var started (monotonic_ms))
+  (var result (cell nil))
+  (try
+    (do
+      (result ~ Cell/set (await_exec task))
+      (emit_check! sink tool command started (result ~ Cell/get))
+      (result ~ Cell/get))
+  ensure
+    (if (== (result ~ Cell/get) nil)
+      (emit_check! sink tool command started nil)
+      nil)))
+
 (register_tool! (Tool
   ^name "read_file"
   ^description "Read a UTF-8 text file inside the workspace."
   ^risk "read"
   ^params [{^name "path" ^type "string" ^required true
             ^doc "workspace-relative file path"}]
-  ^handler (fn [args] (read_text ReadDir (safe_path args/path)))))
+  ^handler (fn [args]
+    (var path (safe_path args/path))
+    (var instructions (newly_loaded_instruction_text args/path false))
+    (var content (read_text ReadDir path))
+    (if (== instructions "")
+      content
+      $"New applicable instructions (parent-to-child):\n${instructions}\n--- file ---\n${content}"))))
 
 (register_tool! (Tool
   ^name "write_file"
@@ -558,11 +810,18 @@
             ^doc "workspace-relative file path"}
            {^name "content" ^type "string" ^required true}]
   ^handler (fn [args]
-    (if (approve? "write_file" args/path)
-      (do
-        (write_text WriteDir (safe_path args/path) args/content)
-        $"wrote ${args/path}")
-      "denied by user policy"))))
+    (var path (safe_path args/path))
+    (var instructions (newly_loaded_instruction_text args/path false))
+    (if (!= instructions "")
+      $"write deferred: apply these newly discovered instructions, then retry:\n${instructions}"
+      (if (approve? "write_file" args/path)
+        (do
+          (var before (file_snapshot path))
+          (write_text WriteDir path args/content)
+          (record_file_change! args/_emit "write" args/path before
+            {^exists true ^text args/content})
+          $"wrote ${args/path}")
+        "denied by user policy")))))
 
 (register_tool! (Tool
   ^name "edit_file"
@@ -577,21 +836,28 @@
     (var path (safe_path args/path))
     (var old_text args/old_text)
     (var new_text args/new_text)
-    (if (== old_text "")
-      "error: old_text must not be empty"
-      (if (approve? "edit_file" args/path)
-        (do
-          (var text (read_text ReadDir path))
-          (var parts (split text old_text))
-          (var matches (- parts/~size 1))
-          (if (== matches 0)
-            "error: old_text not found"
-            (if (> matches 1)
-              $"error: old_text matched ${matches} times; provide a larger unique old_text"
-              (do
-                (write_text WriteDir path (join parts new_text))
-                $"edited ${args/path}"))))
-        "denied by user policy")))))
+    (var instructions (newly_loaded_instruction_text args/path false))
+    (if (!= instructions "")
+      $"edit deferred: apply these newly discovered instructions, then retry:\n${instructions}"
+      (if (== old_text "")
+        "error: old_text must not be empty"
+        (if (approve? "edit_file" args/path)
+          (do
+            (var text (read_text ReadDir path))
+            (var parts (split text old_text))
+            (var matches (- parts/~size 1))
+            (if (== matches 0)
+              "error: old_text not found"
+              (if (> matches 1)
+                $"error: old_text matched ${matches} times; provide a larger unique old_text"
+                (do
+                  (var after_text (join parts new_text))
+                  (write_text WriteDir path after_text)
+                  (record_file_change! args/_emit "edit" args/path
+                    {^exists true ^text text}
+                    {^exists true ^text after_text})
+                  $"edited ${args/path}"))))
+          "denied by user policy"))))))
 
 (register_tool! (Tool
   ^name "list_dir"
@@ -601,7 +867,11 @@
             ^doc "workspace-relative directory; defaults to the workspace root"}]
   ^handler (fn [args]
     (var p (if (== args/path void) "." args/path))
-    ((list_dir ReadDir (safe_path p)) ~ join "\n"))))
+    (var instructions (newly_loaded_instruction_text p true))
+    (var listing ((list_dir ReadDir (safe_path p)) ~ join "\n"))
+    (if (== instructions "")
+      listing
+      $"New applicable instructions (parent-to-child):\n${instructions}\n--- listing ---\n${listing}"))))
 
 (register_tool! (Tool
   ^name "run_shell"
@@ -615,7 +885,7 @@
       denial
       (if (approve? "run_shell" args/command)
         (do
-          (var r (await_exec
+          (var r (run_checked_exec args/_emit "run_shell" args/command
                    (exec_async Exec ^cmd "sh" ^args ["-c" args/command]
                                ^dir workspace_root
                                ^timeout_ms 10000 ^max_bytes 65536)))
@@ -633,9 +903,11 @@
             ^doc "workspace-relative directory or file; defaults to the workspace root"}]
   ^handler (fn [args]
     (var p (if (== args/path void) "." args/path))
-    (var r (await_exec
+    (var checked_path (safe_path p))
+    (var command $"grep -rn ${args/pattern} ${p}")
+    (var r (run_checked_exec args/_emit "grep" command
              (exec_async Exec ^cmd "grep"
-                         ^args ["-rn" args/pattern (safe_path p)]
+                         ^args ["-rn" args/pattern checked_path]
                          ^dir workspace_root
                          ^timeout_ms 10000 ^max_bytes 65536)))
     (var tail (if r/timed_out "\n[timed out]" ""))
@@ -711,7 +983,16 @@ When writing Gene code, use the current repo's language, not generic Lisp:
 Before changing Gene code, inspect nearby examples or docs if uncertain. After
 writing Gene code, verify with at least `bin/gene parse file.gene` or
 `bin/gene compile file.gene`; use `bin/gene run file.gene` when behavior matters.
+Only claim verification that a successful command result directly supports.
+State that broader behavior is unverified when no matching successful check ran.
 """)
+
+(var root_instruction_text
+  (format_instruction_records (effective_agent_instructions ".")))
+(if (!= root_instruction_text "")
+  (set gene_system_prompt
+    $"${gene_system_prompt}\n\nWorkspace instructions (root scope):\n${root_instruction_text}")
+  nil)
 
 (enum ResponseItemKind
   assistant_message
@@ -843,10 +1124,18 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
               (if (present? verr)
                 {^text $"error: ${verr}" ^truncated false}
                 (do
+                  # Internal per-turn context is added only after model-arg
+                  # validation, so it is neither schema-visible nor accepted
+                  # from the wire. Async handlers use this explicit sink
+                  # instead of a process-global callback (gateway sessions
+                  # may interleave while a subprocess is awaited).
+                  (m ~ Map/put! "_emit" emit)
                   (var h t/handler)
                   (try
                     (normalize_tool_result (h m))
                   catch (OsError ^message em)
+                    {^text $"error: ${em}" ^truncated false}
+                  catch {^message em}
                     {^text $"error: ${em}" ^truncated false}
                   catch *
                     {^text "error: tool failed" ^truncated false})))))
@@ -1096,8 +1385,9 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 
 (fn chat_call_items [calls_map, max_cell]
   (var items (cell []))
+  (var entry nil)
   (repeat i in (Cell/get max_cell)
-    (var entry (calls_map ~ Map/get $"${i}"))
+    (set entry (calls_map ~ Map/get $"${i}"))
     (if (== entry void)
       nil
       (Cell/set items (append (Cell/get items)
@@ -1259,11 +1549,18 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
             (emit "turn_done" {})
             input_items)
           (do
-            (var outputs ((to_stream calls) ~ map (fn [c] (run_tool_call c emit)) ; ~ into []))
-            (each (to_stream calls) (fn [c]
-              (render $"  · tool ${c/name} ${c/arguments}")))
+            # Execute tool handlers in this turn fiber. A lazy stream mapper
+            # would own a separate generator continuation; cancelling the turn
+            # could then leave an awaited subprocess alive in that continuation.
+            (var outputs (cell []))
+            (for c in calls
+              (do
+                (outputs ~ Cell/set
+                  (append (outputs ~ Cell/get) (run_tool_call c emit)))
+                (render $"  · tool ${c/name} ${c/arguments}")))
             (run_turn transport
-                      ((to_stream outputs) ~ into (append_all input_items (response_output_items resp)))
+                      ((to_stream (outputs ~ Cell/get))
+                        ~ into (append_all input_items (response_output_items resp)))
                       render
                       render_stream
                       (- budget 1)
@@ -1273,13 +1570,76 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # future input surfaces have one cancellation target. Gateway sessions use
 # their own per-session tracked tasks in gateway.gene.
 (fn run_turn_tracked [transport, input_items, render, render_stream, budget, emit]
+  (var outcome (cell "running"))
+  (var result (cell input_items))
+  (var terminal_emitted (cell false))
+  (var interrupted (cell false))
+  (var failure_text (cell "turn failed"))
+  (var watching (cell true))
+  (var done (channel ^capacity 1))
+  (fn tracked_emit [type : Str, props]
+    (if (== type "turn_done") (terminal_emitted ~ Cell/set true) nil)
+    (emit type props))
   (var task (spawn
-    (run_turn transport input_items render render_stream budget emit)))
+    (try
+      (do
+        (result ~ Cell/set
+          (run_turn transport input_items render render_stream budget tracked_emit))
+        (outcome ~ Cell/set "done"))
+    catch {^message m}
+      (do
+        (failure_text ~ Cell/set m)
+        (outcome ~ Cell/set "failed"))
+    catch *
+      (outcome ~ Cell/set "failed")
+    ensure
+      (done ~ Channel/close))))
   (active_turn_task ~ Cell/set task)
+  (var interrupt_armed (begin_interrupt))
+  (var watcher
+    (if interrupt_armed
+      (spawn
+        (while (watching ~ Cell/get)
+          (sleep 25)
+          (if (take_interrupt)
+            (do
+              (interrupted ~ Cell/set true)
+              (task ~ Task/cancel))
+            nil)))
+      nil))
   (try
-    (await task)
+    (do
+      (try (done ~ Channel/recv) catch (ChannelClosed) nil)
+      (match (outcome ~ Cell/get)
+        (when "done" (result ~ Cell/get))
+        (when "failed"
+          (do
+            (if (! (terminal_emitted ~ Cell/get))
+              (do
+                (tracked_emit "error"
+                  {^kind "failed" ^text (failure_text ~ Cell/get)})
+                (tracked_emit "turn_done" {^failed true}))
+              nil)
+            (render $"[turn failed: ${(failure_text ~ Cell/get)}]")
+            input_items))
+        (else
+          (do
+            (if (! (terminal_emitted ~ Cell/get))
+              (do
+                (tracked_emit "error" {^kind "cancelled" ^text "turn cancelled"})
+                (tracked_emit "turn_done" {^cancelled true}))
+              nil)
+            (render
+              (if (interrupted ~ Cell/get)
+                "[turn cancelled; enter steering to continue]"
+                "[turn cancelled]"))
+            input_items))))
   ensure
-    (active_turn_task ~ Cell/set nil)))
+    (do
+      (watching ~ Cell/set false)
+      (if interrupt_armed (end_interrupt) nil)
+      (if (present? watcher) (watcher ~ Task/cancel) nil)
+      (active_turn_task ~ Cell/set nil))))
 
 # -----------------------------------------------------------------------------
 # Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
@@ -1387,6 +1747,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
     nil
     (do
       (agent_events ~ Cell/set saved/events)
+      (agent_evidence ~ Cell/set
+        ((to_stream saved/events) ~ filter evidence_event? ; ~ into []))
       (next_event_v ~ Cell/set saved/next_v)
       (current_turn ~ Cell/set saved/turn))))
 
@@ -1404,6 +1766,14 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
             (acc ~ Cell/set p)
             (acc ~ Cell/set $"${(acc ~ Cell/get)}${prefix}${p}")))))
   (acc ~ Cell/get))
+
+(fn undo_command [line : Str]
+  (if (== line "/undo")
+    (undo_file_change! nil)
+    (try
+      (undo_file_change! (parse_int (trim (after_prefix line "/undo "))))
+    catch *
+      "usage: /undo [change-id]")))
 
 # -----------------------------------------------------------------------------
 # Offline demo transport: turn 1 asks to list the workspace, turn 2 answers.
@@ -1490,7 +1860,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 (fn append_transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
-(var input_status "Enter sends | /remember note | /memory | /status | /trace | /sh | /repl | /quit")
+(var input_status "Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
 
 (fn close_user_input []
   (if (stdin_tty?)
@@ -1599,7 +1969,8 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
 # event. `evidence` arrives with the later slice-B evidence work.
 (type Session
   ^props {^items Any ^transcript Any ^memory Any ^tools Any ^events Any
-          ^config Any ^workspace Any ^current_task Any ^resume_requested Any}
+          ^changes Any ^evidence Any ^instructions Any ^config Any ^workspace Any
+          ^current_task Any ^resume_requested Any}
 
   # Register (or replace) a typed Tool; it reaches the next model call.
   (message add_tool [self, t]
@@ -1628,6 +1999,12 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   (message trace [self, filters : Str]
     (trace_report filters))
 
+  (message diff [self]
+    (file_diff_report))
+
+  (message undo [self, id : Int?]
+    (undo_file_change! id))
+
   # Cancel the active model/tool turn. The embedded CLI currently exposes
   # this through the programmable session; gateway.gene also maps it to HTTP.
   (message cancel [self]
@@ -1653,6 +2030,9 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                         ^memory memory
                         ^tools tool_registry
                         ^events agent_events
+                        ^changes file_changes
+                        ^evidence agent_evidence
+                        ^instructions agent_instruction_records
                         ^config (config_snapshot)
                         ^workspace workspace_real
                         ^current_task active_turn_task
@@ -1661,7 +2041,7 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
   # strings can be inspected (and tested) without ever executing them.
   (var repl_env (env ^bindings {^session session ^Tool Tool
                                 ^classify_command classify_command}))
-  (println "Entering Gene REPL. `session` is bound: session/items session/events session/current_task (session ~ add_tool (Tool ...)) (session ~ remember \"...\") (session ~ subscribe \"tool_call\") (session ~ trace \"type=tool_call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
+  (println "Entering Gene REPL. `session` is bound: session/items session/events session/evidence session/instructions session/changes session/current_task (session ~ diff) (session ~ undo nil) (session ~ add_tool (Tool ...)) (session ~ remember \"...\") (session ~ trace \"type=tool_call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run_repl_session repl_env ^interactive true)
   (resume_flag ~ Cell/get))
 
@@ -1784,31 +2164,37 @@ writing Gene code, verify with at least `bin/gene parse file.gene` or
                           (var item_count ((items ~ Cell/get) ~ size))
                           (var memory_count ((memory ~ Cell/get) ~ size))
                           (var event_count ((agent_events ~ Cell/get) ~ size))
+                          (var instruction_count
+                            ((agent_instruction_records ~ Cell/get) ~ size))
                           (var guard_label (if (guard_enabled?) "on" "off"))
                           (render_agent_text transcript streaming
-                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\nitems: ${item_count}\nmemory: ${memory_count}\nevents: ${event_count}\nguard: ${guard_label}"))
-                        (if (|| (== line "/trace") (starts_with? line "/trace "))
-                          (render_agent_text transcript streaming
-                            (trace_report
-                              (if (== line "/trace")
-                                ""
-                                (after_prefix line "/trace "))))
-                          (do
-                            (Cell/set streaming false)
-                            (begin_turn!)
-                            (emit_event! "user_input" {^text line})
-                            (Cell/set items
-                              (run_turn_tracked live_transport
-                                        (append (Cell/get items) (user_item line))
-                                        (fn [text]
-                                          (render_agent_text transcript streaming text))
-                                        (fn [text]
-                                          (render_agent_delta transcript streaming text))
-                                        max_tool_turns
-                                        emit_event!))
-                            (save_agent_state (items ~ Cell/get)
-                                              (transcript ~ Cell/get)
-                                              (memory ~ Cell/get))))))))))))))))
+                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\nitems: ${item_count}\nmemory: ${memory_count}\nevents: ${event_count}\ninstructions: ${instruction_count}\nguard: ${guard_label}"))
+                        (if (== line "/diff")
+                          (render_agent_text transcript streaming (file_diff_report))
+                          (if (|| (== line "/undo") (starts_with? line "/undo "))
+                            (render_agent_text transcript streaming (undo_command line))
+                            (if (|| (== line "/trace") (starts_with? line "/trace "))
+                              (render_agent_text transcript streaming
+                                (trace_report
+                                  (if (== line "/trace")
+                                    ""
+                                    (after_prefix line "/trace "))))
+                              (do
+                                (Cell/set streaming false)
+                                (begin_turn!)
+                                (emit_event! "user_input" {^text line})
+                                (Cell/set items
+                                  (run_turn_tracked live_transport
+                                            (append (Cell/get items) (user_item line))
+                                            (fn [text]
+                                              (render_agent_text transcript streaming text))
+                                            (fn [text]
+                                              (render_agent_delta transcript streaming text))
+                                            max_tool_turns
+                                            emit_event!))
+                                (save_agent_state (items ~ Cell/get)
+                                                  (transcript ~ Cell/get)
+                                                  (memory ~ Cell/get))))))))))))))))))
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main [args]

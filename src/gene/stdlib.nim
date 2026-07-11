@@ -44,6 +44,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 static struct termios gene_curses_orig_termios;
 static int gene_curses_termios_saved = 0;
 static int gene_curses_restore_hooks_installed = 0;
+static volatile sig_atomic_t gene_turn_interrupt_pending = 0;
+static struct sigaction gene_turn_interrupt_old;
+static int gene_turn_interrupt_active = 0;
 static int gene_curses_color_pair(short pair) { return COLOR_PAIR(pair); }
 static void gene_curses_setlocale(void) { setlocale(LC_ALL, ""); }
 static void gene_curses_save_termios(void) {
@@ -98,6 +101,35 @@ static void gene_curses_install_restore_hooks(void) {
   signal(SIGTERM, gene_curses_signal_restore);
   signal(SIGHUP, gene_curses_signal_restore);
 }
+static void gene_turn_interrupt_handler(int sig) {
+  (void)sig;
+  gene_turn_interrupt_pending = 1;
+}
+static int gene_turn_interrupt_begin(void) {
+  struct sigaction act;
+  if (gene_turn_interrupt_active) {
+    gene_turn_interrupt_pending = 0;
+    return 0;
+  }
+  act.sa_handler = gene_turn_interrupt_handler;
+  sigemptyset(&act.sa_mask);
+  act.sa_flags = 0;
+  gene_turn_interrupt_pending = 0;
+  if (sigaction(SIGINT, &act, &gene_turn_interrupt_old) != 0) return -1;
+  gene_turn_interrupt_active = 1;
+  return 0;
+}
+static int gene_turn_interrupt_take(void) {
+  int pending = gene_turn_interrupt_pending != 0;
+  gene_turn_interrupt_pending = 0;
+  return pending;
+}
+static void gene_turn_interrupt_end(void) {
+  if (!gene_turn_interrupt_active) return;
+  sigaction(SIGINT, &gene_turn_interrupt_old, NULL);
+  gene_turn_interrupt_active = 0;
+  gene_turn_interrupt_pending = 0;
+}
 """.}
   proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
   proc cSetLocale() {.importc: "gene_curses_setlocale".}
@@ -105,6 +137,9 @@ static void gene_curses_install_restore_hooks(void) {
   proc cRestoreTermios() {.importc: "gene_curses_restore_termios".}
   proc cRestoreDisplay() {.importc: "gene_curses_restore_display".}
   proc cInstallRestoreHooks() {.importc: "gene_curses_install_restore_hooks".}
+  proc cTurnInterruptBegin(): cint {.importc: "gene_turn_interrupt_begin".}
+  proc cTurnInterruptTake(): cint {.importc: "gene_turn_interrupt_take".}
+  proc cTurnInterruptEnd() {.importc: "gene_turn_interrupt_end".}
 
   var stdscr {.importc: "stdscr", header: "<ncurses.h>".}: CursesWindow
   var LINES {.importc: "LINES", header: "<ncurses.h>".}: cint
@@ -1289,6 +1324,34 @@ proc biOsExecStreamAsync(args: openArray[Value], call: ptr NativeCall): Value {.
   ## exits, then the Task settles with the captured result map.
   biOsExecAsyncImpl("os/exec_stream_async", true, args, call)
 
+proc biOsBeginInterrupt(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/begin_interrupt takes no arguments")
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if cTurnInterruptBegin() == 0: TRUE else: FALSE
+  else:
+    FALSE
+
+proc biOsTakeInterrupt(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/take_interrupt takes no arguments")
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    if cTurnInterruptTake() != 0: TRUE else: FALSE
+  else:
+    FALSE
+
+proc biOsEndInterrupt(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/end_interrupt takes no arguments")
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    cTurnInterruptEnd()
+  NIL
+
+proc biOsMonotonicMs(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/monotonic_ms takes no arguments")
+  newInt(getMonoTime().ticks div 1_000_000)
+
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/stdin_tty? takes no arguments")
@@ -1820,6 +1883,14 @@ proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
   except IOError as e:
     raiseOsError("Fs/write_text: " & e.msg, scope)
   NIL
+
+proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Fs/exists? expects (Fs/ReadDir, path)")
+  requireFsReadDir("Fs/exists?", args[0])
+  requireStr("Fs/exists? path", args[1])
+  let path = args[1].strVal
+  newBool(fileExists(path) or dirExists(path) or symlinkExists(path))
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -4602,6 +4673,14 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("exec_async", newNativeCallFn("os/exec_async", biOsExecAsync))
   osScope.define("exec_stream_async",
                  newNativeCallFn("os/exec_stream_async", biOsExecStreamAsync))
+  osScope.define("begin_interrupt",
+                 newNativeFn("os/begin_interrupt", biOsBeginInterrupt))
+  osScope.define("take_interrupt",
+                 newNativeFn("os/take_interrupt", biOsTakeInterrupt))
+  osScope.define("end_interrupt",
+                 newNativeFn("os/end_interrupt", biOsEndInterrupt))
+  osScope.define("monotonic_ms",
+                 newNativeFn("os/monotonic_ms", biOsMonotonicMs))
   osScope.define("stdin_tty?", newNativeFn("os/stdin_tty?", biOsStdinTty))
   osScope.define("read_line", newNativeFn("os/read_line", biOsReadLine))
   osScope.define("read_input", newNativeCallFn("os/read_input", biOsReadInput))
@@ -4624,6 +4703,8 @@ proc registerStdlibNamespaces(root: Scope) =
       newNativeCallFn("Fs/read_text", biFsReadTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text",
       newNativeCallFn("Fs/write_text", biFsWriteTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("exists?",
+      newNativeCallFn("Fs/exists?", biFsExists, acceptsNamed = false))
     fsNs.nsScope.define("list_dir",
       newNativeCallFn("Fs/list_dir", biFsListDir, acceptsNamed = false))
     fsNs.nsScope.define("make_dir",
