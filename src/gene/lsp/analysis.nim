@@ -262,6 +262,10 @@ proc skipCommentOrAtom(src: string, i: var int): bool =
       of '(', '[', '{', '_':
         false   # set/list/map literal or datum comment: not a comment token
       else:
+        # Whitespace/'!' continuations are real line comments. Reserved '#'
+        # forms are read errors in the reader; this raw scanner stays
+        # error-tolerant and skips them like comments so span math survives
+        # invalid buffers (diagnostics come from the real reader).
         while i < src.len and src[i] != '\n':
           inc i
         true

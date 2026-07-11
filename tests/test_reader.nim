@@ -115,6 +115,41 @@ suite "reader — comments":
   test "datum comment":      check_read("(a #_ b c)",            "(a c)")
   test "block comment":      check_read("#< block ># (a b)",     "(a b)")
   test "shebang":            check_read("#!/usr/bin/env gene\n(a b)", "(a b)")
+  test "comment requires whitespace or bang after '#'":
+    check_read("# comment\n(a b)", "(a b)")
+    check_read("#\tcomment\n(a b)", "(a b)")
+    check_read("(a b) #", "(a b)")       # bare trailing '#' at EOF
+    check_read("(a b) #\n", "(a b)")     # bare '#' at end of line
+    check_read("#!anywhere\n(a b)", "(a b)")
+  test "glued datum comment discards the next form":
+    check_read("(a #_b c)", "(a c)")
+
+suite "reader — reserved '#' forms are rejected":
+  test "hash-glued word is a read error, not a comment":
+    expect ReadError: discard read("#a")
+    expect ReadError: discard read("#A 1")
+    expect ReadError: discard read("#1")
+    expect ReadError: discard read("#comment without space")
+  test "hash punctuation forms are reserved":
+    expect ReadError: discard read("##")
+    expect ReadError: discard read("#-reserved")
+    expect ReadError: discard read("#=")
+    expect ReadError: discard read("#'x'")
+  test "reserved '#' error is located and actionable":
+    try:
+      discard read("(a\n  #tag)", "sample.gene")
+      check false
+    except ReadError as e:
+      check e.line == 2
+      check e.col == 3
+      check "#tag" in e.msg
+      check "reserved" in e.msg
+  test "accepted '#' forms still read":
+    check read("#[1 2]").print() == "#[1 2]"
+    check read("#{^a 1}").print() == "#{^a 1}"
+    check read("#(h 1)").print() == "#(h 1)"
+    check read("#\"\\d+\"").print() == "#\"\\d+\""
+    check read("0#SGk=").print() == "0x4869"   # bytes print canonically as hex
 
 suite "reader — datum comments are spacing":
   test "discards next top-level form":

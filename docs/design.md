@@ -277,9 +277,10 @@ Reader literal/comment dispatch examples:
 ```
 
 Reader precedence follows the ordered dispatch table in §2.2. In particular,
-`#"` begins a regex and `0#` is part of a base64 byte literal; neither can be
-swallowed by the catch-all line-comment branch. `#_` followed by EOF is a read
-error.
+`#"` begins a regex and `0#` is part of a base64 byte literal. A `#` begins a
+line comment only when followed by whitespace, `!`, or end of line/input;
+every other `#` sequence (such as `#a`, `#1`, or `##`) is a read error
+reserved for future reader syntax. `#_` followed by EOF is a read error.
 
 ### 2.1 Symbols, slash paths, qualified names, and division
 
@@ -418,10 +419,16 @@ path_segment   = symbol | integer | "%", symbol | "~", symbol ;
 atom           = float | integer | "true" | "false" | "nil" | "void" | symbol ;
 separator      = spacing, [ "," ], spacing ;
 spacing        = { whitespace | line_comment | block_comment | datum_comment } ;
-line_comment   = "#", { not_newline }, ( newline | eof ) ;
+line_comment   = "#", ( whitespace | "!" | newline | eof ),
+                 { not_newline }, ( newline | eof ) ;
 block_comment  = "#<", { block_comment | any_char_but_unmatched_end }, ">#" ;
 datum_comment  = "#_", spacing, form ;
 ```
+
+A `#` not followed by one of the recognized continuations (`(`, `[`, `{`,
+`"`, `_`, `<`, `!`, whitespace, or end of line/input) is a read error: that
+lexical space is reserved for future reader syntax such as parser macros or
+tagged literals.
 
 Ordered lexical dispatch:
 
@@ -433,7 +440,8 @@ Ordered lexical dispatch:
 | `#_` | datum comment; discard exactly the next form as spacing |
 | `#<` | nested block comment through the matching `>#` |
 | `#!` | shebang-style line comment (the same spacing semantics as a line comment) |
-| any other `#` | line comment through newline or EOF |
+| `#` followed by whitespace or end of line/input | line comment through newline or EOF |
+| any other `#` | read error; reserved for future reader syntax |
 | digit prefix matching `date`, `time`, or `datetime` | temporal literal, before numeric/atom fallback |
 | any remaining atom start | number or symbol |
 

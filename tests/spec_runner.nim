@@ -80,6 +80,16 @@ suite "spec — reader surface from design":
       expect ReadError:
         discard read(source)
 
+  test "a line comment requires whitespace or '!' after '#'":
+    check readAll("# comment\n#\tcomment\n#\n#!x\n(a)").len == 1
+    check readAll("(a) #").len == 1
+
+  test "unrecognized '#' forms are reserved read errors":
+    for source in ["#a", "#A", "#1", "#tag x", "##", "#-x", "#=", "#'c'",
+                   "(a #b)"]:
+      expect ReadError:
+        discard read(source)
+
   test "ordinary props require values and flags are explicit":
     check_read("(x ^^ready @@generated false)",
                "(x @@generated ^^ready false)")

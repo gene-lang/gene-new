@@ -28,8 +28,10 @@ language features need it, the highlighting does not.
 **Highlighting** (grammar, no server needed) — matched to the reader's
 actual lexical surface (src/gene/reader.nim):
 
-- line comments `# …`, nested block comments `#< … >#`, datum comments `#_`
-  (`#(`, `#[`, `#{` stay literals, not comments);
+- line comments `# …` (only when `#` is followed by whitespace, `!`, or end
+  of line), nested block comments `#< … >#`, datum comments `#_`
+  (`#(`, `#[`, `#{` stay literals, not comments); every other `#` form is
+  highlighted as invalid — the reader rejects it as reserved;
 - strings `"…"`, triple-quoted `"""…"""`, regular and triple interpolated
   strings with embedded Gene bodies, and regular/triple regex literals with
   flags;

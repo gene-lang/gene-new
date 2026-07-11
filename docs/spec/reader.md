@@ -6,6 +6,11 @@
 
 - A source unit contains zero or more forms; `readAll` preserves every form.
 - Datum comments are spacing and discard exactly the next datum.
+- `#` dispatch is closed: `#(`/`#[`/`#{` open immutable literals, `#"` opens a
+  regex, `#_` is a datum comment, `#<` opens a block comment, and a line
+  comment requires whitespace, `!`, or end of line/input after the `#`. Every
+  other `#` sequence (`#a`, `#1`, `##`, …) is a read error reserved for future
+  reader syntax.
 - Reader prefixes, slash paths, interpolation, props/meta flags, immutable
   literals, and malformed-input behavior follow the reader suites.
 - A glued leading slash is a selector literal. A glued non-leading path is a

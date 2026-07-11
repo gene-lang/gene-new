@@ -68,7 +68,10 @@ proc hasInteriorComment(src: string, a, b: int): bool =
     of '#':
       if i + 1 < src.len and src[i + 1] == '"': i = skipStringRaw(src, i + 1)
       elif i + 1 < src.len and src[i + 1] in {'(', '[', '{'}: inc i
-      else: return true
+      else:
+        # Reserved '#' forms are read errors in the reader; this raw span
+        # helper stays error-tolerant and treats them like comments.
+        return true
     else: inc i
   false
 

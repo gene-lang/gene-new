@@ -41,8 +41,14 @@
           "match": "#_"
         },
         {
+          "comment": "Line comment only when '#' is followed by whitespace, '!', or end of line (reader tokenize '#' dispatch).",
           "name": "comment.line.number-sign.gene",
-          "match": "#(?![(\\[{_<\"]).*$"
+          "match": "#([ \\t!].*)?$"
+        },
+        {
+          "comment": "Every other '#' form is a reserved read error.",
+          "name": "invalid.illegal.reserved-hash.gene",
+          "match": "#(?![(\\[{_<\" \\t!]|$)[^\\s()\\[\\]{}\"]*"
         }
       ]
     },

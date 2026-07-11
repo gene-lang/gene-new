@@ -669,10 +669,27 @@ proc tokenize(r: var Reader) =
             r.advance()
         if depth > 0:
           r.raiseReadIncomplete("unterminated block comment")
-      else:
-        # Line comment
+      of ' ', '\t', '\r', '\n', '\0', '!':
+        # Line comment: '#' followed by whitespace, end of line/input, or '!'
+        # ('#!' stays a plain line comment so a first-line shebang works).
+        # '\0' is nextChar's end-of-input sentinel: a bare trailing '#'.
         while r.pos < r.src.len and r.nextChar() != '\n':
           r.advance()
+      else:
+        # Every other '#' form is reserved for future reader syntax
+        # (design §2.2). Rejecting here keeps '#comment'-without-space a
+        # loud error instead of a silent comment or symbol.
+        var snippet = "#"
+        var j = r.pos
+        while j < r.src.len and snippet.len < 13 and isSymbolChar(r.src[j]):
+          snippet.add r.src[j]
+          inc j
+        if snippet.len == 1:
+          snippet.add c2
+        raiseReadErrorAt(r.sourceName, startLine, startCol,
+          "unknown '#' form \"" & snippet & "\": '#' starts a comment only " &
+          "when followed by whitespace or '!'; other '#' forms are reserved. " &
+          "Write \"# " & snippet[1 .. ^1] & "\" for a comment")
     of '(': r.advance(); r.tokens.add Token(kind: tkLParen, lexeme: "(", line: startLine, col: startCol)
     of ')': r.advance(); r.tokens.add Token(kind: tkRParen, lexeme: ")", line: startLine, col: startCol)
     of '[': r.advance(); r.tokens.add Token(kind: tkLBracket, lexeme: "[", line: startLine, col: startCol)
