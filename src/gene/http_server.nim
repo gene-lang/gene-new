@@ -1188,6 +1188,10 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     proc pumpScheduler() =
       ## Run ready fibers without letting schedulerRunOne sleep on timers —
       ## socket readiness must stay responsive while handlers are parked.
+      # Async subprocess workers publish native results for this scheduler
+      # lane to materialize. Poll before testing the run queue so a completed
+      # curl can wake its channel receiver even when no socket event did.
+      pollOsExecAsyncCompletions()
       discard wakeExpiredTimers()
       var budget = 128
       while budget > 0 and hasRunnableFiber():

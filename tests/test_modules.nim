@@ -45,10 +45,17 @@ suite "modules — file imports":
       "(var ds (filter (declarations m) (fn [d] (== d/name \"exported\")))) " &
       "(ds ~ Stream/next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
-    check runProgram("(import from \"./decls\" ^as m) " &
-      "(var ds (filter (m ~ Module/declarations) (fn [d] (== d/name \"exported\")))) " &
-      "(ds ~ Stream/next)").print() ==
-      "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
+
+  test "runtime declarations exclude compile-time macros":
+    writeModule("macro_decls.gene",
+      "(macro twice [x] `(+ %x %x)) (var runtime-value 7)")
+    check runProgram("(import from \"./macro_decls\" ^as m) " &
+      "(var macros (filter (declarations m) (fn [d] (== d/name \"twice\")))) " &
+      "(var values (filter (declarations m) " &
+      "  (fn [d] (== d/name \"runtime-value\")))) " &
+      "(var decl (values ~ Stream/next)) " &
+      "[(macros ~ Stream/has_next) decl/value]").print() ==
+      "[false 7]"
 
   test "file modules receive a this-mod binding":
     writeModule("self.gene",

@@ -200,6 +200,12 @@ proc `=dup`(src: Value): Value {.inline.} =
   if (src.bits shr TAG_SHIFT) >= MANAGED_MIN: rcRetain(src.bits)
   result.bits = src.bits
 
+proc retainedCopy*(src: Value): Value {.inline.} =
+  ## Force an owned copy when sink analysis must not transfer the caller's ref.
+  if (src.bits shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRetain(src.bits)
+  result.bits = src.bits
+
 type
   ## Props and meta are symbol-keyed ordered maps. Keys are the bare symbol
   ## text (without the leading `^`/`@`). Order is preserved for deterministic
@@ -238,6 +244,7 @@ type
     refCount: int
     shared: int
     immutable: bool
+    constructing: bool
     head: Value
     props: PropTable
     body: seq[Value]
@@ -2002,6 +2009,14 @@ proc nodeImmutable*(v: Value): bool =
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).immutable
+
+proc nodeConstructing*(v: Value): bool {.inline.} =
+  v.tagOf == NODE_TAG and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing
+
+proc finishNodeConstruction*(v: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing = false
 
 proc setListItem*(v: Value, index: int, value: Value) =
   if v.tagOf != LIST_TAG:
@@ -3969,10 +3984,12 @@ proc newNode*(head: Value,
               props: sink PropTable = initOrderedTable[string, Value](),
               body: sink seq[Value] = @[],
               meta: sink PropTable = initOrderedTable[string, Value](),
-              immutable = false): Value =
+              immutable = false,
+              constructing = false): Value =
   let p = createObj(GeneNode)
   p.refCount = 1
   p.immutable = immutable
+  p.constructing = constructing
   p.head = head
   p.props = withoutVoidEntries(props)
   p.body = body
@@ -4124,7 +4141,7 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
     for key, val in v.meta:
       meta[key] = weakenScopeFunctions(val, owner)
     newNode(weakenedHead, props = props, body = body, meta = meta,
-            immutable = v.nodeImmutable)
+            immutable = v.nodeImmutable, constructing = v.nodeConstructing)
   of vkBuffer:
     let data = bufferData(v)
     var changed = false
@@ -4237,7 +4254,7 @@ proc escapeWeakFunctions*(v: Value): Value =
     for key, val in v.meta:
       meta[key] = escapeWeakFunctions(val)
     newNode(escapedHead, props = props, body = body, meta = meta,
-            immutable = v.nodeImmutable)
+            immutable = v.nodeImmutable, constructing = v.nodeConstructing)
   of vkStream:
     let data = streamData(v)
     let escapedSource = escapeWeakFunctions(data.source)

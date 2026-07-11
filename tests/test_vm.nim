@@ -1212,6 +1212,21 @@ suite "vm — node projection built-ins":
   test "projection built-ins validate arity":
     expect GeneError: discard runStr("(props)")
     expect GeneError: discard runStr("(body 1 2)")
+  test "projection containers are detached shallow snapshots":
+    ck "(var child [1]) " &
+       "(var n `(user @note %child ^data %child %child)) " &
+       "(var ps (props n)) (var bs (body n)) (var ms (meta n)) " &
+       "(ps ~ Map/put! `extra 2) " &
+       "(bs ~ List/set! 0 3) " &
+       "(ms ~ Map/put! `other 4) " &
+       "[(== n/extra void) n/0 (== n/%meta/other void)]",
+       "[true [1] true]"
+    ck "(var child [1]) " &
+       "(var n `(user @note %child ^data %child %child)) " &
+       "(var projected (props n)) " &
+       "(projected/data ~ List/set! 0 9) " &
+       "[n/data/0 n/0/0 n/%meta/note/0]",
+       "[9 9 9]"
 
 suite "vm — functional selector updates":
   test "assoc-in updates maps without mutating the original":
@@ -1247,6 +1262,9 @@ suite "vm — functional selector updates":
     expect GeneError: discard runStr("(assoc-in [1] /2 9)")
     expect GeneError: discard runStr("(assoc-in 1 /x 2)")
     expect GeneError: discard runStr("(update-in {^score 1} /score 1)")
+    expect GeneError:
+      discard runStr("(var s (select %(map /name))) " &
+                     "(assoc-in {^name \"Ada\"} s \"Bob\")")
 
 suite "vm — container update built-ins":
   test "List/assoc returns an updated copy":

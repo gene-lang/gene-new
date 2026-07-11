@@ -61,6 +61,15 @@ suite "native api — roots and trampoline":
     expect GeneError:
       discard geneRootGet(root)
 
+  test "roots reject in-progress constructed instances":
+    let partial = newNode(newSym("Partial"), constructing = true)
+    expect GeneError:
+      discard geneRoot(partial)
+    partial.finishNodeConstruction()
+    let root = geneRoot(partial)
+    check geneRootGet(root).print() == "(Partial)"
+    geneRootRelease(root)
+
   test "geneCall invokes Gene callables through the dynamic trampoline":
     let scope = newGlobalScope()
     let callee = run(compileSource("(fn [x] (+ x 1))"), scope)

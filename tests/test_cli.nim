@@ -31,17 +31,10 @@ proc shellQuote(arg: string): string =
       result.add ch
   result.add "'"
 
-proc execRetry139(cmd: string): tuple[output: string, exitCode: int] =
-  ## execCmdEx with ONE retry on SIGSEGV (exit 139) — a workaround for the
-  ## documented residual crash in Nim's thread-local allocator's cross-thread
-  ## free machinery, exercised by os/exec-stream-async under load (see
-  ## tmp/exec-async-segfault.md; ~1.7% per invocation, 0/120 with
-  ## -d:useMalloc). Retries ONLY on 139 so real test failures and other
-  ## crashes still fail the suite.
-  result = execCmdEx(cmd)
-  if result.exitCode == 139:
-    checkpoint "retrying after known allocator SIGSEGV (tmp/exec-async-segfault.md): " & cmd
-    result = execCmdEx(cmd)
+proc execCmdOnce(cmd: string): tuple[output: string, exitCode: int] =
+  ## Keep process execution behind one helper so command-heavy CLI tests use
+  ## the same capture behavior without masking crashes through retries.
+  execCmdEx(cmd)
 
 proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
   buildGeneCli()
@@ -83,6 +76,24 @@ suite "cli — gene run":
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
+  test "main receives only explicitly granted named capabilities":
+    let grantedMain = writeCliProgram("granted_main.gene",
+      "(fn main [args, ^config : Capability] " &
+      "  (if (same? config Fs/ReadDir) 0 4))")
+    var ran = runGene(["run", grantedMain, "--grant", "config=Fs/ReadDir",
+                       "--", "arg"])
+    check ran.exitCode == 0
+
+    let missingMain = writeCliProgram("missing_grant_main.gene",
+      "(fn main [args, ^config : Capability] " &
+      "  (do (println \"BODY-RAN\") 0))")
+    ran = runGene(["run", missingMain])
+    check ran.exitCode == 1
+    check "missing named argument: config" in ran.output
+    check ("at " & normalizedPath(absolutePath(missingMain)) & ":1:1") in
+      ran.output
+    check not ran.output.startsWith("BODY-RAN\n")
+
   test "main parameter boundary errors include source location":
     let typedMain = writeCliProgram("typed_arg_main.gene",
       "(fn main [args : (List Str)] nil)")
@@ -93,7 +104,7 @@ suite "cli — gene run":
 
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
-    let ran = execRetry139("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+    let ran = execCmdOnce("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                         "-u CODEX_ACCESS_TOKEN " &
                         shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check ran.exitCode == 0
@@ -107,7 +118,7 @@ suite "cli — gene run":
     let command = "printf '/sh\\nprintf hi\\nexit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "Entering shell" in ran.output
     check "hi" in ran.output
@@ -118,7 +129,7 @@ suite "cli — gene run":
     let command = "printf '   \\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "agent>" notin ran.output
 
@@ -127,7 +138,7 @@ suite "cli — gene run":
     let command = "printf '/repl\\nsession/config/model\\n(var x 41)\\n(+ x 1)\\nquit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "Entering Gene REPL" in ran.output
     # session/config/model is a real projection (model lives under config,
@@ -141,7 +152,7 @@ suite "cli — gene run":
     let command = "printf '/repl\\nsession/model\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "gpt-5.4-mini" in ran.output
     check "gene> \nyou>" in ran.output
@@ -152,7 +163,7 @@ suite "cli — gene run":
     if dirExists(stateDir):
       removeDir(stateDir)
 
-    let first = execRetry139(
+    let first = execCmdOnce(
       "printf '/remember project uses Gene\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
@@ -166,7 +177,7 @@ suite "cli — gene run":
     check "OPENAI_AUTH_TOKEN" notin configText
     check "CODEX_ACCESS_TOKEN" notin configText
 
-    let second = execRetry139(
+    let second = execCmdOnce(
       "printf '/memory\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
@@ -274,7 +285,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let ran = execCmdOnce("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                         "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
                         "OPENAI_BASE_URL=http://127.0.0.1:8987/v1 " &
                         "OPENAI_MODEL=fake-chat " &
@@ -359,7 +370,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let ran = execCmdOnce("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                         "-u OPENAI_API OPENAI_AUTH_TOKEN=sk-secret-tok-9Z " &
                         "GENE_AGENT_APPROVE_ALL=1 " &
                         "OPENAI_BASE_URL=http://127.0.0.1:8991/v1 " &
@@ -441,7 +452,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let ran = execCmdOnce("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                         "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
                         "OPENAI_BASE_URL=http://127.0.0.1:8993/v1 " &
                         "OPENAI_MODEL=fake-chat " &
@@ -461,7 +472,7 @@ suite "cli — gene run":
     let command = "printf '/sh\\nrm -rf /nonexistent-gene-guard-root\\necho ran-normal\\nexit\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "denied by catastrophe guard" in ran.output
     check "ran-normal" in ran.output
@@ -480,7 +491,7 @@ suite "cli — gene run":
       "quit\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check ran.output.count("\"catastrophic\"") == 3
     check "\"destructive\"" in ran.output
@@ -554,7 +565,7 @@ suite "cli — gene run":
                   "OPENAI_AUTH_TOKEN=dummy " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8971/v1 OPENAI_MODEL=fake-chat " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     # #5: no crash — the turn completed with the model's final answer.
     check "agent> done" in ran.output
@@ -643,7 +654,7 @@ suite "cli — gene run":
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8969/v1 OPENAI_MODEL=fake-chat " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(script)
+    let ran = execCmdOnce(script)
     check ran.exitCode == 0
     check "verdict: shape-error-ok" in ran.output
 
@@ -726,7 +737,7 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let ran = execRetry139("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let ran = execCmdOnce("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                         "-u OPENAI_API OPENAI_AUTH_TOKEN=dummy " &
                         "GENE_AGENT_APPROVE_ALL=1 " &
                         "OPENAI_BASE_URL=http://127.0.0.1:8994/v1 " &
@@ -745,7 +756,7 @@ suite "cli — gene run":
                   "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                   "CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(command)
+    let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "tool-registered read_file (read)" in ran.output
     check "tool-registered run_shell (execute)" in ran.output
@@ -825,7 +836,7 @@ suite "cli — gene run":
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8992/v1 OPENAI_MODEL=fake-chat " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
-    let ran = execRetry139(script)
+    let ran = execCmdOnce(script)
     check ran.exitCode == 0
     check "verdict: ping-visible" in ran.output
 

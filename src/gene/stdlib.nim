@@ -757,40 +757,110 @@ when compileOption("threads"):
   # non-atomic ORC ops whose cycle bookkeeping also mutates a global buffer.
   # A worker-side retain or release of those races the scheduler and corrupts
   # the heap (crashes surface later in unrelated Value ops or allocations).
-  # So the ctx stores task/channel as raw bits (never Value fields), the
-  # worker borrows them through {.cursor.} locals (no hooks), the helper
-  # routines are templates (a closure env would copy captured refs on the
-  # worker thread), and ownership lives in osExecAsyncPending — a scheduler-
-  # thread-only registry that retains the task/channel/ctx at spawn and
-  # releases them at the next spawn's prune, always on the scheduler thread.
-  type OsExecAsyncCtx {.acyclic.} = ref object
-    name: string          # native name, for error messages
-    cmd: string
-    procArgs: seq[string]
-    workdir: string
-    timeoutMs: int
-    maxBytes: int
-    taskBits: uint64      # external Task (OBJECT_TAG bits); osExecAsyncPending owns the ref
-    lineChanBits: uint64  # 0, or a Channel (bits) receiving stdout lines
-    # The spawner's scheduler, captured at spawn time. NOT the dispatch scope:
-    # call scopes are pooled and their .application is nilled on release, so a
-    # scope captured here would resolve to no scheduler by the time the worker
-    # settles — wakes would be lost and fibers parked on the task/channel
-    # would never resume.
-    schedulerPtr: pointer
-    # Release-stored by the worker loop AFTER its final access to this job;
-    # the scheduler frees the ctx (and drops the task/channel refs) only after
-    # acquiring it. taskDone alone is NOT sufficient: the worker still calls
-    # wakeTaskWaitersIn after completing the task.
-    workerDone: bool
+  # So the worker never dereferences task/channel Values and publishes only
+  # plain shared-memory buffers; scheduler polling handles cancellation,
+  # Gene-value construction, channel delivery, and settlement. Scheduler-only
+  # pending refs own Task/Channel values; the worker ctx is plain shared memory.
+  type
+    SharedExecText = object
+      data: pointer
+      len: int
+    SharedExecLine = object
+      next: ptr SharedExecLine
+      text: SharedExecText
+    SharedExecArg = object
+      next: ptr SharedExecArg
+      text: SharedExecText
+    OsExecAsyncCtx = object
+      name: SharedExecText
+      cmd: SharedExecText
+      procArgs: ptr SharedExecArg
+      workdir: SharedExecText
+      timeoutMs: int
+      maxBytes: int
+      taskBits: uint64      # external Task (OBJECT_TAG bits), worker-borrowed
+      lineChanBits: uint64  # 0, or a Channel (bits) receiving stdout lines
+      lineLock: Lock
+      lineHead: ptr SharedExecLine
+      lineTail: ptr SharedExecLine
+      resultStatus: int
+      resultStdout: SharedExecText
+      resultStderr: SharedExecText
+      resultStdoutTruncated: bool
+      resultStderrTruncated: bool
+      resultTimedOut: bool
+      resultFailed: bool
+      resultFailure: SharedExecText
+      resultCancelled: bool
+      cancelRequested: bool
+      # The spawner's scheduler, captured at spawn time. NOT the dispatch scope:
+      # call scopes are pooled and their .application is nilled on release, so a
+      # scope captured here would resolve to no scheduler by the time the worker
+      # settles — wakes would be lost and fibers parked on the task/channel
+      # would never resume.
+      schedulerPtr: pointer
+      # Release-stored by the worker loop AFTER its final access to this job;
+      # the scheduler frees the ctx (and drops the task/channel refs) only after
+      # acquiring it. The scheduler then materializes and publishes the result.
+      workerDone: bool
+    OsExecPending {.acyclic.} = ref object
+      ctx: ptr OsExecAsyncCtx
+      taskOwner: Value
+      lineChanOwner: Value
+
+  proc sharedExecText(text: string): SharedExecText =
+    result.len = text.len
+    if text.len > 0:
+      result.data = allocShared0(text.len)
+      copyMem(result.data, unsafeAddr text[0], text.len)
+
+  proc consumeSharedExecText(text: var SharedExecText): string =
+    if text.len > 0:
+      result = newString(text.len)
+      copyMem(addr result[0], text.data, text.len)
+    if text.data != nil:
+      deallocShared(text.data)
+    text = SharedExecText()
+
+  proc readSharedExecText(text: SharedExecText): string =
+    if text.len > 0:
+      result = newString(text.len)
+      copyMem(addr result[0], text.data, text.len)
+
+  proc freeSharedExecLines(head: ptr SharedExecLine) =
+    var current = head
+    while current != nil:
+      let next = current.next
+      if current.text.data != nil:
+        deallocShared(current.text.data)
+      deallocShared(current)
+      current = next
+
+  proc freeOsExecCtx(ctx: ptr OsExecAsyncCtx) =
+    if ctx == nil:
+      return
+    discard consumeSharedExecText(ctx.name)
+    discard consumeSharedExecText(ctx.cmd)
+    discard consumeSharedExecText(ctx.workdir)
+    discard consumeSharedExecText(ctx.resultStdout)
+    discard consumeSharedExecText(ctx.resultStderr)
+    discard consumeSharedExecText(ctx.resultFailure)
+    freeSharedExecLines(ctx.lineHead)
+    var arg = ctx.procArgs
+    while arg != nil:
+      let next = arg.next
+      if arg.text.data != nil:
+        deallocShared(arg.text.data)
+      deallocShared(arg)
+      arg = next
+    deinitLock(ctx.lineLock)
+    deallocShared(ctx)
 
   # Persistent exec-worker pool. Threads are created on demand up to a cap and
-  # NEVER exit: values a job creates (stdout strings, the result map) live on
-  # the creating thread's heap arena, and Nim tears that arena down at thread
-  # exit — so a thread-per-exec design corrupts the allocator as soon as a
-  # result outlives its thread. Long-lived workers are the same discipline as
-  # the scheduler's aio lane. Jobs queue when all workers are busy; the cap is
-  # generous because jobs can legitimately be long (60s streaming curl).
+  # kept for later jobs, matching the scheduler's aio lane and avoiding repeated
+  # thread startup for long-lived agents. Jobs queue when all workers are busy;
+  # the cap is generous because jobs can legitimately be long (60s streaming
+  # curl).
   const osExecAsyncMaxWorkers = 32
 
   var osExecAsyncLock: Lock
@@ -802,25 +872,96 @@ when compileOption("threads"):
   initCond(osExecAsyncCond)
 
   # Exec workers never touch this registry. Calls may nevertheless originate
-  # from more than one scheduler lane, so the exec lock serializes prune/add and
-  # keeps destructor-bearing Value entries from racing each other. Entries keep
-  # the Task, stdout Channel, and ctx alive for the worker's whole run.
-  var osExecAsyncPending: seq[tuple[task: Value, chan: Value, ctxPtr: pointer]]
+  # from more than one scheduler lane, so the exec lock serializes prune/add.
+  # Strong pending refs live only on scheduler lanes; workers borrow raw ctx
+  # pointers and never touch the pending Task/Channel Value owners.
+  var osExecAsyncPending: seq[OsExecPending]
 
-  proc pruneOsExecAsyncPending() =
-    ## Free finished jobs' task/channel/ctx references — on this (scheduler)
-    ## thread, which is the whole point. Called before each new spawn, so the
-    ## registry is bounded by the number of jobs since the last spawn.
+  proc pollOsExecAsyncCompletions() =
+    ## Materialize Gene values and release completed jobs on the scheduler
+    ## thread. Worker threads publish only native strings/ints; allocating a
+    ## Gene value on a worker and freeing it on another thread corrupts ORC's
+    ## thread-local allocator even when its manual refcount is atomic.
     withLock osExecAsyncLock:
       var i = 0
       while i < osExecAsyncPending.len:
-        let ctx {.cursor.} = cast[OsExecAsyncCtx](osExecAsyncPending[i].ctxPtr)
-        if atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE):
-          GC_unref(cast[OsExecAsyncCtx](osExecAsyncPending[i].ctxPtr))
-          # `seq.delete` shifts every following tuple through destructor-bearing
-          # Value fields. Under ORC that has intermittently double-released a
-          # moved Task/Channel entry. Swap-remove performs one explicit move and
-          # keeps registry order irrelevant.
+        let pending {.cursor.} = osExecAsyncPending[i]
+        let ctx = pending.ctx
+        var task {.cursor.}: Value
+        task.bits = ctx.taskBits
+        let taskCancelled = task.taskCancelled
+        if taskCancelled:
+          atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
+        let cancelling = ctx.resultCancelled or taskCancelled
+        var lineHead, lineTail: ptr SharedExecLine
+        withLock ctx.lineLock:
+          lineHead = ctx.lineHead
+          lineTail = ctx.lineTail
+          ctx.lineHead = nil
+          ctx.lineTail = nil
+        var channelBlocked = false
+        if cancelling:
+          freeSharedExecLines(lineHead)
+          lineHead = nil
+        elif ctx.lineChanBits != 0:
+          var channel {.cursor.}: Value
+          channel.bits = ctx.lineChanBits
+          while lineHead != nil:
+            let line = consumeSharedExecText(lineHead.text)
+            let pushed = channel.tryPushChannel(newStr(line))
+            if pushed.closed:
+              freeSharedExecLines(lineHead)
+              lineHead = nil
+              break
+            if not pushed.pushed:
+              lineHead.text = sharedExecText(line)
+              channelBlocked = true
+              break
+            let consumed = lineHead
+            lineHead = lineHead.next
+            deallocShared(consumed)
+            wakeChannelWaitersIn(
+              cast[SchedulerState](ctx.schedulerPtr), channel,
+              wakeSenders = false)
+        if lineHead != nil:
+          withLock ctx.lineLock:
+            lineTail.next = ctx.lineHead
+            ctx.lineHead = lineHead
+            if ctx.lineTail == nil:
+              ctx.lineTail = lineTail
+        let workerDone = atomicLoadN(addr ctx.workerDone, ATOMIC_ACQUIRE)
+        if workerDone and not channelBlocked:
+          var channel {.cursor.}: Value
+          channel.bits = ctx.lineChanBits
+          if ctx.lineChanBits != 0:
+            closeChannel(channel)
+            let scheduler = cast[SchedulerState](ctx.schedulerPtr)
+            wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = false)
+            wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = true)
+          if not ctx.resultCancelled and not task.taskCancelled:
+            if ctx.resultFailed:
+              let failure = consumeSharedExecText(ctx.resultFailure)
+              if tryFailTask(task, failure):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+            else:
+              var props = initOrderedTable[string, Value]()
+              props["status"] = newInt(ctx.resultStatus)
+              props["stdout"] = newStr(consumeSharedExecText(ctx.resultStdout))
+              props["stderr"] = newStr(consumeSharedExecText(ctx.resultStderr))
+              props["stdout-truncated"] = newBool(ctx.resultStdoutTruncated)
+              props["stderr-truncated"] = newBool(ctx.resultStderrTruncated)
+              props["truncated"] = newBool(ctx.resultStdoutTruncated or
+                                             ctx.resultStderrTruncated)
+              props["timed-out"] = newBool(ctx.resultTimedOut)
+              if tryCompleteTask(task, newMap(props)):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+          else:
+            discard consumeSharedExecText(ctx.resultStdout)
+            discard consumeSharedExecText(ctx.resultStderr)
+            discard consumeSharedExecText(ctx.resultFailure)
+          endExternalNativeOp()
+          pending.ctx = nil
+          freeOsExecCtx(ctx)
           let last = osExecAsyncPending.high
           if i != last:
             osExecAsyncPending[i] = move osExecAsyncPending[last]
@@ -830,25 +971,18 @@ when compileOption("threads"):
 
   proc runOsExecAsyncJob(jobPtr: pointer) {.gcsafe.} =
     {.cast(gcsafe).}:
-      # Borrow everything without touching refcounts: the ctx via a cursor
-      # cast (the registry owns it), the scheduler via its raw pointer, and
-      # the task/channel as cursor Values built from raw bits. All wakes go
-      # through the explicit *In variants. The helpers below are templates on
-      # purpose: nested procs would capture these refs into a closure env,
-      # and creating/destroying that env on this thread is exactly the
-      # non-atomic GC_ref/GC_unref race this design exists to prevent.
-      let ctx {.cursor.} = cast[OsExecAsyncCtx](jobPtr)
-      let sched {.cursor.} = cast[SchedulerState](ctx.schedulerPtr)
-      # Cursor var + raw field assignment, NOT `let v {.cursor.} = Value(bits:
-      # ...)`: cursor does not suppress the destroy of a construction
-      # temporary, so that form still runs =destroy at scope exit — an
-      # unretained rcRelease of the task/channel on this worker thread.
-      var taskView {.cursor.}: Value
-      taskView.bits = ctx.taskBits
-      var lineChanView {.cursor.}: Value
-      lineChanView.bits = ctx.lineChanBits
-      defer:
-        endExternalNativeOp()
+      # The worker owns only local Nim data and explicitly shared raw buffers.
+      # It never constructs a Gene Value or touches an ORC-managed object from
+      # the scheduler heap.
+      let ctx = cast[ptr OsExecAsyncCtx](jobPtr)
+      let nativeName = readSharedExecText(ctx.name)
+      let nativeCmd = readSharedExecText(ctx.cmd)
+      let nativeWorkdir = readSharedExecText(ctx.workdir)
+      var nativeArgs: seq[string]
+      var nativeArg = ctx.procArgs
+      while nativeArg != nil:
+        nativeArgs.add readSharedExecText(nativeArg.text)
+        nativeArg = nativeArg.next
       var outText = ""
       var errText = ""
       var outTruncated = false
@@ -877,33 +1011,18 @@ when compileOption("threads"):
             into.add chunk.substr(0, ctx.maxBytes - into.len - 1)
 
       template sendLine(line: string) =
-        ## Push one stdout line with bounded backpressure: retry while the
-        ## channel is full, give up (but keep capturing) once it is closed or
-        ## the exec deadline passes. The value is created on this thread and
-        ## marked shared before it becomes visible cross-thread, so its
-        ## refcount ops are atomic from then on.
+        ## Publish native text only. The scheduler turns it into Gene strings.
         block sendBlock:
           if not chanGone:
-            while true:
-              let item = newStr(line)
-              markSharedValue(item)
-              let pushed = lineChanView.tryPushChannel(item)
-              if pushed.pushed:
-                wakeChannelWaitersIn(sched, lineChanView, wakeSenders = false)
-                break sendBlock
-              if pushed.closed:
-                chanGone = true
-                break sendBlock
-              if taskView.taskCancelled:
-                # The consumer may have unwound without draining the bounded
-                # channel. Stop applying backpressure so the outer process
-                # loop can observe cancellation and terminate the child.
-                cancelled = true
-                chanGone = true
-                break sendBlock
-              if ctx.timeoutMs >= 0 and getMonoTime() >= deadline:
-                break sendBlock
-              os.sleep(1)
+            let node = cast[ptr SharedExecLine](allocShared0(sizeof(SharedExecLine)))
+            node.text = sharedExecText(line)
+            withLock ctx.lineLock:
+              if ctx.lineTail == nil:
+                ctx.lineHead = node
+                ctx.lineTail = node
+              else:
+                ctx.lineTail.next = node
+                ctx.lineTail = node
 
       template handleStdoutChunk(chunk: string) =
         block:
@@ -918,45 +1037,24 @@ when compileOption("threads"):
               else:
                 lineBuf.add ch
 
-      template closeLineChan() =
-        if ctx.lineChanBits != 0:
-          closeChannel(lineChanView)
-          wakeAllChannelWaitersIn(sched, lineChanView, wakeSenders = false)
-          wakeAllChannelWaitersIn(sched, lineChanView, wakeSenders = true)
-
-      template settle(value: Value) =
-        block:
-          # Bind once: template arguments re-evaluate at each mention.
-          let settled = value
-          markSharedValue(settled)
-          closeLineChan()
-          if tryCompleteTask(taskView, settled):
-            wakeTaskWaitersIn(sched, taskView)
-
       template settleFail(message: string) =
         block:
-          let failMsg = message
-          closeLineChan()
-          if tryFailTask(taskView, failMsg):
-            wakeTaskWaitersIn(sched, taskView)
+          ctx.resultFailed = true
+          ctx.resultFailure = sharedExecText(message)
 
       template cancellationRequested(): bool =
-        ## External Tasks settle as cancelled on the scheduler thread before
-        ## this worker observes the request. Poll the terminal state so task
-        ## cancellation also stops the owned subprocess instead of merely
-        ## discarding its eventual result.
-        taskView.taskCancelled
+        atomicLoadN(addr ctx.cancelRequested, ATOMIC_ACQUIRE)
 
       if cancellationRequested():
-        closeLineChan()
+        ctx.resultCancelled = true
         return
 
       var process: Process
       try:
-        process = startProcess(ctx.cmd, workingDir = ctx.workdir,
-                               args = ctx.procArgs, options = {poUsePath})
+        process = startProcess(nativeCmd, workingDir = nativeWorkdir,
+                               args = nativeArgs, options = {poUsePath})
       except CatchableError as e:
-        settleFail(ctx.name & " could not start '" & ctx.cmd & "': " & e.msg)
+        settleFail(nativeName & " could not start '" & nativeCmd & "': " & e.msg)
         return
       try:
         try:
@@ -1021,22 +1119,16 @@ when compileOption("threads"):
             sendLine(lineBuf)
             lineBuf.setLen(0)
           if cancelled:
-            # Task/cancel already settled and woke its waiters. Only the
-            # worker-owned channel still needs closing; do not race it with a
-            # second task settlement or manufacture an exec result.
-            closeLineChan()
+            ctx.resultCancelled = true
             return
-          var props = initOrderedTable[string, Value]()
-          props["status"] = newInt(exitCode)
-          props["stdout"] = newStr(outText)
-          props["stderr"] = newStr(errText)
-          props["stdout-truncated"] = if outTruncated: TRUE else: FALSE
-          props["stderr-truncated"] = if errTruncated: TRUE else: FALSE
-          props["truncated"] = if outTruncated or errTruncated: TRUE else: FALSE
-          props["timed-out"] = if timedOut: TRUE else: FALSE
-          settle(newMap(props))
+          ctx.resultStatus = exitCode
+          ctx.resultStdout = sharedExecText(outText)
+          ctx.resultStderr = sharedExecText(errText)
+          ctx.resultStdoutTruncated = outTruncated
+          ctx.resultStderrTruncated = errTruncated
+          ctx.resultTimedOut = timedOut
         except CatchableError as e:
-          settleFail(ctx.name & " failed: " & e.msg)
+          settleFail(nativeName & " failed: " & e.msg)
       finally:
         try:
           process.close()
@@ -1058,7 +1150,7 @@ when compileOption("threads"):
         runOsExecAsyncJob(jobPtr)
         # Must be this worker's final access to the job: once the scheduler
         # acquires the flag it frees the ctx and drops the task/channel refs.
-        let doneCtx {.cursor.} = cast[OsExecAsyncCtx](jobPtr)
+        let doneCtx = cast[ptr OsExecAsyncCtx](jobPtr)
         atomicStoreN(addr doneCtx.workerDone, true, ATOMIC_RELEASE)
 
   proc enqueueOsExecAsyncJob(jobPtr: pointer) =
@@ -1076,6 +1168,10 @@ when compileOption("threads"):
       createThread(tr[], osExecAsyncWorkerMain)
       withLock osExecAsyncLock:
         osExecAsyncThreads.add tr
+
+else:
+  proc pollOsExecAsyncCompletions() =
+    discard
 
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        args: openArray[Value],
@@ -1132,39 +1228,50 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
   when compileOption("threads"):
     if scope == nil or scope.application == nil:
       raiseOsError(name & " requires a scheduler scope", scope)
-    pruneOsExecAsyncPending()
+    pollOsExecAsyncCompletions()
     let task = newExternalTask()
     markSharedValue(task)
     if lineChan.kind != vkNil:
       markSharedValue(lineChan)
-    let ctx = OsExecAsyncCtx(name: name, cmd: cmd, procArgs: procArgs,
-                             workdir: workdir, timeoutMs: timeoutMs,
-                             maxBytes: maxBytes, taskBits: task.bits,
-                             lineChanBits: (if lineChan.kind == vkNil: 0'u64
-                                            else: lineChan.bits),
-                             schedulerPtr: cast[pointer](
-                               schedulerForScope(scope)))
-    # Scheduler-side ownership: the registry retains the task/channel (Value
-    # copies) and the ctx (GC_ref) so the worker can borrow raw bits and a raw
-    # pointer with zero refcount traffic. Released in pruneOsExecAsyncPending,
-    # on this thread, after the worker's release-store of workerDone. The
-    # entry is built with explicit field assignments so each Value goes
-    # through =copy — a tuple constructor may sink the locals instead.
-    GC_ref(ctx)
-    var pendingEntry: tuple[task: Value, chan: Value, ctxPtr: pointer]
-    pendingEntry.task = task
-    pendingEntry.chan = lineChan
-    pendingEntry.ctxPtr = cast[pointer](ctx)
+    let ctx = cast[ptr OsExecAsyncCtx](allocShared0(sizeof(OsExecAsyncCtx)))
+    ctx.name = sharedExecText(name)
+    ctx.cmd = sharedExecText(cmd)
+    ctx.workdir = sharedExecText(workdir)
+    ctx.timeoutMs = timeoutMs
+    ctx.maxBytes = maxBytes
+    ctx.taskBits = task.bits
+    ctx.lineChanBits = if lineChan.kind == vkNil: 0'u64 else: lineChan.bits
+    ctx.schedulerPtr = cast[pointer](schedulerForScope(scope))
+    var argTail: ptr SharedExecArg
+    for arg in procArgs:
+      let argNode = cast[ptr SharedExecArg](allocShared0(sizeof(SharedExecArg)))
+      argNode.text = sharedExecText(arg)
+      if argTail == nil:
+        ctx.procArgs = argNode
+      else:
+        argTail.next = argNode
+      argTail = argNode
+    initLock(ctx.lineLock)
+    # `dup` is deliberate: task/lineChan are also returned/owned by the caller.
+    # A sink into the ctx without the explicit retain would leave two logical
+    # owners sharing one ref and completion cleanup would free the caller's
+    # live handle.
+    let pending = OsExecPending(ctx: ctx)
+    pending.taskOwner = retainedCopy(task)
+    pending.lineChanOwner = retainedCopy(lineChan)
+    # Scheduler-side ownership: the pending ref retains task/channel while the
+    # worker borrows their raw bits. The worker ctx itself is shared raw memory.
     withLock osExecAsyncLock:
-      osExecAsyncPending.add(move pendingEntry)
+      osExecAsyncPending.add(pending)
     beginExternalNativeOp()
     try:
       enqueueOsExecAsyncJob(cast[pointer](ctx))
     except CatchableError as e:
       endExternalNativeOp()
-      GC_unref(ctx)
       withLock osExecAsyncLock:
         osExecAsyncPending.setLen(osExecAsyncPending.len - 1)
+      pending.ctx = nil
+      freeOsExecCtx(ctx)
       raiseOsError(name & " could not start a worker thread: " & e.msg, scope)
     task
   else:
@@ -2593,6 +2700,30 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
     discard w.path.pop()
   w.sb.add "])"
 
+proc serdeDataValueP(v: Value): bool
+
+proc selectorIsSerializableData(v: Value): bool =
+  if not v.isSelector:
+    return true
+  for segment in v.body:
+    case segment.kind
+    of vkInt, vkSymbol, vkString:
+      discard
+    of vkNode:
+      if segment.head.isSymbol("selector-key") and segment.body.len == 1:
+        if not serdeDataValueP(segment.body[0]):
+          return false
+      elif segment.isSelector:
+        if not selectorIsSerializableData(segment):
+          return false
+      else:
+        # call-stage and arbitrary node stages execute behavior.
+        return false
+    else:
+      # Callable stages execute behavior and retain runtime authority.
+      return false
+  true
+
 proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool =
   if v.isNil:
     return true
@@ -2644,6 +2775,8 @@ proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool =
     true
   of vkNode:
     if v.head.kind in {vkType, vkEnumVariant}:
+      return false
+    if v.isSelector and not selectorIsSerializableData(v):
       return false
     if v.bits in onPath:
       return false

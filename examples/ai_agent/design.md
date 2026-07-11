@@ -449,13 +449,12 @@ Every new host power is a capability value, consistent with the existing model
 - `Net/Connect` — outbound network (reuse; §4);
 - `Fs/ReadWriteDir` — workspace file tools (reuse; §6).
 
-Open runtime question (tracked in `docs/stdlib.md`): how an entrypoint receives
-capabilities. Today these are defined on the built-ins root, so the agent script
-imports them directly. Capability injection through `gene run` flags remains a
-sound future mechanism for embedding or distributing the agent, but it is not
-required before the personal tool's live programming model. Capability values
-still matter now because typed tools and future actors can state their authority
-explicitly even when the launcher grants the normal personal-tool bundle.
+`gene run` now supports explicit named entrypoint grants such as
+`--grant env=Os/Env --grant exec=Os/Exec --`. The current personal-agent script
+still reads the built-in capability values for backward compatibility; moving
+its `main` signature to named grants is the next packaging/hardening slice, not
+a missing runtime mechanism. Embedding hosts can already pass the same named
+capabilities through `GeneCall`.
 
 ### 8.5 Catastrophe guard
 

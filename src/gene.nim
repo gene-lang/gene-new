@@ -21,7 +21,8 @@ proc usage() =
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene repl [--curses]   read/eval/print source lines from stdin"
-  echo "  gene run <file.gene> [args...] execute a file, then call main if present"
+  echo "  gene run <file.gene> [--grant name=expr] [--] [args...]"
+  echo "                              execute a file and explicitly grant main capabilities"
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
@@ -103,6 +104,41 @@ proc commandArgs(first: int): seq[string] =
     for i in first .. paramCount():
       result.add paramStr(i)
 
+type MainGrantSpec = object
+  name: string
+  expr: string
+
+proc splitMainInvocation(raw: openArray[string]): tuple[args: seq[string],
+                                                        grants: seq[MainGrantSpec]] =
+  var hostOptions = true
+  var i = 0
+  while i < raw.len:
+    if hostOptions and raw[i] == "--":
+      hostOptions = false
+      inc i
+      continue
+    var spec = ""
+    if hostOptions and raw[i] == "--grant":
+      inc i
+      if i >= raw.len:
+        raise newException(GeneError, "--grant expects name=expression")
+      spec = raw[i]
+    elif hostOptions and raw[i].startsWith("--grant="):
+      spec = raw[i][8 .. ^1]
+    else:
+      result.args.add raw[i]
+      inc i
+      continue
+    let equals = spec.find('=')
+    if equals <= 0 or equals == spec.high:
+      raise newException(GeneError, "--grant expects name=expression")
+    let name = spec[0 ..< equals]
+    for existing in result.grants:
+      if existing.name == name:
+        raise newException(GeneError, "duplicate main grant: " & name)
+    result.grants.add MainGrantSpec(name: name, expr: spec[equals + 1 .. ^1])
+    inc i
+
 proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   let message = "main return expected Nil or Int, got " & $value.kind
   var props = initOrderedTable[string, Value]()
@@ -164,11 +200,20 @@ proc cmdRun(path: string, args: openArray[string] = []) =
     replScope = scope
     var mainBinding: Value
     if scope.lookupOptional("main", mainBinding):
-      let result =
+      let invocation = splitMainInvocation(args)
+      var grantNames: seq[string]
+      var grantValues: seq[Value]
+      for grant in invocation.grants:
+        grantNames.add grant.name
+        grantValues.add run(compileEvalSource(grant.expr,
+                                              sourceName = "<main-grant:" &
+                                                grant.name & ">"), scope)
+      let positional =
         if mainBinding.kind == vkFunction and mainBinding.fnParams.len == 0:
-          mainBinding.call()
+          newSeq[Value]()
         else:
-          mainBinding.call(@[argsValue(args)])
+          @[argsValue(invocation.args)]
+      let result = mainBinding.call(positional, grantNames, grantValues, scope)
       exitFromMain(scope, result)
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)

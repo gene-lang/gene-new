@@ -1,8 +1,27 @@
 # Gene — Language Design
 
-**Status:** pre-implementation draft, v2 selector-core surface  
+**Status:** architecture, rationale, and deferred design; non-normative  
 **Design:** G. Cao + ChatGPT, June 2026  
-**Scope:** core language design for review.
+**Scope:** language architecture and design history.
+
+### Document map and precedence
+
+- [`docs/spec/`](spec/README.md) is the normative implemented language
+  contract, split by subsystem.
+- `tests/spec_runner.nim` is the executable contract. If implemented prose and
+  executable behavior disagree, the executable contract wins until the prose
+  is corrected.
+- [`docs/core.md`](core.md) is the detailed protocol/type-message supplement;
+  [`docs/spec/protocols.md`](spec/protocols.md) states its normative subset.
+- [`docs/implementation-status.md`](implementation-status.md) records what is
+  shipped now and what remains.
+- Files under `docs/proposals/` are future proposals unless their status says
+  otherwise.
+
+This file explains why the design has its current shape and preserves deferred
+alternatives. Normative rules formerly introduced here are consolidated in the
+focused spec files above; words such as “should”, “planned”, and “future” in
+this file do not define implemented behavior.
 
 This draft reflects the current direction:
 
@@ -109,6 +128,11 @@ Scalar values are node fixpoints for `head` and have empty props/body/meta unles
 (meta 42)  # {}
 ```
 
+`props`, `body`, and `meta` return detached, shallow snapshots. Mutating the
+returned map/list never changes the projected node, but values inside the
+snapshot retain their ordinary identities: a nested mutable list, map, cell,
+or node is still shared until it is explicitly copied or frozen.
+
 ### 1.4 Meta
 
 Syntax:
@@ -125,6 +149,11 @@ Rules:
 - if it is descriptive/tool/user information, it is meta;
 - patterns see meta only when the pattern explicitly mentions meta;
 - reader/compiler may stamp meta such as `@file`, `@line`, `@col`, `@expanded-from`.
+
+Meta is descriptive but not a safety bypass. Deep `freeze`, `Send` validation,
+and structural serialization traverse meta with the same rules used for node
+props and body. A non-Send or non-serializable value remains so when reachable
+only through meta.
 
 ### 1.5 Equality and identity
 
@@ -291,6 +320,12 @@ Context determines interpretation:
 - module path strings in `from "path"` are resolved and normalized by the module loader.
 
 The reader may represent selector paths and qualified names with related path nodes, but the compiler resolves them by context. Static qualified names are resolved during name/type checking and must not require evaluating runtime values named `C`, `Stream`, or `net`.
+
+In runtime expression and call-head position, the first segment is resolved
+lexically and the remaining segments select from that runtime value. Ordinary
+lexical shadowing therefore applies to the base name. Declaration, type,
+protocol-message, and namespace-import contexts instead resolve the complete
+qualified name statically.
 
 The printer must preserve token boundaries so slash paths and delimited symbols round-trip exactly. The standard library may also expose `(div a b)`, but `/` remains available as a normal callable symbol when delimited.
 
@@ -817,6 +852,13 @@ If an evaluated `%` segment is callable, it is used as a stage. If it is not cal
 (select m %(key x))    # optional library wrapper: force key/index use
 ```
 
+Static symbol/string/index segments and explicit `key` wrappers are pure
+selector data. Callable stages, call-stage nodes, and `~message` path segments
+are executable/effectful. Effectful selectors are not serializable and must not
+be admitted to pure selector caches. Functional update APIs such as `assoc-in`
+and `update-in` accept only pure scalar/key segments and reject executable
+stages before invoking them.
+
 Selector chains propagate `void`:
 
 ```gene
@@ -829,12 +871,15 @@ Long-form selectors may opt into explicit missing-value handling:
 
 ```gene
 ((select ^default "unknown" user name) data) # returns default if any segment is missing
-((select ^strict true user name) data)       # raises if any segment is missing
+((select ^strict true user name) data)       # raises SelectorMissing
 ```
 
 `^default` is evaluated when the selector is constructed and is returned only
 for missing/`void` lookup. Present `nil` is still returned as `nil`. `^strict
 true` takes precedence over `^default`.
+
+`SelectorMissing` is a typed `MatchError` carrying the failed `^segment` and a
+human-readable `^message`.
 
 ---
 
@@ -1133,10 +1178,18 @@ parent constructor is not called automatically:
     (self ~ Node/set-prop! `breed breed)))
 ```
 
-A partially constructed `self` is not `Send` and should not escape to actors,
-channels, native roots, globals, or long-lived closures before construction
-validates. The MVP runtime may reject obvious escapes; future implementations
-may enforce this more precisely with a construction-state marker.
+A partially constructed `self` carries an in-progress construction marker and
+is not publishable. While the marker is set, the runtime rejects Send,
+actor/channel transfer, global or container storage, native rooting, escaping
+closure capture, and error/panic publication. Transient helper returns remain
+inside the constructor's dynamic extent and cannot cross any durable boundary.
+Only the constructor's
+explicit node mutation operations (`Node/set-prop!`, `Node/set-body!`, and
+`Node/push-body!`) may target it; arbitrary receiver dispatch is rejected.
+After schema validation succeeds, the marker is cleared before `new` returns.
+If construction fails, normal error unwinding and `ensure` cleanup run, and no
+partial instance is registered or exposed. A ctor's declared `^errors` form
+part of the checked-error behavior of `new`.
 
 ### 7.2 MVP type hierarchy
 
@@ -2978,9 +3031,23 @@ There is no ambient filesystem authority in the intended runtime API.
 Entry points can receive granted capability values:
 
 ```gene
-(fn main [^config : Fs/ReadDir, ^logs : Fs/WriteDir] : Nil
+(fn main [args : (List Str), ^config : Fs/ReadDir, ^logs : Fs/WriteDir] : Nil
   ...)
 ```
+
+For `gene run`, positional strings remain the first `main` argument. Named
+capabilities are injected only by explicit host grants:
+
+```text
+gene run app.gene --grant config=Fs/ReadDir --grant logs=Fs/WriteDir -- args...
+```
+
+Each grant expression is evaluated by the host in the loaded entry-module
+scope and passed as a named call argument. `--` ends host-option parsing.
+Missing required grants fail normal named-parameter/type boundary validation
+before the body runs; globals are never searched implicitly to fill them.
+Embedding hosts use the same named-argument call envelope (`GeneCall`) and are
+responsible for constructing and granting capability values explicitly.
 
 Static `^effects [fs io net]`, capability-row inference, and hidden capability threading are deferred until the core language stabilizes.
 
@@ -3341,6 +3408,12 @@ on a named `fn`) becomes node meta on the record, so `decl/%meta/route` reads
 it and declarations without that meta answer `void`. This is the hook for
 meta-driven discovery such as route tables built from `@route` annotations.
 
+This is runtime reflection: its stream contains only runtime bindings with a
+real `^value`. Compile-time macro and derive declarations are excluded. Tooling
+that enumerates those artifacts must use the compiler's compile-time
+declaration view, with phase and syntax/source metadata, rather than fabricate
+an `Any` runtime value or execute module top-level code.
+
 Namespaces should expose reflection helpers such as:
 
 ```gene
@@ -3626,6 +3699,7 @@ gene_root_release(root)
 The exact C names are ABI details, but the semantic rules are mandatory:
 
 - an unrooted Gene value must not be retained across calls or VM safepoints;
+- an in-progress constructed instance cannot be rooted;
 - native code must use runtime APIs to inspect and construct Gene values;
 - native code must not retain interior pointers into movable objects;
 - pinned byte/string storage must be explicitly requested and released;

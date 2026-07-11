@@ -1,7 +1,8 @@
 # Gene — Core Type & Protocol Model
 
-**Status:** normative for the implemented protocol/type-message surface;
-explicitly marked deferred sections are non-normative.
+**Status:** detailed protocol/type-message supplement. The implemented,
+normative subset is indexed by `docs/spec/protocols.md`; explicitly marked
+deferred and open-question sections are non-normative.
 **Scope:** protocols, messages, dispatch, protocol-local derivation, the two
 inheritance axes (type `^is` and protocol `^inherit`), type-direct messages,
 message resolution / `~` semantics, and dispatch on scalar/singleton

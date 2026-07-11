@@ -319,7 +319,7 @@ const supervisorFailureRetryCapacity = 64
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope)
-proc rejectCallerEnvEscape(where: string, value: Value)
+proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
@@ -365,6 +365,7 @@ type
 var activeScheduler {.threadvar.}: SchedulerState
 var activeFiberRunning {.threadvar.}: bool
 var activeWorkerThread {.threadvar.}: bool
+var activeConstructionDepth {.threadvar.}: int
 
 proc currentScheduler(): SchedulerState
 
@@ -462,6 +463,7 @@ proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
 # Drive the scheduler until the given task settles, or raise on deadlock.
 proc pumpUntilDone(task: Value)
+proc pollOsExecAsyncCompletions()
 
 # Actor message processing runs each handler as a scheduler fiber. scheduleActor
 # enqueues the next message's handler fiber if the actor is idle; driveActor pumps
@@ -1453,6 +1455,7 @@ proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     if workerLeaseOpen:
       endSchedulerWorkerLease(workerLease)
   while true:
+    pollOsExecAsyncCompletions()
     let state = args[0].channelRecvState()
     if state.empty:
       if state.closed:
@@ -1513,6 +1516,7 @@ proc tryRecvValue(scope: Scope, item: Value): Value =
 proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/try-recv", args)
   requireChannel("Channel/try-recv", args[0])
+  pollOsExecAsyncCompletions()
   let scope = if call == nil: nil else: call[].dispatchScope
   let popped = args[0].tryPopChannel()
   if not popped.popped:
@@ -2292,11 +2296,97 @@ proc carriesCallerEnv(value: Value): bool =
   var seen = initHashSet[uint64]()
   carriesCallerEnv(value, seen)
 
+proc carriesConstruction*(value: Value): bool {.noinline.}
+
 proc rejectCallerEnvEscape(where: string, value: Value) =
   if value.carriesCallerEnv:
     raise newException(GeneError,
       where & " cannot retain borrowed CallerEnv authority; use " &
       "Env/snapshot with explicit binding names")
+  if activeConstructionDepth > 0 and value.carriesConstruction:
+    raise newException(GeneError,
+      where & " cannot publish an in-progress constructed instance")
+
+proc carriesConstruction(value: Value, seenValues: var HashSet[uint64],
+                         seenScopes: var HashSet[pointer]): bool
+
+proc scopeCarriesConstruction(scope: Scope, seenValues: var HashSet[uint64],
+                              seenScopes: var HashSet[pointer]): bool =
+  if scope == nil:
+    return false
+  let key = cast[pointer](scope)
+  if key in seenScopes:
+    return false
+  seenScopes.incl key
+  for _, item in scope.vars:
+    if carriesConstruction(item, seenValues, seenScopes):
+      return true
+  for i, item in scope.slots:
+    if scope.slotDefined(i) and carriesConstruction(item, seenValues, seenScopes):
+      return true
+  false
+
+proc carriesConstruction(value: Value, seenValues: var HashSet[uint64],
+                         seenScopes: var HashSet[pointer]): bool =
+  if value.kind == vkNode and value.nodeConstructing:
+    return true
+  if value.isHeapBacked:
+    if value.bits in seenValues:
+      return false
+    seenValues.incl value.bits
+  case value.kind
+  of vkFunction:
+    scopeCarriesConstruction(value.fnScope, seenValues, seenScopes)
+  of vkList:
+    for item in value.listItems:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    false
+  of vkMap:
+    for _, item in value.mapEntries:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    false
+  of vkSet:
+    for item in value.setItems:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    false
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      if carriesConstruction(entry.key, seenValues, seenScopes) or
+          carriesConstruction(entry.val, seenValues, seenScopes): return true
+    false
+  of vkNode:
+    if carriesConstruction(value.head, seenValues, seenScopes): return true
+    for _, item in value.props:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    for item in value.body:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    for _, item in value.meta:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    false
+  of vkCell:
+    carriesConstruction(value.cellValue, seenValues, seenScopes)
+  of vkAtomicCell:
+    carriesConstruction(value.atomicCellValue, seenValues, seenScopes)
+  of vkEnv:
+    for _, item in value.envBindings:
+      if carriesConstruction(item, seenValues, seenScopes): return true
+    false
+  else:
+    false
+
+proc carriesConstruction*(value: Value): bool =
+  # Construction markers and graphs exist only in heap-backed values. Keep the
+  # ubiquitous scalar return/store path allocation-free.
+  if not value.isHeapBacked:
+    return false
+  var seenValues = initHashSet[uint64]()
+  var seenScopes = initHashSet[pointer]()
+  carriesConstruction(value, seenValues, seenScopes)
+
+proc scopeCarriesConstruction(scope: Scope): bool {.noinline.} =
+  var seenValues = initHashSet[uint64]()
+  var seenScopes = initHashSet[pointer]()
+  scopeCarriesConstruction(scope, seenValues, seenScopes)
 
 proc raiseEndOfStream() =
   var props = initOrderedTable[string, Value]()
@@ -4594,6 +4684,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("MatchError", matchError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: matchError)
+  let selectorMissing = newType("SelectorMissing", matchError,
+                                @[
+                                  TypeField(name: "segment", optional: false,
+                                            typeExpr: newSym("Any"), scope: result)
+                                ],
+                                @[], result)
+  result.define("SelectorMissing", selectorMissing)
   let compileError = newType("CompileError", NIL,
                              @[TypeField(name: "message", optional: false,
                                          typeExpr: newSym("Str"), scope: result)],
@@ -6546,6 +6643,8 @@ proc isSendableValue(value: Value, scope: Scope,
   of vkFunction:
     functionCapturesSendable(value, scope, seen, mode)
   of vkNode:
+    if value.nodeConstructing:
+      return false
     var sendProtocol: Value
     if value.head.kind == vkType and scope != nil and
         scope.lookupOptional("Send", sendProtocol) and
@@ -6764,7 +6863,8 @@ proc cloneForCapturedSnapshot(value: Value,
       meta[key] = cloned
     if changed:
       newNode(clonedHead, props = props, body = body, meta = meta,
-              immutable = value.nodeImmutable)
+              immutable = value.nodeImmutable,
+              constructing = value.nodeConstructing)
     else:
       value
   else:
@@ -7670,7 +7770,8 @@ proc withSourceLocProps(value: Value, loc: SourceLoc): Value =
   newNode(value.head, props = props,
           body = copyItems(value.body),
           meta = copyEntries(value.meta),
-          immutable = value.nodeImmutable)
+          immutable = value.nodeImmutable,
+          constructing = value.nodeConstructing)
 
 proc attachSourceLoc(e: ref GeneError, loc: SourceLoc) =
   if e == nil or not loc.hasSourceLoc:
@@ -9644,6 +9745,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # argument values already on the stack, then the receiver goes back
           # on top as the first positional argument.
           let receiver = stack.pop()
+          if receiver.nodeConstructing and inst[].name notin
+              ["Node/set-prop!", "Node/set-body!", "Node/push-body!"]:
+            raise newException(GeneError,
+              "cannot dispatch '" & inst[].name &
+              "' on an in-progress constructed instance")
           var callee = NIL
           let recvType = receiver.receiverType
           if recvType.kind == vkType:
@@ -10685,6 +10791,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if scope.borrowedCallerEnv:
             raise newException(GeneError,
               "spawn cannot capture borrowed CallerEnv authority")
+          if activeConstructionDepth > 0 and scope.scopeCarriesConstruction:
+            raise newException(GeneError,
+              "spawn cannot capture an in-progress constructed instance")
           let body = chunk.subchunks[inst[].intArg]
           let workerSafe = inst[].flag and scope.spawnCanMoveToWorker(body)
           publishSpawnCapture(scope, body)
@@ -10716,13 +10825,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             elif currentFiberActive:
               # Nested native trampoline (native callback re-entered the VM)
               # inside a fiber: there is no continuation to park. An external
-              # task settles from its own thread, so wait for it directly —
-              # blocking, but correct. A scheduler-owned task would need this
-              # thread to progress; suspend is impossible, so fail cleanly.
+              # task must be waited for directly — blocking, but correct. Some
+              # external operations (notably os/exec-*-async) publish a native
+              # result that this scheduler thread materializes, so keep polling
+              # instead of waiting indefinitely for a worker-side settlement.
+              # A scheduler-owned task would need this thread to progress;
+              # suspend is impossible, so fail cleanly.
               when compileOption("threads"):
                 if task.taskExternalPending:
                   while not task.taskDone:
-                    if not task.waitExternalTaskChange():
+                    pollOsExecAsyncCompletions()
+                    if not task.taskDone:
                       os.sleep(1)
                 else:
                   raise newException(GeneError,
@@ -10738,11 +10851,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           stack.add awaitTaskValue(task)
         of opFail:
           let errVal = stack.pop()
+          rejectCallerEnvEscape("fail payload", errVal)
           if not scope.isErrorValue(errVal):
             raise newException(GeneError, "fail expects an Error value")
           raiseFailedValue(errVal)
         of opPanic:
-          raisePanicValue(stack.pop())
+          let panicVal = stack.pop()
+          rejectCallerEnvEscape("panic payload", panicVal)
+          raisePanicValue(panicVal)
         of opYield:
           if not stopOnYield:
             raise newException(GeneError, "yield is only valid in a generator")
@@ -11965,6 +12081,7 @@ proc schedulerWorkerLeaseHasProgress(lease: SchedulerWorkerLease): bool =
     false
 
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
+  pollOsExecAsyncCompletions()
   if schedulerRunOne(skipWorkerSafe = lease.active):
     return true
   # If the cooperative root lane has no exclusive work, let it help drain the
@@ -11981,6 +12098,7 @@ proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool =
 
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool =
+  pollOsExecAsyncCompletions()
   if schedulerRunOneUntil(deadline, skipWorkerSafe = lease.active):
     return true
   if lease.active and schedulerRunOneUntil(deadline, skipWorkerSafe = false):
@@ -12081,12 +12199,18 @@ proc pumpUntilDone(task: Value) =
   defer:
     endSchedulerWorkerLease(workerLease)
   while not task.taskDone:
+    pollOsExecAsyncCompletions()
     if not schedulerRunOneRoot(workerLease):
       if task.taskDone:
         break
       when compileOption("threads") and defined(gcAtomicArc):
         if task.taskExternalPending:
-          discard task.waitExternalTaskChange()
+          # os/exec-*-async is settled by scheduler polling, not by its worker.
+          # Avoid a condition wait while any such native op may need this lane.
+          if externalNativeOpsPending():
+            os.sleep(1)
+          else:
+            discard task.waitExternalTaskChange()
           if task.taskDone:
             break
           if task.taskExternalPending:
@@ -13584,10 +13708,27 @@ proc selectorStrict(selector: Value): bool =
     raise newException(GeneError, "selector ^strict must be Bool")
   value.boolVal
 
+proc raiseSelectorMissing(segment: Value) =
+  let message = "selector lookup failed at segment: " & segment.print()
+  var props = initOrderedTable[string, Value]()
+  props["message"] = newStr(message)
+  props["segment"] = segment
+  var head = newSym("SelectorMissing")
+  let root = builtinsScope()
+  var missingType: Value
+  if root.lookupOptional("SelectorMissing", missingType) and
+      missingType.kind == vkType:
+    head = missingType
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
 proc selectorMissingResult(selector: Value, segment: Value): Value =
   if selector.selectorStrict:
-    raise newException(GeneError,
-      "selector lookup failed at segment: " & segment.print())
+    raiseSelectorMissing(segment)
   if selector.props.hasKey("default"):
     selector.props["default"]
   else:
@@ -13625,8 +13766,7 @@ proc applySelector(selector, target: Value): Value =
         staticLookup(result, segment)
     if result.kind == vkVoid:
       if strict:
-        raise newException(GeneError,
-          "selector lookup failed at segment: " & segment.print())
+        raiseSelectorMissing(segment)
       return selector.selectorMissingResult(segment)
 
 proc ensureNoInteriorNul(name: string, text: string) =
@@ -18736,14 +18876,19 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
   ## as head, run the ctor with it bound as `self` (the implicit leading
   ## parameter), then validate the completed instance against the full
   ## inherited schema. The ctor body result is ignored.
-  let instance = newNode(callee)
+  let instance = newNode(callee, constructing = true)
   var ctorArgs = newSeqOfCap[Value](args.len + 1)
   ctorArgs.add instance
   for a in args:
     ctorArgs.add a
-  discard applyCall(callee.typeCtor, ctorArgs, named, dispatchScope, site)
-  validateConstructedInstance(callee, instance)
-  instance
+  inc activeConstructionDepth
+  try:
+    discard applyCall(callee.typeCtor, ctorArgs, named, dispatchScope, site)
+    validateConstructedInstance(callee, instance)
+    instance.finishNodeConstruction()
+    instance
+  finally:
+    dec activeConstructionDepth
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL): Value =

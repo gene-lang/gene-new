@@ -1,6 +1,6 @@
 ## Executable Gene language surface spec.
 ##
-## This file intentionally checks behavior from docs/design.md and
+## This file intentionally checks behavior from docs/spec/ and
 ## examples/web_demo.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
@@ -99,9 +99,9 @@ suite "spec — reader surface from design":
     expect ReadError: discard read("$\"hello ${name\"")
     expect ReadError: discard read("'ab'")
 
-suite "spec — compiler special-form inventory from design §3":
+suite "spec — compiler special-form inventory from docs/spec/calls.md":
   test "documented inventory matches compiler dispatch and has fixtures":
-    let design = readFile("docs/design.md")
+    let design = readFile("docs/spec/calls.md")
     let marker = "<!-- compiler-head-dispatch:start -->"
     let markerAt = design.find(marker)
     check markerAt >= 0
@@ -999,6 +999,19 @@ suite "spec — equality and identity from design":
     check_eval("(try (freeze [(cell 1)]) catch {^message m} m)",
                "\"freeze cannot freeze Cell\"")
 
+  test "deep freeze traverses node metadata":
+    let frozen = run(compileSource("(freeze `(x @info {^items [1]}))"),
+                     newGlobalScope())
+    check frozen.meta["info"].isImmutable
+    check frozen.meta["info"].mapEntries["items"].isImmutable
+
+  test "Send validation traverses node metadata":
+    expect GeneError:
+      discard run(compileSource(
+        "(var n (freeze-shallow `(x @state %(cell 1)))) " &
+        "(var ch (channel ^capacity 1)) (ch ~ send n)"),
+        newGlobalScope())
+
 suite "spec — numeric boundaries from design":
   test "Int has mathematical integer semantics":
     check_eval("[(+ 9223372036854775807 1) " &
@@ -1258,6 +1271,76 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "a type defines at most one ctor":
     expect GeneError:
       discard compileSource("(type T ^props {} (ctor [] nil) (ctor [] nil))")
+
+  test "in-progress instances cannot escape construction":
+    check_eval("(var leaked nil) " &
+               "(type T ^props {^x Int} " &
+               "  (ctor [] (set leaked self) " &
+               "    (self ~ Node/set-prop! `x 1))) " &
+               "[(try (new T) catch * \"blocked\") leaked]",
+               "[\"blocked\" nil]")
+    check_eval("(var box (cell nil)) " &
+               "(type T ^props {^x Int} " &
+               "  (ctor [] (box ~ Cell/set self) " &
+               "    (self ~ Node/set-prop! `x 1))) " &
+               "[(try (new T) catch * \"blocked\") (box ~ Cell/get)]",
+               "[\"blocked\" nil]")
+    check_eval("(type T ^props {^x Int} " &
+               "  (ctor [] [self] (self ~ Node/set-prop! `x 1))) " &
+               "(try (new T) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(type T ^props {^x Int} ^impl [Error] " &
+               "  (ctor [] (fail self))) " &
+               "(impl Error for T) " &
+               "(try (new T) catch (T) \"leaked\" catch * \"blocked\")",
+               "\"blocked\"")
+    expect GeneError:
+      discard run(compileSource(
+        "(type T ^props {^x Int} (ctor [] (panic self))) (new T)"),
+        newGlobalScope())
+    check_eval("(var leaked nil) " &
+               "(type T ^props {^x Int} " &
+               "  (ctor [] (set leaked (fn [] self)) " &
+               "    (self ~ Node/set-prop! `x 1))) " &
+               "[(try (new T) catch * \"blocked\") leaked]",
+               "[\"blocked\" nil]")
+    check_eval("(type T ^props {^x Int} " &
+               "  (message inspect [self] self/x) " &
+               "  (ctor [] (self ~ inspect) " &
+               "    (self ~ Node/set-prop! `x 1))) " &
+               "(try (new T) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(type T ^props {^x Int} " &
+               "  (ctor [] (spawn self) " &
+               "    (self ~ Node/set-prop! `x 1))) " &
+               "(try (new T) catch * \"blocked\")",
+               "\"blocked\"")
+    check_eval("(var ch (channel ^capacity 1)) " &
+               "(type T ^props {^x Int} ^impl [Send] " &
+               "  (ctor [] (ch ~ Channel/send self) " &
+               "    (self ~ Node/set-prop! `x 1))) " &
+               "(impl Send for T) " &
+               "(try (new T) catch * \"blocked\")",
+               "\"blocked\"")
+
+  test "successful construction clears the publication guard":
+    check_eval("(type T ^props {^x Int} ^impl [Send] " &
+               "  (ctor [] (self ~ Node/set-prop! `x 1))) " &
+               "(impl Send for T) " &
+               "(var ch (channel ^capacity 1)) (var value (new T)) " &
+               "(ch ~ Channel/send value) " &
+               "(var received (ch ~ Channel/recv)) received/x",
+               "1")
+
+  test "failed construction unwinds ensure cleanup":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error for Boom) (var cleaned (cell false)) " &
+               "(type T ^props {^x Int} " &
+               "  (ctor [] " &
+               "    (try (fail (Boom ^message \"bad\")) " &
+               "      ensure (cleaned ~ Cell/set true)))) " &
+               "(try (new T) catch (Boom) nil) (cleaned ~ Cell/get)",
+               "true")
 
 suite "spec — typed variable boundaries from design":
   test "var annotations check gradual boundaries":
@@ -2071,6 +2154,9 @@ suite "spec — streams from design":
     check_eval("(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
                "catch {^message m} m)",
                "\"selector lookup failed at segment: name\"")
+    check_eval("(try ((select ^strict true name) {^age 37}) " &
+               "catch (SelectorMissing ^segment s) s)",
+               "name")
 
   test "list path sends expose behavior while selectors stay generic":
     check_eval("(var xs [10 20 30]) " &
@@ -3717,6 +3803,16 @@ suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
                " (try (data? 1 ^policy nil) catch * \"rejected\")]",
                "[\"rejected\" \"rejected\"]")
 
+  test "serde rejects executable selectors and traverses node metadata":
+    check_eval("(import serde [data? write-data read-data SerdeError]) " &
+               "(var pure /name) " &
+               "(var executable (select %(map /name))) " &
+               "[(data? pure) (== pure (read-data (write-data pure))) " &
+               " (data? executable) " &
+               " (try (write-data executable) catch (SerdeError) \"rejected\") " &
+               " (data? `(x @state %(cell 1)))]",
+               "[true true false \"rejected\" false]")
+
   test "cycles are detected with a path":
     check_eval("(import serde [write-data SerdeError]) " &
                "(import str [contains?]) " &
@@ -3889,3 +3985,33 @@ suite "spec — web demo remains parseable":
     check "(unquote ($ \"$\" (path self price)))" in rendered
     check "(path routes (unquote to_pairs_stream))" in rendered
     check "(path req params name)" in rendered
+
+suite "spec — documentation contract":
+  test "focused normative specification files exist":
+    for path in ["docs/spec/README.md", "docs/spec/reader.md",
+                 "docs/spec/calls.md", "docs/spec/types.md",
+                 "docs/spec/protocols.md", "docs/spec/streams.md",
+                 "docs/spec/concurrency.md", "docs/spec/modules.md",
+                 "docs/implementation-status.md"]:
+      check fileExists(path)
+
+  test "referenced concrete example files exist":
+    var sources = @["README.md"]
+    for path in walkDirRec("docs"):
+      if path.endsWith(".md"):
+        sources.add path
+    for source in sources:
+      let text = readFile(source)
+      var at = 0
+      while true:
+        at = text.find("examples/", at)
+        if at < 0:
+          break
+        var stop = at
+        while stop < text.len and
+            (text[stop].isAlphaNumeric or text[stop] in {'/', '_', '-', '.'}):
+          inc stop
+        let referenced = text[at ..< stop].strip(chars = {'.'})
+        if referenced.endsWith(".gene") or referenced.endsWith(".md"):
+          check fileExists(referenced)
+        at = max(stop, at + 1)

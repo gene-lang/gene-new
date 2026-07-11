@@ -6,15 +6,13 @@ Gene has **one syntactic and semantic unit: the node**. A node can be read as
 data, code, type/shape, or selector/navigation plan, so code is data and data is
 code. The full language direction — callable-first evaluation, slash selectors,
 streams/generators, typed recoverable errors, gradual typing, structured
-concurrency, and a stable native ABI — is described in
-[`docs/design.md`](docs/design.md).
+concurrency, and a stable native ABI — is specified under
+[`docs/spec/`](docs/spec/README.md). [`docs/design.md`](docs/design.md) retains
+architecture, rationale, and deferred directions.
 
-> **Status: early implementation.** This repository provides the **reader**
-> (parser), the **NaN-boxed value model**, the **printer** (canonical round-trip
-> output), and an initial **compiler → GIR → bytecode VM** pipeline (arithmetic,
-> `if`/`do`/`var`/`set`, functions, and closures). The design in
-> `docs/design.md` is the target, not the current feature set. APIs and the
-> language surface are unstable.
+> **Status: active implementation.** The implemented surface is summarized in
+> [`docs/implementation-status.md`](docs/implementation-status.md) and locked by
+> `nimble spec`. APIs and the language surface are still evolving.
 
 ## The node
 
@@ -47,7 +45,7 @@ participates in equality or hashing.
   and multi-form source units via `readAll`.
 - **Value model** (`src/gene/types.nim`) — a 64-bit NaN-boxed `Value` (see
   [Implementation notes](#implementation-notes)).
-- **Equality & hashing** (`src/gene/equality.nim`) — structural, meta-blind `=`;
+- **Equality & hashing** (`src/gene/equality.nim`) — structural, meta-blind `==`;
   scalar-value/container-identity `same?`; a matching `hash`.
 - **Printer** (`src/gene/printer.nim`) — prints a value back to canonical Gene
   source that re-reads to a structurally equal value.
@@ -240,8 +238,9 @@ src/
     compiler.nim      node values -> GIR bytecode chunks
     gir.nim           bytecode instructions + function prototypes
     vm.nim            stack VM + runtime built-ins
-docs/design.md        full language design (the target)
-examples/web_demo.gene  end-to-end design showcase (not yet runnable)
+docs/spec/            normative implemented language contract
+docs/design.md        architecture, rationale, and deferred directions
+examples/web_demo.gene  end-to-end language showcase
 tests/                unit tests + executable language specs
 benchmarks/           release-mode core benchmarks
 ```
@@ -250,7 +249,7 @@ benchmarks/           release-mode core benchmarks
 
 ```bash
 nimble test     # unit tests (tests/test_all.nim)
-nimble spec     # executable language-surface specs (tracks docs/design.md)
+nimble spec     # executable language-surface specs (tracks docs/spec/)
 nimble perf     # release-mode core benchmarks (smoke check, no thresholds yet)
 nimble leakcheck # refcount/scope leak assertions (-d:geneRcStats)
 nimble threadcheck # threaded atomicArc smoke checks

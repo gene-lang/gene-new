@@ -148,6 +148,9 @@ proc panicResult(e: ref GenePanic): GeneResult =
     result.errorValue = e.errVal
 
 proc geneRoot*(value: Value): GeneRoot =
+  if vm.carriesConstruction(value):
+    raise newException(GeneError,
+      "native root cannot retain an in-progress constructed instance")
   GeneRoot(value: value)
 
 proc geneRootGet*(root: GeneRoot): Value =
