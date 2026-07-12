@@ -41,7 +41,12 @@ const cases = [
   ['(str/join ["a" "b"] "-")', 0, '"a-b"', ""],
   ["(json/stringify {^a 1 ^b [true nil]})", 0, '"{\\"a\\":1,\\"b\\":[true,null]}"', ""],
   ["(foo-undefined)", 1, "undefined symbol: foo-undefined", ""],
-  ["(((", 3, "unexpected EOF: unclosed '('", ""],
+  ["(((", 3,
+    "unexpected EOF: unclosed '('\n" +
+      "  while reading '(' opened at 1:3; expected ')'\n" +
+      "  while reading '(' opened at 1:2; expected ')'\n" +
+      "  while reading '(' opened at 1:1; expected ')'",
+    ""],
 ];
 
 let failed = 0;

@@ -367,11 +367,17 @@ type
   InlineImplProto* = object
     messages*: seq[ImplMessageProto]
 
+  TopLevelFormInfo* = object
+    loc*: SourceLoc
+    label*: string
+    nodeLike*: bool
+
   Chunk* = ref object
     sourceName*: string
     constants*: seq[Value]
     instructions*: seq[Instruction]
     instructionLocs*: seq[SourceLoc]
+    topLevelForms*: seq[TopLevelFormInfo]
     owner* {.cursor.}: FunctionProto
     functions*: seq[FunctionProto]
     localNames*: seq[string]
@@ -398,7 +404,7 @@ type
 
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
-        instructionLocs: @[], functions: @[], subchunks: @[],
+        instructionLocs: @[], topLevelForms: @[], functions: @[], subchunks: @[],
         imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
         typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],

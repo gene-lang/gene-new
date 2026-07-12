@@ -3,6 +3,14 @@ import std/[base64, strutils, unicode, tables, parseutils]
 import ./types
 
 type
+  ReadContextFrame* = object
+    ## A delimited form that was open when a read error occurred. Frames are
+    ## ordered outermost to innermost, so consumers can render or inspect the
+    ## complete nesting without parsing the error message.
+    sourceName*: string
+    opener*, expectedCloser*: string
+    line*, col*: int
+
   TokenKind* = enum
     tkEof,
     tkLParen, tkRParen,      # ( )
@@ -30,6 +38,17 @@ type
   ReadOptions* = object
     maxDepth*: int              # 0 means unlimited
 
+  ReadContextEntry = object
+    kind: TokenKind
+    line, col: int
+
+  ReadContextStack = object
+    ## Keep the common shallow case inline: successful reads should not
+    ## allocate merely to support diagnostics produced only on failure.
+    inline: array[16, ReadContextEntry]
+    overflow: seq[ReadContextEntry]
+    depth: int
+
   Reader* = object
     src*: string
     sourceName*: string
@@ -39,11 +58,13 @@ type
     tokens: seq[Token]
     tokIdx: int
     parseDepth: int
+    context: ReadContextStack
     locs: Table[uint64, SourceLoc]
 
   ReadError* = object of CatchableError
     sourceName*: string
     line*, col*: int
+    contextFrames*: seq[ReadContextFrame]
   ReadIncompleteError* = object of ReadError
 
   SourceUnit* = object
@@ -55,34 +76,81 @@ type
 proc sourceLoc(tok: Token, sourceName: string): SourceLoc =
   SourceLoc(sourceName: sourceName, line: tok.line, col: tok.col)
 
+proc snapshot(stack: ReadContextStack,
+              sourceName: string): seq[ReadContextFrame] =
+  result = newSeq[ReadContextFrame](stack.depth)
+  let inlineCount = min(stack.depth, stack.inline.len)
+  for i in 0 ..< stack.depth:
+    let entry =
+      if i < inlineCount: stack.inline[i]
+      else: stack.overflow[i - stack.inline.len]
+    let delimiters =
+      case entry.kind
+      of tkLParen: ("(", ")")
+      of tkLBracket: ("[", "]")
+      of tkLBrace: ("{", "}")
+      of tkHashMapStart: ("{{", "}}")
+      of tkHashLParen: ("#(", ")")
+      of tkHashLBracket: ("#[", "]")
+      of tkHashLBrace: ("#{", "}")
+      else: ("?", "?")
+    result[i] = ReadContextFrame(
+      sourceName: sourceName,
+      opener: delimiters[0], expectedCloser: delimiters[1],
+      line: entry.line, col: entry.col)
+
+proc frameLocation(frame: ReadContextFrame): string =
+  let location = $frame.line & ":" & $frame.col
+  if frame.sourceName.len > 0:
+    frame.sourceName & ":" & location
+  else:
+    location
+
+proc withReadContext(message: string,
+                     frames: openArray[ReadContextFrame]): string =
+  result = message
+  if frames.len == 0:
+    return
+  for i in countdown(frames.high, 0):
+    let frame = frames[i]
+    result.add "\n  while reading '" & frame.opener & "' opened at " &
+               frame.frameLocation & "; expected '" & frame.expectedCloser & "'"
+
 proc raiseReadErrorAt(sourceName: string, line, col: int,
-                      message: string) {.noReturn.} =
+                      message: string,
+                      contextFrames: openArray[ReadContextFrame] = []) {.noReturn.} =
   var e: ref ReadError
   new(e)
-  e.msg = message
+  e.msg = message.withReadContext(contextFrames)
   e.sourceName = sourceName
   e.line = line
   e.col = col
+  e.contextFrames = @contextFrames
   raise e
 
 proc raiseReadIncompleteAt(sourceName: string, line, col: int,
-                           message: string) {.noReturn.} =
+                           message: string,
+                           contextFrames: openArray[ReadContextFrame] = []) {.noReturn.} =
   var e: ref ReadIncompleteError
   new(e)
-  e.msg = message
+  e.msg = message.withReadContext(contextFrames)
   e.sourceName = sourceName
   e.line = line
   e.col = col
+  e.contextFrames = @contextFrames
   raise e
 
 proc raiseReadError(r: Reader, message: string) {.noReturn.} =
-  raiseReadErrorAt(r.sourceName, r.line, r.col, message)
+  raiseReadErrorAt(r.sourceName, r.line, r.col, message,
+                   r.context.snapshot(r.sourceName))
 
 proc raiseReadErrorAt(r: Reader, tok: Token, message: string) {.noReturn.} =
-  raiseReadErrorAt(r.sourceName, tok.line, tok.col, message)
+  raiseReadErrorAt(r.sourceName, tok.line, tok.col, message,
+                   r.context.snapshot(r.sourceName))
 
 proc raiseReadIncomplete(r: Reader, message: string) {.noReturn.} =
-  raiseReadIncompleteAt(r.sourceName, r.line, r.col, message)
+  raiseReadIncompleteAt(r.sourceName, r.line, r.col, message,
+                        r.context.snapshot(r.sourceName))
 
 proc isIntLexeme(lexeme: string): bool =
   if lexeme.len == 0:
@@ -898,6 +966,20 @@ proc next(r: var Reader): Token =
 
 proc parseForm(r: var Reader, inList = false): Value
 
+proc pushReadContext(r: var Reader, tok: Token) =
+  let frame = ReadContextEntry(kind: tok.kind, line: tok.line, col: tok.col)
+  if r.context.depth < r.context.inline.len:
+    r.context.inline[r.context.depth] = frame
+  else:
+    r.context.overflow.add frame
+  inc r.context.depth
+
+proc restoreReadContext(r: var Reader, depth: int) =
+  r.context.depth = depth
+  let overflowLen = max(0, depth - r.context.inline.len)
+  if r.context.overflow.len > overflowLen:
+    r.context.overflow.setLen(overflowLen)
+
 proc hasStableSourceIdentity(v: Value): bool =
   v.kind in {vkBytes, vkRegex, vkDate, vkTime, vkDateTime, vkTimezone,
              vkDuration, vkList, vkMap, vkSet, vkHashMap, vkNode}
@@ -1251,8 +1333,12 @@ proc parseForm(r: var Reader, inList = false): Value =
   if r.options.maxDepth > 0 and r.parseDepth > r.options.maxDepth:
     r.raiseReadErrorAt(tok, "reader max_depth exceeded (" &
                        $r.options.maxDepth & ")")
+  let contextDepth = r.context.depth
   inc r.parseDepth
-  defer: dec r.parseDepth
+  defer:
+    dec r.parseDepth
+    if r.context.depth != contextDepth:
+      r.restoreReadContext(contextDepth)
   template finish(value: Value): untyped =
     let parsed = value
     r.recordSourceLoc(parsed, tok)
@@ -1278,13 +1364,27 @@ proc parseForm(r: var Reader, inList = false): Value =
           finish newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])
         finish desugarPath(lex)
       else: finish newSym(lex)
-  of tkLParen: finish r.parseNode(tkRParen)
-  of tkLBracket: finish r.parseList(tkRBracket)
-  of tkLBrace: finish r.parseMap(tkRBrace)
-  of tkHashMapStart: finish r.parseHashMap()
-  of tkHashLParen: finish r.parseNode(tkRParen, immutable = true)
-  of tkHashLBracket: finish r.parseList(tkRBracket, immutable = true)
-  of tkHashLBrace: finish r.parseMap(tkRBrace, immutable = true)
+  of tkLParen:
+    r.pushReadContext(tok)
+    finish r.parseNode(tkRParen)
+  of tkLBracket:
+    r.pushReadContext(tok)
+    finish r.parseList(tkRBracket)
+  of tkLBrace:
+    r.pushReadContext(tok)
+    finish r.parseMap(tkRBrace)
+  of tkHashMapStart:
+    r.pushReadContext(tok)
+    finish r.parseHashMap()
+  of tkHashLParen:
+    r.pushReadContext(tok)
+    finish r.parseNode(tkRParen, immutable = true)
+  of tkHashLBracket:
+    r.pushReadContext(tok)
+    finish r.parseList(tkRBracket, immutable = true)
+  of tkHashLBrace:
+    r.pushReadContext(tok)
+    finish r.parseMap(tkRBrace, immutable = true)
   of tkBacktick:
     let inner = r.parseForm(inList)
     finish newNode(newSym("quasiquote"), body = @[inner])

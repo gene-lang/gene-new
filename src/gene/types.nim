@@ -55,12 +55,18 @@ type
     sourceName*: string
     line*, col*: int
 
+  GeneErrorKind* = enum
+    gekGeneral
+    gekUndefinedSymbol
+
   GeneError* = object of CatchableError
     ## Recoverable Gene error. `errVal` carries a `fail`ed Gene value (e.g. an
     ## error node); `hasErrVal` distinguishes that from a plain internal error.
     errVal*: Value
     hasErrVal*: bool
     loc*: SourceLoc
+    errorKind*: GeneErrorKind
+    errorDetail*: string
   MatchError* = object of GeneError    ## pattern match / destructuring failure
   GenePanic* = object of CatchableError
     ## Unrecoverable failure (`panic`). Not caught by `try/catch`.
@@ -2215,6 +2221,14 @@ proc setListItem*(v: Value, index: int, value: Value) =
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
   p.items[index] = (if value.kind == vkVoid: NIL else: value)
+
+proc pushListItem*(v: Value, value: Value) =
+  if v.tagOf != LIST_TAG:
+    raise newException(FieldDefect, "value is not a List")
+  let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable List")
+  p.items.add(if value.kind == vkVoid: NIL else: value)
 
 proc putMapEntry*(v: Value, key: string, value: Value) =
   if v.tagOf != MAP_TAG:

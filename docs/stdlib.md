@@ -74,8 +74,8 @@ Initial modules should be available through namespace imports:
 ```gene
 (import std/stream [to_stream to_pairs_stream map filter take each into])
 (import std/node [head props body meta declarations])
-(import std/parse [parse_int ParseError])
-(import str [join split starts_with? ends_with? trim])
+(import std/parse [parse_int read_all ParseError])
+(import str [join split starts_with? ends_with? trim byte_size slice_bytes])
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
 (import net/http_client [Http request stream HttpClientError])
@@ -83,6 +83,10 @@ Initial modules should be available through namespace imports:
                 next_event CursesError])
 (import sqlite [Database Statement Row SqliteError])
 ```
+
+`str/slice_bytes` returns at most the requested number of UTF-8 bytes without
+splitting a character. Its zero-based start offset must itself be a UTF-8
+boundary. This is the bounded primitive used by agent-facing ranged reads.
 
 For MVP, these may be built-in namespaces registered by the runtime. File-backed
 stdlib modules can replace or wrap those namespaces later, but source programs
@@ -200,11 +204,17 @@ Acceptance:
 Initial parsing helpers:
 
 - `parse_int : Str -> Int ^errors [ParseError]`
-- `ParseError` from the existing reader error family.
+- `read_all : Str -> (Stream Any ParseError)`
+- `ParseError` from the existing reader error family. Reader failures expose
+  `source`, `line`, `col`, and `contexts`; each context records an opener,
+  expected closer, and opening location. Numeric conversion failures may omit
+  the location fields.
 
 Acceptance:
 
 - Invalid integer input is catchable as `ParseError`.
+- Delimiter diagnostics retain machine-readable source locations and open-form
+  context for the CLI, LSP, and programmatic consumers.
 - `parse_int` rejects trailing junk unless a later API explicitly permits it.
 
 ### `str`
@@ -216,6 +226,7 @@ String utilities needed by HTML and HTTP:
 - `trim : Str -> Str`
 - `lower : Str -> Str`
 - `byte_size : Str -> Int` (UTF-8 bytes; allocation-free)
+- `slice_bytes : Str, Int, Int -> Str` (bounded UTF-8-safe byte range)
 - `starts_with? : Str, Str -> Bool`
 - `ends_with? : Str, Str -> Bool`
 - `contains? : Str, Str -> Bool`

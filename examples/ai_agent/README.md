@@ -50,6 +50,7 @@ Key environment variables (all optional beyond the auth token):
 | `GENE_LIBCURL=<path>` | override native libcurl discovery; curl(1) is used only if the library cannot load |
 | `GENE_AGENT_CONTEXT_MAX_BYTES`, `GENE_AGENT_CONTEXT_MAX_ITEMS` | approximate wire-size/item limits that trigger deterministic compaction |
 | `GENE_AGENT_CONTEXT_KEEP_TURNS` | complete recent turns retained during compaction (default 8) |
+| `GENE_AGENT_MAX_TOOL_ROUNDS` | maximum model/tool rounds per turn (default 12); transient landing notices appear with two and one executable rounds left |
 
 Tools auto-approve (single-user posture); the guard denies catastrophic
 commands and asks once for destructive ones.

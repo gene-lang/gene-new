@@ -347,6 +347,12 @@ results. Tools needed for a coding agent:
   `Fs/read_text_async` / `Fs/write_text_async` still exist; `Fs/read_text`,
   `Fs/write_text`, and `Fs/list_dir` are implemented for the line-oriented
   agent tools.
+  Writes and edits of `.gene` files run the public reader in-process and return
+  structured parse warnings without rejecting or rolling back intermediate
+  source. Exact-edit mismatches return bounded, line-numbered candidate
+  excerpts. `read_file` accepts line and byte ranges and caps each response at
+  256 KiB, including for a file containing one very long line. Path confinement
+  runs before hierarchical instruction discovery.
 - `run_shell`, `grep` — subprocess via the implemented `os` namespace entry
   gated by a new `Os/Exec` capability:
 
@@ -358,6 +364,8 @@ results. Tools needed for a coding agent:
 
   Native implementation over Nim `std/osproc` (`startProcess`), with an
   output-size cap, truncation flags, and timeout, returning a typed result map.
+  `run_shell` accepts a model-visible `timeout_ms` from 1 through 120000
+  (default 10000) and reports elapsed time against the requested cap.
   `Os/Exec` is deliberately a *distinct* capability from `Os/Env` so a launcher
   can grant file+env without shell access.
 
@@ -667,7 +675,9 @@ types include attributable changes, verification checks, and compaction:
 {^v 9 ^type "tool_registered" ^name "..." ^risk "read"}
 {^v 10 ^type "file_change" ^id 1 ^path "src/x.gene" ^op "edit" ...}
 {^v 11 ^type "check" ^command "nimble test" ^status 0 ^verified true ...}
-{^v 12 ^type "context_compacted" ^removed_turns 3 ^retained_turns 8 ...}
+{^v 12 ^type "context_compacted" ^removed_turns 3 ^retained_turns 8
+ ^elided_tool_outputs 1 ^irreducible_over_limit false ...}
+{^v 13 ^type "context_limit_warning" ^bytes 900000 ^items 9 ...}
 ```
 
 `run-turn` and `run-tool-call` write through an explicit **emit sink**: the CLI
@@ -726,7 +736,8 @@ forward priority order.
 3. **Done.** CLI and gateway emit one versioned event vocabulary — `user_input`,
    `model_item`, `tool_call`, `tool_result`, `agent_text`, `text_delta`,
    `turn_done`, `tool_registered`, `file_change`, `check`,
-   `context_compacted`, `confirmation`, `memory`, `error` (§9.2, §12.3).
+   `context_compacted`, `context_limit_warning`, `confirmation`, `memory`,
+   `error` (§9.2, §12.3).
 4. **Done.** `/trace` filters the log by `type`/`tool`/`path`/`turn`/`from`/`to`
    (a bare token is shorthand for `type=`); the `session` object exposes the
    same filters.
@@ -753,7 +764,13 @@ Choose exact ordering from dogfood pain:
   claims;
 - **Done:** approximate context visibility plus deterministic whole-turn
   compaction preserving system/workspace instructions, remembered decisions,
-  recent turns, and tool-call/output integrity;
+  recent turns, and tool-call/output integrity. If the retained floor is still
+  oversized, oldest tool output text is replaced without separating its call
+  pair; irreducible user/system content is surfaced explicitly;
+- **Done:** dogfood feedback improvements: structured reader opener contexts,
+  immediate `.gene` write/edit parse warnings, bounded edit mismatch excerpts,
+  configurable shell timeouts, `List/push!`, and configurable tool-round
+  landing notices;
 - prompt/TUI improvements where the current UI causes friction;
 - **Done:** hierarchical `AGENTS.md` loading for work outside the Gene
   repository.

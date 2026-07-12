@@ -4620,8 +4620,30 @@ proc collectMutableBindingNames(value: Value,
   else:
     discard
 
+proc topLevelFormInfo(form: Value, loc: SourceLoc): TopLevelFormInfo =
+  result.loc = loc
+  case form.kind
+  of vkSymbol:
+    result.label = form.symVal
+  of vkNode:
+    result.nodeLike = true
+    if form.head.kind == vkSymbol:
+      result.label = form.head.symVal
+    else:
+      result.label = "expression"
+  of vkList: result.label = "[…]"
+  of vkMap: result.label = "{…}"
+  of vkHashMap: result.label = "{{…}}"
+  else: result.label = $form.kind
+
 proc compileFormsInto(c: var Compiler, forms: openArray[Value],
                       useLocalSlots: bool): Chunk =
+  # A top-level-form label only adds information for a multi-form source unit.
+  # Keep the overwhelmingly common one-form compile path allocation-free.
+  if forms.len > 1 and c.formLocs.len > 0:
+    for i, form in forms:
+      if i < c.formLocs.len:
+        c.chunk.topLevelForms.add topLevelFormInfo(form, c.formLocs[i])
   for form in forms:
     collectMutableBindingNames(form, c.mutableBindingNames)
   if useLocalSlots:

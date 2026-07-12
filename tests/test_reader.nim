@@ -204,6 +204,50 @@ suite "reader — malformed input is rejected":
       check e.sourceName == "sample.gene"
       check e.line == 2
       check e.col == 1
+  test "unclosed forms carry structured opening context":
+    try:
+      discard read("(outer\n  [inner", "nested.gene")
+      check false
+    except ReadIncompleteError as e:
+      check e.contextFrames.len == 2
+      check e.contextFrames[0].opener == "("
+      check e.contextFrames[0].expectedCloser == ")"
+      check e.contextFrames[0].line == 1
+      check e.contextFrames[0].col == 1
+      check e.contextFrames[1].opener == "["
+      check e.contextFrames[1].expectedCloser == "]"
+      check e.contextFrames[1].line == 2
+      check e.contextFrames[1].col == 3
+      check "while reading '[' opened at nested.gene:2:3; expected ']'" in e.msg
+      check "while reading '(' opened at nested.gene:1:1; expected ')'" in e.msg
+  test "mismatched delimiters report the active opener":
+    try:
+      discard read("(outer\n  [inner)", "mismatch.gene")
+      check false
+    except ReadError as e:
+      check e.line == 2
+      check e.col == 9
+      check e.contextFrames.len == 2
+      check e.contextFrames[^1].opener == "["
+      check "unexpected closing delimiter ')'" in e.msg
+      check "opened at mismatch.gene:2:3; expected ']'" in e.msg
+  test "structured context supports nesting beyond the inline fast path":
+    try:
+      discard read(repeat('(', 20), "deep.gene")
+      check false
+    except ReadIncompleteError as e:
+      check e.contextFrames.len == 20
+      check e.contextFrames[0].col == 1
+      check e.contextFrames[^1].col == 20
+  test "top-level closing delimiter has no invented opening context":
+    try:
+      discard readAll("(valid)\n]", "stray.gene")
+      check false
+    except ReadError as e:
+      check e.line == 2
+      check e.col == 1
+      check e.contextFrames.len == 0
+      check "while reading" notin e.msg
   test "unterminated block comment":
     expect ReadError: discard read("#< open")
   test "datum comment at EOF":

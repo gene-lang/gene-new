@@ -30,7 +30,7 @@
 (import net/http [Server serve Response])
 (import net/http_client [Http request HttpClientError])
 (import [gene_system_prompt system_item user_item run_turn live_transport
-         demo_transport_for max_tool_turns append model auth_token
+         demo_transport_for max_tool_rounds append model auth_token
          set_events_enabled redact_any set_guard_confirm]
         from "./tui")
 
@@ -100,7 +100,7 @@
                      [(system_item gene_system_prompt)]
                      saved/items)))
   (fn append_event [event]
-    (events ~ Cell/set (append (events ~ Cell/get) event))
+    ((events ~ Cell/get) ~ List/push! event)
     (if (== on_event nil)
       nil
       (try (on_event event) catch _ nil)))
@@ -170,7 +170,7 @@
                             (append (items ~ Cell/get) (user_item text))
                             (fn [t] (if (== t "") nil (push_event "agent_text" t)))
                             (fn [d] (if (== d "") nil (push_event "text_delta" d)))
-                            max_tool_turns
+                            max_tool_rounds
                             emit_turn_event))))
             (current_task ~ Cell/set task)
             (task ~ Task/detach)
@@ -404,10 +404,9 @@
   (sessions/%to_pairs_stream
     ~ each (fn [pair]
         (var [k, s] pair)
-        (out ~ Cell/set
-          (append (out ~ Cell/get)
-                  {^id k ^events (s/next_v ~ Cell/get)
-                   ^busy (!= (s/current_task ~ Cell/get) nil)}))))
+        ((out ~ Cell/get) ~ List/push!
+          {^id k ^events (s/next_v ~ Cell/get)
+           ^busy (!= (s/current_task ~ Cell/get) nil)})))
   (json_response 200 {^sessions (out ~ Cell/get)}))
 
 (fn post_message [id : Str, req]

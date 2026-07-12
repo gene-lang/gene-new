@@ -513,6 +513,10 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
     check_eval("(var leaked nil) (fn! leak! [] (set leaked caller_env)) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
+    check_eval("(var leaked []) " &
+               "(fn! leak! [] (leaked ~ List/push! caller_env)) " &
+               "[(try (leak!) catch _ \"blocked\") leaked]",
+               "[\"blocked\" []]")
     check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller_env))) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
@@ -1868,14 +1872,21 @@ suite "spec — mutable containers from design":
                "(var xs2 (xs ~ List/assoc 1 20)) " &
                "(var ys [1 2]) " &
                "(ys ~ List/set! 0 9) " &
+               "(var zs []) " &
+               "(var pushed (zs ~ List/push! void)) " &
                "(var m #{^a 1}) " &
                "(var m2 (m ~ Map/assoc \"b\" 2)) " &
                "(var mm {^a 1}) " &
                "(mm ~ Map/put! \"b\" 3) " &
                "(var n (quote (user ^name \"Ada\"))) " &
                "(n ~ Node/set_prop! \"name\" \"Bob\") " &
-               "[xs xs2 ys m m2 (mm ~ Map/get \"b\") (n ~ /name)]",
-               "[#[1 2 3] #[1 20 3] [9 2] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
+               "[xs xs2 ys pushed zs m m2 (mm ~ Map/get \"b\") (n ~ /name)]",
+               "[#[1 2 3] #[1 20 3] [9 2] nil [nil] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
+
+  test "List/push! rejects immutable lists":
+    check_eval("(try (#[1] ~ List/push! 2) " &
+               " catch (Error ^message message) message)",
+               "\"cannot mutate immutable List\"")
 
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":
@@ -3103,6 +3114,17 @@ suite "spec — parser helpers from design":
                "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
                "[(a) (b 2) false]")
 
+  test "reader failures preserve structured location and open-form context":
+    check_eval("(import std/parse [read_all ParseError]) " &
+               "(try (read_all \"(a [b)\") false " &
+               " catch (ParseError ^line line ^col col ^contexts frames) " &
+               "   [line col frames/0/opener frames/0/expected_closer " &
+               "    frames/1/opener frames/1/expected_closer])",
+               "[1 6 \"(\" \")\" \"[\" \"]\"]")
+    check_eval("(try (read_all \"(ok) )\") false " &
+               " catch (ParseError ^contexts frames) (frames ~ size))",
+               "0")
+
   test "lex_all exposes a token stream":
     check_eval("(fn first-token [s : (Stream Token Never)] (s ~ Stream/next)) " &
                "(var t (first-token (lex_all \"(+ 1)\"))) " &
@@ -3367,6 +3389,14 @@ suite "spec — stdlib namespaces from stdlib plan":
                " (contains? \"hello\" \"xyz\")]",
                "[true true false]")
     check_eval("(import str [byte_size]) (byte_size \"Aé\")", "3")
+    check_eval("(import str [slice_bytes]) (slice_bytes \"AéZ\" 1 2)",
+               "\"é\"")
+    check_eval("(import str [slice_bytes]) (slice_bytes \"AéZ\" 0 2)",
+               "\"A\"")
+    expect GeneError:
+      discard run(compileSource(
+        "(import str [slice_bytes]) (slice_bytes \"AéZ\" 2 2)"),
+        newGlobalScope())
 
   test "html/escape neutralizes markup and quote characters":
     check_eval("(import html [escape]) " &

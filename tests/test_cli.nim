@@ -1009,10 +1009,203 @@ suite "cli — gene run":
       " run examples/ai_agent/tui.gene")
     check status.exitCode == 0
     check "context:" in status.output
+    check "tool rounds: max 12" in status.output
     check "context limits: 1234 bytes, 12 items, keep 2 turns" in status.output
     check "memory: 1 items" in status.output
     check "^context {^bytes" in status.output
     check "^context_max_bytes 1234" in status.output
+
+  test "ai agent improvement tools return structural, bounded guidance":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/improvements_test.gene"
+    let target = "tmp/agent-improvements-target.gene"
+    let largeTarget = "tmp/agent-improvements-large.txt"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+      if fileExists(target): removeFile(target)
+      if fileExists(largeTarget): removeFile(largeTarget)
+    writeFile(fixture, """
+(import [find_tool compact_context run_turn_ready config_snapshot append
+         edit_mismatch_hint]
+        from "./tui.gene")
+(import json [stringify])
+(import str [contains? split])
+
+(fn sink [type, props] nil)
+
+(var write_tool (find_tool "write_file"))
+(var write_handler write_tool/handler)
+(var wrote
+  (write_handler {^path "tmp/agent-improvements-target.gene"
+                  ^content "(fn broken []\n  [1 2)\n"
+                  ^_emit sink}))
+(var read_tool (find_tool "read_file"))
+(var read_handler read_tool/handler)
+(var ranged
+  (read_handler {^path "tmp/agent-improvements-target.gene"
+                 ^start_line 2 ^max_lines 1 ^_emit sink}))
+
+(var edit_tool (find_tool "edit_file"))
+(var edit_handler edit_tool/handler)
+(var mismatch
+  (edit_handler {^path "tmp/agent-improvements-target.gene"
+                 ^old_text "(fn broken []\n  [9 9)"
+                 ^new_text "unused"
+                 ^_emit sink}))
+(var edited_warning
+  (edit_handler {^path "tmp/agent-improvements-target.gene"
+                 ^old_text "(fn broken []\n  [1 2)\n"
+                 ^new_text "(fn broken []\n  [1 2]\n"
+                 ^_emit sink}))
+(var candidates
+  (edit_mismatch_hint "anchor\nLONG_CONTEXT\nanchor\nanchor\nanchor\n"
+                      "anchor\nmissing"))
+
+(var large_wrote
+  (write_handler {^path "tmp/agent-improvements-large.txt"
+                  ^content "LARGE_LINE"
+                  ^_emit sink}))
+(var byte_range_1
+  (read_handler {^path "tmp/agent-improvements-large.txt"
+                 ^start_line 1 ^max_lines 1 ^start_byte 0 ^max_bytes 128
+                 ^_emit sink}))
+(var byte_range_2
+  (read_handler {^path "tmp/agent-improvements-large.txt"
+                 ^start_line 1 ^max_lines 1 ^start_byte 128 ^max_bytes 128
+                 ^_emit sink}))
+
+(var shell_tool (find_tool "run_shell"))
+(var shell_handler shell_tool/handler)
+(var timeout_range
+  (shell_handler {^command "true" ^timeout_ms 120001 ^_emit sink}))
+(var timeout
+  (shell_handler {^command "sleep 1" ^timeout_ms 10 ^_emit sink}))
+(var completed
+  (shell_handler {^command "true" ^timeout_ms 1000 ^_emit sink}))
+
+(var list_tool (find_tool "list_dir"))
+(var list_handler list_tool/handler)
+(var unsafe
+  (try
+    (list_handler {^path "../outside" ^_emit sink})
+  catch {^message message} message))
+
+(var compact_events (cell []))
+(fn compact_emit [type, props]
+  (compact_events ~ Cell/set
+    (append (compact_events ~ Cell/get) {^type type ^props props})))
+(var compacted
+  (compact_context
+    [{^role "user" ^content "inspect"}
+     {^type "function_call" ^name "read_file" ^call_id "large-call"
+      ^arguments "{}"}
+     {^type "function_call_output" ^call_id "large-call"
+      ^output "LARGE_OUTPUT"}]
+    compact_emit))
+(var irreducible_events (cell []))
+(fn irreducible_emit [type, props]
+  (irreducible_events ~ Cell/set
+    (append (irreducible_events ~ Cell/get) {^type type ^props props})))
+(var irreducible
+  (compact_context [{^role "user" ^content "LARGE_USER"}]
+                   irreducible_emit))
+(var irreducible_again
+  (compact_context irreducible irreducible_emit))
+
+(var seen_body (cell ""))
+(fn transport [body, render]
+  (seen_body ~ Cell/set body)
+  {^output [] ^output_text "done"})
+(var retained
+  (run_turn_ready transport [{^role "user" ^content "finish"}]
+                  (fn [text] nil) (fn [text] nil) 2 sink))
+
+(var round_calls (cell 0))
+(var round_first_body (cell ""))
+(fn round_transport [body, render]
+  (round_calls ~ Cell/set (+ (round_calls ~ Cell/get) 1))
+  (if (== (round_calls ~ Cell/get) 1)
+    (do
+      (round_first_body ~ Cell/set body)
+      {^output
+        [{^type "function_call" ^name "missing_one" ^call_id "round-1"
+          ^arguments "{}"}
+         {^type "function_call" ^name "missing_two" ^call_id "round-2"
+          ^arguments "{}"}]})
+    {^output [] ^output_text "landed"}))
+(var parallel_round
+  (run_turn_ready round_transport [{^role "user" ^content "parallel"}]
+                  (fn [text] nil) (fn [text] nil) 1 sink))
+
+(println (stringify
+  {^wrote wrote
+   ^ranged ranged
+   ^mismatch mismatch
+   ^edited_warning edited_warning
+   ^candidate_count (- ((split candidates "candidate near line") ~ size) 1)
+   ^candidate_elided (contains? candidates "[line omitted:")
+   ^large_wrote large_wrote
+   ^byte_range_1 byte_range_1
+   ^byte_range_2 byte_range_2
+   ^timeout_range timeout_range
+   ^timeout timeout/text
+   ^completed completed/text
+   ^unsafe unsafe
+   ^compacted compacted
+   ^compact_events (compact_events ~ Cell/get)
+   ^irreducible irreducible
+   ^irreducible_again irreducible_again
+   ^irreducible_events (irreducible_events ~ Cell/get)
+   ^budget_body (seen_body ~ Cell/get)
+   ^retained retained
+   ^round_calls (round_calls ~ Cell/get)
+   ^round_first_body (round_first_body ~ Cell/get)
+   ^parallel_round parallel_round
+   ^config (config_snapshot)}))
+""".replace("LARGE_OUTPUT", repeat('x', 4000)).replace(
+      "LARGE_USER", repeat('u', 2000)).replace(
+      "LONG_CONTEXT", repeat('z', 1200)).replace(
+      "LARGE_LINE", repeat('q', 2000)))
+    let ran = execCmdOnce(
+      "GENE_AGENT_CONTEXT_MAX_BYTES=500 " &
+      "GENE_AGENT_CONTEXT_KEEP_TURNS=8 " &
+      "GENE_AGENT_MAX_TOOL_ROUNDS=17 " &
+      shellQuote(geneExe) & " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "warning: file does not parse at" in ran.output
+    check "while reading '[' opened at" in ran.output
+    check "[lines 2-2 of 3; request start_line/max_lines" in ran.output
+    check "candidate near line 1" in ran.output
+    check "\"edited_warning\":\"edited tmp/agent-improvements-target.gene" in
+      ran.output
+    check "\"candidate_count\":3" in ran.output
+    check "\"candidate_elided\":true" in ran.output
+    check "\"byte_range_1\":\"[bytes 0-128 of 2000" in ran.output
+    check "\"byte_range_2\":\"[bytes 128-256 of 2000" in ran.output
+    check "timeout_ms must be between 1 and 120000" in ran.output
+    check "timed out after" in ran.output
+    check "requested cap 10 ms" in ran.output
+    check "timeout_ms=1000 timed_out=false" in ran.output
+    check "unsafe path rejected (escapes workspace): ../outside" in ran.output
+    check "../outside/AGENTS.md" notin ran.output
+    check "tool output omitted during context compaction" in ran.output
+    check "\"call_id\":\"large-call\"" in ran.output
+    check "\"elided_tool_outputs\":1" in ran.output
+    check "\"removed_items\":0" in ran.output
+    check "\"removed_items\":-" notin ran.output
+    check "\"irreducible_over_limit\":true" in ran.output
+    check ran.output.count("\"type\":\"context_limit_warning\"") == 1
+    check "\"irreducible_events\":[{\"type\":\"context_limit_warning\"" in
+      ran.output
+    check "Two executable tool rounds remain" in ran.output
+    check ran.output.count("Two executable tool rounds remain") == 1
+    check "\"round_calls\":2" in ran.output
+    check "One executable tool round remains" in ran.output
+    check ran.output.count("One executable tool round remains") == 1
+    check "\"call_id\":\"round-1\"" in ran.output
+    check "\"call_id\":\"round-2\"" in ran.output
+    check "\"max_tool_rounds\":17" in ran.output
 
   test "ai agent loads hierarchical AGENTS instructions safely":
     buildGeneCli()

@@ -1284,6 +1284,18 @@ suite "vm — container update built-ins":
     expect GeneError:
       discard runStr("(#[1] ~ List/set! 0 2)")
 
+  test "List/push! grows mutable lists in place":
+    ck "(var xs [1]) [(xs ~ List/push! 2) xs]", "[2 [1 2]]"
+    ck "(var xs []) [(xs ~ List/push! void) xs]", "[nil [nil]]"
+    expect GeneError:
+      discard runStr("(#[1] ~ List/push! 2)")
+
+  test "List/push! supports linear accumulator growth":
+    ck "(var xs []) (var i 0) " &
+       "(while (< i 20000) (xs ~ List/push! i) (set i (+ i 1))) " &
+       "[(size xs) (first xs) (last xs)]",
+       "[20000 0 19999]"
+
   test "Map/put! mutates mutable maps":
     ck "(var m {^a 1}) [(m ~ Map/put! \"b\" 2) (m ~ /b)]", "[2 2]"
     ck "(var m {^a 1}) [(m ~ Map/put! \"a\" void) (m ~ /a)]", "[void void]"
@@ -1322,6 +1334,15 @@ suite "vm — entrypoint support":
     let scope = newGlobalScope()
     var missing: Value
     check not scope.lookupOptional("main", missing)
+
+  test "undefined symbols identify their containing top-level form":
+    try:
+      discard run(compileSource("(var ok 1)\nout", "broken.gene"),
+                  newGlobalScope())
+      check false
+    except GeneError as e:
+      check "undefined symbol: out" in e.msg
+      check "in top-level form opened at broken.gene:2:1: out" in e.msg
 
 suite "vm — namespaces":
   test "ns declares a namespace and binds it":
@@ -2660,9 +2681,9 @@ suite "vm — streams":
        "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
        "[(a) (b 2) false]"
     ck "(try (read_one \"(a\") catch {^message m} m)",
-       "\"read_one: unexpected EOF: unclosed '('\""
+       "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
     ck "(try (read_one \"(a\") catch (ParseError ^message m) m)",
-       "\"read_one: unexpected EOF: unclosed '('\""
+       "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
     expect GeneError: discard runStr("(read_one 1)")
     expect GeneError: discard runStr("(read_all 1)")
     expect GeneError: discard runStr("(read_one \"1 2\")")

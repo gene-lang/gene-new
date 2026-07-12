@@ -221,6 +221,33 @@ proc biStrByteSize(args: openArray[Value]): Value {.nimcall.} =
   requireStr("str/byte_size", args[0])
   newInt(args[0].strVal.len)
 
+proc biStrSliceBytes(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "str/slice_bytes expects 3 arguments, got " & $args.len)
+  requireStr("str/slice_bytes", args[0])
+  let start = int(requireInt64("str/slice_bytes start", args[1]))
+  let maxBytes = int(requireInt64("str/slice_bytes max_bytes", args[2]))
+  if start < 0 or maxBytes < 0:
+    raise newException(GeneError,
+      "str/slice_bytes start and max_bytes must be non-negative")
+  let value = args[0].strVal
+  if start > value.len:
+    raise newException(GeneError,
+      "str/slice_bytes start exceeds string byte size")
+  if start < value.len and (ord(value[start]) and 0xC0) == 0x80:
+    raise newException(GeneError,
+      "str/slice_bytes start must be a UTF-8 boundary")
+  var stop =
+    if maxBytes > value.len - start: value.len
+    else: start + maxBytes
+  while stop > start and stop < value.len and
+      (ord(value[stop]) and 0xC0) == 0x80:
+    dec stop
+  if stop <= start:
+    return newStr("")
+  newStr(value[start ..< stop])
+
 proc biStrStartsWith(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
@@ -5430,6 +5457,7 @@ proc registerStdlibNamespaces(root: Scope) =
   let stdParseScope = newScope(root)
   stdParseScope.define("parse_int", newNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
+  stdParseScope.define("read_all", root.vars["read_all"])
   stdParseScope.define("ParseError", root.vars["ParseError"])
   let stdScope = newScope(root)
   stdScope.define("stream", newNamespace("std/stream", stdStreamScope))
@@ -5442,6 +5470,7 @@ proc registerStdlibNamespaces(root: Scope) =
   strScope.define("trim", newNativeFn("str/trim", biStrTrim))
   strScope.define("lower", newNativeFn("str/lower", biStrLower))
   strScope.define("byte_size", newNativeFn("str/byte_size", biStrByteSize))
+  strScope.define("slice_bytes", newNativeFn("str/slice_bytes", biStrSliceBytes))
   strScope.define("starts_with?", newNativeFn("str/starts_with?",
                                               biStrStartsWith))
   strScope.define("ends_with?", newNativeFn("str/ends_with?", biStrEndsWith))

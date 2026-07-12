@@ -84,7 +84,17 @@ suite "lsp — analysis":
     check not a.parsed
     check a.diagnostics.len == 1
     check "unclosed" in a.diagnostics[0].message
+    check "opened at <lsp>:2:12; expected ']'" in a.diagnostics[0].message
     check a.diagnostics[0].range.start.line >= 1
+
+  test "mismatched delimiter diagnostics identify the nested opener":
+    let a = analyze("(fn broken [x\n  (work x])")
+    check not a.parsed
+    check a.diagnostics.len == 1
+    check "unexpected closing delimiter ']'" in a.diagnostics[0].message
+    check "while reading '(' opened at <lsp>:2:3; expected ')'" in
+      a.diagnostics[0].message
+    check a.diagnostics[0].range.start.line == 1
 
   test "utf16 conversion handles multi-byte runes":
     let line = "(var π 3)"   # pi is 2 bytes in utf-8, 1 utf-16 unit

@@ -722,6 +722,12 @@ proc declareSlotType(scope: Scope, index: int, typeExpr: Value) {.inline.} =
   scope.slotTypes[index] = TypeBinding(expr: typeExpr,
                                        weakScope: cast[pointer](scope))
 
+proc raiseUndefinedSymbol(name: string) {.noReturn.} =
+  var error = newException(GeneError, "undefined symbol: " & name)
+  error.errorKind = gekUndefinedSymbol
+  error.errorDetail = name
+  raise error
+
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
                requireExisting: bool) =
   scope.checkSlot(index, name)
@@ -744,10 +750,10 @@ proc scopeAtDepth(scope: Scope, depth: int, name: string): Scope =
   result = scope
   for _ in 0 ..< depth:
     if result == nil:
-      raise newException(GeneError, "undefined symbol: " & name)
+      raiseUndefinedSymbol(name)
     result = result.parent
   if result == nil:
-    raise newException(GeneError, "undefined symbol: " & name)
+    raiseUndefinedSymbol(name)
 
 proc storeNamedSlot(scope: Scope, name: string, v: Value,
                     requireExisting: bool): bool =
@@ -780,7 +786,7 @@ proc syncSlot(scope: Scope, name: string, v: Value) =
 proc loadSlot(scope: Scope, index: int, name: string): Value =
   scope.checkSlot(index, name)
   if not scope.slotDefined(index):
-    raise newException(GeneError, "undefined symbol: " & name)
+    raiseUndefinedSymbol(name)
   scope.slots[index]
 
 proc loadSlotAt(scope: Scope, depth, index: int, name: string): Value =
@@ -818,7 +824,7 @@ proc lookup*(scope: Scope, name: string): Value =
     s.vars.withValue(name, value):
       return value[]
     s = s.parent
-  raise newException(GeneError, "undefined symbol: " & name)
+  raiseUndefinedSymbol(name)
 
 proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   var s = scope
@@ -2427,10 +2433,29 @@ proc builtInTypeHead(scope: Scope, name: string): Value =
       return typ
   newSym(name)
 
-proc raiseReaderError(name, message, typeName: string, scope: Scope) =
+proc readContextValues(frames: openArray[ReadContextFrame]): Value =
+  var values: seq[Value]
+  for frame in frames:
+    var props = initPropTable()
+    props["source"] = newStr(frame.sourceName)
+    props["opener"] = newStr(frame.opener)
+    props["expected_closer"] = newStr(frame.expectedCloser)
+    props["line"] = newInt(frame.line)
+    props["col"] = newInt(frame.col)
+    values.add newMap(props, immutable = true)
+  newList(values, immutable = true)
+
+proc raiseReaderError(name, message, typeName: string, scope: Scope,
+                      sourceName = "", line = 0, col = 0,
+                      contexts: openArray[ReadContextFrame] = []) =
   let fullMessage = name & ": " & message
   var props = initPropTable()
   props["message"] = newStr(fullMessage)
+  if line > 0:
+    props["source"] = newStr(sourceName)
+    props["line"] = newInt(line)
+    props["col"] = newInt(col)
+    props["contexts"] = readContextValues(contexts)
   var e: ref GeneError
   new(e)
   e.msg = fullMessage
@@ -2444,7 +2469,8 @@ proc readFormsFromString(name: string, value: Value, scope: Scope): seq[Value] =
   try:
     result = readAll(value.strVal)
   except ReadError as e:
-    raiseReaderError(name, e.msg, "ParseError", scope)
+    raiseReaderError(name, e.msg, "ParseError", scope,
+                     e.sourceName, e.line, e.col, e.contextFrames)
 
 proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_one", args)
@@ -2480,7 +2506,8 @@ proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     for token in lexAll(args[0].strVal):
       tokens.add token.tokenValue(tokenType)
   except ReadError as e:
-    raiseReaderError("lex_all", e.msg, "LexError", scope)
+    raiseReaderError("lex_all", e.msg, "LexError", scope,
+                     e.sourceName, e.line, e.col, e.contextFrames)
   newTypedStream(tokens, tokenType, newSym("Never"), scope)
 
 proc requireRangeArgCount(name: string, args: openArray[Value]) =
@@ -3628,6 +3655,15 @@ proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setListItem(index, stored)
   stored
 
+proc biListPushBang(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "List/push! expects 2 arguments, got " & $args.len)
+  requireList("List/push!", args[0])
+  rejectCallerEnvEscape("List/push!", args[1])
+  let stored = if args[1].kind == vkVoid: NIL else: args[1]
+  args[0].pushListItem(stored)
+  stored
+
 proc biSet(args: openArray[Value]): Value {.nimcall.} =
   buildSet("Set", args)
 
@@ -4712,7 +4748,15 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SelectorMissing", selectorMissing)
   let compileError = newType("CompileError", NIL,
                              @[TypeField(name: "message", optional: false,
-                                         typeExpr: newSym("Str"), scope: result)],
+                                         typeExpr: newSym("Str"), scope: result),
+                               TypeField(name: "source", optional: true,
+                                         typeExpr: newSym("Str"), scope: result),
+                               TypeField(name: "line", optional: true,
+                                         typeExpr: newSym("Int"), scope: result),
+                               TypeField(name: "col", optional: true,
+                                         typeExpr: newSym("Int"), scope: result),
+                               TypeField(name: "contexts", optional: true,
+                                         typeExpr: newSym("Any"), scope: result)],
                              @[errorProtocol], result)
   result.define("CompileError", compileError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
@@ -4898,6 +4942,7 @@ proc buildBuiltins(app: Application): Scope =
   let listScope = newScope(result)
   listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
   listScope.define("set!", newNativeFn("List/set!", biListSetBang))
+  listScope.define("push!", newNativeFn("List/push!", biListPushBang))
   result.define("List", newNamespace("List", listScope))
   let mapScope = newScope(result)
   mapScope.define("assoc", newNativeFn("Map/assoc", biMapAssoc))
@@ -6917,7 +6962,7 @@ proc copyChunkCapturesToSnapshots(source: Scope, chunk: Chunk,
         continue
       var value: Value
       if not source.lookupOptional(name, value):
-        raise newException(GeneError, "undefined symbol: " & name)
+        raiseUndefinedSymbol(name)
       rootSnapshot.vars[name] = value
       rootSnapshot.vars[name] = cloneForCapturedSnapshot(value, scopeMap)
 
@@ -6973,9 +7018,9 @@ proc captureValueAtDepth(source: Scope, depth, slot: int,
                          name: string): tuple[scope: Scope, value: Value] =
   result.scope = capturedScope(source, depth)
   if result.scope == nil or slot < 0 or slot >= result.scope.slots.len:
-    raise newException(GeneError, "undefined symbol: " & name)
+    raiseUndefinedSymbol(name)
   if not result.scope.slotDefined(slot):
-    raise newException(GeneError, "undefined symbol: " & name)
+    raiseUndefinedSymbol(name)
   result.value = result.scope.slots[slot]
 
 proc snapshotSpawnScope(source: Scope, body: Chunk): Scope =
@@ -7775,6 +7820,31 @@ proc instructionLocAt(chunk: Chunk, index: int): SourceLoc =
 
 proc instructionLocBefore(chunk: Chunk, ip: int): SourceLoc =
   instructionLocAt(chunk, ip - 1)
+
+proc annotateTopLevelUndefined(e: ref GeneError, chunk: Chunk,
+                               errorLoc: SourceLoc) =
+  if e == nil or e.errorKind != gekUndefinedSymbol or
+      chunk == nil or chunk.topLevelForms.len == 0 or
+      not errorLoc.hasSourceLoc:
+    return
+  var found = -1
+  for i, info in chunk.topLevelForms:
+    let loc = info.loc
+    if loc.sourceName == errorLoc.sourceName and
+        (loc.line < errorLoc.line or
+         (loc.line == errorLoc.line and loc.col <= errorLoc.col)):
+      found = i
+    else:
+      break
+  if found < 0:
+    return
+  let loc = chunk.topLevelForms[found].loc
+  let info = chunk.topLevelForms[found]
+  let label =
+    if info.nodeLike: "(" & info.label & " …)"
+    else: info.label
+  e.msg.add "\n  in top-level form opened at " & loc.locationText() &
+            ": " & label
 
 proc withSourceLocProps(value: Value, loc: SourceLoc): Value =
   if value.kind != vkNode or not loc.hasSourceLoc:
@@ -9779,7 +9849,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             callee = builtinReceiverMessage(scope, receiver, inst[].name)
           if callee.kind == vkNil:
             if not scope.lookupOptional(inst[].name, callee):
-              raise newException(GeneError, "undefined symbol: " & inst[].name)
+              raiseUndefinedSymbol(inst[].name)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
@@ -11000,6 +11070,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         else:
           translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
       if not preservingFirstCleanupError:
+        annotateTopLevelUndefined(err, chunk, errorLoc)
         attachSourceLoc(err, errorLoc)
         appendVmTrace(err, curFnName, errorLoc, frames, tailTraceFrames)
       trimTailTraceFrames(frames.len)

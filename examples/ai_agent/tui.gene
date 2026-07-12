@@ -54,9 +54,10 @@
                 read_input : curses_read_input
                 refresh_input : curses_refresh_input Screen CursesError])
 (import json [parse stringify JsonError])
-(import str [join split starts_with? ends_with? contains? lower trim byte_size])
+(import str [join split starts_with? ends_with? contains? lower trim byte_size
+             slice_bytes])
 (import std/stream [to_stream map filter take into each])
-(import std/parse [parse_int])
+(import std/parse [parse_int read_all ParseError])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])
@@ -109,6 +110,8 @@
   (positive_env_int "GENE_AGENT_CONTEXT_MAX_ITEMS" 200))
 (var context_keep_turns
   (positive_env_int "GENE_AGENT_CONTEXT_KEEP_TURNS" 8))
+(var max_tool_rounds
+  (positive_env_int "GENE_AGENT_MAX_TOOL_ROUNDS" 12))
 
 (fn append_all [xs, ys]
   ((to_stream ys) ~ into xs))
@@ -199,7 +202,7 @@
           ~ each (fn [b]
               ((to_stream (split b "|"))
                 ~ each (fn [c]
-                    (segs ~ Cell/set (append (segs ~ Cell/get) (trim c)))))))))
+                    ((segs ~ Cell/get) ~ List/push! (trim c))))))))
   (Cell/get segs))
 
 (var catastrophic_command_starts
@@ -366,7 +369,14 @@
       $"${e/scope} status=${e/status} ${e/duration_ms}ms: ${(first_line e/command)}")
     (when "confirmation" $"${e/risk} ${e/decision}: ${(first_line e/target)}")
     (when "context_compacted"
-      $"${e/removed_turns} turns / ${e/removed_items} items removed; ${e/bytes_after} bytes retained")
+      (do
+        (var elided
+          (if (present? e/elided_tool_outputs)
+            e/elided_tool_outputs
+            0))
+        $"${e/removed_turns} turns / ${e/removed_items} items removed; ${elided} tool outputs elided; ${e/bytes_after} bytes retained"))
+    (when "context_limit_warning"
+      $"context remains over its configured floor: ${e/bytes} bytes / ${e/items} items")
     (when "tool_registered" $"${e/name} (${e/risk})")
     (when "memory"      (first_line e/text))
     (when "error"       (first_line e/text))
@@ -653,7 +663,7 @@
   ((to_stream (agent_events ~ Cell/get))
     ~ filter (fn [e] (event_matches? e f))
     ; ~ each (fn [e]
-        (lines ~ Cell/set (append (lines ~ Cell/get) (format_event e)))))
+        ((lines ~ Cell/get) ~ List/push! (format_event e))))
   (if (empty? (lines ~ Cell/get))
     "no matching events"
     (join (lines ~ Cell/get) "\n")))
@@ -710,7 +720,7 @@
         nil)
       (props ~ Map/put! p/name spec)
       (if (== p/required true)
-        (required ~ Cell/set (append (required ~ Cell/get) p/name))
+        ((required ~ Cell/get) ~ List/push! p/name)
         nil))
     (var parameters {^type "object" ^properties props})
     (if (empty? (required ~ Cell/get))
@@ -726,13 +736,13 @@
       (var v (args ~ Map/get p/name))
       (if (== v void)
         (if (== p/required true)
-          (problems ~ Cell/set (append (problems ~ Cell/get)
-            $"missing required argument ${p/name}"))
+          ((problems ~ Cell/get) ~ List/push!
+            $"missing required argument ${p/name}")
           nil)
         (if (json_type_ok? p/type v)
           nil
-          (problems ~ Cell/set (append (problems ~ Cell/get)
-            $"argument ${p/name} must be a ${p/type}")))))
+          ((problems ~ Cell/get) ~ List/push!
+            $"argument ${p/name} must be a ${p/type}"))))
     (if (empty? (problems ~ Cell/get))
       nil
       (join (problems ~ Cell/get) "; "))))
@@ -804,6 +814,8 @@
   (try
     (do
       (result ~ Cell/set (await_exec task))
+      ((result ~ Cell/get) ~ Map/put! "duration_ms"
+        (- (monotonic_ms) started))
       (emit_check! sink tool command started (result ~ Cell/get))
       (result ~ Cell/get))
   ensure
@@ -811,19 +823,160 @@
       (emit_check! sink tool command started nil)
       nil)))
 
+# Give exact-edit failures a bounded, deterministic re-anchoring hint. This is
+# deliberately not fuzzy matching: the first nonblank old line must exactly
+# equal a current line, and at most three candidate windows are
+# returned. Very long lines are elided so an error cannot flood model context.
+(fn first_nonblank_line [text : Str] : Str
+  (var found (cell ""))
+  (for line in (split text "\n")
+    (if (&& (== (found ~ Cell/get) "") (!= (trim line) ""))
+      (found ~ Cell/set line)
+      nil))
+  (found ~ Cell/get))
+
+(fn bounded_line [line : Str] : Str
+  (if (> (byte_size line) 1000)
+    $"[line omitted: ${(byte_size line)} bytes]"
+    line))
+
+(fn edit_candidate_window [lines, i : Int] : Str
+  (var window_start (if (> i 3) (- i 3) 0))
+  (var window_stop
+    (if (< (+ i 4) lines/~size) (+ i 4) lines/~size))
+  (var excerpt [])
+  (repeat j in lines/~size
+    (if (&& (>= j window_start) (< j window_stop))
+      (excerpt ~ List/push!
+        $"${(+ j 1)} | ${(bounded_line lines/%j)}")
+      nil))
+  (var excerpt_text (join excerpt "\n"))
+  $"candidate near line ${(+ i 1)}:\n${excerpt_text}")
+
+(fn edit_mismatch_hint [current : Str, old_text : Str] : Str
+  (var anchor (first_nonblank_line old_text))
+  (if (== anchor "")
+    "No nonblank anchor was available; read the current file and retry."
+    (do
+      (var lines (split current "\n"))
+      (var windows (cell []))
+      (var candidates (cell 0))
+      (repeat i in lines/~size
+        (if (&& (< (candidates ~ Cell/get) 3)
+                (== lines/%i anchor))
+          (do
+            (candidates ~ Cell/set (+ (candidates ~ Cell/get) 1))
+            ((windows ~ Cell/get) ~ List/push!
+              (edit_candidate_window lines i)))
+          nil))
+      (if (empty? (windows ~ Cell/get))
+        $"No current line equals the anchor `${(bounded_line anchor)}`; read the current file and retry."
+        (do
+          (var windows_text (join (windows ~ Cell/get) "\n\n"))
+          $"Re-anchor against the current file:\n${windows_text}")))))
+
+# Writing temporarily invalid source is allowed and remains attributable. For
+# Gene files, report reader diagnostics in the same tool result so the model
+# can repair delimiters without spending another shell round. This is syntax
+# validation only; semantic/compiler verification still requires `gene
+# compile` or `gene run`.
+(fn gene_parse_warning [path : Str, content : Str] : Str
+  (if (! (ends_with? path ".gene"))
+    ""
+    (try
+      (do
+        (read_all content)
+        "")
+    catch (ParseError ^message message ^line line ^col col)
+      $"\nwarning: file does not parse at ${line}:${col}: ${message}"
+    catch (ParseError ^message message)
+      $"\nwarning: file does not parse: ${message}")))
+
+(fn read_file_lines [content : Str, start_line : Int, max_lines : Int]
+  (var lines (split content "\n"))
+  (var total lines/~size)
+  (if (> start_line total)
+    {^error $"start_line ${start_line} is beyond the file's ${total} lines"}
+    (do
+      (var start (- start_line 1))
+      (var stop
+        (if (< (+ start max_lines) total) (+ start max_lines) total))
+      (var selected [])
+      (repeat i in total
+        (if (&& (>= i start) (< i stop))
+          (selected ~ List/push! lines/%i)
+          nil))
+      {^text (join selected "\n")
+       ^first start_line ^last stop ^total total})))
+
+(fn read_file_range [content : Str, start_line : Int, max_lines : Int,
+                     start_byte : Int, max_bytes : Int] : Str
+  (var line_range (read_file_lines content start_line max_lines))
+  (if (present? line_range/error)
+    $"error: ${line_range/error}"
+    (do
+      (var line_text line_range/text)
+      (var total_bytes (byte_size line_text))
+      (if (> start_byte total_bytes)
+        $"error: start_byte ${start_byte} is beyond the selected range's ${total_bytes} bytes"
+        (do
+          (var chunk (slice_bytes line_text start_byte max_bytes))
+          (var end_byte (+ start_byte (byte_size chunk)))
+          (if (&& (< start_byte total_bytes) (== end_byte start_byte))
+            "error: max_bytes is too small to include the next complete UTF-8 character"
+            (do
+              (var headers [])
+              (if (|| (> line_range/first 1)
+                      (< line_range/last line_range/total))
+                (headers ~ List/push!
+                  $"lines ${line_range/first}-${line_range/last} of ${line_range/total}")
+                nil)
+              (if (|| (> start_byte 0) (< end_byte total_bytes))
+                (headers ~ List/push!
+                  $"bytes ${start_byte}-${end_byte} of ${total_bytes}")
+                nil)
+              (if (empty? headers)
+                chunk
+                (do
+                  (var header_text (join headers "; "))
+                  $"[${header_text}; request start_line/max_lines and start_byte/max_bytes for another range]\n${chunk}")))))))))
+
 (register_tool! (Tool
   ^name "read_file"
-  ^description "Read a UTF-8 text file inside the workspace."
+  ^description "Read a bounded line range from a UTF-8 text file inside the workspace."
   ^risk "read"
   ^params [{^name "path" ^type "string" ^required true
-            ^doc "workspace-relative file path"}]
+            ^doc "workspace-relative file path"}
+           {^name "start_line" ^type "integer" ^required false
+            ^doc "one-based first line; defaults to 1"}
+           {^name "max_lines" ^type "integer" ^required false
+            ^doc "maximum lines selected; defaults to 400, maximum 2000"}
+           {^name "start_byte" ^type "integer" ^required false
+            ^doc "zero-based UTF-8 byte offset within the selected line range; defaults to 0"}
+           {^name "max_bytes" ^type "integer" ^required false
+            ^doc "maximum bytes returned; defaults to 65536, maximum 262144"}]
   ^handler (fn [args]
     (var path (safe_path args/path))
-    (var instructions (newly_loaded_instruction_text args/path false))
-    (var content (read_text ReadDir path))
-    (if (== instructions "")
-      content
-      $"New applicable instructions (parent-to-child):\n${instructions}\n--- file ---\n${content}"))))
+    (var start_line (if (== args/start_line void) 1 args/start_line))
+    (var max_lines (if (== args/max_lines void) 400 args/max_lines))
+    (var start_byte (if (== args/start_byte void) 0 args/start_byte))
+    (var max_bytes (if (== args/max_bytes void) 65536 args/max_bytes))
+    (if (< start_line 1)
+      "error: start_line must be at least 1"
+      (if (|| (< max_lines 1) (> max_lines 2000))
+        "error: max_lines must be between 1 and 2000"
+        (if (< start_byte 0)
+          "error: start_byte must be non-negative"
+          (if (|| (< max_bytes 1) (> max_bytes 262144))
+            "error: max_bytes must be between 1 and 262144"
+            (do
+              (var instructions (newly_loaded_instruction_text args/path false))
+              (var content
+                (read_file_range (read_text ReadDir path)
+                                 start_line max_lines start_byte max_bytes))
+              (if (== instructions "")
+                content
+                $"New applicable instructions (parent-to-child):\n${instructions}\n--- file ---\n${content}")))))))))
 
 (register_tool! (Tool
   ^name "write_file"
@@ -843,7 +996,7 @@
           (write_text WriteDir path args/content)
           (record_file_change! args/_emit "write" args/path before
             {^exists true ^text args/content})
-          $"wrote ${args/path}")
+          $"wrote ${args/path}${(gene_parse_warning args/path args/content)}")
         "denied by user policy")))))
 
 (register_tool! (Tool
@@ -870,7 +1023,7 @@
             (var parts (split text old_text))
             (var matches (- parts/~size 1))
             (if (== matches 0)
-              "error: old_text not found"
+              $"error: old_text not found\n${(edit_mismatch_hint text old_text)}"
               (if (> matches 1)
                 $"error: old_text matched ${matches} times; provide a larger unique old_text"
                 (do
@@ -879,7 +1032,7 @@
                   (record_file_change! args/_emit "edit" args/path
                     {^exists true ^text text}
                     {^exists true ^text after_text})
-                  $"edited ${args/path}"))))
+                  $"edited ${args/path}${(gene_parse_warning args/path after_text)}"))))
           "denied by user policy"))))))
 
 (register_tool! (Tool
@@ -890,32 +1043,45 @@
             ^doc "workspace-relative directory; defaults to the workspace root"}]
   ^handler (fn [args]
     (var p (if (== args/path void) "." args/path))
+    (var checked_path (safe_path p))
     (var instructions (newly_loaded_instruction_text p true))
-    (var listing ((list_dir ReadDir (safe_path p)) ~ join "\n"))
+    (var listing ((list_dir ReadDir checked_path) ~ join "\n"))
     (if (== instructions "")
       listing
       $"New applicable instructions (parent-to-child):\n${instructions}\n--- listing ---\n${listing}"))))
 
 (register_tool! (Tool
   ^name "run_shell"
-  ^description "Run a shell command in the workspace (10s timeout)."
+  ^description "Run a shell command in the workspace (10s default, 120s maximum timeout)."
   ^risk "execute"
   ^params [{^name "command" ^type "string" ^required true
-            ^doc "command line passed to sh -c"}]
+            ^doc "command line passed to sh -c"}
+           {^name "timeout_ms" ^type "integer" ^required false
+            ^doc "timeout in milliseconds; defaults to 10000, maximum 120000"}]
   ^handler (fn [args]
-    (var denial (guard_shell args/command))
-    (if (present? denial)
-      denial
-      (if (approve? "run_shell" args/command)
-        (do
-          (var r (run_checked_exec args/_emit "run_shell" args/command
-                   (exec_async Exec ^cmd "sh" ^args ["-c" args/command]
-                               ^dir workspace_root
-                               ^timeout_ms 10000 ^max_bytes 65536)))
-          (var tail (if r/timed_out "\n[timed out]" ""))
-          {^text $"${r/stdout}${r/stderr}${tail}"
-           ^truncated (== r/truncated true)})
-        "denied by user policy")))))
+    (var timeout_ms
+      (if (== args/timeout_ms void) 10000 args/timeout_ms))
+    (if (|| (< timeout_ms 1) (> timeout_ms 120000))
+      "error: timeout_ms must be between 1 and 120000"
+      (do
+        (var denial (guard_shell args/command))
+        (if (present? denial)
+          denial
+          (if (approve? "run_shell" args/command)
+            (do
+              (var r (run_checked_exec args/_emit "run_shell" args/command
+                       (exec_async Exec ^cmd "sh" ^args ["-c" args/command]
+                                   ^dir workspace_root
+                                   ^timeout_ms timeout_ms ^max_bytes 65536)))
+              (var tail
+                (if r/timed_out
+                  $"\n[timed out after ${r/duration_ms} ms; requested cap ${timeout_ms} ms. Retry with timeout_ms up to 120000 only when the command is expected to be slow.]"
+                  ""))
+              (var timing
+                $"\n[execution: duration_ms=${r/duration_ms} timeout_ms=${timeout_ms} timed_out=${r/timed_out}]")
+              {^text $"${r/stdout}${r/stderr}${tail}${timing}"
+               ^truncated (== r/truncated true)})
+            "denied by user policy")))))))
 
 (register_tool! (Tool
   ^name "grep"
@@ -977,6 +1143,9 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   bugs.
 - Data:
   - Lists: `[a b c]`
+    Grow a fresh, locally owned list with `(xs ~ List/push! value)`, which is
+    amortized O(1). Repeated copy-and-append inside a loop is quadratic;
+    reserve persistent copy updates for intentionally shared data.
   - Maps: `{^key value}`; property access is `m/key`
   - Nodes: `(tag ^prop value child...)`; quasiquote nodes with backtick and
     unquote with `%`, for example `` `(p ^class "x" %text)``.
@@ -1054,13 +1223,12 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (== item/role "user")
         (do
           (if (! (empty? (current ~ Cell/get)))
-            (turns ~ Cell/set
-              (append (turns ~ Cell/get) (current ~ Cell/get)))
+            ((turns ~ Cell/get) ~ List/push! (current ~ Cell/get))
             nil)
           (current ~ Cell/set [item]))
-        (current ~ Cell/set (append (current ~ Cell/get) item)))))
+        ((current ~ Cell/get) ~ List/push! item))))
   (if (! (empty? (current ~ Cell/get)))
-    (turns ~ Cell/set (append (turns ~ Cell/get) (current ~ Cell/get)))
+    ((turns ~ Cell/get) ~ List/push! (current ~ Cell/get))
     nil)
   (turns ~ Cell/get))
 
@@ -1068,10 +1236,27 @@ State that broader behavior is unverified when no matching successful check ran.
   (var systems (cell []))
   (for item in items
     (if (&& (== item/role "system")
-            (!= item/context_summary true))
-      (systems ~ Cell/set (append (systems ~ Cell/get) item))
+            (!= item/context_summary true)
+            (!= item/context_limit_warning true))
+      ((systems ~ Cell/get) ~ List/push! item)
       nil))
   (systems ~ Cell/get))
+
+(fn has_context_limit_warning [items] : Bool
+  (var found (cell false))
+  (for item in items
+    (if (== item/context_limit_warning true)
+      (found ~ Cell/set true)
+      nil))
+  (found ~ Cell/get))
+
+(fn without_context_limit_warning [items]
+  (var out [])
+  (for item in items
+    (if (!= item/context_limit_warning true)
+      (out ~ List/push! item)
+      nil))
+  out)
 
 (fn context_stats [items, memory]
   (var bytes (approximate_bytes items))
@@ -1087,11 +1272,53 @@ State that broader behavior is unverified when no matching successful check ran.
    ^over_limit (|| (> bytes context_max_bytes)
                     (> (items ~ size) context_max_items))})
 
+# Reduce oversized retained context without splitting a function_call from its
+# function_call_output. Only the output text is replaced; ids and item order
+# remain intact. Work oldest-first so the newest tool evidence survives when
+# older output is enough to get below the byte ceiling.
+(fn elide_old_tool_outputs [items]
+  (var remaining_bytes (cell (approximate_bytes items)))
+  (var elided_count (cell 0))
+  (var elided_bytes (cell 0))
+  (var out (cell []))
+  (for item in items
+    (var replacement item)
+    (if (&& (> (remaining_bytes ~ Cell/get) context_max_bytes)
+            (== item/type "function_call_output")
+            (match item/output (when (s : Str) true) (else false)))
+      (do
+        (var old_bytes (approximate_bytes item))
+        (var output_bytes (byte_size item/output))
+        (var marker
+          $"[tool output omitted during context compaction: ${output_bytes} bytes; rerun the tool with a narrower request if supported and the content is still needed]")
+        (var candidate {})
+        (for [key value] in item
+          (candidate ~ Map/put! key value))
+        (candidate ~ Map/put! "output" marker)
+        (var new_bytes (approximate_bytes candidate))
+        (if (< new_bytes old_bytes)
+          (do
+            (set replacement candidate)
+            (remaining_bytes ~ Cell/set
+              (- (remaining_bytes ~ Cell/get) (- old_bytes new_bytes)))
+            (elided_count ~ Cell/set (+ (elided_count ~ Cell/get) 1))
+            (elided_bytes ~ Cell/set
+              (+ (elided_bytes ~ Cell/get) (- old_bytes new_bytes))))
+          nil))
+      nil)
+    ((out ~ Cell/get) ~ List/push! replacement))
+  {^items (out ~ Cell/get)
+   ^outputs (elided_count ~ Cell/get)
+   ^bytes (elided_bytes ~ Cell/get)})
+
 (fn compact_context [items, emit]
   (var before (context_stats items []))
   (if (!= before/over_limit true)
-    items
+    (if (has_context_limit_warning items)
+      (without_context_limit_warning items)
+      items)
     (do
+      (var had_limit_warning (has_context_limit_warning items))
       (var turns (context_turns items))
       (var turn_count (turns ~ size))
       (var start
@@ -1110,10 +1337,31 @@ State that broader behavior is unverified when no matching successful check ran.
           (compacted ~ Cell/set
             (append_all (compacted ~ Cell/get) turns/%i))
           nil))
-      (var result (compacted ~ Cell/get))
+      (var elided (elide_old_tool_outputs (compacted ~ Cell/get)))
+      (var result elided/items)
       (var after (context_stats result []))
-      (var removed_items (- before/items after/items))
-      (if (> removed_items 0)
+      (var irreducible (== after/over_limit true))
+      # Count only source items actually removed. The explanatory warning item
+      # below is new context, not a negative removal.
+      (var source_items
+        (if had_limit_warning (- before/items 1) before/items))
+      (var removed_items (- source_items after/items))
+      (if irreducible
+        (do
+          (set result
+            (append result
+              {^role "system" ^^context_limit_warning
+               ^content "Context remains above its configured floor after whole-turn compaction and tool-output elision. Irreducible system/user content was preserved; use narrower tool reads or start a fresh session if more room is required."}))
+          (set after (context_stats result []))
+          (if (! had_limit_warning)
+            (emit "context_limit_warning"
+              {^bytes after/bytes ^items after/items
+               ^max_bytes context_max_bytes ^max_items context_max_items
+               ^irreducible_over_limit true})
+            nil))
+        nil)
+      (if (|| (> removed_items 0)
+              (> elided/outputs 0))
         (emit "context_compacted"
           {^bytes_before before/bytes
            ^bytes_after after/bytes
@@ -1122,6 +1370,9 @@ State that broader behavior is unverified when no matching successful check ran.
            ^removed_items removed_items
            ^removed_turns start
            ^retained_turns after/retained_turns
+           ^elided_tool_outputs elided/outputs
+           ^elided_output_bytes elided/bytes
+           ^irreducible_over_limit irreducible
            ^over_limit after/over_limit})
         nil)
       result)))
@@ -1397,7 +1648,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (render_stream (redact event/delta))
           (Cell/set output_text $"${(Cell/get output_text)}${event/delta}"))
         (when SseEventKind/output_item_done
-          (Cell/set output (append (Cell/get output) event/item))
+          ((Cell/get output) ~ List/push! event/item)
           nil)
         (when SseEventKind/output_text_done
           (Cell/set output_text event/text))
@@ -1503,7 +1754,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (if (empty? (Cell/get pending_calls))
           nil
           (m ~ Map/put! "tool_calls" (Cell/get pending_calls)))
-        (Cell/set msgs (append (Cell/get msgs) m))
+        ((Cell/get msgs) ~ List/push! m)
         (Cell/set pending_text nil)
         (Cell/set pending_calls []))
       nil))
@@ -1511,19 +1762,19 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (== item/type void)
       (do
         (flush_assistant)
-        (Cell/set msgs (append (Cell/get msgs) item)))
+        ((Cell/get msgs) ~ List/push! item))
       (match item/type
         (when "message"
           (var sofar (if (present? (Cell/get pending_text)) (Cell/get pending_text) ""))
           (Cell/set pending_text $"${sofar}${(message_item_text item)}"))
         (when "function_call"
-          (Cell/set pending_calls (append (Cell/get pending_calls)
+          ((Cell/get pending_calls) ~ List/push!
             {^id item/call_id ^type "function"
-             ^function {^name item/name ^arguments item/arguments}})))
+             ^function {^name item/name ^arguments item/arguments}}))
         (when "function_call_output"
           (flush_assistant)
-          (Cell/set msgs (append (Cell/get msgs)
-            {^role "tool" ^tool_call_id item/call_id ^content item/output})))
+          ((Cell/get msgs) ~ List/push!
+            {^role "tool" ^tool_call_id item/call_id ^content item/output}))
         (else nil))))
   (flush_assistant)
   (Cell/get msgs))
@@ -1568,9 +1819,9 @@ State that broader behavior is unverified when no matching successful check ran.
     (set entry (calls_map ~ Map/get $"${i}"))
     (if (== entry void)
       nil
-      (Cell/set items (append (Cell/get items)
+      ((Cell/get items) ~ List/push!
         {^type "function_call" ^name entry/name
-         ^call_id entry/id ^arguments entry/arguments}))))
+         ^call_id entry/id ^arguments entry/arguments})))
   (Cell/get items))
 
 (fn chat_build_response [text_cell, calls_map, max_cell]
@@ -1615,15 +1866,15 @@ State that broader behavior is unverified when no matching successful check ran.
       (var items (cell []))
       (if (== text "")
         nil
-        (Cell/set items (append (Cell/get items)
+        ((Cell/get items) ~ List/push!
           {^type "message" ^role "assistant"
-           ^content [{^type "output_text" ^text text}]})))
+           ^content [{^type "output_text" ^text text}]}))
       (if (present? message/tool_calls)
         ((to_stream message/tool_calls)
           ~ each (fn [tc]
-              (Cell/set items (append (Cell/get items)
+              ((Cell/get items) ~ List/push!
                 {^type "function_call" ^name tc/function/name
-                 ^call_id tc/id ^arguments tc/function/arguments}))))
+                 ^call_id tc/id ^arguments tc/function/arguments})))
         nil)
       {^output (Cell/get items) ^output_text text})))
 
@@ -1685,8 +1936,6 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^parallel_tool_calls true})))
   (transport body render_stream))
 
-(var max_tool_turns 12)
-
 # One turn: call the model; if it asked for tools, run them and recurse with the
 # outputs appended, else render the final text. `budget` bounds tool rounds so a
 # model that never stops calling tools cannot loop forever. `emit` is the event
@@ -1695,8 +1944,21 @@ State that broader behavior is unverified when no matching successful check ran.
 # returns without recursing; the tool_call branch recurses and does not emit it).
 (fn run_turn_ready [transport, input_items, render, render_stream, budget, emit]
   (var active_items input_items)
+  # Budget notices affect only this request; they are operational policy, not
+  # durable conversation history. A round may contain multiple parallel calls.
+  (var request_items
+    (if (== budget 2)
+      (append active_items
+        (system_item "Two executable tool rounds remain. Plan the landing now: avoid exploratory edits and leave the final round for verification."))
+      (if (== budget 1)
+        (append active_items
+          (system_item "One executable tool round remains. Prioritize verification and avoid further writes unless absolutely necessary; after this round only a final answer can be accepted."))
+        (if (<= budget 0)
+          (append active_items
+            (system_item "The executable tool-round budget is exhausted. Do not request tools; give an honest final status with any unverified work stated explicitly."))
+          active_items))))
   (var streamed (cell false))
-  (var resp (call_model transport active_items
+  (var resp (call_model transport request_items
               (fn [text]
                 (Cell/set streamed true)
                 # Redact at this choke point (transports also redact — belt
@@ -1739,8 +2001,7 @@ State that broader behavior is unverified when no matching successful check ran.
             (var outputs (cell []))
             (for c in calls
               (do
-                (outputs ~ Cell/set
-                  (append (outputs ~ Cell/get) (run_tool_call c emit)))
+                ((outputs ~ Cell/get) ~ List/push! (run_tool_call c emit))
                 (render $"  · tool ${c/name} ${c/arguments}")))
             (run_turn transport
                       ((to_stream (outputs ~ Cell/get))
@@ -1889,7 +2150,7 @@ State that broader behavior is unverified when no matching successful check ran.
    ^api_flavor api_flavor
    ^workspace_root workspace_root
    ^approve_all approve_all
-   ^max_tool_turns max_tool_turns
+   ^max_tool_rounds max_tool_rounds
    ^context_max_bytes context_max_bytes
    ^context_max_items context_max_items
    ^context_keep_turns context_keep_turns})
@@ -1917,9 +2178,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (var i (cell 0))
   (for item in items
     (if (== (i ~ Cell/get) 0)
-      (out ~ Cell/set
-        (append (out ~ Cell/get) (system_item (prompt_with_memory memory))))
-      (out ~ Cell/set (append (out ~ Cell/get) item)))
+      ((out ~ Cell/get) ~ List/push! (system_item (prompt_with_memory memory)))
+      ((out ~ Cell/get) ~ List/push! item))
     (i ~ Cell/set (+ (i ~ Cell/get) 1)))
   (if (== (i ~ Cell/get) 0)
     (initial_items memory)
@@ -2005,7 +2265,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (run_turn_tracked (demo_transport_for) items
     (fn [text] (println $"agent> ${text}"))
     ignore_stream_delta
-    max_tool_turns
+    max_tool_rounds
     emit_event!)
   (println "Demo complete. Set OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN to go live."))
 
@@ -2044,7 +2304,7 @@ State that broader behavior is unverified when no matching successful check ran.
                         (print "agent> ")
                         (Cell/set streaming true)))
                     (print text))))
-              max_tool_turns
+              max_tool_rounds
               emit_event!))
   (save_agent_state result_items $"Gene AI agent - model ${model}\nuser> ${task}\n" memory)
   (if (Cell/get streaming)
@@ -2326,7 +2586,7 @@ State that broader behavior is unverified when no matching successful check ran.
                                   (render_agent_text transcript streaming text))
                                 (fn [text]
                                   (render_agent_delta transcript streaming text))
-                                max_tool_turns
+                                max_tool_rounds
                                 emit_event!))
                     (save_agent_state (items ~ Cell/get)
                                       (transcript ~ Cell/get)
@@ -2383,7 +2643,7 @@ State that broader behavior is unverified when no matching successful check ran.
                             ((agent_instruction_records ~ Cell/get) ~ size))
                           (var guard_label (if (guard_enabled?) "on" "off"))
                           (render_agent_text transcript streaming
-                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nguard: ${guard_label}"))
+                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nguard: ${guard_label}"))
                         (if (== line "/diff")
                           (render_agent_text transcript streaming (file_diff_report))
                           (if (|| (== line "/undo") (starts_with? line "/undo "))
@@ -2405,7 +2665,7 @@ State that broader behavior is unverified when no matching successful check ran.
                                               (render_agent_text transcript streaming text))
                                             (fn [text]
                                               (render_agent_delta transcript streaming text))
-                                            max_tool_turns
+                                            max_tool_rounds
                                             emit_event!))
                                 (save_agent_state (items ~ Cell/get)
                                                   (transcript ~ Cell/get)

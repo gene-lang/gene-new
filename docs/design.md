@@ -2088,13 +2088,20 @@ Recoverable errors are typed nodes whose type implements the marker protocol `Er
 (protocol Error)
 
 (type ParseError
-  ^props {^line Int ^message Str}
+  ^props {^message Str ^source Str? ^line Int? ^col Int? ^contexts Any?}
   ^impl [Error])
 
 (impl Error for ParseError)
 ```
 
 Every type listed in `^errors [...]` must implement `Error`. `fail` raises only `Error` values. `catch` patterns match error values.
+
+Reader diagnostics preserve structured delimiter contexts (opener, expected
+closer, source, line, and column) through `ParseError`/`LexError`. When a
+dynamic undefined-symbol error originates while executing a source unit's
+top-level chunk, its diagnostic also names the containing top-level form and
+that form's opening location. This makes a prematurely closed declaration
+visible without guessing that otherwise valid top-level syntax was unintended.
 
 `TypeError` is an `Error` when it is produced by an `Any`→typed boundary check, such as untrusted input passed to a typed argument. Internal typed-representation contradictions and VM invariants are panics, not recoverable `TypeError`.
 
@@ -2607,9 +2614,14 @@ Mutable containers use explicit mutating operations, conventionally named with `
 
 ```gene
 (xs ~ List/set! 1 20)
+(xs ~ List/push! 30)
 (m ~ Map/put! key value)
 (n ~ Node/set_prop! name value)
 ```
+
+`List/push!` appends to a mutable list in amortized O(1) time and returns the
+inserted value. It stores `nil` when given `void`. Use it for owned local
+accumulators; repeated copy-and-append growth is quadratic.
 
 Selectors remain read-only paths; Gene does not overload selector access with hidden mutation.
 
