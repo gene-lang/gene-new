@@ -1615,6 +1615,135 @@ suite "cli — gene run":
       check "CURSES-PASTE:hello\né" in output.replace("\r\n", "\n")
       check "\e[?1049l" in output
 
+  test "public curses editor scrolls transcript with page keys":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_scroll.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+        ^output "SCROLL-TOP\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20\nline-21\nline-22\nline-23\nline-24\nline-25\nline-26\nline-27\nline-28\nSCROLL-BOTTOM"))
+    (close screen)
+    (println $"CURSES-SCROLL:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_scroll.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("\e[5~\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "SCROLL-TOP" in output
+      check "[SCROLL +" in output
+      check "CURSES-SCROLL:" in output
+      check "\e[?1049l" in output
+
+  test "public curses editor captures mouse wheel transcript scrolling":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_mouse_scroll.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+        ^output "MOUSE-SCROLL-TOP\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20\nline-21\nline-22\nline-23\nline-24\nline-25\nline-26\nline-27\nline-28\nMOUSE-SCROLL-BOTTOM"))
+    (close screen)
+    (println $"CURSES-MOUSE-SCROLL:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_mouse_scroll.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      # SGR mouse protocol: wheel up/down at column 1, row 1. Scrolling down
+      # must return to the live tail even on macOS' ncurses mouse protocol v1.
+      terminal.inputStream.write(
+        repeat("\e[<64;1;1M", 5) & repeat("\e[<65;1;1M", 5) & "\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "\e[?1000h" in output
+      check "\e[?1006h" in output
+      check "MOUSE-SCROLL-TOP" in output
+      check "[SCROLL +" in output
+      check output.rfind("MOUSE-SCROLL-BOTTOM") > output.rfind("[SCROLL +")
+      check "CURSES-MOUSE-SCROLL:" in output
+      check "\e[?1000l" in output
+
+  test "public curses editor word-wraps transcript visual rows":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_word_wrap.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+        ^output "assistant|WRAP-BEGIN alpha beta gamma delta epsilon zeta eta theta WRAP-END"))
+    (close screen)
+    (println $"CURSES-WRAP:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_word_wrap.out"
+      removeFile(outputFile)
+      let inner = "stty rows 12 cols 32; exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "WRAP-BEGIN" in output
+      check "WRAP-END" in output
+      check "CURSES-WRAP:" in output
+      check "\e[?1049l" in output
+
   test "agent gateway runs concurrent sessions over the async transport":
     ## Milestone 8 e2e (examples/ai_agent/design.md §12): a slow fake chat endpoint
     ## (900ms per response) serves two gateway sessions. Both turns must

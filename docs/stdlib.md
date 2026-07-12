@@ -155,7 +155,12 @@ events. Scheduler polling uses non-blocking `getch`, so waiting for a key does
 not stop other tasks.
 
 `read_input` provides the shared multiline editor with bracketed-paste and
-Unicode support; `refresh_input` redraws it while retaining screen ownership.
+Unicode support. While input is active, the mouse wheel scrolls the transcript
+by three lines and PageUp/PageDown by one viewport; a `[SCROLL +N]` status
+prefix marks a view detached from the latest output. Up/Down remain available
+for input history. Transcript text word-wraps into visual rows at the current
+terminal width, and scrolling counts those wrapped rows. `refresh_input`
+redraws while retaining screen ownership.
 Terminal failures raise `CursesError`. The older `os/read_input`,
 `os/refresh_input`, and `os/close_input` names remain compatibility wrappers.
 

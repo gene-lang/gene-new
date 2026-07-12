@@ -111,8 +111,8 @@ OPENAI_AUTH_TOKEN=... gene run examples/ai_agent/tui.gene
 
 Behavior:
 
-- a shipped multiline TTY prompt with persistent transcript/status rendering;
-  a full-screen curses UI with richer scrollback remains optional later work;
+- a shipped multiline TTY prompt with persistent transcript/status rendering
+  and mouse/page transcript scrolling while input is active;
 - a conversation loop that sends the running input-item list to the Responses
   API and streams assistant text deltas into the transcript as items arrive;
 - **tool use**: the model may return `function_call` items (`read_file`,
@@ -162,7 +162,7 @@ Pure stdlib / runtime pieces (no new authority):
 |---|---|---|---|
 | JSON parse / serialize | API request + response bodies | **implemented** | §5 |
 | TLS transport code | native HTTP client | **implemented** through dynamically loaded libcurl | §4 |
-| Terminal UI (curses) | the TUI | **implemented safe API + prompt** — richer scrollback controls remain optional | §7 |
+| Terminal UI (curses) | the TUI | **implemented safe API + prompt**, including mouse/page transcript scrolling | §7 |
 
 What already exists and is directly reusable:
 
@@ -432,16 +432,21 @@ rows above a second `─` separator, and a status line at the bottom. The agent
 adds a short `─` separator before each user turn in the scrollback, owns one
 `Screen` persistently across prompts to avoid terminal-mode flicker, and calls
 `curses/close` before handing control to `/sh`, `/repl`, EOF, or process exit.
+The mouse wheel moves the transcript by three lines and PageUp/PageDown by one
+viewport; the status line shows `[SCROLL +N]` while the view is above the live
+tail. Transcript lines word-wrap at the current terminal width, and the scroll
+offset counts the resulting visual rows. Up/Down are reserved for input
+history.
 `close` restores echo/cbreak/keypad/cursor state before leaving
 ncurses. Inside those subsessions Ctrl-C stops the running command/eval or
 clears a partially typed line instead of killing the agent: the interactive
 repl installs a SIGINT handler that arms a VM interrupt (surfaced as a
 catchable "interrupted" error), and `/sh` traps INT in the shell loop while
 `os/exec_stdio` ignores it in the parent, system(3)-style. Interrupting an
-in-flight model response and steering its continuation are shipped (§10). A
-more elaborate scrollable transcript TUI remains optional; the reusable
-lifecycle, editor, drawing, resize, and asynchronous input layer is public and
-covered by PTY tests.
+in-flight model response and steering its continuation are shipped (§10).
+Search, selection, and horizontal transcript scrolling remain optional; the
+reusable lifecycle, editor, drawing, vertical scrolling, resize, and
+asynchronous input layer is public and covered by PTY tests.
 
 ## 8. Capabilities and the launcher (§8)
 

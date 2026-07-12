@@ -2320,7 +2320,7 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn append_transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
-(var input_status "Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
+(var input_status "Mouse wheel or PgUp/PgDn scroll | Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
 (var user_screen (cell nil))
 
 (fn ensure_user_screen []

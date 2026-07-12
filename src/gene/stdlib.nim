@@ -37,6 +37,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   {.emit: """
 #include <locale.h>
+#include <ncurses.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <termios.h>
@@ -48,6 +49,41 @@ static volatile sig_atomic_t gene_turn_interrupt_pending = 0;
 static struct sigaction gene_turn_interrupt_old;
 static int gene_turn_interrupt_active = 0;
 static int gene_curses_color_pair(short pair) { return COLOR_PAIR(pair); }
+static int gene_curses_enable_mouse(void) {
+#if NCURSES_MOUSE_VERSION > 1
+  mmask_t mask = BUTTON4_PRESSED;
+#ifdef BUTTON5_PRESSED
+  mask |= BUTTON5_PRESSED;
+#endif
+  mouseinterval(0);
+  mousemask(mask, NULL);
+  return 1;
+#else
+  /* ncurses v1 cannot represent xterm's fifth button (wheel down). Keep
+     ncurses out of the decoding path and request SGR mouse reports, which
+     preserve both wheel directions as ordinary escape sequences. */
+  const char *seq = "\033[?1000h\033[?1006h";
+  mousemask(0, NULL);
+  write(STDOUT_FILENO, seq, sizeof("\033[?1000h\033[?1006h") - 1);
+  return 0;
+#endif
+}
+static void gene_curses_disable_mouse(void) {
+  const char *seq = "\033[?1000l\033[?1002l\033[?1003l\033[?1006l";
+  mousemask(0, NULL);
+  if (isatty(STDOUT_FILENO))
+    write(STDOUT_FILENO, seq,
+          sizeof("\033[?1000l\033[?1002l\033[?1003l\033[?1006l") - 1);
+}
+static int gene_curses_take_mouse_scroll(void) {
+  MEVENT event;
+  if (getmouse(&event) != OK) return 0;
+  if (event.bstate & BUTTON4_PRESSED) return 1;
+#ifdef BUTTON5_PRESSED
+  if (event.bstate & BUTTON5_PRESSED) return -1;
+#endif
+  return 0;
+}
 static void gene_curses_setlocale(void) { setlocale(LC_ALL, ""); }
 static void gene_curses_save_termios(void) {
   if (!gene_curses_termios_saved && isatty(STDIN_FILENO)) {
@@ -77,8 +113,8 @@ static void gene_curses_restore_display(void) {
     /* DECSTBM (\033[r) homes the cursor as a side effect, so wrap it in
        DECSC/DECRC (\0337/\0338); otherwise output after close_input lands at
        the top of the screen and overwrites existing content. */
-    const char *seq = "\033[?2004l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338";
-    write(STDOUT_FILENO, seq, sizeof("\033[?2004l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338") - 1);
+    const char *seq = "\033[?2004l\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338";
+    write(STDOUT_FILENO, seq, sizeof("\033[?2004l\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1l\033>\033[0m\033[?25h\0337\033[r\0338") - 1);
   }
 }
 static void gene_curses_restore_for_exit(void) {
@@ -132,6 +168,9 @@ static void gene_turn_interrupt_end(void) {
 }
 """.}
   proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
+  proc cEnableMouse(): cint {.importc: "gene_curses_enable_mouse".}
+  proc cDisableMouse() {.importc: "gene_curses_disable_mouse".}
+  proc cTakeMouseScroll(): cint {.importc: "gene_curses_take_mouse_scroll".}
   proc cSetLocale() {.importc: "gene_curses_setlocale".}
   proc cSaveTermios() {.importc: "gene_curses_save_termios".}
   proc cRestoreTermios() {.importc: "gene_curses_restore_termios".}
@@ -159,7 +198,10 @@ static void gene_turn_interrupt_end(void) {
     KeyRight = 261
     KeyHome = 262
     KeyEnd = 360
+    KeyPageDown = 338
+    KeyPageUp = 339
     KeyNcursesEnter = 343
+    KeyMouse = 409
     KeyResize = 410
     ColorGreen = 2
     ColorCyan = 6
@@ -2181,6 +2223,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     discard cbreak()
     discard noecho()
     discard keypad(stdscr, 1)
+    discard cEnableMouse()
     discard curs_set(1)
     if not cursesPasteReady:
       stdout.write("\e[?2004h")
@@ -2201,6 +2244,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         stdout.flushFile()
         cursesPasteReady = false
       timeout(-1)
+      cDisableMouse()
       discard keypad(stdscr, 0)
       discard cEcho()
       discard nocbreak()
@@ -2315,6 +2359,54 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     else:
       (line, currentPair)
 
+  type CursesTranscriptRow = object
+    text: string
+    pair: int
+
+  proc wrapCursesText(text: string, width: int): seq[string] =
+    ## Wrap at the last ASCII whitespace that fits, falling back to a UTF-8
+    ## character boundary for long words. Newlines have already been split.
+    let maxChars = max(1, width)
+    if text.len == 0:
+      result.add ""
+      return
+    var start = 0
+    while start < text.len:
+      var i = start
+      var chars = 0
+      var lastBreak = -1
+      while i < text.len and chars < maxChars:
+        if text[i] == ' ' or text[i] == '\t':
+          lastBreak = i
+        let step = min(utf8CharLenAt(text, i), text.len - i)
+        inc i, step
+        inc chars
+      if i >= text.len:
+        result.add text.substr(start)
+        break
+      var stop = i
+      var next = i
+      if lastBreak > start:
+        stop = lastBreak
+        next = lastBreak + 1
+        while next < text.len and
+            (text[next] == ' ' or text[next] == '\t'):
+          inc next
+      result.add text.substr(start, stop - 1)
+      start = next
+
+  proc transcriptRows(output: string, width: int): seq[CursesTranscriptRow] =
+    var currentPair = PairOutput
+    for line in splitCursesLines(output):
+      let rendered = displayTranscriptLine(line, currentPair)
+      if rendered.pair == PairSeparator:
+        result.add CursesTranscriptRow(
+          text: repeat("─", max(1, width)), pair: rendered.pair)
+      else:
+        for visualLine in wrapCursesText(rendered.text, width):
+          result.add CursesTranscriptRow(text: visualLine,
+                                         pair: rendered.pair)
+
   proc drawSeparator(row, width: int) =
     discard cMove(row.cint, 0)
     withCursesColor(PairSeparator,
@@ -2322,7 +2414,20 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         addCursesText(repeat("─", width), width))
     discard clrtoeol()
 
-  proc drawCursesInput(prompt, status, output, input: string, cursor: int) =
+  proc cursesOutputRows(input: string, height: int): int =
+    if height < 4:
+      return 0
+    let inputTotal = max(1, splitCursesLines(input).len)
+    let inputRows = min(inputTotal, max(1, height - 3))
+    max(0, height - inputRows - 3)
+
+  proc maxCursesOutputScroll(output, input: string,
+                             height, width: int): int =
+    max(0, transcriptRows(output, width).len -
+           cursesOutputRows(input, height))
+
+  proc drawCursesInput(prompt, status, output, input: string, cursor: int,
+                       outputScroll = 0) =
     discard wclear(stdscr)
     let height = max(1, int(LINES))
     let width = max(1, int(COLS))
@@ -2354,23 +2459,21 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let topSepRow = inputTop - 1
     let outputRows = max(0, topSepRow)
 
-    let outputLines = splitCursesLines(output)
+    let outputLines = transcriptRows(output, width)
+    let effectiveScroll = min(max(0, outputScroll),
+                              max(0, outputLines.len - outputRows))
     let firstOutput =
       if outputLines.len > outputRows:
-        outputLines.len - outputRows
+        max(0, outputLines.len - outputRows - effectiveScroll)
       else:
         0
-    var transcriptPair = PairOutput
-    for idx in 0 ..< firstOutput:
-      discard displayTranscriptLine(outputLines[idx], transcriptPair)
     for row in 0 ..< outputRows:
       discard cMove(row.cint, 0)
       let idx = firstOutput + row
       if idx < outputLines.len:
-        let rendered = displayTranscriptLine(outputLines[idx], transcriptPair)
-        withCursesColor(rendered.pair,
+        withCursesColor(outputLines[idx].pair,
           proc() =
-            addCursesText(rendered.text, width))
+            addCursesText(outputLines[idx].text, width))
       discard clrtoeol()
 
     drawSeparator(topSepRow, width)
@@ -2386,9 +2489,14 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       discard clrtoeol()
     drawSeparator(bottomSepRow, width)
     discard cMove(statusRow.cint, 0)
+    let visibleStatus =
+      if effectiveScroll > 0:
+        "[SCROLL +" & $effectiveScroll & "] " & status
+      else:
+        status
     withCursesColor(PairStatus,
       proc() =
-        addCursesText(status, width))
+        addCursesText(visibleStatus, width))
     discard clrtoeol()
 
     let cursorVisibleRow = cursorLine - firstInputLine
@@ -2399,9 +2507,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc defaultInputStatus(multiline: bool): string =
     if multiline:
-      "Enter sends | Paste, Shift+Enter, or Alt+Enter keeps newlines | Ctrl-D cancels"
+      "Mouse wheel or PgUp/PgDn scroll | Enter sends | Paste/Shift+Enter keeps newlines | Ctrl-D cancels"
     else:
-      "Enter sends | Ctrl-D cancels"
+      "Mouse wheel or PgUp/PgDn scroll | Enter sends | Ctrl-D cancels"
 
   proc isEscFinalByte(ch: char): bool =
     let code = ch.ord
@@ -2440,6 +2548,16 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc isPasteEndSequence(seq: string): bool =
     seq == "[201~"
 
+  proc mouseScrollFromEsc(seq: string): int =
+    ## SGR mouse reports use button 64/65 for wheel up/down. This path is used
+    ## where ncurses' mouse protocol cannot represent the fifth button.
+    if seq.startsWith("[<64;") and seq.endsWith("M"):
+      1
+    elif seq.startsWith("[<65;") and seq.endsWith("M"):
+      -1
+    else:
+      0
+
   proc insertTextAt(input: var string, cursor: var int, text: string) =
     if text.len == 0:
       return
@@ -2460,8 +2578,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       var input = ""
       var cursor = 0
       var pasteMode = false
+      var outputScroll = 0
       while true:
-        drawCursesInput(prompt, statusText, output, input, cursor)
+        drawCursesInput(prompt, statusText, output, input, cursor, outputScroll)
         let ch = getch()
         if pasteMode:
           if ch == KeyEsc:
@@ -2484,7 +2603,29 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
           of KeyEnter, KeyReturn, KeyNcursesEnter:
             return newStr(input)
           of KeyResize:
-            discard
+            outputScroll = min(outputScroll,
+              maxCursesOutputScroll(output, input, max(1, int(LINES)),
+                                    max(1, int(COLS))))
+          of KeyMouse:
+            let direction = int(cTakeMouseScroll())
+            if direction > 0:
+              outputScroll = min(
+                maxCursesOutputScroll(output, input, max(1, int(LINES)),
+                                      max(1, int(COLS))),
+                outputScroll + 3)
+            elif direction < 0:
+              outputScroll = max(0, outputScroll - 3)
+          of KeyPageUp:
+            let page = max(1,
+              cursesOutputRows(input, max(1, int(LINES))) - 1)
+            outputScroll = min(
+              maxCursesOutputScroll(output, input, max(1, int(LINES)),
+                                    max(1, int(COLS))),
+              outputScroll + page)
+          of KeyPageDown:
+            let page = max(1,
+              cursesOutputRows(input, max(1, int(LINES))) - 1)
+            outputScroll = max(0, outputScroll - page)
           of KeyBackspace, 127, 8:
             if cursor > 0:
               input.delete(cursor - 1 .. cursor - 1)
@@ -2507,7 +2648,15 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             cursor = if nl >= 0: nl else: input.len
           of KeyEsc:
             let seq = readEscSequence()
-            if isPasteStartSequence(seq):
+            let mouseDirection = mouseScrollFromEsc(seq)
+            if mouseDirection > 0:
+              outputScroll = min(
+                maxCursesOutputScroll(output, input, max(1, int(LINES)),
+                                      max(1, int(COLS))),
+                outputScroll + 3)
+            elif mouseDirection < 0:
+              outputScroll = max(0, outputScroll - 3)
+            elif isPasteStartSequence(seq):
               pasteMode = true
             elif multiline and isShiftEnterSequence(seq):
               insertCharAt(input, cursor, '\n')
@@ -2788,6 +2937,12 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of KeyRight: props["type"] = newStr("right")
     of KeyHome: props["type"] = newStr("home")
     of KeyEnd: props["type"] = newStr("end")
+    of KeyMouse:
+      let direction = int(cTakeMouseScroll())
+      props["type"] = newStr(
+        if direction > 0: "scroll_up"
+        elif direction < 0: "scroll_down"
+        else: "mouse")
     of KeyEsc: props["type"] = newStr("escape")
     else:
       if ch >= 0 and ch <= 255:
