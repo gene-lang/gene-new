@@ -1,8 +1,8 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, locks, math, monotimes, net, os, osproc,
+import std/[algorithm, dynlib, json, locks, math, monotimes, net, os, osproc,
             sets, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, equality, gir, printer, reader, types]
+import ./[compiler, diagnostics, equality, gir, logging, printer, reader, types]
 
 when not defined(geneWasm):
   import std/re as nre
@@ -925,7 +925,8 @@ proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
                      scope)
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
-               dispatchScope: Scope = nil, site: Value = NIL): Value
+               dispatchScope: Scope = nil, site: Value = NIL,
+               loc = SourceLoc()): Value
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs): Value
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
@@ -2939,7 +2940,7 @@ proc freezeValue(value: Value): Value =
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
-     vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
+     vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
     value
   of vkList:
     var items = newSeq[Value](value.listItems.len)
@@ -3102,6 +3103,7 @@ proc declarationKind*(value: Value): string =
   of vkFfiLoad: "FfiLoad"
   of vkFfiLibrary: "FfiLibrary"
   of vkFfiCallable: "FfiCallable"
+  of vkLogger: "Logger"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -4215,6 +4217,20 @@ when defined(geneWasm):
   proc geneWasmEmit(s: string) =
     if geneWasmCapture != nil: geneWasmCapture[].add s
     else: stdout.write s
+
+  var geneWasmLogWriterReady = false
+  proc ensureGeneWasmLogWriter*() =
+    ## Route diagnostics to the host capture buffer. Installed lazily rather
+    ## than from a module-init statement: under Emscripten, closures allocated
+    ## during NimMain's global-init phase are not safely callable later (the
+    ## same hazard as the symbol-intern crash), which showed up as an OOB
+    ## fault on the second eval that emitted a log record.
+    if geneWasmLogWriterReady:
+      return
+    geneWasmLogWriterReady = true
+    setLogHostWriter(proc(s: string) {.gcsafe.} =
+      {.cast(gcsafe).}:
+        geneWasmEmit(s))
 
 proc biPrint(args: openArray[Value]): Value {.nimcall.} =
   var parts: seq[string]
@@ -6545,6 +6561,10 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     let durationNs = builtinBinding(scope, "Duration")
     let binding = exportedBinding(durationNs, name)
     if binding.kind == vkVoid: NIL else: binding
+  of vkLogger:
+    let logNs = builtinBinding(scope, "log")
+    let binding = exportedBinding(logNs, name)
+    if binding.kind == vkVoid: NIL else: binding
   else:
     NIL
 
@@ -6702,7 +6722,7 @@ proc isSendableValue(value: Value, scope: Scope,
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
-     vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
+     vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
     true
   of vkFunction:
     functionCapturesSendable(value, scope, seen, mode)
@@ -7188,6 +7208,8 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     publishSpawnValue(value.envModule, seenScopes, seenValues, seenChunks)
     publishSpawnValue(value.envCapabilities, seenScopes, seenValues, seenChunks)
     publishSpawnValue(value.envPolicy, seenScopes, seenValues, seenChunks)
+  of vkLogger:
+    publishSpawnValue(value.loggerPayload, seenScopes, seenValues, seenChunks)
   of vkStream:
     publishSpawnValue(value.streamSource, seenScopes, seenValues, seenChunks)
     publishSpawnValue(value.streamCallable, seenScopes, seenValues, seenChunks)
@@ -9494,7 +9516,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               chunk.callSites.getOrDefault(ip - 1, NIL)
           var value: Value
           try:
-            value = applyCall(callee, [], NamedArgs(), scope, site)
+            value = applyCall(callee, [], NamedArgs(), scope, site,
+                              instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
             if not se.timer:
               raise
@@ -9730,10 +9753,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           try:
             value =
               if argCount == 0:
-                applyCall(callee, [], NamedArgs(), scope, site)
+                applyCall(callee, [], NamedArgs(), scope, site,
+                          instructionLocAt(chunk, ip - 1))
               else:
                 applyCall(callee, stack.toOpenArray(argsStart, stack.high),
-                          NamedArgs(), scope, site)
+                          NamedArgs(), scope, site,
+                          instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
             if not se.timer:
               raise
@@ -10054,9 +10079,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           try:
             value =
               if argCount == 0:
-                applyCall(callee, [], named, scope, site)
+                applyCall(callee, [], named, scope, site,
+                          instructionLocAt(chunk, ip - 1))
               else:
-                applyCall(callee, stack.toOpenArray(argsStart, stack.high), named, scope, site)
+                applyCall(callee, stack.toOpenArray(argsStart, stack.high),
+                          named, scope, site,
+                          instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
             if not se.timer:
               raise
@@ -10182,9 +10210,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           try:
             value =
               if args.len == 0:
-                applyCall(callee, [], named, scope, site)
+                applyCall(callee, [], named, scope, site,
+                          instructionLocAt(chunk, ip - 1))
               else:
-                applyCall(callee, args, named, scope, site)
+                applyCall(callee, args, named, scope, site,
+                          instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
             if not se.timer:
               raise
@@ -12709,6 +12739,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkFfiLoad: newSym("Ffi/Load")
   of vkFfiLibrary: newSym("Ffi/Library")
   of vkFfiCallable: newSym("Ffi/Callable")
+  of vkLogger: newSym("Logger")
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -13140,6 +13171,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkFfiLibrary)
   of "Ffi/Callable":
     (true, value.kind == vkFfiCallable)
+  of "Logger":
+    (true, value.kind == vkLogger)
   of "Set":
     (true, value.kind == vkSet)
   of "Map":
@@ -18998,7 +19031,8 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
     dec activeConstructionDepth
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
-               dispatchScope: Scope = nil, site: Value = NIL): Value =
+               dispatchScope: Scope = nil, site: Value = NIL,
+               loc = SourceLoc()): Value =
   case callee.kind
   of vkNativeFn:
     if named.len == 0 and args.len == 2:
@@ -19025,7 +19059,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                           namedNames: named.names,
                           namedValues: named.toSeq(),
                           dispatchScope: dispatchScope,
-                          site: site)
+                          site: site,
+                          loc: loc)
     callImpl(args, addr call)
   of vkFfiCallable:
     applyFfiCallable(callee, args, named)

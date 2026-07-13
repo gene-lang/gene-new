@@ -23,6 +23,8 @@ const httpDefaultDrainTimeoutMs = 5_000
 const httpDefaultPoolWorkers = 4
 const httpDefaultPoolMailbox = 64
 
+let HttpRuntimeLogger = newRuntimeLogger("gene/http")
+
 proc httpNamespaceBinding(scope: Scope, name: string): Value =
   let root =
     if scope != nil: scope.application().builtinsScope()
@@ -928,9 +930,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       try:
         discard applyCall(accessLog, [record], NamedArgs(), scope)
       except GeneError as e:
-        stderr.writeLine "http/serve access_log error: " & e.msg
+        HttpRuntimeLogger.emit(llError, "access_log error: " & e.msg)
       except GenePanic as e:
-        stderr.writeLine "http/serve access_log panic: " & e.msg
+        HttpRuntimeLogger.emit(llError, "access_log panic: " & e.msg)
 
     proc logError(conn: HttpConn, message: string, panic: bool) =
       ## §17 error log: handler errors/panics as ErrorLog records; same
@@ -946,9 +948,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       try:
         discard applyCall(errorLog, [record], NamedArgs(), scope)
       except GeneError as e:
-        stderr.writeLine "http/serve error_log error: " & e.msg
+        HttpRuntimeLogger.emit(llError, "error_log error: " & e.msg)
       except GenePanic as e:
-        stderr.writeLine "http/serve error_log panic: " & e.msg
+        HttpRuntimeLogger.emit(llError, "error_log panic: " & e.msg)
 
     proc tryFlush(conn: HttpConn): bool =
       ## Flush as much of the response as the socket accepts. True when the
@@ -1005,12 +1007,12 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## generic 500s (stderr diagnostics preserved from the old server).
       let task = conn.task
       if task.taskHasPanic:
-        stderr.writeLine "http/serve handler panic: " & task.taskPanicMsg
+        HttpRuntimeLogger.emit(llError, "handler panic: " & task.taskPanicMsg)
         logError(conn, task.taskPanicMsg, panic = true)
         inc rt.failedRequests
         return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
       if task.taskCancelled:
-        stderr.writeLine "http/serve handler cancelled"
+        HttpRuntimeLogger.emit(llWarn, "handler cancelled")
         logError(conn, "handler cancelled", panic = false)
         inc rt.failedRequests
         return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
@@ -1025,10 +1027,10 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             return (httpWirePayload(wire.status, wire.body, wire.headers),
                     wire.status)
           except GeneError as e:
-            stderr.writeLine "http/serve on_error mapper error: " & e.msg
+            HttpRuntimeLogger.emit(llError, "on_error mapper error: " & e.msg)
           except GenePanic as e:
-            stderr.writeLine "http/serve on_error mapper panic: " & e.msg
-        stderr.writeLine "http/serve handler error: " & task.taskErrorMsg
+            HttpRuntimeLogger.emit(llError, "on_error mapper panic: " & e.msg)
+        HttpRuntimeLogger.emit(llError, "handler error: " & task.taskErrorMsg)
         inc rt.failedRequests
         return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
       try:
@@ -1036,7 +1038,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         inc rt.completedRequests
         (httpWirePayload(wire.status, wire.body, wire.headers), wire.status)
       except GeneError as e:
-        stderr.writeLine "http/serve handler error: " & e.msg
+        HttpRuntimeLogger.emit(llError, "handler error: " & e.msg)
         logError(conn, e.msg, panic = false)
         inc rt.failedRequests
         (simpleHttpWirePayload(500, "Internal Server Error"), 500)
@@ -1085,10 +1087,10 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           conn.task = dispatchHttpHandler(routed, request, scope)
         inc rt.inFlight
       except GeneError as e:
-        stderr.writeLine "http/serve handler error: " & e.msg
+        HttpRuntimeLogger.emit(llError, "handler error: " & e.msg)
         respondCounted(conn, 500, "Internal Server Error")
       except GenePanic as e:
-        stderr.writeLine "http/serve handler panic: " & e.msg
+        HttpRuntimeLogger.emit(llError, "handler panic: " & e.msg)
         respondCounted(conn, 500, "Internal Server Error")
 
     proc handleReadable(conn: HttpConn) =

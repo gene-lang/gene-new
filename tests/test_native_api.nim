@@ -1,4 +1,4 @@
-import gene/[compiler, native_api, printer, types, vm]
+import gene/[compiler, logging, native_api, printer, types, vm]
 import std/[dynlib, strutils, tables, unittest]
 
 proc nativeInc(args: openArray[Value]): Value {.nimcall.} =
@@ -20,6 +20,10 @@ proc nativeModuleEnvelopeEcho(args: openArray[Value],
   newList(items)
 
 var releasedPointers = 0
+var nativeLoggingCaptured {.threadvar.}: seq[string]
+
+proc captureNativeLog(line: string) {.gcsafe.} =
+  nativeLoggingCaptured.add line
 
 proc releaseNativePointer(address: pointer) {.nimcall.} =
   inc releasedPointers
@@ -132,6 +136,26 @@ suite "native api — roots and trampoline":
     check api.featureCount == GeneApiFeatureCount
     check called.status == gsOk
     check called.value.print() == "42"
+
+  test "versioned API table exposes guarded structured logging":
+    nativeLoggingCaptured.setLen(0)
+    var config = defaultLoggingConfig()
+    for _, sink in config.sinks: closeLogSink(sink)
+    config.sinks = initTable[string, LogSink]()
+    config.sinks["capture"] = newCallbackLogSink(
+      "capture", captureNativeLog, lfJsonl)
+    config.rootTargets = @["capture"]
+    config.rootLevel = llInfo
+    installLoggingConfig(config)
+    defer: resetLogging()
+    let api = geneApi()
+    let logger = api.newLogger("extension/example")
+    check api.logEnabled(logger, llInfo)
+    check not api.logEnabled(logger, llDebug)
+    check api.logEmit(logger, llInfo, "native", "{\"answer\":42}").status == gsOk
+    check nativeLoggingCaptured.len == 1
+    check "\"answer\":42" in nativeLoggingCaptured[0]
+    check api.logEmit(logger, llInfo, "bad", "[]").status == gsError
 
   test "versioned API table exposes C pointer slice and buffer construction":
     releasedPointers = 0

@@ -39,6 +39,11 @@ const cases = [
   ["[true false nil]", 0, "[true false nil]", ""],
   ['(println "hi")', 0, "nil", "hi\n"],
   ['(str/join ["a" "b"] "-")', 0, '"a-b"', ""],
+  ['(import log [new_logger debug!]) ' +
+   '(var logger (new_logger "app/wasm")) ' +
+   '(var touched (cell false)) ' +
+   '(debug! logger (do (Cell/set touched true) "hidden")) ' +
+   '(Cell/get touched)', 0, "false", ""],
   ["(json/stringify {^a 1 ^b [true nil]})", 0, '"{\\"a\\":1,\\"b\\":[true,null]}"', ""],
   ["(foo-undefined)", 1, "undefined symbol: foo-undefined", ""],
   ["(((", 3,
@@ -61,6 +66,20 @@ for (const [src, wantStatus, wantText, wantOut] of cases) {
   } else {
     console.log(`ok   ${src}  ->  ${JSON.stringify(r.text)}${r.out ? "  out=" + JSON.stringify(r.out) : ""}`);
   }
+}
+
+const logResult = geneEval(
+  '(import log [new_logger]) ' +
+  '(var logger (new_logger "app/wasm" ^payload {^token "secret"})) ' +
+  '(logger ~ warn "host warning")');
+if (logResult.status !== 0 || logResult.text !== "nil" ||
+    !logResult.out.includes("WARN app/wasm host warning") ||
+    !logResult.out.includes('[redacted]')) {
+  failed++;
+  console.error("FAIL wasm host logging sink");
+  console.error(`  got ${JSON.stringify(logResult)}`);
+} else {
+  console.log("ok   wasm host logging sink captures redacted output");
 }
 console.log(failed === 0 ? `\nall ${cases.length} wasm ABI cases passed` : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

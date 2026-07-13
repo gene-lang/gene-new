@@ -1,5 +1,5 @@
-import gene/[compiler, native_api, types, vm]
-import std/os
+import gene/[compiler, logging, native_api, types, vm]
+import std/[os, strutils, tables]
 import std/unittest
 
 proc detachOnWorker(attachment: GeneThreadAttachment) {.thread.} =
@@ -37,7 +37,42 @@ proc cancelTaskOnWorker(args: AsyncCancelArgs) {.thread.} =
     args.cancelled = result.value == TRUE
     geneDetachThread(attachment)
 
+proc emitLogsOnWorker(id: int) {.thread.} =
+  {.cast(gcsafe).}:
+    for i in 0 ..< 100:
+      let name = "gene/thread/" & $id & "/" & $i
+      let routeId = resolveRouteId(name)
+      if loggerEnabled(routeId, llInfo):
+        emitLog(routeId, name, llInfo, "worker=" & $id & " item=" & $i)
+
 suite "native api threaded attachment":
+  test "concurrent route creation and emission serialize complete records":
+    let dir = getTempDir() / "gene_threaded_logging"
+    createDir(dir)
+    let path = dir / "events.jsonl"
+    if fileExists(path): removeFile(path)
+    var config = defaultLoggingConfig()
+    for _, sink in config.sinks: closeLogSink(sink)
+    config.sinks = initTable[string, LogSink]()
+    config.sinks["file"] = newFileLogSink("file", path, lfJsonl, lflClose)
+    config.rootTargets = @["file"]
+    config.rootLevel = llInfo
+    installLoggingConfig(config)
+    var workers: array[4, Thread[int]]
+    for i in 0 ..< workers.len:
+      createThread(workers[i], emitLogsOnWorker, i)
+    for i in 0 ..< workers.len:
+      joinThread(workers[i])
+    shutdownLogging()
+    let lines = readFile(path).strip().splitLines()
+    check lines.len == 400
+    for line in lines:
+      check line.startsWith("{\"schema\":\"gene.log.v1\"")
+      check line.endsWith("}")
+    removeFile(path)
+    removeDir(dir)
+    resetLogging()
+
   test "wrong-thread detach does not consume owner attachment":
     let scope = newGlobalScope()
     let callee = run(compileSource("(fn [x] (+ x 10))"), scope)

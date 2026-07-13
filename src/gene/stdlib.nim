@@ -27,6 +27,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc clrtoeol(): cint {.importc, header: "<ncurses.h>".}
   proc addnstr(s: cstring, n: cint): cint {.importc, header: "<ncurses.h>".}
   proc getch(): cint {.importc, header: "<ncurses.h>".}
+  proc ungetch(ch: cint): cint {.importc, header: "<ncurses.h>".}
   proc beep(): cint {.importc, header: "<ncurses.h>".}
   proc timeout(delay: cint) {.importc, header: "<ncurses.h>".}
   proc start_color(): cint {.importc, header: "<ncurses.h>".}
@@ -196,6 +197,8 @@ static void gene_turn_interrupt_end(void) {
     KeyDelete = 330
     KeyLeft = 260
     KeyRight = 261
+    KeyUp = 259
+    KeyDown = 258
     KeyHome = 262
     KeyEnd = 360
     KeyPageDown = 338
@@ -2507,9 +2510,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc defaultInputStatus(multiline: bool): string =
     if multiline:
-      "Mouse wheel or PgUp/PgDn scroll | Enter sends | Paste/Shift+Enter keeps newlines | Ctrl-D cancels"
+      "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Enter sends | Paste/Shift+Enter keeps newlines | Ctrl-D cancels"
     else:
-      "Mouse wheel or PgUp/PgDn scroll | Enter sends | Ctrl-D cancels"
+      "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Enter sends | Ctrl-D cancels"
 
   proc isEscFinalByte(ch: char): bool =
     let code = ch.ord
@@ -2548,6 +2551,17 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc isPasteEndSequence(seq: string): bool =
     seq == "[201~"
 
+  proc navigationKeyFromEsc(seq: string): cint =
+    ## Some terminals deliver navigation keys as raw CSI/SS3 sequences even
+    ## with keypad mode enabled. Normalize those sequences to ncurses keys so
+    ## the editor has one set of navigation semantics.
+    case seq
+    of "[A", "OA": KeyUp
+    of "[B", "OB": KeyDown
+    of "[5~": KeyPageUp
+    of "[6~": KeyPageDown
+    else: CursesErr
+
   proc mouseScrollFromEsc(seq: string): int =
     ## SGR mouse reports use button 64/65 for wheel up/down. This path is used
     ## where ncurses' mouse protocol cannot represent the fifth button.
@@ -2557,6 +2571,39 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       -1
     else:
       0
+
+  proc cursesEscapePressed(): bool =
+    ## Scan currently queued input for a standalone Escape without stealing
+    ## ordinary typing. Escape-prefixed terminal sequences (mouse, navigation,
+    ## Alt-key input) have another byte within the short disambiguation window
+    ## and are restored intact for the editor.
+    var buffered: seq[cint]
+    # Disable keypad decoding while polling so ncurses does not hold a lone
+    # Escape for its much longer built-in sequence timeout. Restored bytes are
+    # decoded normally when the editor later reads them with keypad enabled.
+    discard keypad(stdscr, 0)
+    timeout(0)
+    try:
+      while buffered.len < 256:
+        let ch = getch()
+        if ch == CursesErr:
+          break
+        if ch == KeyEsc:
+          timeout(25)
+          let next = getch()
+          timeout(0)
+          if next == CursesErr:
+            return true
+          buffered.add ch
+          buffered.add next
+        else:
+          buffered.add ch
+    finally:
+      if buffered.len > 0:
+        for i in countdown(buffered.high, 0):
+          discard ungetch(buffered[i])
+      timeout(-1)
+      discard keypad(stdscr, 1)
 
   proc insertTextAt(input: var string, cursor: var int, text: string) =
     if text.len == 0:
@@ -2568,8 +2615,27 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     input.insert($ch, cursor)
     inc cursor
 
+  proc browseInputHistory(history: openArray[string], direction: int,
+                          historyIndex: var int, draft, input: var string,
+                          cursor: var int): bool =
+    if direction < 0 and historyIndex > 0:
+      if historyIndex == history.len:
+        draft = input
+      dec historyIndex
+      input = history[historyIndex]
+    elif direction > 0 and historyIndex < history.len:
+      inc historyIndex
+      input =
+        if historyIndex == history.len: draft
+        else: history[historyIndex]
+    else:
+      return false
+    cursor = input.len
+    true
+
   proc readCursesInput(prompt, status, output: string,
-                       multiline, persistent: bool): Value =
+                       multiline, persistent: bool,
+                       history: openArray[string]): Value =
     openCursesInput()
     try:
       let statusText =
@@ -2579,6 +2645,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       var cursor = 0
       var pasteMode = false
       var outputScroll = 0
+      var historyIndex = history.len
+      var draft = ""
       while true:
         drawCursesInput(prompt, statusText, output, input, cursor, outputScroll)
         let ch = getch()
@@ -2626,6 +2694,14 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             let page = max(1,
               cursesOutputRows(input, max(1, int(LINES))) - 1)
             outputScroll = max(0, outputScroll - page)
+          of KeyUp:
+            if not browseInputHistory(history, -1, historyIndex, draft,
+                                      input, cursor):
+              discard beep()
+          of KeyDown:
+            if not browseInputHistory(history, 1, historyIndex, draft,
+                                      input, cursor):
+              discard beep()
           of KeyBackspace, 127, 8:
             if cursor > 0:
               input.delete(cursor - 1 .. cursor - 1)
@@ -2649,6 +2725,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
           of KeyEsc:
             let seq = readEscSequence()
             let mouseDirection = mouseScrollFromEsc(seq)
+            let navigationKey = navigationKeyFromEsc(seq)
             if mouseDirection > 0:
               outputScroll = min(
                 maxCursesOutputScroll(output, input, max(1, int(LINES)),
@@ -2656,6 +2733,25 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                 outputScroll + 3)
             elif mouseDirection < 0:
               outputScroll = max(0, outputScroll - 3)
+            elif navigationKey == KeyPageUp:
+              let page = max(1,
+                cursesOutputRows(input, max(1, int(LINES))) - 1)
+              outputScroll = min(
+                maxCursesOutputScroll(output, input, max(1, int(LINES)),
+                                      max(1, int(COLS))),
+                outputScroll + page)
+            elif navigationKey == KeyPageDown:
+              let page = max(1,
+                cursesOutputRows(input, max(1, int(LINES))) - 1)
+              outputScroll = max(0, outputScroll - page)
+            elif navigationKey == KeyUp:
+              if not browseInputHistory(history, -1, historyIndex, draft,
+                                        input, cursor):
+                discard beep()
+            elif navigationKey == KeyDown:
+              if not browseInputHistory(history, 1, historyIndex, draft,
+                                        input, cursor):
+                discard beep()
             elif isPasteStartSequence(seq):
               pasteMode = true
             elif multiline and isShiftEnterSequence(seq):
@@ -2678,6 +2774,7 @@ proc readInputNative(name: string, call: ptr NativeCall,
   var output = ""
   var multiline = true
   var persistent = persistentDefault
+  var history: seq[string]
   if call != nil:
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
@@ -2695,6 +2792,11 @@ proc readInputNative(name: string, call: ptr NativeCall,
         if v.kind != vkBool:
           raise newException(GeneError, name & " ^multiline must be Bool")
         multiline = v.boolVal
+      of "history":
+        requireList(name & " ^history", v)
+        for item in v.listItems:
+          requireStr(name & " ^history item", item)
+          history.add item.strVal
       of "persistent":
         if persistentFixed:
           raise newException(GeneError,
@@ -2707,7 +2809,8 @@ proc readInputNative(name: string, call: ptr NativeCall,
           name & " got unexpected named argument: " & argName)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if isatty(STDIN_FILENO) != 0:
-      return readCursesInput(prompt, status, output, multiline, persistent)
+      return readCursesInput(prompt, status, output, multiline, persistent,
+                             history)
   if prompt.len > 0:
     stdout.write(prompt)
     stdout.flushFile()
@@ -2909,6 +3012,16 @@ proc biCursesRefreshInput(args: openArray[Value],
   discard cursesScreenId("curses/refresh_input", args[0], scope)
   refreshInputNative("curses/refresh_input", call)
 
+proc biCursesEscapePressed(args: openArray[Value],
+                           call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("curses/escape_pressed?", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  discard cursesScreenId("curses/escape_pressed?", args[0], scope)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    newBool(cursesEscapePressed())
+  else:
+    FALSE
+
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   type CursesEventPending {.acyclic.} = ref object
     taskOwner: Value
@@ -2935,6 +3048,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of KeyDelete: props["type"] = newStr("delete")
     of KeyLeft: props["type"] = newStr("left")
     of KeyRight: props["type"] = newStr("right")
+    of KeyUp: props["type"] = newStr("up")
+    of KeyDown: props["type"] = newStr("down")
     of KeyHome: props["type"] = newStr("home")
     of KeyEnd: props["type"] = newStr("end")
     of KeyMouse:
@@ -3449,6 +3564,334 @@ proc biJsonStringify(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   var buffer = ""
   jsonStringifyInto(args[0], buffer, scope, 0)
   newStr(buffer)
+
+
+# --- log: structured application/runtime diagnostics ------------------------
+
+const LogReservedPayloadKeys = [
+  "schema", "time", "level", "logger", "message", "payload", "seq",
+  "pid", "thread", "task", "actor", "source"]
+
+proc requireLogger(name: string, value: Value) =
+  if value.kind != vkLogger:
+    raise newException(GeneError, name & " expects a Logger")
+
+proc requireLogNamed(name: string, call: ptr NativeCall,
+                     allowed: openArray[string]) =
+  if call == nil: return
+  for actual in call[].namedNames:
+    if actual notin allowed:
+      raise newException(GeneError,
+        name & " got unexpected named argument: " & actual)
+
+proc namedLogPayload(call: ptr NativeCall): Value =
+  if call == nil: return newMap(immutable = true)
+  for i, name in call[].namedNames:
+    if name == "payload":
+      # NativeCall owns namedValues. Force a retained copy: under ORC, returning
+      # an indexed value can otherwise be sink-optimized as though this helper
+      # owned the sequence element, leaving the call frame with a dangling box.
+      return retainedCopy(call[].namedValues[i])
+  newMap(immutable = true)
+
+proc namedLogValue(call: ptr NativeCall, key: string,
+                   fallback: Value): Value =
+  if call != nil:
+    for i, name in call[].namedNames:
+      if name == key: return retainedCopy(call[].namedValues[i])
+  fallback
+
+proc logLevelFromValue(name: string, value: Value,
+                       allowOff = false): LogLevel =
+  if value.kind != vkEnumVariant or
+      value.enumVariantEnum.typeName != "LogLevel":
+    raise newException(GeneError, name & " expects a LogLevel")
+  case value.enumVariantName
+  of "error": llError
+  of "warn": llWarn
+  of "info": llInfo
+  of "debug": llDebug
+  of "trace": llTrace
+  of "off":
+    if allowOff: llOff
+    else: raise newException(GeneError, name & " cannot emit LogLevel/off")
+  else:
+    raise newException(GeneError, name & " got an unknown LogLevel")
+
+proc normalizeLogValue(value: Value, depth: int, items: var int,
+                       active: var HashSet[uint64], maxDepth, maxItems,
+                       maxStringBytes: int): tuple[value: Value,
+                                                   json: JsonNode]
+
+proc enterLogContainer(value: Value, active: var HashSet[uint64]) =
+  if active.contains(value.bits):
+    raise newException(GeneError, "log payload contains a cycle")
+  active.incl value.bits
+
+proc normalizeLogMap(value: Value, depth: int, items: var int,
+                     active: var HashSet[uint64], maxDepth, maxItems,
+                     maxStringBytes: int): tuple[value: Value,
+                                                 json: JsonNode] =
+  if value.kind notin {vkMap, vkHashMap}:
+    raise newException(GeneError, "log payload must be a PropMap or HashMap")
+  enterLogContainer(value, active)
+  defer: active.excl value.bits
+  var entries = initPropTable()
+  result.json = newJObject()
+  template addEntry(key: string, item: Value) =
+    if entries.hasKey(key):
+      raise newException(GeneError, "duplicate log payload key: " & key)
+    if key.toLowerAscii() in LogReservedPayloadKeys:
+      raise newException(GeneError, "reserved log payload key: " & key)
+    if loggingRedactsKey(key):
+      entries[key] = newStr("[redacted]")
+      result.json[key] = newJString("[redacted]")
+    else:
+      let normalized = normalizeLogValue(item, depth + 1, items, active,
+        maxDepth, maxItems, maxStringBytes)
+      entries[key] = normalized.value
+      result.json[key] = normalized.json
+  if value.kind == vkMap:
+    for key in value.mapEntries.keys:
+      addEntry(key, value.mapEntries[key])
+  else:
+    for entry in value.hashMapEntries:
+      let key =
+        case entry.key.kind
+        of vkString: entry.key.strVal
+        of vkSymbol: entry.key.symVal
+        else:
+          raise newException(GeneError,
+            "log payload keys must be strings or symbols")
+      addEntry(key, entry.val)
+  result.value = newMap(entries, immutable = true)
+
+proc normalizeLogValue(value: Value, depth: int, items: var int,
+                       active: var HashSet[uint64], maxDepth, maxItems,
+                       maxStringBytes: int): tuple[value: Value,
+                                                   json: JsonNode] =
+  if depth > maxDepth:
+    raise newException(GeneError, "log payload nesting exceeds limit")
+  inc items
+  if items > maxItems:
+    raise newException(GeneError, "log payload item count exceeds limit")
+  case value.kind
+  of vkNil, vkVoid:
+    result = (NIL, newJNull())
+  of vkBool:
+    result = (value, newJBool(value.boolVal))
+  of vkInt:
+    result = (value, newJInt(value.intVal))
+  of vkFloat:
+    let number = value.floatVal
+    if number.classify in {fcNan, fcInf, fcNegInf}:
+      result = (value, newJString(value.print()))
+    else:
+      result = (value, newJFloat(number))
+  of vkString:
+    if value.strVal.len > maxStringBytes:
+      raise newException(GeneError, "log payload string exceeds limit")
+    result = (value, newJString(value.strVal))
+  of vkSymbol:
+    if value.symVal.len > maxStringBytes:
+      raise newException(GeneError, "log payload symbol exceeds limit")
+    result = (value, newJString(value.symVal))
+  of vkChar:
+    result = (value, newJString($value.charVal))
+  of vkBytes, vkRegex, vkRange, vkDate, vkTime, vkDateTime, vkTimezone,
+     vkDuration:
+    result = (value, newJString(value.print()))
+  of vkList:
+    enterLogContainer(value, active)
+    defer: active.excl value.bits
+    var values: seq[Value]
+    let json = newJArray()
+    for item in value.listItems:
+      let normalized = normalizeLogValue(item, depth + 1, items, active,
+        maxDepth, maxItems, maxStringBytes)
+      values.add normalized.value
+      json.add normalized.json
+    result = (newList(values, immutable = true), json)
+  of vkMap, vkHashMap:
+    result = normalizeLogMap(value, depth, items, active,
+      maxDepth, maxItems, maxStringBytes)
+  of vkSet:
+    enterLogContainer(value, active)
+    defer: active.excl value.bits
+    var values: seq[Value]
+    let json = newJArray()
+    for item in value.setItems:
+      let normalized = normalizeLogValue(item, depth + 1, items, active,
+        maxDepth, maxItems, maxStringBytes)
+      values.add normalized.value
+      json.add normalized.json
+    result = (newSet(values), json)
+  of vkNode:
+    enterLogContainer(value, active)
+    defer: active.excl value.bits
+    let normalizedHead = normalizeLogValue(value.head, depth + 1, items,
+      active, maxDepth, maxItems, maxStringBytes)
+    let normalizedProps = normalizeLogMap(newMap(value.props), depth + 1,
+      items, active, maxDepth, maxItems, maxStringBytes)
+    let normalizedMeta = normalizeLogMap(newMap(value.meta), depth + 1,
+      items, active, maxDepth, maxItems, maxStringBytes)
+    var body: seq[Value]
+    for item in value.body:
+      body.add normalizeLogValue(item, depth + 1, items, active,
+        maxDepth, maxItems, maxStringBytes).value
+    let frozen = newNode(normalizedHead.value,
+      props = normalizedProps.value.mapEntries,
+      body = body,
+      meta = normalizedMeta.value.mapEntries,
+      immutable = true)
+    result = (frozen, newJString(frozen.print()))
+  else:
+    raise newException(GeneError,
+      "log payload cannot contain " & $value.kind)
+
+proc normalizeLogPayload(value: Value): tuple[value: Value, json: JsonNode] =
+  var items = 0
+  var active = initHashSet[uint64]()
+  var maxDepth, maxItems, maxStringBytes: int
+  loggingLimitValues(maxDepth, maxItems, maxStringBytes)
+  normalizeLogMap(value, 0, items, active,
+    maxDepth, maxItems, maxStringBytes)
+
+proc mergeLogPayload(base, event: Value): Value =
+  var entries = initPropTable()
+  if base.kind == vkMap:
+    for key, value in base.mapEntries: entries[key] = value
+  if event.kind == vkMap:
+    for key, value in event.mapEntries: entries[key] = value
+  newMap(entries, immutable = true)
+
+proc logSource(call: ptr NativeCall): LogSource =
+  if call == nil or not call[].loc.hasSourceLoc:
+    return LogSource()
+  LogSource(module: call[].loc.sourceName, line: call[].loc.line,
+            column: call[].loc.col)
+
+proc emitLogger(name: string, logger: Value, level: LogLevel, message: Value,
+                payload: Value, call: ptr NativeCall): Value =
+  requireLogger(name, logger)
+  requireStr(name & " message", message)
+  let eventPayload = normalizeLogPayload(payload).value
+  let merged = normalizeLogPayload(
+    mergeLogPayload(logger.loggerPayload, eventPayload))
+  emitLog(logger.loggerRouteId, logger.loggerName, level, message.strVal,
+          merged.json, logSource(call))
+  NIL
+
+proc biLogNewLogger(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("log/new_logger", args)
+  requireLogNamed("log/new_logger", call, ["payload"])
+  requireStr("log/new_logger name", args[0])
+  let name = args[0].strVal
+  if name != "app" and not name.startsWith("app/"):
+    raise newException(GeneError,
+      "log/new_logger names must be in the app/* namespace")
+  if not validLoggerName(name):
+    raise newException(GeneError, "log/new_logger invalid name: " & name)
+  let normalizedPayload = normalizeLogPayload(namedLogPayload(call))
+  let routeId = resolveRouteId(name)
+  newLogger(name, routeId, normalizedPayload.value)
+
+proc biLogNewFileLogger(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "log/new_file_logger expects (Fs/WriteDir, name, path)")
+  requireLogNamed("log/new_file_logger", call,
+                  ["payload", "format", "flush", "level"])
+  requireFsWriteDir("log/new_file_logger", args[0])
+  requireStr("log/new_file_logger name", args[1])
+  requireStr("log/new_file_logger path", args[2])
+  let name = args[1].strVal
+  if name != "app" and not name.startsWith("app/"):
+    raise newException(GeneError,
+      "log/new_file_logger names must be in the app/* namespace")
+  if not validLoggerName(name):
+    raise newException(GeneError, "log/new_file_logger invalid name: " & name)
+  let formatValue = namedLogValue(call, "format", newStr("jsonl"))
+  requireStr("log/new_file_logger ^format", formatValue)
+  var format: LogFormat
+  if not parseLogFormat(formatValue.strVal, format):
+    raise newException(GeneError,
+      "log/new_file_logger ^format must be text or jsonl")
+  let flushValue = namedLogValue(call, "flush", newStr("error"))
+  requireStr("log/new_file_logger ^flush", flushValue)
+  var flush: LogFlush
+  if not parseLogFlush(flushValue.strVal, flush):
+    raise newException(GeneError,
+      "log/new_file_logger ^flush must be always, error, or close")
+  let levelValue = namedLogValue(call, "level", NIL)
+  let level =
+    if levelValue.kind == vkNil: llTrace
+    else: logLevelFromValue("log/new_file_logger ^level", levelValue,
+                            allowOff = true)
+  let payload = normalizeLogPayload(namedLogPayload(call)).value
+  when defined(geneWasm) or defined(emscripten):
+    raise newException(GeneError,
+      "log/new_file_logger is unavailable in wasm")
+  else:
+    try:
+      let sink = newFileLogSink("direct:" & name, args[2].strVal,
+                                format, flush)
+      newLogger(name, newDirectLogRoute(sink, level), payload)
+    except CatchableError as e:
+      raise newException(GeneError, "log/new_file_logger: " & e.msg)
+
+proc biLoggerChild(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Logger/child expects (Logger, name)")
+  requireLogNamed("Logger/child", call, ["payload"])
+  requireLogger("Logger/child", args[0])
+  requireStr("Logger/child name", args[1])
+  let name = args[0].loggerName & "/" & args[1].strVal
+  if not validLoggerName(name):
+    raise newException(GeneError, "Logger/child invalid name: " & name)
+  let payload = normalizeLogPayload(namedLogPayload(call)).value
+  newLogger(name, resolveRouteId(name),
+    mergeLogPayload(args[0].loggerPayload, payload))
+
+proc biLoggerWith(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Logger/with expects (Logger, payload)")
+  requireLogNamed("Logger/with", call, [])
+  requireLogger("Logger/with", args[0])
+  let payload = normalizeLogPayload(args[1]).value
+  newLogger(args[0].loggerName, args[0].loggerRouteId,
+    mergeLogPayload(args[0].loggerPayload, payload))
+
+proc biLoggerEnabled(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Logger/enabled? expects (Logger, LogLevel)")
+  requireLogNamed("Logger/enabled?", call, [])
+  requireLogger("Logger/enabled?", args[0])
+  let level = logLevelFromValue("Logger/enabled?", args[1], allowOff = true)
+  newBool(level != llOff and loggerEnabled(args[0].loggerRouteId, level))
+
+proc biLoggerEmit(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "Logger/emit expects (Logger, LogLevel, message)")
+  requireLogNamed("Logger/emit", call, ["payload"])
+  emitLogger("Logger/emit", args[0], logLevelFromValue("Logger/emit", args[1]),
+             args[2], namedLogPayload(call), call)
+
+template defineLoggerLevelProc(procName: untyped, publicName: string,
+                               logLevel: LogLevel) =
+  proc procName(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    if args.len != 2:
+      raise newException(GeneError, publicName & " expects (Logger, message)")
+    requireLogNamed(publicName, call, ["payload"])
+    emitLogger(publicName, args[0], logLevel, args[1], namedLogPayload(call), call)
+
+defineLoggerLevelProc(biLoggerError, "Logger/error", llError)
+defineLoggerLevelProc(biLoggerWarn, "Logger/warn", llWarn)
+defineLoggerLevelProc(biLoggerInfo, "Logger/info", llInfo)
+defineLoggerLevelProc(biLoggerDebug, "Logger/debug", llDebug)
+defineLoggerLevelProc(biLoggerTrace, "Logger/trace", llTrace)
 
 
 # --- serde: Gene-text serialization, data core -------------------------------
@@ -5589,6 +6032,43 @@ proc registerStdlibNamespaces(root: Scope) =
   let httpClientError = defineErrorType("HttpClientError")
   let jsonError = defineErrorType("JsonError")
   let serdeError = defineErrorType("SerdeError")
+  # Structured diagnostic logging (docs/proposals/logging.md). Logger methods
+  # are receiver-dispatched through builtinReceiverMessage; lazy `*!` forms
+  # are compiler-known macros selected from this same namespace.
+  let logLevel = newEnum("LogLevel", @[],
+    [(name: "error", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "warn", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "info", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "debug", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "trace", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "off", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL)],
+    NIL, root)
+  let logScope = newScope(root)
+  logScope.define("LogLevel", logLevel)
+  logScope.define("Logger", newSym("Logger"))
+  logScope.define("new_logger", newNativeCallFn("log/new_logger",
+                                                biLogNewLogger))
+  logScope.define("new_file_logger",
+    newNativeCallFn("log/new_file_logger", biLogNewFileLogger))
+  logScope.define("enabled?", newNativeCallFn("Logger/enabled?",
+                                               biLoggerEnabled,
+                                               acceptsNamed = false))
+  logScope.define("emit", newNativeCallFn("Logger/emit", biLoggerEmit))
+  logScope.define("child", newNativeCallFn("Logger/child", biLoggerChild))
+  logScope.define("with", newNativeCallFn("Logger/with", biLoggerWith,
+                                           acceptsNamed = false))
+  logScope.define("error", newNativeCallFn("Logger/error", biLoggerError))
+  logScope.define("warn", newNativeCallFn("Logger/warn", biLoggerWarn))
+  logScope.define("info", newNativeCallFn("Logger/info", biLoggerInfo))
+  logScope.define("debug", newNativeCallFn("Logger/debug", biLoggerDebug))
+  logScope.define("trace", newNativeCallFn("Logger/trace", biLoggerTrace))
+  root.define("log", newNamespace("log", logScope))
   # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
   # built-ins above under stable module paths, so source programs can write
   # `(import std/stream [map])` / `(import str [join])` today and swap in
@@ -5946,6 +6426,9 @@ proc registerStdlibNamespaces(root: Scope) =
     newNativeCallFn("curses/read_input", biCursesReadInput))
   cursesScope.define("refresh_input",
     newNativeCallFn("curses/refresh_input", biCursesRefreshInput))
+  cursesScope.define("escape_pressed?",
+    newNativeCallFn("curses/escape_pressed?", biCursesEscapePressed,
+                    acceptsNamed = false))
   cursesScope.define("next_event",
     newNativeCallFn("curses/next_event", biCursesNextEvent,
                     acceptsNamed = false))

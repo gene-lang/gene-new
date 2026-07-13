@@ -5,6 +5,7 @@ temp/
 tests/*
 !tests/*.nim
 !tests/*.mjs
+!tests/test_ai_agent_tui.py
 
 benchmarks/bench_core
 

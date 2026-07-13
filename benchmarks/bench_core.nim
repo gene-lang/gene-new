@@ -7,10 +7,13 @@
 ## Run:
 ##   nimble perf
 
-import gene/[compiler, equality, printer, reader, types, vm]
-import std/[monotimes, strutils, tables, times]
+import gene/[compiler, equality, logging, printer, reader, types, vm]
+import std/[json, monotimes, strutils, tables, times]
 
 var positiveZeroInput {.volatile.}: float64 = 0.0
+
+proc discardLogLine(line: string) {.gcsafe.} =
+  discard line
 
 template bench(name: string, iterations: int, loopVar: untyped, body: untyped) =
   block:
@@ -73,6 +76,85 @@ proc main() =
   bench("vm.simple_call.compiled_chunk", 500_000, i):
     let v = run(simpleChunk, simpleScope)
     checksum = checksum + v.intVal
+
+  var loggingConfig = defaultLoggingConfig()
+  loggingConfig.rootLevel = llWarn
+  installLoggingConfig(loggingConfig)
+  let disabledRuntimeLogger = newRuntimeLogger("gene/bench")
+  bench("logging.native_disabled", 20_000_000, i):
+    if disabledRuntimeLogger.enabled(llDebug):
+      checksum = checksum + int64(i)
+
+  let disabledGeneScope = newGlobalScope()
+  discard run(compileSource(
+    "(import log [new_logger debug!]) " &
+    "(var logger (new_logger \"app/bench\")) " &
+    "(var drive (fn [] (debug! logger \"disabled\")))"),
+    disabledGeneScope)
+  let disabledGeneChunk = compileSource("(drive)")
+  bench("logging.gene_disabled_macro", 500_000, i):
+    let value = run(disabledGeneChunk, disabledGeneScope)
+    if value.kind == vkNil:
+      checksum = checksum + 1
+
+  var enabledTextConfig = defaultLoggingConfig()
+  for _, sink in enabledTextConfig.sinks: closeLogSink(sink)
+  enabledTextConfig.sinks = initTable[string, LogSink]()
+  enabledTextConfig.sinks["text"] =
+    newCallbackLogSink("text", discardLogLine, lfText)
+  enabledTextConfig.rootTargets = @["text"]
+  enabledTextConfig.rootLevel = llInfo
+  installLoggingConfig(enabledTextConfig)
+  let enabledTextLogger = newRuntimeLogger("gene/bench")
+  bench("logging.enabled_text_no_payload", 100_000, i):
+    enabledTextLogger.emit(llInfo, "ready")
+    checksum = checksum + int64(i and 1)
+
+  var enabledJsonConfig = defaultLoggingConfig()
+  for _, sink in enabledJsonConfig.sinks: closeLogSink(sink)
+  enabledJsonConfig.sinks = initTable[string, LogSink]()
+  enabledJsonConfig.sinks["json"] =
+    newCallbackLogSink("json", discardLogLine, lfJsonl)
+  enabledJsonConfig.rootTargets = @["json"]
+  enabledJsonConfig.rootLevel = llInfo
+  installLoggingConfig(enabledJsonConfig)
+  let enabledJsonLogger = newRuntimeLogger("gene/bench")
+  let eightEntryPayload = %*{
+    "a": 1, "b": 2, "c": 3, "d": 4,
+    "e": 5, "f": 6, "g": 7, "h": 8}
+  bench("logging.enabled_json_payload_8", 50_000, i):
+    enabledJsonLogger.emit(llInfo, "structured", eightEntryPayload)
+    checksum = checksum + int64(i and 1)
+
+  var sameRendererConfig = defaultLoggingConfig()
+  for _, sink in sameRendererConfig.sinks: closeLogSink(sink)
+  sameRendererConfig.sinks = initTable[string, LogSink]()
+  sameRendererConfig.sinks["a"] =
+    newCallbackLogSink("a", discardLogLine, lfJsonl)
+  sameRendererConfig.sinks["b"] =
+    newCallbackLogSink("b", discardLogLine, lfJsonl)
+  sameRendererConfig.rootTargets = @["a", "b"]
+  sameRendererConfig.rootLevel = llInfo
+  installLoggingConfig(sameRendererConfig)
+  let sameRendererLogger = newRuntimeLogger("gene/bench")
+  bench("logging.fanout_same_renderer", 50_000, i):
+    sameRendererLogger.emit(llInfo, "fanout", eightEntryPayload)
+    checksum = checksum + int64(i and 1)
+
+  var mixedRendererConfig = defaultLoggingConfig()
+  for _, sink in mixedRendererConfig.sinks: closeLogSink(sink)
+  mixedRendererConfig.sinks = initTable[string, LogSink]()
+  mixedRendererConfig.sinks["text"] =
+    newCallbackLogSink("text", discardLogLine, lfText)
+  mixedRendererConfig.sinks["json"] =
+    newCallbackLogSink("json", discardLogLine, lfJsonl)
+  mixedRendererConfig.rootTargets = @["text", "json"]
+  mixedRendererConfig.rootLevel = llInfo
+  installLoggingConfig(mixedRendererConfig)
+  let mixedRendererLogger = newRuntimeLogger("gene/bench")
+  bench("logging.fanout_mixed_renderers", 50_000, i):
+    mixedRendererLogger.emit(llInfo, "fanout", eightEntryPayload)
+    checksum = checksum + int64(i and 1)
 
   let noArgScope = newGlobalScope()
   noArgScope.define("seven", run(compileSource("(fn [] 7)"), noArgScope))

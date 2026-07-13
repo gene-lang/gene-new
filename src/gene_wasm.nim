@@ -16,6 +16,13 @@ type
 var results: seq[GeneResult] = @[]   # handle = index + 1 (0 is reserved / OOM)
 
 proc geneEvalSource(src: string): GeneResult =
+  # Install the host log writer on first eval, not at module-init (see
+  # ensureGeneWasmLogWriter). The logging registry itself initializes lazily
+  # via ensureRegistry and carries the documented default limits; do NOT
+  # installLoggingConfig here, since replacing a registry closes the previous
+  # one's sinks and rebinds runtime loggers through globals that are not
+  # safely reachable from the first eval under Emscripten.
+  ensureGeneWasmLogWriter()
   new(result)
   let capture = new(string)
   geneWasmCapture = capture

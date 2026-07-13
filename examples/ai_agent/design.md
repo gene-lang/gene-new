@@ -112,7 +112,8 @@ OPENAI_AUTH_TOKEN=... gene run examples/ai_agent/tui.gene
 Behavior:
 
 - a shipped multiline TTY prompt with persistent transcript/status rendering
-  and mouse/page transcript scrolling while input is active;
+  and mouse/page transcript scrolling while input is active; Up/Down browse
+  submitted prompts, and Escape cancels the active turn;
 - a conversation loop that sends the running input-item list to the Responses
   API and streams assistant text deltas into the transcript as items arrive;
 - **tool use**: the model may return `function_call` items (`read_file`,
@@ -435,8 +436,11 @@ adds a short `─` separator before each user turn in the scrollback, owns one
 The mouse wheel moves the transcript by three lines and PageUp/PageDown by one
 viewport; the status line shows `[SCROLL +N]` while the view is above the live
 tail. Transcript lines word-wrap at the current terminal width, and the scroll
-offset counts the resulting visual rows. Up/Down are reserved for input
-history.
+offset counts the resulting visual rows. Up/Down browse the agent's submitted
+input history without changing transcript scroll position; moving past the
+newest entry restores the current draft. While a turn is running, a standalone
+Escape cancels the same authoritative `Task` as Ctrl-C. The polling path keeps
+queued typing, mouse reports, and navigation sequences intact.
 `close` restores echo/cbreak/keypad/cursor state before leaving
 ncurses. Inside those subsessions Ctrl-C stops the running command/eval or
 clears a partially typed line instead of killing the agent: the interactive

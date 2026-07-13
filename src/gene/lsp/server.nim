@@ -9,6 +9,7 @@
 ## and workspace/symbol over an index of the workspace's .gene files.
 
 import std/[json, os, strutils, tables, uri]
+import ../logging
 import ./analysis
 
 type
@@ -28,12 +29,11 @@ const
   maxIndexedFileBytes = 1_000_000
   skippedDirs = [".git", "node_modules", "nimcache", "bin", ".vscode"]
 
-var logEnabled = false
+let LspRuntimeLogger = newRuntimeLogger("gene/lsp")
 
-proc log(msg: string) =
-  if logEnabled:
-    stderr.writeLine "[gene-lsp] " & msg
-    stderr.flushFile()
+template log(msg: untyped) =
+  if LspRuntimeLogger.enabled(llDebug):
+    LspRuntimeLogger.emit(llDebug, msg)
 
 # ---------------------------------------------------------------------------
 # Transport: Content-Length framed JSON over stdio.
@@ -289,7 +289,6 @@ proc handleWorkspaceSymbol(server: LspServer, id, params: JsonNode) =
 # ---------------------------------------------------------------------------
 
 proc runLspServer*(): int =
-  logEnabled = getEnv("GENE_LSP_LOG", "") in ["1", "true", "yes", "on"]
   log "starting"
   var server = LspServer(docs: initTable[string, DocState](),
                          index: initTable[string, seq[FlatDef]]())

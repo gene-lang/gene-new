@@ -3009,6 +3009,46 @@ proc compileFfiSignature(c: var Compiler, node: Value,
   c.emitConst(newSym(proto.name))
   c.emitDefineBinding(proto.name)
 
+proc builtinLogMacro(level: string): MacroDef =
+  ## Built-in namespace macros use the same template representation as
+  ## file-module macros; only their delivery is compiler-known.
+  MacroDef(
+    params: @[
+      MacroParam(pattern: newSym("logger")),
+      MacroParam(pattern: newSym("message"))
+    ],
+    named: @[
+      MacroNamedParam(arg: "payload", pattern: newSym("payload"),
+        defaultValue: MacroDefault(optional: true, hasExpr: true,
+                                   defaultExpr: newMap()))
+    ],
+    body: @[read("`(scope (do " &
+      "(var generated_logger %logger) " &
+      "(if (generated_logger ~ enabled? log/LogLevel/" & level & ") " &
+      "  (generated_logger ~ emit log/LogLevel/" & level &
+      "    %message ^payload %payload) " &
+      "  nil)))")]
+  )
+
+proc builtinNamespaceMacros(segments: openArray[string]):
+    Table[string, MacroDef] =
+  result = initTable[string, MacroDef]()
+  if segments.len == 1 and segments[0] == "log":
+    for level in ["error", "warn", "info", "debug", "trace"]:
+      result[level & "!"] = builtinLogMacro(level)
+
+proc importMacro(c: var Compiler, local: string, def: MacroDef) =
+  if c.hasMacros and c.macros.hasKey(local):
+    raise newException(GeneError, "duplicate macro: " & local)
+  if c.localSlot(local) >= 0 or c.parentSlot(local).slot >= 0:
+    raise newException(GeneError,
+      "macro '" & local & "' conflicts with a binding of the same name")
+  if not c.hasMacros:
+    c.macros = initTable[string, MacroDef]()
+    c.hasMacros = true
+  c.macros[local] = def
+  c.importedMacroNames.incl local
+
 proc compileImport(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError, "eval cannot use import; add imports to Env")
@@ -3050,19 +3090,20 @@ proc compileImport(c: var Compiler, node: Value) =
     var runtimeSelections: seq[ImportSelection]
     for sel in spec.selections:
       if exported.hasKey(sel.name):
-        if c.hasMacros and c.macros.hasKey(sel.local):
-          raise newException(GeneError, "duplicate macro: " & sel.local)
-        if c.localSlot(sel.local) >= 0 or c.parentSlot(sel.local).slot >= 0:
-          raise newException(GeneError,
-            "macro '" & sel.local & "' conflicts with a binding of the same name")
-        if not c.hasMacros:
-          c.macros = initTable[string, MacroDef]()
-          c.hasMacros = true
-        c.macros[sel.local] = exported[sel.name]
-        c.importedMacroNames.incl sel.local
+        c.importMacro(sel.local, exported[sel.name])
       else:
         runtimeSelections.add sel
     spec.selections = runtimeSelections
+  elif not spec.fromModule:
+    let exported = builtinNamespaceMacros(spec.nsSegments)
+    if exported.len > 0:
+      var runtimeSelections: seq[ImportSelection]
+      for sel in spec.selections:
+        if exported.hasKey(sel.name):
+          c.importMacro(sel.local, exported[sel.name])
+        else:
+          runtimeSelections.add sel
+      spec.selections = runtimeSelections
   if c.useLocalSlots:
     if spec.alias.len > 0:
       discard c.reserveLocal(spec.alias)

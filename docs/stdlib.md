@@ -79,8 +79,9 @@ Initial modules should be available through namespace imports:
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
 (import net/http_client [Http request stream HttpClientError])
+(import log [Logger LogLevel new_logger info! debug!])
 (import curses [Screen open close dimensions draw read_input refresh_input
-                next_event CursesError])
+                escape_pressed? next_event CursesError])
 (import sqlite [Database Statement Row SqliteError])
 ```
 
@@ -91,6 +92,49 @@ boundary. This is the bounded primitive used by agent-facing ranged reads.
 For MVP, these may be built-in namespaces registered by the runtime. File-backed
 stdlib modules can replace or wrap those namespaces later, but source programs
 should not need to change.
+
+### `log`
+
+Structured diagnostic logging is configured by the launcher and is separate
+from program output, typed errors, authoritative event/audit logs, metrics, and
+execution traces. The default route emits `warn` and `error` to stderr.
+
+```gene
+(import log [Logger LogLevel new_logger debug!])
+
+(var logger
+  (new_logger "app/http" ^payload {^service "api"}))
+
+(logger ~ info "listening" ^payload {^port 8080})  # eager
+(debug! logger (expensive_message)                  # lazy
+  ^payload {^request_id id})
+```
+
+`Logger` is an immutable, Send-safe native handle. `new_logger` creates names
+under `app/*`; `child` derives a descendant and `with` adds immutable base
+payload. Eager `error`/`warn`/`info`/`debug`/`trace` methods evaluate arguments
+normally. Their `!` macro counterparts evaluate the logger once and skip
+message/payload evaluation when disabled. `enabled?` accepts `LogLevel`; `emit`
+is the eager level-parametric primitive.
+
+Payloads are PropMaps/general maps with string or symbol keys and data-only
+values. Base and event payloads merge with event keys winning. Payloads are
+bounded and recursively redacted before reaching any sink; common credential
+keys are redacted by default. Programming/boundary mistakes raise normally,
+while accepted-event renderer or sink I/O failures never enter application
+control flow.
+
+`gene run --log-config path app.gene` explicitly loads a data-only config
+before the entry module. It supports hierarchical segment-aware routes,
+console/file sinks, text/JSON Lines formats, color policy, and flush policy;
+file paths are relative to the config file. Config is immutable during entry
+execution. Under wasm, console logging uses captured host output and file sinks
+are unavailable. See [the logging proposal](proposals/logging.md) for the full
+schema and performance contract.
+
+When application-selected file output is required, `new_file_logger` takes an
+explicit `Fs/WriteDir`, logger name, and path and returns a direct one-file
+logger. It does not mutate process routing and is unavailable under wasm.
 
 ### `net/http_client`
 
@@ -155,12 +199,16 @@ events. Scheduler polling uses non-blocking `getch`, so waiting for a key does
 not stop other tasks.
 
 `read_input` provides the shared multiline editor with bracketed-paste and
-Unicode support. While input is active, the mouse wheel scrolls the transcript
-by three lines and PageUp/PageDown by one viewport; a `[SCROLL +N]` status
-prefix marks a view detached from the latest output. Up/Down remain available
-for input history. Transcript text word-wraps into visual rows at the current
-terminal width, and scrolling counts those wrapped rows. `refresh_input`
-redraws while retaining screen ownership.
+Unicode support. Its optional `^history` argument is a list of strings;
+Up/Down replace the current input with the previous/next entry and restore the
+draft after the newest entry. While input is active, the mouse wheel scrolls
+the transcript by three lines and PageUp/PageDown by one viewport; a
+`[SCROLL +N]` status prefix marks a view detached from the latest output.
+Transcript text word-wraps into visual rows at the current terminal width, and
+scrolling counts those wrapped rows. `refresh_input` redraws while retaining
+screen ownership. `escape_pressed?` non-destructively checks a live screen for
+a standalone Escape, preserving queued text and terminal escape sequences so a
+caller can use it to cancel concurrent work.
 Terminal failures raise `CursesError`. The older `os/read_input`,
 `os/refresh_input`, and `os/close_input` names remain compatibility wrappers.
 

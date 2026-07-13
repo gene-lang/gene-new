@@ -35,6 +35,15 @@ proc shellQuote(arg: string): string =
       result.add ch
   result.add "'"
 
+proc geneQuote(arg: string): string =
+  result = "\""
+  for ch in arg:
+    case ch
+    of '\\': result.add "\\\\"
+    of '"': result.add "\\\""
+    else: result.add ch
+  result.add '"'
+
 proc execCmdOnce(cmd: string): tuple[output: string, exitCode: int] =
   ## Keep process execution behind one helper so command-heavy CLI tests use
   ## the same capture behavior without masking crashes through retries.
@@ -97,6 +106,48 @@ suite "cli — gene run":
     check ("at " & normalizedPath(absolutePath(missingMain)) & ":1:1") in
       ran.output
     check not ran.output.startsWith("BODY-RAN\n")
+
+  test "run loads explicit structured logging config before the entry module":
+    let logDir = cliDir / "configured_logs"
+    createDir(logDir)
+    let logPath = logDir / "events.jsonl"
+    removeFile(logPath)
+    let configPath = cliDir / "logging_config.gene"
+    writeFile(configPath, """
+{^level "warn"
+ ^sinks {^main {^type "file" ^path "configured_logs/events.jsonl"
+                 ^format "jsonl" ^flush "close"}}
+ ^targets []
+ ^loggers {{"app" : {^level "info" ^targets ["main"]}}}}
+""")
+    let fixture = writeCliProgram("logging_configured.gene", """
+(import log [new_logger])
+(var logger (new_logger "app/cli" ^payload {^service "test"}))
+(logger ~ info "started" ^payload {^token "secret" ^count 2})
+""")
+    let ran = runGene(["run", "--log-config", configPath, fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check fileExists(logPath)
+    let logged = readFile(logPath)
+    check "\"logger\":\"app/cli\"" in logged
+    check "\"message\":\"started\"" in logged
+    check "\"service\":\"test\"" in logged
+    check "\"token\":\"[redacted]\"" in logged
+
+  test "invalid logging config fails before entry-module execution":
+    let marker = cliDir / "bad_logging_marker"
+    removeFile(marker)
+    let configPath = cliDir / "bad_logging_config.gene"
+    writeFile(configPath,
+      "{^sinks {^console {^type \"console\"}} ^targets [\"missing\"]}")
+    let fixture = writeCliProgram("bad_logging_entry.gene",
+      "(import Fs [write_text WriteDir]) " &
+      "(write_text WriteDir " & geneQuote(marker) & " \"ran\")")
+    let ran = runGene(["run", "--log-config", configPath, fixture])
+    check ran.exitCode == 1
+    check "unknown sink 'missing'" in ran.output
+    check not fileExists(marker)
 
   test "main parameter boundary errors include source location":
     let typedMain = writeCliProgram("typed_arg_main.gene",
@@ -1613,6 +1664,157 @@ suite "cli — gene run":
       if exitCode != 0: checkpoint output
       check exitCode == 0
       check "CURSES-PASTE:hello\né" in output.replace("\r\n", "\n")
+      check "\e[?1049l" in output
+
+  test "public curses editor browses submitted input history":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_history.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+                  ^history ["first command" "second command"]))
+    (close screen)
+    (println $"CURSES-HISTORY:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_history.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      # newest -> oldest -> newest, then submit
+      terminal.inputStream.write("\e[A\e[A\e[B\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "CURSES-HISTORY:second command" in output
+      check "[SCROLL +" notin output
+      check "\e[?1049l" in output
+
+  test "curses standalone Escape detection preserves queued typing":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_escape.gene", """
+(import curses [open close read_input escape_pressed?])
+(var screen (open))
+(var found false)
+(try
+  (do
+    (while (! found)
+      (sleep 25)
+      (set found (escape_pressed? screen)))
+    (var input (read_input screen ^prompt "" ^multiline true
+                           ^history ["old "]))
+    (close screen)
+    (println $"CURSES-ESCAPE:${found}:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_escape.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("\e[Aabc\e")
+      terminal.inputStream.flush()
+      sleep(300)
+      terminal.inputStream.write("\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "CURSES-ESCAPE:true:old abc" in output
+      check "\e[?1049l" in output
+
+  test "Escape cancels a tracked active task":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("agent_escape_cancel.gene", """
+(import os [begin_interrupt take_interrupt end_interrupt])
+(import curses [open close escape_pressed?])
+(var screen (open))
+(var running (cell true))
+(var cancelled (cell false))
+(var done (channel ^capacity 1))
+(var task
+  (spawn
+    (try
+      (do
+        (sleep 5000)
+        (println "too late"))
+    ensure
+      (done ~ Channel/close))))
+(var armed (begin_interrupt))
+(var watcher
+  (spawn
+    (while (running ~ Cell/get)
+      (sleep 25)
+      (if (|| (take_interrupt) (escape_pressed? screen))
+        (do
+          (cancelled ~ Cell/set true)
+          (task ~ Task/cancel))
+        nil))))
+(try (done ~ Channel/recv) catch (ChannelClosed) nil)
+(running ~ Cell/set false)
+(watcher ~ Task/cancel)
+(if armed (end_interrupt) nil)
+(close screen)
+(if (cancelled ~ Cell/get)
+  (println "turn cancelled; enter steering to continue")
+  nil)
+(println "AGENT-ESCAPE-DONE")
+""")
+      let outputFile = cliDir / "agent_escape_cancel.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(400)
+      let cancelledAt = getMonoTime()
+      terminal.inputStream.write("\e")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(3000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check (getMonoTime() - cancelledAt).inMilliseconds < 2000
+      check "turn cancelled; enter steering to continue" in output
+      check "AGENT-ESCAPE-DONE" in output
+      check "too late" notin output
       check "\e[?1049l" in output
 
   test "public curses editor scrolls transcript with page keys":

@@ -278,6 +278,8 @@ proc print*(v: Value): string =
       "(ffi-library)"
   of vkFfiCallable:
     "(ffi-callable " & v.ffiCallableName & ")"
+  of vkLogger:
+    "(logger " & escapeStr(v.loggerName) & ")"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

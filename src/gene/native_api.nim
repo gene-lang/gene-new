@@ -5,9 +5,9 @@
 ## is the trampoline native code can use to call any Gene callable through the
 ## normal dynamic boundary.
 
-import std/dynlib
+import std/[dynlib, json]
 
-import ./[types, vm]
+import ./[logging, types, vm]
 
 type
   GeneRootProc* = proc(value: Value): GeneRoot
@@ -53,6 +53,10 @@ type
   GeneAttachThreadProc* = proc(): GeneThreadAttachment
   GeneDetachThreadProc* = proc(attachment: GeneThreadAttachment)
   GeneThreadAttachedProc* = proc(): bool
+  GeneNewLoggerProc* = proc(name: string): RuntimeLogger
+  GeneLogEnabledProc* = proc(logger: RuntimeLogger, level: LogLevel): bool
+  GeneLogEmitProc* = proc(logger: RuntimeLogger, level: LogLevel,
+                          message, payloadJson: string): GeneResult
   GeneModuleInitProc* = proc(api: ptr GeneApi,
                              module: GeneModule): GeneResult {.nimcall.}
 
@@ -124,14 +128,44 @@ type
     attachThread*: GeneAttachThreadProc
     detachThread*: GeneDetachThreadProc
     threadAttached*: GeneThreadAttachedProc
+    newLogger*: GeneNewLoggerProc
+    logEnabled*: GeneLogEnabledProc
+    logEmit*: GeneLogEmitProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 30
+const GeneApiFeatureCount* = 33
 const GeneModuleInitSymbol* = "gene_module_init"
 
 var geneThreadAttachDepth {.threadvar.}: int
 
 proc geneApi*(): GeneApi
+proc errorResult(e: ref GeneError): GeneResult
+
+proc geneNewLogger*(name: string): RuntimeLogger =
+  newRuntimeLogger(name)
+
+proc geneLogEnabled*(logger: RuntimeLogger, level: LogLevel): bool =
+  logger != nil and logger.enabled(level)
+
+proc geneLogEmit*(logger: RuntimeLogger, level: LogLevel,
+                  message, payloadJson: string): GeneResult =
+  try:
+    if logger == nil:
+      raise newException(GeneError, "native log logger is nil")
+    var payload = newJObject()
+    if payloadJson.len > 0:
+      payload = parseJson(payloadJson)
+      if payload.kind != JObject:
+        raise newException(GeneError,
+          "native log payload JSON must encode an object")
+    logger.emit(level, message, payload)
+    result.status = gsOk
+    result.value = NIL
+  except GeneError as e:
+    result = errorResult(e)
+  except CatchableError as e:
+    result.status = gsError
+    result.message = "native log payload JSON: " & e.msg
 
 proc errorResult(e: ref GeneError): GeneResult =
   result.status = gsError
@@ -468,4 +502,7 @@ proc geneApi*(): GeneApi =
           newFfiLoad: geneNewFfiLoad,
           attachThread: geneAttachThread,
           detachThread: geneDetachThread,
-          threadAttached: geneThreadAttached)
+          threadAttached: geneThreadAttached,
+          newLogger: geneNewLogger,
+          logEnabled: geneLogEnabled,
+          logEmit: geneLogEmit)

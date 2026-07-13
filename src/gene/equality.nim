@@ -110,7 +110,7 @@ proc equal*(a, b: Value): bool =
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability, vkFfiLoad,
-     vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage,
+     vkFfiLibrary, vkFfiCallable, vkLogger, vkType, vkProtocol, vkProtocolMessage,
      vkEnumVariant:
     # callable and opaque runtime values have identity equality
     a.bits == b.bits
@@ -128,7 +128,8 @@ proc same*(a, b: Value): bool =
   of vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
-     vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable, vkType, vkProtocol,
+     vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable, vkLogger,
+     vkType, vkProtocol,
      vkProtocolMessage, vkEnumVariant:
     a.bits == b.bits
 
@@ -212,7 +213,7 @@ proc hash*(v: Value): Hash =
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability, vkFfiLoad,
-     vkFfiLibrary, vkFfiCallable, vkType, vkProtocol, vkProtocolMessage,
+     vkFfiLibrary, vkFfiCallable, vkLogger, vkType, vkProtocol, vkProtocolMessage,
      vkEnumVariant:
     h = h !& hash(v.bits)
   !$h
@@ -232,7 +233,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
-     vkProtocol, vkProtocolMessage, vkEnumVariant:
+     vkProtocol, vkProtocolMessage, vkEnumVariant, vkLogger:
     true
   of vkCallerEnv, vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability,

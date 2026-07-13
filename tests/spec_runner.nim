@@ -3479,9 +3479,49 @@ suite "spec — net/http_client native client contract":
 suite "spec — public curses terminal contract":
   test "owned Screen API is importable and non-TTY open is typed":
     check_eval("(import curses [open close dimensions draw read_input " &
-               "refresh_input next_event Screen CursesError]) " &
+               "refresh_input escape_pressed? next_event Screen CursesError]) " &
                "(try (open) false " &
                " catch (CursesError ^message m) (str/contains? m \"TTY\"))",
+               "true")
+
+suite "spec — structured logging contract":
+  test "Logger API is importable and eager/lazy evaluation is explicit":
+    check_eval("(import log [Logger LogLevel new_logger debug!]) " &
+               "(var logger (new_logger \"app/spec\" ^payload {^x 1})) " &
+               "(var eager (cell false)) (var lazy (cell false)) " &
+               "(logger ~ info (do (Cell/set eager true) \"eager\")) " &
+               "(debug! logger (do (Cell/set lazy true) \"lazy\")) " &
+               "(fn accepts [x : Logger] (x ~ enabled? LogLevel/warn)) " &
+               "[(Cell/get eager) (Cell/get lazy) (accepts logger)]",
+               "[true false true]")
+
+  test "built-in namespace macros support selection aliases":
+    check_eval("(import log [new_logger debug! : diagnostic!]) " &
+               "(var logger (new_logger \"app/spec\")) " &
+               "(var touched (cell false)) " &
+               "(diagnostic! logger (do (Cell/set touched true) \"x\")) " &
+               "(Cell/get touched)",
+               "false")
+
+  test "a lazy logging macro carries its LogLevel dependency":
+    check_eval("(import log [new_logger]) " &
+               "(var logger (new_logger \"app/spec\")) " &
+               "(import log [debug!]) " &
+               "(var touched (cell false)) " &
+               "(debug! logger (do (Cell/set touched true) \"x\")) " &
+               "(Cell/get touched)",
+               "false")
+
+  test "logging payload rejects process-bound values":
+    check_eval("(import log [new_logger]) " &
+               "(try (new_logger \"app/spec\" ^payload {^bad (cell 1)}) " &
+               "  false catch _ true)",
+               "true")
+
+  test "logging payload reserves event envelope keys":
+    check_eval("(import log [new_logger]) " &
+               "(try (new_logger \"app/spec\" ^payload {^message \"fake\"}) " &
+               "  false catch _ true)",
                "true")
 
 suite "spec — db protocol from stdlib plan":

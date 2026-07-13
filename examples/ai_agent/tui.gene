@@ -52,7 +52,8 @@
             Env Exec OsError])
 (import curses [open : curses_open close : curses_close
                 read_input : curses_read_input
-                refresh_input : curses_refresh_input Screen CursesError])
+                refresh_input : curses_refresh_input escape_pressed?
+                Screen CursesError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
@@ -325,6 +326,7 @@
 # events in a single shared list across concurrent actor turns.
 (var events_enabled (cell true))
 (var active_turn_task (cell nil))
+(var user_screen (cell nil))
 
 (fn set_events_enabled [on : Bool]
   (events_enabled ~ Cell/set on))
@@ -2050,16 +2052,16 @@ State that broader behavior is unverified when no matching successful check ran.
   (active_turn_task ~ Cell/set task)
   (var interrupt_armed (begin_interrupt))
   (var watcher
-    (if interrupt_armed
-      (spawn
-        (while (watching ~ Cell/get)
-          (sleep 25)
-          (if (take_interrupt)
-            (do
-              (interrupted ~ Cell/set true)
-              (task ~ Task/cancel))
-            nil)))
-      nil))
+    (spawn
+      (while (watching ~ Cell/get)
+        (sleep 25)
+        (if (|| (&& interrupt_armed (take_interrupt))
+                (&& (!= (user_screen ~ Cell/get) nil)
+                    (escape_pressed? (user_screen ~ Cell/get))))
+          (do
+            (interrupted ~ Cell/set true)
+            (task ~ Task/cancel))
+          nil))))
   (try
     (do
       (try (done ~ Channel/recv) catch (ChannelClosed) nil)
@@ -2091,7 +2093,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (do
       (watching ~ Cell/set false)
       (if interrupt_armed (end_interrupt) nil)
-      (if (present? watcher) (watcher ~ Task/cancel) nil)
+      (watcher ~ Task/cancel)
       (active_turn_task ~ Cell/set nil))))
 
 # -----------------------------------------------------------------------------
@@ -2320,8 +2322,7 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn append_transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
-(var input_status "Mouse wheel or PgUp/PgDn scroll | Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
-(var user_screen (cell nil))
+(var input_status "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Esc cancels task | Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
 
 (fn ensure_user_screen []
   (if (== (user_screen ~ Cell/get) nil)
@@ -2336,10 +2337,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (user_screen ~ Cell/set nil))
     nil))
 
-(fn read_user_input [transcript]
+(fn read_user_input [transcript, history]
   (if (stdin_tty?)
     (curses_read_input (ensure_user_screen)
                        ^prompt "" ^multiline true
+                       ^history (Cell/get history)
                        ^output (Cell/get transcript)
                        ^status input_status)
     (do
@@ -2539,6 +2541,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var running (cell true))
   (var line nil)
   (var streaming (cell false))
+  (var input_history (cell []))
   # Subscribed event types echo into the transcript as they are emitted.
   (event_echo ~ Cell/set
     (fn [text] (render_agent_text transcript streaming $"[event] ${text}")))
@@ -2548,7 +2551,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (refresh_user_input transcript))
     nil)
   (while (Cell/get running)
-    (set line (read_user_input transcript))
+    (set line (read_user_input transcript input_history))
     (if (== line nil)
       (do
         (close_user_input)
@@ -2559,6 +2562,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (blank_line? line)
         nil
         (do
+          ((input_history ~ Cell/get) ~ List/push! line)
           # Keep submitted commands in the visible/persisted transcript just
           # like model-bound user input. Slash commands are handled locally,
           # but they are still input from the user.

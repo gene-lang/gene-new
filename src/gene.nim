@@ -12,7 +12,7 @@
 
 import std/[algorithm, os, strutils, tables]
 import gene/[compiler, diagnostics, fmt, gir, printer, reader, repl,
-             repl_curses, types, vm]
+             repl_curses, logging, logging_config, types, vm]
 import gene/lsp/server as lsp_server
 
 proc usage() =
@@ -21,7 +21,8 @@ proc usage() =
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene repl [--curses]   read/eval/print source lines from stdin"
-  echo "  gene run <file.gene> [--grant name=expr] [--] [args...]"
+  echo "  gene run [--log-config path] [--debug] <file.gene>"
+  echo "           [--grant name=expr] [--] [args...]"
   echo "                              execute a file and explicitly grant main capabilities"
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
@@ -103,6 +104,53 @@ proc commandArgs(first: int): seq[string] =
   if first <= paramCount():
     for i in first .. paramCount():
       result.add paramStr(i)
+
+type RunCli = object
+  path: string
+  args: seq[string]
+  logConfig: string
+  debugging: bool
+
+proc parseRunCli(): RunCli =
+  var i = 2
+  while i <= paramCount() and result.path.len == 0:
+    let arg = paramStr(i)
+    case arg
+    of "--log-config":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, "--log-config expects a path")
+      result.logConfig = paramStr(i)
+    of "--debug":
+      result.debugging = true
+    else:
+      if arg.startsWith("--log-config="):
+        result.logConfig = arg[13 .. ^1]
+      else:
+        result.path = arg
+    inc i
+  if result.path.len == 0:
+    raise newException(ValueError, "'run' needs a file path")
+  result.args = commandArgs(i)
+
+proc configureRunLogging(options: RunCli) =
+  var config =
+    if options.logConfig.len > 0:
+      loadLoggingConfig(options.logConfig)
+    else:
+      defaultLoggingConfig()
+  if options.debugging:
+    config.overrides.add LogRouteOverride(name: "gene", hasLevel: true,
+                                           level: llDebug)
+  installLoggingConfig(config)
+
+proc configureLspLogging() =
+  var config = defaultLoggingConfig()
+  if getEnv("GENE_LSP_LOG", "").strip().toLowerAscii() in
+      ["1", "true", "yes", "on"]:
+    config.overrides.add LogRouteOverride(name: "gene/lsp", hasLevel: true,
+                                           level: llDebug)
+  installLoggingConfig(config)
 
 type MainGrantSpec = object
   name: string
@@ -381,6 +429,8 @@ proc cmdDoc(path: string) =
     quit(1)
 
 proc main() =
+  resetLogging()
+  defer: shutdownLogging()
   if paramCount() == 0:
     usage()
     quit(0)
@@ -403,10 +453,14 @@ proc main() =
           quit(1)
     cmdRepl(useCurses)
   of "run":
-    if paramCount() < 2:
-      stderr.writeLine "Error: 'run' needs a file path"
+    var options: RunCli
+    try:
+      options = parseRunCli()
+      configureRunLogging(options)
+    except CatchableError as e:
+      stderr.writeLine "Error: " & e.msg
       quit(1)
-    cmdRun(paramStr(2), commandArgs(3))
+    cmdRun(options.path, options.args)
   of "parse":
     if paramCount() < 2:
       stderr.writeLine "Error: 'parse' needs a file path"
@@ -442,6 +496,7 @@ proc main() =
       quit(1)
     cmdDoc(paramStr(2))
   of "lsp":
+    configureLspLogging()
     quit(runLspServer())
   of "-h", "--help", "help":
     usage()

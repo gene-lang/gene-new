@@ -2374,7 +2374,8 @@ A name means the same thing in head position and value position. Macro names the
 
 Macros are compile-time rewriters, not runtime values. This is stricter than special forms: a value named `if` may exist in data or qualified positions, but a macro name reserves its name within its visibility region.
 
-Macros are module exports selected through top-level `from "path"` import lists and honor selection aliases:
+File-defined macros are module exports selected through top-level `from
+"path"` import lists and honor selection aliases:
 
 ```gene
 (import [when! : unless_not!] from "./control")
@@ -2384,10 +2385,15 @@ Because expansion happens while the importer compiles, a top-level
 `from "path"` macro selection reads the dependency's cached compile artifact.
 This parses and compiles macro/derive declarations but does not create a
 runtime module scope or execute any dependency top-level form. Imported macros
-are usable but are not re-exported by the importing module. Namespace-path
-imports such as `(import std/stream [...])` do not carry macros in MVP. Imports
-inside nested scopes resolve at runtime only, so macros must be imported at top
-level.
+are usable but are not re-exported by the importing module. Ordinary
+namespace-path imports such as `(import std/stream [...])` do not carry
+file-defined macros in MVP because there is no dependency artifact to read. A
+built-in namespace may register compiler-known template macros; a top-level
+namespace selection imports those with the same alias, collision, hygiene, and
+head-position-only rules. The `log` namespace's
+`error!`/`warn!`/`info!`/`debug!`/`trace!` forms are the first such built-ins.
+Imports inside nested scopes resolve at runtime only, so all macros must still
+be imported at top level.
 
 Use `macro` for:
 

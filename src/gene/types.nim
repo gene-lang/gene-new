@@ -120,6 +120,7 @@ type
     vkFfiLoad   ## explicit authority to load native libraries at runtime
     vkFfiLibrary ## loaded native library handle
     vkFfiCallable ## dynamically bound foreign callable
+    vkLogger    ## immutable structured diagnostic logger handle
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -349,6 +350,7 @@ type
     namedValues*: seq[Value]
     dispatchScope*: Scope
     site*: Value             # the source call-site node, or NIL (design §3)
+    loc*: SourceLoc          # bytecode call location when available
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
@@ -421,6 +423,7 @@ type
     okFfiLoad
     okFfiLibrary
     okFfiCallable
+    okLogger
     okType
     okEnum
     okProtocol
@@ -678,6 +681,11 @@ type
     releaseName: string
     releaseAddress: pointer
 
+  LoggerData = ref object of GeneObjectData
+    name: string
+    routeId: int
+    payload: Value
+
   TypeData = ref object of GeneObjectData
     name: string
     parent: Value         # parent Type value, or NIL
@@ -901,7 +909,7 @@ iterator idPairs*(t: PropTable): (int32, Value) =
   for i in 0 ..< t.data.len:
     yield (t.data[i].keyId, t.data[i].val)
 
-iterator keys*(t: PropTable): string =
+iterator keys*(t: PropTable): lent string =
   for i in 0 ..< t.data.len:
     yield symbolNames[int(t.data[i].keyId)]
 
@@ -1361,6 +1369,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     for val in d.paramTypes:
       emit(val)
     emit(d.returnType)
+  of okLogger:
+    emit(LoggerData(data).payload)
   of okType:
     let d = TypeData(data)
     emit(d.parent)
@@ -1522,6 +1532,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.library)
     d.paramTypes.setLen(0)
     clearValueSlot(d.returnType)
+  of okLogger:
+    clearValueSlot(LoggerData(data).payload)
   of okType:
     let d = TypeData(data)
     clearValueSlot(d.parent)
@@ -1940,6 +1952,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okFfiLoad: vkFfiLoad
     of okFfiLibrary: vkFfiLibrary
     of okFfiCallable: vkFfiCallable
+    of okLogger: vkLogger
     of okType: vkType
     of okEnum: vkType
     of okProtocol: vkProtocol
@@ -4937,6 +4950,27 @@ proc newFfiLibrary*(handle: pointer, path: string,
     raise newException(GeneError, "FFI library handle must not be nil")
   boxObject(FfiLibraryData(objKind: okFfiLibrary, handle: handle,
                            path: path, close: close))
+
+proc newLogger*(name: string, routeId: int, payload: Value): Value =
+  if name.len == 0:
+    raise newException(GeneError, "Logger name must not be empty")
+  boxObject(LoggerData(objKind: okLogger, name: name, routeId: routeId,
+                       payload: payload))
+
+proc loggerName*(v: Value): string =
+  if v.kind != vkLogger:
+    raise newException(FieldDefect, "value is not a Logger")
+  LoggerData(objData(v)).name
+
+proc loggerRouteId*(v: Value): int =
+  if v.kind != vkLogger:
+    raise newException(FieldDefect, "value is not a Logger")
+  LoggerData(objData(v)).routeId
+
+proc loggerPayload*(v: Value): Value =
+  if v.kind != vkLogger:
+    raise newException(FieldDefect, "value is not a Logger")
+  LoggerData(objData(v)).payload
 
 proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
                      paramTypes: seq[Value], returnType: Value,

@@ -9,6 +9,7 @@ include test_errors
 include test_types
 include test_protocols
 include test_native_api
+include test_logging
 include test_cli
 include test_lsp
 include test_http_server
