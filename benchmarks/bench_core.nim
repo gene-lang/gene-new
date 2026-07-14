@@ -122,6 +122,21 @@ proc main() =
   let eightEntryPayload = %*{
     "a": 1, "b": 2, "c": 3, "d": 4,
     "e": 5, "f": 6, "g": 7, "h": 8}
+
+  var enabledGeneConfig = defaultLoggingConfig()
+  for _, sink in enabledGeneConfig.sinks: closeLogSink(sink)
+  enabledGeneConfig.sinks = initTable[string, LogSink]()
+  enabledGeneConfig.sinks["gene"] =
+    newCallbackLogSink("gene", discardLogLine, lfGene)
+  enabledGeneConfig.rootTargets = @["gene"]
+  enabledGeneConfig.rootLevel = llInfo
+  installLoggingConfig(enabledGeneConfig)
+  let enabledGeneLogger = newRuntimeLogger("gene/bench")
+  bench("logging.enabled_gene_payload_8", 50_000, i):
+    enabledGeneLogger.emit(llInfo, "structured", eightEntryPayload)
+    checksum = checksum + int64(i and 1)
+
+  installLoggingConfig(enabledJsonConfig)
   bench("logging.enabled_json_payload_8", 50_000, i):
     enabledJsonLogger.emit(llInfo, "structured", eightEntryPayload)
     checksum = checksum + int64(i and 1)

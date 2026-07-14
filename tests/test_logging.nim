@@ -106,6 +106,64 @@ suite "structured logging":
     check event["payload"]["port"].getInt == 8080
     check loggingCaptured[0] == loggingCaptured[1]
 
+  test "implicit output is readable Gene and JSON remains opt-in":
+    loggingCaptured.setLen(0)
+    var config = defaultLoggingConfig()
+    check config.sinks["stderr"].format == lfGene
+    for _, sink in config.sinks: closeLogSink(sink)
+    config.sinks = initTable[string, LogSink]()
+    config.sinks["gene"] = newCallbackLogSink("gene", captureLoggingLine)
+    config.rootTargets = @["gene"]
+    config.rootLevel = llInfo
+    installLoggingConfig(config)
+    newRuntimeLogger("app/gene").emit(
+      llInfo, "ready\nnext", %*{"port": 8080, "control": "\b"})
+    check loggingCaptured.len == 1
+    let event = read(loggingCaptured[0])
+    check event.kind == vkMap
+    check event.mapEntries["schema"].strVal == "gene.log.v1"
+    check event.mapEntries["logger"].strVal == "app/gene"
+    check event.mapEntries["message"].strVal == "ready\nnext"
+    # Symbol-keyed payloads use a regular prop map by default and round-trip.
+    check event.mapEntries["payload"].kind == vkMap
+    check event.mapEntries["payload"].mapEntries["port"].intVal == 8080
+    check event.mapEntries["payload"].mapEntries["control"].strVal == "\b"
+
+    # A key that cannot be a bare symbol falls back to a general map.
+    loggingCaptured.setLen(0)
+    newRuntimeLogger("app/gene").emit(llInfo, "special", %*{"unit ms": 5})
+    let special = read(loggingCaptured[0])
+    check special.mapEntries["payload"].kind == vkHashMap
+    check special.mapEntries["payload"].print.contains("\"unit ms\" : 5")
+
+    var requested: LogFormat
+    check parseLogFormat("json", requested)
+    check requested == lfJsonl
+    loggingCaptured.setLen(0)
+    config = defaultLoggingConfig()
+    for _, sink in config.sinks: closeLogSink(sink)
+    config.sinks = initTable[string, LogSink]()
+    config.sinks["json"] = newCallbackLogSink(
+      "json", captureLoggingLine, requested)
+    config.rootTargets = @["json"]
+    config.rootLevel = llInfo
+    installLoggingConfig(config)
+    newRuntimeLogger("app/json").emit(llInfo, "requested", %*{"x": 1})
+    check parseJson(loggingCaptured[0])["payload"]["x"].getInt == 1
+
+  test "text output uses Gene values for structured payloads":
+    loggingCaptured.setLen(0)
+    var config = defaultLoggingConfig()
+    for _, sink in config.sinks: closeLogSink(sink)
+    config.sinks = initTable[string, LogSink]()
+    config.sinks["text"] = newCallbackLogSink(
+      "text", captureLoggingLine, lfText)
+    config.rootTargets = @["text"]
+    config.rootLevel = llInfo
+    installLoggingConfig(config)
+    newRuntimeLogger("app/text").emit(llInfo, "ready", %*{"x": 1})
+    check "payload={^x 1}" in loggingCaptured[0]
+
   test "route resolution prefers specificity over declaration order":
     var config = defaultLoggingConfig()
     config.overrides = @[
@@ -195,7 +253,8 @@ suite "structured logging":
     createDir(dir)
     let value = read("""
 {^level "info"
- ^sinks {^file {^type "file" ^path "events.jsonl" ^format "jsonl"}}
+ ^sinks {^file {^type "file" ^path "events.jsonl" ^format "jsonl"}
+         ^gene {^type "file" ^path "events.gene.log"}}
  ^targets ["file"]
  ^loggers {{"app/http" : {^level "debug"}}}}
 """)
@@ -203,12 +262,15 @@ suite "structured logging":
     defer:
       for _, sink in config.sinks: closeLogSink(sink)
       if fileExists(dir / "events.jsonl"): removeFile(dir / "events.jsonl")
+      if fileExists(dir / "events.gene.log"): removeFile(dir / "events.gene.log")
       if dirExists(dir): removeDir(dir)
     check config.rootLevel == llInfo
     check config.rootTargets == @["file"]
     check config.overrides.len == 1
     check config.overrides[0].name == "app/http"
     check config.sinks["file"].path == absolutePath(dir / "events.jsonl")
+    check config.sinks["file"].format == lfJsonl
+    check config.sinks["gene"].format == lfGene
 
   test "invalid config is rejected as a whole":
     expect ValueError:
@@ -259,6 +321,26 @@ suite "structured logging":
     check event["schema"].getStr == "gene.log.v1"
     check event["logger"].getStr == "app/bounded"
 
+  test "bounded default logging remains one valid Gene record":
+    loggingCaptured.setLen(0)
+    var config = defaultLoggingConfig()
+    for _, sink in config.sinks: closeLogSink(sink)
+    config.sinks = initTable[string, LogSink]()
+    config.sinks["capture"] = newCallbackLogSink(
+      "capture", captureLoggingLine)
+    config.rootTargets = @["capture"]
+    config.rootLevel = llInfo
+    config.limits.maxStringBytes = 32
+    config.limits.maxEventBytes = 256
+    installLoggingConfig(config)
+    newRuntimeLogger("app/bounded_gene").emit(
+      llInfo, repeat("message", 100), %*{"value": repeat("payload", 100)})
+    check loggingCaptured.len == 1
+    let event = read(loggingCaptured[0])
+    check event.kind == vkMap
+    check event.mapEntries["schema"].strVal == "gene.log.v1"
+    check event.mapEntries["logger"].strVal == "app/bounded_gene"
+
   test "string truncation preserves valid UTF-8 in messages and payloads":
     loggingCaptured.setLen(0)
     var config = defaultLoggingConfig()
@@ -307,10 +389,10 @@ suite "structured logging":
     check loggingCaptured.len == 1
     check "\e[33m" in loggingCaptured[0]
 
-  test "programmatic file logger requires explicit write authority":
+  test "programmatic file logger defaults to Gene output":
     let dir = getTempDir() / "gene_direct_file_logger"
     createDir(dir)
-    let path = dir / "direct.jsonl"
+    let path = dir / "direct.gene.log"
     if fileExists(path): removeFile(path)
     resetLogging()
     discard runLoggingSource(
@@ -321,8 +403,28 @@ suite "structured logging":
       "(logger ~ info \"direct\" ^payload {^x 1})")
     shutdownLogging()
     check fileExists(path)
+    let event = read(readFile(path).strip())
+    check event.kind == vkMap
+    check event.mapEntries["logger"].strVal == "app/direct"
+    check event.mapEntries["payload"].mapEntries["x"].intVal == 1
+    removeFile(path)
+    removeDir(dir)
+
+  test "programmatic file logger emits JSON only when requested":
+    let dir = getTempDir() / "gene_direct_json_logger"
+    createDir(dir)
+    let path = dir / "direct.jsonl"
+    if fileExists(path): removeFile(path)
+    resetLogging()
+    discard runLoggingSource(
+      "(import log [new_file_logger]) " &
+      "(import Fs [WriteDir]) " &
+      "(var logger (new_file_logger WriteDir \"app/direct_json\" " &
+        loggingGeneQuote(path) & " ^format \"json\" ^flush \"close\")) " &
+      "(logger ~ info \"direct\" ^payload {^x 1})")
+    shutdownLogging()
     let event = parseJson(readFile(path).strip())
-    check event["logger"].getStr == "app/direct"
+    check event["logger"].getStr == "app/direct_json"
     check event["payload"]["x"].getInt == 1
     removeFile(path)
     removeDir(dir)

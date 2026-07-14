@@ -4005,12 +4005,12 @@ proc biLogNewFileLogger(args: openArray[Value],
       "log/new_file_logger names must be in the app/* namespace")
   if not validLoggerName(name):
     raise newException(GeneError, "log/new_file_logger invalid name: " & name)
-  let formatValue = namedLogValue(call, "format", newStr("jsonl"))
+  let formatValue = namedLogValue(call, "format", newStr("gene"))
   requireStr("log/new_file_logger ^format", formatValue)
   var format: LogFormat
   if not parseLogFormat(formatValue.strVal, format):
     raise newException(GeneError,
-      "log/new_file_logger ^format must be text or jsonl")
+      "log/new_file_logger ^format must be gene, text, json, or jsonl")
   let flushValue = namedLogValue(call, "flush", newStr("error"))
   requireStr("log/new_file_logger ^flush", flushValue)
   var flush: LogFlush

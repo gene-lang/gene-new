@@ -42,7 +42,7 @@ Use:
 - immutable startup configuration with independently inherited level and sink
   selection;
 - synchronous `stderr` and buffered file sinks initially;
-- human-readable text and JSON Lines renderers;
+- Gene-data, human-readable text, and JSON Lines renderers;
 - structured payloads, redaction before fan-out, and bounded value rendering;
 - per-sink serialization, with no global write lock;
 - explicit configuration (`--log-config` or an embedding API), never an
@@ -63,7 +63,7 @@ contracts.
 | Longest-prefix configuration | Keep, but resolve a logger to a route handle once rather than scanning on every emission. |
 | Filter before event construction | Keep as a hard performance contract. Lazy forms also avoid evaluating the message and payload. |
 | Construct one event and fan it out | Keep. Render lazily once per format for all sinks using that format. |
-| Separate sink transport from rendering | Keep. A file can use text or JSON Lines without changing callers. |
+| Separate sink transport from rendering | Keep. A file can use Gene data, text, or JSON Lines without changing callers. |
 | Console and append-only file sinks | Keep for the MVP. They cover development and ordinary service use. |
 | Stable runtime names (`gene/parser`, `gene/compiler`, `gene/vm`, `gene/stdlib/*`) | Keep, adjusted to this repository's module boundaries. |
 | Do not replace program output, diagnostics, or explicit tracing indiscriminately | Keep and sharpen the boundary in §3. |
@@ -97,10 +97,11 @@ Specific changes:
   mutable ambient state, and a config that names file sinks is output
   authority. The launcher or embedder selects and reads configuration
   explicitly.
-- **Do not use a Gene-map line as the primary machine format.** JSON Lines has
-  better operational tooling and does not pretend that best-effort logs are
-  durable `serde` records. Gene-record rendering can be added later if a real
-  native consumer requires it.
+- **Default to Gene data without claiming durability.** A native Gene record is
+  readable by the ordinary reader, composes with language tooling, and avoids
+  silently making JSON the language's output syntax. JSON Lines remains an
+  explicit interoperability format for existing operational tooling. Neither
+  form is a durable `serde` record or an audit guarantee.
 - **Do not make thread id the primary correlation key.** Gene tasks and actors
   are the semantic units; future scheduler work may move them between threads.
 - **Define sink failure and redaction behavior.** The legacy proposal leaves
@@ -203,6 +204,9 @@ cheap values. They delegate to the lower-level `emit` primitive:
     ^level LogLevel/debug ^format "jsonl" ^flush "error"))
 ```
 
+Omitting `^format` writes reader-valid Gene records. JSON output is opt-in via
+`^format "json"` or `^format "jsonl"`.
+
 API rules:
 
 - Logger names are non-empty `Str` values. `/` separates hierarchy segments.
@@ -278,7 +282,7 @@ Decisions:
 
 - Internally, time is captured in the runtime's native timestamp
   representation. RFC 3339 UTC is its logical/wire representation and is
-  produced lazily by text/JSON renderers, not formatted during event capture.
+  produced lazily by Gene/text/JSON renderers, not formatted during event capture.
   Local time is a renderer option, never an event-storage choice.
 - `seq` is process-local, monotonic, and assigned with an atomic increment in
   threaded builds. It is useful for relating events with equal timestamps; it
@@ -382,7 +386,7 @@ tokenize as a path rather than remain one logger name.
 
 Rules:
 
-- Default configuration is `warn` to `stderr`, text format, color `auto`.
+- Default configuration is `warn` to `stderr`, Gene format, color `auto`.
   `--debug` may override `gene` to `debug` without changing application
   routes.
 - Configuration is validated completely before installation. Unknown keys,
@@ -437,14 +441,22 @@ containment as other sinks.
 
 MVP formats:
 
+- `gene` (default): one reader-valid Gene data map per line. Payload objects
+  use a regular prop map `{^key value}`; a key that cannot be a bare symbol
+  keeps that object in a general map `{{"key" : value}}` so arbitrary string
+  keys remain lossless. Example:
+  `{^schema "gene.log.v1" ^level "info" ^logger "app/http" ^message "listening" ^payload {^host "127.0.0.1" ^port 8080} ...}`
 - `text`: concise human output, one line per event. Example:
   `2026-07-12T18:42:13.123Z INFO app/http listening host=127.0.0.1 port=8080`
-- `jsonl`: one JSON object per line using the logical event schema in §5.
+- `json`/`jsonl`: one JSON object per line using the logical event schema in
+  §5; both spellings select the same renderer.
 
 Renderer and transport stay orthogonal. One event is rendered at most once per
-format during fan-out. JSON Lines is the machine format because it is broadly
-ingestible; it is not a persistence promise. OpenTelemetry export can later
-map the same structured event without changing callers.
+format during fan-out. Gene is the implicit format for console, callback, and
+file sinks. JSON is emitted only when requested with `^format "json"` or
+`^format "jsonl"`; it remains broadly ingestible but is not a persistence
+promise. OpenTelemetry export can later map the same structured event without
+changing callers.
 
 ### 8.5 WebAssembly host sink
 
@@ -594,7 +606,7 @@ Add benchmarks before broad runtime adoption:
 - disabled typed-`Logger` `debug!` versus its dynamic-send form;
 - enabled text event with no payload;
 - enabled structured event with 8 payload entries;
-- fan-out to two sinks using one renderer and two renderers;
+- fan-out to two sinks using one renderer and different renderers;
 - concurrent producers to one file sink.
 
 Required invariants:
@@ -696,7 +708,8 @@ than approximated with a global lock or risking a write to a closed handle.
 ### Stage 3 — Configuration and file output (shipped)
 
 - Add explicit `--log-config` loading and complete schema validation.
-- Add buffered file sinks, JSON Lines, color policy, flush/shutdown, and
+- Add buffered file sinks, Gene and JSON Lines rendering, color policy,
+  flush/shutdown, and
   capability-gated programmatic file creation.
 - Add PTY tests ensuring console color policy and TUI-safe file routing.
 
@@ -729,7 +742,8 @@ than approximated with a global lock or risking a write to a closed handle.
 4. **Configuration:** data-only and explicitly selected; no ambient CWD load.
 5. **Routing:** segment-aware hierarchy, independently inherited threshold and
    sink list, replacement rather than additive propagation.
-6. **Machine format:** JSON Lines first; human text for console.
+6. **Output format:** reader-valid Gene data by default; JSON Lines only when
+   explicitly requested; human text remains available explicitly.
 7. **Concurrency:** immutable startup registry, pre-resolved logger handles,
    per-sink locking, no global emission lock.
 8. **Failure:** best effort with a non-recursive emergency path; never an audit

@@ -3495,13 +3495,16 @@ suite "spec — net/http_client native client contract":
                " catch (HttpClientError ^kind \"usage\") \"surfaced\")",
                geneString("surfaced"))
 
-suite "spec — public curses terminal contract":
-  test "owned Screen API is importable and non-TTY open is typed":
-    check_eval("(import curses [open close dimensions draw read_input " &
-               "refresh_input escape_pressed? next_event Screen CursesError]) " &
-               "(try (open) false " &
-               " catch (CursesError ^message m) (str/contains? m \"TTY\"))",
-               "true")
+# Disabled here because spec_runner inherits its caller's terminal: the assertion
+# passes under captured CI output but opens curses when run directly from a TTY.
+# Non-TTY rejection and terminal restoration are covered by the CLI PTY tests.
+# suite "spec — public curses terminal contract":
+#   test "owned Screen API is importable and non-TTY open is typed":
+#     check_eval("(import curses [open close dimensions draw read_input " &
+#                "refresh_input escape_pressed? next_event Screen CursesError]) " &
+#                "(try (open) false " &
+#                " catch (CursesError ^message m) (str/contains? m \"TTY\"))",
+#                "true")
 
 suite "spec — structured logging contract":
   test "Logger API is importable and eager/lazy evaluation is explicit":

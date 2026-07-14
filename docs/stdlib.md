@@ -126,7 +126,7 @@ control flow.
 
 `gene run --log-config path app.gene` explicitly loads a data-only config
 before the entry module. It supports hierarchical segment-aware routes,
-console/file sinks, text/JSON Lines formats, color policy, and flush policy;
+console/file sinks, Gene/text/JSON Lines formats, color policy, and flush policy;
 file paths are relative to the config file. Config is immutable during entry
 execution. Under wasm, console logging uses captured host output and file sinks
 are unavailable. See [the logging proposal](proposals/logging.md) for the full
@@ -134,7 +134,10 @@ schema and performance contract.
 
 When application-selected file output is required, `new_file_logger` takes an
 explicit `Fs/WriteDir`, logger name, and path and returns a direct one-file
-logger. It does not mutate process routing and is unavailable under wasm.
+logger. It defaults to one reader-valid Gene data map per line. Pass
+`^format "json"` or `^format "jsonl"` only when JSON interoperability is
+required; `^format "text"` remains available for concise human lines. It does
+not mutate process routing and is unavailable under wasm.
 
 ### `net/http_client`
 

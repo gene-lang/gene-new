@@ -112,8 +112,7 @@ proc parseLoggingConfigValue*(value: Value, configDir: string): LoggingConfig =
       let format =
         if sink.hasKey("format"):
           parseFormat(sink["format"], "sink '" & sinkName & "' ^format")
-        elif sinkType == "file": lfJsonl
-        else: lfText
+        else: lfGene
       case sinkType
       of "console":
         rejectUnknown(sink, ["type", "stream", "format", "color"],

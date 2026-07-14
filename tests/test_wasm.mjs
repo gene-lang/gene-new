@@ -73,7 +73,9 @@ const logResult = geneEval(
   '(var logger (new_logger "app/wasm" ^payload {^token "secret"})) ' +
   '(logger ~ warn "host warning")');
 if (logResult.status !== 0 || logResult.text !== "nil" ||
-    !logResult.out.includes("WARN app/wasm host warning") ||
+    !logResult.out.includes('^level "warn"') ||
+    !logResult.out.includes('^logger "app/wasm"') ||
+    !logResult.out.includes('^message "host warning"') ||
     !logResult.out.includes('[redacted]')) {
   failed++;
   console.error("FAIL wasm host logging sink");

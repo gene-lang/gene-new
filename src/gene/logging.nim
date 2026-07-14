@@ -21,6 +21,7 @@ type
     llOff
 
   LogFormat* = enum
+    lfGene
     lfText
     lfJsonl
 
@@ -177,8 +178,9 @@ proc parseLogLevel*(text: string, level: var LogLevel): bool =
 
 proc parseLogFormat*(text: string, format: var LogFormat): bool =
   case text.toLowerAscii()
+  of "gene": format = lfGene
   of "text": format = lfText
-  of "jsonl": format = lfJsonl
+  of "json", "jsonl": format = lfJsonl
   else: return false
   true
 
@@ -231,18 +233,18 @@ proc emergencyWrite(message: string) =
         discard
 
 proc newConsoleLogSink*(name: string, stderrStream = true,
-                        format = lfText, color = lcAuto): LogSink =
+                        format = lfGene, color = lcAuto): LogSink =
   result = LogSink(name: name, format: format, flush: lflAlways,
     kind: lskConsole, stderrStream: stderrStream, color: color)
   initLock(result.lock)
 
 proc newCallbackLogSink*(name: string, callback: LogWriteCallback,
-                         format = lfText): LogSink =
+                         format = lfGene): LogSink =
   result = LogSink(name: name, format: format, flush: lflAlways,
     kind: lskCallback, callback: callback)
   initLock(result.lock)
 
-proc newFileLogSink*(name, path: string, format = lfJsonl,
+proc newFileLogSink*(name, path: string, format = lfGene,
                      flush = lflError): LogSink =
   when defined(geneWasm) or defined(emscripten):
     raise newException(IOError, "file log sinks are unavailable in wasm")
@@ -522,13 +524,117 @@ proc copyAndRedact(node: JsonNode, redactKeys: HashSet[string], depth: int,
 proc timestampText(timestamp: DateTime): string =
   timestamp.utc.format("yyyy-MM-dd'T'HH:mm:ss'.'ffffff'Z'")
 
+proc geneString(text: string): string =
+  ## Gene strings intentionally share JSON's common escapes, but not \b/\f.
+  ## Escape every other ASCII control byte as a fixed Unicode escape so the
+  ## rendered record always reads back through Gene's real reader.
+  result = "\""
+  for ch in text:
+    case ch
+    of '"': result.add "\\\""
+    of '\\': result.add "\\\\"
+    of '\n': result.add "\\n"
+    of '\r': result.add "\\r"
+    of '\t': result.add "\\t"
+    of '\0': result.add "\\0"
+    else:
+      let code = ord(ch)
+      if code < 0x20 or code == 0x7f:
+        result.add "\\u" & toHex(code, 4)
+      else:
+        result.add ch
+  result.add '"'
+
+proc plainPropKey(key: string): bool =
+  ## True when `^key` re-reads through the reader as a prop whose key is
+  ## exactly this text: a symbol of letters/digits/`_`/`-` that starts with a
+  ## letter or `_`, so it can never lex as a number or a delimiter. Any other
+  ## key keeps the object in a general map so the record still round-trips.
+  if key.len == 0 or key[0] notin {'a'..'z', 'A'..'Z', '_'}:
+    return false
+  for ch in key:
+    if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '_', '-'}:
+      return false
+  true
+
+proc renderGeneValue(node: JsonNode): string =
+  if node == nil: return "nil"
+  case node.kind
+  of JObject:
+    # Default to a regular prop map `{^key value}`; only arbitrary keys that
+    # cannot be bare symbols fall back to a general map `{{"key" : value}}`.
+    var plainKeys = true
+    for key, _ in node:
+      if not plainPropKey(key):
+        plainKeys = false
+        break
+    if plainKeys:
+      result = "{"
+      var first = true
+      for key, value in node:
+        if not first: result.add ' '
+        first = false
+        result.add '^'
+        result.add key
+        result.add ' '
+        result.add renderGeneValue(value)
+      result.add '}'
+    else:
+      result = "{{"
+      var first = true
+      for key, value in node:
+        if not first: result.add ' '
+        first = false
+        result.add geneString(key)
+        result.add " : "
+        result.add renderGeneValue(value)
+      result.add "}}"
+  of JArray:
+    result = "["
+    var first = true
+    for value in node:
+      if not first: result.add ' '
+      first = false
+      result.add renderGeneValue(value)
+    result.add ']'
+  of JString:
+    result = geneString(node.getStr())
+  of JInt:
+    result = $node.getBiggestInt()
+  of JFloat:
+    result = $node.getFloat()
+    if '.' notin result and 'e' notin result and
+        'n' notin result and 'i' notin result:
+      result.add ".0"
+  of JBool:
+    result = if node.getBool(): "true" else: "false"
+  of JNull:
+    result = "nil"
+
+proc renderGene(event: LogEvent): string =
+  result = "{^schema \"gene.log.v1\" ^time " &
+    geneString(timestampText(event.timestamp)) &
+    " ^level " & geneString(levelName(event.level)) &
+    " ^logger " & geneString(event.logger) &
+    " ^message " & geneString(event.message) &
+    " ^payload " & renderGeneValue(
+      if event.payload == nil: newJObject() else: event.payload) &
+    " ^seq " & $event.sequence &
+    " ^pid " & $event.processId &
+    " ^thread " & $event.threadId
+  if event.source.module.len > 0:
+    result.add " ^source {^module " & geneString(event.source.module) &
+      " ^line " & $event.source.line &
+      " ^column " & $event.source.column & "}"
+  result.add '}'
+
 proc renderText(event: LogEvent): string =
   result = timestampText(event.timestamp) & " " &
     levelName(event.level).toUpperAscii() & " " & event.logger & " " &
     event.message.replace("\n", "\\n").replace("\r", "\\r")
   if event.payload != nil and event.payload.kind == JObject and
       event.payload.len > 0:
-    result.add " payload=" & $event.payload
+    result.add " payload=" & renderGeneValue(event.payload)
 
 proc renderJsonl(event: LogEvent): string =
   var node = newJObject()
@@ -552,6 +658,7 @@ proc renderJsonl(event: LogEvent): string =
 proc boundedRender(sink: LogSink, event: LogEvent, maxBytes: int): string =
   result =
     case sink.format
+    of lfGene: renderGene(event)
     of lfText: renderText(event)
     of lfJsonl: renderJsonl(event)
   if result.len <= maxBytes:
@@ -566,16 +673,24 @@ proc boundedRender(sink: LogSink, event: LogEvent, maxBytes: int): string =
     else: event.message
   reduced.payload = %*{"truncated": true}
   reduced.source = LogSource()
-  result = renderJsonl(reduced)
+  result =
+    if sink.format == lfGene: renderGene(reduced)
+    else: renderJsonl(reduced)
   if result.len > maxBytes:
-    # Config validation keeps maxBytes large enough for this valid fallback.
-    var minimal = newJObject()
-    minimal["schema"] = newJString("gene.log.v1")
-    minimal["level"] = newJString(levelName(event.level))
-    minimal["logger"] = newJString(event.logger)
-    minimal["message"] = newJString("[event truncated]")
-    minimal["truncated"] = newJBool(true)
-    result = $minimal
+    # Config validation keeps maxBytes large enough for either valid fallback.
+    if sink.format == lfGene:
+      result = "{^schema \"gene.log.v1\" ^level " &
+        geneString(levelName(event.level)) & " ^logger " &
+        geneString(event.logger) &
+        " ^message \"[event truncated]\" ^^truncated}"
+    else:
+      var minimal = newJObject()
+      minimal["schema"] = newJString("gene.log.v1")
+      minimal["level"] = newJString(levelName(event.level))
+      minimal["logger"] = newJString(event.logger)
+      minimal["message"] = newJString("[event truncated]")
+      minimal["truncated"] = newJBool(true)
+      result = $minimal
 
 proc colorPrefix(level: LogLevel): string =
   case level
@@ -681,12 +796,19 @@ proc emitRoute(route: LogRoute, loggerName: string, level: LogLevel,
     let event = LogEvent(timestamp: timestamp, level: level, logger: loggerName,
       message: safeMessage, payload: safePayload, sequence: nextLogSequence(),
       processId: processId, threadId: threadId, source: source)
+    var geneReady = false
     var textReady = false
     var jsonReady = false
-    var textLine, jsonLine: string
+    var geneLine, textLine, jsonLine: string
     for sink in route.sinks:
       let rendered =
         case sink.format
+        of lfGene:
+          if not geneReady:
+            geneLine = boundedRender(sink, event,
+                                     maxEventBytes)
+            geneReady = true
+          geneLine
         of lfText:
           if not textReady:
             textLine = boundedRender(sink, event,
