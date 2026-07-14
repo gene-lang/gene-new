@@ -41,6 +41,13 @@ with no network or key. The full scrollback TUI and launcher capability
 injection remain available later but do not gate the
 signature Gene experience.
 
+Operational diagnostics are emitted separately under the `app/ai_agent/*`
+logger hierarchy. The trace profile in `logging.gene` records lifecycle,
+counts, sizes, durations, routing backends, and outcomes without copying prompt
+text, model text, tool arguments/output, shell commands, or credentials. This
+does not replace the versioned event log, which remains the authoritative
+record for tool actions and confirmations.
+
 This document specifies a live, programmable AI coding agent written in Gene:
 a terminal program that holds a conversation with a hosted model API, lets the
 model call local tools (read/write files, run shell commands, search), and lets

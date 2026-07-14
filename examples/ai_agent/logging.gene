@@ -1,0 +1,8 @@
+{^level "warn"
+ ^sinks {^agent_file {^type "file"
+                       ^path "logs/agent.jsonl"
+                       ^format "jsonl"
+                       ^flush "error"}}
+ ^targets []
+ ^loggers {{"app/ai_agent" : {^level "trace"
+                                ^targets ["agent_file"]}}}}

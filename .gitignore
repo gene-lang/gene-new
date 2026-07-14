@@ -43,4 +43,5 @@ vendor/
 coverage/
 .cache/
 tmp/
+examples/ai_agent/logs/
 *.vsix

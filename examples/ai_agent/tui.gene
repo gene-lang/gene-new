@@ -64,6 +64,24 @@
 (import net/http_client [Http stream HttpClientError])
 (import store/fs [open : store_open StoreError])
 (import repl [run : run_repl_session])
+(import log [new_logger info! warn! error! debug! trace!])
+
+# Diagnostic logging is intentionally separate from the authoritative event
+# log below. It records lifecycle, routing, sizes, durations, and outcomes, but
+# never prompt/model text, tool arguments/output, shell commands, or auth
+# material. Enable the detailed JSONL profile with
+# `--log-config examples/ai_agent/logging.gene` (README.md).
+(var agent_log
+  (new_logger "app/ai_agent" ^payload {^component "tui"}))
+(var turn_log       (agent_log ~ child "turn"))
+(var model_log      (agent_log ~ child "model"))
+(var transport_log  (agent_log ~ child "transport"))
+(var tool_log       (agent_log ~ child "tool"))
+(var guard_log      (agent_log ~ child "guard"))
+(var state_log      (agent_log ~ child "state"))
+(var context_log    (agent_log ~ child "context"))
+(var event_log      (agent_log ~ child "event"))
+(var instruction_log (agent_log ~ child "instructions"))
 
 # -----------------------------------------------------------------------------
 # Config (all from the environment; nothing hard-coded).
@@ -417,10 +435,16 @@
         (agent_evidence ~ Cell/set (append (agent_evidence ~ Cell/get) e))
         nil)
       (echo_subscribed e)
+      (trace! event_log "event appended"
+        ^payload {^event_type type ^event_v v
+                  ^turn_id (current_turn ~ Cell/get)
+                  ^evidence (evidence_event? e)})
       e)))
 
 (fn begin_turn! []
-  (current_turn ~ Cell/set (+ (current_turn ~ Cell/get) 1)))
+  (current_turn ~ Cell/set (+ (current_turn ~ Cell/get) 1))
+  (debug! turn_log "turn initialized"
+    ^payload {^turn_id (current_turn ~ Cell/get)}))
 
 # Successful file tools record exact before/after snapshots. `/undo` restores
 # one operation only when the current file still equals that operation's after
@@ -606,6 +630,14 @@
 
 (fn newly_loaded_instruction_text [path : Str, include_leaf : Bool]
   (var newly (ensure_agents_for_path path include_leaf))
+  (for record in newly
+    (if (== record/skipped void)
+      (debug! instruction_log "instruction file loaded"
+        ^payload {^instruction_scope record/scope ^instruction_path record/source
+                  ^bytes record/bytes})
+      (warn! instruction_log "instruction file skipped"
+        ^payload {^instruction_scope record/scope ^instruction_path record/source
+                  ^bytes record/bytes ^reason record/skipped})))
   (format_instruction_records
     ((to_stream newly) ~ filter (fn [r] (== r/skipped void)) ; ~ into [])))
 
@@ -676,19 +708,28 @@
 # (gateway) gets them in its per-session log and never blocks on stdin.
 (fn guard_shell [cmd : Str]
   (if (! (guard_enabled?))
-    nil
+    (do
+      (debug! guard_log "command guard bypassed"
+        ^payload {^guard_enabled false})
+      nil)
     (match (classify_command cmd)
       (when "catastrophic"
+        (warn! guard_log "catastrophic command denied"
+          ^payload {^risk "catastrophic" ^decision "deny"})
         (guard_emit! "confirmation"
           {^risk "catastrophic" ^decision "deny" ^target cmd})
         "denied by catastrophe guard (GENE_AGENT_GUARD=0 outside the session overrides)")
       (when "destructive"
         (if (guard_confirmed? cmd)
           (do
+            (info! guard_log "destructive command allowed"
+              ^payload {^risk "destructive" ^decision "allow"})
             (guard_emit! "confirmation"
               {^risk "destructive" ^decision "allow" ^target cmd})
             nil)
           (do
+            (warn! guard_log "destructive command denied"
+              ^payload {^risk "destructive" ^decision "deny"})
             (guard_emit! "confirmation"
               {^risk "destructive" ^decision "deny" ^target cmd})
             "denied: destructive command was not confirmed")))
@@ -762,6 +803,10 @@
     (tool_names ~ Cell/set (append (tool_names ~ Cell/get) t/name))
     nil)
   (emit_event! "tool_registered" {^name t/name ^risk t/risk})
+  (debug! tool_log
+    (if (== existing void) "tool registered" "tool registration replaced")
+    ^payload {^tool_name t/name ^risk t/risk
+              ^parameter_count (t/params ~ size)})
   t)
 
 # Derived live so tools added/replaced from /repl reach the very next model
@@ -813,16 +858,29 @@
 (fn run_checked_exec [sink, tool : Str, command : Str, task]
   (var started (monotonic_ms))
   (var result (cell nil))
+  (debug! tool_log "subprocess started"
+    ^payload {^tool_name tool ^check_scope (command_scope command)})
   (try
     (do
       (result ~ Cell/set (await_exec task))
       ((result ~ Cell/get) ~ Map/put! "duration_ms"
         (- (monotonic_ms) started))
       (emit_check! sink tool command started (result ~ Cell/get))
+      (var completed_result (result ~ Cell/get))
+      (debug! tool_log "subprocess completed"
+        ^payload {^tool_name tool ^check_scope (command_scope command)
+                  ^status completed_result/status
+                  ^duration_ms completed_result/duration_ms
+                  ^timed_out (== completed_result/timed_out true)
+                  ^truncated (== completed_result/truncated true)})
       (result ~ Cell/get))
   ensure
     (if (== (result ~ Cell/get) nil)
-      (emit_check! sink tool command started nil)
+      (do
+        (emit_check! sink tool command started nil)
+        (info! tool_log "subprocess cancelled"
+          ^payload {^tool_name tool ^check_scope (command_scope command)
+                    ^duration_ms (- (monotonic_ms) started)}))
       nil)))
 
 # Give exact-edit failures a bounded, deterministic re-anchoring hint. This is
@@ -1315,6 +1373,10 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn compact_context [items, emit]
   (var before (context_stats items []))
+  (debug! context_log "context evaluated"
+    ^payload {^bytes before/bytes ^items before/items
+              ^retained_turns before/retained_turns
+              ^over_limit (== before/over_limit true)})
   (if (!= before/over_limit true)
     (if (has_context_limit_warning items)
       (without_context_limit_warning items)
@@ -1356,26 +1418,39 @@ State that broader behavior is unverified when no matching successful check ran.
                ^content "Context remains above its configured floor after whole-turn compaction and tool-output elision. Irreducible system/user content was preserved; use narrower tool reads or start a fresh session if more room is required."}))
           (set after (context_stats result []))
           (if (! had_limit_warning)
-            (emit "context_limit_warning"
-              {^bytes after/bytes ^items after/items
-               ^max_bytes context_max_bytes ^max_items context_max_items
-               ^irreducible_over_limit true})
+            (do
+              (warn! context_log "context remains over configured limit"
+                ^payload {^bytes after/bytes ^items after/items
+                          ^max_bytes context_max_bytes
+                          ^max_items context_max_items})
+              (emit "context_limit_warning"
+                {^bytes after/bytes ^items after/items
+                 ^max_bytes context_max_bytes ^max_items context_max_items
+                 ^irreducible_over_limit true}))
             nil))
         nil)
       (if (|| (> removed_items 0)
               (> elided/outputs 0))
-        (emit "context_compacted"
-          {^bytes_before before/bytes
-           ^bytes_after after/bytes
-           ^items_before before/items
-           ^items_after after/items
-           ^removed_items removed_items
-           ^removed_turns start
-           ^retained_turns after/retained_turns
-           ^elided_tool_outputs elided/outputs
-           ^elided_output_bytes elided/bytes
-           ^irreducible_over_limit irreducible
-           ^over_limit after/over_limit})
+        (do
+          (info! context_log "context compacted"
+            ^payload {^bytes_before before/bytes ^bytes_after after/bytes
+                      ^items_before before/items ^items_after after/items
+                      ^removed_items removed_items ^removed_turns start
+                      ^elided_tool_outputs elided/outputs
+                      ^elided_output_bytes elided/bytes
+                      ^irreducible_over_limit irreducible})
+          (emit "context_compacted"
+            {^bytes_before before/bytes
+             ^bytes_after after/bytes
+             ^items_before before/items
+             ^items_after after/items
+             ^removed_items removed_items
+             ^removed_turns start
+             ^retained_turns after/retained_turns
+             ^elided_tool_outputs elided/outputs
+             ^elided_output_bytes elided/bytes
+             ^irreducible_over_limit irreducible
+             ^over_limit after/over_limit}))
         nil)
       result)))
 
@@ -1476,6 +1551,7 @@ State that broader behavior is unverified when no matching successful check ran.
 # the gateway passes a per-session sink, so each session owns its own tool
 # trail. The declared param schema validates arguments before the handler runs.
 (fn run_tool_call [call, emit]
+  (var started (monotonic_ms))
   (var name call/name)
   (var t (find_tool name))
   (var args (cell nil))
@@ -1488,6 +1564,10 @@ State that broader behavior is unverified when no matching successful check ran.
      ^args (if (present? (parse_err ~ Cell/get))
              call/arguments
              (args ~ Cell/get))})
+  (info! tool_log "tool call started"
+    ^payload {^tool_name name ^call_id call/call_id
+              ^known_tool (!= t void)
+              ^risk (if (== t void) "unknown" t/risk)})
   # The guard (called inside handlers) emits confirmation events through this
   # turn's sink. Set synchronously here and cleared after the handler: the
   # guard runs before the handler's first await, so interleaved sessions
@@ -1534,6 +1614,16 @@ State that broader behavior is unverified when no matching successful check ran.
   # never leak back into the next request.
   (var shown
     (if truncated $"${result/text}\n[output truncated]" result/text))
+  (var tool_failed (starts_with? result/text "error:"))
+  (if tool_failed
+    (warn! tool_log "tool call completed with error"
+      ^payload {^tool_name name ^call_id call/call_id
+                ^duration_ms (- (monotonic_ms) started)
+                ^output_bytes (byte_size shown) ^truncated truncated})
+    (info! tool_log "tool call completed"
+      ^payload {^tool_name name ^call_id call/call_id
+                ^duration_ms (- (monotonic_ms) started)
+                ^output_bytes (byte_size shown) ^truncated truncated}))
   (emit "tool_result"
     {^id call/call_id ^name name ^value shown ^truncated truncated})
   {^type "function_call_output" ^call_id call/call_id ^output (redact shown)})
@@ -1595,10 +1685,29 @@ State that broader behavior is unverified when no matching successful check ran.
     (transfer/task ~ Task/cancel)))
 
 (fn exec_http_lines [url, headers, body, curl_args, timeout_ms, on_line]
+  (var started (monotonic_ms))
   (try
-    (exec_native_http_lines url headers body timeout_ms on_line)
+    (do
+      (var native_result
+        (exec_native_http_lines url headers body timeout_ms on_line))
+      (debug! transport_log "HTTP request completed"
+        ^payload {^backend "native" ^status native_result/status
+                  ^http_status native_result/http_status
+                  ^duration_ms (- (monotonic_ms) started)
+                  ^response_bytes (byte_size native_result/stdout)
+                  ^truncated (== native_result/truncated true)})
+      native_result)
   catch (HttpClientError ^kind "unavailable")
-    (exec_curl_lines curl_args timeout_ms on_line)))
+    (do
+      (warn! transport_log "native HTTP unavailable; using curl fallback"
+        ^payload {^backend "curl"})
+      (var curl_result (exec_curl_lines curl_args timeout_ms on_line))
+      (debug! transport_log "HTTP request completed"
+        ^payload {^backend "curl" ^status curl_result/status
+                  ^duration_ms (- (monotonic_ms) started)
+                  ^response_bytes (byte_size curl_result/stdout)
+                  ^truncated (== curl_result/truncated true)})
+      curl_result)))
 
 (fn api_error_text [resp]
   (var status (if (== resp/status void) "?" resp/status))
@@ -1922,6 +2031,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (== api_flavor "chat") chat_live_transport responses_live_transport))
 
 (fn call_model [transport, input_items, render_stream]
+  (var started (monotonic_ms))
   (var body
     (if (== api_flavor "chat")
       (stringify {^model model
@@ -1936,7 +2046,25 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^tools (tool_schemas_now)
                   ^tool_choice "auto"
                   ^parallel_tool_calls true})))
-  (transport body render_stream))
+  (debug! model_log "model request started"
+    ^payload {^api_flavor api_flavor ^model_name model
+              ^input_items (input_items ~ size)
+              ^tool_count ((tool_names ~ Cell/get) ~ size)
+              ^request_bytes (byte_size body)})
+  (var resp (transport body render_stream))
+  (if (!= resp/agent_error void)
+    (warn! model_log "model request failed"
+      ^payload {^api_flavor api_flavor ^model_name model
+                ^duration_ms (- (monotonic_ms) started)
+                ^request_bytes (byte_size body)
+                ^error_kind "transport_or_api"})
+    (debug! model_log "model request completed"
+      ^payload {^api_flavor api_flavor ^model_name model
+                ^duration_ms (- (monotonic_ms) started)
+                ^request_bytes (byte_size body)
+                ^response_items ((response_output_items resp) ~ size)
+                ^output_bytes (byte_size (response_text resp))}))
+  resp)
 
 # One turn: call the model; if it asked for tools, run them and recurse with the
 # outputs appended, else render the final text. `budget` bounds tool rounds so a
@@ -1959,6 +2087,9 @@ State that broader behavior is unverified when no matching successful check ran.
           (append active_items
             (system_item "The executable tool-round budget is exhausted. Do not request tools; give an honest final status with any unverified work stated explicitly."))
           active_items))))
+  (debug! turn_log "model round started"
+    ^payload {^budget_remaining budget ^input_items (active_items ~ size)
+              ^request_items (request_items ~ size)})
   (var streamed (cell false))
   (var resp (call_model transport request_items
               (fn [text]
@@ -1968,6 +2099,9 @@ State that broader behavior is unverified when no matching successful check ran.
                 # through the sink so /trace and subscriptions see text_delta
                 # events; the gateway sink skips them to avoid double-logging.
                 (var safe (redact text))
+                (trace! model_log "model stream delta"
+                  ^payload {^bytes (byte_size safe)
+                            ^budget_remaining budget})
                 (emit "text_delta" {^text safe})
                 (render_stream safe))))
   (if (!= resp/agent_error void)
@@ -1980,6 +2114,10 @@ State that broader behavior is unverified when no matching successful check ran.
       (each (to_stream (response_output_items resp))
         (fn [item] (emit "model_item" {^item item})))
       (var calls (response_calls resp))
+      (debug! turn_log "model round completed"
+        ^payload {^budget_remaining budget ^tool_calls (calls ~ size)
+                  ^response_items ((response_output_items resp) ~ size)
+                  ^streamed (Cell/get streamed)})
       (if (empty? calls)
         (do
           (emit "agent_text" {^text (response_text resp)})
@@ -1993,6 +2131,9 @@ State that broader behavior is unverified when no matching successful check ran.
           (append_all active_items (response_output_items resp)))
         (if (<= budget 0)
           (do
+            (warn! turn_log "tool round budget exhausted"
+              ^payload {^requested_tools (calls ~ size)
+                        ^budget_remaining budget})
             (render "[stopped: tool_call budget exhausted]")
             (emit "turn_done" {})
             active_items)
@@ -2022,6 +2163,7 @@ State that broader behavior is unverified when no matching successful check ran.
 # future input surfaces have one cancellation target. Gateway sessions use
 # their own per-session tracked tasks in gateway.gene.
 (fn run_turn_tracked [transport, input_items, render, render_stream, budget, emit]
+  (var started (monotonic_ms))
   (var outcome (cell "running"))
   (var result (cell input_items))
   (var terminal_emitted (cell false))
@@ -2034,6 +2176,10 @@ State that broader behavior is unverified when no matching successful check ran.
     (emit type props))
   (var prepared_items (compact_context input_items tracked_emit))
   (result ~ Cell/set prepared_items)
+  (info! turn_log "turn started"
+    ^payload {^turn_id (current_turn ~ Cell/get) ^budget budget
+              ^input_items (input_items ~ size)
+              ^prepared_items (prepared_items ~ size)})
   (var task (spawn
     (try
       (do
@@ -2066,9 +2212,19 @@ State that broader behavior is unverified when no matching successful check ran.
     (do
       (try (done ~ Channel/recv) catch (ChannelClosed) nil)
       (match (outcome ~ Cell/get)
-        (when "done" (result ~ Cell/get))
+        (when "done"
+          (do
+            (info! turn_log "turn completed"
+              ^payload {^turn_id (current_turn ~ Cell/get)
+                        ^duration_ms (- (monotonic_ms) started)
+                        ^result_items ((result ~ Cell/get) ~ size)})
+            (result ~ Cell/get)))
         (when "failed"
           (do
+            (error! turn_log "turn failed"
+              ^payload {^turn_id (current_turn ~ Cell/get)
+                        ^duration_ms (- (monotonic_ms) started)
+                        ^error_detail (redact (failure_text ~ Cell/get))})
             (if (! (terminal_emitted ~ Cell/get))
               (do
                 (tracked_emit "error"
@@ -2079,6 +2235,10 @@ State that broader behavior is unverified when no matching successful check ran.
             prepared_items))
         (else
           (do
+            (info! turn_log "turn cancelled"
+              ^payload {^turn_id (current_turn ~ Cell/get)
+                        ^duration_ms (- (monotonic_ms) started)
+                        ^interrupt_requested (interrupted ~ Cell/get)})
             (if (! (terminal_emitted ~ Cell/get))
               (do
                 (tracked_emit "error" {^kind "cancelled" ^text "turn cancelled"})
@@ -2094,7 +2254,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (watching ~ Cell/set false)
       (if interrupt_armed (end_interrupt) nil)
       (watcher ~ Task/cancel)
-      (active_turn_task ~ Cell/set nil))))
+      (active_turn_task ~ Cell/set nil)
+      (trace! turn_log "turn resources released"
+        ^payload {^turn_id (current_turn ~ Cell/get)}))))
 
 # -----------------------------------------------------------------------------
 # Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
@@ -2118,33 +2280,60 @@ State that broader behavior is unverified when no matching successful check ran.
           (!= (agent_store ~ Cell/get) nil))
     nil
     (try
-      (agent_store ~ Cell/set (store_open ReadWriteDir ^root agent_state_dir))
+      (do
+        (agent_store ~ Cell/set (store_open ReadWriteDir ^root agent_state_dir))
+        (info! state_log "agent state opened"
+          ^payload {^state_enabled true ^resume_enabled (resume_enabled?)}))
     catch (StoreError ^message m)
-      (println $"agent state disabled: ${m}")
+      (do
+        (warn! state_log "agent state disabled"
+          ^payload {^error_kind "store" ^error_detail (redact m)})
+        (println $"agent state disabled: ${m}"))
     catch _
-      (println "agent state disabled: could not open store"))))
+      (do
+        (warn! state_log "agent state disabled"
+          ^payload {^error_kind "unknown"})
+        (println "agent state disabled: could not open store")))))
 
 (fn state_put [key : Str, value]
   (if (== (agent_store ~ Cell/get) nil)
     nil
     (try
-      ((agent_store ~ Cell/get) ~ put key value)
+      (do
+        ((agent_store ~ Cell/get) ~ put key value)
+        (debug! state_log "state record saved" ^payload {^record_key key}))
     catch (StoreError ^message m)
-      (println $"agent state save failed (${key}): ${m}")
+      (do
+        (warn! state_log "state record save failed"
+          ^payload {^record_key key ^error_kind "store"
+                    ^error_detail (redact m)})
+        (println $"agent state save failed (${key}): ${m}"))
     catch _
-      (println $"agent state save failed (${key})"))))
+      (do
+        (warn! state_log "state record save failed"
+          ^payload {^record_key key ^error_kind "unknown"})
+        (println $"agent state save failed (${key})")))))
 
 (fn state_get [key : Str, default]
   (if (== (agent_store ~ Cell/get) nil)
     default
     (try
-      ((agent_store ~ Cell/get) ~ get key ^default default)
+      (do
+        (var loaded ((agent_store ~ Cell/get) ~ get key ^default default))
+        (trace! state_log "state record loaded" ^payload {^record_key key})
+        loaded)
     catch (StoreError ^message m)
       (do
+        (warn! state_log "state record load failed"
+          ^payload {^record_key key ^error_kind "store"
+                    ^error_detail (redact m)})
         (println $"agent state load failed (${key}): ${m}")
         default)
     catch _
-      default)))
+      (do
+        (warn! state_log "state record load failed"
+          ^payload {^record_key key ^error_kind "unknown"})
+        default))))
 
 (fn config_snapshot []
   {^model model
@@ -2196,6 +2385,10 @@ State that broader behavior is unverified when no matching successful check ran.
     nil))
 
 (fn save_agent_state [items, transcript, memory]
+  (debug! state_log "agent state snapshot started"
+    ^payload {^items (items ~ size) ^transcript_bytes (byte_size transcript)
+              ^memory_items (memory ~ size)
+              ^events ((agent_events ~ Cell/get) ~ size)})
   (save_config)
   (state_put "memory" memory)
   (state_put "events" {^events (agent_events ~ Cell/get)
@@ -2212,7 +2405,10 @@ State that broader behavior is unverified when no matching successful check ran.
       (agent_evidence ~ Cell/set
         ((to_stream saved/events) ~ filter evidence_event? ; ~ into []))
       (next_event_v ~ Cell/set saved/next_v)
-      (current_turn ~ Cell/set saved/turn))))
+      (current_turn ~ Cell/set saved/turn)
+      (info! state_log "event state restored"
+        ^payload {^events (saved/events ~ size) ^next_event_v saved/next_v
+                  ^turn_id saved/turn}))))
 
 (fn after_prefix [s : Str, prefix : Str] : Str
   (var parts (split s prefix))
@@ -2678,11 +2874,28 @@ State that broader behavior is unverified when no matching successful check ran.
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main [args]
   (var task args/raw)
-  (if (blank_line? task)
-    (if (== auth_token nil)
-      (run_demo)
-      (try
-        (run_repl)
-        ensure
-          (close_user_input)))
-    (run_one_shot task)))
+  (var run_mode
+    (if (blank_line? task)
+      (if (== auth_token nil) "offline_demo" "interactive")
+      "one_shot"))
+  (info! agent_log "agent starting"
+    ^payload {^run_mode run_mode ^api_flavor api_flavor ^model_name model
+              ^live_auth (present? auth_token) ^state_enabled (state_enabled?)
+              ^resume_enabled (resume_enabled?) ^guard_enabled (guard_enabled?)
+              ^approve_all (flag_enabled? approve_all)
+              ^max_tool_rounds max_tool_rounds
+              ^tool_count ((tool_names ~ Cell/get) ~ size)})
+  (try
+    (if (blank_line? task)
+      (if (== auth_token nil)
+        (run_demo)
+        (try
+          (run_repl)
+          ensure
+            (close_user_input)))
+      (run_one_shot task))
+  ensure
+    (info! agent_log "agent stopped"
+      ^payload {^run_mode run_mode
+                ^turns (current_turn ~ Cell/get)
+                ^events ((agent_events ~ Cell/get) ~ size)})))

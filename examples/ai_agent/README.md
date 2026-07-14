@@ -7,6 +7,7 @@ flagship example. Full design, roadmap, and architecture: [design.md](design.md)
 |---|---|
 | `tui.gene` | The terminal agent: streaming model loop, typed tools, event log, `/repl` live programming. Runs standalone (embedded mode). |
 | `gateway.gene` | Multi-session gateway over the same turn loop: session actors, HTTP+JSON API with cursor long-poll, embedded web chat, Telegram channel, SQLite persistence. Imports `tui.gene`. |
+| `logging.gene` | Trace-level JSONL diagnostic profile for the agent; writes `logs/agent.jsonl` beside the config. |
 | `design.md` | The design document (formerly `docs/ai-agent.md`) — what exists, what's next, and why. |
 | `package.gene` | Package manifest. |
 
@@ -27,7 +28,36 @@ OPENAI_API_KEY=... bin/gene run examples/ai_agent/tui.gene
 
 # One-shot (no interactive prompt):
 OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/tui.gene "explain src/gene/reader.nim"
+
+# Detailed structured diagnostics (prompts, model text, tool args/output, and
+# credentials are deliberately excluded):
+bin/gene run --log-config examples/ai_agent/logging.gene \
+  examples/ai_agent/tui.gene
 ```
+
+## Diagnostic logging
+
+The agent has two intentionally separate records:
+
+- `/trace` and `session/events` are the authoritative, versioned action log.
+- `app/ai_agent/*` structured logs are best-effort operational diagnostics.
+
+The checked-in `logging.gene` profile captures trace through error records as
+JSONL in `examples/ai_agent/logs/agent.jsonl`. It covers startup/shutdown,
+turns and model rounds, HTTP backend and timings, tool outcomes, guard
+decisions, context compaction, state persistence, instructions, cancellation,
+and failures. It records sizes, counts, identifiers, durations, and outcomes;
+it does not copy conversation or command content.
+
+Level policy:
+
+| Level | Agent use |
+|---|---|
+| `error` | Unexpected turn failure that aborts the active turn |
+| `warn` | Transport degradation/failure, denied dangerous action, exhausted limits, or state/instruction failure |
+| `info` | Agent and turn lifecycle, tool outcomes, accepted destructive action, context compaction, state restoration |
+| `debug` | Model rounds, request/response sizes and timings, HTTP backend, subprocess/check details, state writes |
+| `trace` | Content-free stream delta sizes, authoritative-event boundaries, state reads, resource cleanup |
 
 ## The TUI
 

@@ -168,6 +168,42 @@ suite "cli — gene run":
     check "agent>   · tool list_dir" in ran.output
     check "Demo complete" in ran.output
 
+  test "ai agent writes detailed content-safe structured diagnostics":
+    buildGeneCli()
+    let logPath = cliDir / "agent_diagnostics.jsonl"
+    removeFile(logPath)
+    let configPath = cliDir / "agent_logging_config.gene"
+    writeFile(configPath, """
+{^level "warn"
+ ^sinks {^agent {^type "file" ^path "agent_diagnostics.jsonl"
+                  ^format "jsonl" ^flush "close"}}
+ ^targets []
+ ^loggers {{"app/ai_agent" : {^level "trace" ^targets ["agent"]}}}}
+""")
+    let command = "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+                  "-u CODEX_ACCESS_TOKEN -u GENE_AGENT_STATE " &
+                  shellQuote(geneExe) & " run --log-config " &
+                  shellQuote(configPath) &
+                  " examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check fileExists(logPath)
+    let logged = readFile(logPath)
+    check "\"logger\":\"app/ai_agent\"" in logged
+    check "\"message\":\"agent starting\"" in logged
+    check "\"message\":\"event appended\"" in logged
+    check "\"message\":\"turn started\"" in logged
+    check "\"message\":\"model request started\"" in logged
+    check "\"message\":\"tool call started\"" in logged
+    check "\"message\":\"tool call completed\"" in logged
+    check "\"message\":\"turn completed\"" in logged
+    check "\"message\":\"agent stopped\"" in logged
+    check "\"level\":\"trace\"" in logged
+    check "\"level\":\"debug\"" in logged
+    check "\"level\":\"info\"" in logged
+    check "what's in this directory?" notin logged
+
   test "ai agent slash sh opens a shell loop":
     buildGeneCli()
     let command = "printf '/sh\\nprintf hi\\nexit\\n/quit\\n' | " &
