@@ -141,7 +141,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
 
     fixture(["do", "var", "set", "if"],
       "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
-    fixture(["if_then"], "(if_then true 1 2)")
+    fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
     fixture(["&&", "||", "!"], "[(&& true 1) (|| nil 2) (! false)]")
     fixture(["~"], "(fn size-of [self] (~ size))")
@@ -3862,11 +3862,11 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
     expect GeneError:
       discard run(compileSource("(" & "= 1 1)"), newGlobalScope())
 
-  test "if_then evaluates its whole tail as the then branch":
-    check_eval("(if_then true 1 2 3)", "3")
-    check_eval("(if_then false 1 2 3)", "nil")
-    check_eval("(if_then true)", "nil")
-    check_eval("(var a 1) (if_then true (set a 5) (+ a 10))", "15")
+  test "if_yes evaluates its whole tail as the then branch":
+    check_eval("(if_yes true 1 2 3)", "3")
+    check_eval("(if_yes false 1 2 3)", "nil")
+    check_eval("(if_yes true)", "nil")
+    check_eval("(var a 1) (if_yes true (set a 5) (+ a 10))", "15")
 
   test "if_not evaluates its whole tail as the else branch":
     check_eval("(if_not false 1 2 3)", "3")

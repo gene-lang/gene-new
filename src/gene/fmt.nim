@@ -264,7 +264,7 @@ proc fits(v: Value, indent: int): bool =
 ## items are laid out one per line underneath.
 proc inlineCount(head: string, body: openArray[Value]): int =
   case head
-  of "if", "if_then", "if_not", "while", "when", "elif", "match", "case",
+  of "if", "if_yes", "if_not", "while", "when", "elif", "match", "case",
      "var", "set", "type", "enum", "protocol", "ns", "mod", "scope",
      "repeat", "spawn": 1
   of "for": 3                      # (for x in xs ...)

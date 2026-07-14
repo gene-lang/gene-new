@@ -104,7 +104,7 @@ type
 const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
-  "do", "if", "if_then", "if_not", "&&", "||", "!", "var", "set", "~",
+  "do", "if", "if_yes", "if_not", "&&", "||", "!", "var", "set", "~",
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -2342,7 +2342,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   deriveScopelessChunk(result)
 
 proc compileIfThen(c: var Compiler, node: Value) =
-  ## (if_then cond body...) — everything after the condition is the then
+  ## (if_yes cond body...) — everything after the condition is the then
   ## branch (implicit do); the whole form is nil when the condition is falsy.
   let body = node.body
   if body.len == 0:
@@ -4476,7 +4476,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "if":
       compileIf(c, node)
       return
-    of "if_then":
+    of "if_yes":
       compileIfThen(c, node)
       return
     of "if_not":
