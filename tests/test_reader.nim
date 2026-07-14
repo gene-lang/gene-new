@@ -92,6 +92,17 @@ suite "reader — sugars":
     check_read("$\"hello ${name}\"", "($ \"hello \" name)")
     check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
     check_read("($ \"hello \" name)", "($ \"hello \" name)")
+  test "interpolation delimiters honor nested lexical forms":
+    check_read("$\"$(do \\\"x)\\\")\"", "($ (do \"x)\"))")
+    check_read("$\"$(match #\\\"[)]\\\" value)\"", "($ (match #\"[)]\" value))")
+    check_read("$\"$(do # ignored )\\n x)\"", "($ (do x))")
+    check_read("$\"${{^label \\\"}\\\"}}\"", "($ {^label \"}\"})")
+    check_read("$\"$(do ')' x)\"", "($ (do ')' x))")
+    check_read("$\"${{{\\\"key\\\" : \\\"}\\\"}}}\"", "($ {{\"key\" : \"}\"}})")
+    check_read("$\"\"\"$(do \"x)\")\"\"\"", "($ (do \"x)\"))")
+  test "interpolation respects max_depth":
+    expect ReadError:
+      discard read("$\"$((x))\"", options = ReadOptions(maxDepth: 1))
 
 suite "reader — paths":
   test "absolute path":      check_read("/user/name",   "(select user name)")

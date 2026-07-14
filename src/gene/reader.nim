@@ -710,7 +710,56 @@ proc parseCharLiteral(r: var Reader): string =
   r.advance()
   ch.toUTF8()
 
-proc tokenize(r: var Reader, captureSpans: static bool = false) =
+type InterpolationCloserStack = object
+  inline: array[16, TokenKind]
+  overflow: seq[TokenKind]
+  depth: int
+
+proc push(stack: var InterpolationCloserStack, kind: TokenKind) =
+  if stack.depth < stack.inline.len:
+    stack.inline[stack.depth] = kind
+  else:
+    let overflowIndex = stack.depth - stack.inline.len
+    if overflowIndex < stack.overflow.len:
+      stack.overflow[overflowIndex] = kind
+    else:
+      stack.overflow.add kind
+  inc stack.depth
+
+proc top(stack: InterpolationCloserStack): TokenKind =
+  if stack.depth <= stack.inline.len:
+    stack.inline[stack.depth - 1]
+  else:
+    stack.overflow[stack.depth - stack.inline.len - 1]
+
+proc pop(stack: var InterpolationCloserStack) =
+  dec stack.depth
+
+proc trackInterpolationCloser(interpolationClosers: var InterpolationCloserStack,
+                              tokKind: TokenKind): bool =
+  ## Kept out of the tokenizer body so normal reads do not carry closer-stack
+  ## code in their instruction-cache working set.
+  case tokKind
+  of tkLParen, tkHashLParen: interpolationClosers.push tkRParen
+  of tkLBracket, tkHashLBracket: interpolationClosers.push tkRBracket
+  of tkLBrace, tkHashLBrace: interpolationClosers.push tkRBrace
+  of tkHashMapStart:
+    interpolationClosers.push tkRBrace
+    interpolationClosers.push tkRBrace
+  of tkRParen, tkRBracket, tkRBrace:
+    if interpolationClosers.depth > 0 and tokKind == interpolationClosers.top:
+      interpolationClosers.pop()
+      return interpolationClosers.depth == 0
+  else: discard
+  false
+
+proc tokenizeImpl(r: var Reader,
+                  interpolationClosers: ptr InterpolationCloserStack,
+                  interpolationClosed: var bool,
+                  captureSpans: static bool = false) =
+  ## The normal tokenizer passes nil. Interpolation supplies a closer stack;
+  ## only delimiter tokens consult it, so ordinary token emission remains the
+  ## original hot path.
   template addToken(reader: var Reader, tokKind: TokenKind, tokLexeme: string,
                     tokLine, tokCol, tokStart: int,
                     tokFlags: string = "") =
@@ -719,8 +768,17 @@ proc tokenize(r: var Reader, captureSpans: static bool = false) =
         flags: tokFlags, line: tokLine, col: tokCol,
         startByte: tokStart, endByte: reader.pos)
     else:
-      reader.tokens.add Token(kind: tokKind, lexeme: tokLexeme, flags: tokFlags,
-                              line: tokLine, col: tokCol)
+      # Interpolation scanning needs only the lexical position and balanced
+      # delimiters, not a token stream.
+      if interpolationClosers == nil:
+        reader.tokens.add Token(kind: tokKind, lexeme: tokLexeme, flags: tokFlags,
+                                line: tokLine, col: tokCol)
+
+  template trackDelimiter(tokKind: TokenKind) =
+    if interpolationClosers != nil and
+        trackInterpolationCloser(interpolationClosers[], tokKind):
+      interpolationClosed = true
+      return
 
   while r.pos < r.src.len:
     let c = r.nextChar()
@@ -736,9 +794,15 @@ proc tokenize(r: var Reader, captureSpans: static bool = false) =
       r.advance()
       let c2 = r.nextChar()
       case c2
-      of '(': r.advance(); r.addToken(tkHashLParen, "#(", startLine, startCol, startByte)
-      of '[': r.advance(); r.addToken(tkHashLBracket, "#[", startLine, startCol, startByte)
-      of '{': r.advance(); r.addToken(tkHashLBrace, "#{", startLine, startCol, startByte)
+      of '(':
+        r.advance(); r.addToken(tkHashLParen, "#(", startLine, startCol, startByte)
+        trackDelimiter(tkHashLParen)
+      of '[':
+        r.advance(); r.addToken(tkHashLBracket, "#[", startLine, startCol, startByte)
+        trackDelimiter(tkHashLBracket)
+      of '{':
+        r.advance(); r.addToken(tkHashLBrace, "#{", startLine, startCol, startByte)
+        trackDelimiter(tkHashLBrace)
       of '_': r.advance(); r.addToken(tkUnderscore, "#_", startLine, startCol, startByte)
       of '"':
         let literal = r.parseRegexLiteral()
@@ -786,18 +850,30 @@ proc tokenize(r: var Reader, captureSpans: static bool = false) =
           "unknown '#' form \"" & snippet & "\": '#' starts a comment only " &
           "when followed by whitespace or '!'; other '#' forms are reserved. " &
           "Write \"# " & snippet[1 .. ^1] & "\" for a comment")
-    of '(': r.advance(); r.addToken(tkLParen, "(", startLine, startCol, startByte)
-    of ')': r.advance(); r.addToken(tkRParen, ")", startLine, startCol, startByte)
-    of '[': r.advance(); r.addToken(tkLBracket, "[", startLine, startCol, startByte)
-    of ']': r.advance(); r.addToken(tkRBracket, "]", startLine, startCol, startByte)
+    of '(':
+      r.advance(); r.addToken(tkLParen, "(", startLine, startCol, startByte)
+      trackDelimiter(tkLParen)
+    of ')':
+      r.advance(); r.addToken(tkRParen, ")", startLine, startCol, startByte)
+      trackDelimiter(tkRParen)
+    of '[':
+      r.advance(); r.addToken(tkLBracket, "[", startLine, startCol, startByte)
+      trackDelimiter(tkLBracket)
+    of ']':
+      r.advance(); r.addToken(tkRBracket, "]", startLine, startCol, startByte)
+      trackDelimiter(tkRBracket)
     of '{':
       r.advance()
       if r.nextChar() == '{':
         r.advance()
         r.addToken(tkHashMapStart, "{{", startLine, startCol, startByte)
+        trackDelimiter(tkHashMapStart)
       else:
         r.addToken(tkLBrace, "{", startLine, startCol, startByte)
-    of '}': r.advance(); r.addToken(tkRBrace, "}", startLine, startCol, startByte)
+        trackDelimiter(tkLBrace)
+    of '}':
+      r.advance(); r.addToken(tkRBrace, "}", startLine, startCol, startByte)
+      trackDelimiter(tkRBrace)
     of ',': r.advance(); r.addToken(tkComma, ",", startLine, startCol, startByte)
     of ':': r.advance(); r.addToken(tkColon, ":", startLine, startCol, startByte)
     of ';': r.advance(); r.addToken(tkSemi, ";", startLine, startCol, startByte)
@@ -896,11 +972,12 @@ proc tokenize(r: var Reader, captureSpans: static bool = false) =
       let start = r.pos
       while r.pos < r.src.len and isSymbolChar(r.nextChar()):
         r.advance()
-      let lexeme = r.src[start ..< r.pos]
-      
-      if lexeme.len == 0:
+      if r.pos == start:
         r.advance() # Should not happen with isSymbolChar
         continue
+      if interpolationClosers != nil:
+        continue
+      let lexeme = r.src[start ..< r.pos]
 
       # Check if it's a byte literal or number.
       var valFloat: float
@@ -914,6 +991,16 @@ proc tokenize(r: var Reader, captureSpans: static bool = false) =
         r.addToken(tkSymbol, lexeme, startLine, startCol, startByte)
 
   r.addToken(tkEof, "", r.line, r.col, r.pos)
+
+proc tokenize(r: var Reader, captureSpans: static bool = false) =
+  var interpolationClosed = false
+  tokenizeImpl(r, nil, interpolationClosed, captureSpans)
+
+proc tokenizeInterpolation(r: var Reader): bool =
+  var interpolationClosers: InterpolationCloserStack
+  var interpolationClosed = false
+  tokenizeImpl(r, addr interpolationClosers, interpolationClosed)
+  interpolationClosed
 
 proc tokenKindName*(kind: TokenKind): string =
   case kind
@@ -1315,6 +1402,20 @@ proc parseHashMap(r: var Reader): Value =
 proc read*(src: string, sourceName = "",
            options: ReadOptions = ReadOptions()): Value
 
+proc interpolationExpressionEnd(lexeme, sourceName: string,
+                              start, line, col: int): int =
+  ## `start` points at the opening `{` or `(`.  Re-lexing this suffix makes
+  ## strings, regexes, comments, and nested delimiters opaque to delimiter
+  ## matching, unlike character-by-character scanning of the cooked string.
+  # Boundary scanning needs lexer state only. Avoid initReader's eager token
+  # buffer: interpolation mode neither materializes nor parses these tokens.
+  var expressionReader = Reader(
+    src: lexeme, sourceName: sourceName, pos: start, line: 1, col: start + 1)
+  if not expressionReader.tokenizeInterpolation():
+    raiseReadIncompleteAt(sourceName, line, col,
+      "unterminated interpolation '" & $lexeme[start] & "...'")
+  expressionReader.pos
+
 proc parseInterpolatedString(lexeme, sourceName: string,
                              line, col: int,
                              options: ReadOptions = ReadOptions()): Value =
@@ -1324,38 +1425,22 @@ proc parseInterpolatedString(lexeme, sourceName: string,
   while i < lexeme.len:
     if lexeme[i..^1].startsWith("${"):
       if i > last: body.add newStr(lexeme[last ..< i])
-      i += 2
-      let start = i
-      var depth = 1
-      while i < lexeme.len and depth > 0:
-        if lexeme[i] == '{': depth += 1
-        elif lexeme[i] == '}': depth -= 1
-        i += 1
-      if depth > 0:
-        raiseReadIncompleteAt(sourceName, line, col,
-                              "unterminated interpolation '${...}'")
-      let exprStr = lexeme[start ..< i-1]
+      let start = i + 1
+      i = interpolationExpressionEnd(lexeme, sourceName, start, line, col)
+      let exprStr = lexeme[start + 1 ..< i - 1]
       body.add read(exprStr, sourceName, options)
       last = i
     elif lexeme[i..^1].startsWith("$("):
       if i > last: body.add newStr(lexeme[last ..< i])
-      i += 1
-      let start = i
-      var depth = 1
-      i += 1
-      while i < lexeme.len and depth > 0:
-        if lexeme[i] == '(': depth += 1
-        elif lexeme[i] == ')': depth -= 1
-        i += 1
-      if depth > 0:
-        raiseReadIncompleteAt(sourceName, line, col,
-                              "unterminated interpolation '$(...)'")
+      let start = i + 1
+      i = interpolationExpressionEnd(lexeme, sourceName, start, line, col)
       let exprStr = lexeme[start ..< i]
       body.add read(exprStr, sourceName, options)
       last = i
-    else: i += 1
+    else:
+      inc i
   if last < lexeme.len: body.add newStr(lexeme[last..^1])
-  return newNode(newSym("$"), body = body)
+  newNode(newSym("$"), body = body)
 
 proc parseForm(r: var Reader, inList = false): Value =
   r.skipDatumComments()

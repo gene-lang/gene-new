@@ -58,6 +58,13 @@ suite "spec — reader surface from design":
     check_read("$\"\"\"hello \"${name}\\\"\"\"\"", "($ \"hello \\\"\" name \"\\\"\")")
     check_read("($ \"hello \" name)", "($ \"hello \" name)")
 
+  test "interpolation closes only at lexer-visible delimiters":
+    check_read("$\"$(do \\\"x)\\\")\"", "($ (do \"x)\"))")
+    check_read("$\"$(match #\\\"[)]\\\" value)\"", "($ (match #\"[)]\" value))")
+    check_read("$\"${{^label \\\"}\\\"}}\"", "($ {^label \"}\"})")
+    check_read("$\"${{{\\\"key\\\" : \\\"}\\\"}}}\"", "($ {{\"key\" : \"}\"}})")
+    check_read("$\"\"\"$(do \"x)\")\"\"\"", "($ (do \"x)\"))")
+
   test "ordered literal dispatch covers every documented prefix family":
     check_read("[#(x) #[1] #{^a 1} {{\"k\" : 2}}]",
                "[#(x) #[1] #{^a 1} {{\"k\" : 2}}]")
