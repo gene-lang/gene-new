@@ -225,13 +225,20 @@ constants:
 loads the module, skips `main`, and prints module metadata, normalized imports,
 and root and namespace declarations.
 
+`gene view [--readonly] [--editor COMMAND] [--path GENE/PATH]
+[--line N[:COLUMN]] <file>` opens a native structural source browser. Arrow,
+page, Home/End, mouse-wheel, and `j`/`k` navigation operate on syntax without
+executing it; `e` suspends the terminal and opens `$VISUAL`/`$EDITOR` at the
+selected occurrence.
+
 ## Project layout
 
 ```text
 src/
-  gene.nim            CLI entry point (eval / run / parse / compile)
+  gene.nim            CLI entry point (eval / run / parse / compile / view)
   gene/
     reader.nim        source text  -> node values
+    source_index.nim  source text  -> structural occurrence spans
     types.nim         NaN-boxed Value model + constructors/accessors
     equality.nim      equal / same / hash
     printer.nim       node values -> canonical Gene source

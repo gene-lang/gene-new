@@ -1642,6 +1642,72 @@ suite "cli — gene run":
       check "^cancelled true" in events
       check events.count("^kind \"cancelled\"") == 1
 
+  test "gene view rejects non-TTY use before changing terminal mode":
+    buildGeneCli()
+    let fixture = writeCliProgram("view_non_tty.gene", "(server ^port 8080)\n")
+    let ran = execCmdOnce(shellQuote(geneExe) & " view --readonly " &
+                          shellQuote(fixture))
+    check ran.exitCode == 1
+    check "interactive terminal required" in ran.output
+
+  test "gene view navigates in a pseudo-terminal and restores it":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("view_tui.gene",
+        "(server ^host \"127.0.0.1\" ^port 8080 ^routes [[GET] [POST]])\n")
+      let outputFile = cliDir / "view_tui.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " view --readonly " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) & " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(250)
+      terminal.inputStream.write("jjjl\e[Bq")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "Path: routes" in output
+      check "GET" in output
+      check "POST" in output
+
+  test "gene view suspends and resumes around an external editor":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("view_editor.gene", "(server ^port 8080)\n")
+      let outputFile = cliDir / "view_editor.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " view --editor /usr/bin/true " &
+                  shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) & " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(250)
+      terminal.inputStream.write("e")
+      terminal.inputStream.flush()
+      sleep(250)
+      terminal.inputStream.write("q")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "reloaded" in output
+      check "\e[?1049l" in output
+
   test "public curses events are cancellable, Unicode-safe, and resize-aware":
     when defined(macosx):
       buildGeneCli()

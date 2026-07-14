@@ -1,6 +1,9 @@
 ## Gene test suite — run all test modules
 {.warning[UnusedImport]: off.}
 include test_reader
+include test_source_index
+include test_viewer
+include test_viewer_editor
 include test_values
 include test_vm
 include test_modules

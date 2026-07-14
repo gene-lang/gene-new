@@ -3993,6 +3993,7 @@ gene parse
 gene compile
 gene fmt
 gene doc
+gene view
 ```
 
 `gene run path.gene args...` creates an `Application`, loads the entry package/module, executes the entry module top to bottom, and calls `main` with command-line arguments if present.
@@ -4002,6 +4003,12 @@ gene doc
 `gene repl` retains a garbage-collected session environment and evaluation overlays across inputs.
 
 `gene parse` and `gene fmt` operate on modules/source units but do not execute top-level forms.
+
+`gene view [options] path.gene` opens a native, non-evaluating structural
+browser over reader-owned source spans. Navigation paths use ordinary static
+Gene slash segments. External-editor handoff is the initial write path;
+`--readonly` disables it. The viewer must restore terminal state on exit and
+must not reconstruct the file by printing runtime Values.
 
 `gene fmt` uses the printer and must round-trip selector slash spacing, immutable-literal prefixes, prop order, meta order, import forms, namespace forms, and pipe sugar reliably.
 

@@ -27,13 +27,21 @@ type
     tkString, tkBytes, tkRegex, tkInt, tkFloat, tkDate, tkTime, tkDateTime,
     tkSymbol, tkChar,
     tkComma, tkColon, tkEqual, tkSemi, tkSlash, tkPercent,
-    tkBacktick, tkDollar, tkUnderscore
+    tkBacktick, tkDollar, tkUnderscore,
+    tkLineComment, tkBlockComment
 
   Token* = object
     kind*: TokenKind
     lexeme*: string
     flags*: string
     line*, col*: int
+
+  SpannedToken* = object
+    kind*: TokenKind
+    lexeme*: string
+    flags*: string
+    line*, col*: int
+    startByte*, endByte*: int
 
   ReadOptions* = object
     maxDepth*: int              # 0 means unlimited
@@ -60,6 +68,8 @@ type
     parseDepth: int
     context: ReadContextStack
     locs: Table[uint64, SourceLoc]
+    captureTrivia: bool
+    spannedTokens: seq[SpannedToken]
 
   ReadError* = object of CatchableError
     sourceName*: string
@@ -167,10 +177,11 @@ proc isIntLexeme(lexeme: string): bool =
   true
 
 proc initReader(src: string, sourceName = "",
-                options: ReadOptions = ReadOptions()): Reader =
+                options: ReadOptions = ReadOptions(),
+                captureTrivia = false): Reader =
   Reader(src: src, sourceName: sourceName, options: options, line: 1, col: 1,
          tokens: newSeqOfCap[Token](min(src.len + 1, 4096)),
-         locs: initTable[uint64, SourceLoc]())
+         locs: initTable[uint64, SourceLoc](), captureTrivia: captureTrivia)
 
 proc isSymbolChar(c: char): bool =
   c notin {'(', ')', '[', ']', '{', '}', ' ', '\t', '\n', '\r', ',', ';', '\"', '\'', '`', '#'}
@@ -699,11 +710,23 @@ proc parseCharLiteral(r: var Reader): string =
   r.advance()
   ch.toUTF8()
 
-proc tokenize(r: var Reader) =
+proc tokenize(r: var Reader, captureSpans: static bool = false) =
+  template addToken(reader: var Reader, tokKind: TokenKind, tokLexeme: string,
+                    tokLine, tokCol, tokStart: int,
+                    tokFlags: string = "") =
+    when captureSpans:
+      reader.spannedTokens.add SpannedToken(kind: tokKind, lexeme: tokLexeme,
+        flags: tokFlags, line: tokLine, col: tokCol,
+        startByte: tokStart, endByte: reader.pos)
+    else:
+      reader.tokens.add Token(kind: tokKind, lexeme: tokLexeme, flags: tokFlags,
+                              line: tokLine, col: tokCol)
+
   while r.pos < r.src.len:
     let c = r.nextChar()
     let startLine = r.line
     let startCol = r.col
+    let startByte = r.pos
 
     case c
     of ' ', '\t', '\r', '\n':
@@ -713,15 +736,14 @@ proc tokenize(r: var Reader) =
       r.advance()
       let c2 = r.nextChar()
       case c2
-      of '(': r.advance(); r.tokens.add Token(kind: tkHashLParen, lexeme: "#(", line: startLine, col: startCol)
-      of '[': r.advance(); r.tokens.add Token(kind: tkHashLBracket, lexeme: "#[", line: startLine, col: startCol)
-      of '{': r.advance(); r.tokens.add Token(kind: tkHashLBrace, lexeme: "#{", line: startLine, col: startCol)
-      of '_': r.advance(); r.tokens.add Token(kind: tkUnderscore, lexeme: "#_", line: startLine, col: startCol)
+      of '(': r.advance(); r.addToken(tkHashLParen, "#(", startLine, startCol, startByte)
+      of '[': r.advance(); r.addToken(tkHashLBracket, "#[", startLine, startCol, startByte)
+      of '{': r.advance(); r.addToken(tkHashLBrace, "#{", startLine, startCol, startByte)
+      of '_': r.advance(); r.addToken(tkUnderscore, "#_", startLine, startCol, startByte)
       of '"':
         let literal = r.parseRegexLiteral()
-        r.tokens.add Token(kind: tkRegex, lexeme: literal.pattern,
-                           flags: canonicalRegexFlags(literal.flags),
-                           line: startLine, col: startCol)
+        r.addToken(tkRegex, literal.pattern, startLine, startCol, startByte,
+                   canonicalRegexFlags(literal.flags))
       of '<':
         # Block comment #< ... >#
         r.advance()
@@ -737,12 +759,18 @@ proc tokenize(r: var Reader) =
             r.advance()
         if depth > 0:
           r.raiseReadIncomplete("unterminated block comment")
+        if r.captureTrivia:
+          r.addToken(tkBlockComment, r.src[startByte ..< r.pos],
+                     startLine, startCol, startByte)
       of ' ', '\t', '\r', '\n', '\0', '!':
         # Line comment: '#' followed by whitespace, end of line/input, or '!'
         # ('#!' stays a plain line comment so a first-line shebang works).
         # '\0' is nextChar's end-of-input sentinel: a bare trailing '#'.
         while r.pos < r.src.len and r.nextChar() != '\n':
           r.advance()
+        if r.captureTrivia:
+          r.addToken(tkLineComment, r.src[startByte ..< r.pos],
+                     startLine, startCol, startByte)
       else:
         # Every other '#' form is reserved for future reader syntax
         # (design §2.2). Rejecting here keeps '#comment'-without-space a
@@ -758,61 +786,58 @@ proc tokenize(r: var Reader) =
           "unknown '#' form \"" & snippet & "\": '#' starts a comment only " &
           "when followed by whitespace or '!'; other '#' forms are reserved. " &
           "Write \"# " & snippet[1 .. ^1] & "\" for a comment")
-    of '(': r.advance(); r.tokens.add Token(kind: tkLParen, lexeme: "(", line: startLine, col: startCol)
-    of ')': r.advance(); r.tokens.add Token(kind: tkRParen, lexeme: ")", line: startLine, col: startCol)
-    of '[': r.advance(); r.tokens.add Token(kind: tkLBracket, lexeme: "[", line: startLine, col: startCol)
-    of ']': r.advance(); r.tokens.add Token(kind: tkRBracket, lexeme: "]", line: startLine, col: startCol)
+    of '(': r.advance(); r.addToken(tkLParen, "(", startLine, startCol, startByte)
+    of ')': r.advance(); r.addToken(tkRParen, ")", startLine, startCol, startByte)
+    of '[': r.advance(); r.addToken(tkLBracket, "[", startLine, startCol, startByte)
+    of ']': r.advance(); r.addToken(tkRBracket, "]", startLine, startCol, startByte)
     of '{':
       r.advance()
       if r.nextChar() == '{':
         r.advance()
-        r.tokens.add Token(kind: tkHashMapStart, lexeme: "{{", line: startLine, col: startCol)
+        r.addToken(tkHashMapStart, "{{", startLine, startCol, startByte)
       else:
-        r.tokens.add Token(kind: tkLBrace, lexeme: "{", line: startLine, col: startCol)
-    of '}': r.advance(); r.tokens.add Token(kind: tkRBrace, lexeme: "}", line: startLine, col: startCol)
-    of ',': r.advance(); r.tokens.add Token(kind: tkComma, lexeme: ",", line: startLine, col: startCol)
-    of ':': r.advance(); r.tokens.add Token(kind: tkColon, lexeme: ":", line: startLine, col: startCol)
-    of ';': r.advance(); r.tokens.add Token(kind: tkSemi, lexeme: ";", line: startLine, col: startCol)
-    of '~': r.advance(); r.tokens.add Token(kind: tkTilde, lexeme: "~", line: startLine, col: startCol)
-    of '%': r.advance(); r.tokens.add Token(kind: tkPercent, lexeme: "%", line: startLine, col: startCol)
-    of '`': r.advance(); r.tokens.add Token(kind: tkBacktick, lexeme: "`", line: startLine, col: startCol)
+        r.addToken(tkLBrace, "{", startLine, startCol, startByte)
+    of '}': r.advance(); r.addToken(tkRBrace, "}", startLine, startCol, startByte)
+    of ',': r.advance(); r.addToken(tkComma, ",", startLine, startCol, startByte)
+    of ':': r.advance(); r.addToken(tkColon, ":", startLine, startCol, startByte)
+    of ';': r.advance(); r.addToken(tkSemi, ";", startLine, startCol, startByte)
+    of '~': r.advance(); r.addToken(tkTilde, "~", startLine, startCol, startByte)
+    of '%': r.advance(); r.addToken(tkPercent, "%", startLine, startCol, startByte)
+    of '`': r.advance(); r.addToken(tkBacktick, "`", startLine, startCol, startByte)
     of '$':
       r.advance()
       if r.nextChar() == '"':
         # Interpolated string handled by string logic
-        r.tokens.add Token(kind: tkDollar, lexeme: "$", line: startLine, col: startCol)
+        r.addToken(tkDollar, "$", startLine, startCol, startByte)
       else:
-        r.tokens.add Token(kind: tkDollar, lexeme: "$", line: startLine, col: startCol)
+        r.addToken(tkDollar, "$", startLine, startCol, startByte)
     of '^':
       r.advance()
       if r.nextChar() == '^':
         r.advance()
-        r.tokens.add Token(kind: tkCaretCaret, lexeme: "^^", line: startLine, col: startCol)
+        r.addToken(tkCaretCaret, "^^", startLine, startCol, startByte)
       else:
-        r.tokens.add Token(kind: tkCaret, lexeme: "^", line: startLine, col: startCol)
+        r.addToken(tkCaret, "^", startLine, startCol, startByte)
     of '@':
       r.advance()
       if r.nextChar() == '@':
         r.advance()
-        r.tokens.add Token(kind: tkAtAt, lexeme: "@@", line: startLine, col: startCol)
+        r.addToken(tkAtAt, "@@", startLine, startCol, startByte)
       else:
-        r.tokens.add Token(kind: tkAt, lexeme: "@", line: startLine, col: startCol)
+        r.addToken(tkAt, "@", startLine, startCol, startByte)
     of '.':
       if r.src.continuesWith("...", r.pos):
         r.advance(); r.advance(); r.advance()
-        r.tokens.add Token(kind: tkDotDotDot, lexeme: "...", line: startLine, col: startCol)
+        r.addToken(tkDotDotDot, "...", startLine, startCol, startByte)
       else:
         # Fallback to symbol if it's just a dot or something else
         let start = r.pos
         while r.pos < r.src.len and isSymbolChar(r.nextChar()):
           r.advance()
         let lexeme = r.src[start ..< r.pos]
-        r.tokens.add Token(kind: tkSymbol, lexeme: lexeme, line: startLine, col: startCol)
+        r.addToken(tkSymbol, lexeme, startLine, startCol, startByte)
     of '\"':
       # String literal
-      let isInterpolated = r.tokens.len > 0 and r.tokens[^1].kind == tkDollar and
-                           r.tokens[^1].line == startLine and r.tokens[^1].col == startCol - 1
-
       r.advance()
       var lexeme = ""
       if r.src.continuesWith("\"\"", r.pos):
@@ -849,30 +874,22 @@ proc tokenize(r: var Reader) =
         if not closed:
           r.raiseReadIncomplete("unterminated string literal")
 
-      if isInterpolated:
-        # Simple implementation: split by ${...}
-        # A real one would tokenize the expressions inside.
-        # For now, let's just mark it.
-        r.tokens[^1].kind = tkString # Change tkDollar to tkString
-        r.tokens[^1].lexeme = lexeme
-        r.tokens[^1].kind = tkDollar # Revert, we'll handle it in parser
-        # Actually, let's keep it simple for now.
-        # The EBNF says interpolated_string is its own thing.
-
-      r.tokens.add Token(kind: tkString, lexeme: lexeme, line: startLine, col: startCol)
+      # `$` remains its own token so semantic parsing keeps the current
+      # desugaring. The string token owns only the quoted source span; tooling
+      # combines the adjacent pair into one interpolation occurrence.
+      r.addToken(tkString, lexeme, startLine, startCol, startByte)
     of '\'':
       let lexeme = r.parseCharLiteral()
-      r.tokens.add Token(kind: tkChar, lexeme: lexeme, line: startLine, col: startCol)
+      r.addToken(tkChar, lexeme, startLine, startCol, startByte)
     else:
       var bytesLexeme = ""
       if r.tryScanBytesLexeme(bytesLexeme):
-        r.tokens.add Token(kind: tkBytes, lexeme: bytesLexeme, line: startLine, col: startCol)
+        r.addToken(tkBytes, bytesLexeme, startLine, startCol, startByte)
         continue
       var temporalLexeme = ""
       var temporalKind = tkDate
       if r.tryScanTemporalLexeme(temporalLexeme, temporalKind):
-        r.tokens.add Token(kind: temporalKind, lexeme: temporalLexeme,
-                           line: startLine, col: startCol)
+        r.addToken(temporalKind, temporalLexeme, startLine, startCol, startByte)
         continue
 
       # Atoms: numbers, symbols
@@ -888,15 +905,15 @@ proc tokenize(r: var Reader) =
       # Check if it's a byte literal or number.
       var valFloat: float
       if isBytesLexeme(lexeme):
-        r.tokens.add Token(kind: tkBytes, lexeme: lexeme, line: startLine, col: startCol)
+        r.addToken(tkBytes, lexeme, startLine, startCol, startByte)
       elif lexeme.isIntLexeme:
-        r.tokens.add Token(kind: tkInt, lexeme: lexeme, line: startLine, col: startCol)
+        r.addToken(tkInt, lexeme, startLine, startCol, startByte)
       elif parseutils.parseFloat(lexeme, valFloat) == lexeme.len:
-        r.tokens.add Token(kind: tkFloat, lexeme: lexeme, line: startLine, col: startCol)
+        r.addToken(tkFloat, lexeme, startLine, startCol, startByte)
       else:
-        r.tokens.add Token(kind: tkSymbol, lexeme: lexeme, line: startLine, col: startCol)
+        r.addToken(tkSymbol, lexeme, startLine, startCol, startByte)
 
-  r.tokens.add Token(kind: tkEof, lexeme: "", line: r.line, col: r.col)
+  r.addToken(tkEof, "", r.line, r.col, r.pos)
 
 proc tokenKindName*(kind: TokenKind): string =
   case kind
@@ -936,14 +953,27 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkBacktick: "backtick"
   of tkDollar: "dollar"
   of tkUnderscore: "underscore"
+  of tkLineComment: "line_comment"
+  of tkBlockComment: "block_comment"
 
-proc lexAll*(src: string, includeEof = false, sourceName = ""): seq[Token] =
-  ## Tokenize source into significant reader tokens. Whitespace and ordinary
-  ## comments are spacing and are not returned; datum comments are returned as
-  ## the `underscore` token because they affect the parser stream.
-  var r = initReader(src, sourceName)
+proc lexAll*(src: string, includeEof = false, sourceName = "",
+             includeTrivia = false): seq[Token] =
+  ## Tokenize source into reader tokens. Ordinary comments are omitted unless
+  ## `includeTrivia` is set; datum comments are always returned as the
+  ## `underscore` token because they affect the parser stream.
+  var r = initReader(src, sourceName, captureTrivia = includeTrivia)
   r.tokenize()
   result = r.tokens
+  if not includeEof and result.len > 0 and result[^1].kind == tkEof:
+    result.setLen(result.len - 1)
+
+proc lexAllSpanned*(src: string, includeEof = false,
+                    sourceName = "", includeTrivia = false): seq[SpannedToken] =
+  ## Tooling token stream with exact raw byte spans. Normal semantic reads and
+  ## `lexAll` retain the compact Token layout and do not write span fields.
+  var r = initReader(src, sourceName, captureTrivia = includeTrivia)
+  r.tokenize(captureSpans = true)
+  result = r.spannedTokens
   if not includeEof and result.len > 0 and result[^1].kind == tkEof:
     result.setLen(result.len - 1)
 

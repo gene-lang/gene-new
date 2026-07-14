@@ -13,6 +13,8 @@
 
 import std/[strutils, tables, unicode]
 import ../reader, ../types
+import ../source_positions
+export source_positions
 
 const
   # LSP SymbolKind constants (the protocol's numeric encoding).
@@ -29,10 +31,6 @@ const
   skObject* = 19
 
 type
-  LspPos* = object
-    line*: int        ## 0-based
-    character*: int   ## 0-based UTF-16 code units
-
   LspRange* = object
     start*: LspPos
     endPos*: LspPos
@@ -61,81 +59,6 @@ type
     parsed*: bool             ## false => parse error; symbols may be empty
     diagnostics*: seq[LspDiagnostic]
     symbols*: seq[DocSymbol]
-
-# ---------------------------------------------------------------------------
-# Position conversion
-# ---------------------------------------------------------------------------
-
-proc lineStarts*(src: string): seq[int] =
-  ## Byte offset of the start of each line (line 0 at offset 0).
-  result = @[0]
-  for i in 0 ..< src.len:
-    if src[i] == '\n':
-      result.add i + 1
-
-proc lineSlice(src: string, starts: seq[int], line0: int): string =
-  if line0 < 0 or line0 >= starts.len:
-    return ""
-  let first = starts[line0]
-  var last = if line0 + 1 < starts.len: starts[line0 + 1] - 1 else: src.len
-  if last > first and last - 1 < src.len and last - 1 >= 0 and
-      src[last - 1] == '\r':
-    dec last
-  if last < first:
-    last = first
-  src[first ..< last]
-
-proc byteColToUtf16*(lineText: string, byteCol0: int): int =
-  ## 0-based byte column within a line -> 0-based UTF-16 code units.
-  var bytePos = 0
-  var units = 0
-  for rune in lineText.runes:
-    if bytePos >= byteCol0:
-      break
-    bytePos += rune.toUTF8.len
-    units += (if rune.int32 > 0xFFFF'i32: 2 else: 1)
-  units
-
-proc utf16ColToByte*(lineText: string, utf16Col: int): int =
-  ## 0-based UTF-16 code units -> 0-based byte column within a line.
-  var bytePos = 0
-  var units = 0
-  for rune in lineText.runes:
-    if units >= utf16Col:
-      break
-    bytePos += rune.toUTF8.len
-    units += (if rune.int32 > 0xFFFF'i32: 2 else: 1)
-  bytePos
-
-proc toLspPos*(src: string, starts: seq[int], line1, col1: int): LspPos =
-  ## Reader (1-based line, 1-based byte col) -> LSP position.
-  let line0 = max(line1 - 1, 0)
-  LspPos(line: line0,
-         character: byteColToUtf16(lineSlice(src, starts, line0),
-                                   max(col1 - 1, 0)))
-
-proc byteOffset*(starts: seq[int], line1, col1: int): int =
-  ## Reader position -> absolute byte offset.
-  let line0 = max(line1 - 1, 0)
-  if line0 >= starts.len:
-    return (if starts.len > 0: starts[^1] else: 0)
-  starts[line0] + max(col1 - 1, 0)
-
-proc offsetToLspPos*(src: string, starts: seq[int], offset: int): LspPos =
-  var line0 = 0
-  for i in countdown(starts.high, 0):
-    if starts[i] <= offset:
-      line0 = i
-      break
-  LspPos(line: line0,
-         character: byteColToUtf16(lineSlice(src, starts, line0),
-                                   offset - starts[line0]))
-
-proc lspPosToOffset*(src: string, starts: seq[int], pos: LspPos): int =
-  if pos.line < 0 or pos.line >= starts.len:
-    return src.len
-  starts[pos.line] + utf16ColToByte(lineSlice(src, starts, pos.line),
-                                    pos.character)
 
 # ---------------------------------------------------------------------------
 # Raw-text scanning (form extents and name tokens). The scanner respects the

@@ -7,8 +7,6 @@
 ## the built-ins root scope; nothing in this file touches VM dispatch state.
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-  {.passL: "-lncurses".}
-
   type CursesWindow = pointer
 
   proc cInitscr(): CursesWindow {.importc: "initscr", header: "<ncurses.h>".}
@@ -50,41 +48,6 @@ static volatile sig_atomic_t gene_turn_interrupt_pending = 0;
 static struct sigaction gene_turn_interrupt_old;
 static int gene_turn_interrupt_active = 0;
 static int gene_curses_color_pair(short pair) { return COLOR_PAIR(pair); }
-static int gene_curses_enable_mouse(void) {
-#if NCURSES_MOUSE_VERSION > 1
-  mmask_t mask = BUTTON4_PRESSED;
-#ifdef BUTTON5_PRESSED
-  mask |= BUTTON5_PRESSED;
-#endif
-  mouseinterval(0);
-  mousemask(mask, NULL);
-  return 1;
-#else
-  /* ncurses v1 cannot represent xterm's fifth button (wheel down). Keep
-     ncurses out of the decoding path and request SGR mouse reports, which
-     preserve both wheel directions as ordinary escape sequences. */
-  const char *seq = "\033[?1000h\033[?1006h";
-  mousemask(0, NULL);
-  write(STDOUT_FILENO, seq, sizeof("\033[?1000h\033[?1006h") - 1);
-  return 0;
-#endif
-}
-static void gene_curses_disable_mouse(void) {
-  const char *seq = "\033[?1000l\033[?1002l\033[?1003l\033[?1006l";
-  mousemask(0, NULL);
-  if (isatty(STDOUT_FILENO))
-    write(STDOUT_FILENO, seq,
-          sizeof("\033[?1000l\033[?1002l\033[?1003l\033[?1006l") - 1);
-}
-static int gene_curses_take_mouse_scroll(void) {
-  MEVENT event;
-  if (getmouse(&event) != OK) return 0;
-  if (event.bstate & BUTTON4_PRESSED) return 1;
-#ifdef BUTTON5_PRESSED
-  if (event.bstate & BUTTON5_PRESSED) return -1;
-#endif
-  return 0;
-}
 static void gene_curses_setlocale(void) { setlocale(LC_ALL, ""); }
 static void gene_curses_save_termios(void) {
   if (!gene_curses_termios_saved && isatty(STDIN_FILENO)) {
@@ -169,9 +132,6 @@ static void gene_turn_interrupt_end(void) {
 }
 """.}
   proc cColorPair(pair: cshort): cint {.importc: "gene_curses_color_pair".}
-  proc cEnableMouse(): cint {.importc: "gene_curses_enable_mouse".}
-  proc cDisableMouse() {.importc: "gene_curses_disable_mouse".}
-  proc cTakeMouseScroll(): cint {.importc: "gene_curses_take_mouse_scroll".}
   proc cSetLocale() {.importc: "gene_curses_setlocale".}
   proc cSaveTermios() {.importc: "gene_curses_save_termios".}
   proc cRestoreTermios() {.importc: "gene_curses_restore_termios".}
@@ -2226,7 +2186,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     discard cbreak()
     discard noecho()
     discard keypad(stdscr, 1)
-    discard cEnableMouse()
+    discard tui_terminal.enableMouse()
     discard curs_set(1)
     if not cursesPasteReady:
       stdout.write("\e[?2004h")
@@ -2247,7 +2207,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         stdout.flushFile()
         cursesPasteReady = false
       timeout(-1)
-      cDisableMouse()
+      tui_terminal.disableMouse()
       discard keypad(stdscr, 0)
       discard cEcho()
       discard nocbreak()
@@ -2565,12 +2525,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc mouseScrollFromEsc(seq: string): int =
     ## SGR mouse reports use button 64/65 for wheel up/down. This path is used
     ## where ncurses' mouse protocol cannot represent the fifth button.
-    if seq.startsWith("[<64;") and seq.endsWith("M"):
-      1
-    elif seq.startsWith("[<65;") and seq.endsWith("M"):
-      -1
-    else:
-      0
+    tui_terminal.mouseScrollFromEscape(seq)
 
   proc cursesEscapePressed(): bool =
     ## Scan currently queued input for a standalone Escape without stealing
@@ -2675,7 +2630,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
               maxCursesOutputScroll(output, input, max(1, int(LINES)),
                                     max(1, int(COLS))))
           of KeyMouse:
-            let direction = int(cTakeMouseScroll())
+            let direction = tui_terminal.takeMouseScroll()
             if direction > 0:
               outputScroll = min(
                 maxCursesOutputScroll(output, input, max(1, int(LINES)),
@@ -3053,7 +3008,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of KeyHome: props["type"] = newStr("home")
     of KeyEnd: props["type"] = newStr("end")
     of KeyMouse:
-      let direction = int(cTakeMouseScroll())
+      let direction = tui_terminal.takeMouseScroll()
       props["type"] = newStr(
         if direction > 0: "scroll_up"
         elif direction < 0: "scroll_down"

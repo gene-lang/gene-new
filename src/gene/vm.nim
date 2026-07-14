@@ -4,6 +4,9 @@ import std/[algorithm, dynlib, json, locks, math, monotimes, net, os, osproc,
             sets, strutils, tables, times, unicode]
 import ./[compiler, diagnostics, equality, gir, logging, printer, reader, types]
 
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  import ./tui/terminal as tui_terminal
+
 when not defined(geneWasm):
   import std/re as nre
 

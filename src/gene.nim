@@ -14,6 +14,7 @@ import std/[algorithm, os, strutils, tables]
 import gene/[compiler, diagnostics, fmt, gir, printer, reader, repl,
              repl_curses, logging, logging_config, types, vm]
 import gene/lsp/server as lsp_server
+import gene/viewer/app as viewer_app
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -29,6 +30,7 @@ proc usage() =
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
+  echo "  gene view [options] <file.gene> browse source structure and edit externally"
   echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
 
 proc readSourceFile(path: string): string =
@@ -104,6 +106,52 @@ proc commandArgs(first: int): seq[string] =
   if first <= paramCount():
     for i in first .. paramCount():
       result.add paramStr(i)
+
+proc parseViewCli(): viewer_app.ViewerOptions =
+  result.col = 1
+  var i = 2
+  while i <= paramCount():
+    let arg = paramStr(i)
+    case arg
+    of "--readonly": result.readonly = true
+    of "--no-color": result.noColor = true
+    of "--editor", "--path", "--line":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, arg & " expects a value")
+      let value = paramStr(i)
+      case arg
+      of "--editor": result.editor = value
+      of "--path": result.initialPath = value
+      of "--line":
+        let parts = value.split(':', maxsplit = 1)
+        result.line = parseInt(parts[0])
+        if parts.len == 2: result.col = parseInt(parts[1])
+        if result.line <= 0 or result.col <= 0:
+          raise newException(ValueError, "--line expects positive N[:COLUMN]")
+      else: discard
+    else:
+      if arg.startsWith("--editor="):
+        result.editor = arg[9 .. ^1]
+      elif arg.startsWith("--path="):
+        result.initialPath = arg[7 .. ^1]
+      elif arg.startsWith("--line="):
+        let parts = arg[7 .. ^1].split(':', maxsplit = 1)
+        result.line = parseInt(parts[0])
+        if parts.len == 2: result.col = parseInt(parts[1])
+        if result.line <= 0 or result.col <= 0:
+          raise newException(ValueError, "--line expects positive N[:COLUMN]")
+      elif arg.startsWith("-"):
+        raise newException(ValueError, "unknown view option: " & arg)
+      elif result.path.len == 0:
+        result.path = arg
+      else:
+        raise newException(ValueError, "view accepts one file path")
+    inc i
+  if result.path.len == 0:
+    raise newException(ValueError, "'view' needs a file path")
+  if result.initialPath.len > 0 and result.line > 0:
+    raise newException(ValueError, "--path and --line are mutually exclusive")
 
 type RunCli = object
   path: string
@@ -495,6 +543,12 @@ proc main() =
       stderr.writeLine "Error: 'doc' needs a file path"
       quit(1)
     cmdDoc(paramStr(2))
+  of "view":
+    try:
+      quit(viewer_app.runViewer(parseViewCli()))
+    except CatchableError as error:
+      stderr.writeLine "Error: " & error.msg
+      quit(1)
   of "lsp":
     configureLspLogging()
     quit(runLspServer())
