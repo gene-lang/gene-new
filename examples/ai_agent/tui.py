@@ -83,7 +83,7 @@ class Config:
         return cls(
             auth_token=token,
             base=base,
-            model=source.get("OPENAI_MODEL", "gpt-5.4-mini"),
+            model=source.get("OPENAI_MODEL", "gpt-5.6-terra"),
             api_flavor=source.get("OPENAI_API", "responses" if base == CODEX_BASE else "chat"),
             approve_all=source.get("GENE_AGENT_APPROVE_ALL", "1"),
             state_dir=source.get("GENE_AGENT_STATE", ""),

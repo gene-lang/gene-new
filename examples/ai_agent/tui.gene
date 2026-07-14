@@ -94,7 +94,7 @@
   (set auth_token (env? Env "CODEX_ACCESS_TOKEN")))
 (var codex_base "https://chatgpt.com/backend-api/codex")
 (var base    (get_env Env "OPENAI_BASE_URL" codex_base))
-(var model   (get_env Env "OPENAI_MODEL" "gpt-5.4-mini"))
+(var model   (get_env Env "OPENAI_MODEL" "gpt-5.6-terra"))
 # Wire shape: the Codex backend speaks the Responses API; generic
 # OpenAI-compatible endpoints (MiniMax, DeepSeek, vLLM, ...) speak Chat
 # Completions. Default follows the backend; override with

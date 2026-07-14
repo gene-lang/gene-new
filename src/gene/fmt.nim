@@ -15,7 +15,7 @@
 ## Formatted output must re-parse to the same canonical forms as the input
 ## (`tests/test_cli.nim` asserts parse-equivalence and idempotence).
 
-import std/[strutils, tables]
+import std/[strutils]
 import ./reader, ./types, ./printer
 import ./lsp/analysis as span
 
