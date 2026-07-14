@@ -386,6 +386,49 @@ suite "cli — gene run":
     check "tool list_dir" in ran.output
     check "verdict: roundtrip-ok" in ran.output
 
+  test "ai agent surfaces non-success HTTP responses":
+    ## A completed native HTTP transfer has process status 0 even for a 401.
+    ## The agent must report the HTTP error instead of accepting its JSON body
+    ## as an empty model response and appearing to hang at a blank prompt.
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_agent_unauthorized.gene", """
+(import net/http [Server serve Response])
+
+(fn handle [req]
+  (Response ^status 401
+            ^headers {^content-type "application/json"}
+            ^body "{\"detail\":\"Unauthorized\"}"))
+
+(serve (Server ^host "127.0.0.1" ^port 8996) handle ^max_requests 1)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running:
+        server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(8996), timeout = 500)
+          s.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let ran = execCmdOnce("env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                        "OPENAI_AUTH_TOKEN=dummy OPENAI_API=responses " &
+                        "OPENAI_BASE_URL=http://127.0.0.1:8996 " &
+                        "OPENAI_MODEL=fake-responses " &
+                        shellQuote(geneExe) &
+                        " run examples/ai_agent/tui.gene 'say hi'")
+    check ran.exitCode == 0
+    check "OpenAI API error 401: Unauthorized" in ran.output
+
   test "ai agent redacts the api token out of tool output before the model sees it":
     ## §8.5 secret-redaction: a run_shell tool whose OUTPUT contains the token
     ## must not leak it into the next model request. Turn 1 runs

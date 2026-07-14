@@ -1718,6 +1718,28 @@ State that broader behavior is unverified when no matching successful check ran.
   (var code (if (== resp/error/code void) "" $" (${resp/error/code})"))
   $"OpenAI API error ${status}: ${message}${code}")
 
+# Native HTTP distinguishes transport success from HTTP success: a completed
+# request has ^status 0 even when the server answered 4xx/5xx. Normalize those
+# responses before either wire decoder sees them, otherwise a short JSON error
+# body can look like a successful response with no assistant output.
+(fn http_status_error_text [result]
+  (var status result/http_status)
+  (if (|| (== status void)
+          (&& (>= status 200) (< status 300)))
+    nil
+    (try
+      (do
+        (var body (parse result/stdout))
+        (var message
+          (if (present? body/error/message)
+            body/error/message
+            (if (present? body/detail)
+              body/detail
+              "request failed")))
+        (redact $"OpenAI API error ${status}: ${message}"))
+    catch (JsonError ^message _)
+      $"OpenAI API error ${status}: request failed")))
+
 # Strip one leading "data: " prefix. Rejoin the remaining pieces so a payload
 # that itself contains "data: " (e.g. a streamed code snippet) survives intact.
 (fn sse_data_payload [line : Str]
@@ -1824,22 +1846,26 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (!= r/status 0)
     {^agent_error (redact $"HTTP transport failed (${r/status}): ${r/stderr}")}
     (do
-      (var resp
-        (if (Cell/get saw_sse)
-          (sse_build_response output output_text final)
-          (try
-            (parse r/stdout)
-          catch (JsonError ^message m)
-            {^agent_error (redact $"OpenAI API returned invalid JSON: ${m}")})))
-      (if (== resp/error void)
-        (if (== resp/status "failed")
-          {^agent_error (redact (api_error_text resp))}
-          resp)
-        (if (== resp/error nil)
-          (if (== resp/status "failed")
-            {^agent_error (redact (api_error_text resp))}
-            resp)
-          {^agent_error (redact (api_error_text resp))})))))
+      (var http_error (http_status_error_text r))
+      (if (present? http_error)
+        {^agent_error http_error}
+        (do
+          (var resp
+            (if (Cell/get saw_sse)
+              (sse_build_response output output_text final)
+              (try
+                (parse r/stdout)
+              catch (JsonError ^message m)
+                {^agent_error (redact $"OpenAI API returned invalid JSON: ${m}")})))
+          (if (== resp/error void)
+            (if (== resp/status "failed")
+              {^agent_error (redact (api_error_text resp))}
+              resp)
+            (if (== resp/error nil)
+              (if (== resp/status "failed")
+                {^agent_error (redact (api_error_text resp))}
+                resp)
+              {^agent_error (redact (api_error_text resp))})))))))
 
 # -----------------------------------------------------------------------------
 # Chat Completions wire shape, for OpenAI-compatible endpoints (MiniMax,
@@ -2018,14 +2044,18 @@ State that broader behavior is unverified when no matching successful check ran.
                    (chat_handle_payload payload text calls callmax err render_stream)))))
   (if (!= r/status 0)
     {^agent_error (redact $"HTTP transport failed (${r/status}): ${r/stderr}")}
-    (if (present? (Cell/get err))
-      {^agent_error (redact (Cell/get err))}
-      (if (Cell/get saw_sse)
-        (chat_build_response text calls callmax)
-        (try
-          (chat_response_from_json (parse r/stdout))
-        catch (JsonError ^message m)
-          {^agent_error (redact $"API returned invalid JSON: ${m}")})))))
+    (do
+      (var http_error (http_status_error_text r))
+      (if (present? http_error)
+        {^agent_error http_error}
+        (if (present? (Cell/get err))
+          {^agent_error (redact (Cell/get err))}
+          (if (Cell/get saw_sse)
+            (chat_build_response text calls callmax)
+            (try
+              (chat_response_from_json (parse r/stdout))
+            catch (JsonError ^message m)
+              {^agent_error (redact $"API returned invalid JSON: ${m}")})))))))
 
 (var live_transport
   (if (== api_flavor "chat") chat_live_transport responses_live_transport))
