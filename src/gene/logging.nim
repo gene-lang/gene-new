@@ -124,8 +124,25 @@ var hostWriter: LogWriteCallback
 var inLogWrite {.threadvar.}: bool
 when compileOption("threads"):
   var nextSequence: Atomic[uint64]
+  var consoleSinkSuppressed: Atomic[bool]
 else:
   var nextSequence: uint64
+  var consoleSinkSuppressed: bool
+
+proc setConsoleLogSuppressed*(suppressed: bool) =
+  ## A full-screen terminal owner cannot safely share stdout/stderr with a
+  ## console sink: an out-of-band newline invalidates ncurses' physical-screen
+  ## model and corrupts the user's input row. File/callback sinks remain live.
+  when compileOption("threads"):
+    consoleSinkSuppressed.store(suppressed, moRelease)
+  else:
+    consoleSinkSuppressed = suppressed
+
+proc consoleLogSuppressed(): bool {.inline.} =
+  when compileOption("threads"):
+    consoleSinkSuppressed.load(moAcquire)
+  else:
+    consoleSinkSuppressed
 
 proc pinRegistry(registry: LoggingRegistry) {.inline.} =
   ## Emscripten's ORC lowering does not keep this module-global ref alive
@@ -571,6 +588,7 @@ proc colorPrefix(level: LogLevel): string =
 
 proc sinkWrite(sink: LogSink, event: LogEvent, rendered: string) =
   if sink == nil or sink.unhealthy: return
+  if sink.kind == lskConsole and consoleLogSuppressed(): return
   when compileOption("threads"):
     acquire(sink.lock)
     defer: release(sink.lock)

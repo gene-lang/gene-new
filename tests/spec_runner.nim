@@ -3032,6 +3032,18 @@ suite "spec — actors from design":
                   newGlobalScope())
 
 suite "spec — Env and eval from design":
+  test "incremental REPL sessions retain declarations and incomplete source":
+    check_eval("(import repl [open eval_source close]) " &
+               "(var s (open (env ^bindings {^base 40}))) " &
+               "(var declared (eval_source s \"(var x (+ base 1))\")) " &
+               "(var used (eval_source s \"(+ x 1)\")) " &
+               "(var partial (eval_source s \"(do\")) " &
+               "(var completed (eval_source s \"(+ x 2))\")) " &
+               "(close s) (close s) " &
+               "[declared/status declared/text used/status used/text " &
+               " partial/status completed/status completed/text]",
+               "[\"ok\" \"41\" \"ok\" \"42\" \"incomplete\" \"ok\" \"43\"]")
+
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &
                "(var child (base ~ Env/extend {^y 20})) " &

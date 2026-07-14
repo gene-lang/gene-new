@@ -6,6 +6,10 @@
 ## is registered by `registerStdlibNamespaces`, which buildBuiltins calls on
 ## the built-ins root scope; nothing in this file touches VM dispatch state.
 
+type CursesPane = object
+  title: string
+  output: string
+
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   type CursesWindow = pointer
 
@@ -19,7 +23,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc keypad(win: CursesWindow, bf: cint): cint {.importc, header: "<ncurses.h>".}
   proc curs_set(visibility: cint): cint {.importc, header: "<ncurses.h>".}
   proc reset_shell_mode(): cint {.importc, header: "<ncurses.h>".}
-  proc wclear(win: CursesWindow): cint {.importc, header: "<ncurses.h>".}
+  proc werase(win: CursesWindow): cint {.importc, header: "<ncurses.h>".}
   proc refresh(): cint {.importc, header: "<ncurses.h>".}
   proc cMove(y, x: cint): cint {.importc: "move", header: "<ncurses.h>".}
   proc clrtoeol(): cint {.importc, header: "<ncurses.h>".}
@@ -2181,6 +2185,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       if cInitscr() == nil:
         raise newException(GeneError, "os/read_input could not initialize ncurses")
       cursesInputActive = true
+      setConsoleLogSuppressed(true)
       cursesColorsReady = false
       cursesPasteReady = false
     discard cbreak()
@@ -2216,6 +2221,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       discard cEndwin()
       discard reset_shell_mode()
       cursesInputActive = false
+      setConsoleLogSuppressed(false)
       cursesColorsReady = false
       cursesPasteReady = false
     cRestoreTermios()
@@ -2384,14 +2390,81 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let inputRows = min(inputTotal, max(1, height - 3))
     max(0, height - inputRows - 3)
 
+  proc cursesMainOutputWidth(width, paneCount: int): int =
+    if paneCount == 0 or width < 48:
+      width
+    else:
+      width - max(18, width div 3) - 1
+
   proc maxCursesOutputScroll(output, input: string,
-                             height, width: int): int =
-    max(0, transcriptRows(output, width).len -
+                             height, width, paneCount: int): int =
+    let outputWidth = cursesMainOutputWidth(width, paneCount)
+    max(0, transcriptRows(output, outputWidth).len -
            cursesOutputRows(input, height))
 
+  proc drawCursesTranscript(outputLines: openArray[CursesTranscriptRow],
+                            top, left, height, width, outputScroll: int) =
+    if height <= 0 or width <= 0:
+      return
+    let effectiveScroll = min(max(0, outputScroll),
+                              max(0, outputLines.len - height))
+    let firstOutput =
+      if outputLines.len > height:
+        max(0, outputLines.len - height - effectiveScroll)
+      else:
+        0
+    for row in 0 ..< height:
+      let idx = firstOutput + row
+      if idx < outputLines.len:
+        let line = outputLines[idx]
+        discard cMove((top + row).cint, left.cint)
+        withCursesColor(line.pair,
+          proc() =
+            addCursesText(line.text, width))
+
+  proc drawCursesPanes(panes: openArray[CursesPane], outputRows, width: int) =
+    if panes.len == 0 or outputRows <= 0 or width < 48:
+      return
+    let mainWidth = cursesMainOutputWidth(width, panes.len)
+    let divider = mainWidth
+    let paneWidth = width - divider - 1
+    for row in 0 ..< outputRows:
+      discard cMove(row.cint, divider.cint)
+      withCursesColor(PairSeparator,
+        proc() = addCursesText("│", 1))
+    for i, pane in panes:
+      let paneTitle = pane.title
+      let paneOutput = pane.output
+      let paneTop = (outputRows * i) div panes.len
+      let paneBottom = (outputRows * (i + 1)) div panes.len
+      let paneHeight = paneBottom - paneTop
+      if paneHeight <= 0:
+        continue
+      discard cMove(paneTop.cint, divider.cint)
+      withCursesColor(PairSeparator,
+        proc() =
+          addCursesText(if i == 0: "│" else: "├", 1)
+          let prefix = if i == 0: " " else: "─ "
+          addCursesText(prefix & paneTitle, paneWidth))
+      if paneHeight > 1:
+        let rows = transcriptRows(paneOutput, paneWidth)
+        let bodyHeight = paneHeight - 1
+        let first = max(0, rows.len - bodyHeight)
+        for bodyRow in 0 ..< bodyHeight:
+          let idx = first + bodyRow
+          if idx < rows.len:
+            discard cMove((paneTop + 1 + bodyRow).cint,
+                          (divider + 1).cint)
+            withCursesColor(rows[idx].pair,
+              proc() = addCursesText(rows[idx].text, paneWidth))
+
   proc drawCursesInput(prompt, status, output, input: string, cursor: int,
-                       outputScroll = 0) =
-    discard wclear(stdscr)
+                       outputScroll = 0,
+                       panes: openArray[CursesPane] = []) =
+    # wclear also sets clearok, forcing ncurses to clear and repaint the
+    # physical terminal on every keypress. Erase only the virtual window so
+    # refresh can emit the small cell diff and avoid visible flashing.
+    discard werase(stdscr)
     let height = max(1, int(LINES))
     let width = max(1, int(COLS))
     if height < 4:
@@ -2422,22 +2495,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let topSepRow = inputTop - 1
     let outputRows = max(0, topSepRow)
 
-    let outputLines = transcriptRows(output, width)
+    let mainOutputWidth = cursesMainOutputWidth(width, panes.len)
+    let outputLines = transcriptRows(output, mainOutputWidth)
     let effectiveScroll = min(max(0, outputScroll),
                               max(0, outputLines.len - outputRows))
-    let firstOutput =
-      if outputLines.len > outputRows:
-        max(0, outputLines.len - outputRows - effectiveScroll)
-      else:
-        0
-    for row in 0 ..< outputRows:
-      discard cMove(row.cint, 0)
-      let idx = firstOutput + row
-      if idx < outputLines.len:
-        withCursesColor(outputLines[idx].pair,
-          proc() =
-            addCursesText(outputLines[idx].text, width))
-      discard clrtoeol()
+    drawCursesTranscript(outputLines, 0, 0, outputRows, mainOutputWidth,
+                         effectiveScroll)
+    drawCursesPanes(panes, outputRows, width)
 
     drawSeparator(topSepRow, width)
     for row in 0 ..< inputRows:
@@ -2590,7 +2654,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc readCursesInput(prompt, status, output: string,
                        multiline, persistent: bool,
-                       history: openArray[string]): Value =
+                       history: openArray[string],
+                       panes: openArray[CursesPane]): Value =
     openCursesInput()
     try:
       let statusText =
@@ -2603,7 +2668,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       var historyIndex = history.len
       var draft = ""
       while true:
-        drawCursesInput(prompt, statusText, output, input, cursor, outputScroll)
+        drawCursesInput(prompt, statusText, output, input, cursor, outputScroll,
+                        panes)
         let ch = getch()
         if pasteMode:
           if ch == KeyEsc:
@@ -2628,13 +2694,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
           of KeyResize:
             outputScroll = min(outputScroll,
               maxCursesOutputScroll(output, input, max(1, int(LINES)),
-                                    max(1, int(COLS))))
+                                    max(1, int(COLS)), panes.len))
           of KeyMouse:
             let direction = tui_terminal.takeMouseScroll()
             if direction > 0:
               outputScroll = min(
                 maxCursesOutputScroll(output, input, max(1, int(LINES)),
-                                      max(1, int(COLS))),
+                                      max(1, int(COLS)), panes.len),
                 outputScroll + 3)
             elif direction < 0:
               outputScroll = max(0, outputScroll - 3)
@@ -2643,7 +2709,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
               cursesOutputRows(input, max(1, int(LINES))) - 1)
             outputScroll = min(
               maxCursesOutputScroll(output, input, max(1, int(LINES)),
-                                    max(1, int(COLS))),
+                                    max(1, int(COLS)), panes.len),
               outputScroll + page)
           of KeyPageDown:
             let page = max(1,
@@ -2684,7 +2750,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             if mouseDirection > 0:
               outputScroll = min(
                 maxCursesOutputScroll(output, input, max(1, int(LINES)),
-                                      max(1, int(COLS))),
+                                      max(1, int(COLS)), panes.len),
                 outputScroll + 3)
             elif mouseDirection < 0:
               outputScroll = max(0, outputScroll - 3)
@@ -2693,7 +2759,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                 cursesOutputRows(input, max(1, int(LINES))) - 1)
               outputScroll = min(
                 maxCursesOutputScroll(output, input, max(1, int(LINES)),
-                                      max(1, int(COLS))),
+                                      max(1, int(COLS)), panes.len),
                 outputScroll + page)
             elif navigationKey == KeyPageDown:
               let page = max(1,
@@ -2722,6 +2788,16 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       if not persistent:
         closeCursesInput()
 
+proc parseCursesPanes(name: string, value: Value): seq[CursesPane] =
+  requireList(name & " ^panes", value)
+  for item in value.listItems:
+    requirePropMap(name & " ^panes item", item)
+    let title = item.mapEntries.getOrDefault("title", VOID)
+    let output = item.mapEntries.getOrDefault("output", VOID)
+    requireStr(name & " ^panes item ^title", title)
+    requireStr(name & " ^panes item ^output", output)
+    result.add CursesPane(title: title.strVal, output: output.strVal)
+
 proc readInputNative(name: string, call: ptr NativeCall,
                      persistentDefault, persistentFixed: bool): Value =
   var prompt = ""
@@ -2730,6 +2806,7 @@ proc readInputNative(name: string, call: ptr NativeCall,
   var multiline = true
   var persistent = persistentDefault
   var history: seq[string]
+  var panes: seq[CursesPane]
   if call != nil:
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
@@ -2752,6 +2829,8 @@ proc readInputNative(name: string, call: ptr NativeCall,
         for item in v.listItems:
           requireStr(name & " ^history item", item)
           history.add item.strVal
+      of "panes":
+        panes = parseCursesPanes(name, v)
       of "persistent":
         if persistentFixed:
           raise newException(GeneError,
@@ -2765,7 +2844,7 @@ proc readInputNative(name: string, call: ptr NativeCall,
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if isatty(STDIN_FILENO) != 0:
       return readCursesInput(prompt, status, output, multiline, persistent,
-                             history)
+                             history, panes)
   if prompt.len > 0:
     stdout.write(prompt)
     stdout.flushFile()
@@ -2785,6 +2864,7 @@ proc refreshInputNative(name: string, call: ptr NativeCall): Value =
   var prompt = ""
   var status = ""
   var output = ""
+  var panes: seq[CursesPane]
   if call != nil:
     for i, argName in call[].namedNames:
       let v = call[].namedValues[i]
@@ -2798,6 +2878,8 @@ proc refreshInputNative(name: string, call: ptr NativeCall): Value =
       of "output":
         requireStr(name & " ^output", v)
         output = v.strVal
+      of "panes":
+        panes = parseCursesPanes(name, v)
       else:
         raise newException(GeneError,
           name & " got unexpected named argument: " & argName)
@@ -2807,7 +2889,7 @@ proc refreshInputNative(name: string, call: ptr NativeCall): Value =
       let statusText =
         if status.len > 0: status
         else: defaultInputStatus(true)
-      drawCursesInput(prompt, statusText, output, "", 0)
+      drawCursesInput(prompt, statusText, output, "", 0, panes = panes)
   NIL
 
 proc biOsRefreshInput(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -2925,6 +3007,8 @@ proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   var output = ""
   var input = ""
   var cursor = -1
+  var outputScroll = 0
+  var panes: seq[CursesPane]
   if call != nil:
     for i, name in call[].namedNames:
       let value = call[].namedValues[i]
@@ -2943,6 +3027,13 @@ proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
         input = value.strVal
       of "cursor":
         cursor = int(requireInt64("curses/draw ^cursor", value))
+      of "output_scroll":
+        outputScroll = int(requireInt64("curses/draw ^output_scroll", value))
+        if outputScroll < 0:
+          raiseCursesError("curses/draw ^output_scroll must be non-negative",
+                           scope)
+      of "panes":
+        panes = parseCursesPanes("curses/draw", value)
       else:
         raiseCursesError("curses/draw got unexpected named argument: " & name,
                          scope)
@@ -2950,7 +3041,8 @@ proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     cursor = input.len
   cursor = min(cursor, input.len)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    drawCursesInput(prompt, status, output, input, cursor)
+    drawCursesInput(prompt, status, output, input, cursor, outputScroll,
+                    panes)
   NIL
 
 proc biCursesReadInput(args: openArray[Value],
@@ -3005,6 +3097,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of KeyRight: props["type"] = newStr("right")
     of KeyUp: props["type"] = newStr("up")
     of KeyDown: props["type"] = newStr("down")
+    of KeyPageUp: props["type"] = newStr("page_up")
+    of KeyPageDown: props["type"] = newStr("page_down")
     of KeyHome: props["type"] = newStr("home")
     of KeyEnd: props["type"] = newStr("end")
     of KeyMouse:
@@ -3020,6 +3114,42 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         props["text"] = newStr($char(ch))
       else:
         props["type"] = newStr("unknown")
+    newMap(props)
+
+  proc cursesEscapeEvent(seq: string): Value =
+    let mouseDirection = mouseScrollFromEsc(seq)
+    let navigationKey = navigationKeyFromEsc(seq)
+    if mouseDirection > 0:
+      var props = initPropTable()
+      props["code"] = newInt(KeyEsc)
+      props["rows"] = newInt(max(1, int(LINES)))
+      props["cols"] = newInt(max(1, int(COLS)))
+      props["type"] = newStr("scroll_up")
+      return newMap(props)
+    if mouseDirection < 0:
+      var props = initPropTable()
+      props["code"] = newInt(KeyEsc)
+      props["rows"] = newInt(max(1, int(LINES)))
+      props["cols"] = newInt(max(1, int(COLS)))
+      props["type"] = newStr("scroll_down")
+      return newMap(props)
+    if navigationKey != CursesErr:
+      return cursesEvent(navigationKey)
+    var props = initPropTable()
+    props["code"] = newInt(KeyEsc)
+    props["rows"] = newInt(max(1, int(LINES)))
+    props["cols"] = newInt(max(1, int(COLS)))
+    if isPasteStartSequence(seq):
+      props["type"] = newStr("paste_start")
+    elif isPasteEndSequence(seq):
+      props["type"] = newStr("paste_end")
+    elif isShiftEnterSequence(seq):
+      props["type"] = newStr("newline")
+    elif seq.len == 0:
+      props["type"] = newStr("escape")
+    else:
+      props["type"] = newStr("escape_sequence")
+      props["sequence"] = newStr(seq)
     newMap(props)
 
   proc pollCursesInputCompletions() =
@@ -3044,7 +3174,17 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         if ch != CursesErr:
           consumedInput = true
           var event = NIL
-          if ch >= 0 and ch <= 255:
+          if ch == KeyEsc:
+            cursesEventText.setLen(0)
+            cursesEventTextExpected = 0
+            event = cursesEscapeEvent(readEscSequence())
+          elif ch == KeyCtrlD or ch == KeyEnter or ch == KeyReturn or
+               ch == KeyNcursesEnter or ch == KeyBackspace or ch == 127 or
+               ch == 8:
+            cursesEventText.setLen(0)
+            cursesEventTextExpected = 0
+            event = cursesEvent(ch)
+          elif ch >= 0 and ch <= 255:
             let byte = char(ch)
             if cursesEventText.len > 0:
               cursesEventText.add byte
@@ -3107,6 +3247,104 @@ else:
     NIL
 
 # --- repl: reusable interactive evaluator ---
+
+type IncrementalReplSession = ref object
+  scope: Scope
+  pendingSource: string
+  pendingError: string
+  closed: bool
+
+var incrementalReplSessions: seq[IncrementalReplSession]
+
+proc incrementalReplId(name: string, value: Value, scope: Scope,
+                       requireOpen = true): int =
+  if value.kind != vkNode or value.head.kind != vkType or
+      value.head.typeName != "ReplSession":
+    raise newException(GeneError, name & " expects a repl/Session")
+  let id = value.props.getOrDefault("id", VOID)
+  let closed = value.props.getOrDefault("closed", VOID)
+  if id.kind != vkInt or closed.kind != vkCell or id.intVal <= 0 or
+      id.intVal > incrementalReplSessions.len:
+    raise newException(GeneError, name & " received an invalid repl/Session")
+  result = int(id.intVal) - 1
+  let session = incrementalReplSessions[result]
+  if session == nil or (requireOpen and
+      (session.closed or closed.cellValue.isTruthy)):
+    raise newException(GeneError, name & ": Session is closed")
+
+proc replEvalResult(status, text: string): Value =
+  var props = initPropTable()
+  props["status"] = newStr(status)
+  props["text"] = newStr(text)
+  newMap(props)
+
+proc biReplOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("repl/open", args)
+  if args[0].kind != vkEnv:
+    raise newException(GeneError, "repl/open expects an Env")
+  let dispatchScope = if call == nil: nil else: call[].dispatchScope
+  let evalScope = incrementalReplScopeForEnv(args[0])
+  let session = IncrementalReplSession(scope: evalScope)
+  incrementalReplSessions.add session
+  var props = initPropTable()
+  props["id"] = newInt(incrementalReplSessions.len)
+  props["closed"] = newCell(FALSE)
+  newNode(builtInTypeHead(dispatchScope, "ReplSession"), props = props)
+
+proc biReplEval(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "repl/eval_source expects (repl/Session, Str)")
+  let dispatchScope = if call == nil: nil else: call[].dispatchScope
+  let id = incrementalReplId("repl/eval_source", args[0], dispatchScope)
+  requireStr("repl/eval_source source", args[1])
+  let session = incrementalReplSessions[id]
+  let source =
+    if session.pendingSource.len == 0: args[1].strVal
+    else: session.pendingSource & "\n" & args[1].strVal
+  if source.strip().len == 0:
+    return replEvalResult("ok", "")
+  try:
+    let value = run(compileEvalSource(source, useLocalSlots = false,
+                                      sourceName = "<repl-pane>"),
+                    session.scope)
+    session.pendingSource.setLen(0)
+    session.pendingError.setLen(0)
+    replEvalResult("ok", value.print())
+  except ReadIncompleteError as error:
+    session.pendingSource = source
+    session.pendingError = error.msg
+    replEvalResult("incomplete", error.msg)
+  except ReadError as error:
+    session.pendingSource.setLen(0)
+    session.pendingError.setLen(0)
+    replEvalResult("error", formatDiagnostic("Read error", error.msg,
+      SourceLoc(sourceName: error.sourceName, line: error.line,
+                col: error.col)))
+  except GenePanic as error:
+    session.pendingSource.setLen(0)
+    session.pendingError.setLen(0)
+    replEvalResult("panic", "Panic: " & error.msg)
+  except GeneError as error:
+    session.pendingSource.setLen(0)
+    session.pendingError.setLen(0)
+    replEvalResult("error", formatDiagnostic("Error", error.msg, error.loc))
+
+proc biReplClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("repl/close", args)
+  let dispatchScope = if call == nil: nil else: call[].dispatchScope
+  let id = incrementalReplId("repl/close", args[0], dispatchScope,
+                             requireOpen = false)
+  let closed = args[0].props["closed"]
+  if not closed.cellValue.isTruthy:
+    let session = incrementalReplSessions[id]
+    if session != nil:
+      session.closed = true
+      session.scope = nil
+      session.pendingSource.setLen(0)
+      session.pendingError.setLen(0)
+    closed.setCellValue(TRUE)
+  NIL
 
 proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
@@ -6391,7 +6629,21 @@ proc registerStdlibNamespaces(root: Scope) =
 
   # repl: shared declaration-persistent REPL loop used by the CLI wrapper and
   # interactive programs that need a scoped sub-REPL.
+  let replSessionType = newType("ReplSession", NIL,
+    @[TypeField(name: "id", optional: false, typeExpr: newSym("Int"),
+                scope: root),
+      TypeField(name: "closed", optional: false, typeExpr: newSym("Any"),
+                scope: root)], @[], root)
+  root.define("ReplSession", replSessionType)
   let replScope = newScope(root)
+  replScope.define("Session", replSessionType)
+  replScope.define("open", newNativeCallFn("repl/open", biReplOpen,
+                                            acceptsNamed = false))
+  replScope.define("eval_source",
+    newNativeCallFn("repl/eval_source", biReplEval,
+                    acceptsNamed = false))
+  replScope.define("close", newNativeCallFn("repl/close", biReplClose,
+                                             acceptsNamed = false))
   replScope.define("run", newNativeCallFn("repl/run", biReplRun))
   root.define("repl", newNamespace("repl", replScope))
 

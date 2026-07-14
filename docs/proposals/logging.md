@@ -410,6 +410,9 @@ Rules:
 - Color modes are `auto`, `always`, and `never`. `auto` respects TTY status,
   `NO_COLOR`, and `TERM=dumb`.
 - The sink does not own or close process stdio.
+- A full-screen terminal owner may temporarily suppress console sinks while it
+  owns stdout/stderr. This avoids corrupting the terminal library's physical
+  screen model; file and callback sinks continue receiving the same events.
 - TUI applications should normally route diagnostics to a file. Writing
   arbitrary diagnostic lines behind ncurses corrupts the display.
 

@@ -204,16 +204,67 @@ suite "cli — gene run":
     check "\"level\":\"info\"" in logged
     check "what's in this directory?" notin logged
 
-  test "ai agent slash sh opens a shell loop":
+  test "ai agent slash sh opens a cancellable shell pane":
     buildGeneCli()
-    let command = "printf '/sh\\nprintf hi\\nexit\\n/quit\\n' | " &
+    let command = "printf '/sh\\n/1 printf hi\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
-    check "Entering shell" in ran.output
+    check "shell pane 1" in ran.output
     check "hi" in ran.output
-    check "sh> \nyou>" in ran.output
+    check "closed pane 1" in ran.output
+
+  test "ai agent model supervision tools use the application registries":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/application_tools_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application_with_task run_tool_call_in] from "./tui.gene")
+(import json [stringify])
+(var events (cell []))
+(fn emit [type props]
+  ((events ~ Cell/get) ~ List/push! {^type type ^props props}))
+(var app (make_application_with_task (cell []) (cell "") (cell []) emit
+                                      (cell nil)))
+(var context {^app app ^agent app/main_agent ^pane nil})
+(var spawned
+  (run_tool_call_in
+    {^name "spawn_agent" ^call_id "s1"
+     ^arguments (stringify {^assignment "review parser" ^title "reader"})}
+    emit context))
+(println $"spawn=${spawned/output} agents=${((app/agents ~ Cell/get) ~ size)}")
+(var opened
+  (run_tool_call_in
+    {^name "open_pane" ^call_id "p1"
+     ^arguments (stringify {^kind "output" ^title "checks" ^text "ready\n"})}
+    emit context))
+(println $"pane=${opened/output} panes=${((app/panes ~ Cell/get) ~ size)}")
+(var appended
+  (run_tool_call_in
+    {^name "append_pane" ^call_id "p2"
+     ^arguments (stringify {^pane_id 1 ^text "passed\n"})}
+    emit context))
+(println appended/output)
+(var pane_list (app/panes ~ Cell/get))
+(var output_pane pane_list/0)
+(println (output_pane/output ~ Cell/get))
+(var closed
+  (run_tool_call_in
+    {^name "close_pane" ^call_id "p3"
+     ^arguments (stringify {^pane_id 1})}
+    emit context))
+(println $"${closed/output} panes=${((app/panes ~ Cell/get) ~ size)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "spawn=a1 agents=2" in ran.output
+    check "pane=1 panes=1" in ran.output
+    check "appended to pane 1" in ran.output
+    check "ready\npassed" in ran.output
+    check "closed pane 1 panes=0" in ran.output
 
   test "ai agent ignores blank input":
     buildGeneCli()
@@ -224,29 +275,156 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "agent>" notin ran.output
 
+  test "ai agent opens routes and closes extension conversations":
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_extension_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [stringify])
+
+(var chunk
+  {^choices [{^index 0
+              ^delta {^role "assistant" ^content "extension-ok"}
+              ^finish_reason "stop"}]})
+
+(fn handle [req]
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body $"data: ${(stringify chunk)}\n\ndata: [DONE]\n\n"))
+
+(serve (Server ^host "127.0.0.1" ^port 8958) handle ^max_requests 1)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running: server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var socket = newSocket()
+        try:
+          socket.connect("127.0.0.1", Port(8958), timeout = 500)
+          socket.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          socket.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let command = "(printf '/ext\\n/1 inspect this\\n'; sleep 1; " &
+                  "printf '/1 close\\n/quit\\n') | " &
+                  "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                  "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
+                  "OPENAI_BASE_URL=http://127.0.0.1:8958/v1 " &
+                  "OPENAI_MODEL=fake-chat " & shellQuote(geneExe) &
+                  " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "opened agent a1 in pane 1" in ran.output
+    check "extension 1 completed" in ran.output
+    check "closed pane 1" in ran.output
+    check server.waitForExit(3000) == 0
+
+  test "ai agent can delegate through the open_extension tool":
+    buildGeneCli()
+    let fixture = writeCliProgram("fake_extension_tool_endpoint.gene", """
+(import net/http [Server serve Response])
+(import json [parse stringify])
+(import str [contains?])
+
+(var hits (cell 0))
+
+(fn sse [chunks]
+  (var body (cell ""))
+  (for chunk in chunks
+    (body ~ Cell/set $"${(body ~ Cell/get)}data: ${(stringify chunk)}\n\n"))
+  $"${(body ~ Cell/get)}data: [DONE]\n\n")
+
+(var delegate
+  [{^choices [{^index 0
+               ^delta {^role "assistant"
+                       ^tool_calls [{^index 0 ^id "call_ext" ^type "function"
+                                     ^function {^name "open_extension"
+                                                ^arguments "{\"title\":\"review\",\"prompt\":\"inspect\"}"}}]}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
+
+(fn answer [text]
+  [{^choices [{^index 0 ^delta {^role "assistant" ^content text}}]}
+   {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
+
+(fn handle [req]
+  (Cell/set hits (+ (Cell/get hits) 1))
+  (var chunks
+    (if (== (Cell/get hits) 1)
+      delegate
+      (if (== (Cell/get hits) 2)
+        (answer "extension-findings")
+        (answer
+          (if (contains? req/body "extension-findings")
+            "delegation-ok"
+            "delegation-missing-result")))))
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body (sse chunks)))
+
+(serve (Server ^host "127.0.0.1" ^port 8957) handle ^max_requests 3)
+""")
+    let server = startProcess(geneExe, args = ["run", fixture],
+                              options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if server.running: server.terminate()
+      server.close()
+    block waitForServer:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var socket = newSocket()
+        try:
+          socket.connect("127.0.0.1", Port(8957), timeout = 500)
+          socket.close()
+          break waitForServer
+        except OSError, TimeoutError:
+          socket.close()
+          if getMonoTime() > deadline:
+            raise
+          sleep(50)
+    let command = "printf 'delegate\\n/quit\\n' | " &
+                  "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+                  "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
+                  "OPENAI_BASE_URL=http://127.0.0.1:8957/v1 " &
+                  "OPENAI_MODEL=fake-chat " & shellQuote(geneExe) &
+                  " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "tool open_extension" in ran.output
+    check "delegation-ok" in ran.output
+    check "delegation-missing-result" notin ran.output
+    check server.waitForExit(3000) == 0
+
   test "ai agent slash repl exposes session binding":
     buildGeneCli()
-    let command = "printf '/repl\\nsession/config/model\\n(var x 41)\\n(+ x 1)\\nquit\\n/quit\\n' | " &
+    let command = "printf '/repl\\n/1 session/config/model\\n/1 (var x 41)\\n/1 (+ x 1)\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
-    check "Entering Gene REPL" in ran.output
+    check "REPL pane 1" in ran.output
     # session/config/model is a real projection (model lives under config,
     # §9.1); the quoted form is the REPL value, distinct from the banner text.
     check "\"gpt-5.6-terra\"" in ran.output
     check "41" in ran.output
     check "42" in ran.output
 
-  test "ai agent repl eof returns to agent prompt":
+  test "ai agent repl pane closes back to the agent prompt":
     buildGeneCli()
-    let command = "printf '/repl\\nsession/model\\n' | " &
+    let command = "printf '/repl\\n/1 session/main_agent/id\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
-    check "gpt-5.6-terra" in ran.output
-    check "gene> \nyou>" in ran.output
+    check "\"main\"" in ran.output
+    check "closed pane 1" in ran.output
 
   test "ai agent persists config session and memory":
     buildGeneCli()
@@ -603,7 +781,7 @@ suite "cli — gene run":
     ## nonexistent root-level path: it classifies catastrophic via the
     ## leading-/ rule but deletes nothing if the guard ever regresses.
     buildGeneCli()
-    let command = "printf '/sh\\nrm -rf /nonexistent-gene-guard-root\\necho ran-normal\\nexit\\n/quit\\n' | " &
+    let command = "printf '/sh\\n/1 rm -rf /nonexistent-gene-guard-root\\n/1 echo ran-normal\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
@@ -617,12 +795,12 @@ suite "cli — gene run":
     ## dangerous strings never sit in an executable path.
     buildGeneCli()
     let command = "printf '/repl\\n" &
-      "(classify_command \"rm -rf /\")\\n" &
-      "(classify_command \"rm -rf $HOME\")\\n" &
-      "(classify_command \"shutdown -h now\")\\n" &
-      "(classify_command \"git reset --hard HEAD~1\")\\n" &
-      "(classify_command \"npm test\")\\n" &
-      "quit\\n/quit\\n' | " &
+      "/1 (classify_command \"rm -rf /\")\\n" &
+      "/1 (classify_command \"rm -rf $HOME\")\\n" &
+      "/1 (classify_command \"shutdown -h now\")\\n" &
+      "/1 (classify_command \"git reset --hard HEAD~1\")\\n" &
+      "/1 (classify_command \"npm test\")\\n" &
+      "/1 close\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
@@ -781,9 +959,9 @@ suite "cli — gene run":
             raise
           sleep(50)
     let script = "printf '/repl\\n" &
-      "(session ~ add_tool (Tool ^name \"badres\" ^description \"demo\" " &
+      "/1 (session ~ add_tool (Tool ^name \"badres\" ^description \"demo\" " &
       "^risk \"read\" ^params [] ^handler (fn [a] nil)))\\n" &
-      "(session ~ resume)\\nexit\\n/quit\\n' | " &
+      "/1 (session ~ resume)\\n/1 close\\n/quit\\n' | " &
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8969/v1 OPENAI_MODEL=fake-chat " &
@@ -960,7 +1138,7 @@ suite "cli — gene run":
           sleep(50)
 
     let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
-    let input = "go\n/diff\n/sh\nprintf external > dirty.txt\nexit\n" &
+    let input = "go\n/diff\n/sh\n/1 printf external > dirty.txt\n/1 close\n" &
                 "/undo 1\n/undo 3\n/undo 2\n/diff\n" &
                 "/trace type=file_change\n/quit\n"
     let command = "cd " & shellQuote(workspace) & " && printf " &
@@ -1032,16 +1210,16 @@ suite "cli — gene run":
           s.close()
           if getMonoTime() > deadline: raise
           sleep(50)
-    let command = "printf '/repl\n(session/evidence ~ Cell/get)\nquit\n" &
-      "go\n/trace type=check\n/repl\n(session/evidence ~ Cell/get)\n" &
-      "quit\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+    let command = "printf '/repl\n/1 (session/evidence ~ Cell/get)\n/1 close\n" &
+      "go\n/trace type=check\n/repl\n/2 (session/evidence ~ Cell/get)\n" &
+      "/2 close\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
       "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
       "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
       "OPENAI_BASE_URL=http://127.0.0.1:8965/v1 OPENAI_MODEL=fake-chat " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
-    check "gene> []" in ran.output
+    check "REPL pane 1: []" in ran.output
     check "check command status=0" in ran.output
     check "check command status=7" in ran.output
     check "^^truncated" in ran.output
@@ -1131,7 +1309,7 @@ suite "cli — gene run":
     check "\"context_max_items\":200" in restoredContext.output
     check "\"context_keep_turns\":8" in restoredContext.output
     let status = execCmdOnce(
-      "printf '/status\n/repl\nsession/config\nquit\n/quit\n' | " &
+      "printf '/status\n/repl\n/1 session/config\n/1 close\n/quit\n' | " &
       "env OPENAI_AUTH_TOKEN=dummy " &
       "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
       "GENE_AGENT_CONTEXT_MAX_BYTES=1234 GENE_AGENT_CONTEXT_MAX_ITEMS=12 " &
@@ -1425,8 +1603,8 @@ suite "cli — gene run":
           sleep(50)
     let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
     let command = "cd " & shellQuote(workspace) &
-      " && printf 'go\n/status\n/repl\n(session/instructions ~ Cell/get)\n" &
-      "quit\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
+      " && printf 'go\n/status\n/repl\n/1 (session/instructions ~ Cell/get)\n" &
+      "/1 close\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
       "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
       "OPENAI_BASE_URL=http://127.0.0.1:8964/v1 OPENAI_MODEL=fake-chat " &
       shellQuote(geneExe) & " run " & shellQuote(tui)
@@ -1526,9 +1704,9 @@ suite "cli — gene run":
             raise
           sleep(50)
     let script = "printf 'go\\n/repl\\n" &
-      "(session ~ add_tool (Tool ^name \"ping\" ^description \"demo\" " &
+      "/1 (session ~ add_tool (Tool ^name \"ping\" ^description \"demo\" " &
       "^risk \"read\" ^params [] ^handler (fn [a] \"pong\")))\\n" &
-      "(session ~ resume)\\nexit\\n/quit\\n' | " &
+      "/1 (session ~ resume)\\n/1 close\\n/quit\\n' | " &
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8992/v1 OPENAI_MODEL=fake-chat " &
@@ -1766,6 +1944,99 @@ suite "cli — gene run":
       check "\"cols\":" in output
       check "\e[?1049l" in output
 
+  test "public curses events decode editor control sequences":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_control_events.gene", """
+(import curses [open close next_event])
+(import json [stringify])
+(var screen (open))
+(try
+  (do
+    (var paste_start (await (next_event screen)))
+    (var text_event (await (next_event screen)))
+    (var pasted_enter (await (next_event screen)))
+    (var paste_end (await (next_event screen)))
+    (var newline (await (next_event screen)))
+    (var page_up (await (next_event screen)))
+    (var escape (await (next_event screen)))
+    (close screen)
+    (println $"CURSES-CONTROLS:${(stringify [paste_start text_event
+                                             pasted_enter paste_end newline
+                                             page_up escape])}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_control_events.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("\e[200~x\n\e[201~\e[13;2u\e[5~")
+      terminal.inputStream.flush()
+      sleep(100)
+      terminal.inputStream.write("\e")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "CURSES-CONTROLS:" in output
+      check "\"type\":\"paste_start\"" in output
+      check "\"text\":\"x\"" in output
+      check "\"type\":\"enter\"" in output
+      check "\"type\":\"paste_end\"" in output
+      check "\"type\":\"newline\"" in output
+      check "\"type\":\"page_up\"" in output
+      check "\"type\":\"escape\"" in output
+
+  test "public curses ownership suppresses only diagnostic console output":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_log_suppression.gene", """
+(import curses [open close draw])
+(import log [new_logger warn!])
+(var logger (new_logger "app/curses_test"))
+(var screen (open))
+(try
+  (do
+    (draw screen ^output "screen active" ^output_scroll 0)
+    (warn! logger "hidden while screen owns terminal")
+    (close screen)
+    (println "CURSES-LOG-SUPPRESSION:ok"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_log_suppression.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "CURSES-LOG-SUPPRESSION:ok" in output
+      check "hidden while screen owns terminal" notin output
+      check "\e[?1049l" in output
+
   test "public curses editor handles resize and bracketed Unicode paste":
     when defined(macosx):
       buildGeneCli()
@@ -1840,8 +2111,10 @@ suite "cli — gene run":
         if terminal.running: terminal.terminate()
         terminal.close()
       sleep(300)
-      # newest -> oldest -> newest, then submit
-      terminal.inputStream.write("\e[A\e[A\e[B\n")
+      # Type once, then browse newest -> oldest -> newest and submit. Each
+      # event redraws the editor, but only initial ncurses setup may clear the
+      # physical screen.
+      terminal.inputStream.write("x\e[A\e[A\e[B\n")
       terminal.inputStream.flush()
       terminal.inputStream.close()
       let exitCode = terminal.waitForExit(5000)
@@ -1850,6 +2123,53 @@ suite "cli — gene run":
       check exitCode == 0
       check "CURSES-HISTORY:second command" in output
       check "[SCROLL +" notin output
+      check output.count("\e[H\e[2J") <= 1
+      check "\e[?1049l" in output
+
+  test "public curses editor renders extension panes beside the transcript":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_panes.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+        ^output "MAIN-TRANSCRIPT"
+        ^panes [{^title "ext 1" ^output "EXTENSION-ONE\nready"}
+                {^title "ext 2" ^output "EXTENSION-TWO\ndone"}]))
+    (close screen)
+    (println $"CURSES-PANES:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_panes.out"
+      removeFile(outputFile)
+      let inner = "stty rows 18 cols 80; exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("pane input\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "MAIN-TRANSCRIPT" in output
+      check "ext 1" in output
+      check "EXTENSION-ONE" in output
+      check "ext 2" in output
+      check "EXTENSION-TWO" in output
+      check "CURSES-PANES:pane input" in output
       check "\e[?1049l" in output
 
   test "curses standalone Escape detection preserves queued typing":

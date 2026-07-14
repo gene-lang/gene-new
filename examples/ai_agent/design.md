@@ -11,10 +11,17 @@ classification, surfaced truncation). Slice B now includes terminal and
 gateway cancellation/steering, attributable `/diff` + targeted `/undo`,
 structured verification evidence, hierarchical `AGENTS.md` loading, and the
 owned public `curses` API used by the agent prompt. Native libcurl is the
-default outbound transport. The richer scrollback TUI, MCP,
-worktrees, browser automation, and general multi-agent orchestration are
-optional later work, not prerequisites.**
-Date: 2026-07-11.
+default outbound transport. MCP, worktrees, and browser automation remain
+optional later work. Slice C is now shipped: the
+main application owns separate `Agent` and `Pane` registries, secondary turns
+run concurrently with the scheduler-friendly input editor, and closing an
+agent pane detaches the view. Output panes, streaming/cancellable line-oriented
+shell panes, declaration-persistent Gene REPL panes, a single workspace
+mutation lease, graph/layout persistence, typed model supervision tools, and
+`--gateway[=PORT]`/`--headless` startup are implemented. Gateway sessions now
+own the same `AgentApplication` services as the TUI; combined mode exposes the
+live local application as session `local`.**
+Date: 2026-07-14.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get_env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -48,20 +55,23 @@ text, model text, tool arguments/output, shell commands, or credentials. This
 does not replace the versioned event log, which remains the authoritative
 record for tool actions and confirmations.
 
-This document specifies a live, programmable AI coding agent written in Gene:
-a terminal program that holds a conversation with a hosted model API, lets the
-model call local tools (read/write files, run shell commands, search), and lets
-the user inspect and reshape the running agent through ordinary Gene values.
-The API auth token is read from an environment variable; nothing is hard-coded.
+This document specifies a live, programmable AI coding application written in
+Gene. It normally presents a terminal UI, can optionally expose gateway
+surfaces, holds conversations with a hosted model API, lets agents call local
+tools (read/write files, run shell commands, search), and lets the user inspect
+and reshape the running application through ordinary Gene values. The API auth
+token is read from an environment variable; nothing is hard-coded.
 
 **Product decision:** this is first and foremost the author's personal power
 tool for developing Gene, not a multi-user service or a parity project against
 every commercial coding agent. Optimize for flow, leverage, inspectability,
-and dogfooding. Routine local work stays auto-approved. Safety is deliberately
-narrow: prevent catastrophic, hard-to-recover actions without surrounding
-normal edits, commands, tests, installs, or network calls with permission
-theater. Features such as MCP, worktree teams, browser automation, and a plugin
-marketplace are a menu to adopt when daily use proves their value.
+and dogfooding. Native supervision of a small number of sub-agents is part of
+that power tool; decentralized or unbounded agent teams are not. Routine local
+work stays auto-approved. Safety is deliberately narrow: prevent catastrophic,
+hard-to-recover actions without surrounding normal edits, commands, tests,
+installs, or network calls with permission theater. Features such as MCP,
+worktree isolation, browser automation, and a plugin marketplace are a menu to
+adopt when daily use proves their value.
 
 **Backends (implemented).** The agent speaks two wire shapes, both entirely
 env-configured:
@@ -116,11 +126,42 @@ A CLI, launched as:
 OPENAI_AUTH_TOKEN=... gene run examples/ai_agent/tui.gene
 ```
 
+The same main program optionally attaches the gateway adapters. The `--`
+separates Gene runner options from application options:
+
+```bash
+# TUI only (default)
+gene run examples/ai_agent/tui.gene
+
+# TUI plus HTTP/web gateway on the configured/default port
+gene run examples/ai_agent/tui.gene -- --gateway
+
+# TUI plus gateway on an explicit port
+gene run examples/ai_agent/tui.gene -- --gateway=8787
+
+# Gateway and configured remote channels without curses
+gene run examples/ai_agent/tui.gene -- --gateway --headless
+```
+
+`--gateway` uses `GENE_GATEWAY_PORT` when set and otherwise port 8090;
+`--gateway=PORT` wins over the environment and must be in 1–65535.
+`--headless` requires `--gateway`, so an accidental invocation cannot start an
+invisible application with no control surface. The existing
+`GENE_GATEWAY_HOST`, `GENE_GATEWAY_TOKEN`, database, and channel settings keep
+their meaning. The listener binds to `127.0.0.1` by default; a non-loopback
+host must be explicit and requires authentication rather than merely printing
+a warning.
+
 Behavior:
 
 - a shipped multiline TTY prompt with persistent transcript/status rendering
   and mouse/page transcript scrolling while input is active; Up/Down browse
-  submitted prompts, and Escape cancels the active turn;
+  submitted prompts, and Escape cancels the active turn; extension panes stack
+  on the right while input and status retain full width;
+- **Target (Slice C):** one stable **main agent** will own the primary
+  conversation and supervise zero or more **sub-agents**. Each sub-agent will
+  have its own item history, task, status, and event identity; it will not
+  implicitly inherit the main agent's conversation context;
 - a conversation loop that sends the running input-item list to the Responses
   API and streams assistant text deltas into the transcript as items arrive;
 - **tool use**: the model may return `function_call` items (`read_file`,
@@ -130,9 +171,10 @@ Behavior:
   guard
   (§8.5), appends `function_call_output` items, and loops until the model
   returns a final message item;
-- slash commands in the input line (shipped: `/quit`, `/sh`, `/repl`,
-  `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`; later as
-  dogfooding demands: `/model`, `/clear`, `/diff`, `/undo`), and
+- slash commands in the input line (shipped/bootstrap: `/quit`, `/sh`, `/repl`,
+  `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`, `/diff`,
+  `/undo`, `/ext`, `/N <prompt>`, `/N close`; later as dogfooding demands:
+  the typed pane commands in §7.1, `/model`, `/clear`), and
   Ctrl-C interrupting a `/sh` command or `/repl` eval (interrupting an
   in-flight model response is part of daily-driver slice B in §10);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
@@ -142,11 +184,14 @@ Behavior:
   declaration, and `/trace` queries the same versioned events used by the CLI,
   gateway, persistence, and tests.
 
-The single-process CLI above is the **embedded bootstrap** of a larger shape:
-§12 extends the same session/turn/tool machinery into a Hermes-style personal
-**gateway** — one long-running process that owns every conversation, with the
-terminal TUI, a browser web UI, and chat channels (Telegram, Slack) as thin
-surfaces onto it.
+The single main program always constructs the same application core. Within
+one application session, an agent registry owns the main agent and its
+supervised children while an independent pane registry owns visible views and
+interactive subprocesses. The default TUI is an in-process adapter over that
+core. `--gateway[=PORT]` additionally attaches HTTP/web and configured channel
+adapters; it does not select a second session implementation or start another
+orchestration layer. §12 describes this Hermes-style personal multi-surface
+shape.
 
 ## 2. Capability gap analysis
 
@@ -183,8 +228,9 @@ What already exists and is directly reusable:
   That pattern (own `LibHandle`, cache resolved symbols in a Nim `object`, wrap
   handles as owned C pointers, raise a typed error) is the template for curses
   and the HTTPS client.
-- **Async tasks + worker I/O queue**: `Net/tcp-*-text-async`, `Fs/*-async`, and
-  `spawn`/`await` already suspend a Gene task on real I/O and resume it. A
+- **Async tasks + worker I/O queue**: `Net/tcp_read_text_async`,
+  `Net/tcp_write_text_async`, `Fs/*_async`, and `spawn`/`await` already suspend
+  a Gene task on real I/O and resume it. A
   streaming HTTP client and non-blocking `getch` fit this model.
 - **`str`, `url`, `std/stream`** stdlib helpers for building request bodies and
   slicing output. (`std/parse` is currently only `parse_int`, so it does not
@@ -224,7 +270,7 @@ everything else:
 
 ```gene
 (import os [get_env Env])
-(var token (get_env env "OPENAI_AUTH_TOKEN"))   ; env : Os/Env
+(var token (get_env Env "OPENAI_AUTH_TOKEN"))   ; Env : Os/Env
 ```
 
 Native surface (small, in `src/gene/stdlib.nim` next to the db backends):
@@ -246,9 +292,9 @@ cross a bounded native buffer into a Gene channel, where scheduler-thread code
 frames SSE lines and repaints the ncurses prompt. `curl -N` through
 `os/exec_stream_async` remains only as a library-discovery fallback.
 
-The runtime's networking is **plaintext TCP only** (`Net/tcp_read_text_async` /
-`Net/tcp_write_text_async` in `src/gene/vm.nim`) remains plaintext-only. HTTPS
-is supplied separately by the first option below:
+The runtime's built-in TCP client is plaintext-only
+(`Net/tcp_read_text_async` / `Net/tcp_write_text_async` in
+`src/gene/vm.nim`); HTTPS is supplied separately by the first option below:
 
 1. **libcurl native namespace (implemented).**
    `net/http_client` is backed by libcurl loaded via dynlib, mirroring the
@@ -307,11 +353,11 @@ adds `stream`:
 
 ```gene
 (import net/http_client [request Http])
-(var resp (await (request Http ^method "POST" ^url url ^headers hs ^body json-body)))
+(var resp (await (request Http ^method "POST" ^url url ^headers hs ^body json_body)))
 ; resp => {^status Int ^body Str}
 
 (import net/http_client [stream Http])
-(var transfer (stream Http ^method "POST" ^url url ^headers hs ^body json-body))
+(var transfer (stream Http ^method "POST" ^url url ^headers hs ^body json_body))
 ; transfer/channel => bounded Channel of raw Str chunks, drained with Channel/recv
 ; transfer/task => cancellable Task yielding the final response map
 ```
@@ -341,8 +387,8 @@ With `json`, the Responses request body is just data:
 ```gene
 (json/stringify
   {^model model
-   ^input input-items      ; Responses API: a list of typed input items
-   ^tools tool-schemas
+   ^input input_items      ; Responses API: a list of typed input items
+   ^tools tool_schemas
    ^stream true})          ; shipped transports stream SSE deltas (§4)
 ```
 
@@ -358,15 +404,16 @@ results. Tools needed for a coding agent:
   Writes and edits of `.gene` files run the public reader in-process and return
   structured parse warnings without rejecting or rolling back intermediate
   source. Exact-edit mismatches return bounded, line-numbered candidate
-  excerpts. `read_file` accepts line and byte ranges and caps each response at
-  256 KiB, including for a file containing one very long line. Path confinement
-  runs before hierarchical instruction discovery.
+  excerpts. `read_file` accepts line and byte ranges, defaults to a 64 KiB
+  (`max_bytes=65536`) response cap, and permits an explicit maximum of 256 KiB
+  (`max_bytes=262144`), including for a file containing one very long line.
+  Path confinement runs before hierarchical instruction discovery.
 - `run_shell`, `grep` — subprocess via the implemented `os` namespace entry
   gated by a new `Os/Exec` capability:
 
   ```gene
   (import os [exec Exec])
-  (var r (exec sh ^cmd "grep" ^args ["-rn" pattern "."] ^timeout_ms 10000))
+  (var r (exec Exec ^cmd "grep" ^args ["-rn" pattern "."] ^timeout_ms 10000))
   ; r => {^status Int ^stdout Str ^stderr Str}
   ```
 
@@ -382,17 +429,17 @@ the single source of truth; the registry entry, model-facing JSON Schema (both
 wire shapes), argument validation, and risk class all derive from it:
 
 ```gene
-(register-tool! (Tool
+(register_tool! (Tool
   ^name "read_file"
   ^description "Read a UTF-8 text file inside the workspace."
   ^risk "read"
   ^params [{^name "path" ^type "string" ^required true
             ^doc "workspace-relative file path"}]
-  ^handler (fn [args] (read_text ReadDir (safe-path args/path)))))
+  ^handler (fn [args] (read_text ReadDir (safe_path args/path)))))
 ```
 
-`Tool` is a `type` with `schema` and `validate-args` messages (§9.1); the turn
-loop reads the live registry (`tool-schemas-now`), so a tool added or replaced
+`Tool` is a `type` with `schema` and `validate_args` messages (§9.1); the turn
+loop reads the live registry (`tool_schemas_now`), so a tool added or replaced
 from `/repl` reaches the very next model call. This removes the earlier
 drift-prone duplication between a handler map and a hand-written schema list,
 and demonstrates how types, metadata, functions, and maps compose. Every call
@@ -407,7 +454,7 @@ A native `curses` namespace backed by linked `libncurses`. ncurses' variadic
 - lifecycle: `initscr`, `endwin`, `cbreak`, `noecho`, `keypad`, `curs_set`,
   `start_color`, `init_pair`;
 - drawing: `waddstr`/`mvwaddstr` (non-variadic, unlike `printw`), `wattron`/
-  `wattroff`, `wclear`, `wrefresh`, `wmove`, `getmaxyx` (via `getmaxx`/
+  `wattroff`, `werase`, `wrefresh`, `wmove`, `getmaxyx` (via `getmaxx`/
   `getmaxy`);
 - input: `wgetch`, polled with `timeout(0)` by the scheduler so streaming work
   and keystrokes interleave without blocking.
@@ -431,10 +478,13 @@ non-variadic color-coded renderer, `dimensions` reports live rows/columns, and
 `next_event` returns a cancellable `Task`. It preserves FIFO ordering,
 assembles complete UTF-8 text events, and reports `KEY_RESIZE` as resize.
 
-The agent uses the public `curses/read_input` editor: on a TTY it opens a small
-ncurses editor with multiline input and bracketed paste support, and in pipes it
-falls back to `read_line` so scripted tests stay deterministic. The helper owns
-a fixed layout:
+The agent's TTY editor is a Gene-level state machine over public
+`curses/next_event` and `curses/draw`; this is what lets sub-agents and pane
+controllers progress while the user types. It supports multiline input,
+bracketed paste, grapheme-aware cursor movement, and per-route history. In
+pipes the agent falls back to `read_line` so scripted tests stay deterministic.
+The reusable blocking `curses/read_input` editor remains available for simpler
+programs and implements the same key conventions. Both paths use a fixed layout:
 color-coded scrollback/output above a `─` separator, one or more promptless input
 rows above a second `─` separator, and a status line at the bottom. The agent
 adds a short `─` separator before each user turn in the scrollback, owns one
@@ -458,6 +508,115 @@ in-flight model response and steering its continuation are shipped (§10).
 Search, selection, and horizontal transcript scrolling remain optional; the
 reusable lifecycle, editor, drawing, vertical scrolling, resize, and
 asynchronous input layer is public and covered by PTY tests.
+
+### 7.1 Native extension panes
+
+**Bootstrap today:** `/ext` creates a secondary `Agent`, attaches an independent
+right-side `Pane`, and `/N prompt` starts a cancellable turn without blocking
+the main input editor; `/N close` detaches the pane while explicit stop controls
+the agent lifetime. The main model has the equivalent `open_extension`
+compatibility tool. Output, streaming line-oriented shell, and
+declaration-persistent Gene REPL panes are also shipped. Restored shell/REPL
+panes retain captured history in a closed state and require an explicit reopen.
+
+**Target design:** continue that separation: a pane is a typed view/controller,
+not an agent. The
+application owns separate agent and pane registries and may attach, detach, or
+replace a pane without changing the lifetime of the thing it displays. A
+sub-agent may keep working headlessly after its pane closes; conversely an
+output or process pane needs no model agent at all.
+
+| Pane kind | Backing owner | User input | Close behavior |
+|---|---|---|---|
+| `agent` | main agent or one sub-agent | prompt or steering message | detach view; the agent continues until explicitly stopped |
+| `output` | append-only stream/projection such as logs, diff, tests, or trace | none beyond navigation/filtering | unsubscribe; producer keeps its own lifecycle |
+| `shell` | one scheduler-owned shell command controller | command lines | cancel the active command and close the controller |
+| `repl` | one live Gene REPL controller | Gene forms | close the REPL session after confirmation if it is busy |
+
+The default layout keeps the main transcript on the left, vertically stacks
+extension panes on the right, and reserves full-width input and status rows:
+
+```text
+main agent transcript │ [1] sub-agent
+                      │─────────────────
+                      │ [2] output/log
+                      │─────────────────
+                      │ [3] shell or REPL
+────────────────────────────────────────
+input
+────────────────────────────────────────
+status
+```
+
+Pane ids are stable for the pane's lifetime and are never reused within an
+application session. Bare input always goes to the main agent. Numbered input
+is dispatched by pane kind:
+
+- `/agent new [prompt]` creates a supervised sub-agent and opens its pane;
+  `/ext` remains a compatibility alias, while `/agents` lists visible and
+  headless agents and `/agent A open|cancel|stop` controls one by stable id;
+- `/pane output [title]` creates an output-only pane for a later producer;
+- `/sh` opens or focuses a shell pane instead of closing curses and taking over
+  the entire terminal;
+- `/repl` opens or focuses a Gene REPL pane with the stable `session` binding;
+- `/N text` prompts/steers an agent pane, sends a command to a shell pane, or
+  evaluates a form in a REPL pane; output panes reject text input. `/N -- text`
+  sends text that would otherwise match a control verb such as `close`;
+- `/N close` closes the pane, `/N cancel` cancels its active task/process,
+  `/N stop` explicitly stops an attached agent/controller, and `/N focus` makes
+  it the target for pane-local navigation.
+
+Input history is kept per route so shell commands, Gene forms, sub-agent
+prompts, and main-agent prompts do not pollute one another. Escape cancels the
+focused pane's active operation when focus is explicit; otherwise it cancels
+the main agent's current turn. Closing a pane is never an implicit cancellation
+of an agent or output producer; a pane-owned shell/REPL controller follows the
+explicit close policy in the table. The status line identifies the routed
+target and reports all running agents/processes compactly.
+
+The model-facing bootstrap `open_extension` becomes a compatibility composite
+over two capability-checked typed operations, conceptually shaped as:
+
+```gene
+(var agent_id
+  (spawn_agent {^assignment "review the reader"
+                ^context [...] }))
+(var pane_id
+  (open_pane {^kind "agent" ; one of agent, output, shell, repl
+              ^owner_id agent_id
+              ^title "reader review"}))
+```
+
+`spawn_agent` returns only an agent id and does not require a pane. `open_pane`
+returns only a pane id and attaches to an existing agent, stream, or controller;
+the `/agent` and legacy `/ext` commands intentionally perform both operations
+as a UI convenience. Separate operations append to an output pane, send to a
+process pane, focus/close a pane, and cancel/stop its backing owner. The model
+may open only kinds allowed by its capabilities: creating a view is harmless,
+but starting a shell or REPL must use the existing `Os/Exec` or VM authority
+and the same catastrophe guard. An output pane accepts structured events or
+already-redacted text; it is not an untracked channel around the authoritative
+event log.
+
+Input provenance remains explicit. Text typed by the user into a shell pane is
+the same deliberate escape hatch as today's interactive `/sh`. A model cannot
+inject raw input into that channel: model-initiated commands still go through
+the typed `run_shell` operation, its classifier, and its events, with output
+optionally projected into a shell/output pane. The same rule prevents a model
+from using a visible REPL pane as an unlogged mutation backdoor.
+
+The shipped shell and REPL panes run as scheduler-owned, cancellable controllers
+behind the curses renderer rather than entering nested blocking terminal loops.
+The shell pane is line-oriented: it reuses the async command runner, streams
+bounded output, retains cwd/environment fields as controller state, and
+supports cancellation, but does not claim job control or full-screen terminal
+programs.
+Drawing arbitrary PTY bytes inside curses would require a real terminal
+emulator; do not approximate one with ANSI stripping. Add that layer or hand
+off to an external terminal only if dogfooding requires it. The REPL is a
+form-oriented controller over the owned `repl/Session` API, so declarations and
+incomplete forms persist without replaying earlier side effects. This boundary
+is reusable by the TUI, web UI, and gateway; curses remains only a view.
 
 ## 8. Capabilities and the launcher (§8)
 
@@ -485,16 +644,15 @@ enterprise permission system. Normal workspace reads/edits, shell commands,
 tests, builds, package installs, and network calls should run without prompts.
 
 The shipped guard classifies each `run_shell`/`/sh`-bound command as `normal`,
-`destructive`, or `catastrophic` (`classify-command` in `examples/ai_agent/tui.gene`)
+`destructive`, or `catastrophic` (`classify_command` in `examples/ai_agent/tui.gene`)
 and acts accordingly:
 
 - **Normal:** run immediately.
 - **Destructive but plausibly intentional:** show the exact target and require
-  one explicit confirmation (`confirm-destructive?`; EOF/no-stdin denies, so a
+  one explicit confirmation (`confirm_destructive?`; EOF/no-stdin denies, so a
   destructive command never auto-approves in a scripted run).
 - **Catastrophic or nonsensical:** deny outright, and emit a `confirmation`
-  event recording the denial. `GENE_AGENT_GUARD=0`, set outside the session,
-  disables classification.
+  event recording the denial.
 
 Classification anchors command-name patterns at the start of each simple
 command (splitting on `&&`, `;`, `|`) so `grep shutdown src/` stays normal while
@@ -503,11 +661,25 @@ anything resolving outside the workspace root, so a symlink inside the workspace
 cannot point a read/write outside it. Subprocesses keep their timeouts and
 output caps, and truncation is surfaced in both the transcript and the
 model-visible tool result. Known auth tokens are redacted from displayed and
-model-visible output — including inside event-log entries. `GENE_AGENT_APPROVE_ALL=0`
-retains the older prompt-before-write/shell mode for occasional use, but it is
-not the primary design.
+model-visible output — including inside event-log entries.
 
-Shipped coverage (`classify-command` in `examples/ai_agent/tui.gene`):
+The two compatibility flags are independent and intentionally have different
+jobs. `GENE_AGENT_GUARD=0` removes shell-command classification **including
+catastrophic command hard stops**; it does not merely remove destructive
+confirmations. Path confinement, output bounds, and redaction remain active.
+
+| `GENE_AGENT_GUARD` | `GENE_AGENT_APPROVE_ALL` | Behavior |
+|---|---|---|
+| `1` (default) | `1` (default) | Normal work auto-approves; destructive shell commands ask once; catastrophic commands are denied. |
+| `1` | `0` | The guard still denies catastrophic commands and confirms destructive ones, then the legacy layer prompts before every file write/edit or model `run_shell`; a destructive shell command can therefore require two confirmations. |
+| `0` | `1` | Shell classification and catastrophic command protection are disabled, and file writes/edits plus model `run_shell` auto-approve. |
+| `0` | `0` | Shell classification and command hard stops are disabled, but the legacy layer prompts before each file write/edit or model `run_shell`; accepting the prompt can run a formerly catastrophic command. |
+
+The default `1`/`1` posture is the product design. `APPROVE_ALL=0` exists for
+occasional prompt-before-operation use; `GUARD=0` is an explicit unsafe escape
+hatch that must be set outside the session.
+
+Shipped coverage (`classify_command` in `examples/ai_agent/tui.gene`):
 
 - **catastrophic** — recursive deletion (`rm -rf`/`-fr`/`-r`) of `/`, `$HOME`,
   a top-level absolute directory, the workspace root, `.`, `..`, or `.git`;
@@ -565,82 +737,91 @@ but this tool_call recursion is the shipped loop rather than language-neutral
 pseudocode.
 
 ```gene
-(fn call-model [transport, input-items, render-stream]
+(fn call_model [transport, input_items, render_stream]
   (var body
-    (if (== api-flavor "chat")
+    (if (== api_flavor "chat")
       (stringify {^model model
-                  ^messages (items-to-chat-messages input-items)
-                  ^tools (chat-tool-schemas-now)
+                  ^messages (items_to_chat_messages input_items)
+                  ^tools (chat_tool_schemas_now)
                   ^tool_choice "auto"
                   ^stream true})
       (stringify {^model model
                   ^store false
                   ^stream true
-                  ^input input-items
-                  ^tools (tool-schemas-now)
+                  ^input input_items
+                  ^tools (tool_schemas_now)
                   ^tool_choice "auto"
                   ^parallel_tool_calls true})))
-  (transport body render-stream))
+  (transport body render_stream))
 
 # Call the model; if it asks for tools, execute them and recur with the model
 # output plus function_call_output items. Otherwise render and retain the final
 # assistant message. `budget` prevents an endless tool_call loop.
-(fn run-turn [transport, input-items, render, render-stream, budget, emit]
+(fn run_turn [transport, input_items, render, render_stream, budget, emit]
   (var streamed (cell false))
   (var resp
-    (call-model transport input-items
+    (call_model transport input_items
       (fn [text]
         (Cell/set streamed true)
         (emit "text_delta" {^text (redact text)})
-        (render-stream (redact text)))))
+        (render_stream (redact text)))))
   (if (!= resp/agent_error void)
     (do
       (emit "error" {^text resp/agent_error})
       (render resp/agent_error)
       (emit "turn_done" {})
-      input-items)
+      input_items)
     (do
-      (each (to_stream (response-output-items resp))
+      (each (to_stream (response_output_items resp))
         (fn [item] (emit "model_item" {^item item})))
-      (var calls (response-calls resp))
+      (var calls (response_calls resp))
       (if (empty? calls)
         (do
-          (emit "agent_text" {^text (response-text resp)})
+          (emit "agent_text" {^text (response_text resp)})
           (if (Cell/get streamed)
             (render "")
-            (render (redact (response-text resp))))
-          (emit "turn_done" {^text (response-text resp)})
-          (append-all input-items (response-output-items resp)))
+            (render (redact (response_text resp))))
+          (emit "turn_done" {^text (response_text resp)})
+          (append_all input_items (response_output_items resp)))
         (if (<= budget 0)
           (do
             (render "[stopped: tool_call budget exhausted]")
             (emit "turn_done" {})
-            input-items)
+            input_items)
           (do
-            (var outputs ((to_stream calls)
-              ~ map (fn [c] (run-tool-call c emit)) ; ~ into []))
-            (each (to_stream calls) (fn [c]
-              (render $"  · tool ${c/name} ${c/arguments}")))
-            (run-turn
+            # Keep awaited tool handlers in the turn fiber so cancellation
+            # cannot strand a subprocess in a lazy mapper continuation.
+            (var outputs (cell []))
+            (for c in calls
+              (do
+                ((outputs ~ Cell/get) ~ List/push! (run_tool_call c emit))
+                (render $"  · tool ${c/name} ${c/arguments}")))
+            (run_turn
               transport
-              ((to_stream outputs) ~ into
-                (append-all input-items (response-output-items resp)))
+              ((to_stream (outputs ~ Cell/get)) ~ into
+                (append_all input_items (response_output_items resp)))
               render
-              render-stream
+              render_stream
               (- budget 1)
               emit)))))))
 
 # The interactive path adds one user item and stores the returned item list.
 (items ~ Cell/set
-  (run-turn-tracked live-transport
-            (append (items ~ Cell/get) (user-item line))
+  (run_turn_tracked live_transport
+            (append (items ~ Cell/get) (user_item line))
             (fn [text]
-              (render-agent-text transcript streaming text))
+              (render_agent_text transcript streaming text))
             (fn [text]
-              (render-agent-delta transcript streaming text))
-            max-tool-turns
-            emit-event!))
+              (render_agent_delta transcript streaming text))
+            max_tool_turns
+            emit_event!))
 ```
+
+The `emit` sink redacts every nested value at append (§9.2); that sink is the
+load-bearing event-log invariant for `error`, `agent_text`, `turn_done`, tool
+payloads, and future event types. The extra `redact` around streamed/final text
+above is defensive because live rendering does not pass through the event
+sink. Call sites must not be relied upon to remember event redaction.
 
 ### 9.1 Stable live session object
 
@@ -652,7 +833,7 @@ layout. The shipped projections are:
 ```text
 session/config       session/items        session/transcript
 session/memory       session/tools        session/events
-session/workspace    session/current-task
+session/workspace    session/current_task
 ```
 
 (`evidence` arrives with slice B's later evidence work.) Reads use ordinary
@@ -660,24 +841,36 @@ selectors. Mutations go through messages so the session can keep invariants
 (system-prompt memory refresh, persistence) and append an audit event:
 
 ```gene
-(session ~ add-tool (Tool ^name "check" ^description "..." ^risk 'read
-                          ^params [...] ^handler my-domain-check))
+(session ~ add_tool (Tool ^name "check" ^description "..." ^risk 'read
+                          ^params [...] ^handler my_domain_check))
 (session ~ remember "reader datum comments are spacing")
 (session ~ subscribe "tool_call")     ; echo future events of this type
 (session ~ trace "type=tool_call")    ; same filters as /trace
 (session ~ resume)                    ; continue the current turn on exit
 ```
 
-`add-tool` registers into the same typed registry the turn loop reads, so a tool
+`add_tool` registers into the same typed registry the turn loop reads, so a tool
 added or replaced from `/repl` reaches the very next model call. The API begins
 small: it stabilizes the pieces needed to inspect a real turn, add/replace a
 typed tool, query events, and continue — not every implementation field or a
 general plugin system.
 
+The native multi-agent slice extends this stable surface rather than exposing
+TUI arrays:
+
+```text
+session/main_agent   session/agents       session/panes
+```
+
+Agent and pane mutations remain message-based (`spawn_agent`, `stop_agent`,
+`open_pane`, `close_pane`, `send_pane`) so supervision, capability checks,
+events, and persistence cannot be bypassed by mutating a list cell.
+
 ### 9.2 Authoritative event log and `/trace`
 
-CLI and gateway share one append-only, versioned event vocabulary. Shipped
-types include attributable changes, verification checks, and compaction:
+CLI and gateway share one append-only, versioned event vocabulary. The first
+group below is shipped and includes attributable changes, verification checks,
+memory, errors, and compaction. Slice C adds the agent/pane lifecycle group:
 
 ```gene
 {^v 1 ^type "user_input"  ^text "..."}
@@ -694,9 +887,19 @@ types include attributable changes, verification checks, and compaction:
 {^v 12 ^type "context_compacted" ^removed_turns 3 ^retained_turns 8
  ^elided_tool_outputs 1 ^irreducible_over_limit false ...}
 {^v 13 ^type "context_limit_warning" ^bytes 900000 ^items 9 ...}
+{^v 14 ^type "memory" ^text "reader datum comments are spacing"}
+{^v 15 ^type "error" ^text "transport failed"}
+
+# Slice C lifecycle events (target)
+{^v 16 ^type "agent_spawned" ^agent_id "a2" ^parent_agent_id "main" ...}
+{^v 17 ^type "agent_status" ^agent_id "a2" ^status "working" ...}
+{^v 18 ^type "agent_completed" ^agent_id "a2" ^task_id "t7" ...}
+{^v 19 ^type "pane_opened" ^pane_id 2 ^kind "output" ...}
+{^v 20 ^type "pane_output" ^pane_id 2 ^source_agent_id "a2" ...}
+{^v 21 ^type "pane_closed" ^pane_id 2 ...}
 ```
 
-`run-turn` and `run-tool-call` write through an explicit **emit sink**: the CLI
+`run_turn` and `run_tool_call` write through an explicit **emit sink**: the CLI
 passes its process-global logger, the gateway passes a per-session sink — so
 each gateway session owns its complete tool trail without cross-session
 interleaving. Every value is redacted at append. The event log is authoritative
@@ -706,12 +909,72 @@ event range, current turn), while `/repl` can apply normal selectors and stream
 operations. Full replay/fork/compare and sanitized trajectory fixtures are later
 extensions, not requirements for the first event slice.
 
-Events carry correlation ids where needed (turn, tool call, actor), module/tool
-version hashes once hot reload exists, and redaction/truncation state. They do
-not contain hidden chain-of-thought; they record explicit plans, decisions,
-actions, results, and evidence.
+Events carry correlation ids where needed (`application_id`, `agent_id`,
+`parent_agent_id`, `task_id`, `turn_id`, `tool_call_id`, `pane_id`),
+module/tool version hashes once hot reload exists, and redaction/truncation
+state. Pane events describe presentation and routing; agent/tool events remain
+authoritative even when no pane is open. They do not contain hidden
+chain-of-thought; they record explicit plans, decisions, actions, results, and
+evidence.
 
-### 9.3 Dogfood rule
+### 9.3 Native agent graph and supervision
+
+The application has exactly one main agent and a bounded set of sub-agents.
+This is a supervised tree, not peer-to-peer swarm infrastructure:
+
+```text
+ApplicationSession
+├── AgentRegistry
+│   └── main
+│       ├── sub-agent a1
+│       └── sub-agent a2
+├── PaneRegistry
+│   ├── pane 1 -> a1
+│   ├── pane 2 -> output projection
+│   └── pane 3 -> shell controller
+└── WorkspaceCoordinator
+```
+
+Each `Agent` owns a stable id, optional parent id, Responses-style item list,
+current task, status, event sink, tool/capability view, and explicit assignment.
+The main agent alone receives bare user input and is responsible for spawning,
+steering, cancelling, and incorporating sub-agent results. A sub-agent starts
+with its assignment, the relevant workspace instructions/memory, and an
+explicit context attachment chosen by the parent; it does not receive the full
+main transcript by accident. Its final result is emitted as a structured child
+result into the main agent's supervisor inbox. At the next safe model boundary,
+the main agent receives a compact child-result item linked to the original
+delegation; the child's private transcript and tool chatter are not copied into
+the main context.
+
+Sub-agents may run concurrently because model and read-only tool work is
+independent. Shared-workspace mutation is coordinated separately from agent
+scheduling. The first clean implementation grants at most one mutation lease
+at a time for `write_file`, `edit_file`, `/undo`, and similar operations. Shell
+commands take the lease by default because reliably proving that an arbitrary
+command is read-only is harder than serializing it; narrowly classified
+read-only commands may opt out later. Pure file reads and model requests may
+overlap. The lease owner and resulting `file_change` events are attributable to
+an agent and task. Per-agent worktrees remain an optional later isolation
+strategy, not a requirement for native sub-agents. The current concurrent agent
+turns establish the scheduler contract; mutation coordination and typed
+non-agent pane controllers remain required before the slice is complete.
+
+Stopping an agent cancels its current model request and subprocesses, releases
+its mutation lease, marks it terminal, and preserves its event trail. Closing
+an attached pane only detaches the view. A completed sub-agent can be retained
+for inspection or explicitly removed after its result is incorporated. The
+application enforces a configurable small concurrency/count bound so a model
+cannot recursively create an unbounded team.
+
+Persistence records the agent graph, durable item histories, statuses,
+assignments, pane descriptors/layout, and event correlations. Output panes may
+restore their event projection. Shell and REPL processes are not pretended to
+survive a crash: restoration shows their captured history in a closed pane and
+requires an explicit restart. No persistence format stores raw terminal state
+or secrets.
+
+### 9.4 Dogfood rule
 
 The quality bar is whether the author voluntarily uses this agent to build
 Gene. Repeated friction observed during that work chooses the next feature.
@@ -748,7 +1011,7 @@ forward priority order.
    shapes), argument validation, and risk class all derive from one value
    (§6, §9.1).
 2. **Done.** `/repl` binds a stable `Session` object with message-based
-   mutations (`add-tool`, `remember`, `subscribe`, `trace`, `resume`) (§9.1).
+   mutations (`add_tool`, `remember`, `subscribe`, `trace`, `resume`) (§9.1).
 3. **Done.** CLI and gateway emit one versioned event vocabulary — `user_input`,
    `model_item`, `tool_call`, `tool_result`, `agent_text`, `text_delta`,
    `turn_done`, `tool_registered`, `file_change`, `check`,
@@ -764,9 +1027,11 @@ forward priority order.
    catastrophe denial, event/trace behavior (`tests/test_cli.nim`), and
    `Fs/real_path` (`tests/spec_runner.nim`).
 
-The signature demo is deliberately single-session: inspect live state in
-`/repl`, add or replace a typed Gene tool, query the event trail, and continue
-the same turn. It requires no MCP, worktrees, browser, native TLS, or subagents.
+The shipped signature demo is deliberately one main session: inspect live state
+in `/repl`, add or replace a typed Gene tool, query the event trail, and
+continue the same turn. The native multi-agent slice builds on that control
+plane; it still requires no MCP, worktrees, browser, or additional provider
+protocol.
 
 ### 10.3 Slice B — make it the best daily driver
 
@@ -791,19 +1056,45 @@ Choose exact ordering from dogfood pain:
 - **Done:** hierarchical `AGENTS.md` loading for work outside the Gene
   repository.
 
-### 10.4 Slice C — keep repeated workflows
+### 10.4 Slice C — native multi-agent application
 
-- Promote repeated `/repl` experiments into small Gene workflow modules.
-- Record module/tool version hashes and hot-reload new calls without changing
-  already-running calls.
-- Add hook points only after the same manual workflow repeats.
-- Add a Gene-aware module/symbol map if raw search becomes a measured
-  bottleneck.
-- Add stable JSONL automation if scripting the agent becomes useful.
+1. **Done.** Introduce independent `AgentRegistry`, `PaneRegistry`, and
+   `WorkspaceCoordinator` application services with stable ids and events;
+   migrate the current extension conversations onto them without changing the
+   visible `/ext` behavior.
+2. **Done.** Make the main agent a supervisor. Add bounded
+   spawn/send/cancel/stop/result
+   operations and explicit context attachments; expose them through stable
+   `session/agents` and typed model tools.
+3. **Done.** Generalize right-side panes to the four §7.1 kinds. Keep `/ext` as an alias,
+   add output panes, and move `/sh` and `/repl` from whole-terminal subsessions
+   to scheduler-owned interactive panes.
+4. **Done.** Allow concurrent sub-agent turns and read-only work, with attributable
+   events and a single shared-workspace mutation lease. Prove cancellation,
+   lease release, bounded spawning, and result delivery with deterministic fake
+   models and PTY tests.
+5. **Done.** Persist the agent graph and pane layout while restoring shell/REPL panes as
+   closed history rather than fake live processes. Fold gateway startup into
+   the main program behind `--gateway[=PORT]`/`--headless`; keep
+   `gateway.gene` only as a thin compatibility launcher. The in-process TUI and
+   optional network adapters must address the same application services.
+
+The slice is complete when the main agent can delegate two independent review
+tasks, the user can interact with either sub-agent while both are running, a
+third output pane can follow verification events, and a shell or REPL pane can
+run without suspending input/rendering in the rest of the application. Starting
+that same program with `--gateway` must expose the already-live local session
+to the web/API while the TUI remains responsive; `--headless` and the temporary
+`gateway.gene` wrapper must expose the same API without constructing curses.
 
 ### 10.5 Slice D — expand only where leverage is proven
 
-- Add one supervised explorer or reviewer actor before general agent teams.
+- Promote repeated `/repl` experiments into small Gene workflow modules;
+  record module/tool version hashes and hot-reload new calls without changing
+  already-running calls.
+- Add hook points only after the same manual workflow repeats. Add a Gene-aware
+  module/symbol map if raw search becomes a measured bottleneck, and stable
+  JSONL automation if scripting the agent becomes useful.
 - Orchestrate `git worktree` only when parallel edits are genuinely useful;
   worktrees are greenfield subprocess orchestration, not a current runtime
   primitive.
@@ -841,65 +1132,107 @@ broad/risky runtime changes); performance regressions must remain visible.
 - a large formal eval/analytics program — deterministic harness tests plus
   small regressions captured from real Gene work are the quality mechanism;
 - MCP, worktree orchestration, browser automation, a general multi-language
-  code graph, and large agent teams as prerequisites; each remains optional
-  slice-D work triggered by actual use;
+  code graph, and decentralized or unbounded agent teams as prerequisites;
+  each remains optional slice-D work triggered by actual use. One main agent
+  with a bounded set of supervised sub-agents is the core slice-C design;
 - TLS certificate pinning and proxy configuration.
 
-## 12. Local-first multi-surface architecture (gateway, TUI, web, channels)
+## 12. Local-first main program and multi-surface adapters
 
-One long-running **gateway** process owns every conversation; surfaces are
-thin views onto it. The terminal agent of §1 becomes one surface among four,
-and a session started in the terminal can be continued from the phone. The
-gateway is already useful infrastructure, but expanding surfaces is slice-D
-work: the embedded CLI and its live Gene control plane remain the primary
-product.
+One long-running **main program** owns every application session. An
+application session contains one main agent, its supervised sub-agents, panes,
+processes, and the shared workspace coordinator — it is not synonymous with
+one model conversation. The main program always starts this same core and then
+attaches surfaces:
 
-```
-                       ┌───────────────────────────────┐
-  ┌──────────┐  HTTP   │            gateway            │
-  │ TUI      │◄───────►│                               │   libcurl (async)
-  ├──────────┤  +JSON  │  session actors (one per      │◄───────────────► model
-  │ Web UI   │◄───────►│  conversation): events,       │   Responses/chat APIs
-  ├──────────┤ cursor  │  turn loop, typed tools,      │
-  │ Telegram │◄──long──│  catastrophe guard            │   libcurl (async, long-poll)
-  ├──────────┤  poll   │                               │◄───────────────► api.telegram.org
-  │ Slack    │◄───────►│  event log per session,       │
-  └──────────┘         │  sqlite persistence (m11)     │
-                       └───────────────────────────────┘
+- by default, only the in-process terminal TUI;
+- with `--gateway[=PORT]`, the TUI plus HTTP/web and any configured channel
+  adapters;
+- with `--gateway --headless`, only the network/channel adapters.
+
+The word **gateway** therefore names an optional adapter set and exposed API,
+not a second executable architecture. The local TUI calls application services
+directly; it must not serialize through localhost HTTP merely because the
+gateway is enabled. Remote surfaces use the same commands and event projections
+through the HTTP/channel adapters. A session started in the terminal can thus
+be continued from the phone without copying state between a CLI agent and a
+gateway agent.
+
+```text
+                         ┌──────────────────────────────────┐
+  ┌──────────┐  direct   │        main agent program        │
+  │ TUI      │◄─────────►│                                  │   libcurl (async)
+  └──────────┘           │  application/session actors:    │◄───────────────► model
+                         │  main + sub-agents, panes,       │   Responses/chat APIs
+  ┌──────────┐  HTTP     │  tools, guard, event log,        │
+  │ Web UI   │◄─────────►│  workspace coordinator          │
+  ├──────────┤  +JSON    │                                  │   libcurl (async)
+  │ remote   │◄─────────►│  optional gateway adapters      │◄───────────────► channels
+  │ clients  │  events   │  + sqlite persistence           │
+  ├──────────┤           │                                  │
+  │ channels │◄─────────►│                                  │
+  └──────────┘           └──────────────────────────────────┘
 ```
 
 Design rules: every piece reuses a pattern already proven in this repo, every
 new host power is a capability value, and each addition is independently
 shippable and testable over loopback with fake endpoints.
 
-### 12.1 The gateway process and session actors
+### 12.1 Main process, adapters, and session actors
 
-The gateway is ordinary Gene: `gene run examples/ai_agent/gateway.gene`
-(**shipped foundation** — historical milestone 8 sessions/HTTP
-API/long-poll/auth/web page, milestone 9 Telegram channel, milestone 11 SQLite
-persistence). Additional surfaces and rare remote confirmations are optional
-slice-D work. Each
-conversation is a **session actor** (`actor/spawn`, design.md §13) owning:
+**Shipped foundation:** `tui.gene` is the primary composition entrypoint and
+parses the §1 flags. `gateway_adapter.gene` is UI-neutral and receives the
+agent core as an explicit API value; it contains the milestone 8 HTTP
+API/long-poll/auth/web page, milestone 9 Telegram channel, and milestone 11
+SQLite persistence. `gateway.gene` is a thin compatibility launcher over those
+same two modules. Every gateway session owns an `AgentApplication` and uses its
+agent registry, pane registry, task cells, event sink, and workspace lease.
+The adapter retains only the session actor/router map needed for per-session
+mailbox ordering. In combined mode it also registers the already-live TUI
+application as stable session `local`, so HTTP can observe, message, and cancel
+the same main agent while curses remains responsive.
 
-- the Responses-style model item list (the chat adapter normalizes wire
-  formats at the boundary);
+Startup order is deliberate: parse and validate application flags, construct
+the core and restore durable state, bind the requested HTTP listener, and only
+then open curses. A requested port that is invalid or unavailable fails before
+terminal mode changes. `/quit` in combined TUI+gateway mode performs one
+controlled shutdown of adapters, agent/process tasks, persistence, and curses;
+headless mode runs until an explicit shutdown or process signal. An unexpected
+loss of the requested HTTP listener is surfaced as a fatal application error
+rather than quietly leaving a supposedly shared session local-only. Optional
+channel failures remain isolated and retry according to their adapter policy.
+
+The main process owns a registry of application sessions. The TUI attaches to
+one designated local session; HTTP/channel routes may address it or create
+additional sessions. Each application session is a **session actor**
+(`actor/spawn`, design.md §13) owning:
+
+- an agent registry with exactly one main agent and zero or more bounded,
+  supervised sub-agents; each agent owns its Responses-style model item list
+  (the chat adapter normalizes wire formats at the boundary);
+- a pane registry independent from the agent registry, plus any output-stream,
+  shell, and REPL controllers described in §7.1;
 - a monotonically versioned **authoritative event log** (12.3), from which
   transcript and surface state are projected;
 - model config (base/model/flavor per session, defaulted from env as today);
-- the typed tool registry + §8.5 catastrophe guard, and at most one pending
-  destructive-operation confirmation (12.8).
+- the typed tool registry, workspace mutation coordinator, §8.5 catastrophe
+  guard, and at most one pending destructive-operation confirmation (12.8).
 
-Actors give per-session ordering for free (one turn at a time per session)
-while the scheduler runs sessions concurrently — the same task_per_request
-model the `net/http` server already uses, with `http/actor_pool` as the
+The session actor serializes control-plane transitions — create/stop agent,
+open/close pane, grant/release mutation lease, append event — while agent model
+requests and read-only tasks run concurrently under the scheduler. This keeps
+state deterministic without forcing all sub-agent work through one turn lock.
+The existing task-per-request `net/http` model and `http/actor_pool` remain the
 in-repo precedent for routing requests into actors via `RequestMsg`/reply.
 
 ### 12.2 Gateway API (HTTP + JSON)
 
-Served by the existing `net/http` server, bound to `127.0.0.1` by default.
-A single static bearer token (`GENE_GATEWAY_TOKEN`) is checked on every
-request when set; when unset the API is open and the gateway warns to keep
-the bind on localhost — single-user posture (§11), no accounts.
+When `--gateway[=PORT]` is enabled, the adapter serves this API through the
+existing `net/http` server. It binds to `GENE_GATEWAY_HOST` or `127.0.0.1` by
+default. A single static bearer token (`GENE_GATEWAY_TOKEN`) is checked on every
+request when set. An unset token is permitted only on a loopback bind;
+non-loopback startup without authentication is rejected — single-user posture
+(§11), no accounts.
 
 | Route | Meaning | Status |
 |---|---|---|
@@ -909,6 +1242,14 @@ the bind on localhost — single-user posture (§11), no accounts.
 | `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N, or park until one arrives | shipped |
 | `POST /api/sessions/:id/confirmations/:cid` | resolve a rare destructive-operation confirmation | planned |
 | `POST /api/sessions/:id/cancel` | cancel the in-flight turn and its subprocess | shipped |
+| `POST /api/sessions/:id/agents` | spawn a supervised sub-agent with assignment/context attachment | slice C |
+| `POST /api/sessions/:id/agents/:aid/messages` | prompt or steer a particular agent | slice C |
+| `POST /api/sessions/:id/agents/:aid/cancel` | cancel that agent's active operation without stopping it | slice C |
+| `DELETE /api/sessions/:id/agents/:aid` | stop a sub-agent and preserve its event trail | slice C |
+| `GET /api/sessions/:id/panes` | list typed panes and backing-owner status | slice C |
+| `POST /api/sessions/:id/panes` | open/attach a typed pane | slice C |
+| `POST /api/sessions/:id/panes/:pid/input` | route user-originated input according to pane kind | slice C |
+| `DELETE /api/sessions/:id/panes/:pid` | close/detach a pane without conflating owner lifetime | slice C |
 | `GET  /` | the web UI page (12.5) | shipped |
 
 Long-poll is the bootstrap streaming mechanism because the `net/http` server
@@ -921,7 +1262,8 @@ chunked/SSE response streaming is gap 2 in 12.9.
 
 Each session appends typed events; surfaces render them and remember only a
 cursor. Events are maps (JSON-friendly, like everything else here). The
-gateway now uses the same hyphenated §9.2 vocabulary as the CLI and `/trace`:
+shipped gateway adapter uses the same hyphenated §9.2 vocabulary as the CLI and
+`/trace`:
 
 ```gene
 {^v 41 ^type "text_delta"        ^text "..."}
@@ -934,24 +1276,26 @@ gateway now uses the same hyphenated §9.2 vocabulary as the CLI and `/trace`:
 {^v 48 ^type "turn_done"         ^cancelled true}
 ```
 
-All text passes the §8.5 `redact` before entering the log — tokens live only in the
-gateway process; surfaces can only ever receive redacted text. The same event
-schema must drive embedded CLI rendering and `/trace`; do not maintain a second
-gateway-only vocabulary.
+All text passes the §8.5 `redact` before entering the log — tokens live only in
+the main process; surfaces can only ever receive redacted text. The same event
+schema must drive in-process TUI rendering, remote adapters, and `/trace`; do
+not maintain a second gateway-only vocabulary.
 
 ### 12.4 TUI surface
 
-The current CLI keeps working unchanged as **embedded mode** (no gateway).
-Optional slice-D work turns the §7 curses TUI into a gateway client: send via
-`POST messages`, render via the events long-poll. Live background updates
-while the user types require non-blocking input — `nodelay`/`timeout`
-`wgetch` polling from a Gene task, exactly as §7 already plans; until then a
-client TUI renders events only between keystrokes/turns, which matches
-today's behavior.
+The TUI is always an in-process adapter when it is enabled, regardless of
+whether `--gateway` also exposes HTTP. Slice C makes its §7 pane layout a
+projection of the application agent/pane registries rather than TUI-owned
+conversation arrays. A future TUI running in a different process may be an
+HTTP gateway client, but that transport distinction must stay below the same
+surface command/event interface. The shipped cancellable `curses/next_event`
+already provides the non-blocking input needed to update sub-agent, output,
+shell, and REPL panes while the user types; neither local nor remote adapters
+may reintroduce a between-turn-only rendering loop.
 
 ### 12.5 Web UI
 
-A single static page served by the gateway (`html` helpers;
+A single static page served by the optional gateway adapter (`html` helpers;
 `examples/todo_app.gene` is the in-repo precedent for a self-contained web
 app): vanilla JS, `fetch` to post messages, a long-poll loop for events,
 rare destructive-operation confirmations rendered as allow/deny buttons
@@ -961,8 +1305,10 @@ a string in the Gene source. Session switcher reads `GET /api/sessions`.
 ### 12.6 Telegram channel (implemented, milestone 9)
 
 The cheapest remote surface, and deliberately the first: it needs **outbound
-HTTPS only**, which the native HTTP transport provides. As shipped in
-`examples/ai_agent/gateway.gene`:
+HTTPS only**, which the native HTTP transport provides. The behavior below is
+shipped in `examples/ai_agent/gateway_adapter.gene` behind the main program's
+gateway flags (and the compatibility launcher), without changing its protocol
+or event semantics:
 
 - an adapter task long-polls `getUpdates` (`timeout=50`, offset cursor) via
   `net/http_client/request` (curl(1) is the library-discovery fallback);
@@ -1004,7 +1350,7 @@ is a conversation.
 ### 12.8 Rare destructive confirmations across surfaces
 
 §8.5's catastrophe guard normally produces no interaction. The guard's
-confirmation strategy and event sink are injectable (`set-guard-confirm`; the
+confirmation strategy and event sink are injectable (`set_guard_confirm`; the
 per-turn emit sink), because an embedding host has no terminal: the CLI
 confirms on stdin, while the shipped gateway **denies destructive commands
 outright** — never blocking the scheduler on an invisible prompt — and records
@@ -1023,7 +1369,7 @@ This is not a general approval workflow.
 | 1 | ~~**Async subprocess**~~ — **closed (m8, cancellation extended in slice B)**: `os/exec_async`/`exec_stream_async` run the child on a dedicated OS thread; stdout lines cross through a channel, the Task settles through the scheduler, and `Task/cancel` now terminates the child and closes its stdout channel | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
 | 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
-| 4 | `crypto/hmac-sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
+| 4 | `crypto/hmac_sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
 | 5 | ~~**Non-blocking TUI input**~~ — **closed**: public cancellable `curses/next_event` polls `getch` without blocking the scheduler and emits UTF-8/resize events | — | — | shipped in `src/gene/stdlib.nim` + PTY tests (§7) |
 
 Gap 1 was the single load-bearing piece: it converts the agent from "one
@@ -1042,4 +1388,12 @@ latency, i.e. sessions really run concurrently). Slice B adds a five-second
 fake model turn that is cancelled through the gateway and must emit its
 cancelled `turn_done` in under two seconds. Milestone 9 adds a fake
 Telegram API server (canned `getUpdates` + captured `sendMessage`), and the
-pty harness pattern from the Ctrl-C work covers the TUI client.
+pty harness pattern from the Ctrl-C work covers the TUI client. Slice C adds a
+fake-model scenario with two concurrent sub-agents, deterministic result
+delivery to the main agent, a contended mutation lease that is released on
+cancellation, output-pane projection, and PTY coverage showing that embedded
+shell/REPL panes do not stall main input or rendering. Gateway-unification
+coverage starts the main program on a loopback test port in combined and
+headless modes, proves that TUI and HTTP commands reach the same session/event
+log, checks explicit-port precedence and bind failure before curses startup,
+and runs the compatibility launcher against the same route fixtures.

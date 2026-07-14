@@ -4657,6 +4657,9 @@ proc runReplSessionForEnv*(env: Value,
                            writeOut: ReplWrite,
                            writeErr: ReplWrite,
                            options: ReplOptions): int
+proc incrementalReplScopeForEnv*(env: Value): Scope
+proc run*(chunk: Chunk, scope: Scope,
+          validateImplRequirements = true): Value
 
 include ./stdlib
 
@@ -7657,6 +7660,13 @@ proc materializeEvalParent(env: Value): Scope =
     current = bindingScope
   current
 
+proc incrementalReplScopeForEnv*(env: Value): Scope =
+  if env.kind != vkEnv:
+    raise newException(GeneError, "repl/open expects an Env")
+  result = newScope(materializeEvalParent(env))
+  result.implOverlayRoot = true
+  result.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
+
 proc materializeCallerEvalParent(callerEnv: Value): Scope =
   ## Materialize a read-only overlay for one eval from the live borrowed view.
   ## The overlay is marked borrowed so any closure it creates cannot escape the
@@ -7828,7 +7838,6 @@ proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
   else:
     raise newException(GeneError, "node splice expects a list, map, or node")
 
-proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value
 proc defaultReplOptions*(interactive = false): ReplOptions =
   ReplOptions(interactive: interactive, prompt: "gene> ")
 

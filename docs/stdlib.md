@@ -194,9 +194,12 @@ The POSIX terminal API uses an explicitly owned `Screen`:
 restores terminal modes; callers should still use `ensure`. `draw` is a
 non-variadic, color-coded full-screen renderer. `dimensions` returns
 `{^rows ^cols}`. `next_event` returns a cancellable `Task` and reports text as
-complete UTF-8 strings plus named enter, edit, navigation, EOF, and resize
-events. Scheduler polling uses non-blocking `getch`, so waiting for a key does
-not stop other tasks.
+complete UTF-8 strings plus named enter, edit, navigation, paste-boundary,
+modified-Enter, EOF, and resize events. Scheduler polling uses non-blocking
+`getch`, so waiting for a key does not stop other tasks. While a `Screen` owns
+the terminal, diagnostic console log sinks are paused to prevent out-of-band
+stdout/stderr writes from corrupting the full-screen display; file and callback
+sinks remain active.
 
 `read_input` provides the shared multiline editor with bracketed-paste and
 Unicode support. Its optional `^history` argument is a list of strings;
@@ -206,11 +209,37 @@ the transcript by three lines and PageUp/PageDown by one viewport; a
 `[SCROLL +N]` status prefix marks a view detached from the latest output.
 Transcript text word-wraps into visual rows at the current terminal width, and
 scrolling counts those wrapped rows. `refresh_input` redraws while retaining
-screen ownership. `escape_pressed?` non-destructively checks a live screen for
+screen ownership. `draw`, `read_input`, and `refresh_input` also accept
+`^panes`, a list of `{^title Str ^output Str}` maps; `draw` additionally accepts
+a non-negative `^output_scroll` visual-row offset. On terminals at least 48
+columns wide, the primary transcript keeps the left side while panes are
+stacked vertically on the right; input separators, input rows, and status keep
+the full terminal width. Narrow terminals retain the primary transcript and
+hide the side panes without changing their state. `escape_pressed?`
+non-destructively checks a live screen for
 a standalone Escape, preserving queued text and terminal escape sequences so a
 caller can use it to cancel concurrent work.
 Terminal failures raise `CursesError`. The older `os/read_input`,
 `os/refresh_input`, and `os/close_input` names remain compatibility wrappers.
+
+The `repl` namespace supports both a whole interactive session and incremental
+controllers suitable for panes:
+
+```gene
+(import repl [open eval_source close])
+(var session (open (env ^bindings {^answer 42})))
+(try
+  (do
+    (eval_source session "(var x answer)")  # {^status "ok" ^text "42"}
+    (eval_source session "(+ x 1)"))        # {^status "ok" ^text "43"}
+  ensure
+    (close session))
+```
+
+`repl/open` creates an owned declaration-persistent evaluation scope.
+`repl/eval_source` returns `{^status ^text}` with status `ok`, `incomplete`, `error`,
+or `panic`; incomplete source is retained for the next call. `repl/close` is
+idempotent. `repl/run` remains the blocking stdin/stdout session helper.
 
 ## Phase 1: Core Utility Modules
 

@@ -5,8 +5,9 @@ flagship example. Full design, roadmap, and architecture: [design.md](design.md)
 
 | File | Role |
 |---|---|
-| `tui.gene` | The terminal agent: streaming model loop, typed tools, event log, `/repl` live programming. Runs standalone (embedded mode). |
-| `gateway.gene` | Multi-session gateway over the same turn loop: session actors, HTTP+JSON API with cursor long-poll, embedded web chat, Telegram channel, SQLite persistence. Imports `tui.gene`. |
+| `tui.gene` | Main application: terminal agent, native agents/panes, streaming model loop, typed tools, event log, `/repl`, and optional gateway flags. |
+| `gateway_adapter.gene` | UI-neutral HTTP/web/Telegram gateway adapter composed by the main application. |
+| `gateway.gene` | Thin headless compatibility launcher over `tui.gene` + `gateway_adapter.gene`. |
 | `logging.gene` | Trace-level JSONL diagnostic profile for the agent; writes `logs/agent.jsonl` beside the config. |
 | `design.md` | The design document (formerly `docs/ai-agent.md`) — what exists, what's next, and why. |
 | `package.gene` | Package manifest. |
@@ -64,10 +65,17 @@ Level policy:
 Slash commands: `/repl` (live Gene REPL with a stable `session` object —
 add tools, inspect state, `(session ~ resume)` to continue the turn),
 `/trace` (query the versioned event log: `type=`, `tool=`, `path=`, `turn=`),
-`/diff` and `/undo [id]` (only attributable file operations), `/sh` (shell
-subsession), `/remember <note>` / `/memory` / `/forget-memory` (durable notes
-in the system prompt), `/status`, `/quit`. Ctrl-C cancels an active model/tool
-turn and returns to a prompt for steering.
+`/diff` and `/undo [id]` (only attributable file operations), `/sh` (open or
+focus a cancellable shell pane), `/remember <note>` / `/memory` /
+`/forget-memory` (durable notes in the system prompt), `/ext` or
+`/agent new [prompt]` (open a secondary agent pane), `/agents`,
+`/pane output [title]`, `/N <input>` and `/N close|cancel|stop|focus`
+(address or control pane N), `/status`, `/quit`. The primary agent can
+also use the independent `spawn_agent`, `send_agent`, `agent_result`,
+`cancel_agent`, `stop_agent`, `open_pane`, `append_pane`, and `close_pane`
+tools; `open_extension` remains a convenience composite. Each agent keeps its
+own model context for follow-up prompts. Ctrl-C cancels an active
+model/tool turn and returns to a prompt for steering.
 
 Key environment variables (all optional beyond the auth token):
 
@@ -88,13 +96,22 @@ commands and asks once for destructive ones.
 ## The gateway
 
 ```bash
+# Integrated headless gateway:
+bin/gene run examples/ai_agent/tui.gene -- --gateway --headless
+
+# TUI and gateway in one process (explicit port overrides the environment):
+OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/tui.gene -- --gateway=8090
+
+# Compatibility launcher:
 GENE_GATEWAY_PORT=8090 bin/gene run examples/ai_agent/gateway.gene
 # then open http://127.0.0.1:8090/ for the web chat
 ```
 
 Sessions are actors sharing the tui's turn loop; surfaces (web, Telegram
 via `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_CHAT_IDS`) read one versioned
-event log per session. `GENE_GATEWAY_DB=<path>` persists sessions in
+event log per session. Each session owns the same native agent/pane application
+services as the TUI. In combined mode, `GET /api/sessions` includes `local`,
+which addresses the already-live terminal session. `GENE_GATEWAY_DB=<path>` persists sessions in
 SQLite; `GENE_GATEWAY_TOKEN` adds bearer auth (keep the bind on localhost
 when unset). `POST /api/sessions/:id/cancel` cancels an active model/tool turn
 and terminates its subprocess; `GET /api/sessions` exposes each session's

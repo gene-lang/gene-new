@@ -53,6 +53,7 @@
 (import curses [open : curses_open close : curses_close
                 read_input : curses_read_input
                 refresh_input : curses_refresh_input escape_pressed?
+                draw : curses_draw next_event : curses_next_event
                 Screen CursesError])
 (import json [parse stringify JsonError])
 (import str [join split starts_with? ends_with? contains? lower trim byte_size
@@ -63,8 +64,12 @@
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])
 (import store/fs [open : store_open StoreError])
-(import repl [run : run_repl_session])
+(import repl [run : run_repl_session open : repl_open
+              eval_source : repl_eval
+              close : repl_close])
 (import log [new_logger info! warn! error! debug! trace!])
+(import [prepare_gateway serve_gateway stop_gateway run_gateway]
+        from "./gateway_adapter")
 
 # Diagnostic logging is intentionally separate from the authoritative event
 # log below. It records lifecycle, routing, sizes, durations, and outcomes, but
@@ -345,6 +350,249 @@
 (var events_enabled (cell true))
 (var active_turn_task (cell nil))
 (var user_screen (cell nil))
+(var active_application (cell nil))
+(var active_editor (cell nil))
+(var interactive_transcript (cell nil))
+(var interactive_memory (cell []))
+
+# Slice C application model. Agents and panes are independent values: an
+# agent may continue without a visible pane, while output/shell/REPL panes do
+# not imply a model conversation. All mutable collections remain behind cells
+# so the stable Session surface can expose the values without exposing TUI
+# implementation arrays.
+(type Agent
+  ^props {^id Str ^parent_id Any ^title Str ^assignment Str
+          ^items Any ^transcript Any ^streaming Any ^current_task Any
+          ^status Any ^result Any ^pane_ids Any ^history Any})
+
+(type Pane
+  ^props {^id Int ^kind Str ^owner_id Any ^title Str ^output Any
+          ^status Any ^current_task Any ^history Any ^controller Any
+          ^close_policy Str})
+
+(type ShellController
+  ^props {^cwd Any ^environment Any})
+
+(type OutputController
+  ^props {^source Str})
+
+(type ReplController
+  ^props {^session Any ^items Any ^transcript Any ^memory Any
+          ^streaming Any ^resume_requested Any})
+
+(type AgentApplication
+  ^props {^main_agent Any ^agents Any ^panes Any
+          ^next_agent_id Any ^next_pane_id Any ^memory Any
+          ^event_sink Any ^workspace_owner Any ^focused_pane Any
+          ^supervisor_inbox Any ^max_agents Int ^shutting_down Any})
+
+(fn make_agent [id : Str, parent_id, title : Str, assignment : Str,
+                items, transcript, current_task]
+  (Agent ^id id ^parent_id parent_id ^title title ^assignment assignment
+         ^items items ^transcript transcript ^streaming (cell false)
+         ^current_task current_task ^status (cell "idle") ^result (cell "")
+         ^pane_ids (cell []) ^history (cell [])))
+
+(fn make_application_with_task [main_items, main_transcript, memory, event_sink,
+                                main_task]
+  (var main_agent
+    (make_agent "main" nil "main" "primary user conversation"
+                main_items main_transcript main_task))
+  (AgentApplication
+    ^main_agent main_agent ^agents (cell [main_agent]) ^panes (cell [])
+    ^next_agent_id (cell 1) ^next_pane_id (cell 1) ^memory memory
+    ^event_sink event_sink ^workspace_owner (cell nil)
+    ^focused_pane (cell nil) ^supervisor_inbox (cell [])
+    ^max_agents 8 ^shutting_down (cell false)))
+
+(fn make_application [main_items, main_transcript, memory, event_sink]
+  (make_application_with_task main_items main_transcript memory event_sink
+                              active_turn_task))
+
+(fn application_emit [app, type : Str, props]
+  (var sink app/event_sink)
+  (sink type props))
+
+(fn application_find_agent [app, id : Str]
+  (var found (cell nil))
+  (for agent in (app/agents ~ Cell/get)
+    (if (== agent/id id) (found ~ Cell/set agent) nil))
+  (found ~ Cell/get))
+
+(fn application_find_pane [app, id : Int]
+  (var found (cell nil))
+  (for pane in (app/panes ~ Cell/get)
+    (if (== pane/id id) (found ~ Cell/set pane) nil))
+  (found ~ Cell/get))
+
+(fn application_find_pane_kind [app, kind : Str]
+  (var found (cell nil))
+  (for pane in (app/panes ~ Cell/get)
+    (if (&& (== pane/kind kind) (== (found ~ Cell/get) nil))
+      (found ~ Cell/set pane)
+      nil))
+  (found ~ Cell/get))
+
+(fn application_open_pane [app, kind : Str, owner_id, title : Str,
+                           output, controller, close_policy : Str]
+  (var id (app/next_pane_id ~ Cell/get))
+  (app/next_pane_id ~ Cell/set (+ id 1))
+  (var pane
+    (Pane ^id id ^kind kind ^owner_id owner_id ^title title ^output output
+          ^status (cell "idle") ^current_task (cell nil) ^history (cell [])
+          ^controller controller ^close_policy close_policy))
+  ((app/panes ~ Cell/get) ~ List/push! pane)
+  (if (== kind "agent")
+    (do
+      (var agent (application_find_agent app owner_id))
+      (if (!= agent nil)
+        ((agent/pane_ids ~ Cell/get) ~ List/push! id)
+        nil))
+    nil)
+  (application_emit app "pane_opened"
+    {^pane_id id ^kind kind ^owner_id owner_id ^title title})
+  pane)
+
+(fn application_spawn_agent [app, title : Str, assignment : Str, items,
+                             transcript]
+  (if (>= ((app/agents ~ Cell/get) ~ size) app/max_agents)
+    nil
+    (do
+      (var seq (app/next_agent_id ~ Cell/get))
+      (app/next_agent_id ~ Cell/set (+ seq 1))
+      (var id $"a${seq}")
+      (var label (if (== (trim title) "") $"agent ${seq}" (trim title)))
+      (var agent
+        (make_agent id app/main_agent/id label assignment items transcript
+                    (cell nil)))
+      ((app/agents ~ Cell/get) ~ List/push! agent)
+      (application_emit app "agent_spawned"
+        {^agent_id id ^parent_agent_id app/main_agent/id
+         ^assignment assignment ^title label})
+      agent)))
+
+(fn application_cancel_agent [app, agent] : Bool
+  (var task (agent/current_task ~ Cell/get))
+  (if (== task nil)
+    false
+    (do
+      (task ~ Task/cancel)
+      (application_emit app "agent_status"
+        {^agent_id agent/id ^status "cancelling"})
+      true)))
+
+(fn application_stop_agent [app, agent] : Bool
+  (if (== agent/id "main")
+    false
+    (do
+      (application_cancel_agent app agent)
+      (if (== (app/workspace_owner ~ Cell/get) agent/id)
+        (application_release_workspace app agent/id "agent_stop")
+        nil)
+      (agent/status ~ Cell/set "stopped")
+      (application_emit app "agent_status"
+        {^agent_id agent/id ^status "stopped"})
+      true)))
+
+(fn application_close_pane [app, id : Int] : Bool
+  (var kept (cell []))
+  (var removed (cell nil))
+  (for pane in (app/panes ~ Cell/get)
+    (if (== pane/id id)
+      (removed ~ Cell/set pane)
+      ((kept ~ Cell/get) ~ List/push! pane)))
+  (var pane (removed ~ Cell/get))
+  (if (== pane nil)
+    false
+    (do
+      (var task (pane/current_task ~ Cell/get))
+      (if (&& (!= task nil)
+              (|| (== pane/close_policy "stop")
+                  (== pane/close_policy "cancel")))
+        (task ~ Task/cancel)
+        nil)
+      (if (== pane/kind "agent")
+        (do
+          (var owner (application_find_agent app pane/owner_id))
+          (if (!= owner nil)
+            (do
+              (var pane_ids (cell []))
+              (for pane_id in (owner/pane_ids ~ Cell/get)
+                (if (!= pane_id id)
+                  ((pane_ids ~ Cell/get) ~ List/push! pane_id)
+                  nil))
+              (owner/pane_ids ~ Cell/set (pane_ids ~ Cell/get)))
+            nil))
+        (if (&& (== pane/kind "repl")
+                (!= pane/controller/session nil))
+          (repl_close pane/controller/session)
+          nil))
+      (app/panes ~ Cell/set (kept ~ Cell/get))
+      (if (== (app/focused_pane ~ Cell/get) id)
+        (app/focused_pane ~ Cell/set nil)
+        nil)
+      (application_emit app "pane_closed"
+        {^pane_id id ^kind pane/kind ^owner_id pane/owner_id})
+      true)))
+
+(fn application_pane_views [app]
+  (var views (cell []))
+  (for pane in (app/panes ~ Cell/get)
+    ((views ~ Cell/get) ~ List/push!
+      {^title $"[${pane/id}] ${pane/title} (${(pane/status ~ Cell/get)})"
+       ^output (pane/output ~ Cell/get)}))
+  (views ~ Cell/get))
+
+(fn application_shutdown [app]
+  (if (app/shutting_down ~ Cell/get)
+    nil
+    (do
+      (app/shutting_down ~ Cell/set true)
+      (for agent in (app/agents ~ Cell/get)
+        (var task (agent/current_task ~ Cell/get))
+        (if (== task nil) nil (task ~ Task/cancel)))
+      (for pane in (app/panes ~ Cell/get)
+        (var task (pane/current_task ~ Cell/get))
+        (if (== task nil) nil (task ~ Task/cancel)))
+      (application_emit app "application_stopped" {})
+      nil)))
+
+# Child results cross into the main conversation only at this explicit
+# supervision boundary. Private child tool transcripts stay private.
+(fn application_drain_supervisor_inbox [app]
+  (var inbox (app/supervisor_inbox ~ Cell/get))
+  (if (empty? inbox)
+    nil
+    (do
+      (for result in inbox
+        (app/main_agent/items ~ Cell/set
+          (append (app/main_agent/items ~ Cell/get)
+            (system_item
+              $"Sub-agent ${result/agent_id} completed assignment: ${result/assignment}\nResult:\n${result/text}"))))
+      (app/supervisor_inbox ~ Cell/set [])
+      nil)))
+
+(fn application_acquire_workspace [app, agent_id : Str, operation : Str]
+  (while (&& (! (app/shutting_down ~ Cell/get))
+              (!= (app/workspace_owner ~ Cell/get) nil)
+              (!= (app/workspace_owner ~ Cell/get) agent_id))
+    (sleep 10))
+  (if (app/shutting_down ~ Cell/get)
+    false
+    (do
+      (app/workspace_owner ~ Cell/set agent_id)
+      (application_emit app "workspace_lease"
+        {^agent_id agent_id ^operation operation ^status "acquired"})
+      true)))
+
+(fn application_release_workspace [app, agent_id : Str, operation : Str]
+  (if (== (app/workspace_owner ~ Cell/get) agent_id)
+    (do
+      (app/workspace_owner ~ Cell/set nil)
+      (application_emit app "workspace_lease"
+        {^agent_id agent_id ^operation operation ^status "released"})
+      true)
+    false))
 
 (fn set_events_enabled [on : Bool]
   (events_enabled ~ Cell/set on))
@@ -706,7 +954,12 @@
 # when the command may run, or the denial text otherwise. Confirmation and
 # audit events go through the injected guard strategy so an embedding host
 # (gateway) gets them in its per-session log and never blocks on stdin.
-(fn guard_shell [cmd : Str]
+(fn guard_audit! [emit, props]
+  (if (present? emit)
+    (emit "confirmation" props)
+    (guard_emit! "confirmation" props)))
+
+(fn guard_shell_in [cmd : Str, confirm, emit]
   (if (! (guard_enabled?))
     (do
       (debug! guard_log "command guard bypassed"
@@ -716,24 +969,27 @@
       (when "catastrophic"
         (warn! guard_log "catastrophic command denied"
           ^payload {^risk "catastrophic" ^decision "deny"})
-        (guard_emit! "confirmation"
+        (guard_audit! emit
           {^risk "catastrophic" ^decision "deny" ^target cmd})
         "denied by catastrophe guard (GENE_AGENT_GUARD=0 outside the session overrides)")
       (when "destructive"
-        (if (guard_confirmed? cmd)
+        (if (if (present? confirm) (confirm cmd) (guard_confirmed? cmd))
           (do
             (info! guard_log "destructive command allowed"
               ^payload {^risk "destructive" ^decision "allow"})
-            (guard_emit! "confirmation"
+            (guard_audit! emit
               {^risk "destructive" ^decision "allow" ^target cmd})
             nil)
           (do
             (warn! guard_log "destructive command denied"
               ^payload {^risk "destructive" ^decision "deny"})
-            (guard_emit! "confirmation"
+            (guard_audit! emit
               {^risk "destructive" ^decision "deny" ^target cmd})
             "denied: destructive command was not confirmed")))
       (else nil))))
+
+(fn guard_shell [cmd : Str]
+  (guard_shell_in cmd nil nil))
 
 # -----------------------------------------------------------------------------
 # Typed tools (§6, slice A). One Tool declaration per tool is the single source
@@ -1124,7 +1380,11 @@
     (if (|| (< timeout_ms 1) (> timeout_ms 120000))
       "error: timeout_ms must be between 1 and 120000"
       (do
-        (var denial (guard_shell args/command))
+        (var context args/_context)
+        (var denial
+          (guard_shell_in args/command
+            (if (present? context) context/guard_confirm nil)
+            args/_emit))
         (if (present? denial)
           denial
           (if (approve? "run_shell" args/command)
@@ -1546,11 +1806,33 @@ State that broader behavior is unverified when no matching successful check ran.
     (else {^text "error: tool returned an invalid result shape"
            ^truncated false})))
 
+(fn tool_mutates_workspace? [name : Str]
+  (["write_file" "edit_file" "run_shell"] ~ contains? name))
+
+(fn tool_context_agent_id [context]
+  (if (&& (present? context) (present? context/agent))
+    context/agent/id
+    nil))
+
+(fn invoke_tool_handler [tool, name : Str, args, context]
+  (var handler tool/handler)
+  (var app (if (present? context) context/app nil))
+  (var agent_id (tool_context_agent_id context))
+  (if (&& (tool_mutates_workspace? name)
+          (present? app) (present? agent_id))
+    (if (application_acquire_workspace app agent_id name)
+      (try
+        (handler args)
+      ensure
+        (application_release_workspace app agent_id name))
+      "error: application is shutting down")
+    (handler args)))
+
 # Execute one function_call item, returning its function_call_output item.
 # `emit` is the event sink (§9.2): the CLI passes its process-global logger,
 # the gateway passes a per-session sink, so each session owns its own tool
 # trail. The declared param schema validates arguments before the handler runs.
-(fn run_tool_call [call, emit]
+(fn run_tool_call_in [call, emit, context]
   (var started (monotonic_ms))
   (var name call/name)
   (var t (find_tool name))
@@ -1559,11 +1841,16 @@ State that broader behavior is unverified when no matching successful check ran.
   (try
     (args ~ Cell/set (parse call/arguments))
   catch (JsonError ^message m) (parse_err ~ Cell/set m))
-  (emit "tool_call"
+  (var call_props
     {^id call/call_id ^name name
      ^args (if (present? (parse_err ~ Cell/get))
              call/arguments
              (args ~ Cell/get))})
+  (var context_agent_id (tool_context_agent_id context))
+  (if (present? context_agent_id)
+    (call_props ~ Map/put! "agent_id" context_agent_id)
+    nil)
+  (emit "tool_call" call_props)
   (info! tool_log "tool call started"
     ^payload {^tool_name name ^call_id call/call_id
               ^known_tool (!= t void)
@@ -1595,9 +1882,10 @@ State that broader behavior is unverified when no matching successful check ran.
                   # instead of a process-global callback (gateway sessions
                   # may interleave while a subprocess is awaited).
                   (m ~ Map/put! "_emit" emit)
-                  (var h t/handler)
+                  (m ~ Map/put! "_context" context)
                   (try
-                    (normalize_tool_result (h m))
+                    (normalize_tool_result
+                      (invoke_tool_handler t name m context))
                   catch (OsError ^message em)
                     {^text $"error: ${em}" ^truncated false}
                   catch {^message em}
@@ -1624,9 +1912,16 @@ State that broader behavior is unverified when no matching successful check ran.
       ^payload {^tool_name name ^call_id call/call_id
                 ^duration_ms (- (monotonic_ms) started)
                 ^output_bytes (byte_size shown) ^truncated truncated}))
-  (emit "tool_result"
+  (var result_props
     {^id call/call_id ^name name ^value shown ^truncated truncated})
+  (if (present? context_agent_id)
+    (result_props ~ Map/put! "agent_id" context_agent_id)
+    nil)
+  (emit "tool_result" result_props)
   {^type "function_call_output" ^call_id call/call_id ^output (redact shown)})
+
+(fn run_tool_call [call, emit]
+  (run_tool_call_in call emit nil))
 
 # -----------------------------------------------------------------------------
 # Transport. Live mode uses the native libcurl-backed net/http_client; curl(1)
@@ -2102,7 +2397,8 @@ State that broader behavior is unverified when no matching successful check ran.
 # sink (§9.2): CLI passes its global logger, gateway passes a per-session sink.
 # `turn_done` fires once, at the outermost completion (each terminal branch
 # returns without recursing; the tool_call branch recurses and does not emit it).
-(fn run_turn_ready [transport, input_items, render, render_stream, budget, emit]
+(fn run_turn_ready_in [transport, input_items, render, render_stream, budget,
+                       emit, context]
   (var active_items input_items)
   # Budget notices affect only this request; they are operational policy, not
   # durable conversation history. A round may contain multiple parallel calls.
@@ -2174,25 +2470,35 @@ State that broader behavior is unverified when no matching successful check ran.
             (var outputs (cell []))
             (for c in calls
               (do
-                ((outputs ~ Cell/get) ~ List/push! (run_tool_call c emit))
+                ((outputs ~ Cell/get) ~ List/push!
+                  (run_tool_call_in c emit context))
                 (render $"  · tool ${c/name} ${c/arguments}")))
-            (run_turn transport
+            (run_turn_in transport
                       ((to_stream (outputs ~ Cell/get))
                         ~ into (append_all active_items (response_output_items resp)))
                       render
                       render_stream
                       (- budget 1)
-                      emit)))))))
+                      emit
+                      context)))))))
+
+(fn run_turn_ready [transport, input_items, render, render_stream, budget, emit]
+  (run_turn_ready_in transport input_items render render_stream budget emit nil))
+
+(fn run_turn_in [transport, input_items, render, render_stream, budget, emit,
+                 context]
+  (run_turn_ready_in transport
+                     (compact_context input_items emit)
+                     render render_stream budget emit context))
 
 (fn run_turn [transport, input_items, render, render_stream, budget, emit]
-  (run_turn_ready transport
-                  (compact_context input_items emit)
-                  render render_stream budget emit))
+  (run_turn_in transport input_items render render_stream budget emit nil))
 
 # Run a CLI turn as a first-class Task so the stable Session projection and
 # future input surfaces have one cancellation target. Gateway sessions use
 # their own per-session tracked tasks in gateway.gene.
-(fn run_turn_tracked [transport, input_items, render, render_stream, budget, emit]
+(fn run_turn_tracked_in [transport, input_items, render, render_stream, budget,
+                         emit, context]
   (var started (monotonic_ms))
   (var outcome (cell "running"))
   (var result (cell input_items))
@@ -2214,8 +2520,8 @@ State that broader behavior is unverified when no matching successful check ran.
     (try
       (do
         (result ~ Cell/set
-          (run_turn_ready transport prepared_items render render_stream budget
-                          tracked_emit))
+          (run_turn_ready_in transport prepared_items render render_stream
+                             budget tracked_emit context))
         (outcome ~ Cell/set "done"))
     catch {^message m}
       (do
@@ -2287,6 +2593,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (active_turn_task ~ Cell/set nil)
       (trace! turn_log "turn resources released"
         ^payload {^turn_id (current_turn ~ Cell/get)}))))
+
+(fn run_turn_tracked [transport, input_items, render, render_stream, budget,
+                      emit]
+  (run_turn_tracked_in transport input_items render render_stream budget emit
+                       nil))
 
 # -----------------------------------------------------------------------------
 # Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
@@ -2414,6 +2725,87 @@ State that broader behavior is unverified when no matching successful check ran.
     (state_get "session" nil)
     nil))
 
+(fn application_snapshot [app]
+  (var agents [])
+  (for agent in (app/agents ~ Cell/get)
+    (if (== agent/id "main")
+      nil
+      (agents ~ List/push!
+        {^id agent/id ^parent_id agent/parent_id ^title agent/title
+         ^assignment agent/assignment ^items (agent/items ~ Cell/get)
+         ^transcript (agent/transcript ~ Cell/get)
+         ^status (agent/status ~ Cell/get) ^result (agent/result ~ Cell/get)
+         ^history (agent/history ~ Cell/get)})))
+  (var panes [])
+  (for pane in (app/panes ~ Cell/get)
+    (panes ~ List/push!
+      {^id pane/id ^kind pane/kind ^owner_id pane/owner_id ^title pane/title
+       ^output (pane/output ~ Cell/get) ^status (pane/status ~ Cell/get)
+       ^history (pane/history ~ Cell/get)
+       ^cwd (if (== pane/kind "shell")
+              (pane/controller/cwd ~ Cell/get) void)}))
+  {^agents agents ^panes panes
+   ^next_agent_id (app/next_agent_id ~ Cell/get)
+   ^next_pane_id (app/next_pane_id ~ Cell/get)})
+
+(fn restore_application_snapshot! [app, saved]
+  (if (== saved nil)
+    nil
+    (do
+      (for data in saved/agents
+        (do
+          (var agent
+            (make_agent data/id data/parent_id data/title data/assignment
+              (cell data/items) (cell data/transcript) (cell nil)))
+          (agent/status ~ Cell/set
+            (if (== data/status "working") "interrupted" data/status))
+          (agent/result ~ Cell/set data/result)
+          (agent/history ~ Cell/set data/history)
+          ((app/agents ~ Cell/get) ~ List/push! agent)))
+      (for data in saved/panes
+        (do
+          (var controller
+            (match data/kind
+              (when "agent" (application_find_agent app data/owner_id))
+              (when "shell"
+                (ShellController
+                  ^cwd (cell (if (== data/cwd void) workspace_root data/cwd))
+                  ^environment (cell {})))
+              (when "repl"
+                (ReplController ^session nil ^items nil ^transcript nil
+                                ^memory nil ^streaming (cell false)
+                                ^resume_requested (cell false)))
+              (else (OutputController ^source "restored"))))
+          (if (== controller nil)
+            nil
+            (do
+              (var pane
+                (Pane ^id data/id ^kind data/kind ^owner_id data/owner_id
+                      ^title data/title ^output (cell data/output)
+                      ^status (cell
+                        (if (|| (== data/kind "shell")
+                                (== data/kind "repl"))
+                          "closed"
+                          (if (== data/status "working")
+                            "interrupted" data/status)))
+                      ^current_task (cell nil) ^history (cell data/history)
+                      ^controller controller
+                      ^close_policy
+                        (if (== data/kind "agent") "detach" "cancel")))
+              ((app/panes ~ Cell/get) ~ List/push! pane)
+              (if (== data/kind "agent")
+                ((controller/pane_ids ~ Cell/get) ~ List/push! data/id)
+                nil)))))
+      (app/next_agent_id ~ Cell/set saved/next_agent_id)
+      (app/next_pane_id ~ Cell/set saved/next_pane_id)
+      (application_emit app "application_restored"
+        {^agents (saved/agents ~ size) ^panes (saved/panes ~ size)})
+      true)))
+
+(fn restore_application! [app]
+  (restore_application_snapshot! app
+    (if (resume_enabled?) (state_get "application" nil) nil)))
+
 (fn save_agent_state [items, transcript, memory]
   (debug! state_log "agent state snapshot started"
     ^payload {^items (items ~ size) ^transcript_bytes (byte_size transcript)
@@ -2424,7 +2816,10 @@ State that broader behavior is unverified when no matching successful check ran.
   (state_put "events" {^events (agent_events ~ Cell/get)
                        ^next_v (next_event_v ~ Cell/get)
                        ^turn (current_turn ~ Cell/get)})
-  (state_put "session" {^items items ^transcript transcript}))
+  (state_put "session" {^items items ^transcript transcript})
+  (var app (active_application ~ Cell/get))
+  (if (== app nil) nil
+    (state_put "application" (application_snapshot app))))
 
 (fn restore_events []
   (var saved (state_get "events" nil))
@@ -2548,7 +2943,15 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn append_transcript [transcript text]
   (Cell/set transcript (join [(Cell/get transcript) text] "")))
 
-(var input_status "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Esc cancels task | Enter sends | /diff | /undo [id] | /status | /trace | /sh | /repl | /quit")
+(var input_status "↑/↓ history | Wheel/PgUp/PgDn scroll | Esc cancels | Enter sends | /ext | /N prompt | /N close | /status | /quit")
+
+(fn extension_views []
+  (var app (active_application ~ Cell/get))
+  (if (== app nil) [] (application_pane_views app)))
+
+(fn find_extension [id : Int]
+  (var app (active_application ~ Cell/get))
+  (if (== app nil) nil (application_find_pane app id)))
 
 (fn ensure_user_screen []
   (if (== (user_screen ~ Cell/get) nil)
@@ -2563,23 +2966,311 @@ State that broader behavior is unverified when no matching successful check ran.
       (user_screen ~ Cell/set nil))
     nil))
 
+(fn editor_chars [text : Str]
+  # Graphemes are strings (unlike `chars`, whose Char values print as source
+  # literals), and they keep combining sequences together during navigation.
+  (graphemes text))
+
+(fn editor_text [values]
+  (join values ""))
+
+(fn editor_cursor_byte [values, cursor : Int]
+  (var prefix [])
+  (repeat i in cursor
+    (prefix ~ List/push! values/%i))
+  (byte_size (editor_text prefix)))
+
+(fn editor_insert! [editor, text : Str]
+  (var values (editor/values ~ Cell/get))
+  (var cursor (editor/cursor ~ Cell/get))
+  (var additions (editor_chars text))
+  (var updated [])
+  (repeat i in values/~size
+    (do
+      (if (== i cursor)
+        (for value in additions (updated ~ List/push! value))
+        nil)
+      (updated ~ List/push! values/%i)))
+  (if (== cursor values/~size)
+    (for value in additions (updated ~ List/push! value))
+    nil)
+  (editor/values ~ Cell/set updated)
+  (editor/cursor ~ Cell/set (+ cursor additions/~size))
+  nil)
+
+(fn editor_remove! [editor, index : Int]
+  (var values (editor/values ~ Cell/get))
+  (if (|| (< index 0) (>= index values/~size))
+    false
+    (do
+      (var updated [])
+      (repeat i in values/~size
+        (if (!= i index) (updated ~ List/push! values/%i) nil))
+      (editor/values ~ Cell/set updated)
+      true)))
+
+(fn editor_set_text! [editor, text : Str]
+  (var values (editor_chars text))
+  (editor/values ~ Cell/set values)
+  (editor/cursor ~ Cell/set values/~size)
+  nil)
+
+(fn editor_history! [editor, direction : Int]
+  (var history editor/history)
+  (var index (editor/history_index ~ Cell/get))
+  (if (&& (< direction 0) (> index 0))
+    (do
+      (if (== index history/~size)
+        (editor/draft ~ Cell/set
+          (editor_text (editor/values ~ Cell/get)))
+        nil)
+      (set index (- index 1))
+      (editor/history_index ~ Cell/set index)
+      (editor_set_text! editor history/%index)
+      true)
+    (if (&& (> direction 0) (< index history/~size))
+      (do
+        (set index (+ index 1))
+        (editor/history_index ~ Cell/set index)
+        (editor_set_text! editor
+          (if (== index history/~size)
+            (editor/draft ~ Cell/get)
+            history/%index))
+        true)
+      false)))
+
+(fn editor_home! [editor]
+  (var values (editor/values ~ Cell/get))
+  (var cursor (editor/cursor ~ Cell/get))
+  (while (&& (> cursor 0) (!= values/%(- cursor 1) "\n"))
+    (set cursor (- cursor 1)))
+  (editor/cursor ~ Cell/set cursor))
+
+(fn editor_end! [editor]
+  (var values (editor/values ~ Cell/get))
+  (var cursor (editor/cursor ~ Cell/get))
+  (while (&& (< cursor values/~size) (!= values/%cursor "\n"))
+    (set cursor (+ cursor 1)))
+  (editor/cursor ~ Cell/set cursor))
+
+(fn draw_editor [editor]
+  (var values (editor/values ~ Cell/get))
+  (curses_draw (ensure_user_screen)
+    ^prompt "" ^status input_status
+    ^output (editor/transcript ~ Cell/get)
+    ^input (editor_text values)
+    ^cursor (editor_cursor_byte values (editor/cursor ~ Cell/get))
+    ^output_scroll (editor/output_scroll ~ Cell/get)
+    ^panes (extension_views)))
+
+(fn cancel_focused_work! []
+  (var app (active_application ~ Cell/get))
+  (var main_task (active_turn_task ~ Cell/get))
+  (if (!= main_task nil)
+    (do (main_task ~ Task/cancel) true)
+    (if (== app nil)
+      false
+      (do
+        (var pane_id (app/focused_pane ~ Cell/get))
+        (var pane
+          (if (== pane_id nil) nil (application_find_pane app pane_id)))
+        (var task
+          (if (== pane nil) nil (pane/current_task ~ Cell/get)))
+        (if (== task nil)
+          false
+          (do (task ~ Task/cancel) true))))))
+
 (fn read_user_input [transcript, history]
   (if (stdin_tty?)
-    (curses_read_input (ensure_user_screen)
-                       ^prompt "" ^multiline true
-                       ^history (Cell/get history)
-                       ^output (Cell/get transcript)
-                       ^status input_status)
+    (do
+      # Keep editor state at Gene level and wait through cancellable
+      # next_event tasks. This yields the scheduler between keystrokes, so
+      # sub-agents, pane controllers, streams, and repaint callbacks continue
+      # while the user is composing the next prompt.
+      (var submitted (cell nil))
+      (var done (cell false))
+      (var editor
+        {^values (cell []) ^cursor (cell 0) ^history (history ~ Cell/get)
+         ^history_index (cell ((history ~ Cell/get) ~ size))
+         ^draft (cell "") ^paste (cell false) ^output_scroll (cell 0)
+         ^transcript transcript})
+      (active_editor ~ Cell/set editor)
+      (try
+        (do
+          (draw_editor editor)
+          # Hoisted because a `var` declaration inside a loop would attempt to
+          # bind the same name again on the second key event.
+          (var event nil)
+          (while (! (done ~ Cell/get))
+            (set event (await (curses_next_event (ensure_user_screen))))
+            (match event/type
+              (when "text" (editor_insert! editor event/text))
+              (when "paste_start" (editor/paste ~ Cell/set true))
+              (when "paste_end" (editor/paste ~ Cell/set false))
+              (when "newline" (editor_insert! editor "\n"))
+              (when "enter"
+                (if (editor/paste ~ Cell/get)
+                  (editor_insert! editor "\n")
+                  (do
+                    (submitted ~ Cell/set
+                      (editor_text (editor/values ~ Cell/get)))
+                    (done ~ Cell/set true))))
+              (when "eof" (done ~ Cell/set true))
+              (when "escape" (cancel_focused_work!))
+              (when "backspace"
+                (var cursor (editor/cursor ~ Cell/get))
+                (if (> cursor 0)
+                  (do
+                    (editor_remove! editor (- cursor 1))
+                    (editor/cursor ~ Cell/set (- cursor 1)))
+                  nil))
+              (when "delete"
+                (editor_remove! editor (editor/cursor ~ Cell/get)))
+              (when "left"
+                (var cursor (editor/cursor ~ Cell/get))
+                (if (> cursor 0) (editor/cursor ~ Cell/set (- cursor 1)) nil))
+              (when "right"
+                (var cursor (editor/cursor ~ Cell/get))
+                (if (< cursor ((editor/values ~ Cell/get) ~ size))
+                  (editor/cursor ~ Cell/set (+ cursor 1))
+                  nil))
+              (when "home" (editor_home! editor))
+              (when "end" (editor_end! editor))
+              (when "up" (editor_history! editor -1))
+              (when "down" (editor_history! editor 1))
+              (when "scroll_up"
+                (editor/output_scroll ~ Cell/set
+                  (+ (editor/output_scroll ~ Cell/get) 3)))
+              (when "scroll_down"
+                (editor/output_scroll ~ Cell/set
+                  (if (> (editor/output_scroll ~ Cell/get) 3)
+                    (- (editor/output_scroll ~ Cell/get) 3)
+                    0)))
+              (when "page_up"
+                (editor/output_scroll ~ Cell/set
+                  (+ (editor/output_scroll ~ Cell/get)
+                     (if (> event/rows 5) (- event/rows 5) 1))))
+              (when "page_down"
+                (var page (if (> event/rows 5) (- event/rows 5) 1))
+                (editor/output_scroll ~ Cell/set
+                  (if (> (editor/output_scroll ~ Cell/get) page)
+                    (- (editor/output_scroll ~ Cell/get) page)
+                    0)))
+              (else nil))
+            (if (! (done ~ Cell/get)) (draw_editor editor) nil))
+          (submitted ~ Cell/get))
+      ensure
+        (active_editor ~ Cell/set nil)))
     (do
       (print "you> ")
       (read_line))))
 
 (fn refresh_user_input [transcript]
   (if (stdin_tty?)
-    (curses_refresh_input (ensure_user_screen)
-                          ^prompt "" ^output (Cell/get transcript)
-                          ^status input_status)
+    (do
+      (var editor (active_editor ~ Cell/get))
+      (if (== editor nil)
+        (curses_refresh_input (ensure_user_screen)
+                              ^prompt "" ^output (Cell/get transcript)
+                              ^panes (extension_views)
+                              ^status input_status)
+        (draw_editor editor)))
     nil))
+
+(fn refresh_active_input []
+  (var transcript (interactive_transcript ~ Cell/get))
+  (if (!= transcript nil)
+    (refresh_user_input transcript)
+    nil))
+
+# A pending turn owns the final transcript line until it produces visible
+# output. The pulse task alternates the dots and spaces while the scheduler is
+# waiting on a model or tool task; the first real output restores the saved
+# transcript and replaces that line.
+(fn refresh_agent_pending [transcript pending prefix dots_visible]
+  (if (pending ~ Cell/get)
+    (do
+      (Cell/set transcript
+        (join [(prefix ~ Cell/get)
+               (if (dots_visible ~ Cell/get) "agent> ...\n" "agent>    \n")]
+              ""))
+      (if (stdin_tty?)
+        (refresh_user_input transcript)
+        (print (if (dots_visible ~ Cell/get) "\ragent> ..." "\ragent>    "))))
+    nil))
+
+# Remove the currently drawn placeholder before appending output, but retain
+# the pending state: the placeholder is redrawn beneath that output until the
+# whole turn completes.
+(fn advance_agent_pending [transcript pending prefix]
+  (if (pending ~ Cell/get)
+    (do
+      (Cell/set transcript (prefix ~ Cell/get))
+      (if (stdin_tty?)
+        (refresh_user_input transcript)
+        (print "\r")))
+    nil))
+
+(fn stop_agent_pending [transcript pending prefix]
+  (if (pending ~ Cell/get)
+    (do
+      (pending ~ Cell/set false)
+      (Cell/set transcript (prefix ~ Cell/get))
+      (if (stdin_tty?)
+        (refresh_user_input transcript)
+        (print "\r")))
+    nil))
+
+(fn output_with_pending [transcript pending prefix dots_visible render]
+  (advance_agent_pending transcript pending prefix)
+  (render)
+  (if (pending ~ Cell/get)
+    (do
+      (prefix ~ Cell/set (transcript ~ Cell/get))
+      (refresh_agent_pending transcript pending prefix dots_visible))
+    nil))
+
+(fn start_agent_pending [transcript]
+  (var pending (cell true))
+  (var prefix (cell (transcript ~ Cell/get)))
+  (var dots_visible (cell true))
+  (refresh_agent_pending transcript pending prefix dots_visible)
+  {^pending pending ^prefix prefix ^dots_visible dots_visible
+   ^task (spawn
+     (while (pending ~ Cell/get)
+       (sleep 400)
+       (if (pending ~ Cell/get)
+         (do
+           (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
+           (refresh_agent_pending transcript pending prefix dots_visible))
+         nil)))} )
+
+(fn run_interactive_turn [transcript streaming transport input_items]
+  (var placeholder (start_agent_pending transcript))
+  (var app (active_application ~ Cell/get))
+  (var context
+    (if (== app nil) nil {^app app ^agent app/main_agent ^pane nil}))
+  (try
+    (run_turn_tracked_in transport input_items
+      (fn [text]
+        (output_with_pending transcript placeholder/pending placeholder/prefix
+                             placeholder/dots_visible
+          (fn [] (render_agent_text transcript streaming text))))
+      (fn [text]
+        (output_with_pending transcript placeholder/pending placeholder/prefix
+                             placeholder/dots_visible
+          (fn [] (render_agent_delta transcript streaming text))))
+      max_tool_rounds
+      emit_event!
+      context)
+  ensure
+    (do
+      (stop_agent_pending transcript placeholder/pending placeholder/prefix)
+      (finish_agent_stream transcript streaming)
+      (placeholder/task ~ Task/cancel))))
+
+(fn interactive_transport []
+  (if (== auth_token nil) (demo_transport_for) live_transport))
 
 (fn render_agent_delta [transcript streaming text]
   (if (== text "")
@@ -2617,6 +3308,826 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (stdin_tty?)
         (refresh_user_input transcript)
         (println $"agent> ${text}")))))
+
+# Compatibility helpers over the native application registries. `/ext` still
+# opens an agent and pane together, but their identities and lifecycles are
+# independent underneath.
+(fn open_extension_pane [title : Str, memory]
+  (var app (active_application ~ Cell/get))
+  (if (== app nil)
+    nil
+    (do
+      (var label (if (== (trim title) "") "sub-agent" (trim title)))
+      (var transcript (cell "ready\n"))
+      (var agent
+        (application_spawn_agent app label "awaiting assignment"
+          (cell
+            (append (initial_items memory)
+              (system_item
+                $"You are ${label}, a supervised sub-agent in the same workspace. Work only on assignments delegated by the main agent or user. Report a concise result; your private tool transcript is not copied into the main context.")))
+          transcript))
+      (if (== agent nil)
+        nil
+        (do
+          (var pane
+            (application_open_pane app "agent" agent/id agent/title
+                                   transcript agent "detach"))
+          (refresh_active_input)
+          pane)))))
+
+(fn open_output_pane [title : Str]
+  (var app (active_application ~ Cell/get))
+  (if (== app nil)
+    nil
+    (do
+      (var label (if (== (trim title) "") "output" (trim title)))
+      (application_open_pane app "output" nil label
+        (cell "ready\n") (OutputController ^source "manual") "detach"))))
+
+(fn open_shell_pane []
+  (var app (active_application ~ Cell/get))
+  (if (== app nil)
+    nil
+    (do
+      (var existing (application_find_pane_kind app "shell"))
+      (if (!= existing nil)
+        existing
+        (application_open_pane app "shell" "user" "shell"
+          (cell $"cwd: ${workspace_root}\n")
+          (ShellController ^cwd (cell workspace_root) ^environment (cell {}))
+          "cancel")))))
+
+(fn shell_next_cwd [pane, command : Str]
+  (if (== command "cd")
+    workspace_root
+    (if (&& (starts_with? command "cd ")
+            (! (contains? command "&&"))
+            (! (contains? command ";"))
+            (! (contains? command "|")))
+      (do
+        (var target (trim (after_prefix command "cd ")))
+        (if (== target "")
+          workspace_root
+          (safe_path $"${(pane/controller/cwd ~ Cell/get)}/${target}")))
+      nil)))
+
+(fn run_shell_pane_command_unchecked [pane, command : Str]
+  (var app (active_application ~ Cell/get))
+  (if (!= (pane/current_task ~ Cell/get) nil)
+    $"shell pane ${pane/id} is already working"
+    (do
+      ((pane/history ~ Cell/get) ~ List/push! command)
+      (append_extension_transcript pane $"$ ${command}\n")
+      (pane/status ~ Cell/set "working")
+      (var last_output (cell ""))
+      (var process_task (cell nil))
+      (var task
+        (spawn
+          (do
+            (var acquired false)
+            (try
+              (do
+                (set acquired
+                  (application_acquire_workspace app "user"
+                                                 $"shell:${pane/id}"))
+                (if acquired
+                  (do
+                    (var next_cwd (shell_next_cwd pane command))
+                    (var effective_command
+                      (if (== command "cd") "cd ." command))
+                    (var started (monotonic_ms))
+                    (var stdout_chan (channel ^capacity 256))
+                    (var exec_task
+                      (exec_stream_async Exec
+                        ^cmd (get_env Env "SHELL" "sh")
+                        ^args ["-lc" effective_command]
+                        ^dir (pane/controller/cwd ~ Cell/get)
+                        ^timeout_ms 120000 ^max_bytes 262144
+                        ^stdout_chan stdout_chan))
+                    (process_task ~ Cell/set exec_task)
+                    (var chunk nil)
+                    (try
+                      (loop
+                        (set chunk (stdout_chan ~ Channel/recv))
+                        (last_output ~ Cell/set
+                          $"${(last_output ~ Cell/get)}${chunk}")
+                        (append_extension_transcript pane chunk))
+                    catch (ChannelClosed) nil)
+                    (var result (await exec_task))
+                    (var duration_ms (- (monotonic_ms) started))
+                    (last_output ~ Cell/set
+                      $"${(last_output ~ Cell/get)}${result/stderr}[exit ${result/status}; ${duration_ms} ms]")
+                    (append_extension_transcript pane
+                      $"${result/stderr}[exit ${result/status}; ${duration_ms} ms]\n")
+                    (if (&& (== result/status 0) (!= next_cwd nil))
+                      (do
+                        (pane/controller/cwd ~ Cell/set next_cwd)
+                        (append_extension_transcript pane $"[cwd ${next_cwd}]\n"))
+                      nil)
+                    (pane/status ~ Cell/set
+                      (if (== result/status 0) "idle" "failed")))
+                  (do
+                    (append_extension_transcript pane
+                      "[application is shutting down]\n")
+                    (pane/status ~ Cell/set "stopped"))))
+            catch {^message message}
+              (do
+                (append_extension_transcript pane $"[shell failed: ${message}]\n")
+                (pane/status ~ Cell/set "failed"))
+            catch _
+              (do
+                (append_extension_transcript pane "[shell failed]\n")
+                (pane/status ~ Cell/set "failed"))
+            ensure
+              (do
+                (if (!= (process_task ~ Cell/get) nil)
+                  ((process_task ~ Cell/get) ~ Task/cancel)
+                  nil)
+                (if acquired
+                  (application_release_workspace app "user"
+                                                 $"shell:${pane/id}")
+                  nil)
+                (pane/current_task ~ Cell/set nil)
+                (refresh_active_input))))))
+      (pane/current_task ~ Cell/set task)
+      (task ~ Task/detach)
+      (if (stdin_tty?)
+        $"shell command started in pane ${pane/id}"
+        (do
+          (await task)
+          $"shell pane ${pane/id}: ${(last_output ~ Cell/get)}")))))
+
+(fn run_shell_pane_command [pane, command : Str]
+  (var denial (if (stdin_tty?) nil (guard_shell command)))
+  (if (present? denial)
+    denial
+    (run_shell_pane_command_unchecked pane command)))
+
+(fn run_repl_pane_command [pane, source : Str]
+  (if (== pane/controller/session nil)
+    $"REPL pane ${pane/id} is restored history; close it and open /repl again"
+    (if (!= (pane/current_task ~ Cell/get) nil)
+      $"REPL pane ${pane/id} is already evaluating"
+      (do
+      ((pane/history ~ Cell/get) ~ List/push! source)
+      (append_extension_transcript pane $"gene> ${source}\n")
+      (pane/status ~ Cell/set "working")
+      (var last_output (cell ""))
+      (var task
+          (spawn
+            (do
+              (try
+                (do
+                  (var result (repl_eval pane/controller/session source))
+                  (last_output ~ Cell/set result/text)
+                  (match result/status
+                    (when "ok"
+                      (if (== result/text "") nil
+                        (append_extension_transcript pane $"${result/text}\n")))
+                    (when "incomplete"
+                      (append_extension_transcript pane "....> \n"))
+                    (else
+                      (append_extension_transcript pane $"${result/text}\n")))
+                  (pane/status ~ Cell/set
+                    (if (== result/status "incomplete") "continuation" "idle")))
+              catch {^message message}
+                (do
+                  (append_extension_transcript pane $"[REPL failed: ${message}]\n")
+                  (pane/status ~ Cell/set "failed"))
+              catch _
+                (do
+                  (append_extension_transcript pane "[REPL failed]\n")
+                  (pane/status ~ Cell/set "failed"))
+              ensure
+                (do
+                  (if (&& (!= pane/controller/items nil)
+                          (pane/controller/resume_requested ~ Cell/get))
+                    (do
+                      (pane/controller/resume_requested ~ Cell/set false)
+                      (pane/controller/items ~ Cell/set
+                        (run_interactive_turn pane/controller/transcript
+                          pane/controller/streaming
+                          (interactive_transport)
+                          (pane/controller/items ~ Cell/get))))
+                    nil)
+                  (pane/current_task ~ Cell/set nil)
+                  (refresh_active_input))))))
+        (pane/current_task ~ Cell/set task)
+        (task ~ Task/detach)
+        (if (stdin_tty?)
+          $"REPL evaluation started in pane ${pane/id}"
+          (do
+            (await task)
+            $"REPL pane ${pane/id}: ${(last_output ~ Cell/get)}"))))))
+
+(fn close_extension_pane [id : Int] : Bool
+  (var app (active_application ~ Cell/get))
+  (if (== app nil)
+    false
+    (do
+      (var removed (application_close_pane app id))
+      (refresh_active_input)
+      removed)))
+
+(fn append_extension_transcript [pane, text : Str]
+  (pane/output ~ Cell/set
+    (join [(pane/output ~ Cell/get) text] ""))
+  (refresh_active_input))
+
+(fn refresh_extension_pending [pane, pending, prefix, dots_visible]
+  (if (pending ~ Cell/get)
+    (do
+      (pane/output ~ Cell/set
+        (join [(prefix ~ Cell/get)
+               (if (dots_visible ~ Cell/get)
+                 "assistant|...\n"
+                 "assistant|   \n")]
+              ""))
+      (refresh_active_input))
+    nil))
+
+(fn start_extension_pending [pane]
+  (var pending (cell true))
+  (var prefix (cell (pane/output ~ Cell/get)))
+  (var dots_visible (cell true))
+  (refresh_extension_pending pane pending prefix dots_visible)
+  {^pending pending ^prefix prefix ^dots_visible dots_visible
+   ^task (spawn
+     (while (pending ~ Cell/get)
+       (sleep 400)
+       (if (pending ~ Cell/get)
+         (do
+           (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
+           (refresh_extension_pending pane pending prefix dots_visible))
+         nil)))})
+
+(fn advance_extension_pending [pane, pending, prefix]
+  (if (pending ~ Cell/get)
+    (do
+      (pane/output ~ Cell/set (prefix ~ Cell/get))
+      (refresh_active_input))
+    nil))
+
+(fn stop_extension_pending [pane, pending, prefix]
+  (if (pending ~ Cell/get)
+    (do
+      (pending ~ Cell/set false)
+      (pane/output ~ Cell/set (prefix ~ Cell/get))
+      (refresh_active_input))
+    nil))
+
+(fn render_extension_delta [pane, text : Str]
+  (if (== text "")
+    nil
+    (do
+      (if (pane/controller/streaming ~ Cell/get)
+        nil
+        (do
+          (append_extension_transcript pane "assistant|")
+          (pane/controller/streaming ~ Cell/set true)))
+      (append_extension_transcript pane text))))
+
+(fn finish_extension_stream [pane]
+  (if (pane/controller/streaming ~ Cell/get)
+    (do
+      (append_extension_transcript pane "\n")
+      (pane/controller/streaming ~ Cell/set false))
+    nil))
+
+(fn render_extension_text [pane, text : Str]
+  (finish_extension_stream pane)
+  (if (== text "")
+    nil
+    (append_extension_transcript pane $"assistant|${text}\n")))
+
+(fn output_with_extension_pending [pane, placeholder, render]
+  (advance_extension_pending pane placeholder/pending placeholder/prefix)
+  (render)
+  (if (placeholder/pending ~ Cell/get)
+    (do
+      (placeholder/prefix ~ Cell/set (pane/output ~ Cell/get))
+      (refresh_extension_pending pane placeholder/pending placeholder/prefix
+                                 placeholder/dots_visible))
+    nil))
+
+(fn extension_emit [pane, type : Str, props]
+  (var app (active_application ~ Cell/get))
+  (var agent pane/controller)
+  (var tagged {^pane_id pane/id ^agent_id agent/id
+               ^parent_agent_id agent/parent_id})
+  (for [key value] in props
+    (tagged ~ Map/put! key value))
+  (if (== app nil)
+    (emit_event! type tagged)
+    (application_emit app type tagged)))
+
+(fn run_extension_prompt [pane, prompt : Str, tracked : Bool]
+  (var app (active_application ~ Cell/get))
+  (var agent pane/controller)
+  (if (!= (agent/current_task ~ Cell/get) nil)
+    $"agent ${agent/id} is already working"
+    (do
+      ((agent/history ~ Cell/get) ~ List/push! prompt)
+      ((pane/history ~ Cell/get) ~ List/push! prompt)
+      (append_extension_transcript pane $"user|› ${prompt}\n")
+      (agent/status ~ Cell/set "working")
+      (pane/status ~ Cell/set "working")
+      (application_emit app "agent_status"
+        {^agent_id agent/id ^parent_agent_id agent/parent_id
+         ^pane_id pane/id ^status "working"})
+      (var task
+        (spawn
+          (do
+            (var placeholder (start_extension_pending pane))
+            (var result (cell (agent/items ~ Cell/get)))
+            (var final_text (cell ""))
+            (var outcome (cell "completed"))
+            (var render
+              (fn [text]
+                (output_with_extension_pending pane placeholder
+                  (fn [] (render_extension_text pane text)))))
+            (var render_stream
+              (fn [text]
+                (output_with_extension_pending pane placeholder
+                  (fn [] (render_extension_delta pane text)))))
+            (var emit
+              (fn [type props]
+                (if (&& (== type "agent_text") (present? props/text))
+                  (final_text ~ Cell/set props/text)
+                  nil)
+                (extension_emit pane type props)))
+            (try
+              (result ~ Cell/set
+              (run_turn_in (interactive_transport)
+                (append (agent/items ~ Cell/get) (user_item prompt))
+                render render_stream max_tool_rounds emit
+                {^app app ^agent agent ^pane pane}))
+            catch {^message message}
+              (do
+                (outcome ~ Cell/set "failed")
+                (render_extension_text pane $"[agent failed: ${message}]"))
+            catch _
+              (do
+                (outcome ~ Cell/set "failed")
+                (render_extension_text pane "[agent failed]"))
+            ensure
+              (do
+                (stop_extension_pending pane placeholder/pending placeholder/prefix)
+                (finish_extension_stream pane)
+                (placeholder/task ~ Task/cancel)
+                (agent/items ~ Cell/set (result ~ Cell/get))
+                (agent/current_task ~ Cell/set nil)
+                (pane/current_task ~ Cell/set nil)
+                (agent/status ~ Cell/set (outcome ~ Cell/get))
+                (pane/status ~ Cell/set (outcome ~ Cell/get))
+                (agent/result ~ Cell/set (final_text ~ Cell/get))
+                (if (== (outcome ~ Cell/get) "completed")
+                  (do
+                    ((app/supervisor_inbox ~ Cell/get) ~ List/push!
+                      {^agent_id agent/id ^assignment prompt
+                       ^text (final_text ~ Cell/get)})
+                    (application_emit app "agent_completed"
+                      {^agent_id agent/id ^parent_agent_id agent/parent_id
+                       ^pane_id pane/id ^status "completed"
+                       ^text (final_text ~ Cell/get)}))
+                  (application_emit app "agent_status"
+                    {^agent_id agent/id ^parent_agent_id agent/parent_id
+                     ^pane_id pane/id ^status (outcome ~ Cell/get)}))
+                (refresh_active_input))))))
+      (agent/current_task ~ Cell/set task)
+      (pane/current_task ~ Cell/set task)
+      (task ~ Task/detach)
+      (if tracked
+        $"agent ${agent/id} started in pane ${pane/id}"
+        (do
+          # `open_extension` predates first-class spawn/send/wait tools and
+          # promises one delegated result to the calling model. Preserve that
+          # compatibility contract while the child runs in its own Task; the
+          # scheduler remains free to serve input and other agents.
+          (await task)
+          $"extension ${pane/id} completed: ${(agent/result ~ Cell/get)}")))))
+
+# Model-facing supervision primitives use the same AgentApplication services as
+# slash commands, but do not require a visible pane. This is intentionally
+# separate from `open_extension`: spawning an agent, opening a view, and
+# sending work are independent capabilities (§7.1/§10.4).
+(fn tool_application [args]
+  (var context args/_context)
+  (if (&& (present? context) (present? context/app)) context/app nil))
+
+(fn spawn_supervised_agent [app, title : Str, assignment : Str]
+  (application_spawn_agent app title assignment
+    (cell
+      (append (initial_items (app/memory ~ Cell/get))
+        (system_item
+          $"You are a supervised sub-agent. Assignment: ${assignment}\nKeep private tool chatter out of the main context and return a concise result.")))
+    (cell "ready\n")))
+
+(fn run_hidden_agent_prompt [app, agent, prompt : Str]
+  (if (!= (agent/current_task ~ Cell/get) nil)
+    $"error: agent ${agent/id} is already working"
+    (do
+      ((agent/history ~ Cell/get) ~ List/push! prompt)
+      (append_transcript agent/transcript $"user|› ${prompt}\n")
+      (agent/status ~ Cell/set "working")
+      (application_emit app "agent_status"
+        {^agent_id agent/id ^parent_agent_id agent/parent_id
+         ^status "working"})
+      (var task
+        (spawn
+          (do
+            (var result (cell (agent/items ~ Cell/get)))
+            (var final_text (cell ""))
+            (var outcome (cell "completed"))
+            (var emit
+              (fn [type props]
+                (if (&& (== type "agent_text") (present? props/text))
+                  (final_text ~ Cell/set props/text)
+                  nil)
+                (var tagged {^agent_id agent/id
+                             ^parent_agent_id agent/parent_id})
+                (for [key value] in props
+                  (tagged ~ Map/put! key value))
+                (application_emit app type tagged)))
+            (try
+              (result ~ Cell/set
+                (run_turn_in (interactive_transport)
+                  (append (agent/items ~ Cell/get) (user_item prompt))
+                  (fn [text]
+                    (if (== text "") nil
+                      (append_transcript agent/transcript $"agent|${text}\n")))
+                  (fn [delta]
+                    (if (== delta "") nil
+                      (append_transcript agent/transcript delta)))
+                  max_tool_rounds emit {^app app ^agent agent}))
+            catch {^message message}
+              (do
+                (outcome ~ Cell/set "failed")
+                (final_text ~ Cell/set $"[agent failed: ${message}]"))
+            catch _
+              (do
+                (outcome ~ Cell/set "failed")
+                (final_text ~ Cell/set "[agent failed]"))
+            ensure
+              (do
+                (agent/items ~ Cell/set (result ~ Cell/get))
+                (agent/current_task ~ Cell/set nil)
+                (agent/status ~ Cell/set (outcome ~ Cell/get))
+                (agent/result ~ Cell/set (final_text ~ Cell/get))
+                (if (== (outcome ~ Cell/get) "completed")
+                  (application_emit app "agent_completed"
+                    {^agent_id agent/id ^parent_agent_id agent/parent_id
+                     ^status "completed" ^text (final_text ~ Cell/get)})
+                  (application_emit app "agent_status"
+                    {^agent_id agent/id ^parent_agent_id agent/parent_id
+                     ^status (outcome ~ Cell/get)})))))))
+      (agent/current_task ~ Cell/set task)
+      (task ~ Task/detach)
+      (await task)
+      (if (== (agent/status ~ Cell/get) "completed")
+        (agent/result ~ Cell/get)
+        $"error: ${(agent/result ~ Cell/get)}"))))
+
+(register_tool! (Tool
+  ^name "spawn_agent"
+  ^description "Create a bounded supervised sub-agent without opening a pane. Returns its stable agent id."
+  ^risk "execute"
+  ^params [{^name "assignment" ^type "string" ^required true
+            ^doc "clear task and expected result for the sub-agent"}
+           {^name "title" ^type "string" ^required false
+            ^doc "short display title"}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (if (== app nil)
+      "error: agent application is unavailable"
+      (do
+        (var title (if (== args/title void) "sub-agent" args/title))
+        (var agent (spawn_supervised_agent app title args/assignment))
+        (if (== agent nil)
+          $"error: sub-agent limit reached (${app/max_agents})"
+          agent/id))))))
+
+(register_tool! (Tool
+  ^name "send_agent"
+  ^description "Send a prompt to an existing supervised agent and wait for its concise result. A visible pane is not required."
+  ^risk "execute"
+  ^params [{^name "agent_id" ^type "string" ^required true}
+           {^name "prompt" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (var agent (if (== app nil) nil
+                 (application_find_agent app args/agent_id)))
+    (if (== agent nil)
+      "error: agent not found"
+      (if (== agent/id "main")
+        "error: send_agent accepts supervised agents only"
+        (run_hidden_agent_prompt app agent args/prompt))))))
+
+(register_tool! (Tool
+  ^name "agent_result"
+  ^description "Read the latest status and concise result of a supervised agent."
+  ^risk "read"
+  ^params [{^name "agent_id" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (var agent (if (== app nil) nil
+                 (application_find_agent app args/agent_id)))
+    (if (== agent nil)
+      "error: agent not found"
+      $"${agent/id} status=${(agent/status ~ Cell/get)} result=${(agent/result ~ Cell/get)}"))))
+
+(register_tool! (Tool
+  ^name "cancel_agent"
+  ^description "Request cancellation of a supervised agent's current task."
+  ^risk "execute"
+  ^params [{^name "agent_id" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (var agent (if (== app nil) nil
+                 (application_find_agent app args/agent_id)))
+    (if (== agent nil)
+      "error: agent not found"
+      (if (application_cancel_agent app agent)
+        $"cancellation requested for ${agent/id}"
+        $"agent ${agent/id} has no active task")))))
+
+(register_tool! (Tool
+  ^name "stop_agent"
+  ^description "Stop a supervised agent. This does not close unrelated panes."
+  ^risk "execute"
+  ^params [{^name "agent_id" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (var agent (if (== app nil) nil
+                 (application_find_agent app args/agent_id)))
+    (if (== agent nil)
+      "error: agent not found"
+      (if (application_stop_agent app agent)
+        $"stopped ${agent/id}"
+        "error: the main agent cannot be stopped through this tool")))))
+
+(register_tool! (Tool
+  ^name "open_pane"
+  ^description "Open an agent or output pane. Shell and REPL panes require explicit user commands and are not model capabilities."
+  ^risk "execute"
+  ^params [{^name "kind" ^type "string" ^required true
+            ^doc "agent or output"}
+           {^name "owner_id" ^type "string" ^required false
+            ^doc "required for an agent pane"}
+           {^name "title" ^type "string" ^required false}
+           {^name "text" ^type "string" ^required false
+            ^doc "initial redacted text for an output pane"}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (if (== app nil)
+      "error: agent application is unavailable"
+      (if (== args/kind "agent")
+        (do
+          (var owner (if (== args/owner_id void) nil
+                       (application_find_agent app args/owner_id)))
+          (if (== owner nil)
+            "error: owner_id must name an existing agent"
+            (do
+              (var pane (application_open_pane app "agent" owner/id
+                (if (== args/title void) owner/title args/title)
+                owner/transcript owner "detach"))
+              (refresh_active_input)
+              $"${pane/id}")))
+        (if (== args/kind "output")
+          (do
+            (var initial (if (== args/text void) "" (redact_any args/text)))
+            (var pane (application_open_pane app "output" nil
+              (if (== args/title void) "output" args/title)
+              (cell initial) (OutputController ^source "model") "detach"))
+            (application_emit app "pane_output"
+              {^pane_id pane/id ^text initial ^source "model"})
+            (refresh_active_input)
+            $"${pane/id}")
+          "error: model open_pane kind must be agent or output"))))))
+
+(register_tool! (Tool
+  ^name "append_pane"
+  ^description "Append redacted text to an output pane through the authoritative event log."
+  ^risk "execute"
+  ^params [{^name "pane_id" ^type "integer" ^required true}
+           {^name "text" ^type "string" ^required true}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (var pane (if (== app nil) nil
+                (application_find_pane app args/pane_id)))
+    (if (== pane nil)
+      "error: pane not found"
+      (if (!= pane/kind "output")
+        "error: append_pane accepts output panes only"
+        (do
+          (var text (redact_any args/text))
+          (append_transcript pane/output text)
+          (application_emit app "pane_output"
+            {^pane_id pane/id ^text text ^source "model"})
+          (refresh_active_input)
+          $"appended to pane ${pane/id}"))))))
+
+(register_tool! (Tool
+  ^name "close_pane"
+  ^description "Close a pane without implicitly stopping an attached agent."
+  ^risk "execute"
+  ^params [{^name "pane_id" ^type "integer" ^required true}]
+  ^handler (fn [args]
+    (var app (tool_application args))
+    (if (== app nil)
+      "error: agent application is unavailable"
+      (if (application_close_pane app args/pane_id)
+        (do (refresh_active_input) $"closed pane ${args/pane_id}")
+        "error: pane not found")))))
+
+(register_tool! (Tool
+  ^name "open_extension"
+  ^description "Open a secondary agent pane in the interactive TUI and optionally run a delegated prompt in it. The pane keeps its own conversation context."
+  ^risk "execute"
+  ^params [{^name "title" ^type "string" ^required false
+            ^doc "short pane title; defaults to ext N"}
+           {^name "prompt" ^type "string" ^required false
+            ^doc "delegated task to run immediately; omit to open an idle pane"}]
+  ^handler (fn [args]
+    (if (== (interactive_transcript ~ Cell/get) nil)
+      "error: extension panes require an interactive TUI session"
+      (do
+        (var title (if (== args/title void) "" args/title))
+        (var pane (open_extension_pane title
+                    (interactive_memory ~ Cell/get)))
+        (if (== pane nil)
+          "error: sub-agent limit reached"
+          (if (|| (== args/prompt void) (blank_line? args/prompt))
+            $"opened agent ${pane/controller/id} in pane ${pane/id}"
+            (run_extension_prompt pane args/prompt false))))))))
+
+(fn extension_command_id [line : Str]
+  (var parts (split line " "))
+  (var selector parts/0)
+  (if (&& (starts_with? selector "/") (> (byte_size selector) 1))
+    (try
+      (parse_int (after_prefix selector "/"))
+    catch _ nil)
+    nil))
+
+(fn handle_extension_command [line : Str, transcript, memory, streaming]
+  (var parts (split line " "))
+  (var selector parts/0)
+  (var id (extension_command_id line))
+  (var pane (find_extension id))
+  (var command (trim (after_prefix line selector)))
+  (if (== pane nil)
+    (render_agent_text transcript streaming $"pane ${id} is not open")
+    (if (== command "close")
+      (do
+        (close_extension_pane id)
+        (render_agent_text transcript streaming $"closed pane ${id}"))
+      (if (== command "")
+        (render_agent_text transcript streaming
+          $"usage: /${id} <input> | /${id} close|cancel|stop|focus")
+        (if (== command "cancel")
+          (do
+            (var task (pane/current_task ~ Cell/get))
+            (if (== task nil) nil (task ~ Task/cancel))
+            (render_agent_text transcript streaming $"cancelled pane ${id}"))
+          (if (== command "stop")
+            (do
+              (if (== pane/kind "agent")
+                (application_stop_agent (active_application ~ Cell/get)
+                                        pane/controller)
+                (do
+                  (var task (pane/current_task ~ Cell/get))
+                  (if (== task nil) nil (task ~ Task/cancel))))
+              (render_agent_text transcript streaming $"stopped pane ${id}"))
+            (if (== command "focus")
+              (do
+                (var app (active_application ~ Cell/get))
+                (app/focused_pane ~ Cell/set id)
+                (render_agent_text transcript streaming $"focused pane ${id}"))
+              (match pane/kind
+                (when "agent"
+                  (do
+                    (interactive_memory ~ Cell/set (memory ~ Cell/get))
+                    (begin_turn!)
+                    (emit_event! "user_input"
+                      {^text command ^pane_id id ^agent_id pane/controller/id})
+                    (render_agent_text transcript streaming
+                      # A TTY has the scheduler-friendly event editor and may
+                      # leave the child running. A pipe blocks in read_line, so
+                      # await here to keep scripted command streams deterministic.
+                      (run_extension_prompt pane command (stdin_tty?)))))
+                (when "shell"
+                  (render_agent_text transcript streaming
+                    (run_shell_pane_command pane
+                      (if (starts_with? command "-- ")
+                        (after_prefix command "-- ") command))))
+                (when "repl"
+                  (render_agent_text transcript streaming
+                    (run_repl_pane_command pane
+                      (if (starts_with? command "-- ")
+                        (after_prefix command "-- ") command))))
+                (when "output"
+                  (render_agent_text transcript streaming
+                    $"pane ${id} is output-only"))
+                (else
+                  (render_agent_text transcript streaming
+                    $"pane ${id} (${pane/kind}) does not accept input"))))))))))
+
+(fn handle_open_extension [transcript, memory, streaming]
+  (var pane (open_extension_pane "" (memory ~ Cell/get)))
+  (if (== pane nil)
+    (render_agent_text transcript streaming "sub-agent limit reached")
+    (render_agent_text transcript streaming
+      $"opened agent ${pane/controller/id} in pane ${pane/id}; use /${pane/id} <prompt> or /${pane/id} close")))
+
+(fn agents_report []
+  (var app (active_application ~ Cell/get))
+  (if (== app nil)
+    "application is not running"
+    (do
+      (var lines [])
+      (for agent in (app/agents ~ Cell/get)
+        (lines ~ List/push!
+          $"${agent/id} ${(agent/status ~ Cell/get)} panes=${(agent/pane_ids ~ Cell/get)} ${agent/title}"))
+      (join lines "\n"))))
+
+(fn handle_agent_command [line : Str, transcript, memory, streaming]
+  (var app (active_application ~ Cell/get))
+  (var rest (trim (after_prefix line "/agent")))
+  (if (|| (== rest "") (== rest "new"))
+    (handle_open_extension transcript memory streaming)
+    (if (starts_with? rest "new ")
+      (do
+        (var prompt (trim (after_prefix rest "new ")))
+        (var pane (open_extension_pane "" (memory ~ Cell/get)))
+        (if (== pane nil)
+          (render_agent_text transcript streaming "sub-agent limit reached")
+          (render_agent_text transcript streaming
+            (run_extension_prompt pane prompt (stdin_tty?)))))
+      (do
+        (var parts (split rest " "))
+        (var agent_id parts/0)
+        (var action (trim (after_prefix rest agent_id)))
+        (var agent (application_find_agent app agent_id))
+        (if (== agent nil)
+          (render_agent_text transcript streaming $"agent ${agent_id} not found")
+          (match action
+            (when "open"
+              (if (empty? (agent/pane_ids ~ Cell/get))
+                (do
+                  (var pane
+                    (application_open_pane app "agent" agent/id agent/title
+                      agent/transcript agent "detach"))
+                  (render_agent_text transcript streaming
+                    $"opened agent ${agent/id} in pane ${pane/id}"))
+                (render_agent_text transcript streaming
+                  $"agent ${agent/id} already has an open pane")))
+            (when "cancel"
+              (render_agent_text transcript streaming
+                (if (application_cancel_agent app agent)
+                  $"cancelling agent ${agent/id}"
+                  $"agent ${agent/id} is idle")))
+            (when "stop"
+              (render_agent_text transcript streaming
+                (if (application_stop_agent app agent)
+                  $"stopped agent ${agent/id}"
+                  "the main agent cannot be stopped here")))
+            (else
+              (render_agent_text transcript streaming
+                "usage: /agent new [prompt] | /agent A open|cancel|stop"))))))))
+
+(fn handle_output_pane_command [line : Str, transcript, streaming]
+  (var title
+    (if (== line "/pane output") ""
+      (trim (after_prefix line "/pane output "))))
+  (var pane (open_output_pane title))
+  (render_agent_text transcript streaming
+    (if (== pane nil) "application is not running"
+      $"opened output pane ${pane/id}")))
+
+(fn handle_shell_pane [transcript, streaming]
+  (var pane (open_shell_pane))
+  (if (== pane nil)
+    (render_agent_text transcript streaming "application is not running")
+    (do
+      (var app (active_application ~ Cell/get))
+      (app/focused_pane ~ Cell/set pane/id)
+      (render_agent_text transcript streaming
+        $"shell pane ${pane/id}; use /${pane/id} <command>"))))
+
+(fn agent_status_report [items, memory] : Str
+  (var state_label
+    (if (== (agent_store ~ Cell/get) nil) "off" agent_state_dir))
+  (var context (context_stats (items ~ Cell/get) (memory ~ Cell/get)))
+  (var item_count context/items)
+  (var memory_count context/memory_items)
+  (var event_count ((agent_events ~ Cell/get) ~ size))
+  (var instruction_count ((agent_instruction_records ~ Cell/get) ~ size))
+  (var guard_label (if (guard_enabled?) "on" "off"))
+  (var app (active_application ~ Cell/get))
+  (var agent_count (if (== app nil) 1 ((app/agents ~ Cell/get) ~ size)))
+  (var pane_count (if (== app nil) 0 ((app/panes ~ Cell/get) ~ size)))
+  $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
 
 (fn run_shell_session []
   (close_user_input)
@@ -2669,7 +4180,8 @@ State that broader behavior is unverified when no matching successful check ran.
 (type Session
   ^props {^items Any ^transcript Any ^memory Any ^tools Any ^events Any
           ^changes Any ^evidence Any ^instructions Any ^config Any ^workspace Any
-          ^current_task Any ^resume_requested Any}
+          ^current_task Any ^resume_requested Any ^application Any
+          ^main_agent Any ^agents Any ^panes Any}
 
   # Register (or replace) a typed Tool; it reaches the next model call.
   (message add_tool [self, t]
@@ -2704,6 +4216,50 @@ State that broader behavior is unverified when no matching successful check ran.
   (message undo [self, id : Int?]
     (undo_file_change! id))
 
+  (message spawn_agent [self, assignment : Str]
+    (var app self/application)
+    (var child_transcript (cell "ready\n"))
+    (var agent
+      (application_spawn_agent app "sub-agent" assignment
+        (cell
+          (append (initial_items (self/memory ~ Cell/get))
+            (system_item
+              $"You are a supervised sub-agent. Assignment: ${assignment}\nKeep private tool chatter out of the main context and return a concise result.")))
+        child_transcript))
+    (if (== agent nil) nil agent/id))
+
+  (message stop_agent [self, agent_id : Str]
+    (var agent (application_find_agent self/application agent_id))
+    (if (== agent nil) false
+      (application_stop_agent self/application agent)))
+
+  (message open_pane [self, kind : Str, owner_id, title : Str]
+    (match kind
+      (when "agent"
+        (var agent (application_find_agent self/application $"${owner_id}"))
+        (if (== agent nil) nil
+          (application_open_pane self/application "agent" agent/id title
+                                 agent/transcript agent "detach")))
+      (when "output"
+        (application_open_pane self/application "output" nil title
+          (cell "ready\n") (OutputController ^source "session") "detach"))
+      (when "shell" (open_shell_pane))
+      (when "repl" (open_repl_pane self/items self/transcript self/memory))
+      (else nil)))
+
+  (message close_pane [self, pane_id : Int]
+    (application_close_pane self/application pane_id))
+
+  (message send_pane [self, pane_id : Int, text : Str]
+    (var pane (application_find_pane self/application pane_id))
+    (if (== pane nil)
+      "pane not found"
+      (match pane/kind
+        (when "agent" (run_extension_prompt pane text true))
+        (when "shell" (run_shell_pane_command pane text))
+        (when "repl" (run_repl_pane_command pane text))
+        (else "pane does not accept input"))))
+
   # Cancel the active model/tool turn. The embedded CLI currently exposes
   # this through the programmable session; gateway.gene also maps it to HTTP.
   (message cancel [self]
@@ -2720,27 +4276,52 @@ State that broader behavior is unverified when no matching successful check ran.
     (self/resume_requested ~ Cell/set true)
     "resume requested: exit the REPL (exit/quit) to continue the current turn"))
 
+(fn make_live_session [items, transcript, memory, resume_flag]
+  (var app (active_application ~ Cell/get))
+  (Session ^items items ^transcript transcript ^memory memory
+           ^tools tool_registry ^events agent_events ^changes file_changes
+           ^evidence agent_evidence ^instructions agent_instruction_records
+           ^config (session_config_snapshot (items ~ Cell/get)
+                                            (memory ~ Cell/get))
+           ^workspace workspace_real ^current_task active_turn_task
+           ^resume_requested resume_flag ^application app
+           ^main_agent app/main_agent ^agents app/agents ^panes app/panes))
+
+(fn live_session_env [items, transcript, memory, resume_flag]
+  (env ^bindings
+    {^session (make_live_session items transcript memory resume_flag)
+     ^Tool Tool ^classify_command classify_command}))
+
+(fn open_repl_pane [items, transcript, memory]
+  (var app (active_application ~ Cell/get))
+  (var existing (application_find_pane_kind app "repl"))
+  (if (&& (!= existing nil) (!= existing/controller/session nil))
+    existing
+    (do
+      (var resume_flag (cell false))
+      (var session
+        (repl_open (live_session_env items transcript memory resume_flag)))
+      (application_open_pane app "repl" "user" "Gene REPL"
+        (cell "session is bound; enter one Gene form per /N command\n")
+        (ReplController ^session session ^items items ^transcript transcript
+                        ^memory memory ^streaming app/main_agent/streaming
+                        ^resume_requested resume_flag)
+        "cancel"))))
+
+(fn handle_repl_pane [items, transcript, memory, streaming]
+  (var pane (open_repl_pane items transcript memory))
+  (var app (active_application ~ Cell/get))
+  (app/focused_pane ~ Cell/set pane/id)
+  (render_agent_text transcript streaming
+    $"REPL pane ${pane/id}; use /${pane/id} <Gene form>"))
+
 # Returns true when the user asked to continue the turn after the REPL.
 (fn run_session_repl [items, transcript, memory]
   (close_user_input)
   (var resume_flag (cell false))
-  (var session (Session ^items items
-                        ^transcript transcript
-                        ^memory memory
-                        ^tools tool_registry
-                        ^events agent_events
-                        ^changes file_changes
-                        ^evidence agent_evidence
-                        ^instructions agent_instruction_records
-                        ^config (session_config_snapshot (items ~ Cell/get)
-                                                        (memory ~ Cell/get))
-                        ^workspace workspace_real
-                        ^current_task active_turn_task
-                        ^resume_requested resume_flag))
   # classify_command is bound so the guard's classification of dangerous
   # strings can be inspected (and tested) without ever executing them.
-  (var repl_env (env ^bindings {^session session ^Tool Tool
-                                ^classify_command classify_command}))
+  (var repl_env (live_session_env items transcript memory resume_flag))
   (println "Entering Gene REPL. `session` is bound: session/items session/events session/evidence session/instructions session/changes session/current_task (session ~ diff) (session ~ undo nil) (session ~ add_tool (Tool ...)) (session ~ remember \"...\") (session ~ trace \"type=tool_call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run_repl_session repl_env ^interactive true)
   (resume_flag ~ Cell/get))
@@ -2768,6 +4349,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (var line nil)
   (var streaming (cell false))
   (var input_history (cell []))
+  (var app (make_application items transcript memory emit_event!))
+  (active_application ~ Cell/set app)
+  (restore_application! app)
+  (interactive_transcript ~ Cell/set transcript)
+  (interactive_memory ~ Cell/set (memory ~ Cell/get))
   # Subscribed event types echo into the transcript as they are emitted.
   (event_echo ~ Cell/set
     (fn [text] (render_agent_text transcript streaming $"[event] ${text}")))
@@ -2777,6 +4363,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (refresh_user_input transcript))
     nil)
   (while (Cell/get running)
+    (interactive_memory ~ Cell/set (memory ~ Cell/get))
     (set line (read_user_input transcript input_history))
     (if (== line nil)
       (do
@@ -2784,11 +4371,13 @@ State that broader behavior is unverified when no matching successful check ran.
         (save_agent_state (items ~ Cell/get)
                           (transcript ~ Cell/get)
                           (memory ~ Cell/get))
+        (interactive_transcript ~ Cell/set nil)
         (Cell/set running false))
       (if (blank_line? line)
         nil
         (do
           ((input_history ~ Cell/get) ~ List/push! line)
+          (application_drain_supervisor_inbox app)
           # Keep submitted commands in the visible/persisted transcript just
           # like model-bound user input. Slash commands are handled locally,
           # but they are still input from the user.
@@ -2800,28 +4389,19 @@ State that broader behavior is unverified when no matching successful check ran.
               (save_agent_state (items ~ Cell/get)
                                 (transcript ~ Cell/get)
                                 (memory ~ Cell/get))
+              (interactive_transcript ~ Cell/set nil)
               (Cell/set running false))
-            (if (== line "/sh")
-              (run_shell_session)
-              (if (== line "/repl")
-                (if (run_session_repl items transcript memory)
-                  (do
-                    # (session ~ resume): continue the current turn with the
-                    # (possibly reshaped) items — no new user input item.
-                    (Cell/set streaming false)
-                    (items ~ Cell/set
-                      (run_turn_tracked live_transport
-                                (items ~ Cell/get)
-                                (fn [text]
-                                  (render_agent_text transcript streaming text))
-                                (fn [text]
-                                  (render_agent_delta transcript streaming text))
-                                max_tool_rounds
-                                emit_event!))
-                    (save_agent_state (items ~ Cell/get)
-                                      (transcript ~ Cell/get)
-                                      (memory ~ Cell/get)))
-                  nil)
+            (if (== line "/agents")
+              (render_agent_text transcript streaming (agents_report))
+              (if (|| (== line "/agent") (starts_with? line "/agent "))
+                (handle_agent_command line transcript memory streaming)
+                (if (|| (== line "/pane output")
+                        (starts_with? line "/pane output "))
+                  (handle_output_pane_command line transcript streaming)
+                  (if (== line "/sh")
+                    (handle_shell_pane transcript streaming)
+                    (if (== line "/repl")
+                      (handle_repl_pane items transcript memory streaming)
                 (if (== line "/memory")
                   (do
                     (var sep "\n")
@@ -2858,22 +4438,8 @@ State that broader behavior is unverified when no matching successful check ran.
                             (render_agent_text transcript streaming
                               $"remembered: ${note}"))))
                       (if (== line "/status")
-                        (do
-                          (var state_label
-                            (if (== (agent_store ~ Cell/get) nil)
-                              "off"
-                              agent_state_dir))
-                          (var context
-                            (context_stats (items ~ Cell/get)
-                                           (memory ~ Cell/get)))
-                          (var item_count context/items)
-                          (var memory_count context/memory_items)
-                          (var event_count ((agent_events ~ Cell/get) ~ size))
-                          (var instruction_count
-                            ((agent_instruction_records ~ Cell/get) ~ size))
-                          (var guard_label (if (guard_enabled?) "on" "off"))
-                          (render_agent_text transcript streaming
-                            $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nguard: ${guard_label}"))
+                        (render_agent_text transcript streaming
+                          (agent_status_report items memory))
                         (if (== line "/diff")
                           (render_agent_text transcript streaming (file_diff_report))
                           (if (|| (== line "/undo") (starts_with? line "/undo "))
@@ -2884,30 +4450,104 @@ State that broader behavior is unverified when no matching successful check ran.
                                   (if (== line "/trace")
                                     ""
                                     (after_prefix line "/trace "))))
-                              (do
-                                (Cell/set streaming false)
-                                (begin_turn!)
-                                (emit_event! "user_input" {^text line})
-                                (Cell/set items
-                                  (run_turn_tracked live_transport
-                                            (append (Cell/get items) (user_item line))
-                                            (fn [text]
-                                              (render_agent_text transcript streaming text))
-                                            (fn [text]
-                                              (render_agent_delta transcript streaming text))
-                                            max_tool_rounds
-                                            emit_event!))
-                                (save_agent_state (items ~ Cell/get)
-                                                  (transcript ~ Cell/get)
-                                                  (memory ~ Cell/get))))))))))))))))))
+                              (if (== line "/ext")
+                                (handle_open_extension transcript memory streaming)
+                                (if (!= (extension_command_id line) nil)
+                                  (handle_extension_command line transcript
+                                                            memory streaming)
+                                  (if (!= (app/main_agent/current_task ~ Cell/get) nil)
+                                    (render_agent_text transcript streaming
+                                      "main agent is already working; press Esc to cancel it or send this input after it finishes")
+                                    (do
+                                      (Cell/set streaming false)
+                                      (begin_turn!)
+                                      (emit_event! "user_input" {^text line})
+                                      (Cell/set items
+                                        (run_interactive_turn transcript streaming
+                                                        (interactive_transport)
+                                                        (append (Cell/get items) (user_item line))))
+                                      (save_agent_state (items ~ Cell/get)
+                                                        (transcript ~ Cell/get)
+                                                        (memory ~ Cell/get))))))))))))))))))))))))
+
+# Project a remotely initiated turn into an attached transcript without giving
+# the adapter any curses knowledge. In headless/remote-only applications these
+# cells are still the canonical transcript projection, just with no screen to
+# refresh.
+(fn gateway_render_event [app, type : Str, text : Str]
+  (var transcript app/main_agent/transcript)
+  (var streaming app/main_agent/streaming)
+  (match type
+    (when "user_input"
+      (do
+        (append_transcript transcript $"──────\n[remote] ${text}\n")
+        (refresh_active_input)))
+    (when "agent_text" (render_agent_text transcript streaming text))
+    (when "text_delta" (render_agent_delta transcript streaming text))
+    (when "turn_done" (finish_agent_stream transcript streaming))
+    (else nil)))
+
+(fn gateway_save_application [app]
+  (save_agent_state (app/main_agent/items ~ Cell/get)
+                    (app/main_agent/transcript ~ Cell/get)
+                    (app/memory ~ Cell/get)))
+
+# Explicit dependency bundle consumed by the UI-neutral gateway adapter.
+(fn gateway_api []
+  {^gene_system_prompt gene_system_prompt ^system_item system_item
+   ^user_item user_item ^run_turn_in run_turn_in
+   ^live_transport live_transport ^demo_transport_for demo_transport_for
+   ^max_tool_rounds max_tool_rounds ^append append ^model model
+   ^auth_token auth_token ^redact_any redact_any
+   ^store_fs_open store_open ^ReadWriteDir ReadWriteDir
+   ^active_application active_application ^agent_events agent_events
+   ^next_event_v next_event_v ^make_application make_application_with_task
+   ^application_emit application_emit ^application_shutdown application_shutdown
+   ^application_snapshot application_snapshot
+   ^restore_application restore_application_snapshot!
+   ^gateway_render_event gateway_render_event
+   ^gateway_save_application gateway_save_application ^begin_turn begin_turn!})
+
+(fn parse_launch_options [raw : Str]
+  (var gateway (cell false))
+  (var headless (cell false))
+  (var port (cell void))
+  (var task_parts [])
+  (for token in (split (trim raw) " ")
+    (if (== token "")
+      nil
+      (if (== token "--gateway")
+        (gateway ~ Cell/set true)
+        (if (starts_with? token "--gateway=")
+          (do
+            (gateway ~ Cell/set true)
+            (port ~ Cell/set
+              (parse_int (after_prefix token "--gateway="))))
+          (if (== token "--headless")
+            (headless ~ Cell/set true)
+            (task_parts ~ List/push! token))))))
+  (if (&& (headless ~ Cell/get) (! (gateway ~ Cell/get)))
+    (fail (OsError ^message "--headless requires --gateway"))
+    nil)
+  (if (&& (!= (port ~ Cell/get) void)
+          (|| (< (port ~ Cell/get) 1) (> (port ~ Cell/get) 65535)))
+    (fail (OsError ^message "--gateway port must be between 1 and 65535"))
+    nil)
+  {^gateway (gateway ~ Cell/get) ^headless (headless ~ Cell/get)
+   ^port (port ~ Cell/get) ^task (join task_parts " ")})
 
 # `gene run` auto-invokes a top-level `main` (src/gene.nim), so no explicit call.
 (fn main [args]
-  (var task args/raw)
+  (var launch (parse_launch_options args/raw))
+  (var task launch/task)
   (var run_mode
-    (if (blank_line? task)
+    (if launch/headless
+      "gateway_headless"
+      (if launch/gateway
+        "gateway_tui"
+        (if (blank_line? task)
       (if (== auth_token nil) "offline_demo" "interactive")
-      "one_shot"))
+          "one_shot"))))
   (info! agent_log "agent starting"
     ^payload {^run_mode run_mode ^api_flavor api_flavor ^model_name model
               ^live_auth (present? auth_token) ^state_enabled (state_enabled?)
@@ -2915,17 +4555,43 @@ State that broader behavior is unverified when no matching successful check ran.
               ^approve_all (flag_enabled? approve_all)
               ^max_tool_rounds max_tool_rounds
               ^tool_count ((tool_names ~ Cell/get) ~ size)})
+  (var gateway_server (cell nil))
+  (var gateway_task (cell nil))
   (try
-    (if (blank_line? task)
-      (if (== auth_token nil)
-        (run_demo)
-        (try
-          (run_repl)
-          ensure
-            (close_user_input)))
-      (run_one_shot task))
+    (if launch/headless
+      (run_gateway (gateway_api) {^port launch/port})
+      (do
+        (if launch/gateway
+          (do
+            (gateway_server ~ Cell/set
+              (prepare_gateway (gateway_api)
+                {^port launch/port ^quiet true}))
+            (gateway_task ~ Cell/set
+              (spawn (serve_gateway (gateway_server ~ Cell/get))))
+            ((gateway_task ~ Cell/get) ~ Task/detach))
+          nil)
+        (if (blank_line? task)
+          (if (&& (== auth_token nil) (! launch/gateway))
+            (run_demo)
+            (try
+              (run_repl)
+            ensure
+              (close_user_input)))
+          (run_one_shot task))))
   ensure
-    (info! agent_log "agent stopped"
-      ^payload {^run_mode run_mode
-                ^turns (current_turn ~ Cell/get)
-                ^events ((agent_events ~ Cell/get) ~ size)})))
+    (do
+      (if (== (gateway_server ~ Cell/get) nil)
+        nil
+        (do
+          (stop_gateway (gateway_server ~ Cell/get))
+          (var task (gateway_task ~ Cell/get))
+          (if (== task nil) nil
+            (try (await task) catch _ nil))))
+      (var app (active_application ~ Cell/get))
+      (if (== app nil) nil (application_shutdown app))
+      (active_application ~ Cell/set nil)
+      (close_user_input)
+      (info! agent_log "agent stopped"
+        ^payload {^run_mode run_mode
+                  ^turns (current_turn ~ Cell/get)
+                  ^events ((agent_events ~ Cell/get) ~ size)}))))
