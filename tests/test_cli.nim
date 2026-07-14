@@ -234,7 +234,7 @@ suite "cli — gene run":
     check "Entering Gene REPL" in ran.output
     # session/config/model is a real projection (model lives under config,
     # §9.1); the quoted form is the REPL value, distinct from the banner text.
-    check "\"gpt-5.4-mini\"" in ran.output
+    check "\"gpt-5.6-terra\"" in ran.output
     check "41" in ran.output
     check "42" in ran.output
 
@@ -245,7 +245,7 @@ suite "cli — gene run":
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
-    check "gpt-5.4-mini" in ran.output
+    check "gpt-5.6-terra" in ran.output
     check "gene> \nyou>" in ran.output
 
   test "ai agent persists config session and memory":
@@ -276,7 +276,7 @@ suite "cli — gene run":
     check second.exitCode == 0
     check "memory:\nproject uses Gene" in second.output
     check "state: " & stateDir in second.output
-    check "model: gpt-5.4-mini" in second.output
+    check "model: gpt-5.6-terra" in second.output
     check "api: responses" in second.output
     check "memory: 1" in second.output
     let sessionText = readFile(stateDir / "session.gene")

@@ -112,7 +112,7 @@ class ConfigAndSafetyTests(unittest.TestCase):
         config = config_for(OPENAI_AUTH_TOKEN="first", OPENAI_API_KEY="second")
         self.assertEqual(config.auth_token, "first")
         self.assertEqual(config.base, tui.CODEX_BASE)
-        self.assertEqual(config.model, "gpt-5.4-mini")
+        self.assertEqual(config.model, "gpt-5.6-terra")
         self.assertEqual(config.api_flavor, "responses")
         custom = config_for(OPENAI_BASE_URL="http://localhost:9000/v1", OPENAI_API_KEY="key")
         self.assertEqual(custom.api_flavor, "chat")
