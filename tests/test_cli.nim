@@ -1379,7 +1379,7 @@ suite "cli — gene run":
     let first = execCmdOnce(
       "printf '/remember project uses Gene\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
-      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
       " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check first.exitCode == 0
     check "remembered: project uses Gene" in first.output
@@ -1393,7 +1393,7 @@ suite "cli — gene run":
     let second = execCmdOnce(
       "printf '/memory\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
-      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
       " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check second.exitCode == 0
     check "memory:\nproject uses Gene" in second.output
@@ -1406,6 +1406,84 @@ suite "cli — gene run":
     check "/memory\\n" in sessionText
     check "agent> remembered: project uses Gene" in sessionText
     check "agent> memory:\\nproject uses Gene" in sessionText
+
+  test "ai agent home restores application state only for the same home":
+    buildGeneCli()
+    let homeDir = cliDir / "ai-agent-home-state"
+    let otherHome = cliDir / "ai-agent-other-home"
+    for path in [homeDir, otherHome]:
+      if dirExists(path):
+        removeDir(path)
+
+    let first = execCmdOnce(
+      "printf '/pane output durable\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u GENE_AGENT_RESUME GENE_AGENT_STATE= " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_HOME=" & shellQuote(homeDir) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    if first.exitCode != 0:
+      checkpoint first.output
+    check first.exitCode == 0
+    check "opened output pane 1" in first.output
+    check fileExists(homeDir / "application.gene")
+    let applicationText = readFile(homeDir / "application.gene")
+    check "^kind \"output\"" in applicationText
+    check "durable" in applicationText
+
+    let restored = execCmdOnce(
+      "printf '/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u GENE_AGENT_STATE -u GENE_AGENT_RESUME " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_HOME=" & shellQuote(homeDir) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    if restored.exitCode != 0:
+      checkpoint restored.output
+    check restored.exitCode == 0
+    check "state: " & homeDir in restored.output
+    check "panes: 1" in restored.output
+
+    let isolated = execCmdOnce(
+      "printf '/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u GENE_AGENT_STATE -u GENE_AGENT_RESUME " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_HOME=" & shellQuote(otherHome) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    if isolated.exitCode != 0:
+      checkpoint isolated.output
+    check isolated.exitCode == 0
+    check "state: " & otherHome in isolated.output
+    check "panes: 0" in isolated.output
+
+  test "ai agent restores application state from sqlite":
+    buildGeneCli()
+    let dbPath = cliDir / "ai-agent-state.sqlite"
+    if fileExists(dbPath):
+      removeFile(dbPath)
+    let stateSpec = "db:sqlite:" & dbPath
+
+    let first = execCmdOnce(
+      "printf '/pane output database\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u GENE_AGENT_HOME -u GENE_AGENT_RESUME " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateSpec) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    if first.exitCode != 0:
+      checkpoint first.output
+    check first.exitCode == 0
+    check "opened output pane 1" in first.output
+    check fileExists(dbPath)
+
+    let restored = execCmdOnce(
+      "printf '/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u GENE_AGENT_HOME -u GENE_AGENT_RESUME " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateSpec) &
+      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    if restored.exitCode != 0:
+      checkpoint restored.output
+    check restored.exitCode == 0
+    check "state: " & stateSpec in restored.output
+    check "panes: 1" in restored.output
 
   test "ai agent talks to an openai-compatible chat endpoint":
     ## End-to-end over loopback: a fake /chat/completions endpoint streams a

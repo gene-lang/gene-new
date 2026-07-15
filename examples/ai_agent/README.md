@@ -84,7 +84,10 @@ Key environment variables (all optional beyond the auth token):
 |---|---|
 | `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` | bearer token, checked in that order; unset → offline demo |
 | `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API` | endpoint, model, wire shape (`responses`\|`chat`) |
-| `GENE_AGENT_STATE=<dir>` | persist config/session/memory/events across restarts (`GENE_AGENT_RESUME=0` for a fresh session) |
+| `GENE_AGENT_STATE=fs:<path>` | persist config, application/session state, memory, and events as filesystem records under `path`; a bare path remains accepted for compatibility |
+| `GENE_AGENT_STATE=db:sqlite:<path>` | persist the same records in SQLite; additional database URL schemes can be added behind the same Store interface |
+| `GENE_AGENT_HOME=<dir>` | filesystem fallback when `GENE_AGENT_STATE` is unset or blank; reusing the same home restores state automatically |
+| `GENE_AGENT_RESUME=0` | start fresh while continuing to save into the selected store |
 | `GENE_AGENT_GUARD=0` | disable destructive/catastrophic risk classification; mediated background/detach forms remain denied (design.md §8.5) |
 | `GENE_LIBCURL=<path>` | override native libcurl discovery; curl(1) is used only if the library cannot load |
 | `GENE_AGENT_CONTEXT_MAX_BYTES`, `GENE_AGENT_CONTEXT_MAX_ITEMS` | approximate wire-size/item limits that trigger deterministic compaction |

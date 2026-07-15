@@ -33,8 +33,10 @@
 # Codex backend and chat for any custom OPENAI_BASE_URL.
 # Tools auto-approve by default (single-user agent); set GENE_AGENT_APPROVE_ALL=0
 # to be prompted before writes and shell commands.
-# Optional local persistence: set GENE_AGENT_STATE=.gene-agent-state to save
-# non-secret config, the interactive session, and memory across restarts.
+# Local persistence: GENE_AGENT_STATE selects `fs:<path>` or
+# `db:sqlite:<path>`. When it is unset or blank, GENE_AGENT_HOME supplies the
+# filesystem path. Reusing the same store restores application/session state
+# automatically.
 # Run demo:   gene run examples/ai_agent/tui.gene         (no token -> offline demo
 #             that drives the same loop with a scripted transport, incl. a
 #             tool_call round trip — needs no network)
@@ -65,7 +67,9 @@
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])
-(import store/fs [open : store_open StoreError])
+(import db/sqlite [open : sqlite_open DbError])
+(import store/fs [open : store_fs_open StoreError])
+(import store/sqlite [open : store_sqlite_open])
 (import repl [run : run_repl_session open : repl_open
               eval_source : repl_eval
               close : repl_close])
@@ -110,7 +114,13 @@
   (get_env Env "OPENAI_API" (if (== base codex_base) "responses" "chat")))
 (var workspace_root ".")
 (var approve_all (get_env Env "GENE_AGENT_APPROVE_ALL" "1"))
-(var agent_state_dir (get_env Env "GENE_AGENT_STATE" ""))
+(var agent_home (get_env Env "GENE_AGENT_HOME" ""))
+(var configured_agent_state (env? Env "GENE_AGENT_STATE"))
+(var agent_state_spec
+  (if (&& configured_agent_state
+          (!= (trim configured_agent_state) ""))
+    configured_agent_state
+    (if_not (== (trim agent_home) "") $"fs:${agent_home}")))
 (var agent_resume (get_env Env "GENE_AGENT_RESUME" "1"))
 (var guard_flag (get_env Env "GENE_AGENT_GUARD" "1"))
 
@@ -3404,34 +3414,98 @@ State that broader behavior is unverified when no matching successful check ran.
                        nil))
 
 # -----------------------------------------------------------------------------
-# Optional local persistence. `GENE_AGENT_STATE=<dir>` enables a filesystem
-# Store with four data records:
+# Local persistence. GENE_AGENT_STATE selects a Store backend:
+#   fs:<path>          — filesystem records under path
+#   db:sqlite:<path>   — SQLite records in path
+# When it is unset or blank, a non-empty GENE_AGENT_HOME is equivalent to
+# fs:<home>.
+# A bare GENE_AGENT_STATE path remains a filesystem compatibility form.
+# The store contains:
 #   config  — non-secret runtime config
 #   session — current interactive transcript and Responses-style items
 #   memory  — user-managed durable notes included in the system prompt
 #   events  — the versioned event log (§9.2) plus its version/turn counters
+#   application — agents, workers, panes, histories, drafts, and bounded output
+# Reusing the same store restores these records automatically. The existing
+# resume policy remains available to a future launcher flag without changing
+# the persistence format.
 # -----------------------------------------------------------------------------
 
 (var agent_store (cell nil))
+(var agent_state_db (cell nil))
 
 (fn state_enabled? []
-  (!= (trim agent_state_dir) ""))
+  (!= (trim (if agent_state_spec agent_state_spec "")) ""))
 
 (fn resume_enabled? []
   (flag_enabled? agent_resume))
+
+(fn state_fs_path [spec : Str]
+  (if (starts_with? spec "fs:")
+    (after_prefix spec "fs:")
+    spec))
+
+(fn state_db_path [url : Str]
+  (if (starts_with? url "sqlite:")
+    (after_prefix url "sqlite:")
+    (fail (OsError
+      ^message "GENE_AGENT_STATE db URL must use sqlite:<path>"))))
+
+(fn state_display []
+  (if (state_enabled?) (state_fs_path agent_state_spec)))
+
+(fn open_agent_store [spec : Str]
+  (if (starts_with? spec "db:")
+    (then
+      (var path (state_db_path (after_prefix spec "db:")))
+      (if (== (trim path) "")
+        (fail (OsError ^message "GENE_AGENT_STATE database path is empty")))
+      (var db (sqlite_open path))
+      (agent_state_db ~ Cell/set db)
+      (store_sqlite_open db ^table "agent_state"))
+    (else
+      (var path (state_fs_path spec))
+      (if (== (trim path) "")
+        (fail (OsError ^message "GENE_AGENT_STATE filesystem path is empty")))
+      (store_fs_open ReadWriteDir ^root path))))
+
+(fn close_agent_state []
+  (var store (agent_store ~ Cell/get))
+  (if_yes store
+    (try (store ~ close) catch _ nil)
+    (agent_store ~ Cell/set nil))
+  (var db (agent_state_db ~ Cell/get))
+  (if_yes db
+    (try (db ~ close) catch _ nil)
+    (agent_state_db ~ Cell/set nil)))
 
 (fn init_agent_state []
   (if_not (|| (! (state_enabled?))
               (!= (agent_store ~ Cell/get) nil))
     (try
-      (agent_store ~ Cell/set (store_open ReadWriteDir ^root agent_state_dir))
+      (agent_store ~ Cell/set (open_agent_store agent_state_spec))
       (info! state_log "agent state opened"
-        ^payload {^state_enabled true ^resume_enabled (resume_enabled?)})
+        ^payload {^state_enabled true
+                  ^state_backend
+                    (if (starts_with? agent_state_spec "db:") "db" "fs")
+                  ^resume_enabled (resume_enabled?)})
     catch (StoreError ^message m)
+      (close_agent_state)
       (warn! state_log "agent state disabled"
         ^payload {^error_kind "store" ^error_detail (redact m)})
       (println $"agent state disabled: ${m}")
+    catch (DbError ^message m)
+      (close_agent_state)
+      (warn! state_log "agent state disabled"
+        ^payload {^error_kind "database" ^error_detail (redact m)})
+      (println $"agent state disabled: ${m}")
+    catch (OsError ^message m)
+      (close_agent_state)
+      (warn! state_log "agent state disabled"
+        ^payload {^error_kind "configuration" ^error_detail (redact m)})
+      (println $"agent state disabled: ${m}")
     catch _
+      (close_agent_state)
       (warn! state_log "agent state disabled"
         ^payload {^error_kind "unknown"})
       (println "agent state disabled: could not open store"))))
@@ -5806,7 +5880,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn agent_status_report [items, memory] : Str
   (var state_label
-    (if (== (agent_store ~ Cell/get) nil) "off" agent_state_dir))
+    (if (== (agent_store ~ Cell/get) nil) "off" (state_display)))
   (var context (context_stats (items ~ Cell/get) (memory ~ Cell/get)))
   (var item_count context/items)
   (var memory_count context/memory_items)
@@ -6253,7 +6327,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (event_echo ~ Cell/set
     (fn [text] (render_agent_text transcript streaming $"[event] ${text}")))
   (if_yes saved
-      (append_transcript transcript $"[restored session from ${agent_state_dir}]\n")
+      (append_transcript transcript $"[restored session from ${(state_display)}]\n")
       (refresh_user_input transcript))
   (while (Cell/get running)
     (interactive_memory ~ Cell/set (memory ~ Cell/get))
@@ -6411,7 +6485,8 @@ State that broader behavior is unverified when no matching successful check ran.
    ^max_tool_rounds max_tool_rounds ^append append ^model model
    ^auth_token auth_token ^redact_any redact_any
    ^bounded_event_record bounded_event_record
-   ^store_fs_open store_open ^ReadWriteDir ReadWriteDir
+   ^store_fs_open store_fs_open ^sqlite_open sqlite_open
+   ^store_sqlite_open store_sqlite_open ^ReadWriteDir ReadWriteDir
    ^active_application active_application ^agent_events agent_events
    ^next_event_v next_event_v ^event_dropped_before event_dropped_before
    ^make_application make_headless_application_with_task
@@ -6534,6 +6609,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (var app (active_application ~ Cell/get))
     (if app (application_shutdown app))
     (active_application ~ Cell/set nil)
+    (close_agent_state)
     (close_user_input)
     (info! agent_log "agent stopped"
       ^payload {^run_mode run_mode

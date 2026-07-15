@@ -28,8 +28,6 @@
 (import std/parse [parse_int])
 (import net/http [Server serve listen stop Response])
 (import net/http_client [Http request HttpClientError])
-(import db/sqlite [open : sqlite_open])
-(import store/sqlite [open : store_sqlite_open])
 
 (var gw_host (get_env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
 (var gw_port 8090)
@@ -1079,9 +1077,9 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (if (== gw_state_dir "")
     (then
       (if_not (== gw_db_path "")
-        (var db (sqlite_open gw_db_path))
+        (var db (agent_api/sqlite_open gw_db_path))
         (gw_store ~ Cell/set
-          (store_sqlite_open db
+          (agent_api/store_sqlite_open db
             ^table "sessions" ^key_column "id" ^data_column "data"))
         (finish_gateway_store gw_db_path)))
     (else

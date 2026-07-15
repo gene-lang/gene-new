@@ -297,10 +297,18 @@ The agent reads a bearer token from `OPENAI_AUTH_TOKEN`, `OPENAI_API_KEY`, or
 `CODEX_ACCESS_TOKEN` (in that order), and optionally `OPENAI_BASE_URL`
 (default: the Codex backend), `OPENAI_MODEL`, and `OPENAI_API`
 (`responses`|`chat` wire shape; defaults by backend as described above).
-`GENE_AGENT_STATE=<dir>` enables local filesystem persistence for the
-single-process CLI; `GENE_AGENT_RESUME=0` keeps saving but starts with a fresh
-interactive session. The persisted config deliberately excludes auth tokens and
-other secrets.
+`GENE_AGENT_STATE` selects the single-process CLI's Store backend. The initial
+forms are `fs:<path>` and `db:sqlite:<path>`; the `db:` suffix is a backend URL
+dispatch point, so future database drivers do not change the persistence
+contract. Unsupported database schemes fail explicitly. Both backends use the
+same record keys and Gene serialization for config, application/session state,
+memory, and events. Starting the agent again with the same store restores them
+automatically. If `GENE_AGENT_STATE` is unset or blank,
+`GENE_AGENT_HOME=<dir>` selects `fs:<dir>`. A bare state path remains accepted
+as a filesystem compatibility form. `GENE_AGENT_RESUME=0` keeps saving while
+starting fresh; a future launcher flag may expose the same opt-out without
+changing the persistence format. The persisted config deliberately excludes
+auth tokens and other secrets.
 
 Before this work there was no OS-environment access at the Gene surface. The
 `Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
