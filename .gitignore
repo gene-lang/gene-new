@@ -44,4 +44,5 @@ coverage/
 .cache/
 tmp/
 examples/ai_agent/logs/
+examples/ai_agent/home/
 *.vsix

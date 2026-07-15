@@ -82,36 +82,32 @@
   (var done false)
   (var next (cell ~ AtomicCell/load))
   (while (not done)
-    (do
-      (if (cell ~ AtomicCell/compare_exchange next (+ next 1))
-        (set done true)
-        (set next (cell ~ AtomicCell/load))))))
+    (if (cell ~ AtomicCell/compare_exchange next (+ next 1))
+      (set done true)
+      (set next (cell ~ AtomicCell/load)))))
 
 (fn atomic_dec [cell]
   (var done false)
   (var next (cell ~ AtomicCell/load))
   (while (not done)
-    (do
-      (if (cell ~ AtomicCell/compare_exchange next (- next 1))
-        (set done true)
-        (set next (cell ~ AtomicCell/load))))))
+    (if (cell ~ AtomicCell/compare_exchange next (- next 1))
+      (set done true)
+      (set next (cell ~ AtomicCell/load)))))
 
 (fn new_job_id []
   (var next (job_counter ~ AtomicCell/load))
   (while true
-    (do
-      (if (not (job_counter ~ AtomicCell/compare_exchange next (+ next 1)))
-        (set next (job_counter ~ AtomicCell/load))
-        (break))))
+    (if (not (job_counter ~ AtomicCell/compare_exchange next (+ next 1)))
+      (set next (job_counter ~ AtomicCell/load))
+      (break)))
   ($ "job-" next))
 
 (fn set_job_state [id state ms]
   (var done false)
   (while (not done)
-    (do
-      (var reg (jobs ~ AtomicCell/load))
-      (var next (Map/assoc reg id {^id id ^state state ^ms ms}))
-      (set done (jobs ~ AtomicCell/compare_exchange reg next)))))
+    (var reg (jobs ~ AtomicCell/load))
+    (var next (Map/assoc reg id {^id id ^state state ^ms ms}))
+    (set done (jobs ~ AtomicCell/compare_exchange reg next))))
 
 (fn parse_job_ms [req default]
   (var parsed

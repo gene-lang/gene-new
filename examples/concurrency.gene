@@ -102,7 +102,8 @@
   (spawn (do
     (try (box ~ Channel/recv)
       catch (ChannelClosed ^message m)
-        (do (done ~ Cell/set true) (println "     receiver saw:" m)))))
+        (done ~ Cell/set true)
+        (println "     receiver saw:" m))))
 
   (sleep 1)                           # let receiver settle into recv
   (box ~ Channel/close)
@@ -120,12 +121,11 @@
 (println "3. Cell as a Send-shareable snapshot")
 
 (var hits (cell 0))
-(do
-  (scope
-    (spawn (do (hits ~ Cell/set 1) (sleep 0)))   # short-lived task: hits=1
-    (spawn (do (sleep 1) (hits ~ Cell/set 2)))   # delayed task: hits=2
-    (await (spawn (sleep 3))))                   # drain scope)
-  (println "   - final cell value (last writer wins):" (hits ~ Cell/get)))
+(scope
+  (spawn (do (hits ~ Cell/set 1) (sleep 0)))   # short-lived task: hits=1
+  (spawn (do (sleep 1) (hits ~ Cell/set 2)))   # delayed task: hits=2
+  (await (spawn (sleep 3))))                   # drain scope)
+(println "   - final cell value (last writer wins):" (hits ~ Cell/get))
 
 (println "")
 
@@ -162,15 +162,14 @@
 (var cleanup2 (cell 0))
 (type Boom ^props {^message Str} ^impl [Error])
 (impl Error for Boom)
-(do
-  (scope
-    (spawn (try (sleep 60)
-            ensure (cleanup2 ~ Cell/set (+ (cleanup2 ~ Cell/get) 1))))
-    (sleep 1)
-    (try (fail (Boom ^message "abandon"))
-      catch (Boom) nil))
+(scope
+  (spawn (try (sleep 60)
+          ensure (cleanup2 ~ Cell/set (+ (cleanup2 ~ Cell/get) 1))))
   (sleep 1)
-  (println "     sibling ensure ran:" (cleanup2 ~ Cell/get)))
+  (try (fail (Boom ^message "abandon"))
+    catch (Boom) nil))
+(sleep 1)
+(println "     sibling ensure ran:" (cleanup2 ~ Cell/get))
 
 (println "")
 
@@ -265,11 +264,15 @@
           (fail (Boom ^message "bad"))
           (actor/continue (+ state msg))))))
   (var first_send
-    (try (do (stoptest ~ actor/send 0) "first_send")
+    (try
+      (stoptest ~ actor/send 0)
+      "first_send"
       catch (Boom ^message m) m))
   (sleep 1)                                           # let failure propagate
   (var post_failure
-    (try (do (stoptest ~ actor/send 99) "second-send")
+    (try
+      (stoptest ~ actor/send 99)
+      "second-send"
       catch (ActorClosed ^message m) m))
   (println "   - first send (failure trapped):" first_send)
   (println "   - post_failure send:" post_failure))

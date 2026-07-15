@@ -215,10 +215,9 @@ The POSIX terminal API uses an explicitly owned `Screen`:
 
 (var screen (open))
 (try
-  (do
-    (draw screen ^output "agent> ready" ^status "waiting" ^input "")
-    (var size (dimensions screen))
-    (var event (await (next_event screen))))
+  (draw screen ^output "agent> ready" ^status "waiting" ^input "")
+  (var size (dimensions screen))
+  (var event (await (next_event screen)))
   ensure
     (close screen))
 ```
@@ -271,9 +270,8 @@ controllers suitable for panes:
 (import repl [open eval_source close])
 (var session (open (env ^bindings {^answer 42})))
 (try
-  (do
-    (eval_source session "(var x answer)")  # {^status "ok" ^text "42"}
-    (eval_source session "(+ x 1)"))        # {^status "ok" ^text "43"}
+  (eval_source session "(var x answer)")  # {^status "ok" ^text "42"}
+  (eval_source session "(+ x 1)")         # {^status "ok" ^text "43"}
   ensure
     (close session))
 ```

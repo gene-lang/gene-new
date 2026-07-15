@@ -2065,6 +2065,12 @@ Guard forms treat their whole tail as one implicit `do` branch:
 
 Each condition is evaluated once. An empty taken tail evaluates to `nil`.
 
+Idiomatic code omits an explicit trailing `nil`: write `(if cond value)` for a
+single expression, or `(if_yes cond body...)` for a multi-expression guard.
+Use `if_not` instead of `(if cond nil value)`. When both branches contain
+multiple expressions, use `then`/`elif`/`else` clauses instead of wrapping
+compact branches in `do`.
+
 `(return value)` leaves the nearest function after running structured cleanup;
 `(return)` returns `void`. In generators only the empty form or
 `(return void)` is accepted, and it terminates without yielding an item (§6.1).
@@ -2128,7 +2134,10 @@ ensure
   cleanup...)
 ```
 
-`catch` patterns match error nodes in order. `ensure` runs on success or error; its result is ignored unless it raises/panics. Unhandled errors propagate.
+The `try`, `catch`, and `ensure` bodies accept multiple expressions directly;
+they do not need `do` wrappers. `catch` patterns match error nodes in order.
+`ensure` runs on success or error; its result is ignored unless it
+raises/panics. Unhandled errors propagate.
 
 `panic` is for violated invariants and unrecoverable bugs. It is not listed in `^errors`.
 
@@ -2355,9 +2364,7 @@ Because `fn!` runs at runtime, its generated/evaluated code may be checked later
 
 ```gene
 (macro when! [cond, body...]
-  `(if %cond
-     (then %body...)
-     (else nil)))
+  `(if_yes %cond %body...))
 ```
 
 The `!` suffix marks visible rewriting by convention. It is not enforced: `(macro twice [x] ...)` is legal, but stdlib and examples should keep `!` for visible expansion.

@@ -511,11 +511,10 @@ The shipped Gene-facing surface is a thin, safe layer over the raw binding:
 (import curses [Screen open close dimensions draw next_event])
 (var screen (open))
 (try
-  (do
-    (draw screen ^output "agent> ready" ^input "" ^status "waiting")
-    (var key (await (next_event screen))))
-  ensure
-    (close screen))
+  (draw screen ^output "agent> ready" ^input "" ^status "waiting")
+  (var key (await (next_event screen)))
+ensure
+  (close screen))
 ```
 
 `Screen` makes terminal ownership explicit. `close` is idempotent and callers
@@ -1140,44 +1139,42 @@ pseudocode.
         (emit "text_delta" {^text (redact text)})
         (render_stream (redact text)))))
   (if (!= resp/agent_error void)
-    (do
+    (then
       (emit "error" {^text resp/agent_error})
       (render resp/agent_error)
       (emit "turn_done" {})
       input_items)
-    (do
+    (else
       (each (to_stream (response_output_items resp))
         (fn [item] (emit "model_item" {^item item})))
       (var calls (response_calls resp))
       (if (empty? calls)
-        (do
+        (then
           (emit "agent_text" {^text (response_text resp)})
           (if (Cell/get streamed)
             (render "")
             (render (redact (response_text resp))))
           (emit "turn_done" {^text (response_text resp)})
           (append_all input_items (response_output_items resp)))
-        (if (<= budget 0)
-          (do
-            (render "[stopped: tool_call budget exhausted]")
-            (emit "turn_done" {})
-            input_items)
-          (do
-            # Keep awaited tool handlers in the turn fiber so cancellation
-            # cannot strand a subprocess in a lazy mapper continuation.
-            (var outputs (cell []))
-            (for c in calls
-              (do
-                ((outputs ~ Cell/get) ~ List/push! (run_tool_call c emit))
-                (render $"  · tool ${c/name} ${c/arguments}")))
-            (run_turn
-              transport
-              ((to_stream (outputs ~ Cell/get)) ~ into
-                (append_all input_items (response_output_items resp)))
-              render
-              render_stream
-              (- budget 1)
-              emit)))))))
+        (elif (<= budget 0)
+          (render "[stopped: tool_call budget exhausted]")
+          (emit "turn_done" {})
+          input_items)
+        (else
+          # Keep awaited tool handlers in the turn fiber so cancellation
+          # cannot strand a subprocess in a lazy mapper continuation.
+          (var outputs (cell []))
+          (for c in calls
+            ((outputs ~ Cell/get) ~ List/push! (run_tool_call c emit))
+            (render $"  · tool ${c/name} ${c/arguments}"))
+          (run_turn
+            transport
+            ((to_stream (outputs ~ Cell/get)) ~ into
+              (append_all input_items (response_output_items resp)))
+            render
+            render_stream
+            (- budget 1)
+            emit))))))
 
 # The interactive path adds one user item and stores the returned item list.
 (items ~ Cell/set

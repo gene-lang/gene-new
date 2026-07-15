@@ -86,8 +86,7 @@ Example:
 ```gene
 (fn! when! [cond, body...]
   (if (eval cond ^in caller_env)
-    (eval `(do %body...) ^in caller_env)
-    nil))
+    (eval `(do %body...) ^in caller_env)))
 ```
 
 The exact name of the caller environment binding is specified below.
@@ -98,9 +97,7 @@ A macro is a compile-time template expander:
 
 ```gene
 (macro when! [cond, body...]
-  `(if %cond
-     (then %body...)
-     (else nil)))
+  `(if_yes %cond %body...))
 ```
 
 A macro transforms syntax before normal compilation continues.
@@ -351,9 +348,7 @@ A macro receives syntax nodes and returns syntax that is compiled in place.
 
 ```gene
 (macro when! [cond, body...]
-  `(if %cond
-     (then %body...)
-     (else nil)))
+  `(if_yes %cond %body...))
 ```
 
 Macros should be used when expansion must happen before type checking, declaration collection, or native/AOT compilation.
@@ -571,12 +566,10 @@ Usage:
 
 ```gene
 (macro unless! [cond, body...]
-  `(if (not %cond)
-     (then %body...)
-     (else nil)))
+  `(if_not %cond %body...))
 ```
 
-The generated `if` is type-checked and compiled as if it appeared in the source.
+The generated guard is type-checked and compiled as if it appeared in the source.
 
 ### 8.5 Template macro introducing a local
 
@@ -767,7 +760,7 @@ fn!, and cross-module suites); this section is kept as the readable inventory.
 
 ```gene
 (macro when! [cond, body...]
-  `(if %cond (then %body...) (else nil)))
+  `(if_yes %cond %body...))
 
 [(when! true 1) (when! false 2)] # => [1 nil]
 ```
@@ -789,7 +782,7 @@ m! # error: macro cannot be used as value
 ```gene
 # control.gene
 (macro when! [cond, body...]
-  `(if %cond (then %body...) (else nil)))
+  `(if_yes %cond %body...))
 
 # app.gene
 (import [when!] from "./control")

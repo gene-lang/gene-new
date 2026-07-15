@@ -44,9 +44,8 @@
 
 (fn positive_env_int [name : Str, fallback : Int] : Int
   (try
-    (do
-      (var parsed (parse_int (get_env Env name $"${fallback}")))
-      (if (> parsed 0) parsed fallback))
+    (var parsed (parse_int (get_env Env name $"${fallback}")))
+    (if (> parsed 0) parsed fallback)
   catch _ fallback))
 
 (var gw_event_max
@@ -58,7 +57,7 @@
     1024 configured_gw_event_max_bytes))
 
 (fn gw_notice [text : Str]
-  (if gw_quiet nil (println text)))
+  (if_not gw_quiet (println text)))
 
 # Injected by the composing application. Keeping this adapter independent of
 # tui.gene avoids a module cycle and lets the TUI and compatibility launcher
@@ -83,8 +82,7 @@
 (var gw_store (cell nil))
 
 (fn persist_session [id, items, events, next_v, dropped_before, app]
-  (if (== (gw_store ~ Cell/get) nil)
-    nil
+  (if (gw_store ~ Cell/get)
     (try
       ((gw_store ~ Cell/get) ~ put
         id
@@ -142,14 +140,12 @@
         (- retained_bytes (byte_size (stringify current/%first))))
       (dropped_before ~ Cell/set current/%first/v)
       (set first (+ first 1)))
-    (if (> first 0)
-      (do
-        (var kept [])
-        (repeat i in current/~size
-          (if (>= i first) (kept ~ List/push! current/%i) nil))
-        (events ~ Cell/set kept)
-        (event_bytes ~ Cell/set retained_bytes))
-      nil))
+    (if_yes (> first 0)
+      (var kept [])
+      (repeat i in current/~size
+        (if (>= i first) (kept ~ List/push! current/%i)))
+      (events ~ Cell/set kept)
+      (event_bytes ~ Cell/set retained_bytes)))
   (trim_events!)
   (fn append_event [event]
     (var stored (agent_api/bounded_event_record event gw_event_max_bytes))
@@ -157,16 +153,16 @@
     (event_bytes ~ Cell/set
       (+ (event_bytes ~ Cell/get) (byte_size (stringify stored))))
     (trim_events!)
-    (if (== on_event nil)
-      nil
+    (if on_event
       (try (on_event stored) catch _ nil))
     stored)
   (fn push_event [type : Str, text : Str]
     (if shared
-      (agent_api/application_emit app type
-        {^worker_id app/main_agent/id ^agent_id app/main_agent/id
-         ^text text ^surface "gateway"})
-      (do
+      (then
+        (agent_api/application_emit app type
+          {^worker_id app/main_agent/id ^agent_id app/main_agent/id
+           ^text text ^surface "gateway"}))
+      (else
         (next_v ~ Cell/set (+ (next_v ~ Cell/get) 1))
         (var event
           {^v (next_v ~ Cell/get) ^type type
@@ -188,8 +184,8 @@
   # callbacks below, so the sink skips them to avoid double-logging.
   (fn push_structured [type : Str, props]
     (if shared
-      (agent_api/application_emit app type props)
-      (do
+      (then (agent_api/application_emit app type props))
+      (else
         (next_v ~ Cell/set (+ (next_v ~ Cell/get) 1))
         (var event {^v (next_v ~ Cell/get) ^type type})
         (for [k pv] in props
@@ -201,22 +197,18 @@
       (when "agent_text" nil)
       (when "text_delta" nil)
       (else
-        (do
-          (var emitted (push_structured type props))
-          (if (== type "turn_done")
-            (if shared
-              (agent_api/gateway_render_event app "turn_done" "")
-              (agent_api/gateway_project_event app "turn_done" ""))
-            nil)
-          emitted))))
+        (var emitted (push_structured type props))
+        (if (== type "turn_done")
+          (if shared
+            (agent_api/gateway_render_event app "turn_done" "")
+            (agent_api/gateway_project_event app "turn_done" "")))
+        emitted)))
   (if (== app nil)
     (set app
       (agent_api/make_application items (cell "") (cell [])
-                                  emit_turn_event current_task))
-    nil)
+                                  emit_turn_event current_task)))
   (if (&& (!= saved nil) (!= saved/application void))
-    (agent_api/restore_application app saved/application)
-    nil)
+    (agent_api/restore_application app saved/application))
   (var transport
     (if (== agent_api/auth_token nil)
       (agent_api/demo_transport_for)
@@ -230,57 +222,53 @@
     (var outcome (cell "running"))
     (try
       (try
-        (do
-          (await task)
-          (outcome ~ Cell/set "done"))
+        (await task)
+        (outcome ~ Cell/set "done")
       catch _
         (outcome ~ Cell/set "failed"))
     ensure
-      (do
-        (if (== (outcome ~ Cell/get) "running")
+      (if (== (outcome ~ Cell/get) "running")
+        (then
           (if (cancel_requested ~ Cell/get)
-            (do
+            (then
               (push_structured "error" {^kind "cancelled" ^text "turn cancelled"})
               (push_structured "turn_done" {^cancelled true}))
-            (do
+            (else
               (push_structured "error" {^kind "failed" ^text "turn failed"})
-              (push_structured "turn_done" {^failed true})))
-          (if (== (outcome ~ Cell/get) "failed")
-            (do
-              (push_structured "error" {^kind "failed" ^text "turn failed"})
-              (push_structured "turn_done" {^failed true}))
-            nil))
-        (var worker_outcome
-          (if (== (outcome ~ Cell/get) "done") "completed"
-            (if (cancel_requested ~ Cell/get) "cancelled" "failed")))
-        (agent_api/application_finish_worker_operation
-          app app/main_agent worker_outcome)
-        (push_structured "agent_status"
-          {^worker_id app/main_agent/id ^agent_id app/main_agent/id
-           ^status worker_outcome})
-        (input_pending ~ Cell/set false)
-        (app/main_agent/input_reserved ~ Cell/set false)
-        (if shared (agent_api/gateway_save_application app) nil)
-        (persist_session id items events next_v dropped_before app))))
+              (push_structured "turn_done" {^failed true}))))
+        (elif (== (outcome ~ Cell/get) "failed")
+          (push_structured "error" {^kind "failed" ^text "turn failed"})
+          (push_structured "turn_done" {^failed true})))
+      (var worker_outcome
+        (if (== (outcome ~ Cell/get) "done") "completed"
+          (if (cancel_requested ~ Cell/get) "cancelled" "failed")))
+      (agent_api/application_finish_worker_operation
+        app app/main_agent worker_outcome)
+      (push_structured "agent_status"
+        {^worker_id app/main_agent/id ^agent_id app/main_agent/id
+         ^status worker_outcome})
+      (input_pending ~ Cell/set false)
+      (app/main_agent/input_reserved ~ Cell/set false)
+      (if shared (agent_api/gateway_save_application app))
+      (persist_session id items events next_v dropped_before app)))
   (var turn_actor
     (actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx, state, input]
         (if (!= (current_task ~ Cell/get) nil)
-          (do
+          (then
             (input_pending ~ Cell/set false)
             (app/main_agent/input_reserved ~ Cell/set false)
             (push_structured "error"
               {^kind "busy" ^text "turn already in flight"}))
-          (do
-            (if shared (agent_api/begin_turn) nil)
+          (else
+            (if shared (agent_api/begin_turn))
             (agent_api/application_drain_supervisor_inbox app)
             (agent_api/record_worker_input
               app/main_agent input/text input/adapter nil)
             (var text input/text)
             (push_event "user_input" text)
             (if shared
-              (agent_api/gateway_render_event app "user_input" text)
-              nil)
+              (agent_api/gateway_render_event app "user_input" text))
             (cancel_requested ~ Cell/set false)
             (push_structured "agent_status"
               {^worker_id app/main_agent/id ^agent_id app/main_agent/id
@@ -292,20 +280,16 @@
                             (agent_api/append (items ~ Cell/get)
                                               (agent_api/user_item text))
                             (fn [t]
-                              (if (== t "") nil
-                                (do
-                                  (push_event "agent_text" t)
-                                  (app/main_agent/result ~ Cell/set t)
-                                  (if shared
-                                    (agent_api/gateway_render_event app "agent_text" t)
-                                    nil))))
+                              (if_not (== t "")
+                                (push_event "agent_text" t)
+                                (app/main_agent/result ~ Cell/set t)
+                                (if shared
+                                  (agent_api/gateway_render_event app "agent_text" t))))
                             (fn [d]
-                              (if (== d "") nil
-                                (do
-                                  (push_event "text_delta" d)
-                                  (if shared
-                                    (agent_api/gateway_render_event app "text_delta" d)
-                                    nil))))
+                              (if_not (== d "")
+                                (push_event "text_delta" d)
+                                (if shared
+                                  (agent_api/gateway_render_event app "text_delta" d))))
                             agent_api/max_tool_rounds
                             emit_turn_event
                             {^app app ^agent app/main_agent ^pane nil
@@ -322,8 +306,8 @@
     (if (|| (input_pending ~ Cell/get)
             (app/main_agent/input_reserved ~ Cell/get)
             (!= (current_task ~ Cell/get) nil))
-      false
-      (do
+      (then false)
+      (else
         (input_pending ~ Cell/set true)
         # Shared worker state lets the TUI observe admission before this
         # adapter's actor installs the Task.
@@ -338,8 +322,7 @@
      ^handler (fn [event]
        (if (["worker_operation_finished" "worker_stopped" "agent_spawned"]
              ~ contains? event/type)
-         (persist_session id items events next_v dropped_before app)
-         nil))})
+         (persist_session id items events next_v dropped_before app)))})
   {^id id ^actor turn_actor ^events events ^next_v next_v
    ^dropped_before dropped_before
    ^event_bytes event_bytes
@@ -356,7 +339,7 @@
 (fn max_event_v [evs, fallback : Int] : Int
   (var m (cell fallback))
   ((to_stream evs)
-    ~ each (fn [e] (if (> e/v (m ~ Cell/get)) (m ~ Cell/set e/v) nil)))
+    ~ each (fn [e] (if (> e/v (m ~ Cell/get)) (m ~ Cell/set e/v))))
   (m ~ Cell/get))
 
 # -----------------------------------------------------------------------------
@@ -371,13 +354,12 @@
   (var url $"${tg_base}/bot${tg_token}/${method}")
   (var body (stringify payload))
   (try
-    (do
-      (var response
-        (await (request Http ^method "POST" ^url url
-                        ^headers ["Content-Type: application/json"]
-                        ^body body ^timeout_ms 30000 ^max_bytes 400000)))
-      {^status 0 ^stdout response/body ^stderr ""
-       ^http_status response/status ^truncated response/truncated})
+    (var response
+      (await (request Http ^method "POST" ^url url
+                      ^headers ["Content-Type: application/json"]
+                      ^body body ^timeout_ms 30000 ^max_bytes 400000)))
+    {^status 0 ^stdout response/body ^stderr ""
+     ^http_status response/status ^truncated response/truncated}
   catch (HttpClientError ^kind "unavailable")
     (await (exec_async Exec ^cmd "curl"
               ^args ["-sS" "-X" "POST" url
@@ -386,22 +368,19 @@
 
 (fn tg_send_message [chat_id, text : Str]
   # returns the sent message_id, or nil
-  (if (== text "")
-    nil
+  (if_not (== text "")
     (try
       (var r (tg_call "sendMessage" {^chat_id chat_id ^text text}))
       (var resp (parse r/stdout))
-      (if (== resp/ok true) resp/result/message_id nil)
+      (if (== resp/ok true) resp/result/message_id)
     catch _ nil)))
 
 (fn tg_edit_message [chat_id, message_id, text : Str]
-  (if (|| (== message_id nil) (== text ""))
-    nil
-    (do
-      (try (tg_call "editMessageText"
-                    {^chat_id chat_id ^message_id message_id ^text text})
-      catch _ nil)
-      nil)))
+  (if_not (|| (== message_id nil) (== text ""))
+    (try (tg_call "editMessageText"
+                  {^chat_id chat_id ^message_id message_id ^text text})
+    catch _ nil)
+    nil))
 
 # Outbound path. Session events are mirrored to Telegram through a queue: the
 # session's on_event hook does a non-blocking try_send (it may run inside a
@@ -420,19 +399,16 @@
 
 (fn make_telegram_sender [chat_id]
   (fn [event]
-    (if (! (tg_relevant? event/type))
-      nil
-      (if (tg_outbox ~ Channel/try_send
+    (if_not (! (tg_relevant? event/type))
+      (if_not (tg_outbox ~ Channel/try_send
             (stringify {^chat_id chat_id ^event event}))
-        nil
         (gw_notice $"telegram: outbox full, dropped event for chat ${chat_id}")))))
 
 (fn telegram_notice [chat_id, text : Str]
-  (if (tg_outbox ~ Channel/try_send
+  (if_not (tg_outbox ~ Channel/try_send
         (stringify
           {^chat_id chat_id
            ^event {^type "agent_text" ^text text ^adapter_result true}}))
-    nil
     (gw_notice $"telegram: outbox full, dropped notice for chat ${chat_id}")))
 
 # Per-chat streaming state for the sender fiber: deltas accumulate into one
@@ -444,11 +420,11 @@
   (var key $"${chat_id}")
   (var st (tg_chat_state ~ Map/get key))
   (if (== st void)
-    (do
+    (then
       (set st {^pending (cell "") ^sent_id (cell nil) ^sent_len (cell 0)})
       (tg_chat_state ~ Map/put! key st)
       st)
-    st))
+    (else st)))
 
 (fn tg_dispatch [raw : Str]
   (var entry (parse raw))
@@ -460,26 +436,24 @@
       (st/pending ~ Cell/set $"${(st/pending ~ Cell/get)}${event/text}")
       (var text (st/pending ~ Cell/get))
       (if (== (st/sent_id ~ Cell/get) nil)
-        (do
+        (then
           (st/sent_id ~ Cell/set (tg_send_message chat_id text))
           (st/sent_len ~ Cell/set text/~size))
-        (if (>= (- text/~size (st/sent_len ~ Cell/get)) 200)
-          (do
+        (else
+          (if_yes (>= (- text/~size (st/sent_len ~ Cell/get)) 200)
             (tg_edit_message chat_id (st/sent_id ~ Cell/get) text)
-            (st/sent_len ~ Cell/set text/~size))
-          nil)))
+            (st/sent_len ~ Cell/set text/~size)))))
     (when "agent_text"
       # A streamed answer is already represented by the pending edited
       # message. agent_text is then terminal metadata, not a second reply.
       (if (== (st/pending ~ Cell/get) "")
-        (tg_send_message chat_id event/text) nil)
+        (tg_send_message chat_id event/text))
       nil)
     (when "turn_done"
       (var text (st/pending ~ Cell/get))
       (if (&& (!= (st/sent_id ~ Cell/get) nil)
               (> text/~size (st/sent_len ~ Cell/get)))
-        (tg_edit_message chat_id (st/sent_id ~ Cell/get) text)
-        nil)
+        (tg_edit_message chat_id (st/sent_id ~ Cell/get) text))
       (st/pending ~ Cell/set "")
       (st/sent_id ~ Cell/set nil)
       (st/sent_len ~ Cell/set 0))
@@ -495,44 +469,40 @@
 
 (fn tg_chat_allowed? [chat_id] : Bool
   (if (== tg_allowed "*")
-    true
-    (do
+    (then true)
+    (else
       (var key $"${chat_id}")
       (var found (cell false))
       ((to_stream (split tg_allowed ","))
         ~ each (fn [entry]
-            (if (== (trim entry) key) (found ~ Cell/set true) nil)))
+            (if (== (trim entry) key) (found ~ Cell/set true))))
       (found ~ Cell/get))))
 
 (fn tg_session_for [chat_id]
   (var id $"tg-${chat_id}")
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (do
+    (then
       (set s (make_session id (make_telegram_sender chat_id) nil nil))
       (sessions ~ Map/put! id s)
       s)
-    s))
+    (else s)))
 
 (fn tg_handle_update [u]
   (var msg u/message)
-  (if (== msg void)
-    nil
-    (do
-      (var chat_id msg/chat/id)
-      (var text msg/text)
-      (if (|| (== chat_id void) (== text void) (== text nil) (== text ""))
-        nil
-        (if (tg_chat_allowed? chat_id)
-          (do
-            (var s (tg_session_for chat_id))
-            (if (s/submit_input text "telegram")
-              nil
-              (do
-                (telegram_notice chat_id
-                  $"worker_busy: session ${s/id} already has a turn in flight")
-                (gw_notice
-                  $"telegram: session ${s/id} is busy; input rejected"))))
+  (if_not (== msg void)
+    (var chat_id msg/chat/id)
+    (var text msg/text)
+    (if_not (|| (== chat_id void) (== text void) (== text nil) (== text ""))
+      (if (tg_chat_allowed? chat_id)
+        (then
+          (var s (tg_session_for chat_id))
+          (if_not (s/submit_input text "telegram")
+            (telegram_notice chat_id
+              $"worker_busy: session ${s/id} already has a turn in flight")
+            (gw_notice
+              $"telegram: session ${s/id} is busy; input rejected")))
+        (else
           (gw_notice $"telegram: dropped message from unlisted chat ${chat_id} - add it to TELEGRAM_ALLOWED_CHAT_IDS to allow"))))))
 
 # One getUpdates long-poll round. Loop-local state lives in the fn body (fresh
@@ -542,17 +512,16 @@
             ^args ["-sS" $"${tg_base}/bot${tg_token}/getUpdates?timeout=50&offset=${(offset ~ Cell/get)}"]
             ^timeout_ms 65000 ^max_bytes 1000000)))
   (if (== r/status 0)
-    (do
+    (then
       (var resp (parse r/stdout))
       (if (== resp/ok true)
         ((to_stream resp/result)
           ~ each (fn [u]
               (if (>= u/update_id (offset ~ Cell/get))
-                (offset ~ Cell/set (+ u/update_id 1))
-                nil)
+                (offset ~ Cell/set (+ u/update_id 1)))
               (tg_handle_update u)))
         (sleep 2000)))
-    (sleep 2000)))
+    (else (sleep 2000))))
 
 (fn telegram_loop []
   (var offset (cell 0))
@@ -572,8 +541,8 @@
 
 (fn authorized? [req]
   (if (== gw_token "")
-    true
-    (do
+    (then true)
+    (else
       (var h req/headers/authorization)
       (if (== h void)
         false
@@ -588,8 +557,7 @@
 (fn ensure_local_session []
   (var app (agent_api/active_application ~ Cell/get))
   (if (&& (!= app nil) (== (sessions ~ Map/get "local") void))
-    (sessions ~ Map/put! "local" (make_session "local" nil nil app))
-    nil))
+    (sessions ~ Map/put! "local" (make_session "local" nil nil app))))
 
 (fn list_sessions []
   (var out (cell []))
@@ -611,14 +579,14 @@
       (if (|| (== body/text void) (== body/text nil) (== body/text ""))
         (json_response 400 {^error "missing text"})
         (if (s/submit_input body/text "http")
-          (json_response 202 {^ok true})
-          (do
+          (then (json_response 202 {^ok true}))
+          (else
             (var operation
               (s/application/main_agent/current_operation ~ Cell/get))
             (json_response 409
               {^error "worker_busy" ^message "turn already in flight"
                ^worker_id s/application/main_agent/id
-               ^task_id (if (== operation nil) nil operation/task_id)
+               ^task_id (if operation operation/task_id)
                ^reserved
                  (s/application/main_agent/input_reserved ~ Cell/get)}))))
       catch (JsonError ^message m)
@@ -627,14 +595,15 @@
 (fn cancel_turn [id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var task (s/current_task ~ Cell/get))
       (if (== task nil)
-        (json_response 409
-          {^error "worker_idle" ^message "no turn in flight"
-           ^worker_id s/application/main_agent/id})
-        (do
+        (then
+          (json_response 409
+            {^error "worker_idle" ^message "no turn in flight"
+             ^worker_id s/application/main_agent/id}))
+        (else
           (s/cancel_requested ~ Cell/set true)
           (agent_api/application_cancel_worker
             s/application s/application/main_agent)
@@ -675,8 +644,7 @@
   (for worker in (agent_api/application_workers_snapshot s/application)
     (if (&& (== worker/lifecycle "running")
             (["stats" "log_tail"] ~ contains? worker/kind))
-      (ids ~ List/push! worker/worker_id)
-      nil))
+      (ids ~ List/push! worker/worker_id)))
   ids)
 
 (fn get_snapshot [id : Str]
@@ -694,25 +662,25 @@
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (try
-      (do
-        (var body (parse req/body))
-        (if (|| (== body/kind void) (== body/kind nil))
-          (json_response 400 {^error "missing worker kind"})
-          (if (["output" "log_tail" "file_view" "stats"]
-                ~ contains? body/kind)
-            (do
-              (var worker
-                (agent_api/application_create_worker
-                  s/application body/kind
-                  (if (== body/config void) body body/config)))
-              (if (== worker nil)
-                (json_response 400
-                  {^error "worker configuration was rejected or limit reached"})
-                (do
-                  (persist_gateway_session s)
-                  (json_response 201 {^worker_id worker/id}))))
-            (json_response 403
-              {^error "remote worker kind is not allowed"}))))
+      (var body (parse req/body))
+      (if (|| (== body/kind void) (== body/kind nil))
+        (then (json_response 400 {^error "missing worker kind"}))
+        (elif (! (["output" "log_tail" "file_view" "stats"]
+                   ~ contains? body/kind))
+          (json_response 403
+            {^error "remote worker kind is not allowed"}))
+        (else
+          (var worker
+            (agent_api/application_create_worker
+              s/application body/kind
+              (if (== body/config void) body body/config)))
+          (if (== worker nil)
+            (then
+              (json_response 400
+                {^error "worker configuration was rejected or limit reached"}))
+            (else
+              (persist_gateway_session s)
+              (json_response 201 {^worker_id worker/id})))))
     catch (JsonError ^message m)
       (json_response 400 {^error m})
     catch {^message m}
@@ -725,26 +693,25 @@
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (try
-      (do
-        (var body (parse req/body))
-        (var assignment
-          (if (|| (== body/assignment void) (== body/assignment nil))
-            "" (trim body/assignment)))
-        (if (== assignment "")
-          (json_response 400 {^error "missing assignment"})
-          (do
-            (var agent
-              (agent_api/spawn_supervised_agent_with_context s/application
-                (if (|| (== body/title void) (== body/title nil))
-                  "sub-agent" body/title)
-                assignment
-                (if (== body/context void) [] body/context)))
-            (if (== agent nil)
-              (json_response 409 {^error "sub-agent limit reached"})
-              (do
-                (persist_gateway_session s)
-                (json_response 201
-                  {^agent_id agent/id ^worker_id agent/id}))))))
+      (var body (parse req/body))
+      (var assignment
+        (if (|| (== body/assignment void) (== body/assignment nil))
+          "" (trim body/assignment)))
+      (if (== assignment "")
+        (then (json_response 400 {^error "missing assignment"}))
+        (else
+          (var agent
+            (agent_api/spawn_supervised_agent_with_context s/application
+              (if (|| (== body/title void) (== body/title nil))
+                "sub-agent" body/title)
+              assignment
+              (if (== body/context void) [] body/context)))
+          (if (== agent nil)
+            (then (json_response 409 {^error "sub-agent limit reached"}))
+            (else
+              (persist_gateway_session s)
+              (json_response 201
+                {^agent_id agent/id ^worker_id agent/id})))))
     catch (JsonError ^message m)
       (json_response 400 {^error m})
     catch {^message m}
@@ -753,8 +720,8 @@
 (fn agent_input [id : Str, agent_id : Str, req]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
@@ -763,40 +730,42 @@
 (fn cancel_agent [id : Str, agent_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
         (if (agent_api/application_cancel_agent s/application agent)
-          (do
+          (then
             (persist_gateway_session s)
             (json_response 202 {^ok true}))
-          (json_response 409
-            {^error "worker_idle" ^message "agent is idle"
-             ^worker_id agent/id}))))))
+          (else
+            (json_response 409
+              {^error "worker_idle" ^message "agent is idle"
+               ^worker_id agent/id})))))))
 
 (fn stop_agent [id : Str, agent_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
         (if (agent_api/application_stop_agent s/application agent)
-          (do
+          (then
             (persist_gateway_session s)
             (json_response 200 {^ok true}))
-          (json_response 409
-            {^error "worker_stopped" ^message "agent is stopped"
-             ^worker_id agent/id}))))))
+          (else
+            (json_response 409
+              {^error "worker_stopped" ^message "agent is stopped"
+               ^worker_id agent/id})))))))
 
 (fn worker_input [id : Str, worker_id : Str, req]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var worker
         (agent_api/application_find_worker s/application worker_id))
       (if (== worker nil)
@@ -808,54 +777,56 @@
           (if (&& (["agent" "shell" "repl"] ~ contains? worker/kind)
                   (|| (worker/input_reserved ~ Cell/get)
                       (!= (worker/current_task ~ Cell/get) nil)))
-            (do
+            (then
               (var operation (worker/current_operation ~ Cell/get))
               (json_response 409
                 {^error "worker_busy" ^message "worker is already working"
                  ^worker_id worker/id
-                 ^task_id (if (== operation nil) nil operation/task_id)
+                 ^task_id (if operation operation/task_id)
                  ^reserved (worker/input_reserved ~ Cell/get)}))
-            (try
-              (do
+            (else
+              (try
                 (var body (parse req/body))
                 (if (|| (== body/text void) (== body/text nil))
-                  (json_response 400 {^error "missing_text"})
-                  (do
+                  (then (json_response 400 {^error "missing_text"}))
+                  (else
                     (var result
                       (agent_api/application_send_worker_input
                         s/application worker body/text "http"))
                     (if (starts_with? result "error:")
-                      (json_response 409
-                        {^error "worker_input_rejected" ^message result
-                         ^worker_id worker/id})
-                      (do
+                      (then
+                        (json_response 409
+                          {^error "worker_input_rejected" ^message result
+                           ^worker_id worker/id}))
+                      (else
                         (persist_gateway_session s)
-                        (json_response 202 {^ok true ^result result}))))))
-            catch (JsonError ^message m)
-              (json_response 400 {^error "invalid_json" ^message m}))))))))
+                        (json_response 202 {^ok true ^result result})))))
+              catch (JsonError ^message m)
+                (json_response 400 {^error "invalid_json" ^message m})))))))))
 
 (fn cancel_worker [id : Str, worker_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var worker
         (agent_api/application_find_worker s/application worker_id))
       (if (== worker nil)
         (json_response 404 {^error "no such worker"})
         (if (agent_api/application_cancel_worker s/application worker)
-          (do
+          (then
             (persist_gateway_session s)
             (json_response 202 {^ok true}))
-          (json_response 409
-            {^error "worker_idle" ^message "worker is idle"
-             ^worker_id worker/id}))))))
+          (else
+            (json_response 409
+              {^error "worker_idle" ^message "worker is idle"
+               ^worker_id worker/id})))))))
 
 (fn stop_worker [id : Str, worker_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var worker
         (agent_api/application_find_worker s/application worker_id))
       (if (== worker nil)
@@ -865,12 +836,13 @@
             {^error "main_worker_cannot_stop"
              ^message "main worker cannot be stopped" ^worker_id worker/id})
           (if (agent_api/application_stop_worker s/application worker)
-            (do
+            (then
               (persist_gateway_session s)
               (json_response 200 {^ok true}))
-            (json_response 409
-              {^error "worker_stopped" ^message "worker is stopped"
-               ^worker_id worker/id})))))))
+            (else
+              (json_response 409
+                {^error "worker_stopped" ^message "worker is stopped"
+                 ^worker_id worker/id}))))))))
 
 # Long-poll: return events after ^cursor as soon as any exist, waiting up to
 # ~20s. A handler parked in sleep does not stall other requests (task-per-
@@ -878,33 +850,33 @@
 (fn get_events [id : Str, req]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (json_response 404 {^error "no such session"})
-    (do
+    (then (json_response 404 {^error "no such session"}))
+    (else
       (var cursor 0)
-      (if (== req/params/cursor void)
-        nil
+      (if_not (== req/params/cursor void)
         (try
           (set cursor (parse_int req/params/cursor))
         catch _ nil))
       (if (< cursor (s/dropped_before ~ Cell/get))
-        (json_response 409
-          {^error "cursor_gap"
-           ^dropped_before (s/dropped_before ~ Cell/get)
-           ^oldest_cursor (+ (s/dropped_before ~ Cell/get) 1)
-           ^snapshot_url $"/api/sessions/${id}/snapshot"})
-        (do
-      (var out (cell (events_after s cursor)))
-      (var waited (cell 0))
-      (while (&& (empty? (out ~ Cell/get)) (< (waited ~ Cell/get) 200))
-        (sleep 100)
-        (waited ~ Cell/set (+ (waited ~ Cell/get) 1))
-        (out ~ Cell/set (events_after s cursor)))
-      (var evs (out ~ Cell/get))
-      (json_response 200 {^events evs
-                          ^cursor (max_event_v evs cursor)
-                          ^changed_worker_ids
-                            (if (empty? evs) []
-                              (projection_worker_ids s))}))))))
+        (then
+          (json_response 409
+            {^error "cursor_gap"
+             ^dropped_before (s/dropped_before ~ Cell/get)
+             ^oldest_cursor (+ (s/dropped_before ~ Cell/get) 1)
+             ^snapshot_url $"/api/sessions/${id}/snapshot"}))
+        (else
+          (var out (cell (events_after s cursor)))
+          (var waited (cell 0))
+          (while (&& (empty? (out ~ Cell/get)) (< (waited ~ Cell/get) 200))
+            (sleep 100)
+            (waited ~ Cell/set (+ (waited ~ Cell/get) 1))
+            (out ~ Cell/set (events_after s cursor)))
+          (var evs (out ~ Cell/get))
+          (json_response 200 {^events evs
+                              ^cursor (max_event_v evs cursor)
+                              ^changed_worker_ids
+                                (if (empty? evs) []
+                                  (projection_worker_ids s))}))))))
 
 (var web_page """<!doctype html>
 <meta charset="utf-8">
@@ -1074,10 +1046,8 @@ document.getElementById('f').addEventListener('submit', function (e) {
     (try
       (var n (parse_int ((split id "s") ~ join "")))
       (if (> n (session_seq ~ Cell/get))
-        (session_seq ~ Cell/set n)
-        nil)
-    catch _ nil)
-    nil))
+        (session_seq ~ Cell/set n))
+    catch _ nil)))
 
 (fn restore_sessions []
   (var count (cell 0))
@@ -1086,8 +1056,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (var saved ((gw_store ~ Cell/get) ~ get id))
       (var hook
         (if (starts_with? id "tg-")
-          (make_telegram_sender ((split id "tg-") ~ join ""))
-          nil))
+          (make_telegram_sender ((split id "tg-") ~ join ""))))
       # Redact legacy snapshots at restore as well as new writes, before any
       # retained model context or transcript becomes live session state.
       (sessions ~ Map/put! id
@@ -1099,24 +1068,23 @@ document.getElementById('f').addEventListener('submit', function (e) {
 
 (fn finish_gateway_store [label : Str]
   (if (== gw_resume "0")
-    (do
+    (then
       ((gw_store ~ Cell/get) ~ clear)
       (gw_notice $"Persistence enabled - ${label} (fresh start)"))
-    (do
+    (else
       (var n (restore_sessions))
       (gw_notice $"Persistence enabled - ${label} (${n} sessions restored)"))))
 
 (fn open_gateway_store []
   (if (== gw_state_dir "")
-    (if (== gw_db_path "")
-      nil
-      (do
+    (then
+      (if_not (== gw_db_path "")
         (var db (sqlite_open gw_db_path))
         (gw_store ~ Cell/set
           (store_sqlite_open db
             ^table "sessions" ^key_column "id" ^data_column "data"))
         (finish_gateway_store gw_db_path)))
-    (do
+    (else
       (gw_store ~ Cell/set
         (agent_api/store_fs_open agent_api/ReadWriteDir ^root gw_state_dir))
       (finish_gateway_store gw_state_dir))))
@@ -1132,35 +1100,32 @@ document.getElementById('f').addEventListener('submit', function (e) {
       options/port
       (parse_int (get_env Env "GENE_GATEWAY_PORT" "8090"))))
   (if (|| (< gw_port 1) (> gw_port 65535))
-    (fail (OsError ^message "gateway port must be between 1 and 65535"))
-    nil)
+    (fail (OsError ^message "gateway port must be between 1 and 65535")))
   (if (&& (== gw_token "")
           (! (["127.0.0.1" "::1" "localhost"] ~ contains? gw_host)))
     (fail (OsError
-      ^message "a non-loopback GENE_GATEWAY_HOST requires GENE_GATEWAY_TOKEN"))
-    nil)
+      ^message "a non-loopback GENE_GATEWAY_HOST requires GENE_GATEWAY_TOKEN")))
   (open_gateway_store)
   (gw_notice $"Gene agent gateway - http://${gw_host}:${gw_port} (model ${agent_api/model})")
   (if (== agent_api/auth_token nil)
-    (gw_notice "No model API token set - sessions use the offline demo transport.")
-    nil)
+    (gw_notice "No model API token set - sessions use the offline demo transport."))
   (if (== gw_token "")
-    (gw_notice "GENE_GATEWAY_TOKEN unset - API is open; keep the bind on localhost.")
-    nil)
+    (gw_notice "GENE_GATEWAY_TOKEN unset - API is open; keep the bind on localhost."))
   # Bind eagerly. The combined application calls this before opening curses,
   # so invalid/unavailable ports fail without leaving a half-live TUI.
   (listen ^host gw_host ^port gw_port))
 
 (fn serve_gateway [server]
   (if (== tg_token "")
-    (do
+    (then
       (gw_notice "TELEGRAM_BOT_TOKEN unset - Telegram channel disabled.")
       (serve server handle))
-    (scope
-      (spawn (telegram_loop))
-      (spawn (telegram_sender_loop))
-      (gw_notice $"Telegram channel enabled - long-polling ${tg_base}")
-      (serve server handle))))
+    (else
+      (scope
+        (spawn (telegram_loop))
+        (spawn (telegram_sender_loop))
+        (gw_notice $"Telegram channel enabled - long-polling ${tg_base}")
+        (serve server handle)))))
 
 (fn stop_gateway [server]
   (sessions/%to_pairs_stream

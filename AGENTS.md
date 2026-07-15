@@ -37,6 +37,20 @@ through source text without benchmark evidence.
 Keep dependencies minimal. Do not add new runtime or benchmark dependencies
 unless explicitly requested.
 
+Gene code style (`docs/design.md` §9 "Control flow" is the contract; examples
+and docs must model it):
+
+- Never write an explicit `nil` arm in `if`. Omit the else arm instead:
+  `(if cond value)` yields `nil` on the false path by itself.
+- Use `(if_not cond body...)` instead of `(if cond nil ...)` or
+  `(if cond (then nil) (else body...))`.
+- Use `(if_yes cond body...)` for a multi-expression guard instead of
+  `(if cond (then body...))` with no else.
+- Reserve `then`/`elif`/`else` clauses for branches that all do real work;
+  never wrap compact branches in `do`.
+- `match` may keep an explicit `(else nil)` arm — match without `else` is not
+  a nil default.
+
 Naming convention: every user-facing name — builtins, namespace members,
 protocol messages, recognized props, policy fields, serde control tags, and
 implicit bindings such as `this_mod` and `caller_env` — uses `snake_case`

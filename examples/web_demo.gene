@@ -255,12 +255,11 @@
   (var req : Request raw_req) # Any -> Request checked at typed boundary
   (render
     (try
-      (do
-        (var path (or req/path "/"))
-        (var handler routes/%path)
-        (if (== handler void)
-          (fail (NotFound ^path path))
-          (handler req)))
+      (var path (or req/path "/"))
+      (var handler routes/%path)
+      (if (== handler void)
+        (fail (NotFound ^path path))
+        (handler req))
     catch (NotFound ^path p)
       (error_page "404" $"No route for ${p}.")
     catch (ParseError _...)
