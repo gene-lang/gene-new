@@ -18,7 +18,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc cInitscr(): CursesWindow {.importc: "initscr", header: "<ncurses.h>".}
   proc cEndwin(): cint {.importc: "endwin", header: "<ncurses.h>".}
-  proc cbreak(): cint {.importc, header: "<ncurses.h>".}
+  proc raw(): cint {.importc, header: "<ncurses.h>".}
   proc nocbreak(): cint {.importc, header: "<ncurses.h>".}
   proc noecho(): cint {.importc, header: "<ncurses.h>".}
   proc cEcho(): cint {.importc: "echo", header: "<ncurses.h>".}
@@ -156,6 +156,7 @@ static void gene_turn_interrupt_end(void) {
 
   const
     CursesErr = -1
+    KeyCtrlC = 3
     KeyCtrlD = 4
     KeyEsc = 27
     KeyEnter = 10
@@ -2278,7 +2279,10 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       setConsoleLogSuppressed(true)
       cursesColorsReady = false
       cursesPasteReady = false
-    discard cbreak()
+    # Deliver Ctrl-C as an editor key. Running turns still arm the explicit
+    # SIGINT handler, so externally delivered interrupts retain cancellation
+    # semantics while terminal Ctrl-C can clear the current draft.
+    discard raw()
     discard noecho()
     discard keypad(stdscr, 1)
     discard tui_terminal.enableMouse()
@@ -2649,9 +2653,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc defaultInputStatus(multiline: bool): string =
     if multiline:
-      "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Enter sends | Paste/Shift+Enter keeps newlines | Ctrl-D cancels"
+      "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Enter sends | Paste/Shift+Enter keeps newlines | Ctrl-C clears | Ctrl-D cancels"
     else:
-      "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Enter sends | Ctrl-D cancels"
+      "↑/↓ history | Mouse wheel or PgUp/PgDn scroll | Enter sends | Ctrl-C clears | Ctrl-D cancels"
 
   proc isEscFinalByte(ch: char): bool =
     let code = ch.ord
@@ -2802,6 +2806,11 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             discard
         else:
           case ch
+          of KeyCtrlC:
+            input.setLen(0)
+            cursor = 0
+            historyIndex = history.len
+            draft.setLen(0)
           of KeyCtrlD:
             return NIL
           of KeyEnter, KeyReturn, KeyNcursesEnter:
@@ -3228,6 +3237,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       return newMap(props)
     case ch
     of KeyResize: props["type"] = newStr("resize")
+    of KeyCtrlC: props["type"] = newStr("interrupt")
     of KeyCtrlD: props["type"] = newStr("eof")
     of KeyEnter, KeyReturn, KeyNcursesEnter: props["type"] = newStr("enter")
     of KeyBackspace, 127, 8: props["type"] = newStr("backspace")
@@ -3325,9 +3335,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
               event = cursesEscapeEvent("")
             else:
               event = cursesEscapeEvent(seq)
-          elif ch == KeyCtrlD or ch == KeyEnter or ch == KeyReturn or
-               ch == KeyNcursesEnter or ch == KeyBackspace or ch == 127 or
-               ch == 8:
+          elif ch == KeyCtrlC or ch == KeyCtrlD or ch == KeyEnter or
+               ch == KeyReturn or ch == KeyNcursesEnter or
+               ch == KeyBackspace or ch == 127 or ch == 8:
             cursesEventText.setLen(0)
             cursesEventTextExpected = 0
             event = cursesEvent(ch)

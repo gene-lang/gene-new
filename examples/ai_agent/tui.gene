@@ -504,6 +504,12 @@
 (var confirmation_active (cell false))
 (var interactive_transcript (cell nil))
 (var interactive_memory (cell []))
+(var agent_checkpoint_suspended (cell false))
+(var agent_checkpoint_writing (cell false))
+(var agent_checkpoint_last_ms (cell 0))
+(var agent_checkpoint_seq (cell 0))
+(var agent_checkpoint_interval_ms
+  (positive_env_int "GENE_AGENT_CHECKPOINT_INTERVAL_MS" 1000))
 (var workspace_coordinators {})
 (var next_surface_instance (cell 1))
 (var next_application_instance (cell 1))
@@ -698,6 +704,7 @@
              ^stream (if (== type "text_delta")
                        "assistant_delta" "assistant_final")
              ^text props/text}))))
+  (checkpoint_application_event! app type)
   emitted)
 
 (fn application_find_agent [app, id : Str]
@@ -3483,7 +3490,13 @@ State that broader behavior is unverified when no matching successful check ran.
   (if_not (|| (! (state_enabled?))
               (!= (agent_store ~ Cell/get) nil))
     (try
+      (agent_checkpoint_seq ~ Cell/set 0)
+      (agent_checkpoint_last_ms ~ Cell/set 0)
       (agent_store ~ Cell/set (open_agent_store agent_state_spec))
+      (if_yes (resume_enabled?)
+          (var saved_checkpoint (state_get "checkpoint" nil))
+          (if (&& saved_checkpoint (present? saved_checkpoint/sequence))
+            (agent_checkpoint_seq ~ Cell/set saved_checkpoint/sequence)))
       (info! state_log "agent state opened"
         ^payload {^state_enabled true
                   ^state_backend
@@ -3977,8 +3990,16 @@ State that broader behavior is unverified when no matching successful check ran.
     true))
 
 (fn restore_application! [app]
-  (restore_application_snapshot! app
-    (if (resume_enabled?) (state_get "application" nil))))
+  (var restored false)
+  (agent_checkpoint_suspended ~ Cell/set true)
+  (try
+    (set restored
+      (restore_application_snapshot! app
+        (if (resume_enabled?) (state_get "application" nil))))
+  ensure
+    (agent_checkpoint_suspended ~ Cell/set false))
+  (if restored (checkpoint_agent_state! app "application_restored"))
+  restored)
 
 (fn save_agent_state [items, transcript, memory]
   (debug! state_log "agent state snapshot started"
@@ -3995,6 +4016,64 @@ State that broader behavior is unverified when no matching successful check ran.
   (var app (active_application ~ Cell/get))
   (if app
     (state_put "application" (application_snapshot app))))
+
+(fn immediate_checkpoint_event? [type : Str] : Bool
+  (["tool_call" "tool_result" "turn_done"
+    "worker_started" "worker_operation_started"
+    "worker_operation_finished" "worker_operation_cancelling"
+    "worker_admission_cancelled" "worker_stopped"
+    "agent_spawned" "agent_status" "agent_completed"
+    "pane_opened" "pane_closed" "file_change" "check"
+    "context_compacted" "confirmation" "memory"
+    "supervisor_result_dropped"] ~ contains? type))
+
+(fn progress_checkpoint_event? [type : Str] : Bool
+  (== type "worker_output"))
+
+(fn checkpoint_local_application? [app] : Bool
+  (var local (active_application ~ Cell/get))
+  (&& (!= app nil) (!= local nil)
+      (== app/coordinator_id local/coordinator_id)))
+
+(fn checkpoint_agent_state! [app, reason : Str] : Bool
+  (if (|| (! (state_enabled?))
+          (== (agent_store ~ Cell/get) nil)
+          (! (checkpoint_local_application? app))
+          (agent_checkpoint_suspended ~ Cell/get)
+          (agent_checkpoint_writing ~ Cell/get)
+          (app/shutting_down ~ Cell/get))
+    (then false)
+    (else
+      (agent_checkpoint_writing ~ Cell/set true)
+      (try
+        (var main app/main_agent)
+        (save_agent_state (main/items ~ Cell/get)
+                          (main/transcript ~ Cell/get)
+                          (app/memory ~ Cell/get))
+        (var seq (+ (agent_checkpoint_seq ~ Cell/get) 1))
+        (agent_checkpoint_seq ~ Cell/set seq)
+        (agent_checkpoint_last_ms ~ Cell/set (monotonic_ms))
+        # Written after the snapshot records, this small marker identifies the
+        # latest checkpoint boundary without duplicating the bounded snapshot.
+        (state_put "checkpoint"
+          {^sequence seq ^reason reason
+           ^turn (current_turn ~ Cell/get)
+           ^event_v (- (next_event_v ~ Cell/get) 1)})
+        (debug! state_log "agent state checkpoint saved"
+          ^payload {^checkpoint_sequence seq ^checkpoint_reason reason
+                    ^turn_id (current_turn ~ Cell/get)})
+        true
+      ensure
+        (agent_checkpoint_writing ~ Cell/set false)))))
+
+(fn checkpoint_application_event! [app, type : Str]
+  (if (immediate_checkpoint_event? type)
+    (checkpoint_agent_state! app type)
+    (if (&& (progress_checkpoint_event? type)
+            (>= (- (monotonic_ms)
+                   (agent_checkpoint_last_ms ~ Cell/get))
+                agent_checkpoint_interval_ms))
+      (checkpoint_agent_state! app type))))
 
 (fn restore_events []
   (var saved (state_get "events" nil))
@@ -4205,7 +4284,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (== pane nil) "[0 main]" $"[${pane/id} ${pane/kind}]"))))
 
 (fn current_input_status []
-  $"${(input_route_label)} ↑/↓ history | Wheel/PgUp/PgDn scroll | Esc cancel/back | Enter sends")
+  $"${(input_route_label)} Enter sends | Ctrl-C clears | Ctrl-D exits | Esc cancel/back | ↑/↓ history | Wheel/PgUp/PgDn scroll")
 
 (fn surface_route_history [app]
   (var surface app/local_surface)
@@ -4322,6 +4401,13 @@ State that broader behavior is unverified when no matching successful check ran.
   (editor/cursor ~ Cell/set values/~size)
   nil)
 
+(fn editor_clear! [editor]
+  (editor/values ~ Cell/set [])
+  (editor/cursor ~ Cell/set 0)
+  (editor/history_index ~ Cell/set editor/history/~size)
+  (editor/draft ~ Cell/set "")
+  nil)
+
 (fn editor_history! [editor, direction : Int]
   (var history editor/history)
   (var index (editor/history_index ~ Cell/get))
@@ -4435,6 +4521,7 @@ State that broader behavior is unverified when no matching successful check ran.
                       (editor_text (editor/values ~ Cell/get)))
                     (done ~ Cell/set true))))
               (when "eof" (done ~ Cell/set true))
+              (when "interrupt" (editor_clear! editor))
               (when "escape"
                 (if (confirmation_active ~ Cell/get)
                   (then
@@ -6125,7 +6212,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (app/local_surface/instance_id ~ Cell/get)))
       (Cell/set streaming false)
       (begin_turn!)
-      (emit_event! "user_input"
+      (application_emit app "user_input"
         {^worker_id app/main_agent/id ^agent_id app/main_agent/id ^text input})
       (Cell/set items
         (run_interactive_turn transcript streaming (interactive_transport)
@@ -6299,7 +6386,7 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn run_repl []
   (init_agent_state)
   (save_config)
-  (println $"Gene AI agent - model ${model}. Type /quit to exit.")
+  (println $"Started Gene AI agent - model ${model}.")
   (var memory (cell (load_memory)))
   (var saved (load_session))
   (if saved
@@ -6349,11 +6436,12 @@ State that broader behavior is unverified when no matching successful check ran.
         # like model-bound user input. Slash commands are handled locally,
         # but they are still input from the user.
         (append_transcript transcript $"──────\n${line}\n")
+        (checkpoint_agent_state! app "input_submitted")
         (refresh_user_input transcript)
         (if_not (handle_surface_global_command line app items transcript memory
                                            streaming)
         ((fn []
-        (if (== line "/quit")
+        (if (|| (== line "/quit") (== line "/exit"))
           (then
             (close_user_input)
             (save_agent_state (items ~ Cell/get)

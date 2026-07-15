@@ -776,10 +776,12 @@ suite "cli — gene run":
         # Shell-pane input is classified even on a live TTY. The destructive
         # confirmation itself uses the async curses editor, then the accepted
         # command runs without a second legacy prompt.
-        "send -- \"rm -rf tmp/gene-agent-pty-confirm-missing\\r\"\n" &
+        "send -- \"rm -rf tmp/gene-agent-pty-confirm-missing && echo CONFIRM_DONE\\r\"\n" &
         "expect -re {run it once\\? \\[y/N\\]}\n" &
         "send -- \"y\\r\"\n" &
-        "expect -re {\\[exit 0}\n" &
+        # Repaints can repeat an earlier `[exit 0]`; wait for output unique to
+        # this accepted command before manipulating the pane.
+        "expect -re {CONFIRM_DONE}\n" &
         "send -- \"/1 max\\r\"\n" &
         "after 700\n" &
         # First Escape restores the split while keeping shell focus.
@@ -815,6 +817,50 @@ suite "cli — gene run":
       check "[0 main]" in output
       check "\e[?1049l" in output
       removeFile(focusedProof)
+
+  test "ai agent Ctrl-C clears drafts and Ctrl-D exits":
+    when defined(macosx):
+      buildGeneCli()
+      let outputFile = cliDir / "agent_ctrl_c_d_pty.out"
+      removeFile(outputFile)
+      let inner =
+        "stty rows 18 cols 100; exec /usr/bin/env " &
+        "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+        "CODEX_ACCESS_TOKEN=dummy TERM=xterm-256color " &
+        shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      let expectScript =
+        "set timeout 15\n" &
+        "log_file -noappend " & outputFile & "\n" &
+        "spawn /bin/sh -c {" & inner & "}\n" &
+        "after 500\n" &
+        "send -- \"/pane output clear-test\\r\"\n" &
+        "expect -re {opened output pane 1}\n" &
+        "send -- \"discard-this-draft\"\n" &
+        "after 150\n" &
+        "send -- \"\\003\"\n" &
+        "after 250\n" &
+        "send -- \"/1 close\\r\"\n" &
+        "expect -re {closed pane 1}\n" &
+        # Ctrl-C on an empty draft is a no-op, not process termination.
+        "send -- \"\\003\"\n" &
+        "after 250\n" &
+        "send -- \"\\004\"\n" &
+        "expect eof\n"
+      let command = "/usr/bin/expect -c " & shellQuote(expectScript) &
+                    " >/dev/null 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      let exitCode = terminal.waitForExit(20000)
+      sleep(100)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "opened output pane 1" in output
+      check "closed pane 1" in output
+      check "\e[?1049l" in output
 
   test "ai agent worker output drops oldest bytes with explicit loss metadata":
     buildGeneCli()
@@ -1219,6 +1265,14 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "agent>" notin ran.output
 
+  test "ai agent accepts exit as a quit alias":
+    buildGeneCli()
+    let command = "printf '/exit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    check ran.exitCode == 0
+
   test "ai agent opens routes and closes extension conversations":
     buildGeneCli()
     let fixture = writeCliProgram("fake_extension_endpoint.gene", """
@@ -1406,6 +1460,87 @@ suite "cli — gene run":
     check "/memory\\n" in sessionText
     check "agent> remembered: project uses Gene" in sessionText
     check "agent> memory:\\nproject uses Gene" in sessionText
+
+  test "ai agent checkpoints application state before graceful exit":
+    buildGeneCli()
+    let stateDir = cliDir / "ai-agent-checkpoint-state"
+    if dirExists(stateDir):
+      removeDir(stateDir)
+    let agentArgs = ["-u", "OPENAI_AUTH_TOKEN", "-u", "OPENAI_API_KEY",
+                     "-u", "GENE_AGENT_HOME", "CODEX_ACCESS_TOKEN=dummy",
+                     "GENE_AGENT_STATE=fs:" & stateDir, geneExe, "run",
+                     "examples/ai_agent/tui.gene"]
+    let agentProc = startProcess("/usr/bin/env", args = agentArgs,
+                                 options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if agentProc.running: agentProc.terminate()
+      agentProc.close()
+    agentProc.inputStream.write("/pane output crash-safe\n")
+    agentProc.inputStream.flush()
+
+    let checkpointPath = stateDir / "checkpoint.gene"
+    let applicationPath = stateDir / "application.gene"
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    var checkpointReady = false
+    while getMonoTime() < deadline:
+      if fileExists(checkpointPath) and fileExists(applicationPath):
+        let checkpointText = readFile(checkpointPath)
+        let applicationText = readFile(applicationPath)
+        if "^reason \"pane_opened\"" in checkpointText and
+            "crash-safe" in applicationText:
+          checkpointReady = true
+          break
+      sleep(25)
+    check checkpointReady
+
+    # Simulate a crash: no /quit, EOF, or application shutdown may perform the
+    # ordinary final save.
+    when defined(posix):
+      discard kill(Pid(agentProc.processID), SIGKILL)
+    else:
+      agentProc.terminate()
+    discard agentProc.waitForExit(5000)
+    check "^reason \"pane_opened\"" in readFile(checkpointPath)
+
+    let restored = execCmdOnce(
+      "printf '/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
+      "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" &
+      shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
+      " run examples/ai_agent/tui.gene")
+    if restored.exitCode != 0:
+      checkpoint restored.output
+    check restored.exitCode == 0
+    check "panes: 1" in restored.output
+
+  test "ai agent tool calls create durable checkpoints":
+    buildGeneCli()
+    let stateDir = cliDir / "ai-agent-tool-checkpoint"
+    if dirExists(stateDir):
+      removeDir(stateDir)
+    let fixture = "examples/ai_agent/agent_tool_checkpoint_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [init_agent_state make_application active_application
+         application_emit emit_event!] from "./tui.gene")
+(init_agent_state)
+(var app (make_application (cell []) (cell "tool checkpoint\n")
+                           (cell []) emit_event!))
+(active_application ~ Cell/set app)
+(application_emit app "tool_call"
+  {^worker_id "main" ^agent_id "main" ^id "call-1"
+   ^name "read_file" ^args {^path "README.md"}})
+""")
+    let ran = execCmdOnce(
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
+      "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
+      shellQuote(geneExe) & " run " & shellQuote(fixture))
+    if ran.exitCode != 0:
+      checkpoint ran.output
+    check ran.exitCode == 0
+    check "^reason \"tool_call\"" in readFile(stateDir / "checkpoint.gene")
+    check "^type \"tool_call\"" in readFile(stateDir / "events.gene")
 
   test "ai agent home restores application state only for the same home":
     buildGeneCli()
@@ -2985,12 +3120,14 @@ suite "cli — gene run":
     (var paste_end (await (next_event screen)))
     (var newline (await (next_event screen)))
     (var page_up (await (next_event screen)))
+    (var interrupt (await (next_event screen)))
     (var escape (await (next_event screen)))
     (var queued_text (await (next_event screen)))
     (close screen)
     (println $"CURSES-CONTROLS:${(stringify [paste_start text_event
                                              pasted_enter paste_end newline
-                                             page_up escape queued_text])}"))
+                                             page_up interrupt escape
+                                             queued_text])}"))
   ensure
     (close screen))
 """)
@@ -3007,7 +3144,7 @@ suite "cli — gene run":
         if terminal.running: terminal.terminate()
         terminal.close()
       sleep(300)
-      terminal.inputStream.write("\e[200~x\n\e[201~\e[13;2u\e[5~")
+      terminal.inputStream.write("\e[200~x\n\e[201~\e[13;2u\e[5~\x03")
       terminal.inputStream.flush()
       sleep(100)
       # A printable byte already queued behind standalone Escape must be
@@ -3026,6 +3163,7 @@ suite "cli — gene run":
       check "\"type\":\"paste_end\"" in output
       check "\"type\":\"newline\"" in output
       check "\"type\":\"page_up\"" in output
+      check "\"type\":\"interrupt\"" in output
       check "\"type\":\"escape\"" in output
       check "\"text\":\"p\"" in output
 

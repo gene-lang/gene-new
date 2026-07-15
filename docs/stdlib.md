@@ -227,11 +227,11 @@ restores terminal modes; callers should still use `ensure`. `draw` is a
 non-variadic, color-coded full-screen renderer. `dimensions` returns
 `{^rows ^cols}`. `next_event` returns a cancellable `Task` and reports text as
 complete UTF-8 strings plus named enter, edit, navigation, paste-boundary,
-modified-Enter, EOF, and resize events. Scheduler polling uses non-blocking
-`getch`, so waiting for a key does not stop other tasks. If ordinary typing is
-already queued behind a standalone Escape when the scheduler polls, the text
-byte is pushed back and delivered by the next event rather than being consumed
-as an unknown escape sequence. While a `Screen` owns
+modified-Enter, interrupt (Ctrl-C), EOF, and resize events. Scheduler polling
+uses non-blocking `getch`, so waiting for a key does not stop other tasks. If
+ordinary typing is already queued behind a standalone Escape when the scheduler
+polls, the text byte is pushed back and delivered by the next event rather than
+being consumed as an unknown escape sequence. While a `Screen` owns
 the terminal, diagnostic console log sinks are paused to prevent out-of-band
 stdout/stderr writes from corrupting the full-screen display; file and callback
 sinks remain active.

@@ -71,7 +71,7 @@ for interactive or persistent/background shell work), `/remember <note>` / `/mem
 `/forget-memory` (durable notes in the system prompt), `/ext` or
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
 `/pane output [title]`, `/N <input>` and `/N close|cancel|stop|focus`
-(address or control pane N), `/status`, `/quit`. The primary agent can
+(address or control pane N), `/status`, `/quit`, `/exit`. The primary agent can
 also use the independent `spawn_agent`, `send_agent`, `agent_result`,
 `cancel_agent`, `stop_agent`, `open_pane`, `append_pane`, and `close_pane`
 tools; `open_extension` remains a convenience composite. Each agent keeps its
@@ -88,6 +88,7 @@ Key environment variables (all optional beyond the auth token):
 | `GENE_AGENT_STATE=db:sqlite:<path>` | persist the same records in SQLite; additional database URL schemes can be added behind the same Store interface |
 | `GENE_AGENT_HOME=<dir>` | filesystem fallback when `GENE_AGENT_STATE` is unset or blank; reusing the same home restores state automatically |
 | `GENE_AGENT_RESUME=0` | start fresh while continuing to save into the selected store |
+| `GENE_AGENT_CHECKPOINT_INTERVAL_MS` | minimum interval between high-volume progress checkpoints (default 1000 ms); tool calls and lifecycle transitions save immediately |
 | `GENE_AGENT_GUARD=0` | disable destructive/catastrophic risk classification; mediated background/detach forms remain denied (design.md §8.5) |
 | `GENE_LIBCURL=<path>` | override native libcurl discovery; curl(1) is used only if the library cannot load |
 | `GENE_AGENT_CONTEXT_MAX_BYTES`, `GENE_AGENT_CONTEXT_MAX_ITEMS` | approximate wire-size/item limits that trigger deterministic compaction |

@@ -199,8 +199,9 @@ Behavior:
 
 - a shipped multiline TTY prompt with persistent transcript/status rendering
   and mouse/page transcript scrolling while input is active; Up/Down browse
-  submitted prompts, and Escape cancels the active turn; extension panes stack
-  on the right while input and status retain full width;
+  submitted prompts, Ctrl-C clears the draft, Ctrl-D exits, and Escape cancels
+  the active turn; extension panes stack on the right while input and status
+  retain full width;
 - one stable **main agent** owns the primary conversation and supervises zero
   or more **sub-agents** (shipped, slice C). Each sub-agent has its own item
   history, task, status, and event identity; it does not implicitly inherit
@@ -214,10 +215,10 @@ Behavior:
   guard
   (§8.5), appends `function_call_output` items, and loops until the model
   returns a final message item;
-- slash commands in the input line (shipped/bootstrap: `/quit`, `/sh`, `/repl`,
-  `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`, `/diff`,
-  `/undo`, `/ext`, `/N <prompt>`, `/N close`; later as dogfooding demands:
-  the typed pane commands in §7.1, `/model`, `/clear`), and
+- slash commands in the input line (shipped/bootstrap: `/quit`, `/exit`, `/sh`,
+  `/repl`, `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`,
+  `/diff`, `/undo`, `/ext`, `/N <prompt>`, `/N close`; later as dogfooding
+  demands: the typed pane commands in §7.1, `/model`, `/clear`), and
   Ctrl-C interrupting a `/sh` command or `/repl` eval, and Escape/Ctrl-C
   cancelling an in-flight model response (shipped, slice B);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
@@ -309,6 +310,20 @@ as a filesystem compatibility form. `GENE_AGENT_RESUME=0` keeps saving while
 starting fresh; a future launcher flag may expose the same opt-out without
 changing the persistence format. The persisted config deliberately excludes
 auth tokens and other secrets.
+
+Persistence is checkpoint-driven, not limited to graceful shutdown. Each
+submitted input and each semantic application transition (tool call/result,
+worker or agent lifecycle, pane lifecycle, file change, check result, memory
+change, compaction, and completed turn) saves the bounded application/session
+snapshot synchronously. Streaming `worker_output` is the only high-volume
+checkpoint source and is rate-limited to once per
+`GENE_AGENT_CHECKPOINT_INTERVAL_MS` (1000 ms by default). A small checkpoint
+record is written after the snapshot records as a boundary marker containing
+its sequence, reason, turn, and latest event version. Restore never resumes an
+in-flight native task: the persisted operation metadata is normalized to a
+safe terminal/interrupted state, after which the user or supervisor can
+explicitly retry it. Gateway applications use their own persistence path and
+do not overwrite the local CLI application's store.
 
 Before this work there was no OS-environment access at the Gene surface. The
 `Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
@@ -802,8 +817,8 @@ restores the split.
 **Focus routes input, with a deterministic grammar.** Focus is upgraded from
 pane-local navigation to input routing. Parsing is surface-first:
 
-1. the surface parses global commands first — `/quit`, `/status`, `/workers`,
-   `/trace`, `/0`, `/N ...`, and the other §1 slash commands;
+1. the surface parses global commands first — `/quit`, `/exit`, `/status`,
+   `/workers`, `/trace`, `/0`, `/N ...`, and the other §1 slash commands;
 2. everything else is sent verbatim to the focused worker;
 3. `//text` sends `/text` literally to the focused worker, and `/N -- text`
    remains the routed-literal escape — so a shell path or Gene form needs
@@ -1824,12 +1839,13 @@ then open curses. A requested port that is invalid or unavailable fails before
 terminal mode changes. `net/http/serve` remains the root scheduler-driving
 event loop in combined mode and the local TUI runs as its sibling Task;
 spawning `serve` inside the TUI fiber would create a recursive scheduler pump
-and starve terminal input. `/quit` in combined TUI+gateway mode performs one
-controlled shutdown of adapters, agent/process tasks, persistence, and curses;
-headless mode runs until an explicit shutdown or process signal. An unexpected
-loss of the requested HTTP listener is surfaced as a fatal application error
-rather than quietly leaving a supposedly shared session local-only. Optional
-channel failures remain isolated and retry according to their adapter policy.
+and starve terminal input. `/quit` or `/exit` in combined TUI+gateway mode
+performs one controlled shutdown of adapters, agent/process tasks, persistence,
+and curses; headless mode runs until an explicit shutdown or process signal. An
+unexpected loss of the requested HTTP listener is surfaced as a fatal
+application error rather than quietly leaving a supposedly shared session
+local-only. Optional channel failures remain isolated and retry according to
+their adapter policy.
 
 The main process owns a registry of application sessions. The TUI attaches to
 one designated local session; HTTP/channel routes may address it or create
