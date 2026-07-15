@@ -8,20 +8,24 @@ schema + validation + risk), a stable live `/repl` `session` object, an
 authoritative versioned event log with `/trace`, and an extended catastrophe
 guard (realpath-confined paths, normal/destructive/catastrophic command
 classification, surfaced truncation). Slice B now includes terminal and
-gateway cancellation/steering, attributable `/diff` + targeted `/undo`,
+gateway cancellation plus explicit cancel-then-prompt continuation,
+attributable `/diff` + targeted `/undo`,
 structured verification evidence, hierarchical `AGENTS.md` loading, and the
 owned public `curses` API used by the agent prompt. Native libcurl is the
 default outbound transport. MCP, worktrees, and browser automation remain
-optional later work. Slice C is now shipped: the
-main application owns separate `Agent` and `Pane` registries, secondary turns
-run concurrently with the scheduler-friendly input editor, and closing an
-agent pane detaches the view. Output panes, streaming/cancellable line-oriented
-shell panes, declaration-persistent Gene REPL panes, a single workspace
-mutation lease, graph/layout persistence, typed model supervision tools, and
-`--gateway[=PORT]`/`--headless` startup are implemented. Gateway sessions now
-own the same `AgentApplication` services as the TUI; combined mode exposes the
-live local application as session `local`.**
-Date: 2026-07-14.
+optional later work. Slices C and C2 are now shipped: every runnable or
+output-producing entity is one worker (agents are a subtype), panes and all
+interaction state are surface-local views, and the process-wide workspace
+coordinator distinguishes colliding session-local worker ids. Secondary turns
+run concurrently with the scheduler-friendly input editor; output, log-tail,
+stats, file-view, streaming shell, and persistent REPL workers share the same
+lifecycle, bounded-output, snapshot, and input-admission contracts. Combined
+`--gateway[=PORT]` mode exposes the live local application as session `local`
+without starving TUI input, while `--headless` constructs no curses or pane
+state. Snapshot/resume, projection non-amplification, restart identities,
+external editing, typed worker routes, and reject-while-busy admission are
+implemented and covered by deterministic CLI/PTY tests (§10.5).**
+Date: 2026-07-15.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get_env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -44,8 +48,8 @@ versioned event log (§9.2) that `/trace`
 queries and the `/repl` `session` object exposes, plus optional `store/fs`
 state persistence for non-secret config, the interactive session, memory, and
 the event log. An offline demo transport keeps the loop runnable (and verified)
-with no network or key. The full scrollback TUI and launcher capability
-injection remain available later but do not gate the
+with no network or key. The full-screen scrollback TUI is shipped (§7);
+launcher capability injection remains later work and does not gate the
 signature Gene experience.
 
 Operational diagnostics are emitted separately under the `app/ai_agent/*`
@@ -110,13 +114,52 @@ implemented as an adapter over the same item vocabulary (see Backends above).
 **Current transport:** `net/http_client` now dynamically loads libcurl and runs
 requests off the scheduler, including bounded streaming and cancellation. The
 agent uses it by default; `curl(1)` remains only as a bootstrap fallback when
-libcurl cannot be loaded. A public native full-screen UI remains future work.
+libcurl cannot be loaded. The full-screen TUI itself is shipped (§7).
 
 The goal of this doc is to make the build *actionable against the real
 runtime*. Each subsystem below states what exists in this repo today, what is
 missing, and the recommended way to close the gap using patterns already proven
 here (the `db/sqlite`/`db/postgres` dynlib backends in `src/gene/stdlib.nim`,
 the `net/http` server, capability values, and the async task/worker model).
+
+## 0. Normative invariants
+
+The rest of this document elaborates these; when text and invariant disagree,
+the invariant wins and the text is stale:
+
+1. One process-level workspace coordinator per canonical (realpath) workspace
+   root; every application-mediated mutation of that root, including a
+   whole-terminal `/tty` handoff, shares its single mutation lease for the
+   lifetime the application can observe. This guarantee is exact for
+   structured file operations and cooperative foreground subprocesses.
+   Mediated shell channels reject recognized background/detach forms; an
+   arbitrary executable can still daemonize internally, so descendant
+   containment is explicitly best-effort rather than an OS sandbox. `/tty` is
+   the user-originated escape for persistent processes, and explicitly granted
+   raw host capabilities remain outside this guarantee.
+2. Every runnable or output-producing entity is a **worker** with exactly one
+   session-stable worker id. Agents are a worker subtype; supervision metadata
+   never mints a second id or a second lifecycle.
+3. Workers, agents, tools, the guard, and the event log are session state.
+   Panes, layout, focus, maximize, and scroll are per-surface state; a surface
+   never mutates another surface's presentation.
+4. A pane attaches exactly one worker and owns no producer lifecycle.
+5. `close` detaches a view; `cancel` interrupts the current operation;
+   `stop` ends the worker. Nothing else ends a worker during a live session;
+   controlled application shutdown and restore normalization are boundaries.
+6. The event stream's `^v` is a per-session cursor, not a schema version.
+   Vocabulary evolves additively; shipped types/props are never renamed.
+7. Under the default guard posture, normal work auto-approves, destructive
+   work takes one confirmation, and catastrophic work is denied.
+   `GENE_AGENT_GUARD=0` is an explicit escape from that risk classifier, not
+   from the mediated foreground-lifetime contract (§8.5).
+8. Every model-originated mutation passes capabilities, the catastrophe guard,
+   the workspace coordinator, and the event sink, on every surface.
+9. Bounded live counts, stopped-worker retention, output caps, and context
+   limits apply to every worker and every surface. History buffers overflow by
+   dropping oldest entries with explicit loss metadata; stale cursors get an
+   explicit gap response, never a silent skip.
+10. Remote adapters never require the local TUI to exist.
 
 ## 1. What the agent is
 
@@ -158,10 +201,10 @@ Behavior:
   and mouse/page transcript scrolling while input is active; Up/Down browse
   submitted prompts, and Escape cancels the active turn; extension panes stack
   on the right while input and status retain full width;
-- **Target (Slice C):** one stable **main agent** will own the primary
-  conversation and supervise zero or more **sub-agents**. Each sub-agent will
-  have its own item history, task, status, and event identity; it will not
-  implicitly inherit the main agent's conversation context;
+- one stable **main agent** owns the primary conversation and supervises zero
+  or more **sub-agents** (shipped, slice C). Each sub-agent has its own item
+  history, task, status, and event identity; it does not implicitly inherit
+  the main agent's conversation context;
 - a conversation loop that sends the running input-item list to the Responses
   API and streams assistant text deltas into the transcript as items arrive;
 - **tool use**: the model may return `function_call` items (`read_file`,
@@ -175,8 +218,8 @@ Behavior:
   `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`, `/diff`,
   `/undo`, `/ext`, `/N <prompt>`, `/N close`; later as dogfooding demands:
   the typed pane commands in §7.1, `/model`, `/clear`), and
-  Ctrl-C interrupting a `/sh` command or `/repl` eval (interrupting an
-  in-flight model response is part of daily-driver slice B in §10);
+  Ctrl-C interrupting a `/sh` command or `/repl` eval, and Escape/Ctrl-C
+  cancelling an in-flight model response (shipped, slice B);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
   registered in a map, and the transcript is a list — homoiconic and testable.
 - the target signature experience makes that last property an official API:
@@ -185,10 +228,10 @@ Behavior:
   gateway, persistence, and tests.
 
 The single main program always constructs the same application core. Within
-one application session, an agent registry owns the main agent and its
-supervised children while an independent pane registry owns visible views and
-interactive subprocesses. The default TUI is an in-process adapter over that
-core. `--gateway[=PORT]` additionally attaches HTTP/web and configured channel
+one application session, a worker registry owns the main agent, its supervised
+children, and the interactive process/projection workers (§7.1); each attached
+surface owns its own panes and layout over those shared workers. The default
+TUI is an in-process adapter over that core. `--gateway[=PORT]` additionally attaches HTTP/web and configured channel
 adapters; it does not select a second session implementation or start another
 orchestration layer. §12 describes this Hermes-style personal multi-surface
 shape.
@@ -328,10 +371,13 @@ The runtime's built-in TCP client is plaintext-only
 
 3. **Shell out to `curl(1)`** via the subprocess capability (§6). Zero new TLS
    code — the bootstrap milestone. `os/exec` is still a blocking
-   request/response helper, but `os/exec_stream` adds synchronous stdout chunk
-   and stdout_line callbacks while retaining the final captured result. The
-   current agent uses that shape for SSE streaming, with the same timeout/output
-   cap contract as `os/exec`.
+   request/response helper, while `os/exec_stream` (synchronous) and
+`os/exec_stream_async` add stdout chunk and stdout_line callbacks with the
+same timeout/output cap contract as `os/exec`. `os/exec_stdio_async` gives an
+inherited-stdin/stdout/stderr handoff whose returned status Task is settled by
+the same worker machinery; it is used by `/edit` and `/tty`, so suspending the
+local terminal surface never blocks remote sessions or background workers. The
+current agent's curl fallback uses the captured async variant.
 
 ### Streaming vs. the blocking subprocess — resolving the conflict
 
@@ -489,27 +535,38 @@ color-coded scrollback/output above a `─` separator, one or more promptless in
 rows above a second `─` separator, and a status line at the bottom. The agent
 adds a short `─` separator before each user turn in the scrollback, owns one
 `Screen` persistently across prompts to avoid terminal-mode flicker, and calls
-`curses/close` before handing control to `/sh`, `/repl`, EOF, or process exit.
-The mouse wheel moves the transcript by three lines and PageUp/PageDown by one
-viewport; the status line shows `[SCROLL +N]` while the view is above the live
-tail. Transcript lines word-wrap at the current terminal width, and the scroll
-offset counts the resulting visual rows. Up/Down browse the agent's submitted
+`curses/close` before EOF, process exit, or the whole-terminal `/tty` escape
+hatch (§8.5; the bootstrap spelled it as interactive `/sh` — C2 gives the two
+meanings distinct commands); the shell and REPL *panes* are scheduler-owned
+and never leave curses (§7.1).
+The mouse wheel moves the focused view by three lines and PageUp/PageDown by
+one viewport. A newly opened extension pane takes navigation focus; `/N focus`
+toggles between pane `N` and the main transcript. The main status line or a
+scrolled pane title shows `[SCROLL +N]` while that view is above its live tail.
+While an agent turn is pending, its surface may pulse a final `...` row. That
+row is a presentation overlay: it is never appended to the shared transcript,
+worker output, event journal, or persisted snapshot, and the first real output
+replaces it visually.
+Transcript lines word-wrap at the current view width, and each independent
+scroll offset counts the resulting visual rows. Up/Down browse the agent's submitted
 input history without changing transcript scroll position; moving past the
 newest entry restores the current draft. While a turn is running, a standalone
 Escape cancels the same authoritative `Task` as Ctrl-C. The polling path keeps
 queued typing, mouse reports, and navigation sequences intact.
 `close` restores echo/cbreak/keypad/cursor state before leaving
-ncurses. Inside those subsessions Ctrl-C stops the running command/eval or
-clears a partially typed line instead of killing the agent: the interactive
-repl installs a SIGINT handler that arms a VM interrupt (surfaced as a
-catchable "interrupted" error), and `/sh` traps INT in the shell loop while
-`os/exec_stdio` ignores it in the parent, system(3)-style. Interrupting an
+ncurses. Inside the `/tty` real-shell escape and the legacy whole-terminal
+REPL, Ctrl-C stops the running command/eval or clears a partially typed line
+instead of killing the agent: the interactive repl installs a SIGINT handler
+that arms a VM interrupt (surfaced as a catchable "interrupted" error), and
+the shell loop traps INT while `os/exec_stdio` ignores it in the parent,
+system(3)-style. The shell/REPL panes need none of this — they cancel through
+the ordinary worker `cancel` path. Interrupting an
 in-flight model response and steering its continuation are shipped (§10).
 Search, selection, and horizontal transcript scrolling remain optional; the
 reusable lifecycle, editor, drawing, vertical scrolling, resize, and
 asynchronous input layer is public and covered by PTY tests.
 
-### 7.1 Native extension panes
+### 7.1 Workers and panes
 
 **Bootstrap today:** `/ext` creates a secondary `Agent`, attaches an independent
 right-side `Pane`, and `/N prompt` starts a cancellable turn without blocking
@@ -519,27 +576,205 @@ compatibility tool. Output, streaming line-oriented shell, and
 declaration-persistent Gene REPL panes are also shipped. Restored shell/REPL
 panes retain captured history in a closed state and require an explicit reopen.
 
-**Target design:** continue that separation: a pane is a typed view/controller,
-not an agent. The
-application owns separate agent and pane registries and may attach, detach, or
-replace a pane without changing the lifetime of the thing it displays. A
-sub-agent may keep working headlessly after its pane closes; conversely an
-output or process pane needs no model agent at all.
+**Shipped design (slice C2): one worker model.** The shipped slice already
+separates a pane from the thing it displays, but names that thing three ways —
+"backing owner", "producer", "controller". The refinement collapses them into
+one concept. A **worker** is anything that owns state and a lifecycle and
+produces output; a **pane** is a view over exactly one worker.
 
-| Pane kind | Backing owner | User input | Close behavior |
-|---|---|---|---|
-| `agent` | main agent or one sub-agent | prompt or steering message | detach view; the agent continues until explicitly stopped |
-| `output` | append-only stream/projection such as logs, diff, tests, or trace | none beyond navigation/filtering | unsubscribe; producer keeps its own lifecycle |
-| `shell` | one scheduler-owned shell command controller | command lines | cancel the active command and close the controller |
-| `repl` | one live Gene REPL controller | Gene forms | close the REPL session after confirmation if it is busy |
-
-The default layout keeps the main transcript on the left, vertically stacks
-extension panes on the right, and reserves full-width input and status rows:
+Workers are **session** state with session-stable ids. Panes are
+**surface** state: each attached surface — the TUI, a browser tab, a phone
+client — owns its own pane set, layout, focus, and scroll over the same shared
+workers (invariant §0.3). Pane ids are scoped to their surface, so a web
+client closing or reordering its panes can never rearrange the terminal. The
+shipped session-owned pane registry becomes the TUI surface's attachment
+during the migration; the session itself keeps no pane state:
 
 ```text
-main agent transcript │ [1] sub-agent
+ApplicationSession              SurfaceAttachment (per TUI/tab/client)
+  AgentRegistry (index)           pane registry and layout
+  WorkerRegistry                  focus, maximize
+  process workspace coordinator   scroll and filter view state
+  EventLog
+```
+
+Surface identity is a small explicit contract. **Layout surfaces** own panes
+and are distinct from **interaction adapters**, which only exchange messages
+(Telegram is an adapter, not a layout surface; a client can be both). The
+local TUI uses one stable surface key, `local_tui`, and persists its layout
+snapshot under it. Each attachment also has a distinct `surface_instance`
+epoch used by pane events; `(surface_instance, pane_id)` is never reused even
+when a persisted surface key reconnects after restart. A browser tab keeps its
+layout in browser-local storage rather than minting durable server-side
+surface records. C2 therefore has no server-tracked ephemeral browser
+attachments; if a later adapter introduces them, their count and reconnect
+lease must be bounded and disconnect must release worker-retention pins. The
+attachment epoch is the `^surface_id` value that pane
+events carry (§9.2); the stable key remains layout-persistence policy rather
+than event identity.
+
+Interfaces then have three states per surface: the always-present **main pane
+0** (the main agent's transcript), zero or more **visible panes** stacked on
+the right, and **headless workers** with no pane on that surface. A
+materialized "invisible pane" — a detached view that retains scroll/filter
+state — is deliberately deferred: headless workers already cover the useful
+case, and hidden view objects only earn their keep if per-pane view state must
+survive detach/reattach in saved layouts. Detaching a pane discards only view
+state, never worker state.
+
+| Worker | User input | Output | Stop semantics |
+|---|---|---|---|
+| `agent` (main or one sub-agent) | prompt; steering is explicit cancel-then-prompt | streamed turn transcript | cancel model request and subprocesses, release lease, keep the event trail |
+| `shell` | command lines | bounded streamed stdout/stderr | cancel the active command; cwd/env are worker state |
+| `repl` | Gene forms; incomplete forms continue | printed values and diagnostics | close the `repl/Session` |
+| `output` | none; producers append through the typed append operation | bounded append-only buffer (diffs, test runs, model projections) | detach producer links and preserve the bounded terminal snapshot |
+| `log_tail` | a filter expression (same syntax as `/trace`) | matching events as they append | unsubscribe from the event log |
+| `file_view` | none beyond navigation | one file, wrapped and scrollable | release the file snapshot/resources |
+| `stats` | none | live context/agent/lease/event counters | release the projection |
+
+The `output` worker exists so the "one pane, one worker" rule has no
+exception: a pane never owns a mutable buffer itself. `open_pane ^kind
+"output"` creates (or attaches to) an output worker, and the shipped
+`append_pane` operation appends to that worker's bounded buffer.
+
+Worker state separates three orthogonal concepts, because one flat status
+cannot describe both request/command workers and continuous projections:
+
+```text
+lifecycle:          running | stopped                (stopped is terminal)
+current operation:  none | busy(task_id, kind)
+last outcome:       completed | cancelled | failed   (observational only)
+```
+
+An input-capable worker also has a short-lived **admission reservation**. It is
+set synchronously before an adapter acknowledges input and cleared atomically
+when the operation Task becomes visible (or when preflight denies/stops it).
+The reservation is reported as busy/confirming but is not itself a runnable
+operation: it prevents two surfaces from both accepting one idle slot while a
+destructive confirmation is still being resolved.
+
+`cancel` interrupts the current operation and leaves the worker running with
+no operation; `stop` ends the lifecycle, preserves the captured history and
+event trail, and leaves attached panes rendering the terminal state rather
+than closing them (invariant §0.5). A UI may render "idle" for a running
+worker with no current operation and "busy" otherwise; a `log_tail`'s or
+`stats`' continuous subscription is worker-owned background state, not a
+forever-busy operation. A completed agent task or finished shell command
+clears the operation — the worker stays running and can take the next prompt
+or command.
+
+Stopped is genuinely terminal: a stopped worker is never resurrected under
+its old id. `/worker W open` on a stopped worker attaches a view of its
+captured history; restarting mints a **new** worker id whose `worker_started`
+event records `^restarted_from W`. This is also how persistence restores shell
+and REPL workers whose processes cannot survive: the restored worker remains
+stopped for inspection, while `/sh` or `/repl` creates its successor.
+Visibility is never a status: headless workers
+keep running, `/workers` lists them, and bounded per-kind counts refuse new
+spawns rather than silently expiring idle workers — reclaiming a slot is an
+explicit `stop`.
+
+The main worker is the one lifecycle restriction: it cannot be stopped inside
+an application session because permanent pane 0 and session identity depend on
+it. Ending or replacing the main agent means controlled application shutdown or
+a new session; sub-agents and every non-agent worker use the ordinary stop
+contract.
+
+Every bounded stream shares one overflow contract (invariant §0.9): encoded
+UTF-8 bytes and entry counts are accounted explicitly, the **oldest** retained
+content is dropped first, and loss is visible —
+
+```gene
+{^dropped_before 3812 ^dropped_bytes 65536}
+```
+
+Text tails truncate only at a valid UTF-8 scalar boundary and keep one in-band
+loss marker whose byte count is updated rather than accumulated. The marker
+itself consumes capacity; configured worker-output and transcript floors (32
+and 64 bytes) ensure it can be represented. Structured event records are
+atomic: a record larger than the journal capacity becomes a typed bounded
+summary retaining its event type/cursor/correlation ids plus
+`^truncated true ^original_bytes N`, never a sliced invalid map. Event journals
+are bounded by both count and encoded bytes.
+
+`dropped_before` is stream-specific but never unitless: for a session journal
+it is the cursor of the last fully evicted event; for a bounded worker-text
+snapshot it is the worker-local output sequence whose append most recently
+caused prefix loss, with the exact cumulative byte loss in `dropped_bytes`.
+Worker-text snapshots are not resumable within a partially retained chunk:
+clients replace them atomically and continue from their `output_seq`; only the
+session journal's cursor is a replay position. Gateway stale cursors receive
+HTTP 409 with `{error:"cursor_gap", dropped_before, oldest_cursor,
+snapshot_url}`; clients install the bounded session/worker snapshot and then
+continue after its cursor, never silently skip (§12.2).
+
+The main rendered transcript is a separate bounded stream because it also
+contains user rows and presentation prefixes that are not worker-output
+events. It therefore exposes `transcript_seq`,
+`transcript_dropped_before`, and exact cumulative
+`transcript_dropped_bytes` alongside the agent worker's ordinary output
+sequence. Its in-band loss marker and snapshot metadata derive from the same
+retained payload, so repeated overflow never counts an older marker as new
+producer text.
+
+Defaults are 256 KiB per worker output, 1 MiB per main transcript, 200 accepted
+inputs per worker, 200 recall entries per `(surface, worker route)`, 64 pending
+supervisor results, 4,096
+events and 2 MiB per in-memory session journal, 256 KiB per surface draft, 16
+panes per surface, 8 live agents including main, 32 total live workers
+including agents, and 64 **unreferenced** stopped-worker snapshots. A stopped worker
+immediately releases its live slot; attached and headless running workers
+consume the same budget. All are configurable through the
+`GENE_AGENT_*`/gateway equivalents, and restore enforces the current limits
+rather than trusting an older larger snapshot. An evicted stopped worker
+leaves a `worker_retention_dropped` tombstone; a stopped worker referenced by
+any server-tracked surface remains until its last view detaches. Browser-local
+layouts do not pin server state, and C2 creates no ephemeral server-side
+browser attachments. Thus neither abandoned surfaces nor a surface-relative
+“headless” bit can bypass the stopped-worker retention bound.
+
+This contract applies uniformly to output-worker buffers, log-tail
+projections, per-surface transcript/render caches, the in-memory event journal,
+and shell output streamed while no pane is attached. A pane whose scrolled-to
+rows are evicted clamps its scroll position and shows that older output was
+dropped. (Tool
+*results* keep their §8.5 rule — the incoming value is truncated with a
+surfaced flag — because the model must see the newest output of the command it
+just ran; history buffers drop oldest instead.)
+
+The journal is logically append-only but its in-memory observation window is
+bounded. SQLite/store snapshots persist that retained window and its cursor-gap
+metadata; they are not an unbounded archival tier. A later audit archive may
+choose a separate policy without changing live cursor semantics.
+
+`stats` and `log_tail` are projections over state the application already owns
+— the §9.2 event log and slice B's context accounting — so they add rendering,
+not new authority, and update on event append rather than polling. Derived
+projection rows are retained only in the worker's bounded snapshot; they are
+not appended as `worker_output` records to the authoritative journal. Otherwise
+N live tails would multiply each source event N times and evict the history
+they observe. The canonical source event invalidates remote views. Each
+gateway event batch returns a non-journal `changed_worker_ids` set; C2
+conservatively includes every live `stats`/`log_tail` worker when a batch is
+non-empty. Clients replace only snapshots whose `output_seq` advanced. This
+bounded over-invalidation avoids duplicating server filters in every client
+without appending one invalidation event per projection to the journal. Ordinary
+agent, shell, REPL, and manually appended output remains canonical
+`worker_output` journal data.
+`log_tail` follows the event log only; tailing arbitrary files needs polling plus
+rotation/truncation semantics and stays deferred for the same reasons `gene
+view --follow` is deferred in `docs/proposals/editor.md`. `file_view` starts as
+wrapped read-only text over the existing transcript machinery; a structural
+Gene view should later reuse the reader-backed viewer model from that proposal
+rather than growing a second implementation here.
+
+The default layout keeps pane 0 on the left, vertically stacks panes on the
+right, and reserves full-width input and status rows:
+
+```text
+[0] main agent        │ [1] sub-agent
                       │─────────────────
-                      │ [2] output/log
+                      │ [2] log tail
                       │─────────────────
                       │ [3] shell or REPL
 ────────────────────────────────────────
@@ -548,31 +783,117 @@ input
 status
 ```
 
-Pane ids are stable for the pane's lifetime and are never reused within an
-application session. Bare input always goes to the main agent. Numbered input
-is dispatched by pane kind:
+Pane 0 is always present and cannot be closed; `/0 text` prompts the main
+agent explicitly. Narrow terminals (the shipped renderer's `width < 48` guard)
+collapse to a single full-width view: pane 0, or the focused pane rendered
+full-width when focus is elsewhere — input is never routed to a worker whose
+pane is invisible. Pane ids remain stable and never reused within a surface
+attachment's lifetime. `/N max` maximizes one pane over the whole worker area
+while the input and status rows stay; the same command (or Escape, below)
+restores the split.
+
+**Focus routes input, with a deterministic grammar.** Focus is upgraded from
+pane-local navigation to input routing. Parsing is surface-first:
+
+1. the surface parses global commands first — `/quit`, `/status`, `/workers`,
+   `/trace`, `/0`, `/N ...`, and the other §1 slash commands;
+2. everything else is sent verbatim to the focused worker;
+3. `//text` sends `/text` literally to the focused worker, and `/N -- text`
+   remains the routed-literal escape — so a shell path or Gene form needs
+   escaping only when it begins with `/` and collides with a command name.
+
+Both the input row and the status line name the route (for example
+`[3 shell]`) so a prompt can never be typed into a shell silently. `/N focus`
+focuses pane N; newly opened panes start focused (shipped behavior); `/0` or
+Escape on an empty input resets focus to the main agent. Escape keeps one
+deterministic priority order, PTY-tested: cancel the focused worker's active
+operation; else restore a maximized pane; else, **only when the draft is
+empty**, reset focus to pane 0; else nothing. With a composed draft and
+nothing to cancel or restore, Escape leaves both the draft and its route
+untouched — an already-composed shell command or Gene form is never silently
+rerouted to the main agent.
+
+The input contract is uniform across input-accepting workers: multi-line
+editing, worker-owned accepted-input history with adapter provenance, and
+surface-local recall lists/navigation cursors per route, plus
+**external composition** — `/edit` suspends curses, opens `$VISUAL`/`$EDITOR`
+on the current draft, and returns the saved buffer as the focused worker's
+draft without submitting it. This reuses the `/sh` suspend/resume discipline
+and the editor-resolution rules in `docs/proposals/editor.md` §7.1; the draft
+is ordinary user input and passes the same redaction-at-append when submitted.
+`/edit` is strictly a surface operation: suspending the TUI's curses session
+sets an explicit local-surface suspension state, and event callbacks must not
+reopen curses over the child. The editor runs through scheduler-friendly
+`os/exec_stdio_async`, so remote turns and workers keep running and events keep
+accumulating; on editor exit the TUI clears suspension and repaints from its
+event cursor. A failed or non-zero editor exit preserves the prior draft
+unchanged; success replaces only this surface's draft.
+
+Numbered input is dispatched by worker kind:
 
 - `/agent new [prompt]` creates a supervised sub-agent and opens its pane;
   `/ext` remains a compatibility alias, while `/agents` lists visible and
   headless agents and `/agent A open|cancel|stop` controls one by stable id;
-- `/pane output [title]` creates an output-only pane for a later producer;
-- `/sh` opens or focuses a shell pane instead of closing curses and taking over
-  the entire terminal;
-- `/repl` opens or focuses a Gene REPL pane with the stable `session` binding;
-- `/N text` prompts/steers an agent pane, sends a command to a shell pane, or
-  evaluates a form in a REPL pane; output panes reject text input. `/N -- text`
-  sends text that would otherwise match a control verb such as `close`;
+- `/workers` lists every worker — kind, stable id, status, plus
+  `visible_here`/local pane ids from the invoking surface; the shared worker
+  API has no global attached/headless field. `/worker W open|cancel|stop`
+  controls one by id, where `open`
+  attaches a fresh pane to a headless worker;
+- `/pane output [title]` creates a bounded `output` worker and a pane over it;
+- `/sh` opens or focuses the line-oriented shell worker's pane; `/repl` opens
+  or focuses the Gene REPL pane with the stable `session` binding;
+- `/tty` suspends the TUI and hands the terminal to the real interactive
+  shell — the deliberate, user-originated escape hatch that runs outside
+  worker capture and the §8.5 classifier while holding the workspace mutation
+  lease for the entire handoff (the bootstrap spelled this
+  "interactive `/sh`"; one command must not mean both);
+- `/stats` opens or focuses the stats pane; `/tail [filter]` opens a log tail
+  (a bare token is `type=` shorthand, as in `/trace`); `/view <path>` opens a
+  file view;
+- `/N text` prompts an idle agent pane, sends a command to a shell pane,
+  evaluates a form in a REPL pane, or replaces the filter of a log-tail pane;
+  stats, file-view, and output panes reject text input. `/N -- text` sends
+  text that would otherwise match a control verb such as `close`;
 - `/N close` closes the pane, `/N cancel` cancels its active task/process,
-  `/N stop` explicitly stops an attached agent/controller, and `/N focus` makes
-  it the target for pane-local navigation.
+  `/N stop` explicitly stops the attached worker, `/N focus` routes input to
+  it, and `/N max` toggles maximize.
 
-Input history is kept per route so shell commands, Gene forms, sub-agent
-prompts, and main-agent prompts do not pollute one another. Escape cancels the
-focused pane's active operation when focus is explicit; otherwise it cancels
-the main agent's current turn. Closing a pane is never an implicit cancellation
-of an agent or output producer; a pane-owned shell/REPL controller follows the
-explicit close policy in the table. The status line identifies the routed
-target and reports all running agents/processes compactly.
+The close rule is uniform, with no per-kind exceptions: `close` detaches the
+view and never stops any worker — a busy shell or REPL keeps running headless
+and stays visible in `/workers`. `stop` cancels the current operation and ends
+the worker immediately, without confirmation, for agents, shell, output, log
+tail, file view, and stats — a blanket "are you sure" on every busy stop would
+be exactly the permission theater §8.5 rejects, and lifecycle control must
+stay cheap. The one exception: a REPL stop confirms only when the worker has
+explicitly tracked unsaved or transient state worth preserving, not merely
+because an eval is running. Destructive confirmation remains about host
+mutation (§8.5), never about worker lifecycle; API/headless callers therefore
+never park on a stop.
+
+Accepted input is kept per worker so shell commands, Gene forms, sub-agent
+prompts, and main-agent prompts do not pollute one another. Draft text, the
+Up/Down recall list, and its navigation cursor belong to the surface: one web
+client cannot move the TUI's editor cursor. The local TUI recalls its own
+accepted submissions for that worker; global control commands are presentation
+history rather than worker input. Unsubmitted drafts may be restored only in
+the same local surface snapshot, are byte-bounded on restore, and are never
+placed in the redacted event journal until submitted. The status line identifies
+the routed target and reports all running agents/processes compactly.
+
+**Input admission is reject-while-busy, not an implicit queue.** The session
+actor is the one admission point across TUI, gateway, channels, and model
+supervision. Once one input reserves an idle worker, another input for that
+worker fails immediately with a typed busy result until the current operation
+finishes or is cancelled; it is never silently queued, used to cancel/replace
+the operation, or inferred as steering from timing. C2 deliberately uses
+explicit cancel-then-prompt for steering: cancel the current operation, wait
+for its terminal outcome, then submit the continuation as a new prompt. There
+is no ambiguous “prompt or steer” endpoint and no second prompt submitted
+during a turn. The reservation is made before an
+HTTP request returns 202, so concurrent surfaces cannot both observe idle and
+receive false acceptance. Accepted-input history records only admitted input
+with adapter/surface provenance; rejected input is not history. Shell and REPL
+therefore also execute at most one submitted command/form at a time.
 
 The model-facing bootstrap `open_extension` becomes a compatibility composite
 over two capability-checked typed operations, conceptually shaped as:
@@ -582,28 +903,65 @@ over two capability-checked typed operations, conceptually shaped as:
   (spawn_agent {^assignment "review the reader"
                 ^context [...] }))
 (var pane_id
-  (open_pane {^kind "agent" ; one of agent, output, shell, repl
-              ^owner_id agent_id
+  (open_pane {^kind "agent" ; agent, output, log_tail, file_view; shell and
+              ^owner_id agent_id ; repl panes are user-opened only
               ^title "reader review"}))
 ```
 
-`spawn_agent` returns only an agent id and does not require a pane. `open_pane`
-returns only a pane id and attaches to an existing agent, stream, or controller;
-the `/agent` and legacy `/ext` commands intentionally perform both operations
-as a UI convenience. Separate operations append to an output pane, send to a
-process pane, focus/close a pane, and cancel/stop its backing owner. The model
-may open only kinds allowed by its capabilities: creating a view is harmless,
-but starting a shell or REPL must use the existing `Os/Exec` or VM authority
-and the same catastrophe guard. An output pane accepts structured events or
-already-redacted text; it is not an untracked channel around the authoritative
-event log.
+`spawn_agent` returns only a worker id and does not require a pane. Because
+panes are surface state, model/session operations never open panes directly
+(invariant §0.3): they create or identify a **worker** and may emit a bounded
+**presentation hint** event:
 
-Input provenance remains explicit. Text typed by the user into a shell pane is
-the same deliberate escape hatch as today's interactive `/sh`. A model cannot
-inject raw input into that channel: model-initiated commands still go through
-the typed `run_shell` operation, its classifier, and its events, with output
-optionally projected into a shell/output pane. The same rule prevents a model
-from using a visible REPL pane as an unlogged mutation backdoor.
+```gene
+{^type "worker_attention_requested" ^worker_id "a2"
+ ^preferred_view "pane" ^title "reader review"}
+```
+
+Each surface independently decides how to honor a hint — the local TUI
+auto-accepts hints as product policy, a browser may show a notification, and
+headless mode records only the worker and the hint. `pane_opened` is emitted
+only after a real surface creates a pane, and pane events always carry a
+stable `^surface_id`: because pane ids are surface-scoped, correlation is the
+pair `(surface_id, pane_id)`, never `pane_id` alone. The model-facing
+`open_pane` tool is retained as a compatibility name for "create/identify the
+worker, then hint"; for `^kind "output"` it creates the output worker as a
+convenience, and the `/agent` and legacy `/ext` commands perform
+worker-plus-local-pane as a UI shortcut on the surface the user typed into.
+Separate operations append to an output worker, send to a process worker,
+focus/close a local pane, and cancel/stop a worker. The model may create only worker kinds allowed by its capabilities and request attention: creating a
+view is harmless, but starting a shell or REPL must use the existing `Os/Exec`
+or VM authority and the same catastrophe guard, so those kinds stay
+user-opened. The shipped rule restricts model-opened panes to `agent` and
+`output`; extending it to the `log_tail` and `file_view` view kinds is
+harmless in principle but stays behind the bounded worker/pane counts and
+waits until dogfooding shows the model uses them productively. An output
+worker accepts structured events or already-redacted text; it is not an
+untracked channel around the authoritative event log.
+
+Input provenance remains explicit, with three distinct channels. User input to
+a shell **pane** is attributable worker input: each line passes the §8.5
+classifier and lands in the event log like scripted `/sh` lines do. The
+`/tty` escape is the one unclassified channel, and it is user-originated by
+construction — the TUI must be suspended by the person at the keyboard. A
+model cannot inject raw input into either: model-initiated commands still go
+through the typed `run_shell` operation, its classifier, and its events, with
+output optionally projected into a shell/output pane. The same rule prevents a
+model from using a visible REPL pane as an unlogged mutation backdoor.
+Every shared `file_view` resolves its path through the same workspace
+`safe_path` confinement as `read_file`, including a user-typed `/view`.
+File-view output is session state exposed by snapshots and persistence, so a
+local arbitrary-host read must not silently become shared remote data.
+Arbitrary host inspection remains a local `/tty` or external-editor action and
+does not create a session worker.
+
+The live `/repl` exposes coordinator-aware `session` mutations (`undo`, tool
+registration, supervised worker operations) and those preserve the ordinary
+lease/event contracts. If an embedding deliberately grants raw filesystem or
+subprocess capabilities into that REPL, direct calls through them are a
+user-originated escape hatch just like using an external terminal: they are
+outside application mediation and the coordinator invariant, and the host must
+label that authority rather than implying it is tracked.
 
 The shipped shell and REPL panes run as scheduler-owned, cancellable controllers
 behind the curses renderer rather than entering nested blocking terminal loops.
@@ -654,6 +1012,16 @@ and acts accordingly:
 - **Catastrophic or nonsensical:** deny outright, and emit a `confirmation`
   event recording the denial.
 
+Before that optional risk classification, every mediated shell channel applies
+the workspace-lifetime contract from invariant §0.1. An unquoted single `&`
+shell operator (excluding `&&`, `&>`, and `>&` redirections) and a deliberately
+small set of explicit detaching launchers (`daemon`/`daemonize`, forking
+`setsid`, non-waiting `systemd-run`, background `start-stop-daemon`, detached
+`tmux`, and detached `screen`) are denied with `risk=detached_process`. This
+check cannot be confirmed or disabled with `GENE_AGENT_GUARD=0`; use the local,
+user-originated `/tty` handoff for persistent/background work. Quoted or escaped
+ampersands and ordinary redirections remain valid.
+
 Classification anchors command-name patterns at the start of each simple
 command (splitting on `&&`, `;`, `|`) so `grep shutdown src/` stays normal while
 `ls && git clean -fdx` is caught. File tools realpath every path and reject
@@ -664,16 +1032,17 @@ model-visible tool result. Known auth tokens are redacted from displayed and
 model-visible output — including inside event-log entries.
 
 The two compatibility flags are independent and intentionally have different
-jobs. `GENE_AGENT_GUARD=0` removes shell-command classification **including
-catastrophic command hard stops**; it does not merely remove destructive
+jobs. `GENE_AGENT_GUARD=0` removes shell-command risk classification
+**including catastrophic command hard stops**; it does not remove the mediated
+foreground-lifetime contract and does not merely remove destructive
 confirmations. Path confinement, output bounds, and redaction remain active.
 
 | `GENE_AGENT_GUARD` | `GENE_AGENT_APPROVE_ALL` | Behavior |
 |---|---|---|
 | `1` (default) | `1` (default) | Normal work auto-approves; destructive shell commands ask once; catastrophic commands are denied. |
-| `1` | `0` | The guard still denies catastrophic commands and confirms destructive ones, then the legacy layer prompts before every file write/edit or model `run_shell`; a destructive shell command can therefore require two confirmations. |
-| `0` | `1` | Shell classification and catastrophic command protection are disabled, and file writes/edits plus model `run_shell` auto-approve. |
-| `0` | `0` | Shell classification and command hard stops are disabled, but the legacy layer prompts before each file write/edit or model `run_shell`; accepting the prompt can run a formerly catastrophic command. |
+| `1` | `0` | The guard still denies catastrophic commands and asks once for destructive shell commands. The legacy layer prompts for normal model `run_shell` and every file write/edit, but coalesces with an already-approved destructive guard decision so one operation never asks twice. |
+| `0` | `1` | Shell risk classification and catastrophic command protection are disabled, and file writes/edits plus model `run_shell` auto-approve; mediated background/detach syntax is still denied. |
+| `0` | `0` | Shell risk classification and catastrophe hard stops are disabled, but the legacy layer prompts before each file write/edit or model `run_shell`; accepting can run a formerly catastrophic foreground command, while mediated background/detach syntax is still denied. |
 
 The default `1`/`1` posture is the product design. `APPROVE_ALL=0` exists for
 occasional prompt-before-operation use; `GUARD=0` is an explicit unsafe escape
@@ -695,9 +1064,14 @@ Shipped coverage (`classify_command` in `examples/ai_agent/tui.gene`):
 Prefer structured wrappers for database, Git, and deployment tools because
 parsing arbitrary shell is necessarily incomplete. For `run_shell`, block or ask
 only on the high-confidence patterns above; do not pretend this is an OS sandbox.
-Interactive `/sh` is a deliberate user-driven escape hatch — the TTY session
-hands the loop to the real shell, so the classifier does not sit in front of it;
-the scripted (piped) `/sh` path does run each line through the classifier.
+`/tty` (the bootstrap's interactive `/sh`) is a deliberate user-driven escape
+hatch — the TTY session hands the loop to the real shell, so the classifier
+does not sit in front of it. Every other shell channel is classified: scripted
+(piped) `/sh` lines, shell-pane input, and model `run_shell` calls alike.
+The foreground-lifetime check covers obvious shell syntax and launchers, but
+cannot prove that an arbitrary binary will not fork and daemonize internally;
+such a program is outside the exact lease guarantee once its tracked parent
+returns.
 
 Reliability rules apply even with auto-approval:
 
@@ -723,7 +1097,7 @@ Known current gaps (documented, not yet classified):
   segment-based rather than argument-parsed, so an unusual spelling can slip a
   destructive command through as normal or trip a false confirmation; DB
   connection awareness (which database, ephemeral vs. not) is not modeled;
-- **interactive `/sh`** — the TTY shell loop is outside the classifier (above).
+- **`/tty`** — the real-shell TTY loop is outside the classifier (above).
 
 A general policy language, default-on approval modes, OS/container sandboxing,
 multi-user isolation, and compliance controls are explicit non-goals unless the
@@ -859,12 +1233,24 @@ The native multi-agent slice extends this stable surface rather than exposing
 TUI arrays:
 
 ```text
-session/main_agent   session/agents       session/panes
+session/main_agent   session/agents       session/panes   (shipped)
+session/workers                                           (C2)
 ```
 
-Agent and pane mutations remain message-based (`spawn_agent`, `stop_agent`,
-`open_pane`, `close_pane`, `send_pane`) so supervision, capability checks,
-events, and persistence cannot be bypassed by mutating a list cell.
+Agent, worker, and pane mutations remain message-based (`spawn_agent`,
+`stop_agent`, `open_pane`, `close_pane`, `send_pane`, `stop_worker`) so
+supervision, capability checks, events, and persistence cannot be bypassed by
+mutating a list cell. `session/panes` is the shipped projection of the local
+TUI's panes; slice C2 moves pane/layout state into per-surface attachments
+(§7.1), after which `session/workers` is the stable enumeration and
+`session/panes` survives only as the local surface's compatibility view.
+It is an empty projection in a headless session; new code inspects a concrete
+`SurfaceAttachment` rather than treating pane state as a stable session field.
+Focus, maximize, and layout are deliberately absent from the session surface:
+they are presentation state owned by each surface attachment (§12.4), not
+session state — a phone client must not observe or perturb the terminal's
+focus. Worker and agent state persist with the session; pane/layout state
+persists per surface (the TUI's local layout snapshot).
 
 ### 9.2 Authoritative event log and `/trace`
 
@@ -890,89 +1276,244 @@ memory, errors, and compaction. Slice C adds the agent/pane lifecycle group:
 {^v 14 ^type "memory" ^text "reader datum comments are spacing"}
 {^v 15 ^type "error" ^text "transport failed"}
 
-# Slice C lifecycle events (target)
-{^v 16 ^type "agent_spawned" ^agent_id "a2" ^parent_agent_id "main" ...}
+# Slice C lifecycle events (shipped with slice C)
+{^v 16 ^type "agent_spawned" ^worker_id "a2" ^agent_id "a2"
+ ^parent_agent_id "main" ...}
 {^v 17 ^type "agent_status" ^agent_id "a2" ^status "working" ...}
 {^v 18 ^type "agent_completed" ^agent_id "a2" ^task_id "t7" ...}
-{^v 19 ^type "pane_opened" ^pane_id 2 ^kind "output" ...}
-{^v 20 ^type "pane_output" ^pane_id 2 ^source_agent_id "a2" ...}
-{^v 21 ^type "pane_closed" ^pane_id 2 ...}
+{^v 19 ^type "pane_opened" ^surface_id "local_tui:1" ^pane_id 2
+ ^worker_id "w2" ^kind "output" ...}
+{^v 20 ^type "pane_output" ^surface_id "local_tui:1" ^pane_id 2
+ ^worker_id "w2" ^source_agent_id "a2" ...}
+{^v 21 ^type "pane_closed" ^surface_id "local_tui:1" ^pane_id 2
+ ^worker_id "w2" ...}
+
+# Slice C2 worker lifecycle and presentation hints (shipped)
+{^v 22 ^type "worker_started" ^worker_id "w4" ^kind "log_tail" ...}
+{^v 23 ^type "worker_operation_started" ^worker_id "w3" ^task_id "t9"
+ ^operation_kind "shell_command"}
+{^v 24 ^type "worker_output" ^worker_id "w3" ^task_id "t9"
+ ^seq 14 ^stream "stdout" ^text "..." ^projection false ^source_v nil}
+{^v 25 ^type "worker_operation_finished" ^worker_id "w3" ^task_id "t9"
+ ^operation_kind "shell_command" ^outcome "completed"}
+{^v 26 ^type "worker_stopped" ^worker_id "w4" ...}
+{^v 27 ^type "worker_started" ^worker_id "w5" ^kind "log_tail"
+ ^restarted_from "w4"}
+{^v 28 ^type "worker_retention_dropped" ^worker_id "w2"
+ ^reason "stopped_worker_limit" ^limit 64}
+{^v 29 ^type "worker_attention_requested" ^worker_id "a2"
+ ^preferred_view "pane" ^title "reader review"}
 ```
+
+Slice C2 adds `^worker_id` and `^surface_id` to pane events additively;
+existing shipped types are never renamed. Pane events are observational
+records of one surface's presentation (correlated by `(surface_id, pane_id)`);
+`worker_attention_requested` is the only session-originated presentation
+event, and it is a hint, not a command (§7.1). Focus and maximize changes are
+not logged — they are presentation-only and would be pure noise next to
+authoritative worker/agent events; local layout snapshots capture them
+instead.
+
+The worker boundary is canonical even with no pane: each operation emits one
+start and exactly one finish (`completed|cancelled|failed`), and every produced
+chunk carries the worker id plus a worker-local `seq`; task output also carries
+its task id. `worker_operation_cancelling` is an intermediate request, not a
+second terminal outcome. The shipped agent text/delta and `pane_output` types
+remain additive compatibility events. During this compatibility window each
+streamed delta emits its legacy event plus a generic `worker_output`; a
+non-streamed final `agent_text` does the same. The generic record carries
+`^source_v` pointing at its source. After deltas, the complete `agent_text` is
+terminal metadata and emits no second generic chunk, so neither client mode
+duplicates the final answer. Agent-specific clients render legacy records and
+ignore their generic aliases; generic worker clients render `worker_output`.
+Deduplication never compares text. Non-agent
+`worker_output` has `^source_v nil` and is canonical. Derived
+`log_tail`/`stats` rows are
+worker-snapshot state rather than journal events (§7.1), so they cannot amplify
+or recursively consume their own source journal.
 
 `run_turn` and `run_tool_call` write through an explicit **emit sink**: the CLI
 passes its process-global logger, the gateway passes a per-session sink — so
 each gateway session owns its complete tool trail without cross-session
-interleaving. Every value is redacted at append. The event log is authoritative
-for rendering and persistence; transcript text, evidence, and current UI state
-are projections. Every surface consumes the same events. `/trace` exposes a few useful filters first (type, tool name, path,
+interleaving. Every value is redacted at append.
+
+The event log's contract is **authoritative journal, not event sourcing**:
+live session state and its persisted snapshots are canonical for *execution*,
+while the append-only event stream is canonical for *observation* — rendering,
+audit, correlation, and surface cursors. Session-visible output and evidence
+are projections of it; focus, maximize, drafts, scroll, and layout come from a
+surface snapshot plus current worker projections. Because values are redacted at append, replaying
+events is deliberately not guaranteed to reconstruct exact model context, and
+no reducer is required to rebuild executable state from events alone. `^v` is
+the per-session monotonic **cursor**, not a schema version: the vocabulary
+evolves additively (new types and new props only; shipped types and props are
+never renamed or re-typed), and an explicit envelope `^schema` field is
+introduced only with the first incompatible change, so consumers assume
+schema 1 when it is absent. Every surface consumes the same events. `/trace` exposes a few useful filters first (type, tool name, path,
 event range, current turn), while `/repl` can apply normal selectors and stream
 operations. Full replay/fork/compare and sanitized trajectory fixtures are later
 extensions, not requirements for the first event slice.
 
-Events carry correlation ids where needed (`application_id`, `agent_id`,
-`parent_agent_id`, `task_id`, `turn_id`, `tool_call_id`, `pane_id`),
+Events carry correlation ids where needed (`application_id`, `worker_id`,
+`agent_id` — for agents the same value as `worker_id`, kept for compatibility
+— `parent_agent_id`, `task_id`, `turn_id`, `tool_call_id`, `pane_id`),
 module/tool version hashes once hot reload exists, and redaction/truncation
-state. Pane events describe presentation and routing; agent/tool events remain
-authoritative even when no pane is open. They do not contain hidden
+state. Pane events describe one surface's presentation and routing and are
+observational only; worker/agent/tool events remain authoritative even when no
+pane is open anywhere. They do not contain hidden
 chain-of-thought; they record explicit plans, decisions, actions, results, and
 evidence.
 
 ### 9.3 Native agent graph and supervision
 
-The application has exactly one main agent and a bounded set of sub-agents.
-This is a supervised tree, not peer-to-peer swarm infrastructure:
+The application has exactly one main agent and a bounded set of direct
+sub-agents. C2 is a supervised **star**, not recursive delegation or
+peer-to-peer swarm infrastructure:
 
 ```text
 ApplicationSession
-├── AgentRegistry
-│   └── main
-│       ├── sub-agent a1
-│       └── sub-agent a2
-├── PaneRegistry
-│   ├── pane 1 -> a1
-│   ├── pane 2 -> output projection
-│   └── pane 3 -> shell controller
-└── WorkspaceCoordinator
+├── WorkerRegistry           owns every worker's lifecycle, one id space (C2)
+│   ├── main   agent
+│   ├── a2     agent (sub-agent of main)
+│   ├── w3     shell
+│   ├── w4     log tail
+│   └── w5     stats
+├── AgentRegistry            supervision index over the agent subset
+│   └── main ── a2
+└── workspace coordinator handle (process-level, keyed by workspace root)
+
+SurfaceAttachment (per TUI/tab/client, §7.1)
+└── PaneRegistry             pane -> worker id
+    ├── pane 0 -> main (fixed)
+    ├── pane 1 -> a2
+    ├── pane 2 -> w4
+    └── pane 3 -> w3
 ```
 
-Each `Agent` owns a stable id, optional parent id, Responses-style item list,
-current task, status, event sink, tool/capability view, and explicit assignment.
-The main agent alone receives bare user input and is responsible for spawning,
-steering, cancelling, and incorporating sub-agent results. A sub-agent starts
+Identity is singular (invariant §0.2): every worker — agents included — has
+exactly one session-stable worker id, and the `WorkerRegistry` owns worker
+state (running/stopped lifecycle, current operation, last outcome, event
+correlation) for all of them. An
+agent is a worker subtype whose record adds supervision and model-context
+metadata (parent id, assignment, item list, tool/capability view); the
+`AgentRegistry` is an index over that subset and mints no second id and no
+second lifecycle. Shipped events keep their `^agent_id` prop for
+compatibility — for an agent, `agent_id` *is* its worker id. `/agent` verbs
+remain sugar over the agent subset; `/worker` verbs address anything.
+
+The main agent is the default focus target for bare input (§7.1 focus routing
+may direct input elsewhere), and it alone is responsible for spawning,
+explicit cancel-then-prompt continuation, cancelling, and incorporating
+sub-agent results. A sub-agent starts
 with its assignment, the relevant workspace instructions/memory, and an
 explicit context attachment chosen by the parent; it does not receive the full
-main transcript by accident. Its final result is emitted as a structured child
-result into the main agent's supervisor inbox. At the next safe model boundary,
+main transcript by accident. Attachments are **bounded copied snapshots**,
+never live references: the permitted kinds are selected transcript items, file
+excerpts (path plus range), memory entries, event references, and a
+parent-written summary, each subject to size/count limits and redacted at
+attach time. A child must not retain a mutable reference into the parent's
+item list or session cells, and the `agent_spawned` delegation event records
+attachment kinds and content digests so the parent can later show exactly what
+context the child received. Its final result is emitted as a structured child
+result into the main agent's bounded, persisted supervisor inbox. At the next safe model boundary,
 the main agent receives a compact child-result item linked to the original
 delegation; the child's private transcript and tool chatter are not copied into
 the main context.
 
 Sub-agents may run concurrently because model and read-only tool work is
 independent. Shared-workspace mutation is coordinated separately from agent
-scheduling. The first clean implementation grants at most one mutation lease
-at a time for `write_file`, `edit_file`, `/undo`, and similar operations. Shell
-commands take the lease by default because reliably proving that an arbitrary
-command is read-only is harder than serializing it; narrowly classified
-read-only commands may opt out later. Pure file reads and model requests may
-overlap. The lease owner and resulting `file_change` events are attributable to
-an agent and task. Per-agent worktrees remain an optional later isolation
-strategy, not a requirement for native sub-agents. The current concurrent agent
-turns establish the scheduler contract; mutation coordination and typed
-non-agent pane controllers remain required before the slice is complete.
+scheduling, and the coordinator is **process-level, keyed by canonical
+(realpath) workspace root** — not per session (invariant §0.1). The gateway
+can create several sessions; if two of them point at the same workspace, they
+share one coordinator and one mutation lease, otherwise the single-writer
+guarantee evaporates exactly when it matters. The coordinator grants at most
+one mutation lease at a time for `write_file`, `edit_file`, `/undo`, and
+similar operations. Shell commands take the lease by default because reliably
+proving that an arbitrary command is read-only is harder than serializing it;
+narrowly classified read-only commands may opt out later. Pure file reads and
+model requests may overlap. Because worker ids are only session-stable and
+therefore collide (`main`, `a1`, `w1`), coordinator owners and waiters are keyed
+by `(application_instance, worker_id)`, never by worker id alone; one session's
+stop or shutdown cannot release another session's lease.
+
+The lease covers a mediated subprocess until its tracked process/task settles.
+To keep that boundary honest, `/sh`, shell-worker input, remote shell-worker
+input, and model `run_shell` reject the high-confidence background/detach forms
+listed in §8.5 before admission or lease acquisition. `/tty` is the explicit
+local escape and holds the lease only for the terminal handoff itself. The
+application does not claim OS-level containment: a binary which daemonizes
+internally can escape descendant tracking, so exact serialization ends with
+the cooperative foreground process while that exceptional descendant is
+best-effort/out-of-contract. An acceptance test proves a recognized background
+writer is denied and never runs after the lease would have been released.
+
+Mutating operations follow one ordering. Confirmation happens **before** the
+lease so that human think time never holds the process-wide single-writer
+lease hostage — one unattended prompt must not block every other session's
+normal writes on that workspace:
+
+```text
+classify -> request confirmation (if destructive) -> acquire workspace lease
+         -> revalidate target/state -> execute -> append events -> release
+```
+
+A confirmation binds a digest of the normalized command/operation and its
+displayed target. After the lease is acquired, paths are re-resolved and the
+state the confirmation displayed is rechecked; a material change denies the
+stale approval (or requests a fresh confirmation) rather than letting it
+authorize a different target. "At most one pending confirmation per session"
+remains a session-actor rule and is unaffected by lease scheduling.
+
+The lease is released on completion, timeout, cancellation, failure, and
+worker stop alike. Lease requests are FIFO; cancelling a worker that is still
+queued dequeues it. `/tty` is the explicit fairness exception: it owns the
+lease until the human exits, and status surfaces name that owner so another
+session does not merely appear hung.
+
+Input admission first installs the short-lived reservation from §7.1. For
+operations requiring local preflight, classification and destructive
+confirmation happen while that reservation is visible but before a host Task
+or workspace lease exists. Denial clears the reservation and emits its
+confirmation/result events without inventing an operation start. Once
+preflight succeeds, Task installation and `worker_operation_started` occur in
+one scheduler turn; lease waiting is inside that operation, so cancellation
+while queued produces its one `cancelled` finish and revalidation failure its
+one `failed` finish. Stop revokes either a reservation or the installed Task.
+Cancellation/stop invalidates the confirmation id and lease request id; a late
+confirmation is stale, and a lease grant racing with dequeue is immediately
+released without host execution. Exactly one transition installs the
+operation's terminal outcome. C2 keeps
+the shipped remote rule that a
+gateway/headless destructive operation denies immediately, so no invisible
+prompt parks a task. The optional §12.8 extension replaces that denial with a
+deadline-bound reply channel broadcast to authorized interaction adapters;
+the first response wins and disconnect does not cancel it. The lease owner and
+resulting `file_change` events are attributable to a worker and task.
+Per-agent worktrees remain an optional later isolation strategy, not a
+requirement for native sub-agents.
 
 Stopping an agent cancels its current model request and subprocesses, releases
 its mutation lease, marks it terminal, and preserves its event trail. Closing
 an attached pane only detaches the view. A completed sub-agent can be retained
-for inspection or explicitly removed after its result is incorporated. The
-application enforces a configurable small concurrency/count bound so a model
-cannot recursively create an unbounded team.
+for inspection or explicitly stopped after its result is incorporated. The
+application enforces a configurable small concurrency/count bound. Only the
+main agent receives the supervision tools; every C2 `parent_agent_id` is
+`main`. The field remains general so a later recursive design can evolve
+additively, but recursion is not part of this contract.
 
-Persistence records the agent graph, durable item histories, statuses,
-assignments, pane descriptors/layout, and event correlations. Output panes may
-restore their event projection. Shell and REPL processes are not pretended to
-survive a crash: restoration shows their captured history in a closed pane and
-requires an explicit restart. No persistence format stores raw terminal state
-or secrets.
+Persistence splits along the session/surface boundary: the session records
+the worker/agent graph, durable item histories, statuses, assignments, and
+event correlations; each surface persists its own pane descriptors and layout
+under a surface key (the TUI's local layout snapshot). Output workers may
+restore their buffered projection. Shell and REPL processes are not pretended
+to survive a crash: restoration shows their captured history on a stopped
+worker and requires an explicit reopen. No process-local Task, admission
+reservation, confirmation, lease owner, or lease waiter is resumed. A
+previously busy agent restores running and idle and emits an attributable
+failed `worker_operation_finished` (or a legacy normalization record when an
+old snapshot lacks the task id); a pending reservation emits
+`worker_admission_cancelled`. Mutation execution is never retried from
+snapshot state. No persistence format stores raw terminal state or secrets.
 
 ### 9.4 Dogfood rule
 
@@ -1039,7 +1580,7 @@ Choose exact ordering from dogfood pain:
 
 - **Done:** tracked turn Tasks, subprocess termination, `Session/cancel`,
   gateway busy state, `POST /api/sessions/:id/cancel`, and terminal Ctrl-C
-  cancellation/steering;
+  cancellation followed by an explicit continuation prompt;
 - **Done:** `/diff`, targeted `/undo`, and preservation of pre-existing changes;
 - **Done:** structured command/test/benchmark evidence and explicit unverified
   claims;
@@ -1066,28 +1607,103 @@ Choose exact ordering from dogfood pain:
    spawn/send/cancel/stop/result
    operations and explicit context attachments; expose them through stable
    `session/agents` and typed model tools.
-3. **Done.** Generalize right-side panes to the four §7.1 kinds. Keep `/ext` as an alias,
+3. **Done.** Generalize right-side panes to the four bootstrap kinds (agent,
+   output, shell, repl; §7.1 now extends these into the slice C2 worker
+   model). Keep `/ext` as an alias,
    add output panes, and move `/sh` and `/repl` from whole-terminal subsessions
    to scheduler-owned interactive panes.
 4. **Done.** Allow concurrent sub-agent turns and read-only work, with attributable
    events and a single shared-workspace mutation lease. Prove cancellation,
-   lease release, bounded spawning, and result delivery with deterministic fake
-   models and PTY tests.
+   lease release, foreground-shell enforcement, bounded spawning, and result
+   delivery with deterministic fake models and PTY tests.
 5. **Done.** Persist the agent graph and pane layout while restoring shell/REPL panes as
    closed history rather than fake live processes. Fold gateway startup into
    the main program behind `--gateway[=PORT]`/`--headless`; keep
    `gateway.gene` only as a thin compatibility launcher. The in-process TUI and
    optional network adapters must address the same application services.
 
-The slice is complete when the main agent can delegate two independent review
-tasks, the user can interact with either sub-agent while both are running, a
-third output pane can follow verification events, and a shell or REPL pane can
-run without suspending input/rendering in the rest of the application. Starting
-that same program with `--gateway` must expose the already-live local session
-to the web/API while the TUI remains responsive; `--headless` and the temporary
-`gateway.gene` wrapper must expose the same API without constructing curses.
+Acceptance (met by the shipped slice): the main agent can delegate two
+independent review tasks, the user can interact with either sub-agent while
+both are running, a third output pane can follow verification events, and a
+shell or REPL pane can run without suspending input/rendering in the rest of
+the application. Starting that same program with `--gateway` exposes the
+already-live local session to the web/API while the TUI remains responsive;
+`--headless` and the temporary `gateway.gene` wrapper expose the same API
+without constructing curses.
 
-### 10.5 Slice D — expand only where leverage is proven
+### 10.5 Slice C2 — one worker model for the TUI
+
+Slice C shipped the registries and concurrency. This follow-up unifies the
+interface model around §7.1 workers and interfaces under the §0 invariants;
+order within the slice comes from dogfood pain:
+
+1. **Done.** Introduce the single worker id space: the `WorkerRegistry` owns every
+   worker's state (agents included, one id each — invariant §0.2; lifecycle
+   `running|stopped`, current operation, last outcome), the `AgentRegistry`
+   becomes a supervision index, and the shell/REPL/output controllers migrate
+   to workers (including the bounded `output` worker) with
+   pane-independent operation/output/start/stop events, restart-mints-a-new-id semantics
+   (`^restarted_from`), and a `/workers` listing — without changing visible
+   `/ext`, `/sh`, or `/repl` behavior.
+2. **Done.** Move panes, layout, focus, and zoom into per-surface attachments with the
+   §7.1 surface-identity contract (`local_tui` key and browser-local layouts;
+   invariant §0.3); the session keeps no pane state,
+   `session/panes` becomes the local surface's compatibility view, and
+   model/session presentation becomes `worker_attention_requested` hints —
+   `pane_opened` fires only when a real surface opens a pane and carries
+   `^surface_id`.
+3. **Done.** Key the workspace coordinator by canonical workspace root at process level
+   (invariant §0.1) and implement the §9.3 ordering — confirm before lease,
+   digest-bound revalidation after lease, release on
+   timeout/cancel/failure/stop, dequeue-on-cancel.
+4. **Done.** Make the main transcript pane 0. Upgrade focus to input routing with the
+   surface-first parsing grammar (`//` literal escape), the route named in the
+   input row and status line, the documented Escape priority order (including
+   the non-empty-draft no-op branch), `/N max`, the narrow-terminal
+   full-width-focused-pane fallback, and the `/sh` (worker pane) vs `/tty`
+   (real-shell escape) split. PTY-test focus/zoom/reset, the Escape-with-draft
+   case, and the "never type into an invisible or wrong worker" guarantees.
+5. **Done.** Add `/edit` external composition over the shared curses suspend/resume
+   handoff and the editor-resolution rules shared with
+   `docs/proposals/editor.md`; suspension is surface-local and pauses nothing
+   in the application.
+6. **Done.** Add the `stats` and `log_tail` projection workers over existing state; the
+   `/tail` filter shares the `/trace` parser rather than growing a second
+   syntax.
+7. **Done.** Add the `file_view` MVP as wrapped read-only text, with workspace
+   `safe_path` confinement for every shared view, regardless of initiating
+   adapter; adopt the structural viewer model
+   from `docs/proposals/editor.md` only when that work lands.
+8. **Done.** Implement the §7.1 bounded-ring overflow contract (drop-oldest with loss
+   metadata) across output buffers, projections, surface caches, and the
+   event journal; bound retained stopped-worker snapshots; add the §12.2
+   cursor-gap plus snapshot/resume response and the typed `POST /workers`
+   creation route. Derived projection rows stay out of the source journal.
+9. **Done.** Make session-actor input admission reject-while-busy across every adapter;
+   reserve before acknowledging an HTTP request so simultaneous surfaces
+   cannot both receive acceptance for one worker operation slot.
+
+The slice is complete when the §0 invariants hold observably: a focused shell
+pane can be used bare-handed while a sub-agent runs; Escape layering behaves
+exactly per the documented order, including leaving a composed draft and its
+route untouched; a maximized log tail follows a verification run and restores;
+`/edit` round-trips a multi-line draft through `$EDITOR` while a remote turn
+keeps streaming; two sessions on the same workspace share one mutation lease,
+an obvious background writer is denied before it can escape that lease, and an
+unattended confirmation blocks neither; a headless `open_pane` yields a
+worker plus a hint but no `pane_opened`; an overflowed output worker reports
+its dropped range and a stale gateway cursor receives an explicit gap followed
+by a coherent snapshot/resume; simultaneous inputs to one busy worker produce
+one acceptance and one typed busy rejection; several live projection workers
+do not multiply authoritative journal records and are invalidated through
+`changed_worker_ids`; one compatibility agent chunk has a structural
+`source_v` alias and renders once per client mode; restore clears dead
+tasks/reservations without retrying mutations; a sub-agent cannot recursively
+spawn another; an arbitrary host file rejected by local `/view` never enters a
+remote or persisted snapshot; and a gateway client sees identical session
+state regardless of local panes, focus, or zoom.
+
+### 10.6 Slice D — expand only where leverage is proven
 
 - Promote repeated `/repl` experiments into small Gene workflow modules;
   record module/tool version hashes and hot-reload new calls without changing
@@ -1140,9 +1756,11 @@ broad/risky runtime changes); performance regressions must remain visible.
 ## 12. Local-first main program and multi-surface adapters
 
 One long-running **main program** owns every application session. An
-application session contains one main agent, its supervised sub-agents, panes,
-processes, and the shared workspace coordinator — it is not synonymous with
-one model conversation. The main program always starts this same core and then
+application session contains one main agent, its supervised sub-agents, and
+the process/projection workers — it is not synonymous with one model
+conversation. Panes and layout belong to each attached surface (§7.1), and
+workspace coordination is process-level, keyed by workspace root (§9.3,
+invariants §0.1/§0.3). The main program always starts this same core and then
 attaches surfaces:
 
 - by default, only the in-process terminal TUI;
@@ -1162,13 +1780,14 @@ gateway agent.
                          ┌──────────────────────────────────┐
   ┌──────────┐  direct   │        main agent program        │
   │ TUI      │◄─────────►│                                  │   libcurl (async)
-  └──────────┘           │  application/session actors:    │◄───────────────► model
-                         │  main + sub-agents, panes,       │   Responses/chat APIs
-  ┌──────────┐  HTTP     │  tools, guard, event log,        │
-  │ Web UI   │◄─────────►│  workspace coordinator          │
+  └──────────┘           │  application/session actors:     │◄───────────────► model
+                         │  main + sub-agents, workers,     │   Responses/chat APIs
+  ┌──────────┐  HTTP     │  tools, guard, event log;        │
+  │ Web UI   │◄─────────►│  per-workspace coordinator;      │
+  ├──────────┤           │  panes live on each surface      │
   ├──────────┤  +JSON    │                                  │   libcurl (async)
-  │ remote   │◄─────────►│  optional gateway adapters      │◄───────────────► channels
-  │ clients  │  events   │  + sqlite persistence           │
+  │ remote   │◄─────────►│  optional gateway adapters       │◄───────────────► channels
+  │ clients  │  events   │  + sqlite persistence            │
   ├──────────┤           │                                  │
   │ channels │◄─────────►│                                  │
   └──────────┘           └──────────────────────────────────┘
@@ -1186,7 +1805,9 @@ agent core as an explicit API value; it contains the milestone 8 HTTP
 API/long-poll/auth/web page, milestone 9 Telegram channel, and milestone 11
 SQLite persistence. `gateway.gene` is a thin compatibility launcher over those
 same two modules. Every gateway session owns an `AgentApplication` and uses its
-agent registry, pane registry, task cells, event sink, and workspace lease.
+worker/agent registries, task cells, event sink, and handle to the process-level
+per-workspace coordinator; only concrete layout surfaces own pane attachments
+(§7.1, §9.3).
 The adapter retains only the session actor/router map needed for per-session
 mailbox ordering. In combined mode it also registers the already-live TUI
 application as stable session `local`, so HTTP can observe, message, and cancel
@@ -1195,7 +1816,10 @@ the same main agent while curses remains responsive.
 Startup order is deliberate: parse and validate application flags, construct
 the core and restore durable state, bind the requested HTTP listener, and only
 then open curses. A requested port that is invalid or unavailable fails before
-terminal mode changes. `/quit` in combined TUI+gateway mode performs one
+terminal mode changes. `net/http/serve` remains the root scheduler-driving
+event loop in combined mode and the local TUI runs as its sibling Task;
+spawning `serve` inside the TUI fiber would create a recursive scheduler pump
+and starve terminal input. `/quit` in combined TUI+gateway mode performs one
 controlled shutdown of adapters, agent/process tasks, persistence, and curses;
 headless mode runs until an explicit shutdown or process signal. An unexpected
 loss of the requested HTTP listener is surfaced as a fatal application error
@@ -1210,18 +1834,24 @@ additional sessions. Each application session is a **session actor**
 - an agent registry with exactly one main agent and zero or more bounded,
   supervised sub-agents; each agent owns its Responses-style model item list
   (the chat adapter normalizes wire formats at the boundary);
-- a pane registry independent from the agent registry, plus any output-stream,
-  shell, and REPL controllers described in §7.1;
+- the non-agent workers described in §7.1 (shell, REPL, output, log tail,
+  file view, stats; slice C2 indexes all workers in one registry). Pane
+  registries now live in per-surface attachments; the session keeps no pane
+  state (§7.1, invariant §0.3);
 - a monotonically versioned **authoritative event log** (12.3), from which
-  transcript and surface state are projected;
+  shared transcript/worker observations are projected; panes, focus, drafts,
+  zoom, and scroll come only from each surface attachment;
 - model config (base/model/flavor per session, defaulted from env as today);
-- the typed tool registry, workspace mutation coordinator, §8.5 catastrophe
-  guard, and at most one pending destructive-operation confirmation (12.8).
+- the typed tool registry, a handle to the process-level per-workspace
+  mutation coordinator (§9.3, invariant §0.1), the §8.5 catastrophe guard, and
+  at most one pending destructive-operation confirmation (12.8).
 
-The session actor serializes control-plane transitions — create/stop agent,
-open/close pane, grant/release mutation lease, append event — while agent model
-requests and read-only tasks run concurrently under the scheduler. This keeps
-state deterministic without forcing all sub-agent work through one turn lock.
+The session actor serializes control-plane transitions — worker/agent
+creation and stop, lease requests toward the per-workspace coordinator, event
+append — while agent model requests and read-only tasks run concurrently under
+the scheduler. Pane and layout changes are not session transitions: each
+surface attachment serializes its own (§7.1). This keeps state deterministic
+without forcing all sub-agent work through one turn lock.
 The existing task-per-request `net/http` model and `http/actor_pool` remain the
 in-repo precedent for routing requests into actors via `RequestMsg`/reply.
 
@@ -1239,30 +1869,76 @@ non-loopback startup without authentication is rejected — single-user posture
 | `POST /api/sessions` | create session → `{^id ...}` | shipped |
 | `GET  /api/sessions` | list sessions with event version and busy state | shipped |
 | `POST /api/sessions/:id/messages` | append a user turn; returns immediately | shipped |
-| `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N, or park until one arrives | shipped |
+| `GET  /api/sessions/:id/events?cursor=N` | **long-poll**: events after N plus non-journal `changed_worker_ids`, or park until one arrives | shipped |
+| `GET  /api/sessions/:id/snapshot` | atomically bounded shared session/worker projection plus event cursor | shipped |
 | `POST /api/sessions/:id/confirmations/:cid` | resolve a rare destructive-operation confirmation | planned |
 | `POST /api/sessions/:id/cancel` | cancel the in-flight turn and its subprocess | shipped |
-| `POST /api/sessions/:id/agents` | spawn a supervised sub-agent with assignment/context attachment | slice C |
-| `POST /api/sessions/:id/agents/:aid/messages` | prompt or steer a particular agent | slice C |
-| `POST /api/sessions/:id/agents/:aid/cancel` | cancel that agent's active operation without stopping it | slice C |
-| `DELETE /api/sessions/:id/agents/:aid` | stop a sub-agent and preserve its event trail | slice C |
-| `GET /api/sessions/:id/panes` | list typed panes and backing-owner status | slice C |
-| `POST /api/sessions/:id/panes` | open/attach a typed pane | slice C |
-| `POST /api/sessions/:id/panes/:pid/input` | route user-originated input according to pane kind | slice C |
-| `DELETE /api/sessions/:id/panes/:pid` | close/detach a pane without conflating owner lifetime | slice C |
+| `POST /api/sessions/:id/agents` | spawn a supervised sub-agent with assignment/context attachment | shipped |
+| `POST /api/sessions/:id/agents/:aid/messages` | prompt a particular idle agent (busy rejects; steering remains explicit cancel-then-prompt) | shipped |
+| `POST /api/sessions/:id/agents/:aid/cancel` | cancel that agent's active operation without stopping it | shipped |
+| `DELETE /api/sessions/:id/agents/:aid` | stop a sub-agent and preserve its event trail | shipped |
+| `GET /api/sessions/:id/workers` | list workers: kind, lifecycle, current operation | shipped |
+| `POST /api/sessions/:id/workers` | create a typed worker: `{kind, config}` → `{worker_id}` | shipped |
+| `POST /api/sessions/:id/workers/:wid/input` | send input per worker kind (§7.1 table) | shipped |
+| `POST /api/sessions/:id/workers/:wid/cancel` | cancel the worker's active operation | shipped |
+| `DELETE /api/sessions/:id/workers/:wid` | stop a worker and preserve its event trail | shipped |
 | `GET  /` | the web UI page (12.5) | shipped |
+
+Worker control failures are typed at every adapter boundary. HTTP uses 409
+with stable codes such as `worker_busy` (including `worker_id`, current
+`task_id` when installed, and reservation state), `worker_idle`,
+`worker_stopped`, `worker_input_rejected`, and
+`main_worker_cannot_stop`; a missing session/worker remains 404. Successful
+cancel is distinct from an idle/stale no-op. Channel adapters render the same
+code as a user-visible notice rather than silently dropping rejected input;
+Telegram, for example, sends a `worker_busy` notice. Remote destructive
+operations continue to deny rather than parking on an unavailable local
+confirmation (§12.8).
+
+There are deliberately no session pane routes: panes, layout, focus, and zoom
+are surface state (§7.1, invariant §0.3), so each remote client manages its
+own layout locally (for the web page, in the browser) over the shared worker
+routes above. Worker creation is kind-typed and keeps each kind's capability
+and provenance rules — remote creation of `output`, `log_tail`, `file_view`,
+and `stats` workers is view-harmless, while `shell` and `repl` creation stays
+unavailable remotely at first. Gateway/channel `file_view` paths are
+workspace-confined through `safe_path`; arbitrary host reads remain a local
+TTY action or require a separately granted host-read capability. The
+agent-specific routes are convenience
+aliases over the same worker operations (spawn carries
+assignment/attachments); aliasing is explicit so the two routes can never
+develop different cancellation or stop semantics.
 
 Long-poll is the bootstrap streaming mechanism because the `net/http` server
 sends complete `Response` bodies — a handler parked on `Channel/recv` waiting
 for the next event does not stall other requests (proven by the
 handler-parked-in-`sleep` e2e test), so cursor long-poll works **today**;
-chunked/SSE response streaming is gap 2 in 12.9.
+chunked/SSE response streaming is gap 2 in 12.9. Because the journal is a
+bounded ring (§7.1), a client cursor older than retained history gets an
+explicit **cursor-gap** response carrying the new oldest cursor — the server
+never silently resumes from a later position, so a client can render "N events
+dropped" instead of misrepresenting continuity. A fresh or stale client then
+loads `GET /snapshot`: the response contains the bounded redacted main
+transcript, shared worker lifecycle/admission/current-operation state, bounded
+worker output, `output_seq`/loss metadata, and the session event cursor, but no
+surface pane/layout state. The main worker additionally carries the separate
+`transcript_seq`/transcript-loss metadata defined in §7.1. The same bounded
+main/worker projection is persisted
+independently of the retained event window. Capture occurs in one session-actor
+turn: every worker sequence and the event cursor describe that same logical
+boundary. The handler implements this without awaiting; the client installs
+the projection atomically and resumes
+events strictly after its cursor. Per-worker output sequences suppress an
+already-snapshotted output chunk at the capture boundary. SQLite persists the
+event high-water mark separately from its retained window, so restart never
+reuses an earlier `^v`.
 
 ### 12.3 Event log
 
-Each session appends typed events; surfaces render them and remember only a
-cursor. Events are maps (JSON-friendly, like everything else here). The
-shipped gateway adapter uses the same hyphenated §9.2 vocabulary as the CLI and
+Each session appends typed events; surfaces install one bounded shared-state
+snapshot, then render incremental events and remember its cursor. Events are
+maps (JSON-friendly, like everything else here). The
+shipped gateway adapter uses the same underscore-separated §9.2 vocabulary as the CLI and
 `/trace`:
 
 ```gene
@@ -1284,9 +1960,11 @@ not maintain a second gateway-only vocabulary.
 ### 12.4 TUI surface
 
 The TUI is always an in-process adapter when it is enabled, regardless of
-whether `--gateway` also exposes HTTP. Slice C makes its §7 pane layout a
-projection of the application agent/pane registries rather than TUI-owned
-conversation arrays. A future TUI running in a different process may be an
+whether `--gateway` also exposes HTTP. Slice C moved its rendering onto the
+application registries rather than TUI-owned conversation arrays; slice C2
+makes the TUI a **surface attachment** that owns its pane registry, layout,
+focus, and zoom locally while rendering shared session workers (§7.1,
+invariant §0.3). A future TUI running in a different process may be an
 HTTP gateway client, but that transport distinction must stay below the same
 surface command/event interface. The shipped cancellable `curses/next_event`
 already provides the non-blocking input needed to update sub-agent, output,
@@ -1357,8 +2035,11 @@ outright** — never blocking the scheduler on an invisible prompt — and recor
 the deny as a `confirmation` event in the owning session's log. The planned
 extension: when a structured operation is destructive but plausibly
 intentional, the session emits a `confirmation` event, parks the turn on a
-reply channel with a deadline (default deny on timeout), and the owning surface
-renders it natively — y/N in the TUI, buttons on the web, `/confirm` in chat.
+reply channel with a deadline (default deny on timeout), and broadcasts it to
+authorized attached interaction adapters — y/N in the TUI, buttons on the web,
+`/confirm` in chat. It belongs to the session/worker/task and normalized
+operation digest, not to one layout surface; the first valid response wins,
+disconnect does not cancel it, and the deadline covers a headless session.
 Catastrophic operations remain denied; normal operations remain auto-approved.
 This is not a general approval workflow.
 
@@ -1366,7 +2047,7 @@ This is not a general approval workflow.
 
 | # | Gap | Blocks | Bootstrap workaround | Proper fix |
 |---|---|---|---|---|
-| 1 | ~~**Async subprocess**~~ — **closed (m8, cancellation extended in slice B)**: `os/exec_async`/`exec_stream_async` run the child on a dedicated OS thread; stdout lines cross through a channel, the Task settles through the scheduler, and `Task/cancel` now terminates the child and closes its stdout channel | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
+| 1 | ~~**Async subprocess**~~ — **closed (m8, cancellation extended in slice B/C2)**: `os/exec_async`/`exec_stream_async` run captured children on dedicated OS threads; stdout lines cross through a channel, the Task settles through the scheduler, and `Task/cancel` terminates the child and closes its stdout channel. `os/exec_stdio_async` uses the same settlement/cancellation boundary with inherited terminal streams for `/edit` and `/tty` | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
 | 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
 | 4 | `crypto/hmac_sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |

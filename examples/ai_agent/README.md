@@ -66,7 +66,8 @@ Slash commands: `/repl` (live Gene REPL with a stable `session` object —
 add tools, inspect state, `(session ~ resume)` to continue the turn),
 `/trace` (query the versioned event log: `type=`, `tool=`, `path=`, `turn=`),
 `/diff` and `/undo [id]` (only attributable file operations), `/sh` (open or
-focus a cancellable shell pane), `/remember <note>` / `/memory` /
+focus a cancellable foreground shell pane), `/tty` (local user-driven escape
+for interactive or persistent/background shell work), `/remember <note>` / `/memory` /
 `/forget-memory` (durable notes in the system prompt), `/ext` or
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
 `/pane output [title]`, `/N <input>` and `/N close|cancel|stop|focus`
@@ -84,14 +85,16 @@ Key environment variables (all optional beyond the auth token):
 | `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` | bearer token, checked in that order; unset → offline demo |
 | `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API` | endpoint, model, wire shape (`responses`\|`chat`) |
 | `GENE_AGENT_STATE=<dir>` | persist config/session/memory/events across restarts (`GENE_AGENT_RESUME=0` for a fresh session) |
-| `GENE_AGENT_GUARD=0` | disable the catastrophe guard (design.md §8.5) |
+| `GENE_AGENT_GUARD=0` | disable destructive/catastrophic risk classification; mediated background/detach forms remain denied (design.md §8.5) |
 | `GENE_LIBCURL=<path>` | override native libcurl discovery; curl(1) is used only if the library cannot load |
 | `GENE_AGENT_CONTEXT_MAX_BYTES`, `GENE_AGENT_CONTEXT_MAX_ITEMS` | approximate wire-size/item limits that trigger deterministic compaction |
 | `GENE_AGENT_CONTEXT_KEEP_TURNS` | complete recent turns retained during compaction (default 8) |
 | `GENE_AGENT_MAX_TOOL_ROUNDS` | maximum model/tool rounds per turn (default 12); transient landing notices appear with two and one executable rounds left |
 
 Tools auto-approve (single-user posture); the guard denies catastrophic
-commands and asks once for destructive ones.
+commands and asks once for destructive ones. All mediated shell channels also
+enforce foreground lifetime independently of that optional classifier; use
+`/tty` for deliberate persistent/background work.
 
 ## The gateway
 

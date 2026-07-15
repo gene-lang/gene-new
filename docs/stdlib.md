@@ -139,6 +139,36 @@ logger. It defaults to one reader-valid Gene data map per line. Pass
 required; `^format "text"` remains available for concise human lines. It does
 not mutate process routing and is unavailable under wasm.
 
+### `os`
+
+The subprocess surface separates captured execution from whole-terminal
+handoff:
+
+```gene
+(import os [exec_async exec_stream_async exec_stdio_async Exec])
+
+(var result
+  (await (exec_async Exec ^cmd "sh" ^args ["-lc" "nimble test"])))
+
+# The child inherits stdin/stdout/stderr, while only this fiber waits.
+(var status
+  (await (exec_stdio_async Exec ^cmd "vi" ^args ["notes.txt"])))
+```
+
+`exec_async` returns a cancellable `Task` yielding the same captured result map
+as `exec`. `exec_stream_async` additionally sends complete stdout lines through
+the required bounded `^stdout_chan`. `exec_stdio_async` returns a cancellable
+`Task[Int]`; its child inherits the parent streams, but waiting happens on a
+dedicated worker so unrelated fibers, HTTP sessions, and application workers
+continue. Inherited-stream children are serialized because they share one
+physical terminal and process-wide terminal signal disposition. The synchronous
+`exec_stdio` remains available for simple programs that intentionally block
+their scheduler.
+
+All subprocess entry points require `Os/Exec`. Cancellation terminates an
+active async child. `exec_stdio_async` accepts only `^cmd`, `^args`, and `^dir`;
+capturing, timeouts, and output limits do not apply to a terminal handoff.
+
 ### `net/http_client`
 
 The native client is separate from the server namespace because its authority,
@@ -199,7 +229,10 @@ non-variadic, color-coded full-screen renderer. `dimensions` returns
 `{^rows ^cols}`. `next_event` returns a cancellable `Task` and reports text as
 complete UTF-8 strings plus named enter, edit, navigation, paste-boundary,
 modified-Enter, EOF, and resize events. Scheduler polling uses non-blocking
-`getch`, so waiting for a key does not stop other tasks. While a `Screen` owns
+`getch`, so waiting for a key does not stop other tasks. If ordinary typing is
+already queued behind a standalone Escape when the scheduler polls, the text
+byte is pushed back and delivered by the next event rather than being consumed
+as an unknown escape sequence. While a `Screen` owns
 the terminal, diagnostic console log sinks are paused to prevent out-of-band
 stdout/stderr writes from corrupting the full-screen display; file and callback
 sinks remain active.
@@ -213,12 +246,18 @@ the transcript by three lines and PageUp/PageDown by one viewport; a
 Transcript text word-wraps into visual rows at the current terminal width, and
 scrolling counts those wrapped rows. `refresh_input` redraws while retaining
 screen ownership. `draw`, `read_input`, and `refresh_input` also accept
-`^panes`, a list of `{^title Str ^output Str}` maps; `draw` additionally accepts
-a non-negative `^output_scroll` visual-row offset. On terminals at least 48
+`^panes`, a list of
+`{^title Str ^output Str ^scroll Int = 0 ^focused Bool = false
+^maximized Bool = false}` maps; `draw`
+additionally accepts a non-negative `^output_scroll` visual-row offset. Pane
+scroll offsets use the same visual-row, live-tail-relative convention and a
+scrolled pane marks its title with `[SCROLL +N]`. On terminals at least 48
 columns wide, the primary transcript keeps the left side while panes are
 stacked vertically on the right; input separators, input rows, and status keep
-the full terminal width. Narrow terminals retain the primary transcript and
-hide the side panes without changing their state. `escape_pressed?`
+the full terminal width. A maximized pane occupies the full output region.
+Narrow terminals show the focused pane full-width when one is focused, and
+otherwise retain the primary transcript; hidden panes keep their state.
+`escape_pressed?`
 non-destructively checks a live screen for
 a standalone Escape, preserving queued text and terminal escape sequences so a
 caller can use it to cancel concurrent work.

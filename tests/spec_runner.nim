@@ -3686,6 +3686,19 @@ suite "spec — os and json from ai-agent plan":
                "(exec_stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
                "7")
 
+  test "os/exec_stdio_async inherits streams without blocking the scheduler":
+    check_eval("(import os [exec_stdio_async Exec]) " &
+               "(var ticks (cell 0)) " &
+               "(var status (cell -1)) " &
+               "(scope " &
+               "  (spawn (repeat 5 (do (sleep 20) " &
+               "    (ticks ~ Cell/set (+ (ticks ~ Cell/get) 1))))) " &
+               "  (status ~ Cell/set " &
+               "    (await (exec_stdio_async Exec ^cmd \"sh\" " &
+               "      ^args [\"-c\" \"sleep 0.2; exit 7\"])))) " &
+               "[(status ~ Cell/get) (ticks ~ Cell/get)]",
+               "[7 5]")
+
   test "os/exec_async settles a task off-thread with the exec result map":
     check_eval("(import os [exec_async Exec]) " &
                "(var r (await (exec_async Exec ^cmd \"echo\" ^args [\"hi\"]))) " &
@@ -3743,6 +3756,17 @@ suite "spec — os and json from ai-agent plan":
                "  (try (loop (ch ~ Channel/recv)) " &
                "    catch (ChannelClosed) \"closed\"))",
                "\"closed\"")
+    check getMonoTime() - started < initDuration(milliseconds = 1200)
+
+  test "Task/cancel terminates an inherited-stream async child":
+    let started = getMonoTime()
+    check_eval("(import os [exec_stdio_async Exec]) " &
+               "(scope " &
+               "  (var t (exec_stdio_async Exec ^cmd \"sleep\" ^args [\"2\"])) " &
+               "  (spawn (do (sleep 50) (t ~ Task/cancel))) " &
+               "  (sleep 200) " &
+               "  \"cancelled\")",
+               "\"cancelled\"")
     check getMonoTime() - started < initDuration(milliseconds = 1200)
 
   test "scheduler stays live while an async exec child runs":

@@ -9,6 +9,9 @@
 type CursesPane = object
   title: string
   output: string
+  scroll: int
+  focused: bool
+  maximized: bool
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   type CursesWindow = pointer
@@ -760,6 +763,12 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   finally:
     process.close()
 
+when compileOption("threads"):
+  # The sync and async inherited-stream variants share one physical terminal
+  # and manipulate process-wide SIGINT disposition. Serialize both surfaces.
+  var osExecStdioLock: Lock
+  initLock(osExecStdioLock)
+
 proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Run a subprocess attached to this process's stdin/stdout/stderr and return
   ## its exit status. This is for terminal handoff cases where captured
@@ -794,11 +803,15 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         raiseOsError("os/exec_stdio got unexpected named argument: " & name, scope)
   if not cmdSet or cmd.len == 0:
     raiseOsError("os/exec_stdio requires a non-empty ^cmd", scope)
+  when compileOption("threads"):
+    acquire(osExecStdioLock)
   var process: Process
   try:
     process = startProcess(cmd, workingDir = workdir, args = procArgs,
                            options = {poUsePath, poParentStreams})
   except OSError as e:
+    when compileOption("threads"):
+      release(osExecStdioLock)
     raiseOsError("os/exec_stdio could not start '" & cmd & "': " & e.msg, scope)
   # system(3) semantics: the child owns the terminal, so Ctrl-C must reach the
   # child (and whatever it runs), not kill this process while it waits.
@@ -814,6 +827,8 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     when defined(posix):
       if intIgnored:
         discard sigaction(SIGINT, oldInt, nil)
+    when compileOption("threads"):
+      release(osExecStdioLock)
     process.close()
 
 # --- os/exec_async + os/exec_stream_async: subprocess on a dedicated thread ---
@@ -856,6 +871,7 @@ when compileOption("threads"):
       cmd: SharedExecText
       procArgs: ptr SharedExecArg
       workdir: SharedExecText
+      inheritStdio: bool
       timeoutMs: int
       maxBytes: int
       taskBits: uint64      # external Task (OBJECT_TAG bits), worker-borrowed
@@ -948,6 +964,9 @@ when compileOption("threads"):
   var osExecAsyncQueue: seq[pointer]   # borrowed OsExecAsyncCtx; registry owns
   var osExecAsyncThreads: seq[ref Thread[void]]
   var osExecAsyncIdle = 0
+  # Inherited-terminal children share process-wide signal disposition and one
+  # physical terminal. Serialize them even though captured exec jobs may run
+  # concurrently on the rest of the worker pool.
   initLock(osExecAsyncLock)
   initCond(osExecAsyncCond)
 
@@ -1022,6 +1041,9 @@ when compileOption("threads"):
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
               if tryFailTask(task, failure):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+            elif ctx.inheritStdio:
+              if tryCompleteTask(task, newInt(ctx.resultStatus)):
                 wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
             else:
               var props = initPropTable()
@@ -1129,6 +1151,61 @@ when compileOption("threads"):
 
       if cancellationRequested():
         ctx.resultCancelled = true
+        return
+
+      if ctx.inheritStdio:
+        # Parent-stream handoff is intentionally a separate path: attempting
+        # to inspect output handles from a poParentStreams Process is invalid,
+        # and inherited terminal bytes must never be captured or materialized
+        # as Gene values on this worker thread.
+        acquire(osExecStdioLock)
+        try:
+          if cancellationRequested():
+            ctx.resultCancelled = true
+            return
+          var process: Process
+          try:
+            process = startProcess(nativeCmd, workingDir = nativeWorkdir,
+                                   args = nativeArgs,
+                                   options = {poUsePath, poParentStreams})
+          except CatchableError as e:
+            settleFail(nativeName & " could not start '" & nativeCmd & "': " &
+                       e.msg)
+            return
+          # system(3) semantics: after the child inherited the current signal
+          # handlers, ignore terminal Ctrl-C in the parent until handoff ends.
+          # The lock above prevents overlapping handoffs from restoring one
+          # another's signal disposition out of order.
+          when defined(posix):
+            var ignoreInt, oldInt: Sigaction
+            ignoreInt.sa_handler = SIG_IGN
+            discard sigemptyset(ignoreInt.sa_mask)
+            ignoreInt.sa_flags = 0
+            let intIgnored = sigaction(SIGINT, ignoreInt, oldInt) == 0
+          try:
+            while process.running:
+              if cancellationRequested():
+                cancelled = true
+                process.terminate()
+                break
+              os.sleep(osExecPollMs)
+            if cancelled:
+              discard process.waitForExit()
+              ctx.resultCancelled = true
+            else:
+              ctx.resultStatus = process.waitForExit()
+          except CatchableError as e:
+            settleFail(nativeName & " failed: " & e.msg)
+          finally:
+            when defined(posix):
+              if intIgnored:
+                discard sigaction(SIGINT, oldInt, nil)
+            try:
+              process.close()
+            except CatchableError:
+              discard
+        finally:
+          release(osExecStdioLock)
         return
 
       var process: Process
@@ -1257,6 +1334,7 @@ else:
     pollCursesInputCompletions()
 
 proc biOsExecAsyncImpl(name: string, wantChan: bool,
+                       inheritStdio: bool,
                        args: openArray[Value],
                        call: ptr NativeCall): Value =
   if args.len != 1:
@@ -1286,8 +1364,12 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
           requireStr(name & " ^args item", item)
           procArgs.add item.strVal
       of "timeout_ms":
+        if inheritStdio:
+          raiseOsError(name & " got unexpected named argument: timeout_ms", scope)
         timeoutMs = int(requireInt64(name & " ^timeout_ms", v))
       of "max_bytes":
+        if inheritStdio:
+          raiseOsError(name & " got unexpected named argument: max_bytes", scope)
         maxBytes = int(requireInt64(name & " ^max_bytes", v))
       of "dir":
         requireStr(name & " ^dir", v)
@@ -1320,6 +1402,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     ctx.name = sharedExecText(name)
     ctx.cmd = sharedExecText(cmd)
     ctx.workdir = sharedExecText(workdir)
+    ctx.inheritStdio = inheritStdio
     ctx.timeoutMs = timeoutMs
     ctx.maxBytes = maxBytes
     ctx.taskBits = task.bits
@@ -1364,13 +1447,20 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
 proc biOsExecAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## os/exec contract, but returns a Task settled off-thread: the scheduler
   ## keeps running fibers while the child executes. Await for the result map.
-  biOsExecAsyncImpl("os/exec_async", false, args, call)
+  biOsExecAsyncImpl("os/exec_async", false, false, args, call)
 
 proc biOsExecStreamAsync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## os/exec_async plus live stdout lines: each complete line (CR stripped) is
   ## sent to ^stdout_chan as it arrives; the channel is closed when the child
   ## exits, then the Task settles with the captured result map.
-  biOsExecAsyncImpl("os/exec_stream_async", true, args, call)
+  biOsExecAsyncImpl("os/exec_stream_async", true, false, args, call)
+
+proc biOsExecStdioAsync(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+  ## Scheduler-friendly terminal handoff. The child inherits this process's
+  ## stdin/stdout/stderr while a worker thread waits for it; await the returned
+  ## Task for its integer exit status. Cancellation terminates the child.
+  biOsExecAsyncImpl("os/exec_stdio_async", false, true, args, call)
 
 # --- net/http_client: native libcurl client ---------------------------------
 #
@@ -2433,23 +2523,29 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       withCursesColor(PairSeparator,
         proc() = addCursesText("│", 1))
     for i, pane in panes:
-      let paneTitle = pane.title
       let paneOutput = pane.output
       let paneTop = (outputRows * i) div panes.len
       let paneBottom = (outputRows * (i + 1)) div panes.len
       let paneHeight = paneBottom - paneTop
       if paneHeight <= 0:
         continue
+      let bodyHeight = max(0, paneHeight - 1)
+      let rows = transcriptRows(paneOutput, paneWidth)
+      let effectiveScroll = min(max(0, pane.scroll),
+                                max(0, rows.len - bodyHeight))
+      let paneTitle =
+        if effectiveScroll > 0:
+          pane.title & " [SCROLL +" & $effectiveScroll & "]"
+        else:
+          pane.title
       discard cMove(paneTop.cint, divider.cint)
       withCursesColor(PairSeparator,
         proc() =
           addCursesText(if i == 0: "│" else: "├", 1)
           let prefix = if i == 0: " " else: "─ "
           addCursesText(prefix & paneTitle, paneWidth))
-      if paneHeight > 1:
-        let rows = transcriptRows(paneOutput, paneWidth)
-        let bodyHeight = paneHeight - 1
-        let first = max(0, rows.len - bodyHeight)
+      if bodyHeight > 0:
+        let first = max(0, rows.len - bodyHeight - effectiveScroll)
         for bodyRow in 0 ..< bodyHeight:
           let idx = first + bodyRow
           if idx < rows.len:
@@ -2495,13 +2591,32 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let topSepRow = inputTop - 1
     let outputRows = max(0, topSepRow)
 
-    let mainOutputWidth = cursesMainOutputWidth(width, panes.len)
-    let outputLines = transcriptRows(output, mainOutputWidth)
-    let effectiveScroll = min(max(0, outputScroll),
+    var fullPane = -1
+    for i, pane in panes:
+      if pane.maximized:
+        fullPane = i
+        break
+    if fullPane < 0 and width < 48:
+      for i, pane in panes:
+        if pane.focused:
+          fullPane = i
+          break
+    let mainOutputWidth =
+      if fullPane >= 0: width
+      else: cursesMainOutputWidth(width, panes.len)
+    let visibleOutput =
+      if fullPane >= 0: panes[fullPane].output
+      else: output
+    let requestedScroll =
+      if fullPane >= 0: panes[fullPane].scroll
+      else: outputScroll
+    let outputLines = transcriptRows(visibleOutput, mainOutputWidth)
+    let effectiveScroll = min(max(0, requestedScroll),
                               max(0, outputLines.len - outputRows))
     drawCursesTranscript(outputLines, 0, 0, outputRows, mainOutputWidth,
                          effectiveScroll)
-    drawCursesPanes(panes, outputRows, width)
+    if fullPane < 0:
+      drawCursesPanes(panes, outputRows, width)
 
     drawSeparator(topSepRow, width)
     for row in 0 ..< inputRows:
@@ -2747,7 +2862,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             let seq = readEscSequence()
             let mouseDirection = mouseScrollFromEsc(seq)
             let navigationKey = navigationKeyFromEsc(seq)
-            if mouseDirection > 0:
+            if seq.len == 1 and seq[0] notin {'[', 'O'}:
+              # A scheduler-delayed standalone Escape can be dequeued only
+              # after ordinary typing has arrived. Do not consume that first
+              # byte as an unsupported Alt sequence.
+              discard ungetch(cint(seq[0].ord))
+              discard beep()
+            elif mouseDirection > 0:
               outputScroll = min(
                 maxCursesOutputScroll(output, input, max(1, int(LINES)),
                                       max(1, int(COLS)), panes.len),
@@ -2794,9 +2915,27 @@ proc parseCursesPanes(name: string, value: Value): seq[CursesPane] =
     requirePropMap(name & " ^panes item", item)
     let title = item.mapEntries.getOrDefault("title", VOID)
     let output = item.mapEntries.getOrDefault("output", VOID)
+    let scrollValue = item.mapEntries.getOrDefault("scroll", VOID)
+    let focusedValue = item.mapEntries.getOrDefault("focused", VOID)
+    let maximizedValue = item.mapEntries.getOrDefault("maximized", VOID)
     requireStr(name & " ^panes item ^title", title)
     requireStr(name & " ^panes item ^output", output)
-    result.add CursesPane(title: title.strVal, output: output.strVal)
+    let scroll =
+      if scrollValue.kind == vkVoid: 0
+      else: int(requireInt64(name & " ^panes item ^scroll", scrollValue))
+    if scroll < 0:
+      raise newException(GeneError,
+        name & " ^panes item ^scroll must be non-negative")
+    if focusedValue.kind notin {vkVoid, vkBool}:
+      raise newException(GeneError,
+        name & " ^panes item ^focused must be Bool")
+    if maximizedValue.kind notin {vkVoid, vkBool}:
+      raise newException(GeneError,
+        name & " ^panes item ^maximized must be Bool")
+    result.add CursesPane(
+      title: title.strVal, output: output.strVal, scroll: scroll,
+      focused: focusedValue.kind == vkBool and focusedValue.boolVal,
+      maximized: maximizedValue.kind == vkBool and maximizedValue.boolVal)
 
 proc readInputNative(name: string, call: ptr NativeCall,
                      persistentDefault, persistentFixed: bool): Value =
@@ -3177,7 +3316,15 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
           if ch == KeyEsc:
             cursesEventText.setLen(0)
             cursesEventTextExpected = 0
-            event = cursesEscapeEvent(readEscSequence())
+            let seq = readEscSequence()
+            if seq.len == 1 and seq[0] notin {'[', 'O'}:
+              # Preserve typing that arrived after a standalone Escape but
+              # before this scheduler poll. The next pending read receives
+              # the pushed-back byte.
+              discard ungetch(cint(seq[0].ord))
+              event = cursesEscapeEvent("")
+            else:
+              event = cursesEscapeEvent(seq)
           elif ch == KeyCtrlD or ch == KeyEnter or ch == KeyReturn or
                ch == KeyNcursesEnter or ch == KeyBackspace or ch == 127 or
                ch == 8:
@@ -6581,6 +6728,8 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("exec_async", newNativeCallFn("os/exec_async", biOsExecAsync))
   osScope.define("exec_stream_async",
                  newNativeCallFn("os/exec_stream_async", biOsExecStreamAsync))
+  osScope.define("exec_stdio_async",
+                 newNativeCallFn("os/exec_stdio_async", biOsExecStdioAsync))
   osScope.define("begin_interrupt",
                  newNativeFn("os/begin_interrupt", biOsBeginInterrupt))
   osScope.define("take_interrupt",

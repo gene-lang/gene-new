@@ -23,7 +23,7 @@
 
 (import os [get_env exec_async Env Exec])
 (import json [parse stringify JsonError])
-(import str [split trim join starts_with? contains?])
+(import str [split trim join starts_with? contains? byte_size])
 (import std/stream [to_stream filter each into])
 (import std/parse [parse_int])
 (import net/http [Server serve listen stop Response])
@@ -41,6 +41,21 @@
 (var gw_state_dir (get_env Env "GENE_GATEWAY_STATE" ""))
 (var gw_resume (get_env Env "GENE_GATEWAY_RESUME" "1"))
 (var gw_quiet false)
+
+(fn positive_env_int [name : Str, fallback : Int] : Int
+  (try
+    (do
+      (var parsed (parse_int (get_env Env name $"${fallback}")))
+      (if (> parsed 0) parsed fallback))
+  catch _ fallback))
+
+(var gw_event_max
+  (positive_env_int "GENE_GATEWAY_EVENT_MAX_COUNT" 4096))
+(var configured_gw_event_max_bytes
+  (positive_env_int "GENE_GATEWAY_EVENT_MAX_BYTES" 2097152))
+(var gw_event_max_bytes
+  (if (< configured_gw_event_max_bytes 1024)
+    1024 configured_gw_event_max_bytes))
 
 (fn gw_notice [text : Str]
   (if gw_quiet nil (println text)))
@@ -67,16 +82,18 @@
 
 (var gw_store (cell nil))
 
-(fn persist_session [id, items, events, next_v, app]
+(fn persist_session [id, items, events, next_v, dropped_before, app]
   (if (== (gw_store ~ Cell/get) nil)
     nil
     (try
       ((gw_store ~ Cell/get) ~ put
         id
-        {^items (items ~ Cell/get)
-         ^events (events ~ Cell/get)
+        {^items (agent_api/redact_any (items ~ Cell/get))
+         ^events (agent_api/redact_any (events ~ Cell/get))
          ^next_v (next_v ~ Cell/get)
-         ^application (agent_api/application_snapshot app)})
+         ^dropped_before (dropped_before ~ Cell/get)
+         ^application
+           (agent_api/redact_any (agent_api/application_snapshot app))})
     catch _ (gw_notice $"persist failed for session ${id}"))))
 
 # on_event: nil, or (fn [event] ...) called after each event is logged — how
@@ -94,8 +111,19 @@
   (var next_v
     (if shared agent_api/next_event_v
       (cell (if (== saved nil) 0 saved/next_v))))
+  (var dropped_before
+    (if shared agent_api/event_dropped_before
+      (cell (if (|| (== saved nil) (== saved/dropped_before void))
+              0 saved/dropped_before))))
+  (var event_bytes (cell 0))
+  (for retained in (events ~ Cell/get)
+    (event_bytes ~ Cell/set
+      (+ (event_bytes ~ Cell/get) (byte_size (stringify retained)))))
   (var current_task
     (if shared existing_app/main_agent/current_task (cell nil)))
+  # Reserve admission before the actor dequeues a message. Two concurrent
+  # handlers must not both return 202 while the worker still appears idle.
+  (var input_pending (cell false))
   (var cancel_requested (cell false))
   (var items
     (if shared existing_app/main_agent/items
@@ -103,19 +131,56 @@
               [(agent_api/system_item agent_api/gene_system_prompt)]
               saved/items))))
   (var app existing_app)
+  (fn trim_events! []
+    (var current (events ~ Cell/get))
+    (var first 0)
+    (var retained_bytes (event_bytes ~ Cell/get))
+    (while (&& (< first current/~size)
+               (|| (> (- current/~size first) gw_event_max)
+                   (> retained_bytes gw_event_max_bytes)))
+      (set retained_bytes
+        (- retained_bytes (byte_size (stringify current/%first))))
+      (dropped_before ~ Cell/set current/%first/v)
+      (set first (+ first 1)))
+    (if (> first 0)
+      (do
+        (var kept [])
+        (repeat i in current/~size
+          (if (>= i first) (kept ~ List/push! current/%i) nil))
+        (events ~ Cell/set kept)
+        (event_bytes ~ Cell/set retained_bytes))
+      nil))
+  (trim_events!)
   (fn append_event [event]
-    ((events ~ Cell/get) ~ List/push! event)
+    (var stored (agent_api/bounded_event_record event gw_event_max_bytes))
+    ((events ~ Cell/get) ~ List/push! stored)
+    (event_bytes ~ Cell/set
+      (+ (event_bytes ~ Cell/get) (byte_size (stringify stored))))
+    (trim_events!)
     (if (== on_event nil)
       nil
-      (try (on_event event) catch _ nil)))
+      (try (on_event stored) catch _ nil))
+    stored)
   (fn push_event [type : Str, text : Str]
     (if shared
-      (agent_api/application_emit app type {^text text ^surface "gateway"})
+      (agent_api/application_emit app type
+        {^worker_id app/main_agent/id ^agent_id app/main_agent/id
+         ^text text ^surface "gateway"})
       (do
         (next_v ~ Cell/set (+ (next_v ~ Cell/get) 1))
-        (append_event
+        (var event
           {^v (next_v ~ Cell/get) ^type type
-           ^text (agent_api/redact_any text)}))))
+           ^worker_id app/main_agent/id ^agent_id app/main_agent/id
+           ^text (agent_api/redact_any text)})
+        (append_event event)
+        # The application observes the same event and derives canonical
+        # worker_output records; its sink intentionally skips the already
+        # appended compatibility event.
+        (agent_api/application_emit app type
+          {^worker_id app/main_agent/id ^agent_id app/main_agent/id
+           ^text text ^surface "gateway"})
+        (agent_api/gateway_project_event app type text)
+        event)))
   # Per-session structured sink for the turn loop (§12.1/§12.3): the same
   # versioned events the CLI logs (tool_call/tool_result/model_item/error/
   # turn_done) land in THIS session's log, redacted, so a persisted session
@@ -129,17 +194,21 @@
         (var event {^v (next_v ~ Cell/get) ^type type})
         (for [k pv] in props
           (event ~ Map/put! k (agent_api/redact_any pv)))
-        (append_event event))))
+        (append_event event)
+        event)))
   (fn emit_turn_event [type : Str, props]
     (match type
       (when "agent_text" nil)
       (when "text_delta" nil)
       (else
         (do
-          (push_structured type props)
-          (if (&& shared (== type "turn_done"))
-            (agent_api/gateway_render_event app "turn_done" "")
-            nil)))))
+          (var emitted (push_structured type props))
+          (if (== type "turn_done")
+            (if shared
+              (agent_api/gateway_render_event app "turn_done" "")
+              (agent_api/gateway_project_event app "turn_done" ""))
+            nil)
+          emitted))))
   (if (== app nil)
     (set app
       (agent_api/make_application items (cell "") (cell [])
@@ -181,29 +250,41 @@
               (push_structured "error" {^kind "failed" ^text "turn failed"})
               (push_structured "turn_done" {^failed true}))
             nil))
-        (current_task ~ Cell/set nil)
-        (app/main_agent/status ~ Cell/set
-          (if (== (outcome ~ Cell/get) "done") "completed" "failed"))
+        (var worker_outcome
+          (if (== (outcome ~ Cell/get) "done") "completed"
+            (if (cancel_requested ~ Cell/get) "cancelled" "failed")))
+        (agent_api/application_finish_worker_operation
+          app app/main_agent worker_outcome)
         (push_structured "agent_status"
-          {^agent_id app/main_agent/id
-           ^status (app/main_agent/status ~ Cell/get)})
+          {^worker_id app/main_agent/id ^agent_id app/main_agent/id
+           ^status worker_outcome})
+        (input_pending ~ Cell/set false)
+        (app/main_agent/input_reserved ~ Cell/set false)
         (if shared (agent_api/gateway_save_application app) nil)
-        (persist_session id items events next_v app))))
+        (persist_session id items events next_v dropped_before app))))
   (var turn_actor
     (actor/spawn ^init (fn [] 0)
-      ^handle (fn [ctx, state, text]
+      ^handle (fn [ctx, state, input]
         (if (!= (current_task ~ Cell/get) nil)
-          (push_structured "error" {^kind "busy" ^text "turn already in flight"})
+          (do
+            (input_pending ~ Cell/set false)
+            (app/main_agent/input_reserved ~ Cell/set false)
+            (push_structured "error"
+              {^kind "busy" ^text "turn already in flight"}))
           (do
             (if shared (agent_api/begin_turn) nil)
+            (agent_api/application_drain_supervisor_inbox app)
+            (agent_api/record_worker_input
+              app/main_agent input/text input/adapter nil)
+            (var text input/text)
             (push_event "user_input" text)
             (if shared
               (agent_api/gateway_render_event app "user_input" text)
               nil)
             (cancel_requested ~ Cell/set false)
-            (app/main_agent/status ~ Cell/set "working")
             (push_structured "agent_status"
-              {^agent_id app/main_agent/id ^status "working"})
+              {^worker_id app/main_agent/id ^agent_id app/main_agent/id
+               ^status "working"})
             (var task
               (spawn
                 (items ~ Cell/set
@@ -229,12 +310,42 @@
                             emit_turn_event
                             {^app app ^agent app/main_agent ^pane nil
                              ^guard_confirm (fn [cmd] false)}))))
-            (current_task ~ Cell/set task)
+            (agent_api/application_begin_worker_operation
+              app app/main_agent task "agent_turn")
+            # The canonical task is now visible. Release only the admission
+            # reservation; `current_task` continues rejecting competing input.
+            (app/main_agent/input_reserved ~ Cell/set false)
             (task ~ Task/detach)
             ((spawn (monitor_turn task)) ~ Task/detach)))
         (actor/continue state))))
+  (fn submit_input [text : Str, adapter : Str] : Bool
+    (if (|| (input_pending ~ Cell/get)
+            (app/main_agent/input_reserved ~ Cell/get)
+            (!= (current_task ~ Cell/get) nil))
+      false
+      (do
+        (input_pending ~ Cell/set true)
+        # Shared worker state lets the TUI observe admission before this
+        # adapter's actor installs the Task.
+        (app/main_agent/input_reserved ~ Cell/set true)
+        (turn_actor ~ actor/send (freeze {^text text ^adapter adapter}))
+        true)))
+  # Persist terminal worker transitions even when no main-agent message runs.
+  # Projection deltas are captured by the terminal operation snapshot (or by
+  # the synchronous route save below), avoiding a store write per text chunk.
+  ((app/event_observers ~ Cell/get) ~ List/push!
+    {^worker_id "__gateway_persistence__"
+     ^handler (fn [event]
+       (if (["worker_operation_finished" "worker_stopped" "agent_spawned"]
+             ~ contains? event/type)
+         (persist_session id items events next_v dropped_before app)
+         nil))})
   {^id id ^actor turn_actor ^events events ^next_v next_v
-   ^current_task current_task ^cancel_requested cancel_requested
+   ^dropped_before dropped_before
+   ^event_bytes event_bytes
+   ^items items
+   ^current_task current_task ^input_pending input_pending
+   ^submit_input submit_input ^cancel_requested cancel_requested
    ^application app ^shared shared})
 
 (fn events_after [s, cursor : Int]
@@ -316,6 +427,14 @@
         nil
         (gw_notice $"telegram: outbox full, dropped event for chat ${chat_id}")))))
 
+(fn telegram_notice [chat_id, text : Str]
+  (if (tg_outbox ~ Channel/try_send
+        (stringify
+          {^chat_id chat_id
+           ^event {^type "agent_text" ^text text ^adapter_result true}}))
+    nil
+    (gw_notice $"telegram: outbox full, dropped notice for chat ${chat_id}")))
+
 # Per-chat streaming state for the sender fiber: deltas accumulate into one
 # message edited every ~200 new characters (size-based throttle) and
 # finalized on turn_done; non-streamed lines go out as individual messages.
@@ -350,7 +469,10 @@
             (st/sent_len ~ Cell/set text/~size))
           nil)))
     (when "agent_text"
-      (tg_send_message chat_id event/text)
+      # A streamed answer is already represented by the pending edited
+      # message. agent_text is then terminal metadata, not a second reply.
+      (if (== (st/pending ~ Cell/get) "")
+        (tg_send_message chat_id event/text) nil)
       nil)
     (when "turn_done"
       (var text (st/pending ~ Cell/get))
@@ -404,7 +526,13 @@
         (if (tg_chat_allowed? chat_id)
           (do
             (var s (tg_session_for chat_id))
-            (s/actor ~ actor/send text))
+            (if (s/submit_input text "telegram")
+              nil
+              (do
+                (telegram_notice chat_id
+                  $"worker_busy: session ${s/id} already has a turn in flight")
+                (gw_notice
+                  $"telegram: session ${s/id} is busy; input rejected"))))
           (gw_notice $"telegram: dropped message from unlisted chat ${chat_id} - add it to TELEGRAM_ALLOWED_CHAT_IDS to allow"))))))
 
 # One getUpdates long-poll round. Loop-local state lives in the fn body (fresh
@@ -469,25 +597,32 @@
     ~ each (fn [pair]
         (var [k, s] pair)
         ((out ~ Cell/get) ~ List/push!
-          {^id k ^events (s/next_v ~ Cell/get)
-           ^busy (!= (s/current_task ~ Cell/get) nil)})))
+          {^id k ^events (session_event_cursor s)
+           ^busy (|| (s/input_pending ~ Cell/get)
+                     (!= (s/current_task ~ Cell/get) nil))})))
   (json_response 200 {^sessions (out ~ Cell/get)}))
 
 (fn post_message [id : Str, req]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
-    (if (!= (s/current_task ~ Cell/get) nil)
-      (json_response 409 {^error "turn already in flight"})
-      (try
-        (var body (parse req/body))
-        (if (|| (== body/text void) (== body/text nil) (== body/text ""))
-          (json_response 400 {^error "missing text"})
+    (try
+      (var body (parse req/body))
+      (if (|| (== body/text void) (== body/text nil) (== body/text ""))
+        (json_response 400 {^error "missing text"})
+        (if (s/submit_input body/text "http")
+          (json_response 202 {^ok true})
           (do
-            (s/actor ~ actor/send body/text)
-            (json_response 202 {^ok true})))
+            (var operation
+              (s/application/main_agent/current_operation ~ Cell/get))
+            (json_response 409
+              {^error "worker_busy" ^message "turn already in flight"
+               ^worker_id s/application/main_agent/id
+               ^task_id (if (== operation nil) nil operation/task_id)
+               ^reserved
+                 (s/application/main_agent/input_reserved ~ Cell/get)}))))
       catch (JsonError ^message m)
-        (json_response 400 {^error m})))))
+        (json_response 400 {^error m}))))
 
 (fn cancel_turn [id : Str]
   (var s (sessions ~ Map/get id))
@@ -496,11 +631,246 @@
     (do
       (var task (s/current_task ~ Cell/get))
       (if (== task nil)
-        (json_response 409 {^error "no turn in flight"})
+        (json_response 409
+          {^error "worker_idle" ^message "no turn in flight"
+           ^worker_id s/application/main_agent/id})
         (do
           (s/cancel_requested ~ Cell/set true)
-          (task ~ Task/cancel)
+          (agent_api/application_cancel_worker
+            s/application s/application/main_agent)
           (json_response 202 {^ok true}))))))
+
+(fn list_workers [id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (json_response 200
+      {^workers (agent_api/application_workers_snapshot s/application)})))
+
+(fn session_event_cursor [s] : Int
+  # The embedded local application exposes the next cursor to allocate;
+  # standalone gateway sessions historically retain the last allocated one.
+  (if s/shared
+    (- (s/next_v ~ Cell/get) 1)
+    (s/next_v ~ Cell/get)))
+
+(fn session_snapshot [s]
+  # This handler contains no await. It captures the shared worker projection
+  # and the journal cursor in one scheduler turn. Per-worker output_seq lets a
+  # client suppress an already-snapshotted worker_output record if a producer
+  # crossed the boundary immediately before capture.
+  {^session_id s/id
+   ^cursor (session_event_cursor s)
+   ^dropped_before (s/dropped_before ~ Cell/get)
+   ^main_worker_id s/application/main_agent/id
+   ^workers
+     (agent_api/redact_any
+     (agent_api/application_workers_snapshot s/application))})
+
+(fn projection_worker_ids [s]
+  # Projection rows are snapshot-only derived state. Conservatively
+  # invalidate every live projection after a canonical event batch; this is
+  # bounded by the worker limit and avoids journal amplification.
+  (var ids [])
+  (for worker in (agent_api/application_workers_snapshot s/application)
+    (if (&& (== worker/lifecycle "running")
+            (["stats" "log_tail"] ~ contains? worker/kind))
+      (ids ~ List/push! worker/worker_id)
+      nil))
+  ids)
+
+(fn get_snapshot [id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (json_response 200 (session_snapshot s))))
+
+(fn persist_gateway_session [s]
+  (persist_session s/id s/items s/events s/next_v s/dropped_before
+                   s/application))
+
+(fn create_worker [id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (try
+      (do
+        (var body (parse req/body))
+        (if (|| (== body/kind void) (== body/kind nil))
+          (json_response 400 {^error "missing worker kind"})
+          (if (["output" "log_tail" "file_view" "stats"]
+                ~ contains? body/kind)
+            (do
+              (var worker
+                (agent_api/application_create_worker
+                  s/application body/kind
+                  (if (== body/config void) body body/config)))
+              (if (== worker nil)
+                (json_response 400
+                  {^error "worker configuration was rejected or limit reached"})
+                (do
+                  (persist_gateway_session s)
+                  (json_response 201 {^worker_id worker/id}))))
+            (json_response 403
+              {^error "remote worker kind is not allowed"}))))
+    catch (JsonError ^message m)
+      (json_response 400 {^error m})
+    catch {^message m}
+      (json_response 400 {^error m}))))
+
+# Agent routes are explicit aliases over the agent subset of the canonical
+# worker registry. They never maintain a second task, id, or lifecycle.
+(fn create_agent [id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (try
+      (do
+        (var body (parse req/body))
+        (var assignment
+          (if (|| (== body/assignment void) (== body/assignment nil))
+            "" (trim body/assignment)))
+        (if (== assignment "")
+          (json_response 400 {^error "missing assignment"})
+          (do
+            (var agent
+              (agent_api/spawn_supervised_agent_with_context s/application
+                (if (|| (== body/title void) (== body/title nil))
+                  "sub-agent" body/title)
+                assignment
+                (if (== body/context void) [] body/context)))
+            (if (== agent nil)
+              (json_response 409 {^error "sub-agent limit reached"})
+              (do
+                (persist_gateway_session s)
+                (json_response 201
+                  {^agent_id agent/id ^worker_id agent/id}))))))
+    catch (JsonError ^message m)
+      (json_response 400 {^error m})
+    catch {^message m}
+      (json_response 400 {^error m}))))
+
+(fn agent_input [id : Str, agent_id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agent (agent_api/application_find_agent s/application agent_id))
+      (if (|| (== agent nil) (== agent/id "main"))
+        (json_response 404 {^error "no such sub-agent"})
+        (worker_input id agent_id req)))))
+
+(fn cancel_agent [id : Str, agent_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agent (agent_api/application_find_agent s/application agent_id))
+      (if (|| (== agent nil) (== agent/id "main"))
+        (json_response 404 {^error "no such sub-agent"})
+        (if (agent_api/application_cancel_agent s/application agent)
+          (do
+            (persist_gateway_session s)
+            (json_response 202 {^ok true}))
+          (json_response 409
+            {^error "worker_idle" ^message "agent is idle"
+             ^worker_id agent/id}))))))
+
+(fn stop_agent [id : Str, agent_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agent (agent_api/application_find_agent s/application agent_id))
+      (if (|| (== agent nil) (== agent/id "main"))
+        (json_response 404 {^error "no such sub-agent"})
+        (if (agent_api/application_stop_agent s/application agent)
+          (do
+            (persist_gateway_session s)
+            (json_response 200 {^ok true}))
+          (json_response 409
+            {^error "worker_stopped" ^message "agent is stopped"
+             ^worker_id agent/id}))))))
+
+(fn worker_input [id : Str, worker_id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var worker
+        (agent_api/application_find_worker s/application worker_id))
+      (if (== worker nil)
+        (json_response 404 {^error "no such worker"})
+        (if (== (worker/lifecycle ~ Cell/get) "stopped")
+          (json_response 409
+            {^error "worker_stopped" ^message "worker is stopped"
+             ^worker_id worker/id})
+          (if (&& (["agent" "shell" "repl"] ~ contains? worker/kind)
+                  (|| (worker/input_reserved ~ Cell/get)
+                      (!= (worker/current_task ~ Cell/get) nil)))
+            (do
+              (var operation (worker/current_operation ~ Cell/get))
+              (json_response 409
+                {^error "worker_busy" ^message "worker is already working"
+                 ^worker_id worker/id
+                 ^task_id (if (== operation nil) nil operation/task_id)
+                 ^reserved (worker/input_reserved ~ Cell/get)}))
+            (try
+              (do
+                (var body (parse req/body))
+                (if (|| (== body/text void) (== body/text nil))
+                  (json_response 400 {^error "missing_text"})
+                  (do
+                    (var result
+                      (agent_api/application_send_worker_input
+                        s/application worker body/text "http"))
+                    (if (starts_with? result "error:")
+                      (json_response 409
+                        {^error "worker_input_rejected" ^message result
+                         ^worker_id worker/id})
+                      (do
+                        (persist_gateway_session s)
+                        (json_response 202 {^ok true ^result result}))))))
+            catch (JsonError ^message m)
+              (json_response 400 {^error "invalid_json" ^message m}))))))))
+
+(fn cancel_worker [id : Str, worker_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var worker
+        (agent_api/application_find_worker s/application worker_id))
+      (if (== worker nil)
+        (json_response 404 {^error "no such worker"})
+        (if (agent_api/application_cancel_worker s/application worker)
+          (do
+            (persist_gateway_session s)
+            (json_response 202 {^ok true}))
+          (json_response 409
+            {^error "worker_idle" ^message "worker is idle"
+             ^worker_id worker/id}))))))
+
+(fn stop_worker [id : Str, worker_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var worker
+        (agent_api/application_find_worker s/application worker_id))
+      (if (== worker nil)
+        (json_response 404 {^error "no such worker"})
+        (if (== worker/id "main")
+          (json_response 409
+            {^error "main_worker_cannot_stop"
+             ^message "main worker cannot be stopped" ^worker_id worker/id})
+          (if (agent_api/application_stop_worker s/application worker)
+            (do
+              (persist_gateway_session s)
+              (json_response 200 {^ok true}))
+            (json_response 409
+              {^error "worker_stopped" ^message "worker is stopped"
+               ^worker_id worker/id})))))))
 
 # Long-poll: return events after ^cursor as soon as any exist, waiting up to
 # ~20s. A handler parked in sleep does not stall other requests (task-per-
@@ -516,6 +886,13 @@
         (try
           (set cursor (parse_int req/params/cursor))
         catch _ nil))
+      (if (< cursor (s/dropped_before ~ Cell/get))
+        (json_response 409
+          {^error "cursor_gap"
+           ^dropped_before (s/dropped_before ~ Cell/get)
+           ^oldest_cursor (+ (s/dropped_before ~ Cell/get) 1)
+           ^snapshot_url $"/api/sessions/${id}/snapshot"})
+        (do
       (var out (cell (events_after s cursor)))
       (var waited (cell 0))
       (while (&& (empty? (out ~ Cell/get)) (< (waited ~ Cell/get) 200))
@@ -524,7 +901,10 @@
         (out ~ Cell/set (events_after s cursor)))
       (var evs (out ~ Cell/get))
       (json_response 200 {^events evs
-                          ^cursor (max_event_v evs cursor)}))))
+                          ^cursor (max_event_v evs cursor)
+                          ^changed_worker_ids
+                            (if (empty? evs) []
+                              (projection_worker_ids s))}))))))
 
 (var web_page """<!doctype html>
 <meta charset="utf-8">
@@ -561,13 +941,27 @@ function show(cls, text) {
 function render(ev) {
   if (ev.type === 'user_input') { if (streaming) { show('text', '\n'); streaming = false; } show('user', 'you> ' + ev.text + '\n'); }
   else if (ev.type === 'text_delta') { if (!streaming) { show('text', 'agent> '); streaming = true; } show('text', ev.text); }
-  else if (ev.type === 'agent_text') { if (streaming) { show('text', '\n'); streaming = false; } show('text', 'agent> ' + ev.text + '\n'); }
+  else if (ev.type === 'agent_text') { if (streaming) { show('text', '\n'); streaming = false; } else { show('text', 'agent> ' + ev.text + '\n'); } }
   else if (ev.type === 'turn_done') { if (streaming) { show('text', '\n'); streaming = false; } }
+}
+function installSnapshot(s) {
+  var main = (s.workers || []).find(function (w) { return w.worker_id === s.main_worker_id; });
+  log.textContent = main && main.output ? main.output : '';
+  log.classList.remove('muted');
+  streaming = false;
+  cursor = s.cursor || 0;
+  log.scrollTop = log.scrollHeight;
+}
+function resync() {
+  return fetch('/api/sessions/' + sid + '/snapshot', { headers: hdrs(false) })
+    .then(function (r) { return r.json(); })
+    .then(installSnapshot);
 }
 function poll() {
   fetch('/api/sessions/' + sid + '/events?cursor=' + cursor, { headers: hdrs(false) })
     .then(function (r) { return r.json(); })
     .then(function (d) {
+      if (d.error === 'cursor_gap') { return resync().then(poll); }
       (d.events || []).forEach(render);
       if (d.cursor > cursor) cursor = d.cursor;
       poll();
@@ -608,10 +1002,58 @@ document.getElementById('f').addEventListener('submit', function (e) {
               (post_message parts/3 req)
               (json_response 405 {^error "method not allowed"})))
           (when "events" (get_events parts/3 req))
+          (when "snapshot"
+            (if (== req/method "GET")
+              (get_snapshot parts/3)
+              (json_response 405 {^error "method not allowed"})))
           (when "cancel"
             (if (== req/method "POST")
               (cancel_turn parts/3)
               (json_response 405 {^error "method not allowed"})))
+          (when "agents"
+            (if (== parts/~size 5)
+              (if (== req/method "POST")
+                (create_agent parts/3 req)
+                (json_response 405 {^error "method not allowed"}))
+              (if (== parts/~size 6)
+                (if (== req/method "DELETE")
+                  (stop_agent parts/3 parts/5)
+                  (json_response 405 {^error "method not allowed"}))
+                (if (== parts/~size 7)
+                  (match parts/6
+                    (when "messages"
+                      (if (== req/method "POST")
+                        (agent_input parts/3 parts/5 req)
+                        (json_response 405 {^error "method not allowed"})))
+                    (when "cancel"
+                      (if (== req/method "POST")
+                        (cancel_agent parts/3 parts/5)
+                        (json_response 405 {^error "method not allowed"})))
+                    (else (json_response 404 {^error "not found"})))
+                  (json_response 404 {^error "not found"})))))
+          (when "workers"
+            (if (== parts/~size 5)
+              (if (== req/method "GET")
+                (list_workers parts/3)
+                (if (== req/method "POST")
+                  (create_worker parts/3 req)
+                  (json_response 405 {^error "method not allowed"})))
+              (if (== parts/~size 6)
+                (if (== req/method "DELETE")
+                  (stop_worker parts/3 parts/5)
+                  (json_response 405 {^error "method not allowed"}))
+                (if (== parts/~size 7)
+                  (match parts/6
+                    (when "input"
+                      (if (== req/method "POST")
+                        (worker_input parts/3 parts/5 req)
+                        (json_response 405 {^error "method not allowed"})))
+                    (when "cancel"
+                      (if (== req/method "POST")
+                        (cancel_worker parts/3 parts/5)
+                        (json_response 405 {^error "method not allowed"})))
+                    (else (json_response 404 {^error "not found"})))
+                  (json_response 404 {^error "not found"})))))
           (else (json_response 404 {^error "not found"})))
         (json_response 404 {^error "not found"})))))
 
@@ -646,7 +1088,10 @@ document.getElementById('f').addEventListener('submit', function (e) {
         (if (starts_with? id "tg-")
           (make_telegram_sender ((split id "tg-") ~ join ""))
           nil))
-      (sessions ~ Map/put! id (make_session id hook saved nil))
+      # Redact legacy snapshots at restore as well as new writes, before any
+      # retained model context or transcript becomes live session state.
+      (sessions ~ Map/put! id
+        (make_session id hook (agent_api/redact_any saved) nil))
       (restore_session_id_seq id)
       (count ~ Cell/set (+ (count ~ Cell/get) 1))
     catch _ (gw_notice $"failed to restore session ${id}")))

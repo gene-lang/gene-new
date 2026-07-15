@@ -1,4 +1,4 @@
-import std/[monotimes, net, os, osproc, streams, strutils, times, unittest]
+import std/[json, monotimes, net, os, osproc, streams, strutils, times, unittest]
 when defined(posix):
   import std/posix
 when defined(macosx):
@@ -215,13 +215,98 @@ suite "cli — gene run":
     check "hi" in ran.output
     check "closed pane 1" in ran.output
 
+  test "ai agent mediated shell panes deny detached workspace writers":
+    buildGeneCli()
+    let marker = "tmp/agent-detached-writer-must-not-run"
+    removeFile(marker)
+    defer: removeFile(marker)
+    let command =
+      "printf '/sh\\n" &
+      "/1 (sleep 0.1; touch " & marker & ") &\\n" &
+      "/1 sleep 0.2; if [ ! -e " & marker & " ]; then echo lease-preserved; fi\\n" &
+      "/1 close\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "must stay in the foreground; use /tty" in ran.output
+    check "lease-preserved" in ran.output
+    check not fileExists(marker)
+
+  test "ai agent routes bare input to the focused worker and close detaches":
+    buildGeneCli()
+    let command =
+      "printf '/sh\\necho routed-to-shell\\n/workers\\n/1 close\\n/workers\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "routed-to-shell" in ran.output
+    check "w1 shell idle pane=1 shell" in ran.output
+    check "closed pane 1" in ran.output
+    check "w1 shell idle headless shell" in ran.output
+
+  test "ai agent worker input addresses headless shell and REPL controllers":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/headless_process_input_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task open_shell_pane
+         open_repl_pane application_close_pane application_send_worker_input
+         user_item]
+  from "./tui.gene")
+(var items (cell []))
+(var transcript (cell ""))
+(var memory (cell []))
+(var app
+  (make_application_with_task items transcript memory
+    (fn [_type, _props] nil) (cell nil)))
+(active_application ~ Cell/set app)
+(var shell_pane (open_shell_pane))
+(var shell shell_pane/worker)
+(application_close_pane app shell_pane/id)
+(var shell_result
+  (application_send_worker_input app shell
+    "printf top-secret-agent-token" "http"))
+(while (!= (shell/current_task ~ Cell/get) nil) (sleep 10))
+(var shell_history (shell/history ~ Cell/get))
+(println $"shell=${shell_result} panes=${((app/local_surface/panes ~ Cell/get) ~ size)} adapter=${shell_history/0/adapter} output=${(shell/output ~ Cell/get)}")
+(var denied
+  (application_send_worker_input app shell "rm -rf tmp/gene-agent-remote-missing" "http"))
+(println $"denied=${denied} task=${(shell/current_task ~ Cell/get)}")
+(var repl_pane (open_repl_pane items transcript memory))
+(var repl repl_pane/worker)
+(application_close_pane app repl_pane/id)
+(var repl_result (application_send_worker_input app repl "(+ 1 2)" "http"))
+(while (!= (repl/current_task ~ Cell/get) nil) (sleep 10))
+(var repl_history (repl/history ~ Cell/get))
+(println $"repl=${repl_result} panes=${((app/local_surface/panes ~ Cell/get) ~ size)} adapter=${repl_history/0/adapter} output=${(repl/output ~ Cell/get)}")
+(var model_input (user_item "top-secret-agent-token"))
+(println $"model_input=${model_input/content}")
+""")
+    let ran = execCmdEx(
+      "OPENAI_AUTH_TOKEN=top-secret-agent-token " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "shell=accepted panes=0 adapter=http" in ran.output
+    check "auth-***REDACTED***" in ran.output
+    check "top-secret-agent-token" notin ran.output
+    check "denied=error: denied: destructive command was not confirmed task=nil" in ran.output
+    check "repl=accepted panes=0 adapter=http" in ran.output
+    check "3" in ran.output
+
   test "ai agent model supervision tools use the application registries":
     buildGeneCli()
     let fixture = "examples/ai_agent/application_tools_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [make_application_with_task run_tool_call_in] from "./tui.gene")
+(import [make_application_with_task make_headless_application_with_task
+         run_tool_call_in] from "./tui.gene")
 (import json [stringify])
 (var events (cell []))
 (fn emit [type props]
@@ -235,19 +320,27 @@ suite "cli — gene run":
      ^arguments (stringify {^assignment "review parser" ^title "reader"})}
     emit context))
 (println $"spawn=${spawned/output} agents=${((app/agents ~ Cell/get) ~ size)}")
+(var registered_agents (app/agents ~ Cell/get))
+(var child_context {^app app ^agent registered_agents/1 ^pane nil})
+(var recursive
+  (run_tool_call_in
+    {^name "spawn_agent" ^call_id "s2"
+     ^arguments (stringify {^assignment "spawn recursively"})}
+    emit child_context))
+(println $"recursive=${recursive/output} agents=${((app/agents ~ Cell/get) ~ size)}")
 (var opened
   (run_tool_call_in
     {^name "open_pane" ^call_id "p1"
      ^arguments (stringify {^kind "output" ^title "checks" ^text "ready\n"})}
     emit context))
-(println $"pane=${opened/output} panes=${((app/panes ~ Cell/get) ~ size)}")
+(println $"worker=${opened/output} panes=${((app/local_surface/panes ~ Cell/get) ~ size)}")
 (var appended
   (run_tool_call_in
     {^name "append_pane" ^call_id "p2"
      ^arguments (stringify {^pane_id 1 ^text "passed\n"})}
     emit context))
 (println appended/output)
-(var pane_list (app/panes ~ Cell/get))
+(var pane_list (app/local_surface/panes ~ Cell/get))
 (var output_pane pane_list/0)
 (println (output_pane/output ~ Cell/get))
 (var closed
@@ -255,16 +348,867 @@ suite "cli — gene run":
     {^name "close_pane" ^call_id "p3"
      ^arguments (stringify {^pane_id 1})}
     emit context))
-(println $"${closed/output} panes=${((app/panes ~ Cell/get) ~ size)}")
+(println $"${closed/output} panes=${((app/local_surface/panes ~ Cell/get) ~ size)}")
+(fn headless_emit [type, _props]
+  (println $"headless-event=${type}"))
+(var headless
+  (make_headless_application_with_task
+    (cell []) (cell "") (cell []) headless_emit (cell nil)))
+(var headless_opened
+  (run_tool_call_in
+    {^name "open_pane" ^call_id "hp1"
+     ^arguments (stringify {^kind "output" ^title "headless checks"
+                            ^text "ready\n"})}
+    headless_emit {^app headless ^agent headless/main_agent ^pane nil}))
+(println $"headless=${headless_opened/output} workers=${((headless/workers ~ Cell/get) ~ size)} surface=${headless/local_surface}")
 """)
     let ran = runGene(["run", fixture])
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
     check "spawn=a1 agents=2" in ran.output
-    check "pane=1 panes=1" in ran.output
+    check "recursive=error: main supervisor authority is required agents=2" in ran.output
+    check "worker=w1 panes=1" in ran.output
     check "appended to pane 1" in ran.output
     check "ready\npassed" in ran.output
     check "closed pane 1 panes=0" in ran.output
+    check "headless=w1 workers=2 surface=nil" in ran.output
+    check "headless-event=worker_attention_requested" in ran.output
+    check "headless-event=pane_opened" notin ran.output
+
+  test "ai agent opens stats event-tail and file-view workers":
+    buildGeneCli()
+    let command =
+      "printf '/stats\\n/1 max\\n/tail worker_started\\n/view examples/ai_agent/design.md\\n/view /etc/passwd\\n/workers\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "maximized pane 1" in ran.output
+    check "w1 stats idle pane=1 stats" in ran.output
+    check "w2 log_tail idle pane=2 event tail" in ran.output
+    check "w3 file_view idle pane=3 view examples/ai_agent/design.md" in ran.output
+    check "cannot open /etc/passwd" in ran.output
+    check "w4 file_view" notin ran.output
+
+  test "ai agent persists and delivers bounded supervisor results":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/supervisor_inbox_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import json [stringify])
+(import [make_application_with_task application_spawn_agent
+         application_enqueue_supervisor_result! application_snapshot
+         restore_application_snapshot! application_drain_supervisor_inbox
+         worker_history_push!]
+  from "./tui.gene")
+(var restored_events (cell []))
+(fn sink [type, props]
+  ((restored_events ~ Cell/get) ~ List/push! type)
+  {^type type ^^props})
+(var first
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(var agent
+  (application_spawn_agent first "reviewer" "review reader" (cell [])
+                           (cell "")))
+(application_enqueue_supervisor_result! first agent "reader is sound")
+(worker_history_push! first/main_agent "remote prompt" "http" nil)
+(first/main_agent/current_operation ~ Cell/set
+  {^task_id "t-before-restart" ^kind "agent_turn"})
+(first/main_agent/input_reserved ~ Cell/set true)
+(first/main_agent/status ~ Cell/set "working")
+(var saved (application_snapshot first))
+(var restored
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(restore_application_snapshot! restored saved)
+(var queued ((restored/supervisor_inbox ~ Cell/get) ~ size))
+(application_drain_supervisor_inbox restored)
+(println $"queued=${queued} empty=${((restored/supervisor_inbox ~ Cell/get) ~ size)} status=${(restored/main_agent/status ~ Cell/get)} reserved=${(restored/main_agent/input_reserved ~ Cell/get)} operation=${(restored/main_agent/current_operation ~ Cell/get)} events=${(stringify (restored_events ~ Cell/get))} history=${(stringify (restored/main_agent/history ~ Cell/get))} items=${(stringify (restored/main_agent/items ~ Cell/get))}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "queued=1 empty=0" in ran.output
+    check "status=idle reserved=false operation=nil" in ran.output
+    check "worker_operation_finished" in ran.output
+    check "t-before-restart" notin ran.output # event type list is content-safe
+    check "\"adapter\":\"http\"" in ran.output
+    check "\"text\":\"remote prompt\"" in ran.output
+    check "Sub-agent a1 completed assignment: review reader" in ran.output
+    check "reader is sound" in ran.output
+
+  test "ai agent shell remains usable while a sub-agent operation runs":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/concurrent_shell_agent_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task application_spawn_agent
+         application_begin_worker_operation! application_cancel_worker
+         application_finish_worker_operation! open_shell_pane
+         run_shell_pane_command_unchecked] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(active_application ~ Cell/set app)
+(var agent
+  (application_spawn_agent app "reviewer" "review" (cell []) (cell "")))
+(var agent_task (spawn (sleep 500)))
+(application_begin_worker_operation! app agent agent_task "agent_turn")
+(var shell (open_shell_pane))
+(var result (run_shell_pane_command_unchecked shell "printf shell-ready"))
+(println $"agent_busy=${(!= (agent/current_task ~ Cell/get) nil)} result=${result}")
+(application_cancel_worker app agent)
+(sleep 25)
+(application_finish_worker_operation! app agent "cancelled")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "agent_busy=true" in ran.output
+    check "shell-ready" in ran.output
+
+  test "ai agent maximized log tail follows checks and restores":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/maximized_log_tail_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import str [contains?])
+(import [active_application make_application_with_task open_log_tail_pane
+         application_emit handle_surface_escape!] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [type, props]
+      (var event {^type type ^v 1 ^turn 1})
+      (for [key value] in props (event ~ Map/put! key value))
+      event)
+    (cell nil)))
+(active_application ~ Cell/set app)
+(var pane (open_log_tail_pane "check"))
+(app/local_surface/maximized_pane ~ Cell/set pane/id)
+(application_emit app "check"
+  {^command "nimble test" ^status 0 ^verified true})
+(var editor {^values (cell [])})
+(var restored (handle_surface_escape! editor))
+(println $"followed=${(contains? (pane/output ~ Cell/get) \"nimble test\")} restored=${restored} max=${(app/local_surface/maximized_pane ~ Cell/get)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "followed=true restored=true max=nil" in ran.output
+
+  test "ai agent keeps independent focused-pane scroll state":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/pane_scroll_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application_with_task application_open_pane
+         application_pane_views application_scroll_target!
+         application_pane_page_rows] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(var pane
+  (application_open_pane app "output" nil "checks" (cell "ready\n") nil
+                         "detach"))
+(var main_scroll (cell 0))
+(application_scroll_target! app main_scroll 1 3)
+(var views (application_pane_views app))
+(println $"focused=${(app/local_surface/focused_pane ~ Cell/get)} pane=${views/0/scroll} main=${(main_scroll ~ Cell/get)} title=${views/0/title}")
+(println $"page=${(application_pane_page_rows app 18)}")
+(application_scroll_target! app main_scroll -1 3)
+(app/local_surface/focused_pane ~ Cell/set nil)
+(application_scroll_target! app main_scroll 1 4)
+(println $"pane=${(pane/scroll ~ Cell/get)} main=${(main_scroll ~ Cell/get)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "focused=1 pane=3 main=0 title=[1]* checks (idle)" in ran.output
+    check "page=12" in ran.output
+    check "pane=0 main=4" in ran.output
+
+  test "ai agent shares one cancellable workspace lease across sessions":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/workspace_coordinator_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application_with_task application_acquire_workspace
+         application_release_workspace application_shutdown] from "./tui.gene")
+(fn sink [_type, _props] nil)
+(var a (make_application_with_task (cell []) (cell "") (cell []) sink
+                                   (cell nil)))
+(var b (make_application_with_task (cell []) (cell "") (cell []) sink
+                                   (cell nil)))
+(println $"shared=${(== a/workspace_coordinator/owner b/workspace_coordinator/owner)}")
+(application_acquire_workspace a "main" "edit")
+# Session-local worker ids deliberately collide. Neither an unrelated release
+# nor an unrelated application shutdown may clear A's process-wide lease.
+(var foreign_release (application_release_workspace b "main" "edit"))
+(var c (make_application_with_task (cell []) (cell "") (cell []) sink
+                                   (cell nil)))
+(application_shutdown c)
+(var owner_after_foreign (a/workspace_coordinator/owner ~ Cell/get))
+(var waiting (spawn (application_acquire_workspace b "main" "edit")))
+(sleep 25)
+(waiting ~ Task/cancel)
+# Cancellation is a control signal and deliberately bypasses `catch _`.
+# Give the task's `ensure` cleanup a scheduler turn instead of awaiting it.
+(sleep 25)
+(println $"owner=${(a/workspace_coordinator/owner ~ Cell/get)} foreign=${foreign_release} preserved=${(== owner_after_foreign (a/workspace_coordinator/owner ~ Cell/get))} waiters=${((a/workspace_coordinator/waiters ~ Cell/get) ~ size)}")
+(application_release_workspace a "main" "edit")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "shared=true" in ran.output
+    check "owner=app1/main foreign=false preserved=true waiters=0" in ran.output
+
+  test "ai agent confirms destructive work before taking the workspace lease":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/workspace_confirmation_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application_with_task run_tool_call_in
+         application_acquire_workspace application_release_workspace
+         preflight_tool_mutation mutation_preflight_valid?]
+  from "./tui.gene")
+(fn sink [_type, _props] nil)
+(var a (make_application_with_task (cell []) (cell "") (cell []) sink
+                                   (cell nil)))
+(var b (make_application_with_task (cell []) (cell "") (cell []) sink
+                                   (cell nil)))
+(var confirming (cell false))
+(var result (cell nil))
+(var task
+  (spawn
+    (result ~ Cell/set
+      (run_tool_call_in
+        {^name "run_shell" ^call_id "guard-order"
+         ^arguments "{\"command\":\"rm -rf tmp/guard-order-target\"}"}
+        sink
+        {^app a ^agent a/main_agent
+         ^guard_confirm (fn [_command]
+           (confirming ~ Cell/set true)
+           (sleep 100)
+           false)}))))
+(while (! (confirming ~ Cell/get)) (sleep 1))
+(application_acquire_workspace b "worker-b" "edit")
+(println $"owner=${(a/workspace_coordinator/owner ~ Cell/get)}")
+(application_release_workspace b "worker-b" "edit")
+(await task)
+(println (result ~ Cell/get)/output)
+(var checked {^command "echo stable" ^timeout_ms 1000 ^_emit sink})
+(preflight_tool_mutation "run_shell" checked nil)
+(var preflight_valid (mutation_preflight_valid? "run_shell" checked))
+(println $"preflight=${preflight_valid}")
+(checked ~ Map/put! "command" "echo changed")
+(var changed_valid (mutation_preflight_valid? "run_shell" checked))
+(println $"changed=${changed_valid}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "owner=app2/worker-b" in ran.output
+    check "denied: destructive command was not confirmed" in ran.output
+    check "preflight=true" in ran.output
+    check "changed=false" in ran.output
+
+  test "ai agent foreground contract survives guard bypass and covers model tools":
+    buildGeneCli()
+    let marker = "tmp/model-detached-writer-must-not-run"
+    removeFile(marker)
+    let fixture = "examples/ai_agent/foreground_contract_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+      removeFile(marker)
+    writeFile(fixture, """
+(import [make_application_with_task run_tool_call_in guard_shell_in]
+  from "./tui.gene")
+(import json [stringify])
+(fn sink [type, props]
+  (if (== type "confirmation")
+    (println $"event=${props/risk}:${props/decision}:${props/reason}") nil))
+(var app
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(var result
+  (run_tool_call_in
+    {^name "run_shell" ^call_id "detach-1"
+     ^arguments
+       (stringify
+         {^command "(sleep 0.1; touch tmp/model-detached-writer-must-not-run) &"})}
+    sink {^app app ^agent app/main_agent ^pane nil}))
+(println result/output)
+(var quoted (guard_shell_in "printf '&'" nil sink))
+(var escaped (guard_shell_in "printf \\&" nil sink))
+(var redirected (guard_shell_in "printf ok 2>&1" nil sink))
+(var chained (guard_shell_in "printf a && printf b" nil sink))
+(var launcher (guard_shell_in "setsid -f writer" nil sink))
+(println $"normal=${(== quoted nil)}:${(== escaped nil)}:${(== redirected nil)}:${(== chained nil)} launcher=${(!= launcher nil)}")
+(sleep 250)
+""")
+    let ran = execCmdEx(
+      "GENE_AGENT_GUARD=0 " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "event=detached_process:deny:background operator '&'" in ran.output
+    check "must stay in the foreground; use /tty" in ran.output
+    check "normal=true:true:true:true launcher=true" in ran.output
+    check not fileExists(marker)
+
+  test "ai agent cancellation revokes destructive preflight admission":
+    buildGeneCli()
+    let marker = "tmp/preflight-cancel-must-not-run"
+    removeFile(marker)
+    let fixture = "examples/ai_agent/preflight_cancel_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+      removeFile(marker)
+    writeFile(fixture, """
+(import [active_application make_application_with_task open_shell_pane
+         run_shell_pane_command set_guard_confirm application_cancel_worker
+         application_shutdown] from "./tui.gene")
+(fn sink [_type, _props] nil)
+(var app
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(active_application ~ Cell/set app)
+(var pane (open_shell_pane))
+(set_guard_confirm
+  (fn [_command]
+    (println $"cancelled=${(application_cancel_worker app pane/worker)}")
+    true))
+(var result
+  (run_shell_pane_command pane
+    "rm -rf tmp/preflight-cancel-target; touch tmp/preflight-cancel-must-not-run"))
+(println result)
+(app/main_agent/input_reserved ~ Cell/set true)
+(application_shutdown app)
+(println $"shutdown_reserved=${(app/main_agent/input_reserved ~ Cell/get)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "cancelled=true" in ran.output
+    check "shell command cancelled before start" in ran.output
+    check "shutdown_reserved=false" in ran.output
+    check not fileExists(marker)
+
+  test "ai agent coalesces legacy approval with destructive confirmation":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/single_confirmation_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [preflight_tool_mutation] from "./tui.gene")
+(fn sink [_type, _props] nil)
+(var confirmations (cell 0))
+(var args
+  {^command "rm -rf tmp/single-confirmation-target"
+   ^timeout_ms 1000 ^_emit sink})
+(var denial
+  (preflight_tool_mutation "run_shell" args
+    {^guard_confirm (fn [_command]
+      (confirmations ~ Cell/set (+ (confirmations ~ Cell/get) 1))
+      true)}))
+(println $"confirmations=${(confirmations ~ Cell/get)} allowed=${(== denial nil)}")
+""")
+    let ran = execCmdEx(
+      "GENE_AGENT_APPROVE_ALL=0 " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture) & " </dev/null")
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "confirmations=1 allowed=true" in ran.output
+
+  test "ai agent Escape restores max then preserves a composed routed draft":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/escape_priority_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task application_open_pane
+         handle_surface_escape!] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(active_application ~ Cell/set app)
+(application_open_pane app "output" nil "checks" (cell "") nil "detach")
+(app/local_surface/maximized_pane ~ Cell/set 1)
+(var editor {^values (cell ["x"])})
+(println $"max=${(handle_surface_escape! editor)} focus=${(app/local_surface/focused_pane ~ Cell/get)} zoom=${(app/local_surface/maximized_pane ~ Cell/get)}")
+(println $"draft=${(handle_surface_escape! editor)} focus=${(app/local_surface/focused_pane ~ Cell/get)}")
+(editor/values ~ Cell/set [])
+(println $"empty=${(handle_surface_escape! editor)} focus=${(app/local_surface/focused_pane ~ Cell/get)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "max=true focus=1 zoom=nil" in ran.output
+    check "draft=false focus=1" in ran.output
+    check "empty=true focus=nil" in ran.output
+
+  test "ai agent TUI routes focused input and layers maximize Escape reset":
+    when defined(macosx):
+      buildGeneCli()
+      let outputFile = cliDir / "agent_focus_escape_pty.out"
+      let focusedProof = cliDir / "agent_focus_escape_focused"
+      removeFile(outputFile)
+      removeFile(focusedProof)
+      let inner =
+        "stty rows 18 cols 80; exec /usr/bin/env " &
+        "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+        "CODEX_ACCESS_TOKEN=dummy TERM=xterm-256color " &
+        shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      let expectScript =
+        "set timeout 15\n" &
+        "log_file -noappend " & outputFile & "\n" &
+        "spawn /bin/sh -c {" & inner & "}\n" &
+        "after 500\n" &
+        "send -- \"/sh\\r\"\n" &
+        "after 350\n" &
+        "send -- \"touch " & focusedProof & "\\r\"\n" &
+        "expect -re {\\[exit 0}\n" &
+        # Shell-pane input is classified even on a live TTY. The destructive
+        # confirmation itself uses the async curses editor, then the accepted
+        # command runs without a second legacy prompt.
+        "send -- \"rm -rf tmp/gene-agent-pty-confirm-missing\\r\"\n" &
+        "expect -re {run it once\\? \\[y/N\\]}\n" &
+        "send -- \"y\\r\"\n" &
+        "expect -re {\\[exit 0}\n" &
+        "send -- \"/1 max\\r\"\n" &
+        "after 700\n" &
+        # First Escape restores the split while keeping shell focus.
+        "send -- \"\\033\"\n" &
+        "after 350\n" &
+        # With a composed draft Escape is a no-op; Enter must still route
+        # this bare command to the shell rather than switching to main.
+        "send -- \"printf DRAFT_RESULT_\\$((40+2))\"\n" &
+        "after 1000\n" &
+        "send -- \"\\033\"\n" &
+        "after 350\n" &
+        "send -- \"\\r\"\n" &
+        "expect -re {DRAFT_RESULT_42}\n" &
+        # Empty-draft Escape resets to pane 0; /quit remains global.
+        "send -- \"\\033\"\n" &
+        "after 500\n" &
+        "send -- \"/quit\\r\"\n" &
+        "expect eof\n"
+      let command = "/usr/bin/expect -c " & shellQuote(expectScript) &
+                    " >/dev/null 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      let exitCode = terminal.waitForExit(20000)
+      sleep(100)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check fileExists(focusedProof)
+      check "DRAFT_RESULT_42" in output
+      check "[0 main]" in output
+      check "\e[?1049l" in output
+      removeFile(focusedProof)
+
+  test "ai agent worker output drops oldest bytes with explicit loss metadata":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/worker_output_bound_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application_with_task application_new_worker
+         application_append_worker_output! application_set_projection_output!]
+  from "./tui.gene")
+(import str [byte_size])
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(var worker
+  (application_new_worker app "output" "bounded" (cell "") nil))
+(application_append_worker_output! app worker
+  "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" "test")
+(application_append_worker_output! app worker
+  "more-output-abcdefghijklmnopqrstuvwxyz" "test")
+(println (worker/output ~ Cell/get))
+(println $"bytes=${(byte_size (worker/output ~ Cell/get))} dropped=${(worker/dropped_bytes ~ Cell/get)} before=${(worker/dropped_before ~ Cell/get)}")
+(application_set_projection_output! app worker "fresh" "stats")
+(println $"replacement=${(worker/output ~ Cell/get)} dropped=${(worker/dropped_bytes ~ Cell/get)} before=${(worker/dropped_before ~ Cell/get)}")
+""")
+    let ran = execCmdEx(
+      "GENE_AGENT_WORKER_OUTPUT_MAX_BYTES=48 " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "[older output dropped:" in ran.output
+    check ran.output.count("[older output dropped:") == 1
+    check "bytes=48 dropped=85 before=2" in ran.output
+    check "replacement=fresh dropped=0 before=nil" in ran.output
+
+  test "ai agent main transcript reports exact bounded loss metadata":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/transcript_overflow_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import str [byte_size])
+(import [active_application make_application_with_task append_transcript
+         application_workers_snapshot] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(active_application ~ Cell/set app)
+(append_transcript app/main_agent/transcript
+  "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-more")
+(append_transcript app/main_agent/transcript
+  "-second-abcdefghijklmnopqrstuvwxyz")
+(var snapshots (application_workers_snapshot app))
+(var snapshot snapshots/0)
+(println (app/main_agent/transcript ~ Cell/get))
+(println $"bytes=${(byte_size (app/main_agent/transcript ~ Cell/get))} dropped=${snapshot/transcript_dropped_bytes} before=${snapshot/transcript_dropped_before} seq=${snapshot/transcript_seq}")
+""")
+    let ran = execCmdEx(
+      "GENE_AGENT_TRANSCRIPT_MAX_BYTES=64 " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check ran.output.count("[older transcript dropped:") == 1
+    check "bytes=64" in ran.output
+    check "before=2 seq=2" in ran.output
+    check "dropped=0" notin ran.output
+
+  test "ai agent projection workers do not amplify the event journal":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/projection_amplification_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task open_stats_pane
+         open_log_tail_pane application_emit] from "./tui.gene")
+(var emitted (cell []))
+(fn sink [type, props]
+  (var event {^v (+ ((emitted ~ Cell/get) ~ size) 1) ^type type})
+  (for [key value] in props (event ~ Map/put! key value))
+  ((emitted ~ Cell/get) ~ List/push! event)
+  event)
+(var app
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(active_application ~ Cell/set app)
+(open_stats_pane)
+(open_log_tail_pane "")
+(application_emit app "check" {^command "nimble test" ^status 0})
+(application_emit app "text_delta"
+  {^worker_id app/main_agent/id ^agent_id app/main_agent/id ^text "ok"})
+(application_emit app "agent_text"
+  {^worker_id app/main_agent/id ^agent_id app/main_agent/id ^text "ok"})
+(var projected 0)
+(var source_checks 0)
+(var aliased false)
+(var worker_chunks 0)
+(for event in (emitted ~ Cell/get)
+  (if (== event/projection true) (set projected (+ projected 1)) nil)
+  (if (== event/type "check") (set source_checks (+ source_checks 1)) nil)
+  (if (&& (== event/type "worker_output") (!= event/source_v nil))
+    (set aliased true) nil)
+  (if (== event/type "worker_output")
+    (set worker_chunks (+ worker_chunks 1)) nil))
+(println $"projected=${projected} checks=${source_checks} aliased=${aliased} chunks=${worker_chunks} events=${((emitted ~ Cell/get) ~ size)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "projected=0 checks=1" in ran.output
+    check "aliased=true" in ran.output
+    check "chunks=1" in ran.output
+
+  test "ai agent shared worker snapshots exclude local surface state":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/surface_independent_snapshot_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import str [contains?])
+(import [make_application_with_task application_open_pane
+         application_spawn_agent application_attach_worker_pane
+         application_close_pane application_pane_ids_for_worker
+         application_pane_views application_workers_snapshot
+         main_presented_output] from "./tui.gene")
+(import json [stringify])
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(var pane
+  (application_open_pane app "output" nil "checks" (cell "ready") nil
+                         "detach"))
+(var before (stringify (application_workers_snapshot app)))
+(app/local_surface/focused_pane ~ Cell/set pane/id)
+(app/local_surface/maximized_pane ~ Cell/set pane/id)
+(pane/scroll ~ Cell/set 99)
+(var after (stringify (application_workers_snapshot app)))
+(println $"same=${(== before after)} local_field=${(contains? after \"attached_local_pane\")}")
+(var agent
+  (application_spawn_agent app "review" "task" (cell []) (cell "ready")))
+(var agent_pane
+  (application_attach_worker_pane app agent agent/id "detach"))
+(println $"agent_field=${(== agent/pane_ids void)} local_ids=${(application_pane_ids_for_worker app agent/id)}")
+(agent/output ~ Cell/set "assistant|steered")
+(agent_pane/pending_visible ~ Cell/set true)
+(var presented (application_pane_views app))
+(app/main_agent/transcript ~ Cell/set "agent> steered")
+(app/local_surface/main_pending_visible ~ Cell/set true)
+(var pane_overlay
+  (contains? presented/1/output "assistant|steered\nassistant|..."))
+(var main_overlay
+  (contains? (main_presented_output app app/main_agent/transcript)
+             "agent> steered\nagent> ..."))
+(println $"pane_overlay=${pane_overlay} canonical=${(agent/output ~ Cell/get)} main_overlay=${main_overlay} main_canonical=${(app/main_agent/transcript ~ Cell/get)}")
+(agent_pane/pending_visible ~ Cell/set false)
+(app/local_surface/main_pending_visible ~ Cell/set false)
+(var final_pane (application_pane_views app))
+(println $"pane_final=${final_pane/1/output} main_final=${(main_presented_output app app/main_agent/transcript)}")
+(app/local_surface/maximized_pane ~ Cell/set agent_pane/id)
+(application_close_pane app agent_pane/id)
+(println $"detached_ids=${(application_pane_ids_for_worker app agent/id)} max=${(app/local_surface/maximized_pane ~ Cell/get)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "same=true local_field=false" in ran.output
+    check "agent_field=true local_ids=[2]" in ran.output
+    check "pane_overlay=true canonical=assistant|steered main_overlay=true main_canonical=agent> steered" in ran.output
+    check "pane_final=assistant|steered main_final=agent> steered" in ran.output
+    check "detached_ids=[] max=nil" in ran.output
+
+  test "ai agent live worker and agent bounds are configurable":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/live_worker_bound_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application_with_task application_new_worker
+         application_spawn_agent] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(var worker (application_new_worker app "output" "extra" (cell "") nil))
+(var agent
+  (application_spawn_agent app "extra" "task" (cell []) (cell "")))
+(println $"worker=${(== worker nil)} agent=${(== agent nil)} max_workers=${app/max_workers} max_agents=${app/max_agents}")
+""")
+    let ran = execCmdEx(
+      "GENE_AGENT_LIVE_WORKER_MAX_COUNT=1 " &
+      "GENE_AGENT_LIVE_AGENT_MAX_COUNT=1 " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "worker=true agent=true max_workers=1 max_agents=1" in ran.output
+
+  test "ai agent restarts stopped process workers with a successor id":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/worker_restart_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task open_shell_pane
+         application_stop_worker] from "./tui.gene")
+(fn emit [type, props]
+  (if (== type "worker_started")
+    (println $"started=${props/worker_id} from=${props/restarted_from}") nil))
+(var app
+  (make_application_with_task (cell []) (cell "") (cell []) emit (cell nil)))
+(active_application ~ Cell/set app)
+(var first (open_shell_pane))
+(first/worker/output ~ Cell/set "captured history\n")
+(application_stop_worker app first/worker)
+(var second (open_shell_pane))
+(println $"old=${first/worker_id}:${(first/worker/lifecycle ~ Cell/get)}:${(first/output ~ Cell/get)} new=${second/worker_id}:${(second/worker/lifecycle ~ Cell/get)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "started=w1 from=nil" in ran.output
+    check "started=w2 from=w1" in ran.output
+    check "old=w1:stopped:captured history" in ran.output
+    check "new=w2:running" in ran.output
+
+  test "ai agent bounds retained stopped worker snapshots":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/stopped_worker_bound_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_headless_application_with_task application_new_worker
+         application_stop_worker application_find_worker] from "./tui.gene")
+(var dropped (cell []))
+(fn emit [type, props]
+  (if (== type "worker_retention_dropped")
+    ((dropped ~ Cell/get) ~ List/push! props/worker_id) nil))
+(var app
+  (make_headless_application_with_task
+    (cell []) (cell "") (cell []) emit (cell nil)))
+(var worker nil)
+(repeat i in 4
+  (do
+    (set worker
+      (application_new_worker app "output" $"output ${i}" (cell $"${i}") nil))
+    (application_stop_worker app worker)))
+(var w1 (application_find_worker app "w1"))
+(var w4 (application_find_worker app "w4"))
+(println $"workers=${((app/workers ~ Cell/get) ~ size)} dropped=${(dropped ~ Cell/get)} w1=${w1} w4=${w4/id}")
+""")
+    let ran = execCmdEx(
+      "GENE_AGENT_STOPPED_WORKER_MAX_COUNT=2 " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "workers=3" in ran.output
+    check "dropped=[\"w1\" \"w2\"]" in ran.output
+    check "w1=nil w4=w4" in ran.output
+
+  test "ai agent summarizes oversized event records atomically":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/oversized_event_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [bounded_event_record] from "./tui.gene")
+(import json [stringify])
+(import str [byte_size join])
+(var pieces [])
+(repeat i in 2400 (pieces ~ List/push! "x"))
+(var event
+  {^v 7 ^turn 2 ^type "worker_output" ^worker_id "w9" ^task_id "t3"
+   ^text (join pieces "")})
+(var bounded (bounded_event_record event 1024))
+(println $"type=${bounded/type} worker=${bounded/worker_id} task=${bounded/task_id} truncated=${bounded/truncated} original=${bounded/original_bytes} bytes=${(byte_size (stringify bounded))}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "type=worker_output worker=w9 task=t3 truncated=true" in ran.output
+    let bytesPos = ran.output.rfind("bytes=")
+    check bytesPos >= 0
+    if bytesPos >= 0:
+      check parseInt(ran.output[bytesPos + 6 .. ^1].strip()) <= 1024
+
+  test "ai agent external editor composition returns the saved draft":
+    buildGeneCli()
+    let editor = cliDir / "fake-agent-editor.sh"
+    writeFile(editor,
+      "#!/bin/sh\nsleep 0.2\nprintf 'composed\\nsecond line' > \"$1\"\n")
+    setFilePermissions(editor, {fpUserRead, fpUserWrite, fpUserExec})
+    let fixture = "examples/ai_agent/external_editor_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+      if fileExists(editor): removeFile(editor)
+    writeFile(fixture, """
+(import [external_editor_draft] from "./tui.gene")
+(var ticks (cell 0))
+(var composed (cell ""))
+(scope
+  (spawn (repeat 5 (do (sleep 20)
+    (ticks ~ Cell/set (+ (ticks ~ Cell/get) 1)))))
+  (composed ~ Cell/set (external_editor_draft "seed")))
+(println (composed ~ Cell/get))
+(println $"ticks=${(ticks ~ Cell/get)}")
+""")
+    let ran = execCmdEx(
+      "EDITOR=" & shellQuote(editor) & " " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "composed\nsecond line" in ran.output
+    check "ticks=5" in ran.output
+
+  test "ai agent external editor suspension does not pause a remote turn":
+    when defined(macosx):
+      buildGeneCli()
+      let editor = cliDir / "slow-agent-editor.sh"
+      let editorStarted = cliDir / "slow-agent-editor.started"
+      let editorFinished = cliDir / "slow-agent-editor.finished"
+      let outputFile = cliDir / "agent-editor-gateway-pty.out"
+      for path in [editorStarted, editorFinished, outputFile]:
+        removeFile(path)
+      writeFile(editor,
+        "#!/bin/sh\n" &
+        "touch " & shellQuote(editorStarted) & "\n" &
+        "sleep 2\n" &
+        "printf 'draft from editor' > \"$1\"\n" &
+        "touch " & shellQuote(editorFinished) & "\n")
+      setFilePermissions(editor, {fpUserRead, fpUserWrite, fpUserExec})
+      defer:
+        for path in [editor, editorStarted, editorFinished, outputFile]:
+          removeFile(path)
+      let inner =
+        "stty rows 18 cols 80; exec /usr/bin/env " &
+        "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u CODEX_ACCESS_TOKEN " &
+        "TERM=xterm-256color GENE_GATEWAY_TOKEN=editor-gateway " &
+        "EDITOR=" & shellQuote(editor) & " " &
+        shellQuote(geneExe) &
+        " run examples/ai_agent/tui.gene -- --gateway=8996"
+      let expectScript =
+        "set timeout 15\n" &
+        "log_file -noappend " & outputFile & "\n" &
+        "spawn /bin/sh -c {" & inner & "}\n" &
+        # Tcl's regexp matcher can reject the UTF-8 screen buffer containing
+        # arrow glyphs on older macOS Expect builds; the glob matcher handles
+        # the same ASCII readiness marker reliably.
+        "expect {Enter sends}\n" &
+        # The status row is painted immediately before the first asynchronous
+        # input poll is installed. Do not race that tiny setup window.
+        "after 200\n" &
+        "send -- \"/edit\\r\"\n" &
+        "expect -re {external editor draft loaded}\n" &
+        # `/edit` composes rather than submits. Clear its returned draft before
+        # issuing the global shutdown command.
+        "send -- [string repeat \"\\177\" 64]\n" &
+        "after 100\n" &
+        "send -- \"/quit\\r\"\n" &
+        "expect eof\n"
+      let terminal = startProcess(
+        "/bin/sh",
+        args = ["-c", "/usr/bin/expect -c " & shellQuote(expectScript) &
+                      " >/dev/null 2>&1"],
+        options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      let startedDeadline = getMonoTime() + initDuration(seconds = 10)
+      while not fileExists(editorStarted):
+        if getMonoTime() > startedDeadline:
+          checkpoint "external editor did not start; terminal output: " &
+                     (if fileExists(outputFile): readFile(outputFile) else: "")
+          break
+        sleep(25)
+      require fileExists(editorStarted)
+      proc editorGatewayCurl(call: string): string =
+        let ran = execCmdEx(
+          "curl -sS -H 'Authorization: Bearer editor-gateway' " & call)
+        if ran.exitCode != 0: checkpoint ran.output
+        check ran.exitCode == 0
+        ran.output
+      let posted = editorGatewayCurl(
+        "-X POST -H 'content-type: application/json' " &
+        "-d '{\"text\":\"remote while editing\"}' " &
+        "http://127.0.0.1:8996/api/sessions/local/messages")
+      check "\"ok\":true" in posted
+      var remoteEvents = ""
+      let eventDeadline = getMonoTime() + initDuration(seconds = 5)
+      while "turn_done" notin remoteEvents and getMonoTime() < eventDeadline:
+        remoteEvents.add editorGatewayCurl(
+          "'http://127.0.0.1:8996/api/sessions/local/events?cursor=0'")
+      check "turn_done" in remoteEvents
+      check not fileExists(editorFinished)
+      let exitCode = terminal.waitForExit(15000)
+      if exitCode != 0 and fileExists(outputFile):
+        checkpoint readFile(outputFile)
+      check exitCode == 0
+      check fileExists(editorFinished)
 
   test "ai agent ignores blank input":
     buildGeneCli()
@@ -1715,7 +2659,7 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "verdict: ping-visible" in ran.output
 
-  test "ai agent SIGINT cancels a model turn and accepts steering":
+  test "ai agent SIGINT cancels a model turn and accepts a continuation":
     when defined(posix):
       buildGeneCli()
       let commandStarted = "tmp/interrupt-command-started"
@@ -1812,7 +2756,11 @@ suite "cli — gene run":
       if exitCode != 0: checkpoint output
       check exitCode == 0
       check "turn cancelled; enter steering to continue" in output
-      check "agent> steered" in output
+      # A curses capture is a stream of differential screen updates, not a
+      # linear transcript: the prefix may have been painted by an earlier
+      # frame. The trace row is a stable assertion that the continuation text
+      # reached the presented turn.
+      check "turn_done steered" in output
       check "tool_call run_shell" in output
       check "check command status=nil" in output
       let events = readFile(eventsFile)
@@ -1960,10 +2908,11 @@ suite "cli — gene run":
     (var newline (await (next_event screen)))
     (var page_up (await (next_event screen)))
     (var escape (await (next_event screen)))
+    (var queued_text (await (next_event screen)))
     (close screen)
     (println $"CURSES-CONTROLS:${(stringify [paste_start text_event
                                              pasted_enter paste_end newline
-                                             page_up escape])}"))
+                                             page_up escape queued_text])}"))
   ensure
     (close screen))
 """)
@@ -1983,7 +2932,9 @@ suite "cli — gene run":
       terminal.inputStream.write("\e[200~x\n\e[201~\e[13;2u\e[5~")
       terminal.inputStream.flush()
       sleep(100)
-      terminal.inputStream.write("\e")
+      # A printable byte already queued behind standalone Escape must be
+      # pushed back rather than consumed as an unsupported Alt sequence.
+      terminal.inputStream.write("\ep")
       terminal.inputStream.flush()
       terminal.inputStream.close()
       let exitCode = terminal.waitForExit(5000)
@@ -1998,6 +2949,7 @@ suite "cli — gene run":
       check "\"type\":\"newline\"" in output
       check "\"type\":\"page_up\"" in output
       check "\"type\":\"escape\"" in output
+      check "\"text\":\"p\"" in output
 
   test "public curses ownership suppresses only diagnostic console output":
     when defined(macosx):
@@ -2170,6 +3122,92 @@ suite "cli — gene run":
       check "ext 2" in output
       check "EXTENSION-TWO" in output
       check "CURSES-PANES:pane input" in output
+      check "\e[?1049l" in output
+
+  test "public curses editor renders scrolled extension panes":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_pane_scroll.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+        ^output "MAIN-TRANSCRIPT"
+        ^panes [{^title "ext"
+                 ^output "PANE-SCROLL-TOP\nline-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20\nline-21\nline-22\nline-23\nline-24\nline-25\nline-26\nline-27\nline-28\nPANE-SCROLL-BOTTOM"
+                 ^scroll 20}]))
+    (close screen)
+    (println $"CURSES-PANE-SCROLL:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_pane_scroll.out"
+      removeFile(outputFile)
+      let inner = "stty rows 18 cols 80; exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "PANE-SCROLL-TOP" in output
+      check "[SCROLL +" in output
+      check "CURSES-PANE-SCROLL:" in output
+      check "\e[?1049l" in output
+
+  test "public curses renders the focused pane full-width on narrow terminals":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("curses_focused_narrow.gene", """
+(import curses [open close read_input])
+(var screen (open))
+(try
+  (do
+    (var input
+      (read_input screen ^prompt "" ^multiline true
+        ^output "MAIN-HIDDEN"
+        ^panes [{^title "shell" ^output "FOCUSED-NARROW"
+                 ^focused true}]))
+    (close screen)
+    (println $"CURSES-FOCUSED:${input}"))
+  ensure
+    (close screen))
+""")
+      let outputFile = cliDir / "curses_focused_narrow.out"
+      removeFile(outputFile)
+      let inner = "stty rows 12 cols 40; exec /usr/bin/env TERM=xterm-256color " &
+                  shellQuote(geneExe) & " run " & shellQuote(fixture)
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(300)
+      terminal.inputStream.write("\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(5000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "FOCUSED-NARROW" in output
+      check "CURSES-FOCUSED:" in output
       check "\e[?1049l" in output
 
   test "curses standalone Escape detection preserves queued typing":
@@ -2498,6 +3536,16 @@ suite "cli — gene run":
     check "\"ok\":true" in gwCurl(
       "-X POST -H 'content-type: application/json' -d '{\"text\":\"go\"}' " &
       "http://127.0.0.1:8989/api/sessions/s1/messages")
+    let duplicate = execCmdEx(
+      "curl -sS -w '\n%{http_code}' " &
+      "-H 'Authorization: Bearer gw-secret' " &
+      "-H 'content-type: application/json' " &
+      "-d '{\"text\":\"must-not-queue\"}' " &
+      "http://127.0.0.1:8989/api/sessions/s1/messages")
+    check duplicate.exitCode == 0
+    check duplicate.output.strip().endsWith("409")
+    check "worker_busy" in duplicate.output
+    check "turn already in flight" in duplicate.output
     check "\"ok\":true" in gwCurl(
       "-X POST -H 'content-type: application/json' -d '{\"text\":\"go\"}' " &
       "http://127.0.0.1:8989/api/sessions/s2/messages")
@@ -2530,11 +3578,144 @@ suite "cli — gene run":
     check "text_delta" in s1Events
     check "slow " in s1Events
     check "answer" in s2Events
+    check "changed_worker_ids" in s1Events
     # Concurrency: serial turns would take >= 1800ms against a 900ms
     # endpoint; parallel sessions finish in roughly one latency. The margin
     # is generous (vs. the 1800ms serial floor) because a full `nimble verify`
     # run contends for cores and can stretch the two concurrent turns.
     check elapsedMs < 1750
+
+  test "agent gateway exposes headless worker lifecycle without pane state":
+    buildGeneCli()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
+              "-u", "OPENAI_API_KEY", "GENE_GATEWAY_PORT=8993",
+              "GENE_GATEWAY_TOKEN=gw-workers",
+              "GENE_GATEWAY_EVENT_MAX_COUNT=5",
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running: gatewayProc.terminate()
+      gatewayProc.close()
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    while true:
+      var s = newSocket()
+      try:
+        s.connect("127.0.0.1", Port(8993), timeout = 500)
+        s.close()
+        break
+      except OSError, TimeoutError:
+        s.close()
+        if getMonoTime() > deadline: raise
+        sleep(50)
+
+    proc workerCurl(call: string): string =
+      let ran = execCmdEx(
+        "curl -sS -H 'Authorization: Bearer gw-workers' " & call)
+      check ran.exitCode == 0
+      ran.output
+
+    check "\"id\":\"s1\"" in workerCurl(
+      "-X POST http://127.0.0.1:8993/api/sessions")
+    let mainStop = workerCurl(
+      "-w '\n%{http_code}' -X DELETE " &
+      "http://127.0.0.1:8993/api/sessions/s1/workers/main")
+    check "main_worker_cannot_stop" in mainStop
+    check mainStop.strip().endsWith("409")
+    check "\"ok\":true" in workerCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"main snapshot recovery\"}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/messages")
+    let mainDeadline = getMonoTime() + initDuration(seconds = 5)
+    while "\"busy\":true" in workerCurl(
+        "http://127.0.0.1:8993/api/sessions"):
+      if getMonoTime() > mainDeadline:
+        checkpoint "main gateway turn did not finish"
+        break
+      sleep(25)
+    let mainSnapshotText = workerCurl(
+      "http://127.0.0.1:8993/api/sessions/s1/snapshot")
+    let mainSnapshot = parseJson(mainSnapshotText)
+    check mainSnapshotText.contains("main snapshot recovery")
+    check mainSnapshotText.contains("I listed the workspace")
+    check mainSnapshotText.count("I listed the workspace") == 1
+    let mainSnapshotCursor = mainSnapshot["cursor"].getInt()
+    let created = workerCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"kind\":\"output\",\"config\":{\"title\":\"checks\",\"text\":\"ready\"}}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/workers")
+    check "\"worker_id\":\"w1\"" in created
+    let workers = workerCurl(
+      "http://127.0.0.1:8993/api/sessions/s1/workers")
+    check "\"kind\":\"output\"" in workers
+    check "attached_local_pane" notin workers
+    check "\"output\":\"ready\"" in workers
+    let events = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=" &
+      $mainSnapshotCursor & "'")
+    check "worker_started" in events
+    check "worker_output" in events
+    let outputCursor = parseJson(events)["cursor"].getInt()
+    let agentCreated = workerCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"assignment\":\"review worker events\",\"title\":\"reviewer\",\"context\":[{\"kind\":\"summary\",\"text\":\"bounded snapshot\"}]}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/agents")
+    check "\"agent_id\":\"a1\"" in agentCreated
+    check "\"worker_id\":\"a1\"" in agentCreated
+    let agentEvents = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=" &
+      $outputCursor & "'")
+    check "agent_spawned" in agentEvents
+    check "summary" in agentEvents
+    let prompted = workerCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"report briefly\"}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/agents/a1/messages")
+    check "\"ok\":true" in prompted
+    let agentStopped = workerCurl(
+      "-X DELETE http://127.0.0.1:8993/api/sessions/s1/agents/a1")
+    check "\"ok\":true" in agentStopped
+    let gapResponse = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=0'")
+    check "cursor_gap" in gapResponse
+    check "/api/sessions/s1/snapshot" in gapResponse
+    let snapshotText = workerCurl(
+      "http://127.0.0.1:8993/api/sessions/s1/snapshot")
+    let snapshot = parseJson(snapshotText)
+    check snapshot["session_id"].getStr() == "s1"
+    check snapshot["main_worker_id"].getStr() == "main"
+    check snapshotText.contains("\"output\":\"ready\"")
+    check snapshotText.contains("main snapshot recovery")
+    check snapshotText.contains("I listed the workspace")
+    let snapshotCursor = snapshot["cursor"].getInt()
+    let afterSnapshot = workerCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"kind\":\"output\",\"config\":{\"title\":\"after snapshot\"}}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/workers")
+    check "worker_id" in afterSnapshot
+    let resumed = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=" &
+      $snapshotCursor & "'")
+    check "worker_started" in resumed
+    check parseJson(resumed)["cursor"].getInt() > snapshotCursor
+    let stopped = workerCurl(
+      "-X DELETE http://127.0.0.1:8993/api/sessions/s1/workers/w1")
+    check "\"ok\":true" in stopped
+    let afterStop = workerCurl(
+      "http://127.0.0.1:8993/api/sessions/s1/workers")
+    check "\"lifecycle\":\"stopped\"" in afterStop
+    let stoppedInput = workerCurl(
+      "-w '\n%{http_code}' -X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"late\"}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/workers/w1/input")
+    check "worker_stopped" in stoppedInput
+    check stoppedInput.strip().endsWith("409")
+    let gap = workerCurl(
+      "-w '\\n%{http_code}' " &
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=0'")
+    check "cursor_gap" in gap
+    check gap.strip().endsWith("409")
 
   test "agent gateway cancellation stops an in-flight model turn":
     buildGeneCli()
@@ -2686,6 +3867,11 @@ suite "cli — gene run":
     # just streamed text — the demo transport invokes list_dir.
     check "tool_call" in firstTurn
     check "tool_result" in firstTurn
+    let durableWorker = execCmdEx(
+      "curl -sS -X POST -H 'content-type: application/json' " &
+      "-d '{\"kind\":\"output\",\"config\":{\"title\":\"durable-checks\",\"text\":\"saved\"}}' " &
+      "http://127.0.0.1:8997/api/sessions/s1/workers")
+    check "\"worker_id\":\"w1\"" in durableWorker.output
     gw.terminate()
     discard gw.waitForExit()
     gw.close()
@@ -2705,6 +3891,14 @@ suite "cli — gene run":
     check "list_dir tool" in restored.output
     check "tool_call" in restored.output
     check "tool_result" in restored.output
+    let restoredWorkers = execCmdEx(
+      "curl -sS http://127.0.0.1:8997/api/sessions/s1/workers")
+    check "\"worker_id\":\"w1\"" in restoredWorkers.output
+    check "\"title\":\"durable-checks\"" in restoredWorkers.output
+    let restoredSnapshot = execCmdEx(
+      "curl -sS http://127.0.0.1:8997/api/sessions/s1/snapshot")
+    check "list it" in restoredSnapshot.output
+    check "I listed the workspace" in restoredSnapshot.output
     # Highest version in the restored log (robust to per-turn event count).
     var maxV = 0
     for piece in restored.output.split("\"v\":"):
@@ -2842,6 +4036,7 @@ suite "cli — gene run":
     check "\"chat_id\":42" in outbox
     check "tool list_dir" in outbox
     check "I listed the workspace via the list_dir tool." in outbox
+    check outbox.count("I listed the workspace via the list_dir tool.") == 1
     # The unlisted chat never got a message.
     check "\"chat_id\":99" notin outbox
     # The turn also shows up in the gateway session log under tg-42.
