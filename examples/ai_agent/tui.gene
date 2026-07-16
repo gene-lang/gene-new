@@ -126,7 +126,7 @@
 (fn valid_reasoning_effort? [level] : Bool
   (reasoning_effort_levels ~ contains? level))
 
-(if (! (valid_reasoning_effort? initial_reasoning_effort))
+(if_not (valid_reasoning_effort? initial_reasoning_effort)
   (fail (OsError
     ^message $"OPENAI_REASONING_EFFORT must be one of ${reasoning_effort_levels_text}")))
 (var reasoning_effort (cell initial_reasoning_effort))
@@ -1802,11 +1802,11 @@
           (set worker_event (agent/last_finish_event ~ Cell/get)))
         (var task_id (if worker_event worker_event/task_id))
         (var worker_v
-          (if (&& worker_event (present? worker_event/v)) worker_event/v nil))
+          (if (&& worker_event (present? worker_event/v)) worker_event/v))
         (var safe_text (utf8_prefix (redact text) agent_result_max_bytes))
         (var safe_error (utf8_prefix (redact error_text) agent_result_max_bytes))
         (var error
-          (if (== outcome "completed") nil
+          (if_not (== outcome "completed")
             {^kind (if (== error_kind "") outcome error_kind)
              ^message safe_error}))
         # Main output was presented directly and is already part of main
@@ -2403,7 +2403,8 @@
   (load_instruction_file "." "AGENTS.md")
   (var parts (split path "/"))
   (var count
-    (if (== path ".") 0
+    (if (== path ".")
+      0
       (if include_leaf parts/~size (- parts/~size 1))))
   (if (> count max_instruction_depth) (set count max_instruction_depth))
   (var scope_cell (cell "."))
@@ -6371,7 +6372,8 @@ State that broader behavior is unverified when no matching successful check ran.
     (var last (- overlay/items/~size 1))
     (if_yes (> last -1)
       (overlay/selected ~ Cell/set
-        (if (< (+ selected direction) 0) 0
+        (if (< (+ selected direction) 0)
+          0
           (if (> (+ selected direction) last) last
             (+ selected direction)))))))
 
@@ -9109,11 +9111,13 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn handle_output_pane_command [line : Str, transcript, streaming]
   (var title
-    (if (== line "/pane output") ""
+    (if (== line "/pane output")
+      ""
       (trim (after_prefix line "/pane output "))))
   (var pane (open_output_pane title))
   (render_agent_text transcript streaming
-    (if (== pane nil) "application is not running"
+    (if (== pane nil)
+      "application is not running"
       $"opened output pane ${pane/id}")))
 
 (fn handle_shell_pane [transcript, streaming]
@@ -9248,12 +9252,14 @@ State that broader behavior is unverified when no matching successful check ran.
 
   (message stop_agent [self, agent_id : Str]
     (var agent (application_find_agent self/application agent_id))
-    (if (== agent nil) false
+    (if (== agent nil)
+      false
       (application_stop_agent self/application agent)))
 
   (message stop_worker [self, worker_id : Str]
     (var worker (application_find_worker self/application worker_id))
-    (if (== worker nil) false
+    (if (== worker nil)
+      false
       (application_stop_worker self/application worker)))
 
   # REPL scripts and embedded callers share the exact declaration-backed
@@ -9270,7 +9276,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (when "result"
         (var agent (application_find_agent app worker_id))
         (var result (if agent (agent/result ~ Cell/get)))
-        (if (== result nil) {^ok false ^error "agent result not found"}
+        (if (== result nil)
+          {^ok false ^error "agent result not found"}
           (application_pin_artifact! app "result"
             (agent_result_text result) agent/id result/task_id)))
       (when "tail"
@@ -10060,105 +10067,97 @@ State that broader behavior is unverified when no matching successful check ran.
         (Cell/set running false))
       (else
         (if_not (blank_line? line)
-        (if_not (help_command? line)
-          # Keep ordinary submitted commands in the visible/persisted
-          # transcript. Help is a replaceable surface notice and deliberately
-          # bypasses both transcript and checkpoint state.
-          (if app/local_surface
-            (app/local_surface/help_notice ~ Cell/set ""))
-          (append_transcript transcript $"──────\n${line}\n")
-          (checkpoint_agent_state! app "input_submitted"))
-        (refresh_user_input transcript)
-        # Registry recognition is the gate in front of every static slash
-        # handler. Dynamic /N routes are parsed separately; nothing else can
-        # become a control command unless its metadata/help entry exists.
-        (if (unregistered_surface_command? line)
-          (route_surface_input app line items transcript memory streaming)
-          (if_not (handle_surface_global_command line app items transcript memory
-                                             streaming)
-        ((fn []
-        (if (|| (== line "/quit") (== line "/exit"))
-          (then
-            (close_user_input)
-            (save_agent_state (items ~ Cell/get)
-                              (transcript ~ Cell/get)
-                              (memory ~ Cell/get))
-            (interactive_transcript ~ Cell/set nil)
-            (Cell/set running false))
-          (else
-            (if (== line "/agents")
-            (render_agent_text transcript streaming (agents_report))
-              (if (|| (== line "/agent") (starts_with? line "/agent "))
-              (handle_agent_command line transcript memory streaming)
-                (if (|| (== line "/pane output")
-                      (starts_with? line "/pane output "))
-                (handle_output_pane_command line transcript streaming)
-                (if (|| (== line "/close") (starts_with? line "/close "))
-                  (handle_close_command line transcript streaming)
-                  (if (== line "/sh")
-                    (handle_shell_pane transcript streaming)
-                  (if (== line "/repl")
-                    (handle_repl_pane items transcript memory streaming)
-              (if (== line "/memory")
+          (if_not (help_command? line)
+            # Keep ordinary submitted commands in the visible/persisted
+            # transcript. Help is a replaceable surface notice and deliberately
+            # bypasses both transcript and checkpoint state.
+            (if app/local_surface
+              (app/local_surface/help_notice ~ Cell/set ""))
+            (append_transcript transcript $"──────\n${line}\n")
+            (checkpoint_agent_state! app "input_submitted"))
+          (refresh_user_input transcript)
+          # Registry recognition is the gate in front of every static slash
+          # handler. Dynamic /N routes are parsed separately; nothing else can
+          # become a control command unless its metadata/help entry exists.
+          (if (unregistered_surface_command? line)
+            (route_surface_input app line items transcript memory streaming)
+            (if_not (handle_surface_global_command line app items transcript memory streaming)
+              (if (|| (== line "/quit") (== line "/exit"))
                 (then
+                  (close_user_input)
+                  (save_agent_state (items ~ Cell/get)
+                                    (transcript ~ Cell/get)
+                                    (memory ~ Cell/get))
+                  (interactive_transcript ~ Cell/set nil)
+                  (Cell/set running false))
+                (elif (== line "/agents")
+                  (render_agent_text transcript streaming (agents_report)))
+                (elif (|| (== line "/agent") (starts_with? line "/agent "))
+                  (handle_agent_command line transcript memory streaming))
+                (elif (|| (== line "/pane output")
+                        (starts_with? line "/pane output "))
+                  (handle_output_pane_command line transcript streaming))
+                (elif (|| (== line "/close") (starts_with? line "/close "))
+                  (handle_close_command line transcript streaming))
+                (elif (== line "/sh")
+                  (handle_shell_pane transcript streaming))
+                (elif (== line "/repl")
+                  (handle_repl_pane items transcript memory streaming))
+                (elif (== line "/memory")
                   (var sep "\n")
                   (render_agent_text transcript streaming
                     (if (empty? (memory ~ Cell/get))
                       "memory is empty"
                       $"memory:\n${(join (memory ~ Cell/get) sep)}")))
-                (else
-                  (if (== line "/forget-memory")
+                (elif (== line "/forget-memory")
+                  (memory ~ Cell/set [])
+                  (items ~ Cell/set
+                    (refresh_system_memory (items ~ Cell/get)
+                                          (memory ~ Cell/get)))
+                  (emit_event! "memory" {^action "clear" ^text "memory cleared"})
+                  (save_agent_state (items ~ Cell/get)
+                                    (transcript ~ Cell/get)
+                                    (memory ~ Cell/get))
+                  (render_agent_text transcript streaming "memory cleared"))
+                (elif (starts_with? line "/remember ")
+                  (var note (trim (after_prefix line "/remember ")))
+                  (if (== note "")
                     (then
-                      (memory ~ Cell/set [])
+                      (render_agent_text transcript streaming
+                        "usage: /remember <note>"))
+                    (else
+                      (memory ~ Cell/set (append (memory ~ Cell/get) note))
                       (items ~ Cell/set
                         (refresh_system_memory (items ~ Cell/get)
-                                               (memory ~ Cell/get)))
-                      (emit_event! "memory" {^action "clear" ^text "memory cleared"})
+                                              (memory ~ Cell/get)))
+                      (emit_event! "memory" {^action "remember" ^text note})
                       (save_agent_state (items ~ Cell/get)
                                         (transcript ~ Cell/get)
                                         (memory ~ Cell/get))
-                      (render_agent_text transcript streaming "memory cleared"))
-                    (else
-                      (if (starts_with? line "/remember ")
-                        (then
-                          (var note (trim (after_prefix line "/remember ")))
-                          (if (== note "")
-                            (then
-                              (render_agent_text transcript streaming
-                                "usage: /remember <note>"))
-                            (else
-                              (memory ~ Cell/set (append (memory ~ Cell/get) note))
-                              (items ~ Cell/set
-                                (refresh_system_memory (items ~ Cell/get)
-                                                       (memory ~ Cell/get)))
-                              (emit_event! "memory" {^action "remember" ^text note})
-                              (save_agent_state (items ~ Cell/get)
-                                                (transcript ~ Cell/get)
-                                                (memory ~ Cell/get))
-                              (render_agent_text transcript streaming
-                                $"remembered: ${note}"))))
-                        (else
-                          (if (== line "/status")
-                          (render_agent_text transcript streaming
-                            (agent_status_report items memory))
-                          (if (== line "/progress")
-                            (render_agent_text transcript streaming
-                              (project_progress_report app))
-                          (if (== line "/diff")
-                            (render_agent_text transcript streaming (file_diff_report))
-                            (if (|| (== line "/undo") (starts_with? line "/undo "))
-                              (render_agent_text transcript streaming (undo_command line))
-                              (if (|| (== line "/trace") (starts_with? line "/trace "))
-                                (render_agent_text transcript streaming
-                                  (trace_report
-                                    (if (== line "/trace")
-                                      ""
-                                      (after_prefix line "/trace "))))
-                                (if (!= (extension_command_id line) nil)
-                                    (handle_extension_command line transcript
-                                                              memory streaming)
-                                    (route_surface_input app line items transcript
-                                                         memory streaming))))))))))))))))))))))))))))))
+                      (render_agent_text transcript streaming
+                        $"remembered: ${note}"))))
+                (elif (== line "/status")
+                  (render_agent_text transcript streaming
+                    (agent_status_report items memory)))
+                (elif (== line "/progress")
+                  (render_agent_text transcript streaming
+                    (project_progress_report app)))
+                (elif (== line "/diff")
+                  (render_agent_text transcript streaming (file_diff_report)))
+                (elif (|| (== line "/undo") (starts_with? line "/undo "))
+                  (render_agent_text transcript streaming (undo_command line)))
+                (elif (|| (== line "/trace") (starts_with? line "/trace "))
+                  (render_agent_text transcript streaming
+                    (trace_report
+                      (if (== line "/trace")
+                        ""
+                        (after_prefix line "/trace ")))))
+                (elif (!= (extension_command_id line) nil)
+                  (handle_extension_command line transcript
+                                            memory streaming))
+                (else
+                  (route_surface_input app line items transcript
+                                        memory streaming))))))))))
 
 # Project a remotely initiated turn into an attached transcript without giving
 # the adapter any curses knowledge. In headless/remote-only applications these
