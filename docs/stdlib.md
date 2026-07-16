@@ -42,10 +42,13 @@ Implementation status:
   `serde/write_data`/`read_data`/`data?`, full `serde/write`/`read`,
   typed refs/instances, policy-gated restore hooks, `SerdeRef`,
   `SerdeError`, and `SerdePolicy`, per docs/proposals/serialization.md.
-- `store` (durable serde-backed persistence) — controlled-stop MVP
-  implemented: shared `Store` protocol, `StoreError`, `store/sqlite`,
-  `store/fs`, and `Fs/make_dir`/`Fs/remove`, per
-  docs/proposals/persistence.md.
+- `store` (durable serde-backed persistence) — implemented with the shared
+  `Store` protocol, `StoreError`, `store/sqlite`, `store/fs`, atomic
+  hash-validated checkpoint generations (`checkpoint`/`load_checkpoint`),
+  owner-only storage, and `Fs/make_dir`/`Fs/remove`, per
+  docs/proposals/persistence.md. The `crypto/sha256` helper used by manifests
+  and content-addressed artifacts and `os/process_id` used by ownership
+  advisories are also public, dependency-free primitives.
 
 ## Goals
 
@@ -79,6 +82,8 @@ Initial modules should be available through namespace imports:
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
 (import net/http_client [Http request stream HttpClientError])
+(import crypto [sha256])
+(import os [process_id])
 (import log [Logger LogLevel new_logger info! debug!])
 (import curses [Screen open close dimensions draw read_input refresh_input
                 escape_pressed? next_event CursesError])

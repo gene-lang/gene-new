@@ -3593,9 +3593,21 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   };
   function ___syscall_chdir(path) {
   try {
-  
+
       path = SYSCALLS.getStr(path);
       FS.chdir(path);
+      return 0;
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+
+  function ___syscall_chmod(path, mode) {
+  try {
+
+      path = SYSCALLS.getStr(path);
+      FS.chmod(path, mode);
       return 0;
     } catch (e) {
     if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
@@ -4495,7 +4507,7 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
     };
   function ___syscall_connect(fd, addr, addrlen, d1, d2, d3) {
   try {
-  
+
       var sock = getSocketFromFD(fd);
       var info = getSocketAddress(addr, addrlen);
       sock.sock_ops.connect(sock, info.addr, info.port);
@@ -5207,6 +5219,33 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
       }
       HEAPU8.set(msg.buffer, buf);
       return msg.buffer.byteLength;
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+
+  function ___syscall_renameat(olddirfd, oldpath, newdirfd, newpath) {
+  try {
+
+      oldpath = SYSCALLS.getStr(oldpath);
+      newpath = SYSCALLS.getStr(newpath);
+      oldpath = SYSCALLS.calculateAt(olddirfd, oldpath);
+      newpath = SYSCALLS.calculateAt(newdirfd, newpath);
+      FS.rename(oldpath, newpath);
+      return 0;
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+
+  function ___syscall_rmdir(path) {
+  try {
+
+      path = SYSCALLS.getStr(path);
+      FS.rmdir(path);
+      return 0;
     } catch (e) {
     if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
@@ -6513,6 +6552,8 @@ var wasmImports = {
   /** @export */
   __syscall_chdir: ___syscall_chdir,
   /** @export */
+  __syscall_chmod: ___syscall_chmod,
+  /** @export */
   __syscall_connect: ___syscall_connect,
   /** @export */
   __syscall_dup3: ___syscall_dup3,
@@ -6544,6 +6585,10 @@ var wasmImports = {
   __syscall_readlinkat: ___syscall_readlinkat,
   /** @export */
   __syscall_recvfrom: ___syscall_recvfrom,
+  /** @export */
+  __syscall_renameat: ___syscall_renameat,
+  /** @export */
+  __syscall_rmdir: ___syscall_rmdir,
   /** @export */
   __syscall_sendto: ___syscall_sendto,
   /** @export */
@@ -6788,4 +6833,3 @@ if (typeof exports === 'object' && typeof module === 'object') {
   module.exports.default = GeneModule;
 } else if (typeof define === 'function' && define['amd'])
   define([], () => GeneModule);
-

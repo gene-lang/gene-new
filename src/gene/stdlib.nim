@@ -165,6 +165,9 @@ static void gene_turn_interrupt_end(void) {
     KeyCtrlPageDownNcurses = 552
     KeyCtrlC = 3
     KeyCtrlD = 4
+    KeyCtrlE = 5
+    KeyTab = 9
+    KeyCtrlR = 18
     KeyEsc = 27
     KeyEnter = 10
     KeyReturn = 13
@@ -2257,6 +2260,11 @@ proc biOsMonotonicMs(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "os/monotonic_ms takes no arguments")
   newInt(getMonoTime().ticks div 1_000_000)
 
+proc biOsProcessId(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError, "os/process_id takes no arguments")
+  newInt(getCurrentProcessId())
+
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/stdin_tty? takes no arguments")
@@ -2590,7 +2598,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc drawCursesInput(prompt, status, output, input: string, cursor: int,
                        outputScroll = 0,
-                       panes: openArray[CursesPane] = []) =
+                       panes: openArray[CursesPane] = [],
+                       overlay: openArray[string] = [],
+                       overlaySelected = 0, overlayTitle = "") =
     # wclear also sets clearok, forcing ncurses to clear and repaint the
     # physical terminal on every keypress. Erase only the virtual window so
     # refresh can emit the small cell diff and avoid visible flashing.
@@ -2651,6 +2661,29 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                          effectiveScroll)
     if fullPane < 0:
       drawCursesPanes(panes, outputRows, width)
+
+    # One transient list primitive backs completion, reverse search, and the
+    # command palette. It is drawn last over the bottom of the output region,
+    # bounded by available rows and terminal cell width.
+    if overlay.len > 0 and outputRows > 0:
+      let titleRows = if overlayTitle.len > 0: 1 else: 0
+      let shown = min(overlay.len, max(1, outputRows - titleRows))
+      let overlayRows = min(outputRows, shown + titleRows)
+      let first = max(0, min(overlaySelected, overlay.len - 1) - shown + 1)
+      let top = outputRows - overlayRows
+      if titleRows > 0:
+        discard cMove(top.cint, 0)
+        withCursesColor(PairSeparator,
+          proc() = addCursesText("─ " & overlayTitle, width))
+        discard clrtoeol()
+      for row in 0 ..< shown:
+        let index = first + row
+        let overlayText =
+          (if index == overlaySelected: "› " else: "  ") & overlay[index]
+        discard cMove((top + titleRows + row).cint, 0)
+        withCursesColor(if index == overlaySelected: PairInput else: PairStatus,
+          proc() = addCursesText(overlayText, width))
+        discard clrtoeol()
 
     drawSeparator(topSepRow, width)
     for row in 0 ..< inputRows:
@@ -3189,6 +3222,9 @@ proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   var cursor = -1
   var outputScroll = 0
   var panes: seq[CursesPane]
+  var overlay: seq[string]
+  var overlaySelected = 0
+  var overlayTitle = ""
   if call != nil:
     for i, name in call[].namedNames:
       let value = call[].namedValues[i]
@@ -3214,6 +3250,20 @@ proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
                            scope)
       of "panes":
         panes = parseCursesPanes("curses/draw", value)
+      of "overlay":
+        requireList("curses/draw ^overlay", value)
+        for item in value.listItems:
+          requireStr("curses/draw ^overlay item", item)
+          overlay.add item.strVal
+      of "overlay_selected":
+        overlaySelected = int(requireInt64(
+          "curses/draw ^overlay_selected", value))
+        if overlaySelected < 0:
+          raiseCursesError(
+            "curses/draw ^overlay_selected must be non-negative", scope)
+      of "overlay_title":
+        requireStr("curses/draw ^overlay_title", value)
+        overlayTitle = value.strVal
       else:
         raiseCursesError("curses/draw got unexpected named argument: " & name,
                          scope)
@@ -3222,7 +3272,7 @@ proc biCursesDraw(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   cursor = min(cursor, input.len)
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     drawCursesInput(prompt, status, output, input, cursor, outputScroll,
-                    panes)
+                    panes, overlay, overlaySelected, overlayTitle)
   NIL
 
 proc biCursesReadInput(args: openArray[Value],
@@ -3271,6 +3321,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of KeyResize: props["type"] = newStr("resize")
     of KeyCtrlC: props["type"] = newStr("interrupt")
     of KeyCtrlD: props["type"] = newStr("eof")
+    of KeyCtrlE: props["type"] = newStr("edit")
+    of KeyCtrlR: props["type"] = newStr("reverse_search")
+    of KeyTab: props["type"] = newStr("complete")
     of KeyEnter, KeyReturn, KeyNcursesEnter: props["type"] = newStr("enter")
     of KeyBackspace, 127, 8: props["type"] = newStr("backspace")
     of KeyDelete: props["type"] = newStr("delete")
@@ -3371,7 +3424,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
               event = cursesEscapeEvent("")
             else:
               event = cursesEscapeEvent(seq)
-          elif ch == KeyCtrlC or ch == KeyCtrlD or ch == KeyEnter or
+          elif ch == KeyCtrlC or ch == KeyCtrlD or ch == KeyCtrlE or
+               ch == KeyCtrlR or ch == KeyTab or ch == KeyEnter or
                ch == KeyReturn or ch == KeyNcursesEnter or
                ch == KeyBackspace or ch == 127 or ch == 8:
             cursesEventText.setLen(0)
@@ -3428,6 +3482,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     pending.schedulerPtr = cast[pointer](schedulerForScope(scope))
     cursesEventPending.add pending
     beginExternalNativeOp()
+    # getch() may have pulled a whole terminal burst into ncurses' private
+    # queue while completing the preceding one-event task. In that case the
+    # OS fd is no longer readable, so waiting for another scheduler I/O tick
+    # would strand the buffered suffix until the user typed again. Probe the
+    # queue as each successor task is registered; a ready task is safe to
+    # await, and an empty queue remains registered for normal polling.
+    pollCursesInputCompletions()
     task
 else:
   proc pollCursesInputCompletions() =
@@ -6019,6 +6080,144 @@ proc biPostgresTransaction(args: openArray[Value], call: ptr NativeCall): Value 
 const storeDefaultTable = "store_records"
 const storeDefaultKeyColumn = "key"
 const storeDefaultDataColumn = "data"
+const storeCheckpointSchema = 1
+const storeCheckpointRetain = 3
+
+const sha256RoundConstants: array[64, uint32] = [
+  0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32,
+  0x3956c25b'u32, 0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32,
+  0xd807aa98'u32, 0x12835b01'u32, 0x243185be'u32, 0x550c7dc3'u32,
+  0x72be5d74'u32, 0x80deb1fe'u32, 0x9bdc06a7'u32, 0xc19bf174'u32,
+  0xe49b69c1'u32, 0xefbe4786'u32, 0x0fc19dc6'u32, 0x240ca1cc'u32,
+  0x2de92c6f'u32, 0x4a7484aa'u32, 0x5cb0a9dc'u32, 0x76f988da'u32,
+  0x983e5152'u32, 0xa831c66d'u32, 0xb00327c8'u32, 0xbf597fc7'u32,
+  0xc6e00bf3'u32, 0xd5a79147'u32, 0x06ca6351'u32, 0x14292967'u32,
+  0x27b70a85'u32, 0x2e1b2138'u32, 0x4d2c6dfc'u32, 0x53380d13'u32,
+  0x650a7354'u32, 0x766a0abb'u32, 0x81c2c92e'u32, 0x92722c85'u32,
+  0xa2bfe8a1'u32, 0xa81a664b'u32, 0xc24b8b70'u32, 0xc76c51a3'u32,
+  0xd192e819'u32, 0xd6990624'u32, 0xf40e3585'u32, 0x106aa070'u32,
+  0x19a4c116'u32, 0x1e376c08'u32, 0x2748774c'u32, 0x34b0bcb5'u32,
+  0x391c0cb3'u32, 0x4ed8aa4a'u32, 0x5b9cca4f'u32, 0x682e6ff3'u32,
+  0x748f82ee'u32, 0x78a5636f'u32, 0x84c87814'u32, 0x8cc70208'u32,
+  0x90befffa'u32, 0xa4506ceb'u32, 0xbef9a3f7'u32, 0xc67178f2'u32]
+
+proc sha256RotateRight(value: uint32, amount: int): uint32 {.inline.} =
+  (value shr amount) or (value shl (32 - amount))
+
+proc sha256Hex(data: string): string =
+  ## Small dependency-free SHA-256 used for checkpoint validation and durable
+  ## artifact ids. This is off every VM/reader hot path.
+  var bytes = newSeq[byte](data.len)
+  for i, c in data:
+    bytes[i] = byte(ord(c))
+  let bitLen = uint64(bytes.len) * 8'u64
+  bytes.add 0x80'u8
+  while (bytes.len mod 64) != 56:
+    bytes.add 0'u8
+  for shift in countdown(56, 0, 8):
+    bytes.add byte((bitLen shr shift) and 0xff'u64)
+
+  var state = [0x6a09e667'u32, 0xbb67ae85'u32, 0x3c6ef372'u32,
+               0xa54ff53a'u32, 0x510e527f'u32, 0x9b05688c'u32,
+               0x1f83d9ab'u32, 0x5be0cd19'u32]
+  var schedule: array[64, uint32]
+  var offset = 0
+  while offset < bytes.len:
+    for i in 0 ..< 16:
+      let j = offset + i * 4
+      schedule[i] = (uint32(bytes[j]) shl 24) or
+                    (uint32(bytes[j + 1]) shl 16) or
+                    (uint32(bytes[j + 2]) shl 8) or uint32(bytes[j + 3])
+    for i in 16 ..< 64:
+      let s0 = sha256RotateRight(schedule[i - 15], 7) xor
+               sha256RotateRight(schedule[i - 15], 18) xor
+               (schedule[i - 15] shr 3)
+      let s1 = sha256RotateRight(schedule[i - 2], 17) xor
+               sha256RotateRight(schedule[i - 2], 19) xor
+               (schedule[i - 2] shr 10)
+      schedule[i] = schedule[i - 16] + s0 + schedule[i - 7] + s1
+    var a = state[0]
+    var b = state[1]
+    var c = state[2]
+    var d = state[3]
+    var e = state[4]
+    var f = state[5]
+    var g = state[6]
+    var h = state[7]
+    for i in 0 ..< 64:
+      let big1 = sha256RotateRight(e, 6) xor sha256RotateRight(e, 11) xor
+                 sha256RotateRight(e, 25)
+      let choose = (e and f) xor ((not e) and g)
+      let temp1 = h + big1 + choose + sha256RoundConstants[i] + schedule[i]
+      let big0 = sha256RotateRight(a, 2) xor sha256RotateRight(a, 13) xor
+                 sha256RotateRight(a, 22)
+      let majority = (a and b) xor (a and c) xor (b and c)
+      let temp2 = big0 + majority
+      h = g
+      g = f
+      f = e
+      e = d + temp1
+      d = c
+      c = b
+      b = a
+      a = temp1 + temp2
+    state[0] += a
+    state[1] += b
+    state[2] += c
+    state[3] += d
+    state[4] += e
+    state[5] += f
+    state[6] += g
+    state[7] += h
+    offset += 64
+  result = ""
+  for word in state:
+    result.add toHex(word, 8).toLowerAscii()
+
+proc biCryptoSha256(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("crypto/sha256", args)
+  requireStr("crypto/sha256", args[0])
+  newStr(sha256Hex(args[0].strVal))
+
+proc storeOwnerOnly(path: string, directory = false) =
+  try:
+    if directory:
+      setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
+    else:
+      setFilePermissions(path, {fpUserRead, fpUserWrite})
+  except OSError:
+    discard
+
+proc storeFsync(path: string, directory = false) =
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    let fd = posix.open(path.cstring, O_RDONLY)
+    if fd >= 0:
+      discard posix.fsync(fd)
+      discard posix.close(fd)
+
+proc storeWriteDurable(path, data: string) =
+  writeFile(path, data)
+  storeOwnerOnly(path)
+  storeFsync(path)
+
+when defined(posix):
+  proc storeCRename(source, destination: cstring): cint
+    {.importc: "rename", header: "<stdio.h>".}
+
+proc storeReplaceFile(source, destination: string) =
+  when defined(posix):
+    if storeCRename(source.cstring, destination.cstring) != 0:
+      raiseOSError(osLastError())
+  else:
+    if fileExists(destination):
+      removeFile(destination)
+    moveFile(source, destination)
+
+proc storeGenerationName(generation: int64): string =
+  align($generation, 20, '0')
+
+proc storeCheckpointKey(generation: int64, name: string): string =
+  "checkpoint/" & storeGenerationName(generation) & "/" & name
 
 proc raiseStoreError(scope: Scope, kind, message: string, key = "") =
   var props = initPropTable()
@@ -6135,6 +6334,16 @@ proc storeSqliteDb(store: Value, scope: Scope): pointer =
   let dbVal = store.props.getOrDefault("db", NIL)
   sqliteHandle("Store/sqlite", dbVal, scope)
 
+proc storeSqliteOwnerOnly(store: Value) =
+  let dbValue = store.props.getOrDefault("db", VOID)
+  if dbValue.kind == vkNode:
+    let path = dbValue.props.getOrDefault("path", VOID)
+    if path.kind == vkString and path.strVal != ":memory:":
+      storeOwnerOnly(path.strVal)
+      for suffix in ["-wal", "-shm", "-journal"]:
+        if fileExists(path.strVal & suffix):
+          storeOwnerOnly(path.strVal & suffix)
+
 proc storeSqliteTable(store: Value): tuple[tableName, keyColumn, dataColumn: string] =
   (store.props["table"].strVal,
    store.props["key_column"].strVal,
@@ -6174,6 +6383,12 @@ proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.ni
         "store/sqlite/open got unexpected named argument: " & name)
   storeSqliteEnsureSchema(sqliteHandle("store/sqlite/open", args[0], scope),
                           tableName, keyColumn, dataColumn, scope)
+  let databasePath = args[0].props.getOrDefault("path", VOID)
+  if databasePath.kind == vkString:
+    storeOwnerOnly(databasePath.strVal)
+    for suffix in ["-wal", "-shm", "-journal"]:
+      if fileExists(databasePath.strVal & suffix):
+        storeOwnerOnly(databasePath.strVal & suffix)
   var props = initPropTable()
   props["db"] = args[0]
   props["table"] = newStr(tableName)
@@ -6200,12 +6415,18 @@ proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
       "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
       [newStr(key), newStr(data)], "Store/put", scope)
+    storeSqliteOwnerOnly(args[0])
   else:
     let root = args[0].props["root"].strVal
     let path = root / (urlEncodeComponent(key) & ".gene")
     try:
-      writeFile(path, data)
+      let temporary = path & ".tmp-" & $getCurrentProcessId()
+      storeWriteDurable(temporary, data)
+      storeReplaceFile(temporary, path)
+      storeFsync(root, directory = true)
     except IOError as e:
+      raiseStoreError(scope, "io", "Store/put: " & e.msg, key)
+    except OSError as e:
       raiseStoreError(scope, "io", "Store/put: " & e.msg, key)
   NIL
 
@@ -6348,6 +6569,250 @@ proc biStoreClear(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
       raiseStoreError(scope, "io", "Store/clear: " & e.msg)
   NIL
 
+proc storeCheckpointManifest(scope: Scope, generation: int64,
+                             encoded: seq[(string, string)]): string =
+  var hashes = initPropTable()
+  for (name, data) in encoded:
+    hashes[name] = newStr("sha256:" & sha256Hex(data))
+  var manifest = initPropTable()
+  manifest["schema"] = newInt(storeCheckpointSchema)
+  manifest["generation"] = newInt(generation)
+  manifest["hashes"] = newMap(hashes)
+  storeEncode(scope, "data", newMap(manifest))
+
+proc storeDecodeCheckpoint(scope: Scope, store: Value, generation: int64,
+                           manifestText: string,
+                           encoded: Table[string, string]): Value =
+  let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
+  if manifest.kind != vkMap or
+      manifest.mapEntries.getOrDefault("schema", VOID).kind != vkInt or
+      manifest.mapEntries["schema"].intVal != storeCheckpointSchema or
+      manifest.mapEntries.getOrDefault("generation", VOID).kind != vkInt or
+      manifest.mapEntries["generation"].intVal != generation:
+    return VOID
+  let hashes = manifest.mapEntries.getOrDefault("hashes", VOID)
+  if hashes.kind != vkMap:
+    return VOID
+  var records = initPropTable()
+  let mode = storeModeOf(store, scope)
+  let policy = storePolicyOf(store)
+  for name, expected in hashes.mapEntries:
+    if expected.kind != vkString or name notin encoded:
+      return VOID
+    let data = encoded[name]
+    if expected.strVal != "sha256:" & sha256Hex(data):
+      return VOID
+    records[name] = storeDecode(scope, mode, data, policy, name)
+  var resultProps = initPropTable()
+  resultProps["generation"] = newInt(generation)
+  resultProps["schema"] = newInt(storeCheckpointSchema)
+  resultProps["records"] = newMap(records)
+  newMap(resultProps)
+
+proc storeFilesystemCheckpoint(scope: Scope, store: Value, generation: int64,
+                               encoded: seq[(string, string)],
+                               manifestText: string) =
+  let root = store.props["root"].strVal
+  let generations = root / "generations"
+  createDir(generations)
+  storeOwnerOnly(root, directory = true)
+  storeOwnerOnly(generations, directory = true)
+  let generationName = storeGenerationName(generation)
+  let finalDir = generations / generationName
+  let tempDir = generations / (".tmp-" & generationName & "-" &
+    $getCurrentProcessId())
+  if dirExists(tempDir):
+    removeDir(tempDir)
+  if dirExists(finalDir):
+    raiseStoreError(scope, "conflict",
+      "checkpoint generation already exists: " & $generation)
+  createDir(tempDir)
+  storeOwnerOnly(tempDir, directory = true)
+  try:
+    for (name, data) in encoded:
+      storeWriteDurable(tempDir / (urlEncodeComponent(name) & ".gene"), data)
+    storeWriteDurable(tempDir / "MANIFEST.gene", manifestText)
+    storeFsync(tempDir, directory = true)
+    storeReplaceFile(tempDir, finalDir)
+    storeFsync(generations, directory = true)
+    let currentTemp = root / (".CURRENT-" & $getCurrentProcessId())
+    storeWriteDurable(currentTemp, generationName & "\n")
+    storeReplaceFile(currentTemp, root / "CURRENT")
+    storeFsync(root, directory = true)
+  except OSError as e:
+    if dirExists(tempDir):
+      try: removeDir(tempDir)
+      except OSError: discard
+    raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
+
+  var complete: seq[string]
+  for kind, path in walkDir(generations, relative = true):
+    if kind == pcDir and not path.startsWith(".tmp-"):
+      complete.add path
+  complete.sort(SortOrder.Descending)
+  if complete.len > storeCheckpointRetain:
+    for name in complete[storeCheckpointRetain .. ^1]:
+      try: removeDir(generations / name)
+      except OSError: discard
+
+proc storeSqliteCheckpoint(scope: Scope, store: Value, generation: int64,
+                           encoded: seq[(string, string)],
+                           manifestText: string) =
+  let db = storeSqliteDb(store, scope)
+  let names = storeSqliteTable(store)
+  sqliteExecScript(db, "BEGIN IMMEDIATE", "Store/checkpoint", scope)
+  try:
+    for (name, data) in encoded:
+      discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+        "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
+        [newStr(storeCheckpointKey(generation, "record/" & name)), newStr(data)],
+        "Store/checkpoint", scope)
+    discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+      "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
+      [newStr(storeCheckpointKey(generation, "manifest")), newStr(manifestText)],
+      "Store/checkpoint", scope)
+    discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+      "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
+      [newStr("checkpoint/CURRENT"), newStr(storeGenerationName(generation))],
+      "Store/checkpoint", scope)
+    sqliteExecScript(db, "COMMIT", "Store/checkpoint", scope)
+    storeSqliteOwnerOnly(store)
+  except GeneError, GenePanic:
+    try: sqliteExecScript(db, "ROLLBACK", "Store/checkpoint", scope)
+    except GeneError: discard
+    raise
+
+  let manifests = sqliteRunStmt(db, "select " & names.keyColumn & " from " &
+    names.tableName & " where " & names.keyColumn & " like ? order by " &
+    names.keyColumn & " desc", [newStr("checkpoint/%/manifest")],
+    "Store/checkpoint", scope).rows
+  if manifests.len > storeCheckpointRetain:
+    for row in manifests[storeCheckpointRetain .. ^1]:
+      let manifestKey = row.mapEntries[names.keyColumn].strVal
+      let prefix = manifestKey[0 ..< manifestKey.len - "manifest".len]
+      discard sqliteRunStmt(db, "delete from " & names.tableName & " where " &
+        names.keyColumn & " like ?", [newStr(prefix & "%")],
+        "Store/checkpoint", scope)
+
+proc biStoreCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError,
+      "Store/checkpoint expects (store, generation, records)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  if args[1].kind != vkInt or args[1].intVal < 1:
+    raiseStoreError(scope, "invalid_key",
+      "Store/checkpoint generation must be a positive Int")
+  if args[2].kind != vkMap:
+    raiseStoreError(scope, "invalid_key",
+      "Store/checkpoint records must be a Map")
+  let generation = args[1].intVal
+  let mode = storeModeOf(args[0], scope)
+  var encoded: seq[(string, string)]
+  for name, value in args[2].mapEntries:
+    storeValidateKey(scope, name)
+    encoded.add (name, storeEncode(scope, mode, value))
+  let manifestText = storeCheckpointManifest(scope, generation, encoded)
+  if kind == "SqliteStore":
+    storeSqliteCheckpoint(scope, args[0], generation, encoded, manifestText)
+  else:
+    storeFilesystemCheckpoint(scope, args[0], generation, encoded, manifestText)
+  newInt(generation)
+
+proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value): Value =
+  let generations = store.props["root"].strVal / "generations"
+  if not dirExists(generations):
+    return NIL
+  var candidates: seq[string]
+  for kind, path in walkDir(generations, relative = true):
+    if kind == pcDir and not path.startsWith(".tmp-"):
+      candidates.add path
+  candidates.sort(SortOrder.Descending)
+  for name in candidates:
+    var generation: int64
+    try: generation = parseBiggestInt(name)
+    except ValueError: continue
+    let dir = generations / name
+    let manifestPath = dir / "MANIFEST.gene"
+    if not fileExists(manifestPath):
+      continue
+    try:
+      let manifestText = readFile(manifestPath)
+      let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
+      if manifest.kind != vkMap:
+        continue
+      let hashes = manifest.mapEntries.getOrDefault("hashes", VOID)
+      if hashes.kind != vkMap:
+        continue
+      var encoded = initTable[string, string]()
+      var complete = true
+      for recordName, _ in hashes.mapEntries:
+        let path = dir / (urlEncodeComponent(recordName) & ".gene")
+        if not fileExists(path):
+          complete = false
+          break
+        encoded[recordName] = readFile(path)
+      if complete:
+        let loaded = storeDecodeCheckpoint(scope, store, generation,
+                                           manifestText, encoded)
+        if loaded.kind != vkVoid:
+          return loaded
+    except GeneError, IOError, OSError:
+      discard
+  NIL
+
+proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
+  let db = storeSqliteDb(store, scope)
+  let names = storeSqliteTable(store)
+  let manifests = sqliteRunStmt(db, "select " & names.keyColumn & ", " &
+    names.dataColumn & " from " & names.tableName & " where " &
+    names.keyColumn & " like ? order by " & names.keyColumn & " desc",
+    [newStr("checkpoint/%/manifest")], "Store/load_checkpoint", scope).rows
+  for row in manifests:
+    let key = row.mapEntries[names.keyColumn].strVal
+    let parts = key.split('/')
+    if parts.len != 3:
+      continue
+    var generation: int64
+    try: generation = parseBiggestInt(parts[1])
+    except ValueError: continue
+    let manifestText = row.mapEntries[names.dataColumn].strVal
+    try:
+      let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
+      if manifest.kind != vkMap:
+        continue
+      let hashes = manifest.mapEntries.getOrDefault("hashes", VOID)
+      if hashes.kind != vkMap:
+        continue
+      var encoded = initTable[string, string]()
+      var complete = true
+      for recordName, _ in hashes.mapEntries:
+        let record = sqliteRunStmt(db, "select " & names.dataColumn & " from " &
+          names.tableName & " where " & names.keyColumn & " = ?",
+          [newStr(storeCheckpointKey(generation, "record/" & recordName))],
+          "Store/load_checkpoint", scope).rows
+        if record.len == 0:
+          complete = false
+          break
+        encoded[recordName] = record[0].mapEntries[names.dataColumn].strVal
+      if complete:
+        let loaded = storeDecodeCheckpoint(scope, store, generation,
+                                           manifestText, encoded)
+        if loaded.kind != vkVoid:
+          return loaded
+    except GeneError:
+      discard
+  NIL
+
+proc biStoreLoadCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Store/load_checkpoint", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let kind = storeRequire(scope, args[0])
+  if kind == "SqliteStore":
+    storeLoadSqliteCheckpoint(scope, args[0])
+  else:
+    storeLoadFilesystemCheckpoint(scope, args[0])
+
 proc biStoreClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/close", args)
   let scope = if call == nil: nil else: call[].dispatchScope
@@ -6377,6 +6842,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         "store/fs/open got unexpected named argument: " & name)
   try:
     createDir(root)
+    storeOwnerOnly(root, directory = true)
   except OSError as e:
     raiseStoreError(scope, "io", "store/fs/open: " & e.msg)
   var props = initPropTable()
@@ -6691,7 +7157,8 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("StoreError", storeError)
   root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: storeError)
   let storeProtocol = newProtocol("Store", ["put", "get", "has?", "delete",
-                                            "keys", "clear", "close"])
+                                            "keys", "clear", "checkpoint",
+                                            "load_checkpoint", "close"])
   let storeMessages = storeProtocol.protocolMessages
   let sqliteStoreType = newType("SqliteStore", NIL, @[], @[storeProtocol], root)
   let fsStoreType = newType("FsStore", NIL, @[], @[storeProtocol], root)
@@ -6725,6 +7192,13 @@ proc registerStdlibNamespaces(root: Scope) =
       ImplMessage(message: storeMessages["clear"],
                   fn: newNativeCallFn("Store/clear", biStoreClear,
                                       acceptsNamed = false)),
+      ImplMessage(message: storeMessages["checkpoint"],
+                  fn: newNativeCallFn("Store/checkpoint", biStoreCheckpoint,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["load_checkpoint"],
+                  fn: newNativeCallFn("Store/load_checkpoint",
+                                      biStoreLoadCheckpoint,
+                                      acceptsNamed = false)),
       ImplMessage(message: storeMessages["close"],
                   fn: newNativeCallFn("Store/close", biStoreClose,
                                       acceptsNamed = false))])
@@ -6752,12 +7226,25 @@ proc registerStdlibNamespaces(root: Scope) =
       ImplMessage(message: storeMessages["clear"],
                   fn: newNativeCallFn("Store/clear", biStoreClear,
                                       acceptsNamed = false)),
+      ImplMessage(message: storeMessages["checkpoint"],
+                  fn: newNativeCallFn("Store/checkpoint", biStoreCheckpoint,
+                                      acceptsNamed = false)),
+      ImplMessage(message: storeMessages["load_checkpoint"],
+                  fn: newNativeCallFn("Store/load_checkpoint",
+                                      biStoreLoadCheckpoint,
+                                      acceptsNamed = false)),
       ImplMessage(message: storeMessages["close"],
                   fn: newNativeCallFn("Store/close", biStoreClose,
                                       acceptsNamed = false))])
   storeScope.define("sqlite", newNamespace("store/sqlite", storeSqliteScope))
   storeScope.define("fs", newNamespace("store/fs", storeFsScope))
   root.define("store", newNamespace("store", storeScope))
+
+  let cryptoScope = newScope(root)
+  cryptoScope.define("sha256", newNativeCallFn("crypto/sha256",
+                                               biCryptoSha256,
+                                               acceptsNamed = false))
+  root.define("crypto", newNamespace("crypto", cryptoScope))
 
   # os: env, subprocess, line input (examples/ai_agent/design.md §3,§6). Capabilities are
   # ambient values like Net/Connect; a launcher can withhold them.
@@ -6786,6 +7273,8 @@ proc registerStdlibNamespaces(root: Scope) =
                  newNativeFn("os/end_interrupt", biOsEndInterrupt))
   osScope.define("monotonic_ms",
                  newNativeFn("os/monotonic_ms", biOsMonotonicMs))
+  osScope.define("process_id",
+                 newNativeFn("os/process_id", biOsProcessId))
   osScope.define("stdin_tty?", newNativeFn("os/stdin_tty?", biOsStdinTty))
   osScope.define("read_line", newNativeFn("os/read_line", biOsReadLine))
   osScope.define("read_input", newNativeCallFn("os/read_input", biOsReadInput))

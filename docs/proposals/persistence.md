@@ -1,9 +1,10 @@
 # Gene Persistence & Reload — Design
 
-Status: **controlled-stop MVP implemented** (stages 1-4: `Store` protocol,
-`store/sqlite`, gateway migration, `Fs/make_dir`/`Fs/remove`, and `store/fs`).
-Crash/power-loss hardening remains deferred to §7 / stage 5. Date:
-2026-07-09.
+Status: **controlled-stop MVP plus atomic checkpoint generations implemented**
+(stages 1-4 and the checkpoint portion of stage 5). Point filesystem `put`
+also uses durable atomic replacement and all store-created state is owner-only.
+General WAL/replay and full multi-process arbitration remain deferred. Date:
+2026-07-16.
 
 Goal: let a Gene application **save its durable state to a store and reload it
 on the next run**, so a controlled stop-and-restart resumes where it left off.
@@ -11,12 +12,13 @@ The application decides *when* to save (explicit save points, not automatic
 checkpointing) and, at startup, decides *whether* to load existing state (a
 resume flag) or start fresh.
 
-**Scope, deliberately narrowed.** This is *controlled stop and reload*, not
-crash recovery. Surviving an arbitrary kill or power loss with zero corruption
-— atomic writes, `fsync` discipline, write-ahead logging, stale-temp recovery
-— is a real but separable problem, deferred to §7. Starting from the
-controlled case keeps the first public `store` contract small and lets the
-durable-state model prove out before the crash-hardening machinery.
+**Scope.** Ordinary point records remain the simple controlled-stop API. When
+several records form one application snapshot, `checkpoint` publishes a
+schema-versioned, hash-validated generation atomically and
+`load_checkpoint` selects the newest complete valid generation. This gives an
+application such as the AI agent kill-safe snapshot boundaries without
+pretending that arbitrary in-flight host operations can be replayed exactly
+once. WAL/replay remains a separable problem in §7.
 
 This design sits *above* serialization: `serde`
 (docs/proposals/serialization.md, stages 1–6 shipped) is the format;
@@ -84,16 +86,24 @@ their own namespaces, mirroring `db/sqlite/open` (review: no ambiguous
 (s ~ delete key)
 (s ~ keys)                   ; -> [Str]
 (s ~ clear)                  ; drop all records (for a "start fresh" init)
+(s ~ checkpoint generation records) ; atomically publish one Map of records
+(s ~ load_checkpoint)       ; newest complete valid generation, or nil
 (s ~ close)
 ```
 
 Decisions, several from review:
 
-- **Records are independent.** A store is a flat map of `Str` key → one
+- **Point records are independent.** A store is a flat map of `Str` key → one
   serialized value. There is no global snapshot to rewrite wholesale (the
   prior repo's fatal `_genearray`-rewrite-per-turn cost). Each `put` writes
   one record; a reload reads the records it wants. `keys` + `get`-all is **not**
-  a transactionally consistent snapshot (§6 shows the cross-record pattern).
+  a transactionally consistent snapshot. Applications that require one use
+  `checkpoint`, not an ad-hoc sequence of `put`s (§6).
+- **A checkpoint is one generation, not a second serialization format.** Its
+  values use the Store's configured serde mode. The manifest stores the
+  generation, checkpoint schema, record names, and SHA-256 of each serialized
+  record. Both backends retain the newest three complete generations so a
+  corrupt newest generation can fall back without mixing records.
 - **`get` on a missing key raises `StoreError ^kind missing`**, never returns
   `void`. `void` and `nil` are both serializable values a program may store,
   so a sentinel return would be lossy. Use `has?` when absence is expected, or
@@ -131,7 +141,7 @@ Both backends store the *same* serde text under the *same* key API, so a store
 written by one reloads through the other — "filesystem now, db later" is a
 backend swap, not a rewrite. That is the payoff of one format.
 
-## 4. Filesystem backend (controlled-stop MVP)
+## 4. Filesystem backend
 
 A store is a directory; each record is one file holding one `serde_v1`
 envelope. Flat, **not** a directory tree (the prior repo's removed model):
@@ -154,10 +164,16 @@ envelope. Flat, **not** a directory tree (the prior repo's removed model):
   (editor backups, files from other tools, future temp files) is ignored, not
   an error — a store directory is not assumed pristine. A separate
   `store/fs/audit` for surfacing unrecognized files can follow.
-- **Reads/writes** are `Fs/read_text`/`Fs/write_text` + `serde`. **MVP uses a
-  plain write** — acceptable because a controlled stop lets the `put`
-  complete before exit. Atomic replace (temp+rename+fsync) is the §7
-  crash-hardening upgrade, not required here.
+- **Point writes** serialize to a unique owner-only temporary file, `fsync`
+  it, rename over the record, and `fsync` the parent directory.
+- **Checkpoint publication** writes owner-only record and manifest files into
+  a temporary generation directory, `fsync`s them and the directory, renames
+  it to `generations/<20-digit-generation>`, then durably replaces `CURRENT`.
+  Restore scans generations newest-first and accepts only a complete manifest
+  whose record hashes match; `CURRENT` is a publication hint, never permission
+  to load an invalid generation.
+- Store roots, generation directories, records, SQLite database files, and
+  SQLite sidecars are owner-only. The store never exposes a serving route.
 
 ### 4.1 Runtime gap (small, for the fs backend)
 
@@ -174,8 +190,10 @@ them in `src/gene/stdlib.nim`:
 absence). The shipped `Fs/make_dir`/`Fs/remove` follow the existing broad
 `Fs/*` path semantics; `store/fs` keeps record paths confined by composing the
 caller-chosen root with a URL-encoded key that contains no path separators.
-`Fs/rename` and the atomic-write native belong to §7. The **sqlite backend
-needs none of this** — another reason it ships first.
+The Store implements its own narrow same-directory replacement internally;
+it does not broaden the public filesystem capability surface with arbitrary
+rename authority. The **sqlite backend needs none of this** — another reason
+it shipped first.
 
 ## 5. Stop-and-reload model
 
@@ -210,11 +228,12 @@ and easier to migrate, and avoids identity-ref/module-order surprises inside
 restore state. Types that genuinely need refs in their state use `full` mode
 records directly rather than a hook.
 
-## 6. Cross-record consistency is the app's job
+## 6. Cross-record consistency
 
-Records are independent; `keys` + `get`-all is a set of point reads, not a
-consistent snapshot. When two records must agree, the application orders its
-saves and tolerates the in-between state on reload. Example — a session plus
+Point records are independent; `keys` + `get`-all is a set of point reads, not
+a consistent snapshot. Use `checkpoint` when several records must restore as
+one state. The lower-level ordered-write pattern remains useful when records
+intentionally have independent lifetimes. Example — a session plus
 an "unprocessed input" marker, so a stop between accepting input and finishing
 its turn reloads sensibly:
 
@@ -227,31 +246,22 @@ its turn reloads sensibly:
 
 On reload: a `pending:*` with no matching completed state means a stop
 happened mid-turn — the app re-runs it from `input`. This is an app-level
-write-ahead pattern, shown so future readers do not assume the store gives
-cross-record atomicity. (Multi-record `store ~ transaction` — trivial on
-sqlite, harder on fs — is a later addition.)
+write-ahead pattern for independently addressable point records. It is not
+needed for one checkpoint generation.
 
-## 7. Deferred: crash & power-loss hardening
+## 7. Remaining crash hardening
 
-Everything needed to survive an arbitrary kill or power loss, explicitly out
-of the controlled-stop MVP and gathered here for when it is built:
+Atomic point writes and atomic multi-record checkpoint publication are now
+implemented. Remaining work is deliberately narrower:
 
-- **Atomic fs writes**: unique temp file *in the target directory* → write →
-  `fsync` temp → `rename` over target → `fsync` the parent directory. Without
-  the directory `fsync` the rename may not be durable across power loss; the
-  unique temp name avoids concurrent writers clobbering one staging file.
-  New natives: `Fs/write_text_atomic`, `Fs/rename` (same-directory-confined
-  when used for commit).
 - **Delete durability**: unlink + `fsync` the parent directory.
 - **Stale-temp recovery**: `open`/`keys` ignore recognized temp files; an
   optional sweep removes them.
 - **Write-ahead** for at-most-one-lost instead of at-least-committed: the §6
   `pending:*` pattern generalized, or a store-level WAL.
-- **Corruption detection**: a record that fails to parse raises
-  `StoreError ^kind corrupt` rather than crashing the reload; the app decides
-  to skip, default, or abort.
-- **A real crash/power-loss test harness** (kill mid-write, assert last
-  committed record intact) or a clearly documented simulation limit.
+- **A real crash/power-loss test harness** (kill mid-write, assert the last
+  committed generation intact) beyond the deterministic corrupt/incomplete
+  generation tests.
 
 sqlite already gives per-`put` atomicity via transactions, so the sqlite
 backend is crash-safe for a single `put` without any of the above — fs is the
@@ -279,21 +289,23 @@ existing databases keep loading, and bespoke persistence code retires.
 
 ## 9. Non-goals (first version)
 
-- Crash / power-loss durability (§7, deferred) — the MVP is controlled stop.
+- Exactly-once replay of in-flight host operations after a crash.
 - Serializing live scheduler state (fibers, channels, tasks) — impossible and
   unnecessary (§2/§5).
-- A global consistent snapshot / cross-record transactions — records are
-  independent (§6); `store ~ transaction` is later.
+- Arbitrary transactions over point keys; checkpoint generations provide the
+  application snapshot boundary without a general transaction callback.
 - Automatic checkpoint-on-mutation — save timing is the app's call (§5.1).
 - Concurrent multi-process access, file locking, replication.
-- Schema migration of persisted records (serde's `^schema_version` reserves
-  the space; a store-level migration hook can follow).
+- Automatic schema migration of arbitrary records. Checkpoint records carry
+  explicit application schema versions and the application supplies pure
+  migrations.
 - Encryption at rest.
 
 ## 10. Staged plan
 
 1. **`store` protocol + `store/sqlite`.** The `Store` protocol
-   (`put`/`get`/`delete`/`keys`/`has?`/`clear`/`close`), `StoreError` with
+   (`put`/`get`/`delete`/`keys`/`has?`/`clear`/`checkpoint`/
+   `load_checkpoint`/`close`), `StoreError` with
    `^kind`, `^mode` and read `^policy` pass-through, over an existing
    `db/sqlite` connection. **No new runtime.** Spec/e2e: record round-trip in
    both modes, `get` missing→raises and `^default`, `has?`, `delete`/`clear`,
@@ -303,13 +315,15 @@ existing databases keep loading, and bespoke persistence code retires.
 3. **Fs primitives.** `Fs/make_dir` + `Fs/remove` (+ optional `Fs/exists?`),
    `Fs/WriteDir`-gated, path-confined (§4.1). Spec tests incl. path-escape
    rejection.
-4. **`store/fs`.** The directory backend: url-encoded keys, plain writes,
+4. **`store/fs`.** The directory backend: url-encoded keys, atomic writes,
    tolerant `keys`. Spec/e2e: the *same* suite as sqlite (interface parity)
    plus fs-specifics (invalid/empty keys, junk-file tolerance, path escape).
    Gateway gains `GENE_GATEWAY_STATE` for fully file-backed operation.
-5. **Crash hardening (§7), when needed.** Atomic writes, `Fs/rename` +
-   `Fs/write_text_atomic`, directory `fsync`, stale-temp recovery, corruption
-   detection, a kill/power-loss test harness. Independent of stages 1–4.
+5. **Checkpoint crash hardening (implemented in part).** Durable atomic point
+   writes; SQLite transaction-backed and filesystem generation-backed
+   `checkpoint`/`load_checkpoint`; SHA-256 validation, fallback, retention,
+   and owner-only modes. Delete durability, stale-temp sweeping, and a real
+   kill/power-loss harness remain.
 
 Each stage lands with the repo's gates (`nimble test`/`spec`/`perf`/`wasm`);
 persistence is off the dispatch hot path, and no stage adds fields to the

@@ -28,17 +28,17 @@ implemented and covered by deterministic CLI/PTY tests (§10.5). Slice C3 is
 now shipped too: isolated restore records, structured terminal agent results,
 registry-derived help and safe slash commands, hidden/focused pane operations,
 and explicit project progress make the worker model discoverable, operable,
-and recoverable under the complex-project dogfood flow (§10.6). The next core
-slice is C4: each worker kind declares one Gene-typed operation table, and
-user commands, model tools, delegated peer workers, REPL scripts, and gateway
-routes all invoke those same operations under declared
-effects/audience/admission/audit policies — a worker id is an address, never
-authority (§7.2, §10.7). C5 then hardens persistence into durable knowledge:
-atomic checkpoint generations, durable-vs-ephemeral handler registration,
-pinned artifacts, at-rest policy, and a cross-process ownership warning
-(§10.8). C6 separately makes the daily surface discoverable through the
-four-axis help system and a completion-capable input editor (Tab/Ctrl-R/
-Ctrl-E over one overlay primitive; §7.3, §10.9).**
+and recoverable under the complex-project dogfood flow (§10.6). Slices C4-C6
+are now shipped as well. Every worker kind declares one Gene-typed operation
+table used by user commands, model tools, delegated peers, REPL scripts, and
+gateway routes under declared effects/audience/admission/audit policies
+(§7.2, §10.7). Atomic hash-validated checkpoint generations,
+durable-vs-ephemeral handler registration, pinned artifacts, owner-only state,
+and a cross-process ownership warning provide the durable boundary (§10.8).
+The four-axis help system and completion-capable editor share one bounded
+overlay for the `/` palette, Tab, and Ctrl-R; Ctrl-E uses the same external
+editor composition path as `/edit` (§7.3, §10.9). Slice D remains an optional
+menu driven by measured dogfood leverage, not a required next milestone.**
 Date: 2026-07-16.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
@@ -601,7 +601,7 @@ results. Tools needed for a coding agent:
   `Os/Exec` is deliberately a *distinct* capability from `Os/Env` so a launcher
   can grant file+env without shell access.
 
-Tools are **typed `Tool` declarations** (shipped, slice A). One `Tool` value is
+Tools are **typed `Tool` declarations** (shipped, slices A/C4). One `Tool` value is
 the single source of truth; the registry entry, model-facing JSON Schema (both
 wire shapes), argument validation, and risk class all derive from it:
 
@@ -615,15 +615,16 @@ wire shapes), argument validation, and risk class all derive from it:
   ^handler (fn [args] (read_text ReadDir (safe_path args/path)))))
 ```
 
-`Tool` is a `type` with `schema` and `validate_args` messages (§9.1); the turn
+This original `^params` spelling remains supported for live experiments and
+older workflow modules. `Tool` is a `type` with `schema` and `validate_args`
+messages (§9.1); the turn
 loop reads the live registry (`tool_schemas_now`), so a tool added or replaced
 from `/repl` reaches the very next model call. This removes the earlier
 drift-prone duplication between a handler map and a hand-written schema list,
 and demonstrates how types, metadata, functions, and maps compose.
 
-The shipped `^params` list is still half stringly-typed (`^type "string"`
-maps) — a small second schema vocabulary beside Gene's own. The target form
-references real Gene type values and derives everything from them:
+Built-in tools now use real Gene type values as their validation and schema
+source:
 
 ```gene
 (type ReadFileArgs ^props {^path Str ^start_line Int? ^max_bytes Int?})
@@ -632,12 +633,12 @@ references real Gene type values and derives everything from them:
       ^errors [FsError ToolError] ^risk "read" ^handler read_file)
 ```
 
-JSON Schema for both wire shapes, runtime validation, CLI parsing, and help
-all derive from `ReadFileArgs` — one type value instead of five parallel
-descriptions, and a stronger demonstration of Gene's type system doing real
-work. §7.2 operation declarations use this Gene-typed form from their first
-release; the shipped `^params` form remains a compatibility spelling that
-migrates onto the same derivation (slice C4). Every call
+JSON Schema for both wire shapes and runtime validation derive from
+`ReadFileArgs` through `Type/fields` and `construct_type` — one type value
+instead of parallel name/type/required descriptions. Optional `^params`
+records on a typed tool may add field documentation or JSON enum hints, but
+cannot change the type, optionality, or validator. §7.2 operation declarations
+use the same Gene-typed path. Every call
 passes through argument validation and then the narrow catastrophe guard in
 §8.5, and both the call and its result are appended to the event log (§9.2).
 
@@ -1073,11 +1074,11 @@ main viewport. The block covers navigation and keys, focus and literal-input
 escapes, pane/worker/agent lifecycle verbs, every worker kind, session
 commands, concise aliases, and where to inspect status, progress, results,
 trace, diff, and undo. `/help <topic>` and `/? <topic>` accept `pane`, `agent`,
-`worker`, `input`, `session`, and `trace`; C4 adds `/help worker <kind>`, which
+`worker`, `input`, `session`, and `trace`; `/help worker <kind>`
 renders that kind's §7.2 operation table from the same declaration the parser
 uses. They still display the selected section in pane 0.
 
-**Progressive disclosure (C6 target):** the comprehensive block is reference,
+**Progressive disclosure (shipped in C6):** the comprehensive block is reference,
 not the default. Bare `/help` teaches the small product model — type to talk,
 `/sh`, `/repl`, `/agent new`, `/status`, `/help <topic>` — in a dozen lines;
 `/help all` prints the full block above. Worker kinds, operation tables,
@@ -1529,9 +1530,9 @@ behavior and C6 targets, in one table:
 | `Shift+Enter` | insert a newline in the multi-line draft (`Enter` submits) | shipped |
 | bracketed paste | multi-line paste lands in the draft without submitting | shipped |
 | `Escape` | the §7.1 priority ladder (cancel → unmaximize → focus reset when draft empty → nothing) | shipped |
-| `Ctrl-E` | key binding for `/edit`: compose the draft in `$VISUAL`/`$EDITOR` | C6 |
-| `Ctrl-R` | incremental reverse search over the focused worker's history | C6 |
-| `Tab` | context-sensitive completion (below) | C6 |
+| `Ctrl-E` | key binding for `/edit`: compose the draft in `$VISUAL`/`$EDITOR` | shipped |
+| `Ctrl-R` | incremental reverse search over the focused worker's history | shipped |
+| `Tab` | context-sensitive completion (below) | shipped |
 | `Ctrl-PgUp`/`Ctrl-PgDn` | cycle visible panes (never Up/Down, which stay history) | shipped |
 
 `Ctrl-R` searches the same worker-scoped history that Up/Down browses: typing
@@ -2512,20 +2513,20 @@ one corrupt pane record must be visible but non-fatal.
 C3 makes workers operable by the user; C4 makes the same functionality
 uniformly reachable by peers and scripts (§7.2, invariants §0.14). Steps:
 
-1. Introduce per-kind **operation tables**: one declaration — with argument
+1. **Done.** Introduce per-kind **operation tables**: one declaration — with argument
    and result schemas that are real Gene type values — derives validation,
    slash dispatch, the `call_worker` session message, the gateway route,
    model-tool access, and help, mirroring the §6 `Tool` derivation so nothing
    registers twice. New declarations start Gene-typed; the shipped `Tool`
    `^params` string maps remain a compatibility form that migrates onto the
    same type-derived path.
-2. Ship the universal **observe** operations (`status`, `tail`, plus `snapshot`
+2. **Done.** Ship the universal **observe** operations (`status`, `tail`, plus `snapshot`
    for stats): admission-free, journal-event-free under `none` audit, bounded
    with loss metadata. A busy worker is always observable *by an authorized
    audience*: local/remote users and the supervisor always, a sub-agent only
    for workers delegated to it in its context attachment — a worker id alone
    is never authority.
-3. Ship the `call_worker` model tool and session message with declared
+3. **Done.** Ship the `call_worker` model tool and session message with declared
    effects/audience/admission/audit enforced at one choke point. `cancel` and
    `stop` use `interrupt` admission and succeed against a busy worker;
    `worker_exclusive` operations keep the typed reject-while-busy contract;
@@ -2533,14 +2534,14 @@ uniformly reachable by peers and scripts (§7.2, invariants §0.14). Steps:
    caller with a typed error. Split `result` (pure observe) from `mark_result_read`
    and `incorporate` (idempotent session writes); `/agent A result` becomes a
    declared surface composite over the primitives.
-4. Add **stateful shell workers** as distinct from one-shot `run_shell`:
+4. **Done.** Add **stateful shell workers** as distinct from one-shot `run_shell`:
    explicit `chdir`/`set_env`/`unset_env` mutate confined controller state,
    and each `run` launches one foreground subprocess under that state with
    identical classification, lease, and events. Never infer persistent state
    changes by parsing arbitrary shell text.
-5. Add optional immutable unique worker `^name`s accepted wherever an id is
+5. **Done.** Add optional immutable unique worker `^name`s accepted wherever an id is
    accepted; ids remain canonical in events and snapshots.
-6. Add the C4 gateway routes and the additive `^origin`/`^caller_worker_id`
+6. **Done.** Add the C4 gateway routes and the additive `^origin`/`^caller_worker_id`
    props on `worker_operation_*` events; extend `/help worker <kind>` to render the kind's
    operation table from the same declaration.
 
@@ -2564,24 +2565,24 @@ timestamps, durations, and the expected `^origin`/`^caller_worker_id` fields.
 C4 makes the live system uniform; C5 makes what matters survive it
 (invariants §0.15/§0.16). Steps, ordered by risk:
 
-1. **Checkpoint generations**: schema-versioned, hash-validated, atomic per
+1. **Done. Checkpoint generations**: schema-versioned, hash-validated, atomic per
    backend (single SQLite transaction; filesystem generation directory with
    fsynced records/manifest, atomic `CURRENT` rename, and parent-directory
    fsync); restore picks the highest complete generation and never mixes
    generations. Schema versions and pure migration functions for every
    persisted record kind, with quarantine as fallback.
-2. **Durable vs ephemeral registration**: versioned module-qualified
+2. **Done. Durable vs ephemeral registration**: versioned module-qualified
    `HandlerRef`s for tools and worker operations; ephemeral handlers restore
    disabled with an attributable event. Promotion of a `/repl` experiment to
    a module is the durability boundary (§9.1).
-3. **Durable artifacts** (§9.5): `/pin` creates a provenance record over a
+3. **Done. Durable artifacts** (§9.5): `/pin` creates a provenance record over a
    separately content-addressed redacted blob, bounded with explicit deletion;
    progress/results reference artifact ids where evidence must outlive the
    journal ring.
-4. **At-rest policy**: owner-only file modes, never-served store files, the
+4. **Done. At-rest policy**: owner-only file modes, never-served store files, the
    explicit redacted-vs-full choice on any future export; encryption-at-rest
    stays a documented later option.
-5. **Cross-process workspace advisory**: an ownership record in the configured
+5. **Done. Cross-process workspace advisory**: an ownership record in the configured
    state backend (or under `GENE_AGENT_HOME`), keyed by a hash of the canonical
    workspace path and carrying process identity plus heartbeat. It never writes
    a lockfile into the source tree. A second Gene agent process opening the
@@ -2604,12 +2605,12 @@ C5 protects durable state; C6 makes the C4 object model easy to use without
 requiring the user to memorize it. It is a separate presentation slice so
 terminal interaction work cannot delay or destabilize storage recovery.
 
-1. **Progressive disclosure and the four-axis help system** (§7.1): layered
+1. **Done. Progressive disclosure and the four-axis help system** (§7.1): layered
    `/help` → `/help <topic>` → `/help all` → `/help <command>` pages derived
    from declarations; contextual did-you-mean diagnostics; `/help search`;
    and the `/`-palette. Worker names (C4) carry the same goal: ids, kinds,
    and operation tables are expert surfaces, not prerequisites.
-2. **Input editor completion** (§7.3): the single transient overlay-list
+2. **Done. Input editor completion** (§7.3): the single transient overlay-list
    primitive; context-sensitive `Tab` completion sourced from the command
    registry, operation tables, and live session state under §7.2 audience;
    `Ctrl-R` incremental history search per worker; `Ctrl-E` bound to `/edit`.
@@ -2799,21 +2800,21 @@ non-loopback startup without authentication is rejected — single-user posture
 | `POST /api/sessions/:id/cancel` | cancel the in-flight turn and its subprocess | shipped |
 | `POST /api/sessions/:id/agents` | spawn a supervised sub-agent with assignment/context attachment | shipped |
 | `POST /api/sessions/:id/agents/:aid/messages` | prompt a particular idle agent (busy rejects; steering remains explicit cancel-then-prompt) | shipped |
-| `GET /api/sessions/:id/agents/:aid/result` | inspect the bounded latest result without changing its state | C3 |
-| `POST /api/sessions/:id/agents/:aid/result/read` | explicitly mark that result read, idempotently | C3 |
-| `POST /api/sessions/:id/agents/:aid/incorporate` | explicitly add that result to main context, idempotently | C3 |
+| `GET /api/sessions/:id/agents/:aid/result` | inspect the bounded latest result without changing its state | shipped |
+| `POST /api/sessions/:id/agents/:aid/result/read` | explicitly mark that result read, idempotently | shipped |
+| `POST /api/sessions/:id/agents/:aid/incorporate` | explicitly add that result to main context, idempotently | shipped |
 | `POST /api/sessions/:id/agents/:aid/cancel` | cancel that agent's active operation without stopping it | shipped |
 | `DELETE /api/sessions/:id/agents/:aid` | stop a sub-agent and preserve its event trail | shipped |
-| `GET /api/sessions/:id/workers` | list workers: kind, lifecycle, current operation, last outcome, unread result | C3 extension |
+| `GET /api/sessions/:id/workers` | list workers: kind, lifecycle, current operation, last outcome, unread result | shipped |
 | `POST /api/sessions/:id/workers` | create a typed worker: `{kind, config}` → `{worker_id}` | shipped |
 | `POST /api/sessions/:id/workers/:wid/input` | send input per worker kind (§7.1 table) | shipped |
 | `POST /api/sessions/:id/workers/:wid/cancel` | cancel the worker's active operation | shipped |
 | `DELETE /api/sessions/:id/workers/:wid` | stop a worker and preserve its event trail | shipped |
-| `GET /api/sessions/:id/progress` | inspect the main `ProjectProgress` record | C3 |
-| `PUT /api/sessions/:id/progress` | main-supervisor update under session serialization | C3 |
-| `GET /api/sessions/:id/workers/:wid/status` | observe: bounded status snapshot (§7.2) | C4 |
-| `GET /api/sessions/:id/workers/:wid/tail?n=` | observe: bounded recent output + loss metadata | C4 |
-| `POST /api/sessions/:id/workers/:wid/ops/:op` | typed kind-specific operation `{args}` under its declared effects/audience/admission | C4 |
+| `GET /api/sessions/:id/progress` | inspect the main `ProjectProgress` record | shipped |
+| `PUT /api/sessions/:id/progress` | main-supervisor update under session serialization | shipped |
+| `GET /api/sessions/:id/workers/:wid/status` | observe: bounded status snapshot (§7.2) | shipped |
+| `GET /api/sessions/:id/workers/:wid/tail?n=` | observe: bounded recent output + loss metadata | shipped |
+| `POST /api/sessions/:id/workers/:wid/ops/:op` | typed kind-specific operation `{args}` under its declared effects/audience/admission | shipped |
 | `GET  /` | the web UI page (12.5) | shipped |
 
 The read-marking asymmetry is intentional. The interactive `/agent A result`
@@ -3050,7 +3051,7 @@ Slice C3 adds the exact complex-project dogfood failures as acceptance tests:
   gateway `GET result` calls do not mark it read; the explicit read and
   incorporate requests are independently idempotent.
 
-Slice C4 adds the worker-operations acceptance tests (§10.7):
+The shipped C4 worker-operations acceptance tests (§10.7) include:
 
 - a fake sub-agent supervises a busy verification shell purely through
   `status`/`tail` **after the shell is delegated in its context attachment**:

@@ -1,4 +1,5 @@
-import std/[json, monotimes, net, os, osproc, streams, strutils, times, unittest]
+import std/[json, monotimes, net, os, osproc, sequtils, streams, strutils,
+            times, unittest]
 when defined(posix):
   import std/posix
 when defined(macosx):
@@ -63,6 +64,14 @@ proc runGeneInput(args: openArray[string],
   for arg in args:
     command.add " " & shellQuote(arg)
   execCmdEx(command, input = input)
+
+proc agentStateRecordPath(root, key: string): string =
+  ## Agent checkpoints publish a generation atomically. Tests inspect the
+  ## authoritative generation selected by CURRENT, never loose legacy keys.
+  let current = root / "CURRENT"
+  if not fileExists(current):
+    return root / "generations" / "missing" / (key & ".gene")
+  root / "generations" / readFile(current).strip() / (key & ".gene")
 
 suite "cli — gene run":
   setup:
@@ -290,6 +299,21 @@ suite "cli — gene run":
     check ran.exitCode == 0
     check "unchanged=true focus=nil max=nil comprehensive=true alias=true routes=true panes=7" in ran.output
 
+  test "ai agent help supports all command pages search and suggestions":
+    buildGeneCli()
+    let command =
+      "printf '/help all\n/help /worker\n/help search durable\n/pan\n/quit\n' | " &
+      "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "Gene agent help" in ran.output
+    check "/worker\nusage: /worker list" in ran.output
+    check "help search: durable" in ran.output
+    check "/artifacts" in ran.output
+    check "unknown command: /pan; did you mean '/pane'?" in ran.output
+
   test "ai agent canonical pane commands and unknown-slash safety work":
     buildGeneCli()
     let stateDir = cliDir / "agent_c3_command_state"
@@ -380,6 +404,111 @@ suite "cli — gene run":
     check "\"worker_id\":\"w2\"" in restarted.output
     check "\"restarted_from\":\"w1\"" in restarted.output
 
+  test "ai agent worker operations are typed attributed delegated and stateful":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/worker_operations_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application
+         application_create_worker_from_config application_call_worker
+         application_find_worker application_spawn_agent_with_attachments
+         open_repl_pane]
+  from "./tui.gene")
+(import str [contains?])
+(var events (cell []))
+(var sink
+  (fn [type, props]
+    (var event {^type type})
+    (for [key value] in props (event ~ Map/put! key value))
+    ((events ~ Cell/get) ~ List/push! event)
+    event))
+(var items (cell []))
+(var transcript (cell ""))
+(var memory (cell []))
+(var app (make_application items transcript memory sink))
+(active_application ~ Cell/set app)
+(var shell
+  (application_create_worker_from_config app "shell"
+    {^title "build" ^name "build-shell"}))
+(var addressed (application_find_worker app "build-shell"))
+(var invocation {^origin "worker" ^caller_worker_id "main"
+                 ^adapter "model" ^detached false})
+(var changed
+  (application_call_worker app "build-shell" "chdir" {^path "tests"}
+    invocation))
+(var env_set
+  (application_call_worker app "build-shell" "set_env"
+    {^name "C4_MARKER" ^value "stateful"} invocation))
+(var ran
+  (application_call_worker app "build-shell" "run"
+    {^command "printf $C4_MARKER; pwd"} invocation))
+(var before_observe ((events ~ Cell/get) ~ size))
+(var status
+  (application_call_worker app "build-shell" "status" {}
+    {^origin "user" ^caller_worker_id "main"}))
+(var tail
+  (application_call_worker app "build-shell" "tail" {^n 5}
+    {^origin "worker" ^caller_worker_id "main"}))
+(var observe_events (- ((events ~ Cell/get) ~ size) before_observe))
+(var child
+  (application_spawn_agent_with_attachments app "child" "test" (cell [])
+    (cell "") []))
+(var denied
+  (application_call_worker app shell/id "status" {}
+    {^origin "model" ^caller_worker_id child/id}))
+(var delegated
+  (application_spawn_agent_with_attachments app "delegated" "test" (cell [])
+    (cell "") [{^kind "worker" ^worker_id shell/id}]))
+(var allowed
+  (application_call_worker app shell/id "tail" {^n 2}
+    {^origin "model" ^caller_worker_id delegated/id}))
+(var repl_pane (open_repl_pane items transcript memory))
+(var repl_denied
+  (application_call_worker app repl_pane/worker/id "eval" {^form "(+ 1 2)"}
+    {^origin "model" ^caller_worker_id "main"}))
+(var busy
+  (application_call_worker app shell/id "run" {^command "sleep 5"}
+    {^origin "worker" ^caller_worker_id "main" ^adapter "model"
+     ^detached true}))
+# Let the detached task enter its guarded body before testing cancellation;
+# otherwise this fixture can cancel it before its `ensure` is installed.
+(sleep 25)
+(var busy_status
+  (application_call_worker app shell/id "status" {}
+    {^origin "worker" ^caller_worker_id "main"}))
+(var cancelled
+  (application_call_worker app shell/id "cancel" {}
+    {^origin "worker" ^caller_worker_id "main"}))
+(while (!= (shell/current_task ~ Cell/get) nil) (sleep 10))
+(var attributed false)
+(for event in (events ~ Cell/get)
+  (if (&& (== event/type "worker_operation_started")
+          (== event/operation_kind "run") (== event/origin "worker")
+          (== event/caller_worker_id "main"))
+    (set attributed true)))
+(var duplicate "")
+(try
+  (application_create_worker_from_config app "output" {^name "build-shell"})
+catch {^message message} (set duplicate message))
+(println "named" (== addressed/id shell/id)
+  "changed" changed/ok "env" env_set/ok "run" ran/ok
+  "stateful" (contains? (shell/output ~ Cell/get) "stateful")
+  "cwd" (contains? (shell/output ~ Cell/get) "/tests")
+  "observe_events" observe_events "status" status/result/status "tail" tail/ok
+  "denied" denied/error/kind "delegated" allowed/ok
+  "repl" repl_denied/error/kind "busy" busy/ok busy_status/result/busy
+  "cancel" cancelled/ok "attributed" attributed
+  "duplicate" (contains? duplicate "worker_name_taken"))
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "named true changed true env true run true stateful true cwd true" in ran.output
+    check "observe_events 0 status idle tail true" in ran.output
+    check "denied worker_access_denied delegated true repl worker_access_denied" in ran.output
+    check "busy true true cancel true attributed true duplicate true" in ran.output
+
   test "ai agent mediated shell panes deny detached workspace writers":
     buildGeneCli()
     let marker = "tmp/agent-detached-writer-must-not-run"
@@ -413,7 +542,7 @@ suite "cli — gene run":
     check "closed pane 1" in ran.output
     check "w1 shell idle headless shell" in ran.output
 
-  test "ai agent worker input addresses headless shell and REPL controllers":
+  test "ai agent worker input addresses shell and rejects remote REPL eval":
     buildGeneCli()
     let fixture = "examples/ai_agent/headless_process_input_test.gene"
     defer:
@@ -460,9 +589,9 @@ suite "cli — gene run":
     check "shell=accepted panes=0 adapter=http" in ran.output
     check "auth-***REDACTED***" in ran.output
     check "top-secret-agent-token" notin ran.output
-    check "denied=error: denied: destructive command was not confirmed task=nil" in ran.output
-    check "repl=accepted panes=0 adapter=http" in ran.output
-    check "3" in ran.output
+    check "denied=error: operation_rejected: denied: destructive command was not confirmed task=nil" in ran.output
+    check "repl=error: worker_access_denied" in ran.output
+    check "adapter=void" in ran.output
 
   test "ai agent model supervision tools use the application registries":
     buildGeneCli()
@@ -1130,14 +1259,17 @@ suite "cli — gene run":
         # after presentation commands and an invalid command-shaped typo.
         "send -- \"//usr/bin/printf H >> " & historyProof & "\\r\"\n" &
         "expect -re {\\[exit 0;}\n" &
+        "expect -re {idle\\] Enter run}\n" &
         "send -- \"/pane list\\r\"\n" &
         "expect -re {lifecycle=running}\n" &
         "send -- \"/focus typo\\r\"\n" &
         "expect -re {literal leading-slash input}\n" &
         "send -- \"\\033\\[A\\r\"\n" &
         "expect -re {\\[exit 0;}\n" &
+        "expect -re {idle\\] Enter run}\n" &
         "send -- \"touch " & focusedProof & "\\r\"\n" &
         "expect -re {\\[exit 0}\n" &
+        "expect -re {idle\\] Enter run}\n" &
         # Shell-pane input is classified even on a live TTY. The destructive
         # confirmation itself uses the async curses editor, then the accepted
         # command runs without a second legacy prompt.
@@ -1886,7 +2018,7 @@ suite "cli — gene run":
     check "memory: 1" in first.output
     check "reasoning effort set to xhigh" in first.output
     check "effort: xhigh" in first.output
-    let configText = readFile(stateDir / "config.gene")
+    let configText = readFile(agentStateRecordPath(stateDir, "config"))
     check "^reasoning_effort \"xhigh\"" in configText
     check "dummy" notin configText
     check "OPENAI_AUTH_TOKEN" notin configText
@@ -1906,7 +2038,7 @@ suite "cli — gene run":
     check "current effort: xhigh" in second.output
     check "effort: xhigh" in second.output
     check "memory: 1" in second.output
-    let sessionText = readFile(stateDir / "session.gene")
+    let sessionText = readFile(agentStateRecordPath(stateDir, "session"))
     check "/remember project uses Gene\\n" in sessionText
     check "/memory\\n" in sessionText
     check "agent> remembered: project uses Gene" in sessionText
@@ -1981,11 +2113,11 @@ suite "cli — gene run":
     agentProc.inputStream.write("/pane output crash-safe\n")
     agentProc.inputStream.flush()
 
-    let checkpointPath = stateDir / "checkpoint.gene"
-    let applicationPath = stateDir / "application.gene"
     let deadline = getMonoTime() + initDuration(seconds = 10)
     var checkpointReady = false
     while getMonoTime() < deadline:
+      let checkpointPath = agentStateRecordPath(stateDir, "checkpoint")
+      let applicationPath = agentStateRecordPath(stateDir, "application")
       if fileExists(checkpointPath) and fileExists(applicationPath):
         let checkpointText = readFile(checkpointPath)
         let applicationText = readFile(applicationPath)
@@ -2003,7 +2135,8 @@ suite "cli — gene run":
     else:
       agentProc.terminate()
     discard agentProc.waitForExit(5000)
-    check "^reason \"pane_opened\"" in readFile(checkpointPath)
+    check "^reason \"pane_opened\"" in
+      readFile(agentStateRecordPath(stateDir, "checkpoint"))
 
     let restored = execCmdOnce(
       "printf '/status\\n/quit\\n' | " &
@@ -2042,8 +2175,10 @@ suite "cli — gene run":
     if ran.exitCode != 0:
       checkpoint ran.output
     check ran.exitCode == 0
-    check "^reason \"tool_call\"" in readFile(stateDir / "checkpoint.gene")
-    check "^type \"tool_call\"" in readFile(stateDir / "events.gene")
+    check "^reason \"tool_call\"" in
+      readFile(agentStateRecordPath(stateDir, "checkpoint"))
+    check "^type \"tool_call\"" in
+      readFile(agentStateRecordPath(stateDir, "events"))
 
   test "ai agent home restores application state only for the same home":
     buildGeneCli()
@@ -2063,8 +2198,8 @@ suite "cli — gene run":
       checkpoint first.output
     check first.exitCode == 0
     check "opened output pane 1" in first.output
-    check fileExists(homeDir / "application.gene")
-    let applicationText = readFile(homeDir / "application.gene")
+    check fileExists(agentStateRecordPath(homeDir, "application"))
+    let applicationText = readFile(agentStateRecordPath(homeDir, "application"))
     check "^kind \"output\"" in applicationText
     check "durable" in applicationText
 
@@ -2122,6 +2257,161 @@ suite "cli — gene run":
     check restored.exitCode == 0
     check "state: " & stateSpec in restored.output
     check "panes: 1" in restored.output
+
+  test "ai agent pins deduplicated redacted artifacts and deletes explicitly":
+    buildGeneCli()
+    let stateDir = cliDir / "ai-agent-artifacts"
+    if dirExists(stateDir):
+      removeDir(stateDir)
+    let first = execCmdOnce(
+      "printf '/pane output evidence\n/1 append pin-secret\n" &
+      "/pin worker w1 tail\n/pin worker w1 tail\n/artifacts\n/quit\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "CODEX_ACCESS_TOKEN=pin-secret GENE_AGENT_STATE=" &
+      shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
+      " run examples/ai_agent/tui.gene")
+    if first.exitCode != 0: checkpoint first.output
+    check first.exitCode == 0
+    check "pinned artifact:1 sha256:" in first.output
+    check "pinned artifact:2 sha256:" in first.output
+    let pinnedLines = first.output.splitLines().filterIt(
+      it.contains("pinned artifact:"))
+    check pinnedLines.len == 2
+    if pinnedLines.len == 2:
+      check strutils.splitWhitespace(pinnedLines[0])[^1] ==
+            strutils.splitWhitespace(pinnedLines[1])[^1]
+    var blobCount = 0
+    for path in walkFiles(stateDir / "blob*.gene"):
+      inc blobCount
+      check "pin-secret" notin readFile(path)
+    check blobCount == 1
+
+    let restored = execCmdOnce(
+      "printf '/artifacts\n/artifact artifact:1\n" &
+      "/artifact delete artifact:1\n/artifact artifact:2\n" &
+      "/artifact delete artifact:2\n/artifacts\n/quit\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "CODEX_ACCESS_TOKEN=pin-secret GENE_AGENT_STATE=" &
+      shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
+      " run examples/ai_agent/tui.gene")
+    if restored.exitCode != 0: checkpoint restored.output
+    check restored.exitCode == 0
+    check "auth-***REDACTED***" in restored.output
+    check "deleted artifact:1" in restored.output
+    check "deleted artifact:2" in restored.output
+    check "no artifacts" in restored.output
+
+  test "ai agent restores ephemeral handlers disabled and exact refs enabled":
+    buildGeneCli()
+    let stateDir = cliDir / "ai-agent-handler-refs"
+    if dirExists(stateDir):
+      removeDir(stateDir)
+    let fixture = "examples/ai_agent/handler_ref_restore_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import os [get_env Env])
+(import [Tool HandlerRef Operation EmptyArgs OperationAck
+         register_tool! register_worker_operation!
+         worker_operation_for init_agent_state restore_dynamic_registrations!
+         save_agent_state close_agent_state find_tool agent_events]
+  from "./tui.gene")
+(var mode (get_env Env "HANDLER_MODE"))
+(var exact (HandlerRef ^module "test/workflows" ^path "run"
+                       ^version "sha256:exact"))
+(register_tool! (Tool ^name "durable_check" ^description "durable"
+  ^risk "read" ^params [] ^handler (fn [_args] "ok") ^handler_ref exact))
+(register_worker_operation! "output"
+  (Operation ^name "durable_op" ^summary "durable" ^usage "durable_op"
+    ^args EmptyArgs ^result OperationAck ^errors [] ^effects ["observe"]
+    ^audience ["local_user"] ^admission "none" ^audit "none"
+    ^cancellable false ^idempotent true ^task_managed false
+    ^primary_input false
+    ^handler (fn [_a, _w, _o, _x, _i]
+      (OperationAck ^accepted true ^text "ok"))
+    ^parse_cli (fn [_text] {}) ^handler_ref exact))
+(if (== mode "write")
+  (do
+    (register_tool! (Tool ^name "ephemeral_check" ^description "ephemeral"
+      ^risk "read" ^params [] ^handler (fn [_args] "live")))
+    (register_worker_operation! "output"
+      (Operation ^name "ephemeral_op" ^summary "ephemeral"
+        ^usage "ephemeral_op" ^args EmptyArgs ^result OperationAck ^errors []
+        ^effects ["observe"] ^audience ["local_user"]
+        ^admission "none" ^audit "none" ^cancellable false
+        ^idempotent true ^task_managed false ^primary_input false
+        ^handler (fn [_a, _w, _o, _x, _i]
+          (OperationAck ^accepted true ^text "live"))
+        ^parse_cli (fn [_text] {})))
+    (init_agent_state)
+    (save_agent_state [] "" [])
+    (close_agent_state))
+  (do
+    (init_agent_state)
+    (restore_dynamic_registrations! nil)
+    (var ephemeral_tool (find_tool "ephemeral_check"))
+    (var durable_tool (find_tool "durable_check"))
+    (var ephemeral_op (worker_operation_for "output" "ephemeral_op"))
+    (var durable_op (worker_operation_for "output" "durable_op"))
+    (println "handlers" ephemeral_tool/enabled durable_tool/enabled
+      ephemeral_op/enabled durable_op/enabled)
+    (var rejections 0)
+    (for event in (agent_events ~ Cell/get)
+      (if (== event/type "restore_record_rejected")
+        (set rejections (+ rejections 1))))
+    (println "rejections" rejections)
+    (close_agent_state)))
+""")
+    let common = " GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
+                 " " & shellQuote(geneExe) & " run " & shellQuote(fixture)
+    let wrote = execCmdOnce("env HANDLER_MODE=write" & common)
+    if wrote.exitCode != 0: checkpoint wrote.output
+    check wrote.exitCode == 0
+    let restored = execCmdOnce("env HANDLER_MODE=read" & common)
+    if restored.exitCode != 0: checkpoint restored.output
+    check restored.exitCode == 0
+    check "handlers false true false true" in restored.output
+    check "rejections 2" in restored.output
+
+  test "ai agent warns when another process owns the workspace advisory":
+    buildGeneCli()
+    let stateDir = cliDir / "ai-agent-workspace-owner"
+    if dirExists(stateDir):
+      removeDir(stateDir)
+    let fixture = "examples/ai_agent/workspace_owner_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import os [get_env Env])
+(import [init_agent_state start_workspace_heartbeat! close_agent_state]
+  from "./tui.gene")
+(init_agent_state)
+(start_workspace_heartbeat!)
+(if (== (get_env Env "OWNER_MODE") "hold") (sleep 10000))
+(close_agent_state)
+""")
+    let common = ["GENE_AGENT_STATE=fs:" & stateDir,
+                  "OWNER_MODE=hold", geneExe, "run", fixture]
+    let owner = startProcess("/usr/bin/env", args = common,
+                             options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if owner.running: owner.terminate()
+      owner.close()
+    let deadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < deadline:
+      var found = false
+      for path in walkFiles(stateDir / "workspace*.gene"):
+        found = fileExists(path)
+      if found: break
+      sleep(20)
+    let second = execCmdOnce(
+      "env OWNER_MODE=check GENE_AGENT_STATE=" &
+      shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
+      " run " & shellQuote(fixture))
+    if second.exitCode != 0: checkpoint second.output
+    check second.exitCode == 0
+    check "WARNING: another Gene agent owns this workspace (pid " in
+      second.output
 
   test "ai agent talks to an openai-compatible chat endpoint":
     ## End-to-end over loopback: a fake /chat/completions endpoint streams a
@@ -2378,12 +2668,13 @@ suite "cli — gene run":
     check "a2 lifecycle=running availability=idle last=failed unread=true" in first.output
     check "agent a1 completed task=" in first.output
     check "agent a2 failed task=" in first.output
-    let persistedEvents = readFile(stateDir / "events.gene")
+    let persistedEvents = readFile(agentStateRecordPath(stateDir, "events"))
     check persistedEvents.count("^type \"agent_finished\"") == 2
     check "^name \"list_dir\"" in persistedEvents
     check "^name \"grep\"" in persistedEvents
     check "^name \"read_file\"" in persistedEvents
-    check "research succeeded" in readFile(stateDir / "application.gene")
+    check "research succeeded" in
+      readFile(agentStateRecordPath(stateDir, "application"))
 
     let restored = execCmdOnce(
       "printf '/agents\\n/agent a1 result\\n/agent a2 result\\n/quit\\n' | " &
@@ -3044,7 +3335,7 @@ catch {^message message}
     check "^^truncated" in ran.output
     check "^^verified" in ran.output
     check "^verified false" in ran.output
-    let stored = readFile(stateDir / "events.gene")
+    let stored = readFile(agentStateRecordPath(stateDir, "events"))
     check stored.count("^type \"check\"") == 3
     check "^duration_ms" in stored
 
@@ -3612,10 +3903,10 @@ catch {^message message}
         check kill(Pid(parseInt(readFile(pidFile).strip())), SIGINT) == 0
       else:
         check kill(Pid(agentProc.processID), SIGINT) == 0
-      let eventsFile = stateDir / "events.gene"
       let cancelDeadline = getMonoTime() + initDuration(seconds = 2)
       var cancellationPersisted = false
       while getMonoTime() < cancelDeadline and not cancellationPersisted:
+        let eventsFile = agentStateRecordPath(stateDir, "events")
         if fileExists(eventsFile):
           cancellationPersisted = "cancelled" in readFile(eventsFile)
         if not cancellationPersisted: sleep(10)
@@ -3639,7 +3930,7 @@ catch {^message message}
       check "tool_call run_shell" in output
       check "check command status=nil" in output
       check "agent_finished" in output
-      let events = readFile(eventsFile)
+      let events = readFile(agentStateRecordPath(stateDir, "events"))
       check "^type \"check\"" in events
       check "^cancelled true" in events
       check events.count("^kind \"cancelled\"") == 1
@@ -3664,29 +3955,23 @@ catch {^message message}
                   "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
                   shellQuote(geneExe) &
                   " run examples/ai_agent/tui.gene"
-      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
-                    shellQuote(inner) & " > " & shellQuote(outputFile) &
-                    " 2>&1"
-      let terminal = startProcess("/bin/sh", args = ["-c", command],
-                                  options = {poUsePath, poStdErrToStdOut})
-      defer:
-        if terminal.running: terminal.terminate()
-        terminal.close()
-      sleep(400)
-      terminal.inputStream.write("/view " & fixture & "\n")
-      terminal.inputStream.flush()
-      sleep(500)
-      terminal.inputStream.write("q")
-      terminal.inputStream.flush()
-      sleep(600)
-      terminal.inputStream.write("/status\n")
-      terminal.inputStream.flush()
-      sleep(300)
-      terminal.inputStream.write("/quit\n")
-      terminal.inputStream.flush()
-      sleep(400)
-      terminal.inputStream.close()
-      let exitCode = terminal.waitForExit(7000)
+      let expectScript =
+        "set timeout 20\n" &
+        "log_file -noappend " & outputFile & "\n" &
+        "spawn /bin/sh -c {" & inner & "}\n" &
+        "expect -re {\\[0 main\\]}\n" &
+        "send -- \"/view " & fixture & "\\r\"\n" &
+        "expect -re {Path:}\n" &
+        "send -- \"q\"\n" &
+        "expect -re {returned from gene view}\n" &
+        "send -- \"/status\\r\"\n" &
+        "expect -re {agent> state:}\n" &
+        "send -- \"/quit\\r\"\n" &
+        "expect eof\n"
+      let terminal = execCmdOnce(
+        "/usr/bin/expect -c " & shellQuote(expectScript) &
+        " >/dev/null 2>&1")
+      let exitCode = terminal.exitCode
       let output = readFile(outputFile)
       if exitCode != 0: checkpoint output
       check exitCode == 0
@@ -3836,6 +4121,9 @@ catch {^message message}
     (var page_up (await (next_event screen)))
     (var pane_previous (await (next_event screen)))
     (var pane_next (await (next_event screen)))
+    (var complete (await (next_event screen)))
+    (var reverse_search (await (next_event screen)))
+    (var edit (await (next_event screen)))
     (var interrupt (await (next_event screen)))
     (var escape (await (next_event screen)))
     (var queued_text (await (next_event screen)))
@@ -3843,6 +4131,7 @@ catch {^message message}
     (println $"CURSES-CONTROLS:${(stringify [paste_start text_event
                                              pasted_enter paste_end newline
                                              page_up pane_previous pane_next
+                                             complete reverse_search edit
                                              interrupt escape
                                              queued_text])}"))
   ensure
@@ -3862,7 +4151,7 @@ catch {^message message}
         terminal.close()
       sleep(300)
       terminal.inputStream.write(
-        "\e[200~x\n\e[201~\e[13;2u\e[5~\e[5;5~\e[6;5~\x03")
+        "\e[200~x\n\e[201~\e[13;2u\e[5~\e[5;5~\e[6;5~\t\x12\x05\x03")
       terminal.inputStream.flush()
       sleep(100)
       # A printable byte already queued behind standalone Escape must be
@@ -3883,9 +4172,111 @@ catch {^message message}
       check "\"type\":\"page_up\"" in output
       check "\"type\":\"pane_previous\"" in output
       check "\"type\":\"pane_next\"" in output
+      check "\"type\":\"complete\"" in output
+      check "\"type\":\"reverse_search\"" in output
+      check "\"type\":\"edit\"" in output
       check "\"type\":\"interrupt\"" in output
       check "\"type\":\"escape\"" in output
       check "\"text\":\"p\"" in output
+
+  test "ai agent palette completion reverse search and Ctrl-E share the overlay editor":
+    when defined(macosx):
+      buildGeneCli()
+      let editor = cliDir / "agent_c6_editor.sh"
+      writeFile(editor, "#!/bin/sh\nprintf '/status' > \"$1\"\n")
+      setFilePermissions(editor,
+        {fpUserRead, fpUserWrite, fpUserExec,
+         fpGroupRead, fpGroupExec, fpOthersRead, fpOthersExec})
+      let outputFile = cliDir / "agent_c6_overlay.out"
+      removeFile(outputFile)
+      let inner = "exec /usr/bin/env TERM=xterm-256color " &
+                  "EDITOR=" & shellQuote(editor) &
+                  " CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= " &
+                  shellQuote(geneExe) &
+                  " run examples/ai_agent/tui.gene"
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(500)
+      # Escape dismisses the palette without touching /wor; Tab reopens the
+      # same overlay and completes it to /worker. Enter accepts without
+      # submitting, then " list" submits the completed command.
+      terminal.inputStream.write("/wor\x1b\t\n list\n")
+      terminal.inputStream.flush()
+      sleep(400)
+      # Global control commands are presentation history, not accepted worker
+      # input. Open a shell route and execute one admitted command instead.
+      # Escape dismisses the automatic slash-command palette before submit.
+      terminal.inputStream.write("/sh\x1b\nprintf history-marker\n")
+      terminal.inputStream.flush()
+      sleep(600)
+      # Route-local reverse search restores the prior shell command into the
+      # draft. First Enter accepts; second submits it again.
+      terminal.inputStream.write("\x12history\n\n")
+      terminal.inputStream.flush()
+      sleep(600)
+      # Ctrl-E loads /status through the configured editor, then Enter runs it.
+      terminal.inputStream.write("\x05")
+      terminal.inputStream.flush()
+      sleep(500)
+      terminal.inputStream.write("\n")
+      terminal.inputStream.flush()
+      sleep(600)
+      terminal.inputStream.write("/quit\x1b\n")
+      terminal.inputStream.flush()
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(8000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "main agent idle pane=0" in output
+      check output.count("history-marker") >= 2
+      check "state:" in output
+      check "context limits:" in output
+
+  test "ai agent typed tools and shell completion use one closed schema and lexer":
+    buildGeneCli()
+    let candidate = "tmp/agent-c6-completion space.txt"
+    let fixture = "examples/ai_agent/c6_completion_contract_test.gene"
+    defer:
+      if fileExists(candidate): removeFile(candidate)
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(candidate, "completion\n")
+    writeFile(fixture, """
+(import [Tool workspace_path_completion_items shell_route_completion_items]
+  from "./tui.gene")
+(type Args ^props {^name Str ^count Int?})
+(var tool
+  (Tool ^name "typed" ^description "typed" ^risk "read" ^args Args
+        ^handler (fn [_args] "ok")))
+(var schema (tool ~ schema))
+(println [(tool ~ validate_args {^name "ok"})
+          (tool ~ validate_args {^name 7})
+          (tool ~ validate_args {^name "ok" ^surprise 1})
+          schema/parameters/additionalProperties])
+(println (workspace_path_completion_items "cat tmp/agent-c6-com"))
+(println (workspace_path_completion_items "cat \"tmp/agent-c6-com"))
+(println (workspace_path_completion_items "cat $(echo nope"))
+(println
+  (shell_route_completion_items
+    {^history (cell [{^text "echo history-token"}])} "hist"))
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "[nil \"field 'name' for Args expected Str, got vkInt\"" in ran.output
+    check "Args has no field 'surprise'" in ran.output
+    check ran.output.contains("false]")
+    check "cat 'tmp/agent-c6-completion space.txt'" in ran.output
+    check "cat \\\"tmp/agent-c6-completion space.txt\\\"" in ran.output
+    check "[]\n" in ran.output
+    check "history-token" in ran.output
+    check "shell history" in ran.output
 
   test "public curses ownership suppresses only diagnostic console output":
     when defined(macosx):
@@ -4604,6 +4995,26 @@ catch {^message message}
     check "worker_started" in events
     check "worker_output" in events
     let outputCursor = parseJson(events)["cursor"].getInt()
+    let statusAlias = workerCurl(
+      "http://127.0.0.1:8993/api/sessions/s1/workers/w1/status")
+    check "\"ok\":true" in statusAlias
+    check "\"kind\":\"output\"" in statusAlias
+    let tailAlias = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/workers/w1/tail?n=1'")
+    check "\"ok\":true" in tailAlias
+    check "\"requested\":1" in tailAlias
+    check "\"text\":\"ready\"" in tailAlias
+    let observed = workerCurl(
+      "-X POST -H 'content-type: application/json' -d '{\"args\":{}}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/workers/w1/ops/status")
+    check "\"ok\":true" in observed
+    check "\"kind\":\"output\"" in observed
+    check "\"status\":\"idle\"" in observed
+    let observeEvents = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=" &
+      $outputCursor & "'")
+    check "\"events\":[]" in observeEvents
+    check parseJson(observeEvents)["cursor"].getInt() == outputCursor
     let agentCreated = workerCurl(
       "-X POST -H 'content-type: application/json' " &
       "-d '{\"assignment\":\"review worker events\",\"title\":\"reviewer\",\"context\":[{\"kind\":\"summary\",\"text\":\"bounded snapshot\"}]}' " &
@@ -4658,9 +5069,18 @@ catch {^message message}
     check "\"required_action\":\"approve\"" in progressRead
     check "\"objective\":\"ship C3\"" in workerCurl(
       "http://127.0.0.1:8993/api/sessions/s1/snapshot")
+    let beforeAgentStop = parseJson(workerCurl(
+      "http://127.0.0.1:8993/api/sessions/s1/snapshot"))["cursor"].getInt()
     let agentStopped = workerCurl(
       "-X DELETE http://127.0.0.1:8993/api/sessions/s1/agents/a1")
     check "\"ok\":true" in agentStopped
+    let agentStopEvents = workerCurl(
+      "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=" &
+      $beforeAgentStop & "'")
+    check "\"operation_kind\":\"stop\"" in agentStopEvents
+    check "\"origin\":\"remote\"" in agentStopEvents
+    check "\"type\":\"agent_status\"" in agentStopEvents
+    check "\"status\":\"stopped\"" in agentStopEvents
     let gapResponse = workerCurl(
       "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=0'")
     check "cursor_gap" in gapResponse
@@ -4785,6 +5205,8 @@ catch {^message message}
     check "\"cancelled\":true" in events
     check "\"type\":\"check\"" in events
     check "\"tool\":\"run_shell\"" in events
+    check "\"operation_kind\":\"cancel\"" in events
+    check "\"origin\":\"remote\"" in events
     check "turn_done" in events
     check (getMonoTime() - started).inMilliseconds < 2000
 

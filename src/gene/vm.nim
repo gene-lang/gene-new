@@ -4690,6 +4690,56 @@ proc biNew(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   else:
     constructTypedInstance(callee, args.toOpenArray(1, args.len - 1), named)
 
+proc biConstructType(args: openArray[Value]): Value {.nimcall.} =
+  ## Data-driven direct construction. This is the runtime-map counterpart of
+  ## `(T ^field value ...)`: it validates the same closed schema and never
+  ## invokes a ctor. Registries can therefore retain real Gene Type values as
+  ## their one schema instead of mirroring them in a string vocabulary.
+  if args.len != 2:
+    raise newException(GeneError, "construct_type expects (Type, Map)")
+  let callee = args[0]
+  if callee.kind != vkType:
+    raise newException(GeneError,
+      "construct_type expects a Type as its first argument")
+  if callee.isEnumType:
+    raise newException(GeneError,
+      "construct_type does not construct enum types; use a variant")
+  if args[1].kind != vkMap:
+    raise newException(GeneError,
+      "construct_type expects a Map as its second argument")
+  var names: seq[string]
+  var values: seq[Value]
+  for name, value in args[1].mapEntries:
+    names.add name
+    values.add value
+  constructTypedInstance(callee, [], NamedArgs(names: names, values: values))
+
+proc biTypeFields(args: openArray[Value]): Value {.nimcall.} =
+  ## Stable data reflection for a Type's closed property schema. Returning the
+  ## original type expression keeps consumers such as schema derivation on the
+  ## language's one type vocabulary instead of inventing string descriptors.
+  if args.len != 1 or args[0].kind != vkType:
+    raise newException(GeneError, "Type/fields expects a Type receiver")
+  var fields: seq[Value]
+  for field in args[0].typeFields:
+    var props = initPropTable()
+    props["name"] = newStr(field.name)
+    props["optional"] = newBool(field.optional)
+    props["type"] = field.typeExpr
+    fields.add newMap(props)
+  newList(fields)
+
+proc biTypeName(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 1 or args[0].kind != vkType:
+    raise newException(GeneError, "Type/name expects a Type receiver")
+  newStr(args[0].typeName)
+
+proc typeReflectionMessage(name: string): Value =
+  case name
+  of "fields": newNativeFn("Type/fields", biTypeFields)
+  of "name": newNativeFn("Type/name", biTypeName)
+  else: NIL
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -4883,6 +4933,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("body", newNativeFn("body", biBody))
   result.define("meta", newNativeFn("meta", biMeta))
   result.define("new", newNativeCallFn("new", biNew))
+  result.define("construct_type",
+                newNativeFn("construct_type", biConstructType))
   result.define("to_str", newNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
   result.define("chars", newNativeFn("chars", biChars))
@@ -6516,6 +6568,10 @@ proc enumReflectionMessage(name: string): Value =
 proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value =
   if receiver.isEnumType:
     let message = enumReflectionMessage(name)
+    if message.kind != vkNil:
+      return message
+  if receiver.kind == vkType:
+    let message = typeReflectionMessage(name)
     if message.kind != vkNil:
       return message
   if receiver.enumValueVariant.kind == vkEnumVariant:

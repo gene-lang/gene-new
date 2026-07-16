@@ -604,19 +604,8 @@
 (fn cancel_turn [id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (then (json_response 404 {^error "no such session"}))
-    (else
-      (var task (s/current_task ~ Cell/get))
-      (if (== task nil)
-        (then
-          (json_response 409
-            {^error "worker_idle" ^message "no turn in flight"
-             ^worker_id s/application/main_agent/id}))
-        (else
-          (s/cancel_requested ~ Cell/set true)
-          (agent_api/application_cancel_worker
-            s/application s/application/main_agent)
-          (json_response 202 {^ok true}))))))
+    (json_response 404 {^error "no such session"})
+    (cancel_worker id s/application/main_agent/id)))
 
 (fn list_workers [id : Str]
   (var s (sessions ~ Map/get id))
@@ -678,7 +667,7 @@
       (var body (parse req/body))
       (if (|| (== body/kind void) (== body/kind nil))
         (then (json_response 400 {^error "missing worker kind"}))
-        (elif (! (["output" "log_tail" "file_view" "stats"]
+        (elif (! (["shell" "output" "log_tail" "file_view" "stats"]
                    ~ contains? body/kind))
           (json_response 403
             {^error "remote worker kind is not allowed"}))
@@ -726,11 +715,12 @@
         (then (json_response 400 {^error "missing assignment"}))
         (else
           (var agent
-            (agent_api/spawn_supervised_agent_with_context s/application
+            (agent_api/spawn_supervised_named_agent_with_context s/application
               (if (|| (== body/title void) (== body/title nil))
                 "sub-agent" body/title)
               assignment
-              (if (== body/context void) [] body/context)))
+              (if (== body/context void) [] body/context)
+              (if (== body/name void) nil body/name)))
           (if (== agent nil)
             (then (json_response 409 {^error "sub-agent limit reached"}))
             (else
@@ -747,46 +737,47 @@
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (do
-      (var agent (agent_api/application_find_agent s/application agent_id))
-      (if (== agent nil)
-        (json_response 404 {^error "no such agent"})
-        (do
-          (var result (agent/result ~ Cell/get))
-          (if (== result nil)
-            (json_response 404 {^error "no agent result"})
-            (json_response 200 {^agent_id agent/id ^result result})))))))
+      (var response
+        (agent_api/application_call_worker s/application agent_id "result" {}
+          {^origin "remote" ^caller_worker_id nil}))
+      (if_not response/ok
+        (return (json_response
+          (if (== response/error/kind "worker_not_found") 404 403)
+          {^error response/error})))
+      (var result (props response/result))
+      (if_not result/available
+        (return (json_response 404 {^error "no agent result"})))
+      (json_response 200 {^agent_id response/worker_id ^result result/result}))))
 
 (fn mark_agent_result_read [id : Str, agent_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (do
+      (var response
+        (agent_api/application_call_worker s/application agent_id
+          "mark_result_read" {} {^origin "remote" ^caller_worker_id nil}))
+      (if_not response/ok
+        (return (json_response 409 {^error response/error})))
+      (persist_gateway_session s)
       (var agent (agent_api/application_find_agent s/application agent_id))
-      (if (== agent nil)
-        (json_response 404 {^error "no such agent"})
-        (if (== (agent/result ~ Cell/get) nil)
-          (json_response 404 {^error "no agent result"})
-          (do
-            (agent_api/application_inspect_agent_result s/application agent)
-            (persist_gateway_session s)
-            (json_response 200
-              {^agent_id agent/id ^result (agent/result ~ Cell/get)})))))))
+      (json_response 200
+        {^agent_id response/worker_id ^result (agent/result ~ Cell/get)}))))
 
 (fn incorporate_agent_result [id : Str, agent_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (do
+      (var response
+        (agent_api/application_call_worker s/application agent_id
+          "incorporate" {} {^origin "remote" ^caller_worker_id nil}))
+      (if_not response/ok
+        (return (json_response 409 {^error response/error})))
+      (persist_gateway_session s)
       (var agent (agent_api/application_find_agent s/application agent_id))
-      (if (== agent nil)
-        (json_response 404 {^error "no such agent"})
-        (if (agent_api/application_incorporate_agent_result
-              s/application agent)
-          (then
-            (persist_gateway_session s)
-            (json_response 200
-              {^agent_id agent/id ^result (agent/result ~ Cell/get)}))
-          (else (json_response 404 {^error "no agent result"})))))))
+      (json_response 200
+        {^agent_id response/worker_id ^result (agent/result ~ Cell/get)}))))
 
 (fn get_progress [id : Str]
   (var s (sessions ~ Map/get id))
@@ -838,14 +829,7 @@
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
-        (if (agent_api/application_cancel_agent s/application agent)
-          (then
-            (persist_gateway_session s)
-            (json_response 202 {^ok true}))
-          (else
-            (json_response 409
-              {^error "worker_idle" ^message "agent is idle"
-               ^worker_id agent/id})))))))
+        (cancel_worker id agent/id)))))
 
 (fn stop_agent [id : Str, agent_id : Str]
   (var s (sessions ~ Map/get id))
@@ -855,14 +839,62 @@
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
-        (if (agent_api/application_stop_agent s/application agent)
-          (then
-            (persist_gateway_session s)
-            (json_response 200 {^ok true}))
-          (else
-            (json_response 409
-              {^error "worker_stopped" ^message "agent is stopped"
-               ^worker_id agent/id})))))))
+        (stop_worker id agent/id)))))
+
+(fn worker_operation_failure_response [response]
+  (var kind response/error/kind)
+  (var status
+    (if (== kind "worker_not_found") 404
+      (if (== kind "unknown_operation") 404
+        (if (== kind "worker_access_denied") 403
+          (if (== kind "invalid_arguments") 400 409)))))
+  (json_response status {^ok false ^error response/error}))
+
+(fn worker_operation_success_response
+  [s, response, operation : Str, status : Int]
+  # Observe-only operations are side-effect-free all the way through the
+  # adapter: they do not append operation events or force a checkpoint.
+  (if_not (response/effects ~ contains? "observe")
+    (persist_gateway_session s))
+  (json_response status
+    {^ok true ^worker_id response/worker_id ^operation operation
+     ^result (props response/result)}))
+
+(fn worker_operation [id : Str, worker_id : Str, operation : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (return (json_response 404 {^error "no such session"})))
+  (try
+    (var body (if (== (trim req/body) "") {} (parse req/body)))
+    (var raw_args
+      (if (== body/args void) body body/args))
+    (var response
+      (agent_api/application_call_worker s/application worker_id operation
+        raw_args {^origin "remote" ^caller_worker_id nil}))
+    (if response/ok
+      (worker_operation_success_response s response operation 200)
+      (worker_operation_failure_response response))
+  catch (JsonError ^message m)
+    (json_response 400 {^error "invalid_json" ^message m})
+  catch {^message m}
+    (json_response 400 {^error "invalid_operation" ^message m})))
+
+(fn worker_observation [id : Str, worker_id : Str, operation : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (return (json_response 404 {^error "no such session"})))
+  (try
+    (var args {})
+    (if (&& (== operation "tail") (!= req/params/n void))
+      (args ~ Map/put! "n" (parse_int req/params/n)))
+    (var response
+      (agent_api/application_call_worker s/application worker_id operation args
+        {^origin "remote" ^caller_worker_id nil}))
+    (if response/ok
+      (worker_operation_success_response s response operation 200)
+      (worker_operation_failure_response response))
+  catch {^message m}
+    (json_response 400 {^error "invalid_arguments" ^message m})))
 
 (fn worker_input [id : Str, worker_id : Str, req]
   (var s (sessions ~ Map/get id))
@@ -910,42 +942,43 @@
 (fn cancel_worker [id : Str, worker_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (then (json_response 404 {^error "no such session"}))
-    (else
-      (var worker
-        (agent_api/application_find_worker s/application worker_id))
-      (if (== worker nil)
-        (json_response 404 {^error "no such worker"})
-        (if (agent_api/application_cancel_worker s/application worker)
-          (then
-            (persist_gateway_session s)
-            (json_response 202 {^ok true}))
-          (else
-            (json_response 409
-              {^error "worker_idle" ^message "worker is idle"
-               ^worker_id worker/id})))))))
+    (return (json_response 404 {^error "no such session"})))
+  (var response
+    (agent_api/application_call_worker s/application worker_id "cancel" {}
+      {^origin "remote" ^caller_worker_id nil}))
+  (if_not response/ok
+    (return (worker_operation_failure_response response)))
+  (var result (props response/result))
+  (if_not result/accepted
+    (return
+      (json_response 409
+        {^error "worker_idle" ^message result/text
+         ^worker_id response/worker_id})))
+  (if (== response/worker_id s/application/main_agent/id)
+    (s/cancel_requested ~ Cell/set true))
+  (worker_operation_success_response s response "cancel" 202))
 
 (fn stop_worker [id : Str, worker_id : Str]
   (var s (sessions ~ Map/get id))
   (if (== s void)
-    (then (json_response 404 {^error "no such session"}))
-    (else
-      (var worker
-        (agent_api/application_find_worker s/application worker_id))
-      (if (== worker nil)
-        (json_response 404 {^error "no such worker"})
-        (if (== worker/id "main")
-          (json_response 409
-            {^error "main_worker_cannot_stop"
-             ^message "main worker cannot be stopped" ^worker_id worker/id})
-          (if (agent_api/application_stop_worker s/application worker)
-            (then
-              (persist_gateway_session s)
-              (json_response 200 {^ok true}))
-            (else
-              (json_response 409
-                {^error "worker_stopped" ^message "worker is stopped"
-                 ^worker_id worker/id}))))))))
+    (return (json_response 404 {^error "no such session"})))
+  (if (== worker_id s/application/main_agent/id)
+    (return
+      (json_response 409
+        {^error "main_worker_cannot_stop"
+         ^message "main worker cannot be stopped" ^worker_id worker_id})))
+  (var response
+    (agent_api/application_call_worker s/application worker_id "stop" {}
+      {^origin "remote" ^caller_worker_id nil}))
+  (if_not response/ok
+    (return (worker_operation_failure_response response)))
+  (var result (props response/result))
+  (if_not result/accepted
+    (return
+      (json_response 409
+        {^error "worker_stopped" ^message result/text
+         ^worker_id response/worker_id})))
+  (worker_operation_success_response s response "stop" 200))
 
 # Long-poll: return events after ^cursor as soon as any exist, waiting up to
 # ~20s. A handler parked in sleep does not stall other requests (task-per-
@@ -1148,8 +1181,20 @@ document.getElementById('f').addEventListener('submit', function (e) {
                       (if (== req/method "POST")
                         (cancel_worker parts/3 parts/5)
                         (json_response 405 {^error "method not allowed"})))
+                    (when "status"
+                      (if (== req/method "GET")
+                        (worker_observation parts/3 parts/5 "status" req)
+                        (json_response 405 {^error "method not allowed"})))
+                    (when "tail"
+                      (if (== req/method "GET")
+                        (worker_observation parts/3 parts/5 "tail" req)
+                        (json_response 405 {^error "method not allowed"})))
                     (else (json_response 404 {^error "not found"})))
-                  (json_response 404 {^error "not found"})))))
+                  (if (&& (== parts/~size 8) (== parts/6 "ops"))
+                    (if (== req/method "POST")
+                      (worker_operation parts/3 parts/5 parts/7 req)
+                      (json_response 405 {^error "method not allowed"}))
+                    (json_response 404 {^error "not found"}))))))
           (else (json_response 404 {^error "not found"})))
         (json_response 404 {^error "not found"})))))
 

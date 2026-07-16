@@ -1087,6 +1087,16 @@ rejects unknown fields, validates field/body types, stamps the head with the
 type, and returns the new instance. It **does not** call `ctor`, even when the
 type defines one.
 
+`(construct_type T fields)` is the data-driven equivalent when `T` and the
+field map are runtime values. It performs the same closed-schema validation as
+direct `(T ^field value ...)` construction and never invokes `ctor`; registries
+can therefore keep a declared type as their sole argument schema without
+generating syntax or maintaining a parallel validation vocabulary.
+`(T ~ fields)` returns the closed property schema as data records containing
+`^name`, `^type`, and `^optional`; `(T ~ name)` returns its declared name. The
+type expressions are the original Gene values, so schema consumers reflect
+the language vocabulary rather than translating it to a second internal one.
+
 This is intentional. Gene values must be printable/serializable back into Gene
 data without replaying arbitrary constructor code, side effects, normalization
 logic, network calls, clock reads, or validation policies. The printer should

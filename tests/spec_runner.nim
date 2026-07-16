@@ -1262,6 +1262,23 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (Port4) catch _ \"missing field\")",
                "\"missing field\"")
 
+  test "construct_type validates a runtime map against one real type schema":
+    check_eval("(type Request ^props {^name Str ^count Int?}) " &
+               "(var request_type Request) " &
+               "(construct_type request_type {^name \"build\" ^count 2})",
+               "((type Request) ^name \"build\" ^count 2)")
+    check_eval("(type Request ^props {^name Str}) " &
+               "(try (construct_type Request {^name 7}) " &
+               " catch (TypeError ^where w) w)",
+               "\"field 'name' for Request\"")
+
+  test "types reflect their closed property schema as Gene data":
+    check_eval("(type Request ^props {^name Str ^count Int?}) " &
+               "(var f (Request ~ fields)) " &
+               "[(Request ~ name) f/0/name f/0/optional f/0/type " &
+               " f/1/name f/1/optional f/1/type]",
+               "[\"Request\" \"name\" false Str \"count\" true Int?]")
+
   test "new without a ctor falls back to direct schema mapping":
     check_eval("(type Plain ^props {^name Str ^age Int}) " &
                "(var p (new Plain ^name \"Ada\" ^age 37)) [p/name p/age]",
@@ -3591,6 +3608,10 @@ suite "spec — db protocol from stdlib plan":
                "[true true true]")
 
 suite "spec — store persistence protocol":
+  test "crypto sha256 matches the standard known vector":
+    check_eval("(import crypto [sha256]) (sha256 \"abc\")",
+               "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"")
+
   test "sqlite store round-trips data records and missing/default semantics":
     check_eval("(import db/sqlite [open]) " &
                "(import store/sqlite [open : store-open StoreError]) " &
@@ -3638,6 +3659,59 @@ suite "spec — store persistence protocol":
                " (s ~ keys) " &
                " (try (s ~ put \"\" 1) catch (StoreError ^kind k) k)]",
                "[{^x 1} [\"session:tg/42\"] invalid_key]")
+
+  test "sqlite checkpoints publish one hash-validated generation atomically":
+    check_eval("(import db/sqlite [open]) " &
+               "(import store/sqlite [open : store-open]) " &
+               "(var db (open \":memory:\")) " &
+               "(var s (store-open db)) " &
+               "(s ~ checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+               "(s ~ checkpoint 2 {^session {^schema 1 ^data {^x 2}} " &
+               "                   ^events {^schema 1 ^data [\"ok\"]}}) " &
+               "(var loaded (s ~ load_checkpoint)) " &
+               "[loaded/generation loaded/schema " &
+               " loaded/records/session/data/x loaded/records/events/data]",
+               "[2 1 2 [\"ok\"]]")
+
+  test "sqlite store files are owner-only":
+    when defined(posix):
+      let path = getTempDir() / "gene-store-owner-only-spec.sqlite"
+      for suffix in ["", "-wal", "-shm", "-journal"]:
+        if fileExists(path & suffix): removeFile(path & suffix)
+      check_eval("(import db/sqlite [open]) " &
+                 "(import store/sqlite [open : store-open]) " &
+                 "(var db (open " & geneString(path) & ")) " &
+                 "(var s (store-open db)) " &
+                 "(s ~ checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+                 "(s ~ close) (db ~ close) true",
+                 "true")
+      check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+
+  test "filesystem checkpoints fall back from a corrupt newest generation":
+    let dir = getTempDir() / "gene-store-fs-checkpoint-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    check_eval("(import store/fs [open : store-open]) " &
+               "(import Fs [ReadWriteDir]) " &
+               "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
+               "(s ~ checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+               "(s ~ checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
+               "(var loaded (s ~ load_checkpoint)) " &
+               "[loaded/generation loaded/records/session/data/x]",
+               "[2 2]")
+    let newest = dir / "generations" / "00000000000000000002" /
+                 "session.gene"
+    writeFile(newest, "corrupt")
+    check_eval("(import store/fs [open : store-open]) " &
+               "(import Fs [ReadWriteDir]) " &
+               "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
+               "(var loaded (s ~ load_checkpoint)) " &
+               "[loaded/generation loaded/records/session/data/x]",
+               "[1 1]")
+    when defined(posix):
+      check getFilePermissions(dir) ==
+        {fpUserRead, fpUserWrite, fpUserExec}
 
 suite "spec — os and json from ai-agent plan":
   test "os/get_env reads, defaults, and errors under Os/Env":
