@@ -145,7 +145,10 @@ The subprocess surface separates captured execution from whole-terminal
 handoff:
 
 ```gene
-(import os [exec_async exec_stream_async exec_stdio_async Exec])
+(import os [executable_path exec_async exec_stream_async exec_stdio_async Exec])
+
+# Absolute path of the currently running Gene executable.
+(var gene (executable_path))
 
 (var result
   (await (exec_async Exec ^cmd "sh" ^args ["-lc" "nimble test"])))
@@ -168,6 +171,9 @@ their scheduler.
 All subprocess entry points require `Os/Exec`. Cancellation terminates an
 active async child. `exec_stdio_async` accepts only `^cmd`, `^args`, and `^dir`;
 capturing, timeouts, and output limits do not apply to a terminal handoff.
+`executable_path` takes no arguments and returns the absolute path of the
+current Gene executable, which lets a program launch a subcommand through the
+same runtime without guessing from `PATH`.
 
 ### `net/http_client`
 

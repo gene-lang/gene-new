@@ -28,8 +28,17 @@ implemented and covered by deterministic CLI/PTY tests (§10.5). Slice C3 is
 now shipped too: isolated restore records, structured terminal agent results,
 registry-derived help and safe slash commands, hidden/focused pane operations,
 and explicit project progress make the worker model discoverable, operable,
-and recoverable under the complex-project dogfood flow (§10.6).**
-Date: 2026-07-15.
+and recoverable under the complex-project dogfood flow (§10.6). The next core
+slice is C4: each worker kind declares one Gene-typed operation table, and
+user commands, model tools, delegated peer workers, REPL scripts, and gateway
+routes all invoke those same operations under declared
+effect/audience/admission/audit policies — a worker id is an address, never
+authority (§7.2, §10.7). C5 then hardens persistence into durable knowledge
+and the daily surface into a discoverable one: atomic checkpoint generations,
+durable-vs-ephemeral handler registration, pinned artifacts, at-rest policy,
+the four-axis help system, and a completion-capable input editor (Tab/Ctrl-R/
+Ctrl-E over one overlay primitive) (§7.3, §10.8).**
+Date: 2026-07-16.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
 namespace (`get_env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
@@ -63,6 +72,14 @@ text, model text, tool arguments/output, shell commands, or credentials. This
 does not replace the versioned event log, which remains the authoritative
 record for tool actions and confirmations.
 
+Diagnostic event-boundary records copy stable worker/agent/task correlation
+ids and surface-local pane/surface ids when present. Pane ids cannot be a
+required field: one worker may be headless or viewed by several surfaces under
+different pane ids. Process diagnostic routing and severity stay immutable
+launcher configuration; a pane-local `/log LEVEL` command would therefore be
+misleading. Pane-local inspection uses `/tail worker=W` (or `/trace worker=W`)
+over the authoritative event log instead.
+
 This document specifies a live, programmable AI coding application written in
 Gene. It normally presents a terminal UI, can optionally expose gateway
 surfaces, holds conversations with a hosted model API, lets agents call local
@@ -80,6 +97,13 @@ hard-to-recover actions without surrounding normal edits, commands, tests,
 installs, or network calls with permission theater. Features such as MCP,
 worktree isolation, browser automation, and a plugin marketplace are a menu to
 adopt when daily use proves their value.
+
+The central product tension is explicit: **expose a very powerful
+programmable object model without requiring the human to operate that object
+model manually.** Workers, operation tables, policies, cursors, and snapshots
+stay precise internally; the ordinary experience stays "talk, delegate,
+inspect, run, resume tomorrow" — names over ids, composites over assembly,
+and a small default `/help` with the full grammar behind it (§7.2, §10.8).
 
 **Backends (implemented).** The agent speaks two wire shapes, both entirely
 env-configured:
@@ -175,6 +199,23 @@ the invariant wins and the text is stale:
    worker, or surface record is quarantined with an attributable event and can
    never prevent the main session from loading, and never causes a host
    operation to be retried.
+14. A worker's functionality is exposed only as typed, declared operations
+   (§7.2). User command, model tool, peer agent/worker, REPL script, and
+   remote adapter all invoke the same operation under the same declared
+   effect, audience, admission, and audit policies — no caller class has a
+   private path, and no operation bypasses provenance. A worker id is an
+   address, not a capability: a sub-agent reaches another worker only through
+   an explicitly delegated handle, and read-only does not mean public.
+15. Persisted state never claims a live closure is durable. Dynamically
+   registered tools, operations, and handlers restore only through versioned
+   module-qualified references; anything else restores disabled with an
+   attributable event, never silently dropped and never executed from
+   deserialized code.
+16. Snapshots install atomically per checkpoint generation. Restore selects
+   the highest complete, hash-valid generation and never mixes records from
+   different generations; persisted record schemas are versioned from their
+   first release and migrate through pure functions, with quarantine as the
+   fallback.
 
 ## 1. What the agent is
 
@@ -232,8 +273,8 @@ Behavior:
   returns a final message item;
 - slash commands in the input line. The canonical grammar is `/help`, `/pane
   ...`, `/agent ...`, and `/worker ...` (§7.1); `/?` is the exact short help
-  alias, while `/0`, `/N ...`, `/ext`, `/sh`, `/repl`, `/tail`, `/stats`, and
-  `/view` remain concise aliases. Unknown
+  alias, while `/0`, `/N ...`, `/close [N]`, `/sh`, `/repl`, `/tail`,
+  `/stats`, and `/view` remain concise commands. Unknown
   command-shaped input is rejected locally rather than sent to the focused
   worker. Session commands include `/quit`, `/exit`, `/remember`, `/memory`,
   `/forget-memory`, `/status`, `/progress`, `/trace`, `/diff`, and `/undo`, and
@@ -352,6 +393,30 @@ file view, projection, or layout can reduce the restored UI but cannot abort the
 main session. No validator evaluates ad-hoc syntax from persisted data. The
 all-kinds restore fixture covers agent, shell, REPL, output, log-tail, stats,
 and file-view workers together, including one deliberately malformed pane.
+
+Writes are grouped into **checkpoint generations** (invariant §0.16). A
+checkpoint carries a schema version, a monotonically increasing generation
+number, the event high-water mark, and per-record content hashes. The SQLite
+backend writes all records plus the checkpoint marker in one transaction; the
+filesystem backend writes and fsyncs the new records, then writes and fsyncs a
+manifest, then atomically updates a `CURRENT` pointer. Restore selects the
+highest complete generation whose hashes validate and never combines the
+session core of one generation with workers of another. Every persisted record
+kind — checkpoint, session core, worker, surface, tool/operation declaration —
+carries its schema version from its first release; pure migration functions
+upgrade old records before validation, and record quarantine remains the
+fallback when no migration applies. (The §9.2 rule that the *journal*
+introduces `^schema` only at its first incompatible change is unchanged;
+snapshot records are stricter because they restore executable state.)
+
+Local state is sensitive even after redaction: item lists, transcripts, memory,
+and worker output can contain source excerpts or credentials the redactor did
+not recognize. The storage policy is explicit — filesystem records and SQLite
+databases are created with owner-only permissions; the gateway never serves
+store files as static content; optional encryption-at-rest (an OS
+keychain-derived key) is a later hardening, not an implied present guarantee;
+and any future export command must make redacted-versus-full an explicit
+choice, never a default.
 
 Before this work there was no OS-environment access at the Gene surface. The
 `Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
@@ -518,6 +583,9 @@ results. Tools needed for a coding agent:
   output-size cap, truncation flags, and timeout, returning a typed result map.
   `run_shell` accepts a model-visible `timeout_ms` from 1 through 120000
   (default 10000) and reports elapsed time against the requested cap.
+  `run_shell` is the stateless one-shot spelling; the stateful per-worker
+  variant with persistent cwd/env is §7.2's `shell run` operation, under the
+  same classifier, lease, and events.
   `Os/Exec` is deliberately a *distinct* capability from `Os/Env` so a launcher
   can grant file+env without shell access.
 
@@ -539,7 +607,25 @@ wire shapes), argument validation, and risk class all derive from it:
 loop reads the live registry (`tool_schemas_now`), so a tool added or replaced
 from `/repl` reaches the very next model call. This removes the earlier
 drift-prone duplication between a handler map and a hand-written schema list,
-and demonstrates how types, metadata, functions, and maps compose. Every call
+and demonstrates how types, metadata, functions, and maps compose.
+
+The shipped `^params` list is still half stringly-typed (`^type "string"`
+maps) — a small second schema vocabulary beside Gene's own. The target form
+references real Gene type values and derives everything from them:
+
+```gene
+(type ReadFileArgs ^props {^path Str ^start_line? Int ^max_bytes? Int})
+
+(Tool ^name "read_file" ^args ReadFileArgs ^result ToolText
+      ^errors [FsError ToolError] ^risk "read" ^handler read_file)
+```
+
+JSON Schema for both wire shapes, runtime validation, CLI parsing, and help
+all derive from `ReadFileArgs` — one type value instead of five parallel
+descriptions, and a stronger demonstration of Gene's type system doing real
+work. §7.2 operation declarations use this Gene-typed form from their first
+release; the shipped `^params` form remains a compatibility spelling that
+migrates onto the same derivation (slice C4). Every call
 passes through argument validation and then the narrow catastrophe guard in
 §8.5, and both the call and its result are appended to the event log (§9.2).
 
@@ -584,8 +670,11 @@ assembles complete UTF-8 text events, and reports `KEY_RESIZE` as resize.
 
 The agent's TTY editor is a Gene-level state machine over public
 `curses/next_event` and `curses/draw`; this is what lets sub-agents and pane
-controllers progress while the user types. It supports multiline input,
-bracketed paste, grapheme-aware cursor movement, and per-route history. In
+controllers progress while the user types. It supports multiline input
+(`Shift+Enter` inserts, `Enter` submits), bracketed paste, grapheme-aware
+cursor movement, and per-route history; §7.3 specifies the complete key
+contract, incremental history search, context-sensitive completion, and the
+overlay primitive they share. In
 pipes the agent falls back to `read_line` so scripted tests stay deterministic.
 The reusable blocking `curses/read_input` editor remains available for simpler
 programs and implements the same key conventions. Both paths use a fixed layout:
@@ -593,14 +682,16 @@ color-coded scrollback/output above a `─` separator, one or more promptless in
 rows above a second `─` separator, and a status line at the bottom. The agent
 adds a short `─` separator before each user turn in the scrollback, owns one
 `Screen` persistently across prompts to avoid terminal-mode flicker, and calls
-`curses/close` before EOF, process exit, or the whole-terminal `/tty` escape
-hatch (§8.5; the bootstrap spelled it as interactive `/sh` — C2 gives the two
-meanings distinct commands); the shell and REPL *panes* are scheduler-owned
+`curses/close` before EOF, process exit, or the whole-terminal `/tty` and
+`/view` escape hatches (§8.5; the bootstrap spelled `/tty` as interactive
+`/sh`, while C2 gives the two meanings distinct commands); the shell and REPL
+*panes* are scheduler-owned
 and never leave curses (§7.1).
 The mouse wheel moves the focused view by three lines and PageUp/PageDown by
 one viewport. A newly opened extension pane takes navigation focus; `/pane
-focus N` (alias `/N focus`) selects it and `/pane focus 0` (aliases `/0` and
-`/focus 0`) returns to main. The main status line or a scrolled pane title
+focus N` (aliases `/N` and `/N focus`) selects it and `/pane focus 0`
+(aliases `/0` and `/focus 0`) returns to main. The main status line or a
+scrolled pane title
 shows `[SCROLL +N]` while that view is above its live tail.
 While an agent turn is pending, its surface may pulse a final `...` row. That
 row is a presentation overlay: it is never appended to the shared transcript,
@@ -636,7 +727,7 @@ Examples:
 [0 main] Enter send | /pane list | /help
 [1 agent a1: working] /0 main | Esc cancel | PgUp/PgDn scroll
 [2 shell w1: idle] Enter run | /0 main | Ctrl-C cancel
-[4 output w3: read-only] /0 main | PgUp/PgDn scroll | /4 close
+[4 output w3: read-only] /0 main | PgUp/PgDn scroll | /close
 ```
 
 Presentation refresh is coalesced: worker/event callbacks mark dirty regions
@@ -652,10 +743,12 @@ authoritative events.
 
 ### 7.1 Workers and panes
 
-**Bootstrap today:** `/ext` creates a secondary `Agent`, attaches an independent
-right-side `Pane`, and `/N prompt` starts a cancellable turn without blocking
-the main input editor; `/N close` detaches the pane while explicit stop controls
-the agent lifetime. The main model has the equivalent `open_extension`
+**Bootstrap today:** `/agent new` creates a secondary `Agent`, attaches an
+independent right-side `Pane`, and `/N prompt` starts a cancellable turn
+without blocking the main input editor. Bare `/N` focuses that pane;
+`/close` detaches the focused pane and `/close N` detaches a named pane, while
+explicit stop controls the agent lifetime. The main model has the equivalent
+`open_extension`
 compatibility tool. Output, streaming line-oriented shell, and
 declaration-persistent Gene REPL panes are also shipped. Restored shell/REPL
 panes retain captured history in a closed state and require an explicit reopen.
@@ -729,6 +822,8 @@ close, never duplicate source journal events, and are removed when either
 worker stops. The follow graph must remain acyclic: self-links and any link
 that would create a transitive cycle are rejected with a typed
 `worker_follow_cycle` error before state changes or output propagates.
+`append` and `follow` are the first instances of a general pattern — §7.2
+gives every worker kind such a typed operation table.
 
 Worker state separates three orthogonal concepts, because one flat status
 cannot describe both request/command workers and continuous projections:
@@ -913,7 +1008,8 @@ restores the split.
 pane-local navigation to input routing. Parsing is surface-first:
 
 1. the surface parses the complete global-command registry first — `/help`,
-   `/?`, `/pane`, `/agent`, `/worker`, session commands, `/0`, `/N ...`, and
+   `/?`, `/pane`, `/agent`, `/worker`, `/close`, session commands, `/0`,
+   `/N ...`, and
    their documented aliases;
 2. an unrecognized leading `/` is a local `unknown command` error with a
    `/help` hint; on an input-capable route the diagnostic also teaches the
@@ -931,8 +1027,9 @@ for shell and REPL routes includes this escape instead of making the user infer
 it from a rejection.
 
 Both the input row and the status line name the route (for example
-`[3 shell]`) so a prompt can never be typed into a shell silently. `/N focus`
-focuses pane N; newly opened panes start focused (shipped behavior); `/0` or
+`[3 shell]`) so a prompt can never be typed into a shell silently. Bare `/N`
+focuses pane N (`/N focus` remains accepted); newly opened panes start focused
+(shipped behavior); `/0` or
 `/focus 0` or Escape on an empty input resets focus to the main agent. Escape
 keeps one deterministic priority order, PTY-tested: cancel the focused
 worker's active operation; else restore a maximized pane; else, **only when the
@@ -964,8 +1061,41 @@ main viewport. The block covers navigation and keys, focus and literal-input
 escapes, pane/worker/agent lifecycle verbs, every worker kind, session
 commands, concise aliases, and where to inspect status, progress, results,
 trace, diff, and undo. `/help <topic>` and `/? <topic>` accept `pane`, `agent`,
-`worker`, `input`, `session`, and `trace`; they still display the selected
-section in pane 0.
+`worker`, `input`, `session`, and `trace`; `/help worker <kind>` additionally
+renders that kind's §7.2 operation table from the same declaration the parser
+uses. They still display the selected section in pane 0.
+
+**Progressive disclosure (C5 target):** the comprehensive block is reference,
+not the default. Bare `/help` teaches the small product model — type to talk,
+`/sh`, `/repl`, `/agent new`, `/status`, `/help <topic>` — in a dozen lines;
+`/help all` prints the full block above. Worker kinds, operation tables,
+surface attachments, and correlation ids are expert surfaces that appear when
+asked for, never prerequisites for ordinary use.
+
+The help system scales along four axes as the system grows, all derived from
+the one registry so none can drift or go stale:
+
+- **layered** — bare `/help` (small model) → `/help <topic>` → `/help all`
+  → `/help <command>`: one page per command generated from its declaration —
+  syntax, argument types, aliases, effect/audience/admission where relevant,
+  and one example; `/help worker <kind>` renders that kind's operation table;
+- **contextual** — the route-specific status line (shipped, C3) names the
+  keys and commands that matter *now*; every non-main route teaches `/0
+  main`; error diagnostics teach the fix (`unknown command` suggests the
+  nearest registered name — "did you mean `/pane focus 2`?" — and the `//`
+  literal escape when the focused worker accepts input);
+- **searchable** — `/help search <term>` matches command names, aliases,
+  argument names, and description text; the `/`-palette is the interactive
+  form of the same query;
+- **interactive** — typing `/` opens the §7.3 overlay: registry commands
+  filtered as you type, argument hints from the declaration once a command is
+  chosen, `Tab` to accept. The palette, `/help search`, and Tab completion
+  are one mechanism with three entry points.
+
+Because help, parsing, completion, and the palette share one registry, a
+command that exists is discoverable in all four ways the moment it is
+declared — including operations added at runtime (§9.1) — and acceptance
+tests reject undocumented or stale entries (shipped, C3).
 
 Help is generated from the same command registry and key-binding metadata used
 for parsing, so acceptance tests can reject undocumented or stale commands. It
@@ -985,6 +1115,8 @@ The canonical command grammar included by comprehensive help begins with:
 /pane open <worker-id> [title]
 /pane focus <0|N>
 /pane show|hide|close|max <N>
+/pane <N> focus|show|hide|close|max     # accepted id-first equivalent
+/close [N]                              # focused pane by default; never pane 0
 
 /agent list
 /agent new [prompt]
@@ -993,16 +1125,32 @@ The canonical command grammar included by comprehensive help begins with:
 
 /worker list
 /worker <W> open|cancel|stop|restart
+/worker <W> status                    # any kind: lifecycle, operation, outcome
+/worker <W> tail [n]                  # any kind: bounded recent output
+/worker <W> run <command>             # shell workers (stateful cwd/env)
+/worker <W> filter <expr>             # log-tail workers
+/worker <W> view <path>|reload|info   # file-view workers
+/worker <W> snapshot                  # stats workers
 /worker <W> append <text>             # output workers
 /worker <OUT> follow|unfollow <SOURCE>
+/help worker <kind>                   # that kind's operation table (§7.2)
+/help all                             # the full reference block (C5: bare
+                                      # /help teaches the small model)
+
+/pin result [A] | /pin worker <W> tail   # promote to a durable artifact (§9.5)
+/artifacts | /artifact <id>
 
 /status          /progress        /trace [filters] [--detail]
 /diff            /undo [change-id]
 /remember ...    /memory          /forget-memory ...
 /edit            /tty             /quit | /exit
+/view <file>                         # terminal handoff to gene view
 ```
 
-`/pane new` is an intentional surface-local composite: it creates the requested
+Everywhere `<W>` or `<A>` appears, a unique session-local worker `^name`
+(`build-shell`, `reader-review`) is accepted interchangeably with the id
+(§7.2); ids stay canonical in events and snapshots. `/pane new` is an
+intentional surface-local composite: it creates the requested
 worker when needed, opens a local pane, and focuses it. `/pane open W` attaches
 a fresh local view to an existing headless worker. Every listing prints pane id,
 worker id, kind, lifecycle/current operation, last outcome, and unread result
@@ -1010,7 +1158,7 @@ state in one row; pane 0 is reported as `pane=0`, not `headless`. The concise
 aliases below remain part of the interface:
 
 - `/agent new [prompt]` creates a supervised sub-agent and opens its pane;
-  `/ext` remains a compatibility alias, while `/agents` lists visible and
+  `/agents` lists visible and
   headless agents. `/agent A result` displays and marks the latest result read
   without changing model context; `/agent A incorporate` explicitly appends
   its bounded result to main context. `/agent A send|open|cancel|stop` controls
@@ -1029,15 +1177,22 @@ aliases below remain part of the interface:
   worker capture and the §8.5 classifier while holding the workspace mutation
   lease for the entire handoff (the bootstrap spelled this
   "interactive `/sh`"; one command must not mean both);
+- `/view <file>` suspends the TUI and launches `gene view <file>` through the
+  same running Gene executable; quitting the viewer restores the agent. It is
+  a local terminal handoff, holds the workspace mutation lease because the
+  viewer can invoke an editor, and creates no worker or persisted/remote output.
+  `/pane new view <workspace-path>` remains the confined shared file-view
+  worker;
 - `/stats` opens or focuses the stats pane; `/tail [filter]` opens a log tail
-  (a bare token is `type=` shorthand, as in `/trace`); `/view <path>` opens a
-  file view;
+  (a bare token is `type=` shorthand, as in `/trace`);
 - `/N text` prompts an idle agent pane, sends a command to a shell pane,
   evaluates a form in a REPL pane, or replaces the filter of a log-tail pane;
   stats and file-view panes reject text input, while output panes accept only
   the explicit `append` verb. `/N -- text` sends text that would otherwise
   match a control verb such as `close`;
-- `/N close` closes the pane, `/N cancel` cancels its active task/process,
+- bare `/N` focuses pane N; `/close` closes the focused non-main pane and
+  `/close N` closes pane N. Pane 0 cannot be closed. `/N close` remains an
+  accepted compatibility spelling. `/N cancel` cancels its active task/process,
   `/N stop` explicitly stops the attached worker, `/N focus` routes input to
   it, and `/N max` toggles maximize.
 
@@ -1109,7 +1264,7 @@ stable `^surface_id`: because pane ids are surface-scoped, correlation is the
 pair `(surface_id, pane_id)`, never `pane_id` alone. The model-facing
 `open_pane` tool is retained as a compatibility name for "create/identify the
 worker, then hint"; for `^kind "output"` it creates the output worker as a
-convenience, and the `/agent` and legacy `/ext` commands perform
+convenience, and `/agent new` performs
 worker-plus-local-pane as a UI shortcut on the surface the user typed into.
 Separate operations append to an output worker, send to a process worker,
 focus/close a local pane, and cancel/stop a worker. The model may create only worker kinds allowed by its capabilities and request attention: creating a
@@ -1132,11 +1287,11 @@ through the typed `run_shell` operation, its classifier, and its events, with
 output optionally projected into a shell/output pane. The same rule prevents a
 model from using a visible REPL pane as an unlogged mutation backdoor.
 Every shared `file_view` resolves its path through the same workspace
-`safe_path` confinement as `read_file`, including a user-typed `/view`.
+`safe_path` confinement as `read_file`, including `/pane new view`.
 File-view output is session state exposed by snapshots and persistence, so a
 local arbitrary-host read must not silently become shared remote data.
-Arbitrary host inspection remains a local `/tty` or external-editor action and
-does not create a session worker.
+The `/view` terminal handoff may inspect a path the local user selects, but its
+screen content remains local and does not create a session worker.
 
 The live `/repl` exposes coordinator-aware `session` mutations (`undo`, tool
 registration, supervised worker operations) and those preserve the ordinary
@@ -1158,6 +1313,212 @@ off to an external terminal only if dogfooding requires it. The REPL is a
 form-oriented controller over the owned `repl/Session` API, so declarations and
 incomplete forms persist without replaying earlier side effects. This boundary
 is reusable by the TUI, web UI, and gateway; curses remains only a view.
+
+### 7.2 Worker operations — one typed surface for user, model, and peers
+
+Slice C2 made every runnable thing a worker; C3 makes the workers operable by
+the user. The remaining asymmetry is that a worker's functionality is reachable
+unevenly: `append`/`follow` exist on output workers, `send`/`result` on agents,
+`run_shell` for one-shot commands — but a supervising agent cannot check a
+verification shell's recent output, and a REPL script cannot drive a log tail,
+except by rendering a pane. Slice C4 closes this: **each worker kind declares
+one typed operation table, and that single declaration is the only functional
+surface the worker has.**
+
+An operation declaration mirrors the §6 `Tool` pattern — one value derives
+everything: argument validation, the `/worker W <op>` slash dispatch, the
+`session ~ call_worker` message, the gateway route, model-tool access, and
+`/help worker <kind>` documentation, with no second registration to drift.
+The declaration keeps independent concerns as **orthogonal policies** rather
+than one flat risk class, and its argument/result schemas are real Gene type
+values, not a parallel string vocabulary:
+
+```gene
+(type ShellRunArgs ^props {^command Str ^timeout_ms? Int})
+
+(Operation
+  ^name "run"
+  ^args ShellRunArgs ^result ToolText ^errors [ShellError WorkerStopped]
+  ^effect "host_write"        ; observe | session_write | host_read | host_write
+  ^audience ["user" "supervisor" "delegated"]
+  ^admission "worker_exclusive"  ; none | interrupt | worker_exclusive
+  ^audit "full"               ; none | attributed | full
+  ^cancellable true ^idempotent false
+  ^handler shell_run)
+```
+
+- **effect** — what the operation touches. `observe` reads bounded worker
+  state and changes nothing; `session_write` mutates session state (results,
+  filters, buffers, lifecycle); `host_read` reads the machine under a
+  capability and path confinement; `host_write` mutates it under the §8.5
+  classifier and the workspace lease. Reading a workspace file is host
+  authority even though it mutates nothing — the capability model already
+  says so.
+- **audience** — who may call. `user` (any authenticated surface, local or
+  remote), `supervisor` (the main agent), `delegated` (a sub-agent that
+  received this worker as an explicit handle in its §9.3 context attachment),
+  plus the worker itself. **A worker id is an address, not a capability**:
+  knowing `"main"` does not entitle a sub-agent to `tail` the main transcript.
+  Observation of another worker requires audience membership, so the bounded
+  context attachment remains the only channel by which a child sees parent or
+  sibling state. Read-only does not mean public.
+- **admission** — how the call interacts with the worker's single operation
+  slot. `none` (runs anytime, even mid-operation), `interrupt` (targets the
+  currently installed operation instead of competing with it), and
+  `worker_exclusive` (the normal reject-while-busy slot; for `host_write`
+  operations the workspace lease is acquired on top, per §9.3 ordering).
+  `cancel` and `stop` are `interrupt` operations — a `worker_exclusive`
+  `cancel` would be rejected exactly when it is needed. `stop` is an atomic
+  cancel-then-terminate; `restart` requires a stopped worker and uses ordinary
+  exclusive admission on the successor.
+- **audit** — journal policy. `none` for surface-driven observe polling
+  (projection non-amplification), `attributed` for non-surface observe calls
+  when provenance matters, `full` for every effectful operation.
+
+The per-kind operation table (audience abbreviations: U user, S supervisor,
+D delegated):
+
+| Worker | Operation | Effect | Audience | Admission |
+|---|---|---|---|---|
+| *every kind* | `status`, `tail [n]` | observe | U S D | none |
+| *every kind* | `cancel` | session_write | U S | interrupt |
+| *every kind* | `stop` | session_write | U S | interrupt (cancel + terminate) |
+| *every kind* | `restart` | session_write | U S | worker_exclusive (stopped only) |
+| `agent` | `send <prompt>` | session_write | U S | worker_exclusive |
+| `agent` | `result` | observe | U S | none |
+| `agent` | `mark_result_read` | session_write (idempotent) | U S | none |
+| `agent` | `incorporate` | session_write (idempotent) | U S | none |
+| `shell` | `run <command>` | host_write | U S D | worker_exclusive + lease |
+| `repl` | `eval <form>` | host_write (VM) | U only | worker_exclusive |
+| `output` | `append <text>` | session_write | U S D | none (bounded buffer) |
+| `output` | `follow`/`unfollow <src>` | session_write | U S | none |
+| `log_tail` | `filter <expr>` | session_write | U S | none |
+| `file_view` | `info` | observe | U S D | none |
+| `file_view` | `view <path>`, `reload` | host_read (confined) | U S | worker_exclusive |
+| `stats` | `snapshot` | observe | U S D | none |
+
+Decisions the table encodes:
+
+- **`result` has one meaning everywhere; read-marking is a separate write.**
+  `result` is a pure observe operation on every adapter. `mark_result_read`
+  and `incorporate` are idempotent session writes. The CLI's `/agent A result`
+  is a declared surface composite — `result`, render, `mark_result_read` —
+  while gateway `GET .../result` invokes only the primitive. The adapters
+  differ in composition, never in operation semantics, which is what keeps
+  C4's one-surface thesis true.
+
+- **Stateful `shell run` is distinct from one-shot `run_shell`.** The §6
+  `run_shell` tool stays the stateless spelling; `call_worker W run` executes
+  in a named shell worker whose cwd and environment persist between calls —
+  that persistence is the feature. Both pass the same classifier, take the
+  same lease, and emit the same events; only the execution context differs.
+  A model composing a build in one worker (`cd build`, `cmake ..`, `make`)
+  no longer needs to re-derive state per command.
+- **`repl eval` stays user-originated.** §7.1's rule that a model must not use
+  a REPL as an unlogged mutation backdoor extends to peers: no model, agent, or
+  remote caller may evaluate forms in a REPL worker in C4. Peers get observe
+  operations only. If dogfooding ever justifies programmatic eval, it arrives
+  as an explicitly granted capability with full evented provenance — a new
+  decision, not a default.
+- **Observation replaces projection where a pane is overkill.** A supervising
+  agent that wants a verification shell's last lines calls `tail`, which reads
+  the worker's existing bounded buffer; it does not open a pane, add a
+  `follow` link, or append journal events. `follow` remains the right tool for
+  *continuous* projection into an output worker; `tail` is the point read.
+- **The primary input verb is the default operation.** `/N text` on a shell
+  pane is sugar for `run`, on an agent pane for `send`, on a log-tail pane for
+  `filter`. The table makes the verb explicit so a non-surface caller can use
+  it; it does not change surface input routing (§7.1).
+
+Callers and attribution: the model reaches operations through one typed
+`call_worker` tool (`^worker_id`, `^op`, `^args`) validated against the target
+kind's table, with the operation's declared effect/audience/admission enforced
+at one choke point; `agent_result`, `send_agent`, and `append_pane` remain
+compatibility spellings over the same operations. Workers accept an optional
+unique session-local `^name` (`"build-shell"`, `"reader-review"`), and every
+command or operation that takes a worker/agent id accepts the name
+interchangeably — ids stay authoritative in events, snapshots, and
+`/trace --detail`, names exist so routine interaction never requires an id.
+REPL scripts use the message form
+(`session ~ call_worker "build-shell" "run" {^command "nimble test"}`), which
+is the §9.1 signature story extended to workers. Every effectful invocation
+records its caller: the existing `worker_operation_started/finished` events
+gain additive `^origin` (`user|model|worker|remote`) and `^caller_worker_id`
+props, and `attributed`-audit observe calls append one bounded access record,
+so `/trace` can answer "who ran this" — and "who read this" where it matters.
+Reject-while-busy admission applies to `worker_exclusive` operations from
+every caller with an identical typed `worker_busy` rejection across CLI,
+model tool, and gateway; `interrupt` operations succeed against a busy worker
+by design.
+
+Surface composites remain first-class. `/sh`, `/repl`, `/agent new`, `/tail`,
+`/stats`, and `/pane new` stay convenient one-step commands; they are declared
+compositions over canonical operations (create worker if needed, open pane,
+focus, invoke primary verb), never private paths. The user should never have
+to assemble a worker, a pane, focus, and an operation by hand for ordinary
+work — the operation table is what makes the composites cheap to define and
+impossible to drift.
+
+### 7.3 Input editing, completion, and overlays
+
+The input editor is where system complexity either stays invisible or leaks
+onto the user, so its key contract is specified once and PTY-tested. Shipped
+behavior and C5 targets, in one table:
+
+| Key | Behavior | Status |
+|---|---|---|
+| `Up`/`Down` | browse the focused worker's accepted-input history; past the newest entry restores the live draft | shipped |
+| `Shift+Enter` | insert a newline in the multi-line draft (`Enter` submits) | shipped |
+| bracketed paste | multi-line paste lands in the draft without submitting | shipped |
+| `Escape` | the §7.1 priority ladder (cancel → unmaximize → focus reset when draft empty → nothing) | shipped |
+| `Ctrl-E` | key binding for `/edit`: compose the draft in `$VISUAL`/`$EDITOR` | C5 |
+| `Ctrl-R` | incremental reverse search over the focused worker's history | C5 |
+| `Tab` | context-sensitive completion (below) | C5 |
+| `Ctrl-PgUp`/`Ctrl-PgDn` | cycle visible panes (never Up/Down, which stay history) | shipped |
+
+`Ctrl-R` searches the same worker-scoped history that Up/Down browses: typing
+narrows incrementally, `Ctrl-R` again steps to the older match, `Enter`
+accepts into the draft (never auto-submits), and `Escape` restores the prior
+draft. Search never crosses routes — a shell pane's `Ctrl-R` cannot surface a
+main-agent prompt — because history is per worker (§7.1).
+
+**Tab completion is context-sensitive by parse position**, derived from the
+same command registry, operation tables, and session state the parser uses —
+never a second hardcoded word list:
+
+- command position (`/pa…`) → command and alias names;
+- after `/worker`, `/agent`, `/pane` → worker/agent names and ids, pane ids,
+  each annotated with kind and status;
+- verb position after a target → that worker kind's §7.2 operations, filtered
+  by the caller's audience;
+- argument position → the operation's declared Gene argument type drives the
+  source: workspace-confined paths for path args, `/trace` filter keys for
+  filter args, artifact ids for artifact args;
+- on a shell route, plain-text position → workspace-confined path completion
+  plus tokens from that worker's own history; on a REPL route → the stable
+  `session` projections and top-level bindings.
+
+Completion is surface-local presentation: it reads live registries
+synchronously, mutates nothing, and is never journaled. A completion that
+would name another worker respects §7.2 audience — a sub-agent-delegated
+surface never completes worker names the caller cannot observe.
+
+**One overlay primitive, not a widget toolkit.** Tab completion, `Ctrl-R`
+search, the `/`-palette (§7.1 help), and any future drop-down menu are the
+same interaction: a transient, bounded, keyboard-navigable list rendered
+above the input row, filtered as the user types, dismissed by `Escape`
+without side effects. The curses renderer gains exactly one such overlay-list
+component (draw last in the frame, clip by cell width, reuse the §7 dirty/
+coalescing rules); everything else is a parameterization. This is the honest
+answer to "how hard are drop-down menus": a *transient keyboard-driven
+overlay* is straightforward on the existing full-frame renderer, and the
+palette, completion, and menus should all be it. A persistent mouse-driven
+menu bar is a different animal — permanent screen real estate, hit-testing,
+and mouse-report handling beyond the shipped wheel support — and is deferred
+until dogfooding shows keyboard overlays are insufficient. Overlay state is
+per-surface (invariant §0.3): it never appears in snapshots, events, or
+remote projections, and a repaint storm may drop overlay frames but never
+draft bytes (§7's input-before-draw rule).
 
 ## 8. Capabilities and the launcher (§8)
 
@@ -1410,6 +1771,27 @@ small: it stabilizes the pieces needed to inspect a real turn, add/replace a
 typed tool, query events, and continue — not every implementation field or a
 general plugin system.
 
+Live registration meets persistence through an explicit durability split
+(invariant §0.15). A handler defined ad hoc in `/repl` is typically a closure
+over live cells and environments; no serialization can honestly reconstruct
+it. So a dynamically registered tool or worker operation is **ephemeral** by
+default: its declaration (name, schema, policies) may be recorded for
+inspection, but on restore the handler is disabled with a
+`restore_record_rejected`-style attributable event — never silently dropped,
+never resurrected from deserialized code. A **durable** registration instead
+names its handler as a versioned module-qualified reference:
+
+```gene
+{^module "my/workflows" ^path "run_check" ^version "sha256:..."}
+```
+
+On restore, a matching version enables the tool, a compatible version
+revalidates and migrates, and a missing or incompatible one disables it with
+the attributable event. The same rule covers dynamically added worker
+operations, hot-reloaded handlers, and any REPL-created callable retained by
+session state — promoting a proven `/repl` experiment into a module (§10.9)
+is exactly the act that makes it durable.
+
 The native multi-agent slice extends this stable surface rather than exposing
 TUI arrays:
 
@@ -1420,9 +1802,14 @@ session/workers                                           (C2)
 
 Agent, worker, and pane mutations remain message-based (`spawn_agent`,
 `stop_agent`, `agent_result`, `incorporate_agent_result`, `update_progress`,
-`open_pane`, `close_pane`, `send_pane`, `stop_worker`) so
+`open_pane`, `close_pane`, `send_pane`, `stop_worker`, and the general
+`call_worker` over the §7.2 operation tables) so
 supervision, capability checks, events, and persistence cannot be bypassed by
-mutating a list cell. `session/panes` is the shipped projection of the local
+mutating a list cell. `call_worker` makes the REPL a first-class worker
+scripting surface — `(session ~ call_worker "w3" "run" {^command "nimble
+test"})` drives the same typed operation as `/worker w3 run nimble test` —
+while observe operations (`status`, `tail`, `snapshot`) give scripts bounded,
+event-free reads of any worker. `session/panes` is the shipped projection of the local
 TUI's panes; slice C2 moves pane/layout state into per-surface attachments
 (§7.1), after which `session/workers` is the stable enumeration and
 `session/panes` survives only as the local surface's compatibility view.
@@ -1496,6 +1883,11 @@ memory, errors, and compaction. Slice C adds the agent/pane lifecycle group:
  ^record_id "local_tui/6" ^error_kind "invalid_path" ^error_text "..."}
 {^v 33 ^type "progress_updated" ^phase "verifying" ^status "active"
  ^summary "running repository gates" ^evidence_v [301 304]}
+
+# Slice C4 worker-operations surface (target): additive caller attribution on
+# the existing operation events; observe operations emit nothing.
+{^v 34 ^type "worker_operation_started" ^worker_id "w3" ^task_id "t11"
+ ^operation_kind "run" ^origin "worker" ^caller_worker_id "a2"}
 ```
 
 Slice C2 adds `^worker_id` and `^surface_id` to pane events additively;
@@ -1645,7 +2037,11 @@ scheduling, and the coordinator is **process-level, keyed by canonical
 (realpath) workspace root** — not per session (invariant §0.1). The gateway
 can create several sessions; if two of them point at the same workspace, they
 share one coordinator and one mutation lease, otherwise the single-writer
-guarantee evaporates exactly when it matters. The coordinator grants at most
+guarantee evaporates exactly when it matters. Two independent agent
+*processes* on one workspace are outside this guarantee entirely; C5 adds an
+advisory ownership check (lockfile/heartbeat with a visible warning, §10.8),
+and full cross-process lease arbitration stays deferred until routine
+multi-launch use demands it. The coordinator grants at most
 one mutation lease at a time for `write_file`, `edit_file`, `/undo`, and
 similar operations. Shell commands take the lease by default because reliably
 proving that an arbitrary command is read-only is harder than serializing it;
@@ -1758,12 +2154,52 @@ plan. The application therefore keeps one bounded, main-agent-owned
 The main agent updates it through a typed `update_progress` operation; the user
 can inspect it with `/progress`. Transitions emit `progress_updated`, checkpoint
 immediately, and appear as one concise status-bar line. Evidence links point to
-bounded authoritative events rather than copying logs. A blocked state carries
+bounded authoritative events rather than copying logs; evidence that must
+outlive the journal window points to durable artifact ids (§9.5) instead. A
+blocked state carries
 non-nil `^blocked_reason` and `^required_action`; other states omit or nil both.
 Sub-agents may report progress in their own result/event stream but cannot
 overwrite the main project record.
 
-### 9.5 Dogfood rule
+### 9.5 Durable artifacts
+
+The bounded journal, bounded worker output, and expiring evidence references
+are the right shape for a responsive live application — but they are *restart*
+persistence, not knowledge persistence. A verification transcript, a diff, an
+agent's research summary, or a benchmark comparison can age out of every
+retained window, and today the design deliberately renders an expired
+reference rather than keeping everything. The missing piece is explicit
+**promotion**: the user (or the main agent, through a typed operation) pins a
+live value into a durable, content-addressed artifact:
+
+```gene
+(Artifact
+  ^id "sha256:..."              ; content hash; storage is deduplicated
+  ^kind "verification"          ; verification | diff | result | note | capture
+  ^mime "text/plain"
+  ^source_worker "w3" ^source_task "t11" ^created_v 9021
+  ^content "...")
+```
+
+Artifacts live in the same Store as the session (fs records or SQLite rows),
+are bounded in count/total bytes with the standard refuse-then-explicit-delete
+policy rather than silent eviction, pass redaction at promotion time, and are
+never silently exported off the machine. Surface commands:
+
+```text
+/pin result [A]        # promote an agent's latest structured result
+/pin worker <W> tail   # promote a worker's current bounded output
+/artifacts             # list: id prefix, kind, source, age, size
+/artifact <id>         # open one in a read-only view
+```
+
+`pin` is a `session_write` operation in the §7.2 table (audience: user and
+supervisor), so a model can preserve its own verification evidence
+attributably. `ProjectProgress/evidence` and agent results may reference
+artifact ids where they currently reference journal cursors; soft `^v`
+references remain correct for ordinary transient evidence.
+
+### 9.6 Dogfood rule
 
 The quality bar is whether the author voluntarily uses this agent to build
 Gene. Repeated friction observed during that work chooses the next feature.
@@ -1850,15 +2286,14 @@ Choose exact ordering from dogfood pain:
 1. **Done.** Introduce independent `AgentRegistry`, `PaneRegistry`, and
    `WorkspaceCoordinator` application services with stable ids and events;
    migrate the current extension conversations onto them without changing the
-   visible `/ext` behavior.
+   visible secondary-agent behavior.
 2. **Done.** Make the main agent a supervisor. Add bounded
    spawn/send/cancel/stop/result
    operations and explicit context attachments; expose them through stable
    `session/agents` and typed model tools.
 3. **Done.** Generalize right-side panes to the four bootstrap kinds (agent,
    output, shell, repl; §7.1 now extends these into the slice C2 worker
-   model). Keep `/ext` as an alias,
-   add output panes, and move `/sh` and `/repl` from whole-terminal subsessions
+   model). Add output panes, and move `/sh` and `/repl` from whole-terminal subsessions
    to scheduler-owned interactive panes.
 4. **Done.** Allow concurrent sub-agent turns and read-only work, with attributable
    events and a single shared-workspace mutation lease. Prove cancellation,
@@ -1896,7 +2331,7 @@ order within the slice comes from dogfood pain:
    to workers (including the bounded `output` worker) with
    pane-independent operation/output/start/stop events, restart-mints-a-new-id semantics
    (`^restarted_from`), and a `/workers` listing — without changing visible
-   `/ext`, `/sh`, or `/repl` behavior.
+   secondary-agent, `/sh`, or `/repl` behavior.
 2. **Done.** Move panes, layout, focus, and zoom into per-surface attachments with the
    §7.1 surface-identity contract (`local_tui` key and browser-local layouts;
    invariant §0.3); the session keeps no pane state,
@@ -1951,7 +2386,7 @@ do not multiply authoritative journal records and are invalidated through
 `changed_worker_ids`; one compatibility agent chunk has a structural
 `source_v` alias and renders once per client mode; restore clears dead
 tasks/reservations without retrying mutations; a sub-agent cannot recursively
-spawn another; an arbitrary host file rejected by local `/view` never enters a
+spawn another; an arbitrary host file rejected by shared `/pane new view` never enters a
 remote or persisted snapshot; and a gateway client sees identical session
 state regardless of local panes, focus, or zoom.
 
@@ -1991,7 +2426,109 @@ one result explicitly, exit, and restore the session. The TUI must teach every
 required command in context, a command-shaped typo must execute nowhere, and
 one corrupt pane record must be visible but non-fatal.
 
-### 10.7 Slice D — expand only where leverage is proven
+### 10.7 Slice C4 — every worker's functionality is a shared, typed surface
+
+C3 makes workers operable by the user; C4 makes the same functionality
+uniformly reachable by peers and scripts (§7.2, invariants §0.14). Steps:
+
+1. Introduce per-kind **operation tables**: one declaration — with argument
+   and result schemas that are real Gene type values — derives validation,
+   slash dispatch, the `call_worker` session message, the gateway route,
+   model-tool access, and help, mirroring the §6 `Tool` derivation so nothing
+   registers twice. New declarations start Gene-typed; the shipped `Tool`
+   `^params` string maps remain a compatibility form that migrates onto the
+   same type-derived path.
+2. Ship the universal **observe** operations (`status`, `tail`, plus `snapshot`
+   for stats): admission-free, journal-event-free under `none` audit, bounded
+   with loss metadata. A busy worker is always observable *by an authorized
+   audience*: user and supervisor always, a sub-agent only for workers
+   delegated to it in its context attachment — a worker id alone is never
+   authority.
+3. Ship the `call_worker` model tool and session message with declared
+   effect/audience/admission/audit enforced at one choke point. `cancel` and
+   `stop` use `interrupt` admission and succeed against a busy worker;
+   `worker_exclusive` operations keep the typed reject-while-busy contract;
+   `repl eval` remains user-originated and is rejected for every other caller
+   with a typed error. Split `result` (pure observe) from `mark_result_read`
+   and `incorporate` (idempotent session writes); `/agent A result` becomes a
+   declared surface composite over the primitives.
+4. Add **stateful `shell run`** on an explicit worker (persistent cwd/env)
+   as distinct from one-shot `run_shell`; identical classification, lease,
+   and events.
+5. Add optional unique worker `^name`s accepted wherever an id is accepted;
+   ids remain canonical in events and snapshots.
+6. Add the C4 gateway routes and the additive `^origin`/`^caller_worker_id`
+   props on `worker_operation_*` events (plus bounded access records for
+   `attributed` observes); extend `/help worker <kind>` to render the kind's
+   operation table from the same declaration.
+
+The slice is complete when the main agent supervises a busy verification
+shell by `tail`/`status` without opening a pane, a `follow` link, or journal
+events, while a sub-agent's identical call is rejected until the worker is
+delegated to it; `cancel` succeeds against a busy worker from every adapter;
+the main agent runs a multi-step stateful shell sequence through
+`call_worker` with each step classified, leased, and attributed; a `/repl`
+script drives a log tail's filter by worker *name* and reads its `status`; a
+model attempt to `eval` in a REPL worker is denied with a typed error and an
+attributable event; gateway `GET result` provably does not mutate read state
+while `mark_result_read`/`incorporate` stay idempotent; and the same
+operation invoked from CLI, REPL script, model tool, and gateway produces
+byte-identical journal records except for `^origin`/`^caller_worker_id`.
+
+### 10.8 Slice C5 — durable knowledge and storage hardening
+
+C4 makes the live system uniform; C5 makes what matters survive it
+(invariants §0.15/§0.16). Steps, ordered by risk:
+
+1. **Checkpoint generations**: schema-versioned, hash-validated, atomic per
+   backend (single SQLite transaction; fs generation + fsynced manifest +
+   atomic `CURRENT` update); restore picks the highest complete generation
+   and never mixes generations. Schema versions and pure migration functions
+   for every persisted record kind, with quarantine as fallback.
+2. **Durable vs ephemeral registration**: versioned module-qualified
+   `HandlerRef`s for tools and worker operations; ephemeral handlers restore
+   disabled with an attributable event. Promotion of a `/repl` experiment to
+   a module is the durability boundary (§9.1).
+3. **Durable artifacts** (§9.5): content-addressed promotion via `/pin` and a
+   typed `pin` operation, bounded with explicit deletion, redacted at
+   promotion; progress/results reference artifact ids where evidence must
+   outlive the journal ring.
+4. **At-rest policy**: owner-only file modes, never-served store files, the
+   explicit redacted-vs-full choice on any future export; encryption-at-rest
+   stays a documented later option.
+5. **Cross-process workspace advisory**: a lockfile or store-backed lease
+   with process identity and heartbeat under the workspace root; a second
+   Gene agent process opening the same workspace sees a prominent warning
+   naming the owner. Full cross-process lease arbitration remains deferred —
+   the in-process coordinator contract (§9.3) is unchanged.
+6. **Progressive disclosure and the four-axis help system** (§7.1): layered
+   `/help` → `/help <topic>` → `/help all` → `/help <command>` pages derived
+   from declarations; contextual did-you-mean diagnostics; `/help search`;
+   and the `/`-palette. Worker names (C4) carry the same goal: ids, kinds,
+   and operation tables are expert surfaces, not prerequisites.
+7. **Input editor completion** (§7.3): the single transient overlay-list
+   primitive; context-sensitive `Tab` completion sourced from the command
+   registry, operation tables, and live session state under §7.2 audience;
+   `Ctrl-R` incremental history search per worker; `Ctrl-E` bound to `/edit`.
+   Persistent mouse-driven menu bars stay deferred until keyboard overlays
+   prove insufficient.
+
+The slice is complete when a kill -9 during a checkpoint restores the prior
+complete generation with no mixed records; an ephemeral `/repl` tool restores
+visibly disabled while its module-promoted twin restores enabled with a
+version match; a pinned verification artifact survives journal eviction and
+restart and is reachable from `/artifacts` and a progress evidence link; a
+second agent process on the same workspace warns with the owner's identity;
+and a new user completes the §10.6 dogfood flow using only default `/help`.
+The input-editor bar (PTY-tested): `Tab` after `/worker ` completes only
+workers the caller may observe, annotated with kind and status; on a shell
+route it completes confined workspace paths; `Ctrl-R` finds an earlier shell
+command without crossing routes and never auto-submits; `Ctrl-E` round-trips
+the draft through `$EDITOR` mid-turn; an unknown command's diagnostic names
+the nearest registered command; and an overlay dismissed with `Escape`
+leaves the draft, route, and journal byte-identical to before it opened.
+
+### 10.9 Slice D — expand only where leverage is proven
 
 - Promote repeated `/repl` experiments into small Gene workflow modules;
   record module/tool version hashes and hot-reload new calls without changing
@@ -2176,6 +2713,9 @@ non-loopback startup without authentication is rejected — single-user posture
 | `DELETE /api/sessions/:id/workers/:wid` | stop a worker and preserve its event trail | shipped |
 | `GET /api/sessions/:id/progress` | inspect the main `ProjectProgress` record | C3 |
 | `PUT /api/sessions/:id/progress` | main-supervisor update under session serialization | C3 |
+| `GET /api/sessions/:id/workers/:wid/status` | observe: bounded status snapshot (§7.2) | C4 |
+| `GET /api/sessions/:id/workers/:wid/tail?n=` | observe: bounded recent output + loss metadata | C4 |
+| `POST /api/sessions/:id/workers/:wid/ops/:op` | typed kind-specific operation `{args}` under its declared effect/audience/admission | C4 |
 | `GET  /` | the web UI page (12.5) | shipped |
 
 The read-marking asymmetry is intentional. The interactive `/agent A result`
@@ -2411,3 +2951,33 @@ Slice C3 adds the exact complex-project dogfood failures as acceptance tests:
   unread-result state match CLI, snapshot, and gateway projections. Repeated
   gateway `GET result` calls do not mark it read; the explicit read and
   incorporate requests are independently idempotent.
+
+Slice C4 adds the worker-operations acceptance tests (§10.7):
+
+- a fake sub-agent supervises a busy verification shell purely through
+  `status`/`tail` **after the shell is delegated in its context attachment**:
+  the reads succeed while the shell is mid-command, return bounded output with
+  loss metadata, and append zero journal events; the same calls before
+  delegation are rejected — worker id alone is never authority;
+- `cancel` and `stop` succeed against a busy worker from CLI, model tool, and
+  gateway (`interrupt` admission), while a second `send`/`run` receives the
+  typed `worker_busy` rejection;
+- the main agent runs a three-step stateful sequence (`cd`, configure, build)
+  through `call_worker` on one shell worker: cwd persists between steps, each
+  step is classified and leased, and every event carries `^origin "model"`
+  plus the caller's worker id;
+- a `/repl` script sets a log-tail filter and reads worker `status`,
+  addressing the worker by `^name`; the same filter change through
+  `/worker W filter` and the gateway ops route produces byte-identical
+  journal records except `^origin`;
+- `result` is a pure observe primitive on every adapter: gateway `GET` never
+  mutates read state, the CLI composite marks read exactly once, and
+  `mark_result_read`/`incorporate` remain independently idempotent;
+- a model `call_worker` targeting `repl eval` is rejected with a typed error
+  and an attributable event, and a sub-agent invoking `stop` on a sibling is
+  rejected by the declared audience;
+- `/help worker shell` renders the operation table from the live declaration,
+  and an operation added to a kind in `/repl` appears in help, slash dispatch,
+  and the gateway route without further registration — and restores disabled
+  after restart unless registered through a versioned module reference
+  (§9.1, invariant §0.15).

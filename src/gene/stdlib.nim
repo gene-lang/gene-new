@@ -467,6 +467,12 @@ proc biOsEnvOpt(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   requireStr("os/env? name", args[1])
   if existsEnv(args[1].strVal): newStr(getEnv(args[1].strVal)) else: NIL
 
+proc biOsExecutablePath(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError,
+      "os/executable_path expects no arguments, got " & $args.len)
+  newStr(getAppFilename())
+
 const osExecDefaultOutputCap = 1024 * 1024
 const osExecPollMs = 5
 
@@ -6762,6 +6768,8 @@ proc registerStdlibNamespaces(root: Scope) =
                  acceptsNamed = false))
   osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
                  acceptsNamed = false))
+  osScope.define("executable_path",
+                 newNativeFn("os/executable_path", biOsExecutablePath))
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
   osScope.define("exec_stream", newNativeCallFn("os/exec_stream", biOsExecStream))
   osScope.define("exec_stdio", newNativeCallFn("os/exec_stdio", biOsExecStdio))

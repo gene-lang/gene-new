@@ -50,6 +50,12 @@ decisions, context compaction, state persistence, instructions, cancellation,
 and failures. It records sizes, counts, identifiers, durations, and outcomes;
 it does not copy conversation or command content.
 
+Event-boundary diagnostics carry `worker_id`, `agent_id`, `task_id`, and the
+surface-local `pane_id`/`surface_id` when the event has them. Global, headless,
+and worker-only records intentionally have no pane id. Use `/trace worker=W` or
+open `/tail worker=W` for a pane-local filtered view of the authoritative log;
+diagnostic severity remains launcher-owned through `--log-config`.
+
 Level policy:
 
 | Level | Agent use |
@@ -68,15 +74,21 @@ add tools, inspect state, `(session ~ resume)` to continue the turn),
 `/diff` and `/undo [id]` (only attributable file operations), `/sh` (open or
 focus a cancellable foreground shell pane), `/tty` (local user-driven escape
 for interactive or persistent/background shell work), `/remember <note>` / `/memory` /
-`/forget-memory` (durable notes in the system prompt), `/ext` or
+`/forget-memory` (durable notes in the system prompt),
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
-`/pane output [title]`, `/N <input>` and `/N close|cancel|stop|focus`
+`/pane output [title]`, bare `/N` (focus), `/N <input>`, `/close [N]`, and
+`/N cancel|stop|max`
 (address or control pane N), `/status`, `/quit`, `/exit`. The primary agent can
 also use the independent `spawn_agent`, `send_agent`, `agent_result`,
 `cancel_agent`, `stop_agent`, `open_pane`, `append_pane`, and `close_pane`
 tools; `open_extension` remains a convenience composite. Each agent keeps its
 own model context for follow-up prompts. Ctrl-C cancels an active
 model/tool turn and returns to a prompt for steering.
+
+`/view <file>` temporarily leaves the agent TUI and runs `gene view <file>`
+through the current executable. Quit the viewer to return to the agent.
+`/pane new view <workspace-path>` instead creates a confined shared read-only
+pane that is persisted with the application.
 
 Key environment variables (all optional beyond the auth token):
 

@@ -50,6 +50,7 @@
 
 (import os [get_env env? exec exec_async exec_stream_async
             exec_stdio_async
+            executable_path
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms
             stdin_tty? read_line
@@ -2044,6 +2045,11 @@
     (trace! event_log "event appended"
       ^payload {^event_type type ^event_v v
                 ^turn_id (current_turn ~ Cell/get)
+                ^worker_id stored/worker_id
+                ^agent_id stored/agent_id
+                ^task_id stored/task_id
+                ^pane_id stored/pane_id
+                ^surface_id stored/surface_id
                 ^evidence (evidence_event? stored)})
     stored))
 
@@ -5174,7 +5180,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (when "repl"
           $"[${pane/id} repl ${worker/id}: ${state}] Enter eval | /0 main | //literal slash | Ctrl-C cancel | PgUp/PgDn scroll")
         (else
-          $"[${pane/id} ${pane/kind} ${worker/id}: read-only] /0 main | PgUp/PgDn scroll | /${pane/id} close | /help")))))
+          $"[${pane/id} ${pane/kind} ${worker/id}: read-only] /0 main | PgUp/PgDn scroll | /close | /help")))))
 
 (fn surface_route_input_capable? [app] : Bool
   (if (|| (== app nil) (== app/local_surface nil))
@@ -5686,9 +5692,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (refresh_user_input transcript)
       (println $"agent> ${text}"))))
 
-# Compatibility helpers over the native application registries. `/ext` still
-# opens an agent and pane together, but their identities and lifecycles are
-# independent underneath.
+# Convenience helpers over the native application registries. Creating an
+# agent and opening its pane is a surface composite; their identities and
+# lifecycles remain independent underneath.
 (fn open_extension_pane [title : Str, memory]
   (var app (active_application ~ Cell/get))
   (if_yes app
@@ -6151,6 +6157,21 @@ State that broader behavior is unverified when no matching successful check ran.
       (var removed (application_close_pane app id))
       (refresh_active_input)
       removed)))
+
+(fn handle_close_command [line : Str, transcript, streaming]
+  (var app (active_application ~ Cell/get))
+  (var rest (trim (after_prefix line "/close")))
+  (var id
+    (if (== rest "")
+      (app/local_surface/focused_pane ~ Cell/get)
+      (pane_command_id rest)))
+  (if (&& (!= rest "") (== id nil))
+    (render_agent_text transcript streaming "usage: /close [N]")
+    (if (|| (== id nil) (== id 0))
+      (render_agent_text transcript streaming "pane 0 cannot be closed")
+      (render_agent_text transcript streaming
+        (if (application_close_pane app id)
+          $"closed pane ${id}" $"pane ${id} is not open")))))
 
 (fn refresh_application_input [app]
   (var local (active_application ~ Cell/get))
@@ -6752,8 +6773,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (close_extension_pane id)
       (render_agent_text transcript streaming $"closed pane ${id}"))
       (when ""
-        (render_agent_text transcript streaming
-          $"usage: /${id} <input> | /${id} close|cancel|stop|focus|max"))
+        (var app (active_application ~ Cell/get))
+        (application_focus_pane! app id)
+        (render_agent_text transcript streaming $"focused pane ${id}"))
     (when "cancel"
       (application_cancel_worker
         (active_application ~ Cell/get) pane/worker)
@@ -6768,7 +6790,7 @@ State that broader behavior is unverified when no matching successful check ran.
           $"worker ${pane/worker_id} is already stopped")))
     (when "focus"
       (var app (active_application ~ Cell/get))
-      (app/local_surface/focused_pane ~ Cell/set id)
+      (application_focus_pane! app id)
       (render_agent_text transcript streaming $"focused pane ${id}"))
     (when "max"
       (var app (active_application ~ Cell/get))
@@ -6830,7 +6852,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (== pane nil)
     (render_agent_text transcript streaming "sub-agent limit reached")
     (render_agent_text transcript streaming
-      $"opened agent ${pane/controller/id} in pane ${pane/id}; use /${pane/id} <prompt> or /${pane/id} close")))
+      $"opened agent ${pane/controller/id} in pane ${pane/id}; use /${pane/id} <prompt> or /close")))
 
 (fn worker_result_unread? [worker] : Bool
   (if (!= worker/kind "agent") false
@@ -6990,7 +7012,7 @@ State that broader behavior is unverified when no matching successful check ran.
             (if (== args "")
               (render_agent_text transcript streaming
                 "usage: /pane new view <workspace-path>")
-              (then
+              (do
                 (var pane (open_file_view_pane args))
                 (render_agent_text transcript streaming
                   (if pane $"opened ${args} in pane ${pane/id}"
@@ -7026,7 +7048,16 @@ State that broader behavior is unverified when no matching successful check ran.
             (var parts (split rest " "))
             (var action (if (empty? parts) "" parts/0))
             (var id_text (trim (after_prefix rest action)))
-            (var id (pane_command_id id_text))
+            (var id nil)
+            # Accept both canonical action-first `/pane max 1` and natural
+            # id-first `/pane 1 max`. Short `/1 max` remains available too.
+            (var leading_id (pane_command_id action))
+            (if (&& (!= leading_id nil)
+                    (["focus" "show" "hide" "close" "max"] ~ contains? id_text))
+              (do
+                (set action id_text)
+                (set id leading_id))
+              (set id (pane_command_id id_text)))
             (if (== id nil)
               (render_agent_text transcript streaming
                 (do
@@ -7051,14 +7082,15 @@ State that broader behavior is unverified when no matching successful check ran.
                       $"hid pane ${id}" $"pane ${id} is not open")))
                 (when "close"
                   (render_agent_text transcript streaming
-                    (if (application_close_pane app id)
-                      $"closed pane ${id}" $"pane ${id} is not open")))
+                    (if (== id 0) "pane 0 cannot be closed"
+                      (if (application_close_pane app id)
+                        $"closed pane ${id}" $"pane ${id} is not open"))))
                 (when "max"
                   (var pane (application_find_pane app id))
                   (if (== pane nil)
                     (render_agent_text transcript streaming
                       $"pane ${id} is not open")
-                    (then
+                    (do
                       (pane/hidden ~ Cell/set false)
                       (app/local_surface/focused_pane ~ Cell/set id)
                       (app/local_surface/maximized_pane ~ Cell/set
@@ -7606,6 +7638,19 @@ State that broader behavior is unverified when no matching successful check ran.
     (resume_user_input)
     (if (exists? ReadDir path) (remove WriteDir path))))
 
+(fn run_gene_view [app, path : Str] : Int
+  (var owner app/main_agent/id)
+  (if_not (application_acquire_workspace app owner "view")
+    (fail (OsError
+      ^message "workspace is busy; stop the mutating worker and retry /view")))
+  (try
+    (suspend_user_input)
+    (await (exec_stdio_async Exec ^cmd (executable_path)
+                             ^args ["view" path] ^dir workspace_root))
+  ensure
+    (resume_user_input)
+    (application_release_workspace app owner "view")))
+
 # One registry drives command recognition and comprehensive help. Handlers stay
 # ordinary Gene functions, but a command cannot be accepted by the surface
 # without a matching entry here; this keeps typo rejection and documentation
@@ -7619,7 +7664,9 @@ State that broader behavior is unverified when no matching successful check ran.
    ^summary "focus main, or send an explicit main prompt"}
   {^name "/focus" ^section "input" ^usage "/focus <0|N>"
    ^summary "focus main or an extension pane"}
-  {^name "/pane" ^section "pane" ^usage "/pane list | /pane new <agent|shell|repl|tail|output|view|stats> [args] | /pane open <W> [title] | /pane focus <0|N> | /pane show|hide|close|max <N>"
+  {^name "/close" ^section "pane" ^usage "/close [N]"
+   ^summary "close the focused pane, or pane N; pane 0 is protected"}
+  {^name "/pane" ^section "pane" ^usage "/pane list | /pane new <agent|shell|repl|tail|output|view|stats> [args] | /pane open <W> [title] | /pane focus <0|N> | /pane show|hide|close|max <N> | /pane <N> focus|show|hide|close|max"
    ^summary "create and manage surface-local panes"}
   {^name "/agent" ^section "agent" ^usage "/agent list | /agent new [prompt] | /agent <A> send <prompt> | /agent <A> open|result|incorporate|cancel|stop"
    ^summary "create and supervise sub-agents"}
@@ -7629,8 +7676,6 @@ State that broader behavior is unverified when no matching successful check ran.
    ^summary "address any worker by stable id"}
   {^name "/workers" ^section "worker" ^usage "/workers"
    ^summary "list workers with pane ids and operation state"}
-  {^name "/ext" ^section "agent" ^usage "/ext"
-   ^summary "short alias for /agent new"}
   {^name "/sh" ^section "pane" ^usage "/sh"
    ^summary "open or focus the line-oriented shell"}
   {^name "/repl" ^section "pane" ^usage "/repl"
@@ -7639,8 +7684,8 @@ State that broader behavior is unverified when no matching successful check ran.
    ^summary "open an authoritative event-tail projection"}
   {^name "/stats" ^section "pane" ^usage "/stats"
    ^summary "open the live application-stats projection"}
-  {^name "/view" ^section "pane" ^usage "/view <workspace-path>"
-   ^summary "open a confined read-only file view"}
+  {^name "/view" ^section "pane" ^usage "/view <file>"
+   ^summary "suspend the TUI and run gene view; quitting returns here"}
   {^name "/status" ^section "session" ^usage "/status"
    ^summary "show application and context status"}
   {^name "/progress" ^section "session" ^usage "/progress"
@@ -7713,7 +7758,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (lines ~ List/push! "keys: Up/Down history | PgUp/PgDn or wheel scroll | Ctrl-PgUp/PgDn cycle panes | Esc cancel/back | Ctrl-C clear | Ctrl-D exit")
           (lines ~ List/push! "literal leading slash: //text for focused input | /N -- /absolute/path for pane N")))
       (lines ~ List/push! "")
-      (lines ~ List/push! "pane shortcuts: /N focus|close|cancel|stop|max | /N <input> | /0 main")
+      (lines ~ List/push! "pane shortcuts: /N focus | /close [N] | /N cancel|stop|max | /N <input> | /0 main")
       (var line_separator "\n")
       (var help_text (join lines line_separator))
       $"${help_text}\n")))
@@ -7762,8 +7807,10 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (starts_with? line "/0 ")
       (then
         (app/local_surface/focused_pane ~ Cell/set nil)
-        (handle_main_input app (after_prefix line "/0 ") items transcript
-                           memory streaming)
+        (var main_input (after_prefix line "/0 "))
+        (if (blank_line? main_input)
+          (render_agent_text transcript streaming "focused main agent")
+          (handle_main_input app main_input items transcript memory streaming))
         true)
       (else
         (if (== line "/workers")
@@ -7792,10 +7839,14 @@ State that broader behavior is unverified when no matching successful check ran.
           (if (starts_with? line "/view ")
           (then
             (var path (trim (after_prefix line "/view ")))
-            (var pane (open_file_view_pane path))
-            (render_agent_text transcript streaming
-              (if (== pane nil) $"cannot open ${path}"
-                $"opened ${path} in pane ${pane/id}"))
+            (try
+              (var status (run_gene_view app path))
+              (render_agent_text transcript streaming
+                (if (== status 0) "returned from gene view"
+                  $"gene view exited with status ${status}"))
+            catch {^message message}
+              (render_agent_text transcript streaming
+                $"cannot run gene view: ${message}"))
             true)
         (else
           (if (|| (== line "/edit") (starts_with? line "/edit "))
@@ -7930,11 +7981,13 @@ State that broader behavior is unverified when no matching successful check ran.
             (render_agent_text transcript streaming (agents_report))
               (if (|| (== line "/agent") (starts_with? line "/agent "))
               (handle_agent_command line transcript memory streaming)
-              (if (|| (== line "/pane output")
+                (if (|| (== line "/pane output")
                       (starts_with? line "/pane output "))
                 (handle_output_pane_command line transcript streaming)
-                (if (== line "/sh")
-                  (handle_shell_pane transcript streaming)
+                (if (|| (== line "/close") (starts_with? line "/close "))
+                  (handle_close_command line transcript streaming)
+                  (if (== line "/sh")
+                    (handle_shell_pane transcript streaming)
                   (if (== line "/repl")
                     (handle_repl_pane items transcript memory streaming)
               (if (== line "/memory")
@@ -7992,9 +8045,7 @@ State that broader behavior is unverified when no matching successful check ran.
                                 (if (== line "/trace")
                                   ""
                                   (after_prefix line "/trace "))))
-                            (if (== line "/ext")
-                              (handle_open_extension transcript memory streaming)
-                              (if (!= (extension_command_id line) nil)
+                            (if (!= (extension_command_id line) nil)
                                 (handle_extension_command line transcript
                                                           memory streaming)
                                 (route_surface_input app line items transcript

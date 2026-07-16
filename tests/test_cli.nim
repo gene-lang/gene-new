@@ -188,6 +188,15 @@ suite "cli — gene run":
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
+    let paneCommand =
+      "printf '/pane new output diagnostics\\n/pane 1 max\\n/close\\n/quit\\n' | " &
+      "env -u OPENAI_API_KEY -u CODEX_ACCESS_TOKEN " &
+      "-u GENE_AGENT_STATE -u GENE_AGENT_HOME OPENAI_AUTH_TOKEN=dummy " &
+      shellQuote(geneExe) & " run --log-config " & shellQuote(configPath) &
+      " examples/ai_agent/tui.gene"
+    let paneRan = execCmdOnce(paneCommand)
+    if paneRan.exitCode != 0: checkpoint paneRan.output
+    check paneRan.exitCode == 0
     check fileExists(logPath)
     let logged = readFile(logPath)
     check "\"logger\":\"app/ai_agent\"" in logged
@@ -202,11 +211,14 @@ suite "cli — gene run":
     check "\"level\":\"trace\"" in logged
     check "\"level\":\"debug\"" in logged
     check "\"level\":\"info\"" in logged
+    check "\"worker_id\":\"w1\"" in logged
+    check "\"pane_id\":1" in logged
+    check "\"surface_id\":\"local_tui:" in logged
     check "what's in this directory?" notin logged
 
   test "ai agent slash sh opens a cancellable shell pane":
     buildGeneCli()
-    let command = "printf '/sh\\n/1 printf hi\\n/1 close\\n/quit\\n' | " &
+    let command = "printf '/sh\\n/1 printf hi\\n/close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
@@ -285,14 +297,14 @@ suite "cli — gene run":
     defer:
       if dirExists(stateDir): removeDir(stateDir)
     let command =
-      "printf '/pane new output notes\\n/1 append first\\n" &
+      "printf '/pane new output notes\\n/pane 1 max\\n/pane max 1\\n/1 append first\\n" &
       "/worker w1 append second\\n/pane open w1 mirror\\n" &
       "/pane hide 1\\n/pane hide 2\\n/worker w1 open\\n" &
       "/sh\\n/pane hide 3\\n/sh\\n" &
       "/stats\\n/pane hide 4\\n/stats\\n" &
       "/repl\\n/pane hide 5\\n/repl\\n" &
       "/pane list\\n/worker list\\n/focus 1\\n/pane list\\n" &
-      "/unknown-command\\n/? pane\\n/quit\\n' | " &
+      "/unknown-command\\n/close 1\\n/pane close 0\\n/? pane\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
@@ -300,6 +312,8 @@ suite "cli — gene run":
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
     check "opened output pane 1" in ran.output
+    check "maximized pane 1" in ran.output
+    check "restored split layout" in ran.output
     check "appended to pane 1" in ran.output
     check "appended to worker w1" in ran.output
     check "opened worker w1 in pane 2" in ran.output
@@ -312,10 +326,14 @@ suite "cli — gene run":
     check "2:hidden" in ran.output
     check "focused pane 1" in ran.output
     check "1 w1 output visible lifecycle=running" in ran.output
+    check "closed pane 1" in ran.output
+    check "pane 0 cannot be closed" in ran.output
     check "unknown command: /unknown-command" in ran.output
     check "use /help or /?" in ran.output
     check "unknown command: /unknown-command\nuse /help or /?;" notin ran.output
     check "/pane new <agent|shell|repl|tail|output|view|stats>" in ran.output
+    check "/close [N]" in ran.output
+    check "/ext" notin ran.output
 
   test "ai agent output follow rejects cycles and process restart mints identity":
     buildGeneCli()
@@ -522,10 +540,10 @@ suite "cli — gene run":
     check "headless-event=worker_attention_requested" in ran.output
     check "headless-event=pane_opened" notin ran.output
 
-  test "ai agent opens stats event-tail and file-view workers":
+  test "ai agent opens stats event-tail and shared file-view workers":
     buildGeneCli()
     let command =
-      "printf '/stats\\n/1 max\\n/tail worker_started\\n/view examples/ai_agent/design.md\\n/view /etc/passwd\\n/workers\\n/quit\\n' | " &
+      "printf '/stats\\n/1 max\\n/tail worker_started\\n/pane new view examples/ai_agent/design.md\\n/pane new view /etc/passwd\\n/workers\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
@@ -1696,7 +1714,7 @@ suite "cli — gene run":
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
 
-  test "ai agent opens routes and closes extension conversations":
+  test "ai agent opens, focuses, and closes secondary-agent panes":
     buildGeneCli()
     let fixture = writeCliProgram("fake_extension_endpoint.gene", """
 (import net/http [Server serve Response])
@@ -1732,8 +1750,8 @@ suite "cli — gene run":
           if getMonoTime() > deadline:
             raise
           sleep(50)
-    let command = "(printf '/ext\\n/1 inspect this\\n'; sleep 1; " &
-                  "printf '/1 close\\n/quit\\n') | " &
+    let command = "(printf '/agent new\\n/0   \\n/1\\n/1 inspect this\\n'; sleep 1; " &
+                  "printf '/close\\n/close 0\\n/quit\\n') | " &
                   "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                   "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8958/v1 " &
@@ -1743,8 +1761,11 @@ suite "cli — gene run":
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
     check "opened agent a1 in pane 1" in ran.output
+    check "focused main agent" in ran.output
+    check "focused pane 1" in ran.output
     check "extension 1 completed" in ran.output
     check "closed pane 1" in ran.output
+    check "pane 0 cannot be closed" in ran.output
     check server.waitForExit(3000) == 0
 
   test "ai agent can delegate through the open_extension tool":
@@ -3567,6 +3588,53 @@ catch {^message message}
       check events.count("^type \"worker_operation_finished\"") == 2
       check "^outcome \"cancelled\"" in events
       check "^source_v" in events
+
+  test "ai agent /view hands the terminal to gene view and resumes":
+    when defined(macosx):
+      buildGeneCli()
+      let fixture = writeCliProgram("agent_view_handoff.gene",
+        "(server ^port 8080 ^routes [[GET] [POST]])\n")
+      let stateDir = cliDir / "agent_view_handoff_state"
+      let outputFile = cliDir / "agent_view_handoff.out"
+      if dirExists(stateDir): removeDir(stateDir)
+      removeFile(outputFile)
+      defer:
+        if dirExists(stateDir): removeDir(stateDir)
+      let inner = "stty rows 24 cols 100; exec /usr/bin/env " &
+                  "TERM=xterm-256color OPENAI_AUTH_TOKEN=dummy " &
+                  "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
+                  shellQuote(geneExe) &
+                  " run examples/ai_agent/tui.gene"
+      let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
+                    shellQuote(inner) & " > " & shellQuote(outputFile) &
+                    " 2>&1"
+      let terminal = startProcess("/bin/sh", args = ["-c", command],
+                                  options = {poUsePath, poStdErrToStdOut})
+      defer:
+        if terminal.running: terminal.terminate()
+        terminal.close()
+      sleep(400)
+      terminal.inputStream.write("/view " & fixture & "\n")
+      terminal.inputStream.flush()
+      sleep(500)
+      terminal.inputStream.write("q")
+      terminal.inputStream.flush()
+      sleep(600)
+      terminal.inputStream.write("/status\n")
+      terminal.inputStream.flush()
+      sleep(300)
+      terminal.inputStream.write("/quit\n")
+      terminal.inputStream.flush()
+      sleep(400)
+      terminal.inputStream.close()
+      let exitCode = terminal.waitForExit(7000)
+      let output = readFile(outputFile)
+      if exitCode != 0: checkpoint output
+      check exitCode == 0
+      check "Path:" in output
+      check "returned from gene view" in output
+      check "state:" in output
+      check output.count("\e[?1049l") >= 2
 
   test "gene view rejects non-TTY use before changing terminal mode":
     buildGeneCli()

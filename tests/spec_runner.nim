@@ -3656,6 +3656,12 @@ suite "spec — os and json from ai-agent plan":
                "catch (OsError ^message _) \"denied\")",
                "\"denied\"")
 
+  test "os/executable_path identifies the running Gene executable":
+    check_eval("(import os [executable_path]) " &
+               "(import str [byte_size]) " &
+               "(> (byte_size (executable_path)) 0)",
+               "true")
+
   test "os/exec runs a program, captures output, and enforces timeout":
     check_eval("(import os [exec Exec]) " &
                "(var r (exec Exec ^cmd \"echo\" ^args [\"hi\"])) " &
