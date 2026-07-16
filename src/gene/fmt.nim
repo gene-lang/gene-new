@@ -156,6 +156,48 @@ proc resugarInterp(v: Value): string =
   sb.add '"'
   sb
 
+proc declarationPrefixCount(head: string, body: openArray[Value]): int =
+  ## Body items which conventionally precede declaration props/meta. Runtime
+  ## nodes store props separately, so their original source position is not
+  ## available after reading; the formatter chooses the language convention.
+  case head
+  of "mod", "ns", "type", "enum", "protocol":
+    if body.len > 0 and body[0].kind == vkSymbol: 1 else: 0
+  of "fn", "fn!", "macro", "message", "ctor":
+    var n = 0
+    if head != "ctor" and n < body.len and body[n].kind == vkSymbol: inc n
+    if n < body.len and body[n].kind == vkList: inc n
+    if n + 1 < body.len and body[n].isSym(":"): n += 2
+    n
+  else:
+    0
+
+proc headerBodyCount(head: string, body: openArray[Value]): int =
+  ## Number of positional items kept on the opening line of a broken form.
+  case head
+  of "if", "if_yes", "if_not", "while", "when", "elif", "match", "case",
+     "var", "set", "spawn":
+    1
+  of "for", "repeat":
+    if body.len >= 3 and body[1].isSym("in"): 3 else: 1
+  of "impl":
+    if body.len >= 3 and body[1].isSym("for"): 3 else: 1
+  of "do", "else", "then", "try", "loop", "supervisor":
+    0
+  of "fn", "fn!", "macro", "message", "ctor", "mod", "ns", "type",
+     "enum", "protocol":
+    declarationPrefixCount(head, body)
+  else:
+    # Message send keeps `x ~ msg` on the head line.
+    if body.len >= 2 and body[0].isSym("~"): 2 else: 0
+
+proc attributePrefixCount(v: Value, head: string): int =
+  result = declarationPrefixCount(head, v.body)
+  # Data nodes conventionally place metadata after a leading symbolic name.
+  if result == 0 and v.meta.len > 0 and v.body.len > 0 and
+      v.body[0].kind == vkSymbol:
+    result = 1
+
 proc addProps(sb: var string, props: PropTable, sigil: string) =
   for k, val in props:
     sb.add ' '
@@ -167,18 +209,54 @@ proc addProps(sb: var string, props: PropTable, sigil: string) =
 proc joinItems(items: openArray[Value]): string =
   ## Space-joined, but a bare `,` symbol glues to the previous item.
   var sb = ""
+  var glueNext = false
   for item in items:
     if item.isSym(","):
       sb.add ","
-    else:
+      glueNext = false
+    elif item.isSym("^") or item.isSym("@"):
       if sb.len > 0: sb.add ' '
       sb.add oneLine(item)
+      glueNext = true
+    else:
+      if sb.len > 0 and not glueNext: sb.add ' '
+      sb.add oneLine(item)
+      glueNext = false
   sb
+
+proc pipelineParts(v: Value): tuple[base: Value, stages: seq[seq[Value]]] =
+  ## Reader pipe folding and explicitly nested receiver sends have the same
+  ## value shape. Canonical human style uses pipe sugar for chains of at least
+  ## two sends; a single receiver send remains `(value ~ message ...)`.
+  var current = v
+  var reversed: seq[seq[Value]]
+  while current.kind == vkNode and not current.nodeImmutable and
+      current.props.len == 0 and current.meta.len == 0 and
+      current.body.len >= 2 and current.body[0].isSym("~"):
+    reversed.add current.body
+    current = current.head
+  result.base = current
+  if reversed.len >= 2:
+    for i in countdown(reversed.high, 0):
+      result.stages.add reversed[i]
+
+proc pipelineOneLine(v: Value): string =
+  let parts = pipelineParts(v)
+  if parts.stages.len < 2:
+    return ""
+  result = "(" & oneLine(parts.base)
+  for i, stage in parts.stages:
+    result.add (if i == 0: " " else: "; ")
+    result.add joinItems(stage)
+  result.add ')'
 
 proc oneLine(v: Value): string =
   case v.kind
   of vkNode:
-    if v.head.kind == vkSymbol:
+    let pipeline = pipelineOneLine(v)
+    if pipeline.len > 0:
+      return pipeline
+    if not v.nodeImmutable and v.head.kind == vkSymbol:
       case v.head.symVal
       of "path":
         let p = resugarPath(v)
@@ -189,16 +267,18 @@ proc oneLine(v: Value): string =
       of "unquote":
         if v.body.len == 1 and v.props.len == 0:
           return "%" & oneLine(v.body[0])
+      of "...":
+        if v.body.len == 1 and v.props.len == 0:
+          return oneLine(v.body[0]) & "..."
       of "$":
         let s = resugarInterp(v)
         if s.len > 0: return s
       else: discard
-    var sb = "(" & oneLine(v.head)
-    var start = 0
-    # Human meta placement: (mod name @doc "...") — after a leading name.
-    if v.meta.len > 0 and v.body.len > 0 and v.body[0].kind == vkSymbol:
-      sb.add " " & oneLine(v.body[0])
-      start = 1
+    var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
+    let head = if v.head.kind == vkSymbol: v.head.symVal else: ""
+    let start = attributePrefixCount(v, head)
+    for i in 0 ..< start:
+      sb.add " " & oneLine(v.body[i])
     addProps(sb, v.meta, "@")
     addProps(sb, v.props, "^")
     if v.body.len > start:
@@ -245,7 +325,10 @@ proc hasMultilineString(v: Value): bool =
 proc fmtValue(v: Value, indent: int): string
 
 proc rawStr(s: string): string =
-  ## Raw multiline string: real newlines, minimal escaping.
+  ## Prefer the language's explicit triple-quoted spelling for multiline text.
+  if '\n' in s and "\"\"\"" notin s:
+    return "\"\"\"" & s & "\"\"\""
+  ## Fallback for one-line text or content containing a triple delimiter.
   var sb = "\""
   for ch in s:
     case ch
@@ -260,57 +343,76 @@ proc rawStr(s: string): string =
 proc fits(v: Value, indent: int): bool =
   not hasMultilineString(v) and indent + oneLine(v).len <= MaxWidth
 
-## Head-line inline argument count for special forms whose remaining body
-## items are laid out one per line underneath.
-proc inlineCount(head: string, body: openArray[Value]): int =
+proc prefersMultiline(v: Value): bool =
+  if v.kind != vkNode:
+    return false
+  if pipelineParts(v).stages.len >= 2:
+    return true
+  if v.head.kind != vkSymbol:
+    return false
+  let head = v.head.symVal
+  let bodyCount = v.body.len
   case head
-  of "if", "if_yes", "if_not", "while", "when", "elif", "match", "case",
-     "var", "set", "type", "enum", "protocol", "ns", "mod", "scope",
-     "repeat", "spawn": 1
-  of "for": 3                      # (for x in xs ...)
-  of "impl":
-    if body.len >= 3 and body[1].isSym("for"): 3 else: 1
-  of "do", "else", "then", "try", "loop", "supervisor": 0
   of "fn", "fn!", "macro", "message", "ctor":
-    # signature: [name] params [: Ret]
-    var n = 0
-    if head != "ctor" and n < body.len and body[n].kind == vkSymbol: inc n
-    if n < body.len and body[n].kind == vkList: inc n
-    if n + 1 < body.len and body[n].isSym(":"): n += 2
-    n
+    bodyCount > headerBodyCount(head, v.body)
+  of "protocol", "impl", "ns":
+    bodyCount > headerBodyCount(head, v.body)
+  of "if":
+    if bodyCount >= 3:
+      return true
+    for item in v.body:
+      if item.kind == vkNode and item.head.kind == vkSymbol and
+          item.head.symVal in ["then", "elif", "else"]:
+        return true
+    false
+  of "if_yes", "if_not":
+    bodyCount > 2
+  of "then", "else", "when", "elif":
+    bodyCount > 0
+  of "match", "try":
+    bodyCount > 1
+  of "for":
+    bodyCount > headerBodyCount(head, v.body)
+  of "while", "repeat", "scope", "loop", "do":
+    bodyCount > headerBodyCount(head, v.body)
   else:
-    # message send keeps `x ~ msg` on the head line
-    if body.len >= 2 and body[0].isSym("~"): 2
-    else: 0
+    false
 
 proc breakNode(v: Value, indent: int): string =
   let pad = repeat(' ', indent + 2)
-  var sb = "(" & oneLine(v.head)
-  var start = 0
-  if v.meta.len > 0 and v.body.len > 0 and v.body[0].kind == vkSymbol:
-    sb.add " " & oneLine(v.body[0])
-    start = 1
+  let pipeline = pipelineParts(v)
+  if pipeline.stages.len >= 2:
+    var sb = "(" & oneLine(pipeline.base)
+    for index, stage in pipeline.stages:
+      sb.add "\n" & pad
+      if index > 0: sb.add "; "
+      sb.add joinItems(stage)
+    return sb & ")"
+  var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
+  let head = if v.head.kind == vkSymbol: v.head.symVal else: ""
+  let start = attributePrefixCount(v, head)
+  for index in 0 ..< start:
+    sb.add " " & oneLine(v.body[index])
   addProps(sb, v.meta, "@")
   addProps(sb, v.props, "^")
-  let head = if v.head.kind == vkSymbol: v.head.symVal else: ""
   let body = v.body
   var i = start
-  var inline = inlineCount(head, body[start .. ^1]) + start
+  let inline = max(headerBodyCount(head, body), start)
   while i < body.len and i < inline:
     sb.add " " & oneLine(body[i])
     inc i
   if head == "try":
-    # catch/ensure markers share a line with what follows them.
+    # catch/ensure align with `try`; their bodies remain one level inside.
+    let markerPad = repeat(' ', indent)
     while i < body.len:
-      sb.add "\n" & pad
       if body[i].isSym("catch") and i + 1 < body.len:
-        sb.add "catch " & oneLine(body[i + 1])
+        sb.add "\n" & markerPad & "catch " & oneLine(body[i + 1])
         i += 2
       elif body[i].isSym("ensure"):
-        sb.add "ensure"
+        sb.add "\n" & markerPad & "ensure"
         inc i
       else:
-        sb.add fmtValue(body[i], indent + 2)
+        sb.add "\n" & pad & fmtValue(body[i], indent + 2)
         inc i
   else:
     # A lone remaining string rides the head line — the common
@@ -325,17 +427,19 @@ proc breakNode(v: Value, indent: int): string =
   sb & ")"
 
 proc fmtValue(v: Value, indent: int): string =
-  if fits(v, indent):
+  if fits(v, indent) and not prefersMultiline(v):
     return oneLine(v)
   case v.kind
   of vkString:
     rawStr(v.strVal)
   of vkNode:
     # Sugar wrappers stay glued to their (possibly multiline) inner form.
-    if v.head.kind == vkSymbol and v.props.len == 0 and v.body.len == 1:
+    if not v.nodeImmutable and v.head.kind == vkSymbol and
+        v.props.len == 0 and v.body.len == 1:
       case v.head.symVal
       of "quasiquote": return "`" & fmtValue(v.body[0], indent + 1)
       of "unquote": return "%" & fmtValue(v.body[0], indent + 1)
+      of "...": return fmtValue(v.body[0], indent) & "..."
       else: discard
     breakNode(v, indent)
   of vkList:

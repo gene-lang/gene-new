@@ -4027,7 +4027,11 @@ Gene slash segments. External-editor handoff is the initial write path;
 `--readonly` disables it. The viewer must restore terminal state on exit and
 must not reconstruct the file by printing runtime Values.
 
-`gene fmt` uses the printer and must round-trip selector slash spacing, immutable-literal prefixes, prop order, meta order, import forms, namespace forms, and pipe sugar reliably.
+`gene fmt` uses the human source formatter and must round-trip selector slash
+spacing, immutable-literal prefixes, prop order, meta order, import forms,
+namespace forms, and pipe sugar reliably. `docs/style.md` defines the canonical
+layout and idioms. `examples/style_guide.gene` is the broad executable fixture:
+formatting it must reproduce the file byte for byte.
 
 Prop print order should be deterministic. MVP recommendation: preserve source order when available; otherwise sort by symbol text for stable generated output.
 

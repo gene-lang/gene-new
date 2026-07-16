@@ -843,17 +843,19 @@
   (var name (normalize_worker_name requested))
   (var existing (application_find_worker app name))
   (if (&& existing (!= existing/id worker/id))
-    {^ok false
-     ^error {^kind "worker_name_taken"
-             ^message $"worker name '${name}' is already in use"}}
-    (do
+    (then
+      {^ok false
+       ^error {^kind "worker_name_taken"
+               ^message $"worker name '${name}' is already in use"}})
+    (else
       (worker ~ Node/set_prop! `name name)
       {^ok true ^name name ^worker_id worker/id})))
 
 (fn application_available_worker_name [app, requested]
   (if (|| (== requested nil) (== requested void) (== (trim $"${requested}") ""))
-    nil
-    (do
+    (then
+      nil)
+    (else
       (var name (normalize_worker_name requested))
       (var existing (application_find_worker app name))
       (if existing
@@ -911,11 +913,10 @@
   [app, kind : Str, title : Str, output, controller, requested_name]
   (var name (application_available_worker_name app requested_name))
   (var worker (application_new_worker app kind title output controller))
-  (if (&& worker name)
-    (do
-      (worker ~ Node/set_prop! `name name)
-      (application_emit app "worker_named"
-        {^worker_id worker/id ^kind worker/kind ^name name})))
+  (if_yes (&& worker name)
+    (worker ~ Node/set_prop! `name name)
+    (application_emit app "worker_named"
+      {^worker_id worker/id ^kind worker/kind ^name name}))
   worker)
 
 (fn application_new_worker_from [app, kind : Str, title : Str, output,
@@ -1326,11 +1327,10 @@
   (var agent
     (application_spawn_agent_with_attachments
       app title assignment items transcript attachments))
-  (if (&& agent name)
-    (do
-      (agent ~ Node/set_prop! `name name)
-      (application_emit app "worker_named"
-        {^worker_id agent/id ^kind "agent" ^name name})))
+  (if_yes (&& agent name)
+    (agent ~ Node/set_prop! `name name)
+    (application_emit app "worker_named"
+      {^worker_id agent/id ^kind "agent" ^name name}))
   agent)
 
 (fn application_next_task_id! [app] : Str
@@ -1401,16 +1401,16 @@
     (then
       (if (worker/input_reserved ~ Cell/get)
         (then
-        # Preflight confirmation owns a reservation before a Task exists.
-        # Revoking it is a real cancellation; the admitting path must prove
-        # the reservation survived before it may install host work.
-        (worker/input_reserved ~ Cell/set false)
-        (worker/status ~ Cell/set
-          (if (== (worker/lifecycle ~ Cell/get) "stopped")
-            "stopped" "idle"))
-        (application_emit app "worker_admission_cancelled"
-          {^worker_id worker/id ^kind worker/kind ^reason "cancelled"})
-          true)
+          # Preflight confirmation owns a reservation before a Task exists.
+          # Revoking it is a real cancellation; the admitting path must prove
+          # the reservation survived before it may install host work.
+          (worker/input_reserved ~ Cell/set false)
+          (worker/status ~ Cell/set
+            (if (== (worker/lifecycle ~ Cell/get) "stopped")
+              "stopped" "idle"))
+          (application_emit app "worker_admission_cancelled"
+            {^worker_id worker/id ^kind worker/kind ^reason "cancelled"})
+            true)
         (else false)))
     (else
       (task ~ Task/cancel)
@@ -1615,38 +1615,38 @@
 
 (fn application_shutdown [app]
   (if_not (app/shutting_down ~ Cell/get)
-      (app/shutting_down ~ Cell/set true)
-      (for worker in (app/workers ~ Cell/get)
-        (if_not (== (worker/lifecycle ~ Cell/get) "stopped")
-            # A reservation can exist before preflight installs a Task.
-            # Controlled shutdown must revoke both admission states so a late
-            # confirmation cannot execute against a stopped application.
-            (worker/input_reserved ~ Cell/set false)
-            (var task (worker/current_task ~ Cell/get))
-            (if task (task ~ Task/cancel))
-            (worker/lifecycle ~ Cell/set "stopped")
-            (worker/status ~ Cell/set "stopped")
-            (if task
-              (if (== worker/kind "agent")
-                (application_finish_agent_operation!
-                  app worker "cancelled" "" "cancelled"
-                  "application shutdown" nil)
-                (application_finish_worker_operation!
-                  app worker "cancelled")))
-            (if (&& (== worker/kind "repl") (!= worker/controller nil)
-                    (!= worker/controller/session nil))
-              (repl_close worker/controller/session))
-            (application_remove_worker_follow_links! app worker)
-            (application_remove_worker_observers! app worker/id)
-            (application_emit app "worker_stopped"
-              {^worker_id worker/id ^kind worker/kind
-               ^reason "shutdown"})))
-      (var owner (app/workspace_coordinator/owner ~ Cell/get))
-      (if (&& (!= owner nil)
-              (starts_with? owner $"${app/coordinator_id}/"))
-        (app/workspace_coordinator/owner ~ Cell/set nil))
-      (application_emit app "application_stopped" {})
-      nil))
+    (app/shutting_down ~ Cell/set true)
+    (for worker in (app/workers ~ Cell/get)
+      (if_not (== (worker/lifecycle ~ Cell/get) "stopped")
+        # A reservation can exist before preflight installs a Task.
+        # Controlled shutdown must revoke both admission states so a late
+        # confirmation cannot execute against a stopped application.
+        (worker/input_reserved ~ Cell/set false)
+        (var task (worker/current_task ~ Cell/get))
+        (if task (task ~ Task/cancel))
+        (worker/lifecycle ~ Cell/set "stopped")
+        (worker/status ~ Cell/set "stopped")
+        (if task
+          (if (== worker/kind "agent")
+            (application_finish_agent_operation!
+              app worker "cancelled" "" "cancelled"
+              "application shutdown" nil)
+            (application_finish_worker_operation!
+              app worker "cancelled")))
+        (if (&& (== worker/kind "repl") (!= worker/controller nil)
+                (!= worker/controller/session nil))
+          (repl_close worker/controller/session))
+        (application_remove_worker_follow_links! app worker)
+        (application_remove_worker_observers! app worker/id)
+        (application_emit app "worker_stopped"
+          {^worker_id worker/id ^kind worker/kind
+           ^reason "shutdown"})))
+    (var owner (app/workspace_coordinator/owner ~ Cell/get))
+    (if (&& (!= owner nil)
+            (starts_with? owner $"${app/coordinator_id}/"))
+      (app/workspace_coordinator/owner ~ Cell/set nil))
+    (application_emit app "application_stopped" {})
+    nil))
 
 (fn agent_result_text [result] : Str
   (match result
@@ -1694,8 +1694,9 @@
 (fn application_mark_agent_result_read! [app, agent] : Bool
   (var result (agent/result ~ Cell/get))
   (if (== result nil)
-    false
-    (do
+    (then
+      false)
+    (else
       (var already
         (match result
           (when (m : Map) (== m/read true))
@@ -1756,15 +1757,15 @@
     {^agent_id agent/id ^assignment agent/assignment
      ^result normalized})
   (if_yes (> inbox/~size supervisor_inbox_max_count)
-      (var kept [])
-      (var first (- inbox/~size supervisor_inbox_max_count))
-      (repeat i in inbox/~size
-        (if (>= i first) (kept ~ List/push! inbox/%i)))
-      (app/supervisor_inbox ~ Cell/set kept)
-      (application_emit app "supervisor_result_dropped"
-        {^worker_id agent/id ^agent_id agent/id
-         ^reason "supervisor_inbox_limit"
-         ^limit supervisor_inbox_max_count})))
+    (var kept [])
+    (var first (- inbox/~size supervisor_inbox_max_count))
+    (repeat i in inbox/~size
+      (if (>= i first) (kept ~ List/push! inbox/%i)))
+    (app/supervisor_inbox ~ Cell/set kept)
+    (application_emit app "supervisor_result_dropped"
+      {^worker_id agent/id ^agent_id agent/id
+       ^reason "supervisor_inbox_limit"
+       ^limit supervisor_inbox_max_count})))
 
 (fn application_finish_agent_operation!
   [app, agent, outcome : Str, text : Str, error_kind : Str,
@@ -1788,8 +1789,9 @@
             (== m/task_id prior_worker_event/task_id)))
       (else false)))
   (if already_finished
-    prior_result
-    (do
+    (then
+      prior_result)
+    (else
       (var previous_suspension (agent_checkpoint_suspended ~ Cell/get))
       (var final_result nil)
       (agent_checkpoint_suspended ~ Cell/set true)
@@ -1853,19 +1855,19 @@
 (fn application_drain_supervisor_inbox [app]
   (var inbox (app/supervisor_inbox ~ Cell/get))
   (if_not (empty? inbox)
-      (for result in inbox
-        (var agent (application_find_agent app result/agent_id))
-        (if agent
-          (then
-            (if (== (agent/result ~ Cell/get) nil)
-              (agent/result ~ Cell/set result/result))
-            (application_incorporate_agent_result! app agent))
-          (app/main_agent/items ~ Cell/set
-            (append (app/main_agent/items ~ Cell/get)
-              (system_item
-                $"Sub-agent ${result/agent_id} finished assignment: ${result/assignment}\nResult:\n${(agent_result_text result/result)}")))))
-      (app/supervisor_inbox ~ Cell/set [])
-      nil))
+    (for result in inbox
+      (var agent (application_find_agent app result/agent_id))
+      (if agent
+        (then
+          (if (== (agent/result ~ Cell/get) nil)
+            (agent/result ~ Cell/set result/result))
+          (application_incorporate_agent_result! app agent))
+        (app/main_agent/items ~ Cell/set
+          (append (app/main_agent/items ~ Cell/get)
+            (system_item
+              $"Sub-agent ${result/agent_id} finished assignment: ${result/assignment}\nResult:\n${(agent_result_text result/result)}")))))
+    (app/supervisor_inbox ~ Cell/set [])
+    nil))
 
 (fn project_progress_report [app] : Str
   (var progress (app/progress ~ Cell/get))
@@ -2385,14 +2387,14 @@
                     max_instruction_total_bytes)
             {^scope scope ^source source ^skipped "total byte cap reached"
              ^bytes bytes_count})
-            (else
-              (instruction_bytes ~ Cell/set
-                (+ (instruction_bytes ~ Cell/get) bytes_count))
-              (var record {^scope scope ^source source
-                           ^text text ^bytes bytes_count})
-              (agent_instruction_records ~ Cell/set
-                (append (agent_instruction_records ~ Cell/get) record))
-              record))
+          (else
+            (instruction_bytes ~ Cell/set
+              (+ (instruction_bytes ~ Cell/get) bytes_count))
+            (var record {^scope scope ^source source
+                         ^text text ^bytes bytes_count})
+            (agent_instruction_records ~ Cell/set
+              (append (agent_instruction_records ~ Cell/get) record))
+            record))
       catch (OsError ^message _)
         {^scope scope ^source source ^skipped "unreadable"}))))
 
@@ -2479,11 +2481,11 @@
   (if (present? f/to)
     (if_not (<= e/v (parse_int f/to)) (Cell/set ok false)))
   (if_yes (present? f/path)
-      (var p (cell ""))
-      (if (present? e/path) (Cell/set p e/path))
-      (if (present? e/args)
-        (if (present? e/args/path) (Cell/set p e/args/path)))
-      (if_not (contains? (Cell/get p) f/path) (Cell/set ok false)))
+    (var p (cell ""))
+    (if (present? e/path) (Cell/set p e/path))
+    (if (present? e/args)
+      (if (present? e/args/path) (Cell/set p e/args/path)))
+    (if_not (contains? (Cell/get p) f/path) (Cell/set ok false)))
   (Cell/get ok))
 
 (fn parse_trace_filters [rest : Str]
@@ -2492,13 +2494,13 @@
     ~ each (fn [raw]
         (var tok (trim raw))
         (if_not (== tok "")
-            (if (== tok "--detail")
-              (then (f ~ Map/put! "detail" true))
-              (else
-                (var kv (split tok "="))
-                (if (== kv/~size 2)
-                  (f ~ Map/put! kv/0 kv/1)
-                  (f ~ Map/put! "type" tok)))))))
+          (if (== tok "--detail")
+            (then (f ~ Map/put! "detail" true))
+            (else
+              (var kv (split tok "="))
+              (if (== kv/~size 2)
+                (f ~ Map/put! kv/0 kv/1)
+                (f ~ Map/put! "type" tok)))))))
   f)
 
 (fn format_event_with_filters [e, filters] : Str
@@ -2614,31 +2616,28 @@
     (var required (cell []))
     (if (present? self/args)
       (for field in (self/args ~ fields)
-        (do
-          (var spec (gene_type_json_schema field/type))
-          # Typed declarations may retain doc/enum annotations in ^params,
-          # but name/type/required and runtime validation come only from the
-          # Gene Type. The legacy form keeps all four in ^params.
-          (for metadata in (if (present? self/params) self/params [])
-            (if (== metadata/name field/name)
-              (do
-                (if (present? metadata/doc)
-                  (spec ~ Map/put! "description" metadata/doc))
-                (if (present? metadata/enum)
-                  (spec ~ Map/put! "enum" metadata/enum)))))
-          (props ~ Map/put! field/name spec)
-          (if_not field/optional
-            ((required ~ Cell/get) ~ List/push! field/name))))
+        (var spec (gene_type_json_schema field/type))
+        # Typed declarations may retain doc/enum annotations in ^params,
+        # but name/type/required and runtime validation come only from the
+        # Gene Type. The legacy form keeps all four in ^params.
+        (for metadata in (if (present? self/params) self/params [])
+          (if_yes (== metadata/name field/name)
+            (if_yes (present? metadata/doc)
+              (spec ~ Map/put! "description" metadata/doc))
+            (if_yes (present? metadata/enum)
+              (spec ~ Map/put! "enum" metadata/enum))))
+        (props ~ Map/put! field/name spec)
+        (if_not field/optional
+          ((required ~ Cell/get) ~ List/push! field/name)))
       (for p in self/params
-        (do
-          (var spec {^type p/type})
-          (if (present? p/doc)
-            (spec ~ Map/put! "description" p/doc))
-          (if (present? p/enum)
-            (spec ~ Map/put! "enum" p/enum))
-          (props ~ Map/put! p/name spec)
-          (if (== p/required true)
-            ((required ~ Cell/get) ~ List/push! p/name)))))
+        (var spec {^type p/type})
+        (if_yes (present? p/doc)
+          (spec ~ Map/put! "description" p/doc))
+        (if_yes (present? p/enum)
+          (spec ~ Map/put! "enum" p/enum))
+        (props ~ Map/put! p/name spec)
+        (if_yes (== p/required true)
+          ((required ~ Cell/get) ~ List/push! p/name))))
     (var parameters
       {^type "object" ^properties props
        ^additionalProperties (if (present? self/args) false true)})
@@ -2679,17 +2678,16 @@
      ^version handler_ref/version}))
 
 (fn capture_dynamic_registration! [record]
-  (if (&& (registration_capture_enabled ~ Cell/get)
-          (! (restoring_registrations ~ Cell/get)))
-    (do
-      (var retained [])
-      (for current in (dynamic_registration_records ~ Cell/get)
-        (if_not (&& (== current/kind record/kind)
-                    (== current/name record/name)
-                    (== current/worker_kind record/worker_kind))
-          (retained ~ List/push! current)))
-      (retained ~ List/push! record)
-      (dynamic_registration_records ~ Cell/set retained))))
+  (if_yes (&& (registration_capture_enabled ~ Cell/get)
+              (! (restoring_registrations ~ Cell/get)))
+    (var retained [])
+    (for current in (dynamic_registration_records ~ Cell/get)
+      (if_not (&& (== current/kind record/kind)
+                  (== current/name record/name)
+                  (== current/worker_kind record/worker_kind))
+        (retained ~ List/push! current)))
+    (retained ~ List/push! record)
+    (dynamic_registration_records ~ Cell/set retained)))
 
 (fn find_tool [name : Str]
   ((tool_registry ~ Cell/get) ~ Map/get name))
@@ -3301,20 +3299,20 @@ State that broader behavior is unverified when no matching successful check ran.
         (if had_limit_warning (- before/items 1) before/items))
       (var removed_items (- source_items after/items))
       (if_yes irreducible
-          (set result
-            (append result
-              {^role "system" ^^context_limit_warning
-               ^content "Context remains above its configured floor after whole-turn compaction and tool-output elision. Irreducible system/user content was preserved; use narrower tool reads or start a fresh session if more room is required."}))
-          (set after (context_stats result []))
-          (if_not had_limit_warning
-              (warn! context_log "context remains over configured limit"
-                ^payload {^bytes after/bytes ^items after/items
-                          ^max_bytes context_max_bytes
-                          ^max_items context_max_items})
-              (emit "context_limit_warning"
-                {^bytes after/bytes ^items after/items
-                 ^max_bytes context_max_bytes ^max_items context_max_items
-                 ^irreducible_over_limit true})))
+        (set result
+          (append result
+            {^role "system" ^^context_limit_warning
+             ^content "Context remains above its configured floor after whole-turn compaction and tool-output elision. Irreducible system/user content was preserved; use narrower tool reads or start a fresh session if more room is required."}))
+        (set after (context_stats result []))
+        (if_not had_limit_warning
+          (warn! context_log "context remains over configured limit"
+            ^payload {^bytes after/bytes ^items after/items
+                      ^max_bytes context_max_bytes
+                      ^max_items context_max_items})
+          (emit "context_limit_warning"
+            {^bytes after/bytes ^items after/items
+             ^max_bytes context_max_bytes ^max_items context_max_items
+             ^irreducible_over_limit true})))
       (if_yes (|| (> removed_items 0)
                   (> elided/outputs 0))
           (info! context_log "context compacted"
@@ -3783,12 +3781,12 @@ State that broader behavior is unverified when no matching successful check ran.
                   "-H" "Content-Type: application/json"
                   "-H" "Accept: text/event-stream"])
   (if_yes (== base codex_base)
-      (set request_headers (append_all request_headers
-        ["User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
-         "originator: codex_cli_rs"]))
-      (set curl_args (append_all curl_args
-        ["-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
-         "-H" "originator: codex_cli_rs"])))
+    (set request_headers (append_all request_headers
+      ["User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
+       "originator: codex_cli_rs"]))
+    (set curl_args (append_all curl_args
+      ["-H" "User-Agent: codex_cli_rs/0.0.0 (Gene AI Agent)"
+       "-H" "originator: codex_cli_rs"])))
   (set curl_args (append_all curl_args ["-d" body]))
   (var r (exec_http_lines $"${base}/responses" request_headers body
                curl_args 60000
@@ -3883,10 +3881,10 @@ State that broader behavior is unverified when no matching successful check ran.
   (var key $"${idx}")
   (var entry (calls_map ~ Map/get key))
   (if_yes (== entry void)
-      (set entry {^id "" ^name "" ^arguments ""})
-      (calls_map ~ Map/put! key entry)
-      (if (< (Cell/get max_cell) (+ idx 1))
-        (Cell/set max_cell (+ idx 1))))
+    (set entry {^id "" ^name "" ^arguments ""})
+    (calls_map ~ Map/put! key entry)
+    (if (< (Cell/get max_cell) (+ idx 1))
+      (Cell/set max_cell (+ idx 1))))
   (if (present? frag/id)
     (entry ~ Map/put! "id" frag/id))
   (if (present? frag/function/name)
@@ -3924,8 +3922,8 @@ State that broader behavior is unverified when no matching successful check ran.
         (else
           (var delta chunk/choices/0/delta)
           (if_yes (present? delta/content)
-              (render_stream (redact delta/content))
-              (Cell/set text_cell $"${(Cell/get text_cell)}${delta/content}"))
+            (render_stream (redact delta/content))
+            (Cell/set text_cell $"${(Cell/get text_cell)}${delta/content}"))
           (if (present? delta/tool_calls)
             ((to_stream delta/tool_calls)
               ~ each (fn [frag] (chat_note_call_frag calls_map max_cell frag))))))
@@ -4343,18 +4341,18 @@ State that broader behavior is unverified when no matching successful check ran.
       (agent_checkpoint_last_ms ~ Cell/set 0)
       (agent_store ~ Cell/set (open_agent_store agent_state_spec))
       (if_yes (resume_enabled?)
-          (var saved_checkpoint ((agent_store ~ Cell/get) ~ load_checkpoint))
-          (if saved_checkpoint
-            (do
-              (agent_loaded_checkpoint ~ Cell/set saved_checkpoint)
-              (agent_checkpoint_seq ~ Cell/set saved_checkpoint/generation))
-            (do
-              # Compatibility migration: stores written before generation
-              # checkpoints retain their loose marker for one restore.
-              (var legacy
-                ((agent_store ~ Cell/get) ~ get "checkpoint" ^default nil))
-              (if (&& legacy (present? legacy/sequence))
-                (agent_checkpoint_seq ~ Cell/set legacy/sequence)))))
+        (var saved_checkpoint ((agent_store ~ Cell/get) ~ load_checkpoint))
+        (if saved_checkpoint
+          (then
+            (agent_loaded_checkpoint ~ Cell/set saved_checkpoint)
+            (agent_checkpoint_seq ~ Cell/set saved_checkpoint/generation))
+          (else
+            # Compatibility migration: stores written before generation
+            # checkpoints retain their loose marker for one restore.
+            (var legacy
+              ((agent_store ~ Cell/get) ~ get "checkpoint" ^default nil))
+            (if (&& legacy (present? legacy/sequence))
+              (agent_checkpoint_seq ~ Cell/set legacy/sequence)))))
       (restore_artifacts!)
       (claim_workspace_advisory!)
       (info! state_log "agent state opened"
@@ -4425,11 +4423,12 @@ State that broader behavior is unverified when no matching successful check ran.
       (var checkpoint (agent_loaded_checkpoint ~ Cell/get))
       (var loaded default)
       (if checkpoint
-        (do
+        (then
           (var record (checkpoint/records ~ Map/get key))
           (if (!= record void)
             (set loaded (migrate_state_record key record))))
-        (set loaded ((agent_store ~ Cell/get) ~ get key ^default default)))
+        (else
+          (set loaded ((agent_store ~ Cell/get) ~ get key ^default default))))
       (trace! state_log "state record loaded" ^payload {^record_key key})
       # Sanitize snapshots written by older versions before they can be
       # rendered, resumed, or sent back to a model.
@@ -4477,27 +4476,25 @@ State that broader behavior is unverified when no matching successful check ran.
         (write_workspace_heartbeat!)))))
 
 (fn start_workspace_heartbeat! []
-  (if (&& (workspace_advisory_owned ~ Cell/get)
-          (== (workspace_heartbeat_task ~ Cell/get) nil))
-    (do
-      (var task
-        (spawn
-          (loop
-            (sleep 5000)
-            (write_workspace_heartbeat!))))
-      (workspace_heartbeat_task ~ Cell/set task)
-      (task ~ Task/detach))))
+  (if_yes (&& (workspace_advisory_owned ~ Cell/get)
+              (== (workspace_heartbeat_task ~ Cell/get) nil))
+    (var task
+      (spawn
+        (loop
+          (sleep 5000)
+          (write_workspace_heartbeat!))))
+    (workspace_heartbeat_task ~ Cell/set task)
+    (task ~ Task/detach)))
 
 (fn release_workspace_advisory! []
   (var task (workspace_heartbeat_task ~ Cell/get))
   (if task (task ~ Task/cancel))
   (workspace_heartbeat_task ~ Cell/set nil)
-  (if (&& (workspace_advisory_owned ~ Cell/get)
-          (agent_store ~ Cell/get))
-    (do
-      (var current (durable_state_get workspace_advisory_key nil))
-      (if (&& current (== current/process_id (process_id)))
-        ((agent_store ~ Cell/get) ~ delete workspace_advisory_key))))
+  (if_yes (&& (workspace_advisory_owned ~ Cell/get)
+              (agent_store ~ Cell/get))
+    (var current (durable_state_get workspace_advisory_key nil))
+    (if_yes (&& current (== current/process_id (process_id)))
+      ((agent_store ~ Cell/get) ~ delete workspace_advisory_key)))
   (workspace_advisory_owned ~ Cell/set false))
 
 (fn artifact_find [id : Str]
@@ -4511,29 +4508,26 @@ State that broader behavior is unverified when no matching successful check ran.
   (next_artifact_id ~ Cell/set 1)
   (if_yes (agent_store ~ Cell/get)
     (for key in ((agent_store ~ Cell/get) ~ keys)
-      (if (starts_with? key "artifact/")
-        (do
-          (var data (durable_state_get key nil))
-          (if (&& data (present? data/id) (present? data/blob_id)
-                  (present? data/kind) (present? data/size))
-            (do
-              ((agent_artifacts ~ Cell/get) ~ List/push! data)
-              (var parts (split data/id ":"))
-              (if (== (parts ~ size) 2)
-                (try
-                  (var value (parse_int parts/1))
-                  (if (>= value (next_artifact_id ~ Cell/get))
-                    (next_artifact_id ~ Cell/set (+ value 1)))
-                catch _ nil)))))))))
+      (if_yes (starts_with? key "artifact/")
+        (var data (durable_state_get key nil))
+        (if_yes (&& data (present? data/id) (present? data/blob_id)
+                (present? data/kind) (present? data/size))
+          ((agent_artifacts ~ Cell/get) ~ List/push! data)
+          (var parts (split data/id ":"))
+          (if_yes (== (parts ~ size) 2)
+            (try
+              (var value (parse_int parts/1))
+              (if_yes (>= value (next_artifact_id ~ Cell/get))
+                (next_artifact_id ~ Cell/set (+ value 1)))
+            catch _ nil)))))))
 
 (fn artifact_total_bytes [] : Int
   (var total 0)
   (var seen {})
   (for artifact in (agent_artifacts ~ Cell/get)
-    (if (== (seen ~ Map/get artifact/blob_id) void)
-      (do
-        (seen ~ Map/put! artifact/blob_id true)
-        (set total (+ total artifact/size)))))
+    (if_yes (== (seen ~ Map/get artifact/blob_id) void)
+      (seen ~ Map/put! artifact/blob_id true)
+      (set total (+ total artifact/size))))
   total)
 
 (fn application_pin_artifact!
@@ -4572,11 +4566,10 @@ State that broader behavior is unverified when no matching successful check ran.
   (var retained [])
   (var blob_referenced false)
   (for current in (agent_artifacts ~ Cell/get)
-    (if (!= current/id id)
-      (do
-        (retained ~ List/push! current)
-        (if (== current/blob_id artifact/blob_id)
-          (set blob_referenced true)))))
+    (if_yes (!= current/id id)
+      (retained ~ List/push! current)
+      (if_yes (== current/blob_id artifact/blob_id)
+        (set blob_referenced true))))
   (agent_artifacts ~ Cell/set retained)
   ((agent_store ~ Cell/get) ~ delete $"artifact/${id}")
   (if_not blob_referenced
@@ -4591,8 +4584,9 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn artifacts_report [] : Str
   (if (empty? (agent_artifacts ~ Cell/get))
-    "no artifacts"
-    (do
+    (then
+      "no artifacts")
+    (else
       (var lines [])
       (for artifact in (agent_artifacts ~ Cell/get)
         (lines ~ List/push!
@@ -4617,17 +4611,17 @@ State that broader behavior is unverified when no matching successful check ran.
   (restoring_registrations ~ Cell/set true)
   (try
     (for record in saved
-      (if (== record/kind "tool")
-        (do
+      (match record/kind
+        (when "tool"
           (var current (find_tool record/name))
           (if (&& (!= current void)
                   (handler_ref_matches? current/handler_ref record/handler_ref))
-            (do
+            (then
               (current ~ Node/set_prop! `enabled true)
               (registration_restore_event! app "registration_restored"
                 {^registration_kind "tool" ^name record/name
                  ^handler_ref record/handler_ref}))
-            (do
+            (else
               (if (== current void)
                 (set current
                   (Tool ^name record/name ^description record/description
@@ -4639,41 +4633,42 @@ State that broader behavior is unverified when no matching successful check ran.
               (registration_restore_event! app "restore_record_rejected"
                 {^record_kind "tool_handler" ^record_id record/name
                  ^error_text "ephemeral or exact-version handler unavailable"}))))
-        (if (== record/kind "operation")
-          (do
-            (var current
-              (worker_operation_for record/worker_kind record/name))
-            (if (&& current
-                    (handler_ref_matches?
-                      current/handler_ref record/handler_ref))
-              (do
-                (current ~ Node/set_prop! `enabled true)
-                (registration_restore_event! app "registration_restored"
-                  {^registration_kind "operation"
-                   ^worker_kind record/worker_kind ^name record/name
-                   ^handler_ref record/handler_ref}))
-              (do
-                (if current
-                  (current ~ Node/set_prop! `enabled false)
-                  (do
-                    (set current
-                      (Operation ^name record/name ^summary record/summary
-                        ^usage record/usage ^args EmptyArgs ^result OperationAck
-                        ^errors record/errors ^effects record/effects
-                        ^audience record/audience ^admission record/admission
-                        ^audit record/audit ^cancellable record/cancellable
-                        ^idempotent record/idempotent
-                        ^task_managed false ^primary_input false
-                        ^handler
-                          (fn [_app, _worker, _operation, _args, _invocation]
-                            (fail (OsError ^message "restored operation handler unavailable")))
-                        ^parse_cli (fn [text] {^raw text})
-                        ^handler_ref record/handler_ref ^enabled false))
-                    (register_worker_operation! record/worker_kind current)))
-                (registration_restore_event! app "restore_record_rejected"
-                  {^record_kind "operation_handler"
-                   ^record_id $"${record/worker_kind}/${record/name}"
-                   ^error_text "ephemeral or exact-version handler unavailable"})))))))
+        (when "operation"
+          (var current
+            (worker_operation_for record/worker_kind record/name))
+          (if (&& current
+                  (handler_ref_matches?
+                    current/handler_ref record/handler_ref))
+            (then
+              (current ~ Node/set_prop! `enabled true)
+              (registration_restore_event! app "registration_restored"
+                {^registration_kind "operation"
+                 ^worker_kind record/worker_kind ^name record/name
+                 ^handler_ref record/handler_ref}))
+            (else
+              (if current
+                (then
+                  (current ~ Node/set_prop! `enabled false))
+                (else
+                  (set current
+                    (Operation ^name record/name ^summary record/summary
+                      ^usage record/usage ^args EmptyArgs ^result OperationAck
+                      ^errors record/errors ^effects record/effects
+                      ^audience record/audience ^admission record/admission
+                      ^audit record/audit ^cancellable record/cancellable
+                      ^idempotent record/idempotent
+                      ^task_managed false ^primary_input false
+                      ^handler
+                        (fn [_app, _worker, _operation, _args, _invocation]
+                          (fail (OsError ^message "restored operation handler unavailable")))
+                      ^parse_cli (fn [text] {^raw text})
+                      ^handler_ref record/handler_ref ^enabled false))
+                  (register_worker_operation! record/worker_kind current)))
+              (registration_restore_event! app "restore_record_rejected"
+                {^record_kind "operation_handler"
+                 ^record_id $"${record/worker_kind}/${record/name}"
+                 ^error_text "ephemeral or exact-version handler unavailable"}))))
+        (else nil)))
   ensure
     (restoring_registrations ~ Cell/set false))
   true)
@@ -4698,13 +4693,12 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn restore_reasoning_effort! []
   # An explicit environment value is launch configuration and wins over the
   # durable interactive choice. Otherwise resume the last valid choice.
-  (if (&& (resume_enabled?) (== configured_reasoning_effort nil))
-    (do
-      (var saved (state_get "config" nil))
-      (if (&& saved
-              (present? saved/reasoning_effort)
-              (valid_reasoning_effort? saved/reasoning_effort))
-        (reasoning_effort ~ Cell/set saved/reasoning_effort)))))
+  (if_yes (&& (resume_enabled?) (== configured_reasoning_effort nil))
+    (var saved (state_get "config" nil))
+    (if_yes (&& saved
+            (present? saved/reasoning_effort)
+            (valid_reasoning_effort? saved/reasoning_effort))
+      (reasoning_effort ~ Cell/set saved/reasoning_effort))))
 
 (fn prompt_with_memory [memory]
   (if (empty? memory)
@@ -4964,51 +4958,51 @@ State that broader behavior is unverified when no matching successful check ran.
     # restart. Restore only the bounded main-worker projection and normalize
     # an interrupted status to idle-with-failed-last-outcome semantics.
     (if_yes (present? saved/main_worker)
-        (var data saved/main_worker)
-        (app/main_agent/transcript ~ Cell/set data/transcript)
-        (app/main_agent/status ~ Cell/set
-          (if (== data/status "working") "idle" data/status))
-        (app/main_agent/last_outcome ~ Cell/set
-          (if (== data/status "working") "failed" data/last_outcome))
-        (try
-          (app/main_agent/result ~ Cell/set
-            (normalized_agent_result data/result true))
-        catch {^message message}
-          (app/main_agent/result ~ Cell/set nil)
-          (emit_restore_rejected! app "result" "main" message)
-        catch _
-          (app/main_agent/result ~ Cell/set nil)
-          (emit_restore_rejected! app "result" "main"
-            "unknown result restore failure"))
-        (var saved_history
-          (if (present? data/history) data/history []))
-        (var restored_history
-          (bounded_list_tail saved_history worker_history_max))
-        (app/main_agent/history ~ Cell/set restored_history)
-        (if (present? data/next_output_seq)
-          (app/main_agent/next_output_seq ~ Cell/set data/next_output_seq))
-        (if (present? data/dropped_bytes)
-          (app/main_agent/dropped_bytes ~ Cell/set data/dropped_bytes))
-        (if (present? data/dropped_before)
-          (app/main_agent/dropped_before ~ Cell/set data/dropped_before))
-        (app/main_agent/retained_output ~ Cell/set
-          (if (present? data/retained_output)
-            data/retained_output data/transcript))
-        (if (present? data/transcript_seq)
-          (app/main_agent/transcript_seq ~ Cell/set data/transcript_seq))
-        (if (present? data/transcript_dropped_bytes)
-          (app/main_agent/transcript_dropped_bytes ~ Cell/set
-            data/transcript_dropped_bytes))
-        (if (present? data/transcript_dropped_before)
-          (app/main_agent/transcript_dropped_before ~ Cell/set
-            data/transcript_dropped_before))
-        (app/main_agent/transcript_retained ~ Cell/set
-          (if (present? data/transcript_retained)
-            data/transcript_retained data/transcript))
-        (app/main_agent/history_dropped ~ Cell/set
-          (+ (if (present? data/history_dropped) data/history_dropped 0)
-             (- saved_history/~size restored_history/~size)))
-        (emit_restore_normalization! app app/main_agent data))
+      (var data saved/main_worker)
+      (app/main_agent/transcript ~ Cell/set data/transcript)
+      (app/main_agent/status ~ Cell/set
+        (if (== data/status "working") "idle" data/status))
+      (app/main_agent/last_outcome ~ Cell/set
+        (if (== data/status "working") "failed" data/last_outcome))
+      (try
+        (app/main_agent/result ~ Cell/set
+          (normalized_agent_result data/result true))
+      catch {^message message}
+        (app/main_agent/result ~ Cell/set nil)
+        (emit_restore_rejected! app "result" "main" message)
+      catch _
+        (app/main_agent/result ~ Cell/set nil)
+        (emit_restore_rejected! app "result" "main"
+          "unknown result restore failure"))
+      (var saved_history
+        (if (present? data/history) data/history []))
+      (var restored_history
+        (bounded_list_tail saved_history worker_history_max))
+      (app/main_agent/history ~ Cell/set restored_history)
+      (if (present? data/next_output_seq)
+        (app/main_agent/next_output_seq ~ Cell/set data/next_output_seq))
+      (if (present? data/dropped_bytes)
+        (app/main_agent/dropped_bytes ~ Cell/set data/dropped_bytes))
+      (if (present? data/dropped_before)
+        (app/main_agent/dropped_before ~ Cell/set data/dropped_before))
+      (app/main_agent/retained_output ~ Cell/set
+        (if (present? data/retained_output)
+          data/retained_output data/transcript))
+      (if (present? data/transcript_seq)
+        (app/main_agent/transcript_seq ~ Cell/set data/transcript_seq))
+      (if (present? data/transcript_dropped_bytes)
+        (app/main_agent/transcript_dropped_bytes ~ Cell/set
+          data/transcript_dropped_bytes))
+      (if (present? data/transcript_dropped_before)
+        (app/main_agent/transcript_dropped_before ~ Cell/set
+          data/transcript_dropped_before))
+      (app/main_agent/transcript_retained ~ Cell/set
+        (if (present? data/transcript_retained)
+          data/transcript_retained data/transcript))
+      (app/main_agent/history_dropped ~ Cell/set
+        (+ (if (present? data/history_dropped) data/history_dropped 0)
+           (- saved_history/~size restored_history/~size)))
+      (emit_restore_normalization! app app/main_agent data))
     (if (present? saved/supervisor_inbox)
       (app/supervisor_inbox ~ Cell/set
         (bounded_list_tail saved/supervisor_inbox
@@ -5072,8 +5066,8 @@ State that broader behavior is unverified when no matching successful check ran.
                   (optional_int? data/transcript_dropped_before))
         (fail (OsError ^message "agent counters must be Int or nil")))
       (var agent
-          (make_agent data/id data/parent_id data/title data/assignment
-            (cell data/items) (cell data/transcript) (cell nil)))
+        (make_agent data/id data/parent_id data/title data/assignment
+          (cell data/items) (cell data/transcript) (cell nil)))
         (if_yes (present? data/name)
           (var named (application_assign_worker_name! app agent data/name))
           (if_not named/ok
@@ -5328,59 +5322,59 @@ State that broader behavior is unverified when no matching successful check ran.
                    (when (_hidden : Bool) true) (else false))))
         (fail (OsError ^message "pane hidden must be a Bool")))
       (var worker
-          (if (present? data/worker_id)
-            (application_find_worker app data/worker_id)
-            (if (== data/kind "agent")
-              (application_find_agent app data/owner_id))))
+        (if (present? data/worker_id)
+          (application_find_worker app data/worker_id)
+          (if (== data/kind "agent")
+            (application_find_agent app data/owner_id))))
         # Backward compatibility for the shipped pane-owned snapshot:
         # materialize its producer as a stopped worker before attaching the
         # restored view.
         (if_yes (&& (== worker nil) (! (present? data/worker_id)))
-            (var seq (app/next_worker_id ~ Cell/get))
-            (app/next_worker_id ~ Cell/set (+ seq 1))
-            (var controller
-              (match data/kind
-                (when "shell"
-                  (ShellController
-                    ^cwd (cell (if (== data/cwd void)
-                                 workspace_root data/cwd))
-                    ^environment (cell {})))
-                (when "repl"
-                  (ReplController ^session nil ^items nil ^transcript nil
-                                  ^memory nil ^streaming (cell false)
-                                  ^resume_requested (cell false)))
-                (else (OutputController ^source "restored" ^following (cell [])))))
-            (set worker
-              (make_worker $"w${seq}" data/kind
-                (if (== data/title void) data/kind data/title)
-                (cell (if (== data/output void) "" data/output))
-                controller))
-            (worker/lifecycle ~ Cell/set
-              (if (|| (== data/kind "shell") (== data/kind "repl"))
-                "stopped" "running"))
-            (worker/status ~ Cell/set
-              (if (== (worker/lifecycle ~ Cell/get) "stopped")
-                "stopped" "idle"))
-            (if (!= data/history void)
-              (worker/history ~ Cell/set data/history))
-            ((app/workers ~ Cell/get) ~ List/push! worker))
+          (var seq (app/next_worker_id ~ Cell/get))
+          (app/next_worker_id ~ Cell/set (+ seq 1))
+          (var controller
+            (match data/kind
+              (when "shell"
+                (ShellController
+                  ^cwd (cell (if (== data/cwd void)
+                               workspace_root data/cwd))
+                  ^environment (cell {})))
+              (when "repl"
+                (ReplController ^session nil ^items nil ^transcript nil
+                                ^memory nil ^streaming (cell false)
+                                ^resume_requested (cell false)))
+              (else (OutputController ^source "restored" ^following (cell [])))))
+          (set worker
+            (make_worker $"w${seq}" data/kind
+              (if (== data/title void) data/kind data/title)
+              (cell (if (== data/output void) "" data/output))
+              controller))
+          (worker/lifecycle ~ Cell/set
+            (if (|| (== data/kind "shell") (== data/kind "repl"))
+              "stopped" "running"))
+          (worker/status ~ Cell/set
+            (if (== (worker/lifecycle ~ Cell/get) "stopped")
+              "stopped" "idle"))
+          (if (!= data/history void)
+            (worker/history ~ Cell/set data/history))
+          ((app/workers ~ Cell/get) ~ List/push! worker))
         (if_yes worker
-            (var pane
-              (Pane ^id data/id ^worker_id worker/id ^worker worker
-                    ^kind worker/kind ^owner_id data/owner_id
-                    ^title (if (present? data/title)
-                             data/title worker/title)
-                    ^output worker/output
-                    ^status worker/status ^current_task worker/current_task
-                    ^history worker/history
-                    ^scroll (cell (if (== data/scroll void) 0 data/scroll))
-                    ^controller (if (== worker/kind "agent")
-                                  worker worker/controller)
-                    ^pending_visible (cell false)
-                    ^hidden (cell (if (present? data/hidden)
-                                    data/hidden false))
-                    ^close_policy "detach"))
-            ((surface/panes ~ Cell/get) ~ List/push! pane))
+          (var pane
+            (Pane ^id data/id ^worker_id worker/id ^worker worker
+                  ^kind worker/kind ^owner_id data/owner_id
+                  ^title (if (present? data/title)
+                           data/title worker/title)
+                  ^output worker/output
+                  ^status worker/status ^current_task worker/current_task
+                  ^history worker/history
+                  ^scroll (cell (if (== data/scroll void) 0 data/scroll))
+                  ^controller (if (== worker/kind "agent")
+                                worker worker/controller)
+                  ^pending_visible (cell false)
+                  ^hidden (cell (if (present? data/hidden)
+                                  data/hidden false))
+                  ^close_policy "detach"))
+          ((surface/panes ~ Cell/get) ~ List/push! pane))
         (if (== worker nil)
           (fail (OsError ^message "pane references a missing worker")))
       catch {^message message}
@@ -5648,15 +5642,15 @@ State that broader behavior is unverified when no matching successful check ran.
               (append (initial_items memory) (user_item task))
               (fn [text]
                 (if_yes (Cell/get streaming)
-                    (println "")
-                    (Cell/set streaming false))
+                  (println "")
+                  (Cell/set streaming false))
                 (if_not (== text "")
                   (println $"agent> ${text}")))
               (fn [text]
                 (if_not (== text "")
                   (if_not (Cell/get streaming)
-                      (print "agent> ")
-                      (Cell/set streaming true))
+                    (print "agent> ")
+                    (Cell/set streaming true))
                   (print text)))
               max_tool_rounds
               emit_event!))
@@ -5812,8 +5806,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (var histories (surface/input_histories ~ Cell/get))
   (var history (histories ~ Map/get worker_id))
   (if_yes (== history void)
-      (set history (cell []))
-      (histories ~ Map/put! worker_id history))
+    (set history (cell []))
+    (histories ~ Map/put! worker_id history))
   history)
 
 (fn surface_route_draft [app]
@@ -5825,19 +5819,19 @@ State that broader behavior is unverified when no matching successful check ran.
   (var drafts (surface/drafts ~ Cell/get))
   (var draft (drafts ~ Map/get worker_id))
   (if_yes (== draft void)
-      (set draft (cell ""))
-      (drafts ~ Map/put! worker_id draft))
+    (set draft (cell ""))
+    (drafts ~ Map/put! worker_id draft))
   draft)
 
 (fn surface_history_push! [history, value]
   ((history ~ Cell/get) ~ List/push! value)
   (if_yes (> ((history ~ Cell/get) ~ size) surface_history_max)
-      (var current (history ~ Cell/get))
-      (var first (- (current ~ size) surface_history_max))
-      (var kept [])
-      (repeat i in current/~size
-        (if (>= i first) (kept ~ List/push! current/%i)))
-      (history ~ Cell/set kept)))
+    (var current (history ~ Cell/get))
+    (var first (- (current ~ size) surface_history_max))
+    (var kept [])
+    (repeat i in current/~size
+      (if (>= i first) (kept ~ List/push! current/%i)))
+    (history ~ Cell/set kept)))
 
 (fn record_local_surface_history! [worker_id : Str, value : Str, surface_id]
   (var app (active_application ~ Cell/get))
@@ -5872,8 +5866,8 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn close_user_input []
   (if_yes (!= (user_screen ~ Cell/get) nil)
-      (curses_close (user_screen ~ Cell/get))
-      (user_screen ~ Cell/set nil)))
+    (curses_close (user_screen ~ Cell/get))
+    (user_screen ~ Cell/set nil)))
 
 (fn suspend_user_input []
   # Surface-local terminal handoffs must not let an event callback reopen
@@ -6005,17 +5999,16 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn worker_completion_items [app, prefix : Str, agents_only : Bool]
   (var out [])
   (for worker in (app/workers ~ Cell/get)
-    (if (|| (! agents_only) (== worker/kind "agent"))
-      (do
-        (var label (if worker/name worker/name worker/id))
-        (if (starts_with? label prefix)
-          (out ~ List/push!
-            (completion_item label label
-              $"${worker/kind} ${(worker/status ~ Cell/get)}")))
-        (if (&& worker/name (starts_with? worker/id prefix))
-          (out ~ List/push!
-            (completion_item worker/id worker/id
-              $"${worker/kind} ${(worker/status ~ Cell/get)}"))))))
+    (if_yes (|| (! agents_only) (== worker/kind "agent"))
+      (var label (if worker/name worker/name worker/id))
+      (if_yes (starts_with? label prefix)
+        (out ~ List/push!
+          (completion_item label label
+            $"${worker/kind} ${(worker/status ~ Cell/get)}")))
+      (if_yes (&& worker/name (starts_with? worker/id prefix))
+        (out ~ List/push!
+          (completion_item worker/id worker/id
+            $"${worker/kind} ${(worker/status ~ Cell/get)}")))))
   out)
 
 (fn pane_completion_items [app, prefix : Str, include_main : Bool]
@@ -6055,10 +6048,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (repeat i in values/~size
     (set ch values/%i)
     (if escaped
-      (do
+      (then
         (token ~ List/push! ch)
         (set escaped false))
-      (match state
+      (else
+        (match state
         (when "single"
           (if (== ch "'") (set state "plain")
             (token ~ List/push! ch)))
@@ -6072,21 +6066,23 @@ State that broader behavior is unverified when no matching successful check ran.
                 (token ~ List/push! ch)))))
         (else
           (if (contains? " \t\n" ch)
-            (do
+            (then
               (set token [])
               (set token_start (+ i 1))
               (set quote ""))
-            (if (== ch "\\")
-              (set escaped true)
-              (if (|| (== ch "$") (== ch "`"))
-                (return nil)
-                (if (|| (== ch "'") (== ch "\""))
-                  (if (! (empty? token))
-                    (return nil)
-                    (do
-                      (set quote ch)
-                      (set state (if (== ch "'") "single" "double"))))
-                  (token ~ List/push! ch)))))))))
+            (else
+              (if (== ch "\\")
+                (set escaped true)
+                (if (|| (== ch "$") (== ch "`"))
+                  (return nil)
+                  (if (|| (== ch "'") (== ch "\""))
+                    (if (! (empty? token))
+                      (then
+                        (return nil))
+                      (else
+                        (set quote ch)
+                        (set state (if (== ch "'") "single" "double"))))
+                    (token ~ List/push! ch)))))))))))
   (if escaped (return nil))
   (var before [])
   (repeat j in token_start (before ~ List/push! values/%j))
@@ -6126,21 +6122,20 @@ State that broader behavior is unverified when no matching successful check ran.
   (try
     (var checked_directory (safe_path directory))
     (for name in (list_dir ReadDir checked_directory)
-      (if (&& (< out/~size surface_overlay_max_items)
-              (starts_with? name path_parts/base))
-        (do
-          (var candidate
-            (if (== path_parts/directory "") name
-              $"${path_parts/directory}/${name}"))
-          (var detail "workspace")
-          (try
-            (list_dir ReadDir (safe_path candidate))
-            (set candidate $"${candidate}/")
-            (set detail "workspace directory")
-          catch _ nil)
-          (var value (shell_completion_render context candidate))
-          (if value
-            (out ~ List/push! (completion_item value candidate detail))))))
+      (if_yes (&& (< out/~size surface_overlay_max_items)
+                  (starts_with? name path_parts/base))
+        (var candidate
+          (if (== path_parts/directory "") name
+            $"${path_parts/directory}/${name}"))
+        (var detail "workspace")
+        (try
+          (list_dir ReadDir (safe_path candidate))
+          (set candidate $"${candidate}/")
+          (set detail "workspace directory")
+        catch _ nil)
+        (var value (shell_completion_render context candidate))
+        (if_yes value
+          (out ~ List/push! (completion_item value candidate detail)))))
   catch _ nil)
   out)
 
@@ -6152,20 +6147,18 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (== context nil) (return out))
   (for record in (worker/history ~ Cell/get)
     (for token in (split record/text " ")
-      (if (&& (< out/~size surface_overlay_max_items)
-              (!= token "")
-              (starts_with? token context/prefix)
-              (== (seen ~ Map/get token) void)
-              (! (contains? token "$")) (! (contains? token "`"))
-              (! (contains? token "'")) (! (contains? token "\""))
-              (! (contains? token "\\")))
-        (do
-          (var value (shell_completion_render context token))
-          (if value
-            (do
-              (seen ~ Map/put! token true)
-              (out ~ List/push!
-                (completion_item value token "shell history"))))))))
+      (if_yes (&& (< out/~size surface_overlay_max_items)
+                  (!= token "")
+                  (starts_with? token context/prefix)
+                  (== (seen ~ Map/get token) void)
+                  (! (contains? token "$")) (! (contains? token "`"))
+                  (! (contains? token "'")) (! (contains? token "\""))
+                  (! (contains? token "\\")))
+        (var value (shell_completion_render context token))
+        (if_yes value
+          (seen ~ Map/put! token true)
+          (out ~ List/push!
+            (completion_item value token "shell history"))))))
   out)
 
 (fn command_completion_items [text : Str]
@@ -6184,74 +6177,71 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn worker_command_completion_items [app, text : Str, parts]
   (var out [])
   (if (<= parts/~size 2)
-    (do
+    (then
       (var prefix (if (== parts/~size 2) parts/1 ""))
       (for item in (worker_completion_items app prefix false)
         (out ~ List/push!
           (completion_item $"/worker ${item/value} " item/label item/detail))))
-    (do
+    (else
       (var target parts/1)
       (var worker (application_find_worker app target))
-      (if worker
-        (do
-          (var operation_name parts/2)
-          (if (<= parts/~size 3)
+      (if_yes worker
+        (var operation_name parts/2)
+        (if (<= parts/~size 3)
+          (then
             (for operation in (worker_operations_for_kind worker/kind)
-              (if (&& (operation_visible_to_local? operation)
-                      (starts_with? operation/name operation_name))
+              (if_yes (&& (operation_visible_to_local? operation)
+                          (starts_with? operation/name operation_name))
                 (out ~ List/push!
                   (completion_item $"/worker ${target} ${operation/name} "
-                    operation/name operation/summary))))
-            (do
-              (var operation
-                (worker_operation_for worker/kind operation_name))
-              (if (&& operation (operation_visible_to_local? operation))
-                (do
-                  (var field (operation_argument_field operation parts))
-                  (if (&& field (== field/name "path"))
-                  (set out (workspace_path_completion_items text))
-                  (if (&& field (== field/name "source"))
-                    (do
-                      (var last (- parts/~size 1))
-                      (var prefix parts/%last)
-                      (for item in (worker_completion_items app prefix false)
-                        (out ~ List/push!
-                          (completion_item
-                            (replace_last_token text item/value)
-                            item/label item/detail)))))))))))))
-  out))
+                    operation/name operation/summary)))))
+          (else
+            (var operation
+              (worker_operation_for worker/kind operation_name))
+            (if_yes (&& operation (operation_visible_to_local? operation))
+              (var field (operation_argument_field operation parts))
+              (if_yes (&& field (== field/name "path"))
+                (set out (workspace_path_completion_items text)))
+              (if_yes (&& field (== field/name "source"))
+                (var last (- parts/~size 1))
+                (var prefix parts/%last)
+                (for item in (worker_completion_items app prefix false)
+                  (out ~ List/push!
+                    (completion_item
+                      (replace_last_token text item/value)
+                      item/label item/detail))))))))))
+  out)
 
 (fn agent_command_completion_items [app, parts]
   (var out [])
   (var target (if (> parts/~size 1) parts/1 ""))
   (if (<= parts/~size 2)
-    (do
+    (then
       (for item in (verb_completion_items ["list" "new"] target "/agent ")
         (out ~ List/push! item))
       (for item in (worker_completion_items app target true)
         (out ~ List/push!
           (completion_item $"/agent ${item/value} " item/label item/detail))))
-    (do
+    (else
       (var agent (application_find_agent app target))
-      (if agent
-        (do
-          (var prefix parts/2)
-          (if (starts_with? "open" prefix)
+      (if_yes agent
+        (var prefix parts/2)
+        (if_yes (starts_with? "open" prefix)
+          (out ~ List/push!
+            (completion_item $"/agent ${target} open " "open" "open pane")))
+        (for operation in (worker_operations_for_kind "agent")
+          (if_yes (&& (operation_visible_to_local? operation)
+                      (starts_with? operation/name prefix))
             (out ~ List/push!
-              (completion_item $"/agent ${target} open " "open" "open pane")))
-          (for operation in (worker_operations_for_kind "agent")
-            (if (&& (operation_visible_to_local? operation)
-                    (starts_with? operation/name prefix))
-              (out ~ List/push!
-                (completion_item $"/agent ${target} ${operation/name} "
-                  operation/name operation/summary))))))))
+              (completion_item $"/agent ${target} ${operation/name} "
+                operation/name operation/summary)))))))
   out)
 
 (fn pane_command_completion_items [app, parts]
   (var out [])
   (var action (if (> parts/~size 1) parts/1 ""))
   (if (<= parts/~size 2)
-    (do
+    (then
       (for item in
           (verb_completion_items
             ["list" "new" "open" "focus" "show" "hide" "close" "max"]
@@ -6260,25 +6250,25 @@ State that broader behavior is unverified when no matching successful check ran.
       (for item in (pane_completion_items app action true)
         (out ~ List/push!
           (completion_item $"/pane ${item/value} " item/label item/detail))))
-    (do
+    (else
       (var prefix parts/2)
-      (if (== action "new")
+      (if_yes (== action "new")
         (for item in
             (verb_completion_items
               ["agent" "shell" "repl" "tail" "output" "view" "stats"]
               prefix "/pane new ")
           (out ~ List/push! item)))
-      (if (== action "open")
+      (if_yes (== action "open")
         (for item in (worker_completion_items app prefix false)
           (out ~ List/push!
             (completion_item $"/pane open ${item/value} "
               item/label item/detail))))
-      (if (["focus" "show" "hide" "close" "max"] ~ contains? action)
+      (if_yes (["focus" "show" "hide" "close" "max"] ~ contains? action)
         (for item in (pane_completion_items app prefix (== action "focus"))
           (out ~ List/push!
             (completion_item $"/pane ${action} ${item/value}"
               item/label item/detail))))
-      (if (!= (pane_command_id action) nil)
+      (if_yes (!= (pane_command_id action) nil)
         (for item in
             (verb_completion_items ["focus" "show" "hide" "close" "max"]
               prefix $"/pane ${action} ")
@@ -6354,10 +6344,11 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn editor_begin_reverse_search! [editor]
   (var current (editor/overlay ~ Cell/get))
   (if (&& current (== current/kind "reverse_search"))
-    (do
+    (then
       (var selected (current/selected ~ Cell/get))
-      (if (> selected 0) (current/selected ~ Cell/set (- selected 1))))
-    (do
+      (if_yes (> selected 0)
+        (current/selected ~ Cell/set (- selected 1))))
+    (else
       (var items (reverse_search_items editor ""))
       (editor/overlay ~ Cell/set
         {^kind "reverse_search" ^title "reverse history"
@@ -6375,21 +6366,21 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn editor_overlay_move! [editor, direction : Int]
   (var overlay (editor/overlay ~ Cell/get))
-  (if overlay
-    (do
-      (var selected (overlay/selected ~ Cell/get))
-      (var last (- overlay/items/~size 1))
-      (if (> last -1)
-        (overlay/selected ~ Cell/set
-          (if (< (+ selected direction) 0) 0
-            (if (> (+ selected direction) last) last
-              (+ selected direction))))))))
+  (if_yes overlay
+    (var selected (overlay/selected ~ Cell/get))
+    (var last (- overlay/items/~size 1))
+    (if_yes (> last -1)
+      (overlay/selected ~ Cell/set
+        (if (< (+ selected direction) 0) 0
+          (if (> (+ selected direction) last) last
+            (+ selected direction)))))))
 
 (fn editor_accept_overlay! [editor] : Bool
   (var overlay (editor/overlay ~ Cell/get))
   (if (|| (== overlay nil) (empty? overlay/items))
-    false
-    (do
+    (then
+      false)
+    (else
       (var selected (overlay/selected ~ Cell/get))
       (editor_set_text! editor overlay/items/%selected/value)
       (editor/overlay ~ Cell/set nil)
@@ -6399,8 +6390,9 @@ State that broader behavior is unverified when no matching successful check ran.
   (var overlay (editor/overlay ~ Cell/get))
   (if (|| (== overlay nil) (== overlay/kind "reverse_search")
           (empty? overlay/items))
-    false
-    (do
+    (then
+      false)
+    (else
       (var selected (overlay/selected ~ Cell/get))
       (== overlay/items/%selected/value
           (editor_text (editor/values ~ Cell/get))))))
@@ -6482,13 +6474,14 @@ State that broader behavior is unverified when no matching successful check ran.
               (when "text"
                 (var overlay (editor/overlay ~ Cell/get))
                 (if (&& overlay (== overlay/kind "reverse_search"))
-                  (do
+                  (then
                     (overlay/query ~ Cell/set
                       $"${(overlay/query ~ Cell/get)}${event/text}")
                     (editor_refresh_reverse_search! editor))
-                  (if (editor_accepts_surface_text?
+                  (else
+                    (if_yes
+                      (editor_accepts_surface_text?
                         (active_application ~ Cell/get) editor event/text)
-                    (do
                       (editor_insert! editor event/text)
                       (var current
                         (editor_text (editor/values ~ Cell/get)))
@@ -6512,15 +6505,16 @@ State that broader behavior is unverified when no matching successful check ran.
                     # completion and reverse-search still accept into the
                     # draft without submitting.
                     (if (editor_overlay_is_current_draft? editor)
-                      (do
+                      (then
                         (editor_dismiss_overlay! editor false)
                         (submitted ~ Cell/set
                           (editor_text (editor/values ~ Cell/get)))
                         (done ~ Cell/set true))
-                      (if_not (editor_accept_overlay! editor)
-                        (submitted ~ Cell/set
-                          (editor_text (editor/values ~ Cell/get)))
-                        (done ~ Cell/set true))))))
+                      (else
+                        (if_not (editor_accept_overlay! editor)
+                          (submitted ~ Cell/set
+                            (editor_text (editor/values ~ Cell/get)))
+                          (done ~ Cell/set true)))))))
               (when "eof" (done ~ Cell/set true))
               (when "interrupt" (editor_clear! editor))
               (when "escape"
@@ -6534,18 +6528,17 @@ State that broader behavior is unverified when no matching successful check ran.
               (when "backspace"
                 (var overlay (editor/overlay ~ Cell/get))
                 (if (&& overlay (== overlay/kind "reverse_search"))
-                  (do
+                  (then
                     (var query_values
                       (editor_chars (overlay/query ~ Cell/get)))
                     (if_not (empty? query_values)
-                      (do
-                        (var shortened [])
-                        (repeat i in (- query_values/~size 1)
-                          (shortened ~ List/push! query_values/%i))
-                        (set query_values shortened)))
+                      (var shortened [])
+                      (repeat i in (- query_values/~size 1)
+                        (shortened ~ List/push! query_values/%i))
+                      (set query_values shortened))
                     (overlay/query ~ Cell/set (editor_text query_values))
                     (editor_refresh_reverse_search! editor))
-                  (do
+                  (else
                     (set cursor (editor/cursor ~ Cell/get))
                     (if_yes (> cursor 0)
                       (editor_remove! editor (- cursor 1))
@@ -6572,12 +6565,13 @@ State that broader behavior is unverified when no matching successful check ran.
               (when "complete"
                 (var overlay (editor/overlay ~ Cell/get))
                 (if (&& overlay (== overlay/kind "palette"))
-                  (do
+                  (then
                     (overlay ~ Map/put! "kind" "completion")
                     (overlay ~ Map/put! "title" "completion"))
-                (if (&& overlay (!= overlay/kind "reverse_search"))
-                  (editor_overlay_move! editor 1)
-                  (editor_show_completion! editor "completion"))))
+                  (else
+                    (if (&& overlay (!= overlay/kind "reverse_search"))
+                      (editor_overlay_move! editor 1)
+                      (editor_show_completion! editor "completion")))))
               (when "reverse_search"
                 (editor_begin_reverse_search! editor))
               (when "edit"
@@ -6634,19 +6628,19 @@ State that broader behavior is unverified when no matching successful check ran.
       # default-deny this rare collision without blocking the scheduler.
         (then false)
         (else
-        (append_transcript transcript $"${prompt}\n")
-        (refresh_user_input transcript)
-        (confirmation_active ~ Cell/set true)
-        (var answer nil)
-        (try
-          (set answer (read_user_input transcript (cell [])))
-        ensure
-          (confirmation_active ~ Cell/set false))
-        (if (== answer nil)
-          (then false)
-          (else
-            (set answer (lower (trim answer)))
-            (|| (== answer "y") (== answer "yes")))))))
+          (append_transcript transcript $"${prompt}\n")
+          (refresh_user_input transcript)
+          (confirmation_active ~ Cell/set true)
+          (var answer nil)
+          (try
+            (set answer (read_user_input transcript (cell [])))
+          ensure
+            (confirmation_active ~ Cell/set false))
+          (if (== answer nil)
+            (then false)
+            (else
+              (set answer (lower (trim answer)))
+              (|| (== answer "y") (== answer "yes")))))))
     (else
       # Scripted/one-shot callers have no live curses surface. Preserve the
       # ordinary stdin contract; EOF remains default deny.
@@ -6661,16 +6655,16 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn refresh_user_input [transcript]
   (if_yes (&& (stdin_tty?) (! (user_input_suspended ~ Cell/get)))
-      (var editor (active_editor ~ Cell/get))
-      (if (== editor nil)
-        (curses_refresh_input (ensure_user_screen)
-                              ^prompt (input_route_label)
-                              ^output
-                                (main_presented_output
-                                  (active_application ~ Cell/get) transcript)
-                              ^panes (extension_views)
-                              ^status (current_input_status))
-        (draw_editor editor))))
+    (var editor (active_editor ~ Cell/get))
+    (if (== editor nil)
+      (curses_refresh_input (ensure_user_screen)
+                            ^prompt (input_route_label)
+                            ^output
+                              (main_presented_output
+                                (active_application ~ Cell/get) transcript)
+                            ^panes (extension_views)
+                            ^status (current_input_status))
+      (draw_editor editor))))
 
 (fn refresh_active_input []
   # Background workers may emit many deltas in one scheduler turn. Collapse
@@ -6694,35 +6688,35 @@ State that broader behavior is unverified when no matching successful check ran.
 # transcript and replaces that line.
 (fn refresh_agent_pending [transcript pending dots_visible]
   (if_yes (pending ~ Cell/get)
-      (var app (active_application ~ Cell/get))
-      (if (&& (!= app nil) (!= app/local_surface nil))
-        (app/local_surface/main_pending_visible ~ Cell/set
-          (dots_visible ~ Cell/get)))
-      (if (stdin_tty?)
-        (refresh_user_input transcript)
-        (print (if (dots_visible ~ Cell/get) "\ragent> ..." "\ragent>    ")))))
+    (var app (active_application ~ Cell/get))
+    (if (&& (!= app nil) (!= app/local_surface nil))
+      (app/local_surface/main_pending_visible ~ Cell/set
+        (dots_visible ~ Cell/get)))
+    (if (stdin_tty?)
+      (refresh_user_input transcript)
+      (print (if (dots_visible ~ Cell/get) "\ragent> ..." "\ragent>    ")))))
 
 # Remove the currently drawn placeholder before appending output, but retain
 # the pending state: the placeholder is redrawn beneath that output until the
 # whole turn completes.
 (fn advance_agent_pending [transcript pending]
   (if_yes (pending ~ Cell/get)
-      (var app (active_application ~ Cell/get))
-      (if (&& (!= app nil) (!= app/local_surface nil))
-        (app/local_surface/main_pending_visible ~ Cell/set false))
-      (if (stdin_tty?)
-        (refresh_user_input transcript)
-        (print "\r"))))
+    (var app (active_application ~ Cell/get))
+    (if (&& (!= app nil) (!= app/local_surface nil))
+      (app/local_surface/main_pending_visible ~ Cell/set false))
+    (if (stdin_tty?)
+      (refresh_user_input transcript)
+      (print "\r"))))
 
 (fn stop_agent_pending [transcript pending]
   (if_yes (pending ~ Cell/get)
-      (pending ~ Cell/set false)
-      (var app (active_application ~ Cell/get))
-      (if (&& (!= app nil) (!= app/local_surface nil))
-        (app/local_surface/main_pending_visible ~ Cell/set false))
-      (if (stdin_tty?)
-        (refresh_user_input transcript)
-        (print "\r"))))
+    (pending ~ Cell/set false)
+    (var app (active_application ~ Cell/get))
+    (if (&& (!= app nil) (!= app/local_surface nil))
+      (app/local_surface/main_pending_visible ~ Cell/set false))
+    (if (stdin_tty?)
+      (refresh_user_input transcript)
+      (print "\r"))))
 
 (fn output_with_pending [transcript pending dots_visible render]
   (advance_agent_pending transcript pending)
@@ -6739,8 +6733,8 @@ State that broader behavior is unverified when no matching successful check ran.
      (while (pending ~ Cell/get)
        (sleep 400)
        (if_yes (pending ~ Cell/get)
-           (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
-           (refresh_agent_pending transcript pending dots_visible))))})
+         (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
+         (refresh_agent_pending transcript pending dots_visible))))})
 
 (fn run_interactive_turn [transcript streaming transport input_items]
   (var placeholder (start_agent_pending transcript))
@@ -6778,10 +6772,10 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn render_agent_delta [transcript streaming text]
   (if_not (== text "")
     (if_not (Cell/get streaming)
-        (append_transcript transcript "agent> ")
-        (if_not (stdin_tty?)
-          (print "agent> "))
-        (Cell/set streaming true))
+      (append_transcript transcript "agent> ")
+      (if_not (stdin_tty?)
+        (print "agent> "))
+      (Cell/set streaming true))
     (append_transcript transcript text)
     (if (stdin_tty?)
       (refresh_user_input transcript)
@@ -6789,11 +6783,11 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn finish_agent_stream [transcript streaming]
   (if_yes (Cell/get streaming)
-      (append_transcript transcript "\n")
-      (if (stdin_tty?)
-        (refresh_user_input transcript)
-        (println ""))
-      (Cell/set streaming false)))
+    (append_transcript transcript "\n")
+    (if (stdin_tty?)
+      (refresh_user_input transcript)
+      (println ""))
+    (Cell/set streaming false)))
 
 (fn render_agent_text [transcript streaming text]
   (finish_agent_stream transcript streaming)
@@ -6819,11 +6813,11 @@ State that broader behavior is unverified when no matching successful check ran.
               $"You are ${label}, a supervised sub-agent in the same workspace. Work only on assignments delegated by the main agent or user. Report a concise result; your private tool transcript is not copied into the main context.")))
         transcript))
     (if_yes agent
-        (var pane
-          (application_open_pane app "agent" agent/id agent/title
-                                 transcript agent "detach"))
-        (refresh_active_input)
-        pane)))
+      (var pane
+        (application_open_pane app "agent" agent/id agent/title
+                               transcript agent "detach"))
+      (refresh_active_input)
+      pane)))
 
 (fn open_output_pane [title : Str]
   (var app (active_application ~ Cell/get))
@@ -6852,25 +6846,25 @@ State that broader behavior is unverified when no matching successful check ran.
   (var app (active_application ~ Cell/get))
   (var worker (application_find_worker_kind app "stats"))
   (if_yes (== worker nil)
-      (set worker
-        (application_new_worker app "stats" "stats"
-          (cell "") (StatsController)))
-      (if_yes worker
-          (application_set_projection_output!
-            app worker (stats_worker_text app) "stats")
-          ((app/event_observers ~ Cell/get) ~ List/push!
-            {^worker_id worker/id
-             ^handler (fn [event]
-               (if_not (== event/projection true)
-                 (application_set_projection_output!
-                   app worker (stats_worker_text app) "stats")
-                 (refresh_active_input)))})))
+    (set worker
+      (application_new_worker app "stats" "stats"
+        (cell "") (StatsController)))
+    (if_yes worker
+      (application_set_projection_output!
+        app worker (stats_worker_text app) "stats")
+      ((app/event_observers ~ Cell/get) ~ List/push!
+        {^worker_id worker/id
+         ^handler (fn [event]
+           (if_not (== event/projection true)
+             (application_set_projection_output!
+               app worker (stats_worker_text app) "stats")
+             (refresh_active_input)))})))
   (if_yes worker
-      (var pane (application_find_pane_worker app worker/id))
-      (if (== pane nil)
-        (set pane (application_attach_worker_pane app worker nil "detach")))
-      (if pane (application_focus_pane! app pane/id))
-      pane))
+    (var pane (application_find_pane_worker app worker/id))
+    (if (== pane nil)
+      (set pane (application_attach_worker_pane app worker nil "detach")))
+    (if pane (application_focus_pane! app pane/id))
+    pane))
 
 (fn open_log_tail_pane [filter_text : Str]
   (var app (active_application ~ Cell/get))
@@ -6911,9 +6905,9 @@ State that broader behavior is unverified when no matching successful check ran.
         (application_new_worker app "file_view" $"view ${path}"
           (cell "") (FileViewController ^path path)))
       (if_yes worker
-          (application_append_projection_output!
-            app worker (read_text ReadDir path) "file_view")
-          (application_attach_worker_pane app worker nil "detach")))
+        (application_append_projection_output!
+          app worker (read_text ReadDir path) "file_view")
+        (application_attach_worker_pane app worker nil "detach")))
     catch _ nil))
 
 (fn application_worker_snapshot [app, worker]
@@ -6965,8 +6959,10 @@ State that broader behavior is unverified when no matching successful check ran.
   (match kind
     (when "shell"
       (var cwd
-        (if (== config/cwd void) workspace_real
-          (do
+        (if (== config/cwd void)
+          (then
+            workspace_real)
+          (else
             (safe_path config/cwd)
             (list_dir ReadDir config/cwd)
             (real_path ReadDir config/cwd))))
@@ -7020,14 +7016,14 @@ State that broader behavior is unverified when no matching successful check ran.
       (if_not (! (present? config/path))
         (var path (safe_path config/path))
         (if_not (! (exists? ReadDir path))
-            (var worker
-              (application_new_named_worker app kind
-                (if (== title kind) $"view ${path}" title)
-                (cell "") (FileViewController ^path path) requested_name))
-            (if (!= worker nil)
-              (application_append_projection_output!
-                app worker (read_text ReadDir path) "file_view"))
-            worker)))
+          (var worker
+            (application_new_named_worker app kind
+              (if (== title kind) $"view ${path}" title)
+              (cell "") (FileViewController ^path path) requested_name))
+          (if (!= worker nil)
+            (application_append_projection_output!
+              app worker (read_text ReadDir path) "file_view"))
+          worker)))
     (else nil)))
 
 (fn open_shell_pane []
@@ -7060,10 +7056,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (var args [])
   (for [name value] in (worker/controller/environment ~ Cell/get)
     (if (== value void)
-      (do
+      (then
         (args ~ List/push! "-u")
         (args ~ List/push! name))
-      (args ~ List/push! $"${name}=${value}")))
+      (else
+        (args ~ List/push! $"${name}=${value}"))))
   (args ~ List/push! (get_env Env "SHELL" "sh"))
   (args ~ List/push! "-lc")
   (args ~ List/push! command)
@@ -7084,75 +7081,75 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (!= (worker/current_task ~ Cell/get) nil)
       (then $"shell ${route} is already working")
       (else
-      (worker_history_push! worker command adapter surface_id)
-      (var last_output (cell ""))
-      (var process_task (cell nil))
-      (var outcome (cell "cancelled"))
-      (var task
-        (spawn
-          (do
-            (var acquired false)
-            (try
-              (set acquired
-                (application_acquire_workspace app worker/id
-                                               $"shell:${route}"))
-              (if acquired
-                (then
-                  (var started (monotonic_ms))
-                  (var stdout_chan (channel ^capacity 256))
-                  (var exec_task
-                    (exec_stream_async Exec
-                      ^cmd "env"
-                      ^args (shell_environment_args worker command)
-                      ^dir (worker/controller/cwd ~ Cell/get)
-                      ^timeout_ms (normalized_shell_timeout timeout_ms)
-                      ^max_bytes 262144
-                      ^stdout_chan stdout_chan))
-                  (process_task ~ Cell/set exec_task)
-                  (var chunk nil)
-                  (try
-                    (loop
-                      (set chunk (stdout_chan ~ Channel/recv))
-                      (last_output ~ Cell/set
-                        $"${(last_output ~ Cell/get)}${chunk}")
-                      (append_worker_transcript! app worker chunk))
-                  catch (ChannelClosed) nil)
-                  (var result (await exec_task))
-                  (var duration_ms (- (monotonic_ms) started))
-                  (last_output ~ Cell/set
-                    $"${(last_output ~ Cell/get)}${result/stderr}[exit ${result/status}; ${duration_ms} ms]")
-                  (append_worker_transcript! app worker
-                    $"${result/stderr}[exit ${result/status}; ${duration_ms} ms]\n")
-                  (outcome ~ Cell/set
-                    (if (== result/status 0) "completed" "failed")))
-                (else
-                  (append_worker_transcript! app worker
-                    "[application is shutting down]\n")
-                  (outcome ~ Cell/set "failed")))
-            catch {^message message}
-              (append_worker_transcript! app worker $"[shell failed: ${message}]\n")
-              (outcome ~ Cell/set "failed")
-            catch _
-              (append_worker_transcript! app worker "[shell failed]\n")
-              (outcome ~ Cell/set "failed")
-            ensure
-              (if (!= (process_task ~ Cell/get) nil)
-                ((process_task ~ Cell/get) ~ Task/cancel))
-              (if acquired
-                (application_release_workspace app worker/id
-                                               $"shell:${route}"))
-              (application_finish_worker_operation!
-                app worker (outcome ~ Cell/get))
-              (refresh_application_input app)))))
-      (application_begin_worker_operation!
-        app worker task "shell_command")
-      (append_worker_transcript! app worker $"$ ${command}\n")
-      (task ~ Task/detach)
-      (if detached
-        (then "accepted")
-        (else
-          (await task)
-          $"shell ${route}: ${(last_output ~ Cell/get)}"))))))
+        (worker_history_push! worker command adapter surface_id)
+        (var last_output (cell ""))
+        (var process_task (cell nil))
+        (var outcome (cell "cancelled"))
+        (var task
+          (spawn
+            (do
+              (var acquired false)
+              (try
+                (set acquired
+                  (application_acquire_workspace app worker/id
+                                                 $"shell:${route}"))
+                (if acquired
+                  (then
+                    (var started (monotonic_ms))
+                    (var stdout_chan (channel ^capacity 256))
+                    (var exec_task
+                      (exec_stream_async Exec
+                        ^cmd "env"
+                        ^args (shell_environment_args worker command)
+                        ^dir (worker/controller/cwd ~ Cell/get)
+                        ^timeout_ms (normalized_shell_timeout timeout_ms)
+                        ^max_bytes 262144
+                        ^stdout_chan stdout_chan))
+                    (process_task ~ Cell/set exec_task)
+                    (var chunk nil)
+                    (try
+                      (loop
+                        (set chunk (stdout_chan ~ Channel/recv))
+                        (last_output ~ Cell/set
+                          $"${(last_output ~ Cell/get)}${chunk}")
+                        (append_worker_transcript! app worker chunk))
+                    catch (ChannelClosed) nil)
+                    (var result (await exec_task))
+                    (var duration_ms (- (monotonic_ms) started))
+                    (last_output ~ Cell/set
+                      $"${(last_output ~ Cell/get)}${result/stderr}[exit ${result/status}; ${duration_ms} ms]")
+                    (append_worker_transcript! app worker
+                      $"${result/stderr}[exit ${result/status}; ${duration_ms} ms]\n")
+                    (outcome ~ Cell/set
+                      (if (== result/status 0) "completed" "failed")))
+                  (else
+                    (append_worker_transcript! app worker
+                      "[application is shutting down]\n")
+                    (outcome ~ Cell/set "failed")))
+              catch {^message message}
+                (append_worker_transcript! app worker $"[shell failed: ${message}]\n")
+                (outcome ~ Cell/set "failed")
+              catch _
+                (append_worker_transcript! app worker "[shell failed]\n")
+                (outcome ~ Cell/set "failed")
+              ensure
+                (if (!= (process_task ~ Cell/get) nil)
+                  ((process_task ~ Cell/get) ~ Task/cancel))
+                (if acquired
+                  (application_release_workspace app worker/id
+                                                 $"shell:${route}"))
+                (application_finish_worker_operation!
+                  app worker (outcome ~ Cell/get))
+                (refresh_application_input app)))))
+        (application_begin_worker_operation!
+          app worker task "shell_command")
+        (append_worker_transcript! app worker $"$ ${command}\n")
+        (task ~ Task/detach)
+        (if detached
+          (then "accepted")
+          (else
+            (await task)
+            $"shell ${route}: ${(last_output ~ Cell/get)}"))))))
 
 (fn run_shell_worker_command
   [app, worker, command : Str, timeout_ms, adapter : Str, surface_id, route : Str,
@@ -7166,34 +7163,34 @@ State that broader behavior is unverified when no matching successful check ran.
             (!= (worker/current_task ~ Cell/get) nil))
       (then $"shell ${route} is already working")
       (else
-      (worker/input_reserved ~ Cell/set true)
-      (worker/status ~ Cell/set "confirming")
-      (var denial nil)
-      (var admission_survived false)
-      (try
-        (var guard_sink
-          (fn [type props]
-            (var tagged {^worker_id worker/id ^kind worker/kind})
-            (for [key value] in props
-              (tagged ~ Map/put! key value))
-            (application_emit app type tagged)))
-        (set denial
-          (if remote
-            (guard_shell_in command (fn [_command] false) guard_sink)
-            (guard_shell_in command nil guard_sink)))
-        (set admission_survived (worker/input_reserved ~ Cell/get))
-      ensure
-        (worker/input_reserved ~ Cell/set false)
-        (if (== (worker/current_task ~ Cell/get) nil)
-          (worker/status ~ Cell/set
-            (if (== (worker/lifecycle ~ Cell/get) "stopped")
-              "stopped" "idle"))))
-      (if (present? denial)
-        denial
-        (if (! admission_survived)
-          "shell command cancelled before start"
-          (run_shell_worker_command_unchecked
-            app worker command timeout_ms adapter surface_id route detached)))))))
+        (worker/input_reserved ~ Cell/set true)
+        (worker/status ~ Cell/set "confirming")
+        (var denial nil)
+        (var admission_survived false)
+        (try
+          (var guard_sink
+            (fn [type props]
+              (var tagged {^worker_id worker/id ^kind worker/kind})
+              (for [key value] in props
+                (tagged ~ Map/put! key value))
+              (application_emit app type tagged)))
+          (set denial
+            (if remote
+              (guard_shell_in command (fn [_command] false) guard_sink)
+              (guard_shell_in command nil guard_sink)))
+          (set admission_survived (worker/input_reserved ~ Cell/get))
+        ensure
+          (worker/input_reserved ~ Cell/set false)
+          (if (== (worker/current_task ~ Cell/get) nil)
+            (worker/status ~ Cell/set
+              (if (== (worker/lifecycle ~ Cell/get) "stopped")
+                "stopped" "idle"))))
+        (if (present? denial)
+          denial
+          (if (! admission_survived)
+            "shell command cancelled before start"
+            (run_shell_worker_command_unchecked
+              app worker command timeout_ms adapter surface_id route detached)))))))
 
 (fn run_shell_pane_command_unchecked [pane, command : Str]
   (var app (active_application ~ Cell/get))
@@ -7225,10 +7222,10 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (!= (worker/current_task ~ Cell/get) nil)
       (then $"REPL ${route} is already evaluating")
       (else
-      (worker_history_push! worker source adapter surface_id)
-      (var last_output (cell ""))
-      (var outcome (cell "cancelled"))
-      (var task
+        (worker_history_push! worker source adapter surface_id)
+        (var last_output (cell ""))
+        (var outcome (cell "cancelled"))
+        (var task
           (spawn
             (do
               (try
@@ -7262,15 +7259,15 @@ State that broader behavior is unverified when no matching successful check ran.
                 (application_finish_worker_operation!
                   app worker (outcome ~ Cell/get))
                 (refresh_application_input app)))))
-        (application_begin_worker_operation!
-          app worker task "repl_eval")
-        (append_worker_transcript! app worker $"gene> ${source}\n")
-        (task ~ Task/detach)
-        (if detached
-          (then "accepted")
-          (else
-            (await task)
-            $"REPL ${route}: ${(last_output ~ Cell/get)}"))))))
+          (application_begin_worker_operation!
+            app worker task "repl_eval")
+          (append_worker_transcript! app worker $"gene> ${source}\n")
+          (task ~ Task/detach)
+          (if detached
+            (then "accepted")
+            (else
+              (await task)
+              $"REPL ${route}: ${(last_output ~ Cell/get)}"))))))
 
 (fn run_repl_pane_command [pane, source : Str]
   (var app (active_application ~ Cell/get))
@@ -7326,8 +7323,8 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn refresh_extension_pending [pane, pending, dots_visible]
   (if_yes (pending ~ Cell/get)
-      (pane/pending_visible ~ Cell/set (dots_visible ~ Cell/get))
-      (refresh_active_input)))
+    (pane/pending_visible ~ Cell/set (dots_visible ~ Cell/get))
+    (refresh_active_input)))
 
 (fn start_extension_pending [pane]
   (var pending (cell true))
@@ -7338,31 +7335,31 @@ State that broader behavior is unverified when no matching successful check ran.
      (while (pending ~ Cell/get)
        (sleep 400)
        (if_yes (pending ~ Cell/get)
-           (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
-           (refresh_extension_pending pane pending dots_visible))))})
+         (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
+         (refresh_extension_pending pane pending dots_visible))))})
 
 (fn advance_extension_pending [pane, pending]
   (if_yes (pending ~ Cell/get)
-      (pane/pending_visible ~ Cell/set false)
-      (refresh_active_input)))
+    (pane/pending_visible ~ Cell/set false)
+    (refresh_active_input)))
 
 (fn stop_extension_pending [pane, pending]
   (if_yes (pending ~ Cell/get)
-      (pending ~ Cell/set false)
-      (pane/pending_visible ~ Cell/set false)
-      (refresh_active_input)))
+    (pending ~ Cell/set false)
+    (pane/pending_visible ~ Cell/set false)
+    (refresh_active_input)))
 
 (fn render_extension_delta [pane, text : Str]
   (if_not (== text "")
     (if_not (pane/controller/streaming ~ Cell/get)
-        (append_extension_transcript pane "assistant|")
-        (pane/controller/streaming ~ Cell/set true))
+      (append_extension_transcript pane "assistant|")
+      (pane/controller/streaming ~ Cell/set true))
     (append_extension_transcript pane text)))
 
 (fn finish_extension_stream [pane]
   (if_yes (pane/controller/streaming ~ Cell/get)
-      (append_extension_transcript pane "\n")
-      (pane/controller/streaming ~ Cell/set false)))
+    (append_extension_transcript pane "\n")
+    (pane/controller/streaming ~ Cell/set false)))
 
 (fn render_extension_text [pane, text : Str]
   (finish_extension_stream pane)
@@ -7393,78 +7390,78 @@ State that broader behavior is unverified when no matching successful check ran.
     $"agent ${agent/id} is stopped"
     (if (|| (agent/input_reserved ~ Cell/get)
             (!= (agent/current_task ~ Cell/get) nil))
-    (then $"agent ${agent/id} is already working")
-    (else
-      (worker_history_push! agent prompt "local_tui"
-        (if app/local_surface
-          (app/local_surface/instance_id ~ Cell/get)))
-      (append_extension_transcript pane $"user|› ${prompt}\n")
-      (application_emit app "agent_status"
-        {^worker_id agent/id ^agent_id agent/id
-         ^parent_agent_id agent/parent_id
-         ^pane_id pane/id ^status "working"})
-      (var task
-        (spawn
-          (do
-            (var placeholder (start_extension_pending pane))
-            (var result (cell (agent/items ~ Cell/get)))
-            (var final_text (cell ""))
-            (var outcome (cell "cancelled"))
-            (var error_kind (cell "cancelled"))
-            (var error_text (cell "agent operation cancelled"))
-            (var render
-              (fn [text]
-                (output_with_extension_pending pane placeholder
-                  (fn [] (render_extension_text pane text)))))
-            (var render_stream
-              (fn [text]
-                (output_with_extension_pending pane placeholder
-                  (fn [] (render_extension_delta pane text)))))
-            (var emit
-              (fn [type props]
-                (if (&& (== type "agent_text") (present? props/text))
-                  (final_text ~ Cell/set props/text))
-                (extension_emit pane type props)))
-            (try
-              (result ~ Cell/set
-              (run_turn_in (interactive_transport)
-                (append (agent/items ~ Cell/get) (user_item prompt))
-                render render_stream max_tool_rounds emit
-                {^app app ^agent agent ^pane pane}))
-              (outcome ~ Cell/set "completed")
-            catch {^message message}
-              (outcome ~ Cell/set "failed")
-              (error_kind ~ Cell/set "AgentError")
-              (error_text ~ Cell/set message)
-              (render_extension_text pane $"[agent failed: ${message}]")
-            catch _
-              (outcome ~ Cell/set "failed")
-              (error_kind ~ Cell/set "AgentError")
-              (error_text ~ Cell/set "agent operation failed")
-              (render_extension_text pane "[agent failed]")
-            ensure
-              (stop_extension_pending pane placeholder/pending)
-              (finish_extension_stream pane)
-              (placeholder/task ~ Task/cancel)
-              (agent/items ~ Cell/set (result ~ Cell/get))
-              (application_finish_agent_operation!
-                app agent (outcome ~ Cell/get) (final_text ~ Cell/get)
-                (error_kind ~ Cell/get) (error_text ~ Cell/get) pane/id)))))
-      (application_begin_worker_operation! app agent task "agent_turn")
-      (task ~ Task/detach)
-      (if tracked
-        (then $"agent ${agent/id} started in pane ${pane/id}")
-        (else
-          # `open_extension` predates first-class spawn/send/wait tools and
-          # promises one delegated result to the calling model. Preserve that
-          # compatibility contract while the child runs in its own Task; the
-          # scheduler remains free to serve input and other agents.
-          (await task)
-          (var completed_text
-            (agent_result_text (agent/result ~ Cell/get)))
-          (if (== (agent/last_outcome ~ Cell/get) "completed")
-            $"extension ${pane/id} completed: ${completed_text}"
-            $"extension ${pane/id} ${(agent_result_report agent)}")))))))
+      (then $"agent ${agent/id} is already working")
+      (else
+        (worker_history_push! agent prompt "local_tui"
+          (if app/local_surface
+            (app/local_surface/instance_id ~ Cell/get)))
+        (append_extension_transcript pane $"user|› ${prompt}\n")
+        (application_emit app "agent_status"
+          {^worker_id agent/id ^agent_id agent/id
+           ^parent_agent_id agent/parent_id
+           ^pane_id pane/id ^status "working"})
+        (var task
+          (spawn
+            (do
+              (var placeholder (start_extension_pending pane))
+              (var result (cell (agent/items ~ Cell/get)))
+              (var final_text (cell ""))
+              (var outcome (cell "cancelled"))
+              (var error_kind (cell "cancelled"))
+              (var error_text (cell "agent operation cancelled"))
+              (var render
+                (fn [text]
+                  (output_with_extension_pending pane placeholder
+                    (fn [] (render_extension_text pane text)))))
+              (var render_stream
+                (fn [text]
+                  (output_with_extension_pending pane placeholder
+                    (fn [] (render_extension_delta pane text)))))
+              (var emit
+                (fn [type props]
+                  (if (&& (== type "agent_text") (present? props/text))
+                    (final_text ~ Cell/set props/text))
+                  (extension_emit pane type props)))
+              (try
+                (result ~ Cell/set
+                (run_turn_in (interactive_transport)
+                  (append (agent/items ~ Cell/get) (user_item prompt))
+                  render render_stream max_tool_rounds emit
+                  {^app app ^agent agent ^pane pane}))
+                (outcome ~ Cell/set "completed")
+              catch {^message message}
+                (outcome ~ Cell/set "failed")
+                (error_kind ~ Cell/set "AgentError")
+                (error_text ~ Cell/set message)
+                (render_extension_text pane $"[agent failed: ${message}]")
+              catch _
+                (outcome ~ Cell/set "failed")
+                (error_kind ~ Cell/set "AgentError")
+                (error_text ~ Cell/set "agent operation failed")
+                (render_extension_text pane "[agent failed]")
+              ensure
+                (stop_extension_pending pane placeholder/pending)
+                (finish_extension_stream pane)
+                (placeholder/task ~ Task/cancel)
+                (agent/items ~ Cell/set (result ~ Cell/get))
+                (application_finish_agent_operation!
+                  app agent (outcome ~ Cell/get) (final_text ~ Cell/get)
+                  (error_kind ~ Cell/get) (error_text ~ Cell/get) pane/id)))))
+        (application_begin_worker_operation! app agent task "agent_turn")
+        (task ~ Task/detach)
+        (if tracked
+          (then $"agent ${agent/id} started in pane ${pane/id}")
+          (else
+            # `open_extension` predates first-class spawn/send/wait tools and
+            # promises one delegated result to the calling model. Preserve that
+            # compatibility contract while the child runs in its own Task; the
+            # scheduler remains free to serve input and other agents.
+            (await task)
+            (var completed_text
+              (agent_result_text (agent/result ~ Cell/get)))
+            (if (== (agent/last_outcome ~ Cell/get) "completed")
+              $"extension ${pane/id} completed: ${completed_text}"
+              $"extension ${pane/id} ${(agent_result_report agent)}")))))))
 
 # Model-facing supervision primitives use the same AgentApplication services as
 # slash commands, but do not require a visible pane. This is intentionally
@@ -7563,72 +7560,69 @@ State that broader behavior is unverified when no matching successful check ran.
             (!= (agent/current_task ~ Cell/get) nil))
       (then {^accepted false ^error $"agent ${agent/id} is already working"})
       (else
-      (do
-      (agent/input_reserved ~ Cell/set true)
-      (agent/status ~ Cell/set "admitting")
-      (worker_history_push! agent prompt adapter surface_id)
-      (bounded_worker_append! agent $"user|› ${prompt}\n")
-      (application_emit app "agent_status"
-        {^worker_id agent/id ^agent_id agent/id
-         ^parent_agent_id agent/parent_id
-         ^status "working"})
-      (var task
-        (spawn
-          (do
-            (var result (cell (agent/items ~ Cell/get)))
-            (var final_text (cell ""))
-            (var outcome (cell "cancelled"))
-            (var error_kind (cell "cancelled"))
-            (var error_text (cell "agent operation cancelled"))
-            (var emit
-              (fn [type props]
-                (if (&& (== type "agent_text") (present? props/text))
-                  (final_text ~ Cell/set props/text))
-                (var tagged {^worker_id agent/id ^agent_id agent/id
-                             ^parent_agent_id agent/parent_id})
-                (for [key value] in props
-                  (tagged ~ Map/put! key value))
-                (application_emit app type tagged)))
-            (try
-              (result ~ Cell/set
-                (run_turn_in (interactive_transport)
-                  (append (agent/items ~ Cell/get) (user_item prompt))
-                  (fn [text]
-                    (if_not (== text "")
-                      (bounded_worker_append! agent $"agent|${text}\n")))
-                  (fn [delta]
-                    (if_not (== delta "")
-                      (bounded_worker_append! agent delta)))
-                  max_tool_rounds emit {^app app ^agent agent}))
-              (outcome ~ Cell/set "completed")
-            catch {^message message}
-              (outcome ~ Cell/set "failed")
-              (error_kind ~ Cell/set "AgentError")
-              (error_text ~ Cell/set message)
-            catch _
-              (outcome ~ Cell/set "failed")
-              (error_kind ~ Cell/set "AgentError")
-              (error_text ~ Cell/set "agent operation failed")
-            ensure
-              (agent/items ~ Cell/set (result ~ Cell/get))
-              (application_finish_agent_operation!
-                app agent (outcome ~ Cell/get) (final_text ~ Cell/get)
-                (error_kind ~ Cell/get) (error_text ~ Cell/get) nil)))))
-      (var operation
-        (application_begin_worker_operation! app agent task "agent_turn"))
-      (release_worker_input_reservation! agent)
-      (if (== operation nil)
-        (then
-          (do
+        (agent/input_reserved ~ Cell/set true)
+        (agent/status ~ Cell/set "admitting")
+        (worker_history_push! agent prompt adapter surface_id)
+        (bounded_worker_append! agent $"user|› ${prompt}\n")
+        (application_emit app "agent_status"
+          {^worker_id agent/id ^agent_id agent/id
+           ^parent_agent_id agent/parent_id
+           ^status "working"})
+        (var task
+          (spawn
+            (do
+                (var result (cell (agent/items ~ Cell/get)))
+                (var final_text (cell ""))
+                (var outcome (cell "cancelled"))
+                (var error_kind (cell "cancelled"))
+                (var error_text (cell "agent operation cancelled"))
+                (var emit
+                  (fn [type props]
+                    (if (&& (== type "agent_text") (present? props/text))
+                      (final_text ~ Cell/set props/text))
+                    (var tagged {^worker_id agent/id ^agent_id agent/id
+                                 ^parent_agent_id agent/parent_id})
+                    (for [key value] in props
+                      (tagged ~ Map/put! key value))
+                    (application_emit app type tagged)))
+                (try
+                  (result ~ Cell/set
+                    (run_turn_in (interactive_transport)
+                      (append (agent/items ~ Cell/get) (user_item prompt))
+                      (fn [text]
+                        (if_not (== text "")
+                          (bounded_worker_append! agent $"agent|${text}\n")))
+                      (fn [delta]
+                        (if_not (== delta "")
+                          (bounded_worker_append! agent delta)))
+                      max_tool_rounds emit {^app app ^agent agent}))
+                  (outcome ~ Cell/set "completed")
+                catch {^message message}
+                  (outcome ~ Cell/set "failed")
+                  (error_kind ~ Cell/set "AgentError")
+                  (error_text ~ Cell/set message)
+                catch _
+                  (outcome ~ Cell/set "failed")
+                  (error_kind ~ Cell/set "AgentError")
+                  (error_text ~ Cell/set "agent operation failed")
+                ensure
+                  (agent/items ~ Cell/set (result ~ Cell/get))
+                (application_finish_agent_operation!
+                  app agent (outcome ~ Cell/get) (final_text ~ Cell/get)
+                  (error_kind ~ Cell/get) (error_text ~ Cell/get) nil)))))
+        (var operation
+          (application_begin_worker_operation! app agent task "agent_turn"))
+        (release_worker_input_reservation! agent)
+        (if (== operation nil)
+          (then
             (var rejected
               {^accepted false ^error $"agent ${agent/id} is stopped"})
             (task ~ Task/cancel)
-            rejected))
-        (else
-          (do
+            rejected)
+          (else
             (var accepted {^accepted true ^task task})
             (task ~ Task/detach)
-            accepted))))))))
+            accepted))))))
 
 (fn run_hidden_agent_prompt [app, agent, prompt : Str]
   (var started (start_hidden_agent_prompt app agent prompt "model" nil))
@@ -7645,8 +7639,9 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn application_send_worker_input [app, worker, text : Str, adapter : Str]
   (var operation (worker_primary_operation worker/kind))
   (if (== operation nil)
-    "error: worker does not accept input"
-    (do
+    (then
+      "error: worker does not accept input")
+    (else
       (var raw_args (operation/parse_cli text))
       (var local_pane
         (if (== adapter "local_tui")
@@ -7668,10 +7663,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (var rendered (worker_call_text response))
       (if (&& response/ok (== adapter "local_tui") (! (stdin_tty?))
               (== operation/name "send"))
-        (do
+        (then
           (var pane (application_find_pane_worker app worker/id))
           (if pane $"extension ${pane/id} completed: ${rendered}" rendered))
-        rendered))))
+        (else
+          rendered)))))
 
 # ---------------------------------------------------------------------------
 # Slice C4: one typed worker-operation surface.
@@ -7798,14 +7794,15 @@ State that broader behavior is unverified when no matching successful check ran.
       (if_not started/accepted
         (fail (OsError ^message started/error)))
       (if (== detached false)
-        (do
+        (then
           (await started/task)
           (operation_ack worker
             (== (worker/last_outcome ~ Cell/get) "completed")
             (if (== (worker/last_outcome ~ Cell/get) "completed")
               (agent_result_text (worker/result ~ Cell/get))
               (agent_result_report worker))))
-        (operation_ack worker true "accepted")))
+        (else
+          (operation_ack worker true "accepted"))))
     (when "result" (agent_result_value worker))
     (when "mark_result_read"
       (operation_ack worker (application_mark_agent_result_read! app worker)
@@ -7911,10 +7908,9 @@ State that broader behavior is unverified when no matching successful check ran.
     (fail (OsError
       ^message $"audit none requires observe effect on ${kind}/${operation/name}")))
   (var current (worker_operation_tables ~ Map/get kind))
-  (if (== current void)
-    (do
-      (set current [])
-      (worker_operation_tables ~ Map/put! kind current)))
+  (if_yes (== current void)
+    (set current [])
+    (worker_operation_tables ~ Map/put! kind current))
   (for existing in current
     (if (== existing/name operation/name)
       (fail (OsError
@@ -8034,14 +8030,17 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn invocation_authorized? [app, worker, operation, invocation] : Bool
   (var audience (invocation_audience app worker invocation))
   (if (operation/audience ~ contains? audience)
-    (if (== audience "delegated")
-      (do
-        (var caller
-          (application_find_agent app
-            (invocation_field invocation "caller_worker_id")))
-        (agent_has_worker_attachment? caller worker/id))
-      true)
-    false))
+    (then
+      (if (== audience "delegated")
+        (then
+          (var caller
+            (application_find_agent app
+              (invocation_field invocation "caller_worker_id")))
+          (agent_has_worker_attachment? caller worker/id))
+        (else
+          true)))
+    (else
+      false)))
 
 (fn application_emit_operation_boundary!
   [app, worker, operation, invocation, task_id : Str, phase : Str, outcome]
@@ -8126,18 +8125,16 @@ State that broader behavior is unverified when no matching successful check ran.
         (validation_error ~ Cell/get))))
 
   (var task_id nil)
-  (if (&& (== operation/audit "full") (! operation/task_managed))
-    (do
-      (set task_id (application_next_task_id! app))
-      (application_emit_operation_boundary!
-        app worker operation invocation task_id "started" nil)))
-  (if operation/task_managed
-    (do
-      (var pending {})
-      (for [key value] in invocation
-        (pending ~ Map/put! key value))
-      (pending ~ Map/put! "operation_name" operation/name)
-      (worker/pending_invocation ~ Cell/set pending)))
+  (if_yes (&& (== operation/audit "full") (! operation/task_managed))
+    (set task_id (application_next_task_id! app))
+    (application_emit_operation_boundary!
+      app worker operation invocation task_id "started" nil))
+  (if_yes operation/task_managed
+    (var pending {})
+    (for [key value] in invocation
+      (pending ~ Map/put! key value))
+    (pending ~ Map/put! "operation_name" operation/name)
+    (worker/pending_invocation ~ Cell/set pending))
   (var value nil)
   (var execution_error (cell nil))
   (try
@@ -8155,19 +8152,18 @@ State that broader behavior is unverified when no matching successful check ran.
   # operation. Clear a leftover reservation after pre-task failure.
   (if operation/task_managed
     (worker/pending_invocation ~ Cell/set nil))
-  (if (execution_error ~ Cell/get)
-    (do
-      (if (&& operation/task_managed (! task_started))
-        (return
-          (application_reject_worker_operation! app worker worker_ref
-            operation_name invocation "operation_rejected"
-            (execution_error ~ Cell/get))))
-      (if task_id
-        (application_emit_operation_boundary!
-          app worker operation invocation task_id "finished" "failed"))
+  (if_yes (execution_error ~ Cell/get)
+    (if_yes (&& operation/task_managed (! task_started))
       (return
-        (operation_failure "operation_failed" (execution_error ~ Cell/get)
-          worker/id operation_name))))
+        (application_reject_worker_operation! app worker worker_ref
+          operation_name invocation "operation_rejected"
+          (execution_error ~ Cell/get))))
+    (if_yes task_id
+      (application_emit_operation_boundary!
+        app worker operation invocation task_id "finished" "failed"))
+    (return
+      (operation_failure "operation_failed" (execution_error ~ Cell/get)
+        worker/id operation_name)))
   (if task_id
     (application_emit_operation_boundary!
       app worker operation invocation task_id "finished" "completed"))
@@ -8272,11 +8268,12 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn worker_call_text [response] : Str
   (if response/ok
-    (do
+    (then
       (var text response/result/text)
       (if (|| (== text nil) (== text void))
         (stringify (props response/result)) text))
-    $"error: ${response/error/kind}: ${response/error/message}"))
+    (else
+      $"error: ${response/error/kind}: ${response/error/message}")))
 
 (fn model_worker_invocation [app, args]
   (var context args/_context)
@@ -8313,29 +8310,29 @@ State that broader behavior is unverified when no matching successful check ran.
     (var app (supervisor_tool_application args))
     (if (== app nil)
       "error: main supervisor authority is required"
-      (if (== args/source "result")
-        (do
+      (match args/source
+        (when "result"
           (var agent (application_find_agent app args/worker_id))
           (var result (if agent (agent/result ~ Cell/get)))
           (if (== result nil)
             "error: agent result not found"
-            (do
+            (then
               (var pinned
                 (application_pin_artifact! app "result"
                   (agent_result_text result) agent/id result/task_id))
               (if pinned/ok pinned/artifact/id $"error: ${pinned/error}"))))
-        (if (== args/source "tail")
-          (do
-            (var worker (application_find_worker app args/worker_id))
-            (if (== worker nil)
-              "error: worker not found"
-              (do
-                (var operation (worker/current_operation ~ Cell/get))
-                (var pinned
-                  (application_pin_artifact! app "capture"
-                    (worker/output ~ Cell/get) worker/id
-                    (if operation operation/task_id nil)))
-                (if pinned/ok pinned/artifact/id $"error: ${pinned/error}"))))
+        (when "tail"
+          (var worker (application_find_worker app args/worker_id))
+          (if (== worker nil)
+            "error: worker not found"
+            (then
+              (var operation (worker/current_operation ~ Cell/get))
+              (var pinned
+                (application_pin_artifact! app "capture"
+                  (worker/output ~ Cell/get) worker/id
+                  (if operation operation/task_id nil)))
+              (if pinned/ok pinned/artifact/id $"error: ${pinned/error}"))))
+        (else
           "error: source must be result or tail"))))))
 
 (register_tool! (Tool
@@ -8369,20 +8366,21 @@ State that broader behavior is unverified when no matching successful check ran.
     (var agent (if app
                  (application_find_agent app args/agent_id)))
     (if (== agent nil)
-      "error: agent not found"
-      (if (== agent/id "main")
-        "error: send_agent accepts supervised agents only"
-        (do
-          (var response
-            (application_call_worker app agent/id "send"
-              {^prompt args/prompt} (model_worker_invocation app args)))
-          (if_not response/ok
-            (return $"error: ${response/error/kind}: ${response/error/message}"))
-          (var task (agent/current_task ~ Cell/get))
-          (if task (await task))
-          (if (== (agent/last_outcome ~ Cell/get) "completed")
-            (agent_result_text (agent/result ~ Cell/get))
-            $"error: ${(agent_result_report agent)}")))))))
+      (then
+        "error: agent not found")
+      (elif (== agent/id "main")
+        "error: send_agent accepts supervised agents only")
+      (else
+        (var response
+          (application_call_worker app agent/id "send"
+            {^prompt args/prompt} (model_worker_invocation app args)))
+        (if_not response/ok
+          (return $"error: ${response/error/kind}: ${response/error/message}"))
+        (var task (agent/current_task ~ Cell/get))
+        (if task (await task))
+        (if (== (agent/last_outcome ~ Cell/get) "completed")
+          (agent_result_text (agent/result ~ Cell/get))
+          $"error: ${(agent_result_report agent)}"))))))
 
 (register_tool! (Tool
   ^name "agent_result"
@@ -8487,20 +8485,20 @@ State that broader behavior is unverified when no matching successful check ran.
         (else
           (if (== args/kind "output")
             (then
-            (var initial (if (== args/text void) "" (redact_any args/text)))
-            (var worker
-              (application_new_worker app "output"
-                (if (== args/title void) "output" args/title)
-                (cell "")
-                (OutputController ^source "model" ^following (cell []))))
-            (if (== worker nil)
-              (then "error: worker limit reached")
-              (else
-                (if_not (== initial "")
-                  (application_append_worker_output! app worker initial "model"))
-                (application_request_worker_attention app worker worker/title)
-                (refresh_active_input)
-                worker/id)))
+              (var initial (if (== args/text void) "" (redact_any args/text)))
+              (var worker
+                (application_new_worker app "output"
+                  (if (== args/title void) "output" args/title)
+                  (cell "")
+                  (OutputController ^source "model" ^following (cell []))))
+              (if (== worker nil)
+                (then "error: worker limit reached")
+                (else
+                  (if_not (== initial "")
+                    (application_append_worker_output! app worker initial "model"))
+                  (application_request_worker_attention app worker worker/title)
+                  (refresh_active_input)
+                  worker/id)))
             (else "error: model open_pane kind must be agent or output"))))))))
 
 (register_tool! (Tool
@@ -8575,8 +8573,9 @@ State that broader behavior is unverified when no matching successful check ran.
             (var pane
               (application_request_worker_attention app agent agent/title))
             (if (|| (== args/prompt void) (blank_line? args/prompt))
-              $"opened agent ${agent/id}"
-              (do
+              (then
+                $"opened agent ${agent/id}")
+              (else
                 (var response
                   (application_call_worker app agent/id "send"
                     {^prompt args/prompt} (model_worker_invocation app args)))
@@ -8852,9 +8851,10 @@ State that broader behavior is unverified when no matching successful check ran.
                 "worker limit reached")))
           (when "view"
             (if (== args "")
-              (render_agent_text transcript streaming
-                "usage: /pane new view <workspace-path>")
-              (do
+              (then
+                (render_agent_text transcript streaming
+                  "usage: /pane new view <workspace-path>"))
+              (else
                 (var pane (open_file_view_pane args))
                 (render_agent_text transcript streaming
                   (if pane $"opened ${args} in pane ${pane/id}"
@@ -8876,9 +8876,10 @@ State that broader behavior is unverified when no matching successful check ran.
             (var pane_title (trim (after_prefix open_rest worker_id)))
             (var worker (application_find_worker app worker_id))
             (if (== worker nil)
-              (render_agent_text transcript streaming
-                $"worker ${worker_id} not found")
-              (do
+              (then
+                (render_agent_text transcript streaming
+                  $"worker ${worker_id} not found"))
+              (else
                 (var pane
                   (application_attach_worker_pane_as app worker
                     (if (== worker/kind "agent") worker/id "user") "detach"
@@ -8896,19 +8897,21 @@ State that broader behavior is unverified when no matching successful check ran.
             (var leading_id (pane_command_id action))
             (if (&& (!= leading_id nil)
                     (["focus" "show" "hide" "close" "max"] ~ contains? id_text))
-              (do
+              (then
                 (set action id_text)
                 (set id leading_id))
-              (set id (pane_command_id id_text)))
+              (else
+                (set id (pane_command_id id_text))))
             (if (== id nil)
-              (render_agent_text transcript streaming
-                (do
-                  (var literal_help
-                    (if (surface_route_input_capable? app)
-                      "\nto send literal leading-slash input, use //text or /N -- text"
-                      ""))
+              (then
+                (var literal_help
+                  (if (surface_route_input_capable? app)
+                    "\nto send literal leading-slash input, use //text or /N -- text"
+                    ""))
+                (render_agent_text transcript streaming
                   $"usage: /pane list | /pane new ... | /pane open W | /pane focus|show|hide|close|max N${literal_help}"))
-              (match action
+              (else
+                (match action
                 (when "focus"
                   (render_agent_text transcript streaming
                     (if (application_focus_pane! app id)
@@ -8930,9 +8933,10 @@ State that broader behavior is unverified when no matching successful check ran.
                 (when "max"
                   (var pane (application_find_pane app id))
                   (if (== pane nil)
-                    (render_agent_text transcript streaming
-                      $"pane ${id} is not open")
-                    (do
+                    (then
+                      (render_agent_text transcript streaming
+                        $"pane ${id} is not open"))
+                    (else
                       (pane/hidden ~ Cell/set false)
                       (app/local_surface/focused_pane ~ Cell/set id)
                       (app/local_surface/maximized_pane ~ Cell/set
@@ -8943,7 +8947,7 @@ State that broader behavior is unverified when no matching successful check ran.
                           $"maximized pane ${id}" "restored split layout")))))
                 (else
                   (render_agent_text transcript streaming
-                    "usage: /pane list | /pane new ... | /pane open W | /pane focus|show|hide|close|max N"))))))))))
+                    "usage: /pane list | /pane new ... | /pane open W | /pane focus|show|hide|close|max N")))))))))))
 
 (fn worker_operation_cli_text [worker, operation_name : Str, response] : Str
   (if response/ok
@@ -8999,68 +9003,67 @@ State that broader behavior is unverified when no matching successful check ran.
       (var cli_args (trim (after_prefix operation_text operation_name)))
       (var operation (worker_operation_for worker/kind operation_name))
       (if (== operation nil)
-        (do
+        (then
           (var response
             (application_call_worker app worker/id operation_name {}
               {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
                ^caller_worker_id app/main_agent/id}))
           (render_agent_text transcript streaming
             $"${response/error/kind}: ${response/error/message}; ${(worker_operations_usage worker)}"))
-        (try
-          (var raw_args (operation/parse_cli cli_args))
-          (var response
-            (application_call_worker app worker/id operation_name raw_args
-              {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
-               ^caller_worker_id app/main_agent/id}))
-          (render_agent_text transcript streaming
-            (worker_operation_cli_text worker operation_name response))
-        catch {^message message}
-          (render_agent_text transcript streaming
-            $"usage: /worker ${worker_ref} ${operation/usage}\n${message}"))))))
+        (else
+          (try
+            (var raw_args (operation/parse_cli cli_args))
+            (var response
+              (application_call_worker app worker/id operation_name raw_args
+                {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
+                 ^caller_worker_id app/main_agent/id}))
+            (render_agent_text transcript streaming
+              (worker_operation_cli_text worker operation_name response))
+          catch {^message message}
+            (render_agent_text transcript streaming
+              $"usage: /worker ${worker_ref} ${operation/usage}\n${message}")))))))
 
 (fn handle_agent_command [line : Str, transcript, memory, streaming]
   (var app (active_application ~ Cell/get))
   (var rest (trim (after_prefix line "/agent")))
   (if (== rest "list")
     (then (render_agent_text transcript streaming (agents_report)))
-    (else
-  (if (|| (== rest "") (== rest "new"))
-    (then (handle_open_extension transcript memory streaming))
-    (else
-      (if (starts_with? rest "new ")
+    (elif (|| (== rest "") (== rest "new"))
+      (handle_open_extension transcript memory streaming))
+    (elif (starts_with? rest "new ")
+      (var prompt (trim (after_prefix rest "new ")))
+      (var pane (open_extension_pane "" (memory ~ Cell/get)))
+      (if (== pane nil)
         (then
-        (var prompt (trim (after_prefix rest "new ")))
-        (var pane (open_extension_pane "" (memory ~ Cell/get)))
-        (if (== pane nil)
-          (render_agent_text transcript streaming "sub-agent limit reached")
-          (do
-            (var response
-              (application_call_worker app pane/worker/id "send" {^prompt prompt}
-                {^origin "user" ^adapter "local_tui"
-                 ^detached (stdin_tty?)
-                 ^caller_worker_id app/main_agent/id}))
-            (render_agent_text transcript streaming
-              (if (&& response/ok (! (stdin_tty?)))
-                $"extension ${pane/id} completed: ${response/result/text}"
-                (worker_operation_cli_text pane/worker "send" response))))))
+          (render_agent_text transcript streaming "sub-agent limit reached"))
         (else
-        (var parts (split rest " "))
-        (var agent_id parts/0)
-        (var action (trim (after_prefix rest agent_id)))
-        (var agent (application_find_agent app agent_id))
-        (if (== agent nil)
-          (render_agent_text transcript streaming $"agent ${agent_id} not found")
-          (if (starts_with? action "send ")
-            (then
-              (var prompt (after_prefix action "send "))
-              (var response
-                (application_call_worker app agent/id "send" {^prompt prompt}
-                  {^origin "user" ^adapter "local_tui"
-                   ^detached (stdin_tty?)
-                   ^caller_worker_id app/main_agent/id}))
-              (render_agent_text transcript streaming
-                (worker_operation_cli_text agent "send" response)))
-          (else
+          (var response
+            (application_call_worker app pane/worker/id "send" {^prompt prompt}
+              {^origin "user" ^adapter "local_tui"
+               ^detached (stdin_tty?)
+               ^caller_worker_id app/main_agent/id}))
+          (render_agent_text transcript streaming
+            (if (&& response/ok (! (stdin_tty?)))
+              $"extension ${pane/id} completed: ${response/result/text}"
+              (worker_operation_cli_text pane/worker "send" response))))))
+    (else
+      (var parts (split rest " "))
+      (var agent_id parts/0)
+      (var action (trim (after_prefix rest agent_id)))
+      (var agent (application_find_agent app agent_id))
+      (if (== agent nil)
+        (then
+          (render_agent_text transcript streaming $"agent ${agent_id} not found"))
+        (elif (starts_with? action "send ")
+          (var prompt (after_prefix action "send "))
+          (var response
+            (application_call_worker app agent/id "send" {^prompt prompt}
+              {^origin "user" ^adapter "local_tui"
+               ^detached (stdin_tty?)
+               ^caller_worker_id app/main_agent/id}))
+          (render_agent_text transcript streaming
+            (worker_operation_cli_text agent "send" response)))
+        (else
           (match action
             (when "open"
               (var pane (application_find_pane_worker app agent/id))
@@ -9070,7 +9073,8 @@ State that broader behavior is unverified when no matching successful check ran.
                     agent/transcript agent "detach"))
                 (application_focus_pane! app pane/id))
               (render_agent_text transcript streaming
-                (if pane $"opened agent ${agent/id} in pane ${pane/id}"
+                (if pane
+                  $"opened agent ${agent/id} in pane ${pane/id}"
                   "pane limit reached")))
             (when "cancel"
               (var response
@@ -9101,7 +9105,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 (worker_operation_cli_text agent "incorporate" response)))
             (else
               (render_agent_text transcript streaming
-                "usage: /agent list | /agent new [prompt] | /agent A send <prompt>|open|result|incorporate|cancel|stop")))))))))))))
+                "usage: /agent list | /agent new [prompt] | /agent A send <prompt>|open|result|incorporate|cancel|stop"))))))))
 
 (fn handle_output_pane_command [line : Str, transcript, streaming]
   (var title
@@ -9262,22 +9266,23 @@ State that broader behavior is unverified when no matching successful check ran.
 
   (message pin_artifact [self, source : Str, worker_id : Str]
     (var app self/application)
-    (if (== source "result")
-      (do
+    (match source
+      (when "result"
         (var agent (application_find_agent app worker_id))
         (var result (if agent (agent/result ~ Cell/get)))
         (if (== result nil) {^ok false ^error "agent result not found"}
           (application_pin_artifact! app "result"
             (agent_result_text result) agent/id result/task_id)))
-      (if (== source "tail")
-        (do
-          (var worker (application_find_worker app worker_id))
-          (if (== worker nil) {^ok false ^error "worker not found"}
-            (do
-              (var operation (worker/current_operation ~ Cell/get))
-              (application_pin_artifact! app "capture"
-                (worker/output ~ Cell/get) worker/id
-                (if operation operation/task_id nil)))))
+      (when "tail"
+        (var worker (application_find_worker app worker_id))
+        (if (== worker nil)
+          {^ok false ^error "worker not found"}
+          (then
+            (var operation (worker/current_operation ~ Cell/get))
+            (application_pin_artifact! app "capture"
+              (worker/output ~ Cell/get) worker/id
+              (if operation operation/task_id nil)))))
+      (else
         {^ok false ^error "source must be result or tail"})))
 
   (message open_pane [self, kind : Str, owner_id, title : Str]
@@ -9353,11 +9358,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (if worker
         (application_find_pane_worker app worker/id)))
     (if (!= existing nil)
-    (then
-      (application_focus_pane! app existing/id)
-      existing)
-    (else
-      (if_yes (== worker nil)
+      (then
+        (application_focus_pane! app existing/id)
+        existing)
+      (else
+        (if_yes (== worker nil)
           (var resume_flag (cell false))
           (var session
             (repl_open (live_session_env items transcript memory resume_flag)))
@@ -9369,7 +9374,7 @@ State that broader behavior is unverified when no matching successful check ran.
                               ^streaming app/main_agent/streaming
                               ^resume_requested resume_flag)
               previous)))
-      (application_attach_worker_pane app worker "user" "detach"))))
+        (application_attach_worker_pane app worker "user" "detach"))))
 
 (fn restart_process_worker! [app, previous]
   # Restart is intentionally identity-preserving only through the
@@ -9381,17 +9386,16 @@ State that broader behavior is unverified when no matching successful check ran.
       (var worker nil)
       (match previous/kind
         (when "agent"
-          (if (!= previous/id "main")
-            (do
-              (set worker
-                (application_spawn_agent_with_attachments app previous/title
-                  previous/assignment
-                  (cell (previous/items ~ Cell/get)) (cell "ready\n")
-                  (previous/attachments ~ Cell/get)))
-              (if worker
-                (application_emit app "worker_started"
-                  {^worker_id worker/id ^kind "agent" ^title worker/title
-                   ^restarted_from previous/id})))))
+          (if_yes (!= previous/id "main")
+            (set worker
+              (application_spawn_agent_with_attachments app previous/title
+                previous/assignment
+                (cell (previous/items ~ Cell/get)) (cell "ready\n")
+                (previous/attachments ~ Cell/get)))
+            (if_yes worker
+              (application_emit app "worker_started"
+                {^worker_id worker/id ^kind "agent" ^title worker/title
+                 ^restarted_from previous/id}))))
         (when "shell"
           (set worker
             (application_new_worker_from app "shell" previous/title
@@ -9452,16 +9456,15 @@ State that broader behavior is unverified when no matching successful check ran.
           (set worker
             (application_new_worker_from app "stats" previous/title
               (cell "") (StatsController) previous))
-          (if worker
-            (do
-              (application_set_projection_output!
-                app worker (stats_worker_text app) "stats")
-              ((app/event_observers ~ Cell/get) ~ List/push!
-                {^worker_id worker/id
-                 ^handler (fn [event]
-                   (if_not (== event/projection true)
-                     (application_set_projection_output!
-                       app worker (stats_worker_text app) "stats")))}))))
+          (if_yes worker
+            (application_set_projection_output!
+              app worker (stats_worker_text app) "stats")
+            ((app/event_observers ~ Cell/get) ~ List/push!
+              {^worker_id worker/id
+               ^handler (fn [event]
+                 (if_not (== event/projection true)
+                   (application_set_projection_output!
+                     app worker (stats_worker_text app) "stats")))})))
         (else nil))
       (if (== worker nil)
         (then
@@ -9738,8 +9741,9 @@ State that broader behavior is unverified when no matching successful check ran.
   (var best_score 0)
   (for spec in surface_command_specs
     (var score (common_prefix_size name spec/name))
-    (if (> score best_score)
-      (do (set best spec/name) (set best_score score))))
+    (if_yes (> score best_score)
+      (set best spec/name)
+      (set best_score score)))
   (if (>= best_score 2) $"; did you mean '${best}'?" ""))
 
 (fn comprehensive_help [topic : Str] : Str
@@ -9804,18 +9808,20 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn handle_pin_command [line : Str, app, transcript, streaming]
   (var rest (trim (after_prefix line "/pin")))
   (if (starts_with? rest "result")
-    (do
+    (then
       (var agent_ref (trim (after_prefix rest "result")))
       (var agent
         (if (== agent_ref "") (latest_subagent app)
           (application_find_agent app agent_ref)))
       (if (== agent nil)
-        (render_agent_text transcript streaming "agent result not found")
-        (do
+        (then
+          (render_agent_text transcript streaming "agent result not found"))
+        (else
           (var result (agent/result ~ Cell/get))
           (if (== result nil)
-            (render_agent_text transcript streaming $"agent ${agent/id} has no result")
-            (do
+            (then
+              (render_agent_text transcript streaming $"agent ${agent/id} has no result"))
+            (else
               (var pinned
                 (application_pin_artifact! app "result"
                   (agent_result_text result) agent/id result/task_id))
@@ -9823,42 +9829,44 @@ State that broader behavior is unverified when no matching successful check ran.
                 (if pinned/ok
                   $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"
                   pinned/error)))))))
-    (if (starts_with? rest "worker ")
-      (do
-        (var worker_rest (trim (after_prefix rest "worker ")))
-        (var parts (split worker_rest " "))
-        (var worker_ref (if (empty? parts) "" parts/0))
-        (var action (trim (after_prefix worker_rest worker_ref)))
-        (var worker (application_find_worker app worker_ref))
-        (if (|| (== worker nil) (!= action "tail"))
+    (elif (starts_with? rest "worker ")
+      (var worker_rest (trim (after_prefix rest "worker ")))
+      (var parts (split worker_rest " "))
+      (var worker_ref (if (empty? parts) "" parts/0))
+      (var action (trim (after_prefix worker_rest worker_ref)))
+      (var worker (application_find_worker app worker_ref))
+      (if (|| (== worker nil) (!= action "tail"))
+        (then
           (render_agent_text transcript streaming
-            "usage: /pin worker <W> tail")
-          (do
-            (var operation (worker/current_operation ~ Cell/get))
-            (var pinned
-              (application_pin_artifact! app "capture"
-                (worker/output ~ Cell/get) worker/id
-                (if operation operation/task_id nil)))
-            (render_agent_text transcript streaming
-              (if pinned/ok
-                $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"
-                pinned/error)))))
+            "usage: /pin worker <W> tail"))
+        (else
+          (var operation (worker/current_operation ~ Cell/get))
+          (var pinned
+            (application_pin_artifact! app "capture"
+              (worker/output ~ Cell/get) worker/id
+              (if operation operation/task_id nil)))
+          (render_agent_text transcript streaming
+            (if pinned/ok
+              $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"
+              pinned/error)))))
+    (else
       (render_agent_text transcript streaming
         "usage: /pin result [A] | /pin worker <W> tail"))))
 
 (fn handle_artifact_command [line : Str, app, transcript, streaming]
   (var rest (trim (after_prefix line "/artifact")))
   (if (starts_with? rest "delete ")
-    (do
+    (then
       (var id (trim (after_prefix rest "delete ")))
       (var deleted (application_delete_artifact! app id))
       (render_agent_text transcript streaming
         (if deleted/ok $"deleted ${id}" deleted/error)))
-    (do
+    (else
       (var artifact (artifact_find rest))
       (if (== artifact nil)
-        (render_agent_text transcript streaming $"artifact ${rest} not found")
-        (do
+        (then
+          (render_agent_text transcript streaming $"artifact ${rest} not found"))
+        (else
           (var content (artifact_content artifact))
           (render_agent_text transcript streaming
             (if (== content nil)
@@ -9868,13 +9876,15 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn handle_effort_command [line : Str, app, transcript, streaming]
   (var requested (trim (after_prefix line "/effort")))
   (if (== requested "")
-    (render_agent_text transcript streaming (effort_report))
-    (do
+    (then
+      (render_agent_text transcript streaming (effort_report)))
+    (else
       (var level (lower requested))
       (if (! (valid_reasoning_effort? level))
-        (render_agent_text transcript streaming
-          $"invalid reasoning effort '${requested}'\n${(effort_report)}")
-        (do
+        (then
+          (render_agent_text transcript streaming
+            $"invalid reasoning effort '${requested}'\n${(effort_report)}"))
+        (else
           (reasoning_effort ~ Cell/set level)
           (application_emit app "config_changed"
             {^setting "reasoning_effort" ^value level})
@@ -9887,126 +9897,100 @@ State that broader behavior is unverified when no matching successful check ran.
     (then
       (handle_pin_command line app transcript streaming)
       true)
-    (else
-  (if (== line "/artifacts")
-    (then
+    (elif (== line "/artifacts")
       (render_agent_text transcript streaming (artifacts_report))
       true)
-    (else
-  (if (starts_with? line "/artifact ")
-    (then
+    (elif (starts_with? line "/artifact ")
       (handle_artifact_command line app transcript streaming)
       true)
-    (else
-  (if (|| (== line "/effort") (starts_with? line "/effort "))
-    (then
+    (elif (|| (== line "/effort") (starts_with? line "/effort "))
       (handle_effort_command line app transcript streaming)
       true)
-    (else
-  (if (help_command? line)
-    (then
+    (elif (help_command? line)
       (show_surface_help! app transcript line)
       true)
-    (else
-      (if (starts_with? line "/focus ")
-      (then
-        (var focus_id_text (trim (after_prefix line "/focus ")))
-        (handle_pane_command
-          $"/pane focus ${focus_id_text}"
-          items transcript memory streaming)
-        true)
-    (else
-      (if (|| (== line "/pane") (starts_with? line "/pane "))
-      (then
-        (handle_pane_command line items transcript memory streaming)
-        true)
-    (else
-      (if (== line "/0")
-    (then
+    (elif (starts_with? line "/focus ")
+      (var focus_id_text (trim (after_prefix line "/focus ")))
+      (handle_pane_command
+        $"/pane focus ${focus_id_text}"
+        items transcript memory streaming)
+      true)
+    (elif (|| (== line "/pane") (starts_with? line "/pane "))
+      (handle_pane_command line items transcript memory streaming)
+      true)
+    (elif (== line "/0")
       (app/local_surface/focused_pane ~ Cell/set nil)
       (render_agent_text transcript streaming "focused main agent")
       true)
-    (else
-      (if (starts_with? line "/0 ")
-      (then
-        (app/local_surface/focused_pane ~ Cell/set nil)
-        (var main_input (after_prefix line "/0 "))
-        (if (blank_line? main_input)
-          (render_agent_text transcript streaming "focused main agent")
-          (handle_main_input app main_input items transcript memory streaming))
-        true)
-      (else
-        (if (== line "/workers")
-        (then
-          (render_agent_text transcript streaming (workers_report))
-          true)
-        (else
-          (if (== line "/stats")
-          (then
-            (var pane (open_stats_pane))
-            (render_agent_text transcript streaming
-              (if (== pane nil) "worker limit reached"
-                $"opened stats pane ${pane/id}"))
-            true)
-        (else
-          (if (|| (== line "/tail") (starts_with? line "/tail "))
-          (then
-            (var filter_text
-              (if (== line "/tail") "" (after_prefix line "/tail ")))
-            (var pane (open_log_tail_pane filter_text))
-            (render_agent_text transcript streaming
-              (if (== pane nil) "worker limit reached"
-                $"opened event tail pane ${pane/id}"))
-            true)
-        (else
-          (if (starts_with? line "/view ")
-          (then
-            (var path (trim (after_prefix line "/view ")))
-            (try
-              (var status (run_gene_view app path))
-              (render_agent_text transcript streaming
-                (if (== status 0) "returned from gene view"
-                  $"gene view exited with status ${status}"))
-            catch {^message message}
-              (render_agent_text transcript streaming
-                $"cannot run gene view: ${message}"))
-            true)
-        (else
-          (if (|| (== line "/edit") (starts_with? line "/edit "))
-          (then
-            (var draft (surface_route_draft app))
-            (var initial
-              (if (== line "/edit") (draft ~ Cell/get)
-                (after_prefix line "/edit ")))
-            (try
-              (draft ~ Cell/set (external_editor_draft initial))
-              (render_agent_text transcript streaming
-                "external editor draft loaded; Enter submits it")
-            catch {^message message}
-              (render_agent_text transcript streaming
-                $"external editor failed: ${message}"))
-            true)
-        (else
-          (if (== line "/tty")
-          (then
-            (var acquired
-              (application_acquire_workspace app app/main_agent/id "tty"))
-            (if acquired
-              (try
-                (run_shell_session)
-              ensure
-                (resume_user_input)
-                (application_release_workspace app app/main_agent/id "tty"))
-              (render_agent_text transcript streaming
-                "application is shutting down"))
-            (refresh_user_input transcript)
-            true)
-        (else
-          (if (|| (== line "/worker") (starts_with? line "/worker "))
-          (then
-            (handle_worker_command line transcript streaming)
-            true)
-          (else false)))))))))))))))))))))))))))))))))
+    (elif (starts_with? line "/0 ")
+      (app/local_surface/focused_pane ~ Cell/set nil)
+      (var main_input (after_prefix line "/0 "))
+      (if (blank_line? main_input)
+        (render_agent_text transcript streaming "focused main agent")
+        (handle_main_input app main_input items transcript memory streaming))
+      true)
+    (elif (== line "/workers")
+      (render_agent_text transcript streaming (workers_report))
+      true)
+    (elif (== line "/stats")
+      (var pane (open_stats_pane))
+      (render_agent_text transcript streaming
+        (if (== pane nil)
+          "worker limit reached"
+          $"opened stats pane ${pane/id}"))
+      true)
+    (elif (|| (== line "/tail") (starts_with? line "/tail "))
+      (var filter_text
+        (if (== line "/tail") "" (after_prefix line "/tail ")))
+      (var pane (open_log_tail_pane filter_text))
+      (render_agent_text transcript streaming
+        (if (== pane nil)
+          "worker limit reached"
+          $"opened event tail pane ${pane/id}"))
+      true)
+    (elif (starts_with? line "/view ")
+      (var path (trim (after_prefix line "/view ")))
+      (try
+        (var status (run_gene_view app path))
+        (render_agent_text transcript streaming
+          (if (== status 0)
+            "returned from gene view"
+            $"gene view exited with status ${status}"))
+      catch {^message message}
+        (render_agent_text transcript streaming
+          $"cannot run gene view: ${message}"))
+      true)
+    (elif (|| (== line "/edit") (starts_with? line "/edit "))
+      (var draft (surface_route_draft app))
+      (var initial
+        (if (== line "/edit")
+          (draft ~ Cell/get)
+          (after_prefix line "/edit ")))
+      (try
+        (draft ~ Cell/set (external_editor_draft initial))
+        (render_agent_text transcript streaming
+          "external editor draft loaded; Enter submits it")
+      catch {^message message}
+        (render_agent_text transcript streaming
+          $"external editor failed: ${message}"))
+      true)
+    (elif (== line "/tty")
+      (var acquired
+        (application_acquire_workspace app app/main_agent/id "tty"))
+      (if acquired
+        (try
+          (run_shell_session)
+        ensure
+          (resume_user_input)
+          (application_release_workspace app app/main_agent/id "tty"))
+        (render_agent_text transcript streaming
+          "application is shutting down"))
+      (refresh_user_input transcript)
+      true)
+    (elif (|| (== line "/worker") (starts_with? line "/worker "))
+      (handle_worker_command line transcript streaming)
+      true)
+    (else false)))
 
 (fn route_surface_input [app, line : Str, items, transcript, memory, streaming]
   (if (&& (starts_with? line "/") (! (starts_with? line "//")))
@@ -10060,8 +10044,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (event_echo ~ Cell/set
     (fn [text] (render_agent_text transcript streaming $"[event] ${text}")))
   (if_yes saved
-      (append_transcript transcript $"[restored session from ${(state_display)}]\n")
-      (refresh_user_input transcript))
+    (append_transcript transcript $"[restored session from ${(state_display)}]\n")
+    (refresh_user_input transcript))
   (while (Cell/get running)
     (interactive_memory ~ Cell/set (memory ~ Cell/get))
     (set input_history (surface_route_history app))
@@ -10125,56 +10109,56 @@ State that broader behavior is unverified when no matching successful check ran.
                 (else
                   (if (== line "/forget-memory")
                     (then
-                    (memory ~ Cell/set [])
-                    (items ~ Cell/set
-                      (refresh_system_memory (items ~ Cell/get)
-                                             (memory ~ Cell/get)))
-                    (emit_event! "memory" {^action "clear" ^text "memory cleared"})
-                    (save_agent_state (items ~ Cell/get)
-                                      (transcript ~ Cell/get)
-                                      (memory ~ Cell/get))
-                    (render_agent_text transcript streaming "memory cleared"))
-                  (else
-                    (if (starts_with? line "/remember ")
-                      (then
-                      (var note (trim (after_prefix line "/remember ")))
-                      (if (== note "")
-                        (then
-                          (render_agent_text transcript streaming
-                            "usage: /remember <note>"))
-                        (else
-                          (memory ~ Cell/set (append (memory ~ Cell/get) note))
-                          (items ~ Cell/set
-                            (refresh_system_memory (items ~ Cell/get)
-                                                   (memory ~ Cell/get)))
-                          (emit_event! "memory" {^action "remember" ^text note})
-                          (save_agent_state (items ~ Cell/get)
-                                            (transcript ~ Cell/get)
-                                            (memory ~ Cell/get))
-                          (render_agent_text transcript streaming
-                            $"remembered: ${note}"))))
+                      (memory ~ Cell/set [])
+                      (items ~ Cell/set
+                        (refresh_system_memory (items ~ Cell/get)
+                                               (memory ~ Cell/get)))
+                      (emit_event! "memory" {^action "clear" ^text "memory cleared"})
+                      (save_agent_state (items ~ Cell/get)
+                                        (transcript ~ Cell/get)
+                                        (memory ~ Cell/get))
+                      (render_agent_text transcript streaming "memory cleared"))
                     (else
-                      (if (== line "/status")
-                      (render_agent_text transcript streaming
-                        (agent_status_report items memory))
-                      (if (== line "/progress")
-                        (render_agent_text transcript streaming
-                          (project_progress_report app))
-                      (if (== line "/diff")
-                        (render_agent_text transcript streaming (file_diff_report))
-                        (if (|| (== line "/undo") (starts_with? line "/undo "))
-                          (render_agent_text transcript streaming (undo_command line))
-                          (if (|| (== line "/trace") (starts_with? line "/trace "))
+                      (if (starts_with? line "/remember ")
+                        (then
+                          (var note (trim (after_prefix line "/remember ")))
+                          (if (== note "")
+                            (then
+                              (render_agent_text transcript streaming
+                                "usage: /remember <note>"))
+                            (else
+                              (memory ~ Cell/set (append (memory ~ Cell/get) note))
+                              (items ~ Cell/set
+                                (refresh_system_memory (items ~ Cell/get)
+                                                       (memory ~ Cell/get)))
+                              (emit_event! "memory" {^action "remember" ^text note})
+                              (save_agent_state (items ~ Cell/get)
+                                                (transcript ~ Cell/get)
+                                                (memory ~ Cell/get))
+                              (render_agent_text transcript streaming
+                                $"remembered: ${note}"))))
+                        (else
+                          (if (== line "/status")
+                          (render_agent_text transcript streaming
+                            (agent_status_report items memory))
+                          (if (== line "/progress")
                             (render_agent_text transcript streaming
-                              (trace_report
-                                (if (== line "/trace")
-                                  ""
-                                  (after_prefix line "/trace "))))
-                            (if (!= (extension_command_id line) nil)
-                                (handle_extension_command line transcript
-                                                          memory streaming)
-                                (route_surface_input app line items transcript
-                                                     memory streaming))))))))))))))))))))))))))))))
+                              (project_progress_report app))
+                          (if (== line "/diff")
+                            (render_agent_text transcript streaming (file_diff_report))
+                            (if (|| (== line "/undo") (starts_with? line "/undo "))
+                              (render_agent_text transcript streaming (undo_command line))
+                              (if (|| (== line "/trace") (starts_with? line "/trace "))
+                                (render_agent_text transcript streaming
+                                  (trace_report
+                                    (if (== line "/trace")
+                                      ""
+                                      (after_prefix line "/trace "))))
+                                (if (!= (extension_command_id line) nil)
+                                    (handle_extension_command line transcript
+                                                              memory streaming)
+                                    (route_surface_input app line items transcript
+                                                         memory streaming))))))))))))))))))))))))))))))
 
 # Project a remotely initiated turn into an attached transcript without giving
 # the adapter any curses knowledge. In headless/remote-only applications these
@@ -10327,27 +10311,27 @@ State that broader behavior is unverified when no matching successful check ran.
       (else
         (if launch/gateway
           (then
-          (gateway_server ~ Cell/set
-            (prepare_gateway (gateway_api)
-              {^port launch/port ^quiet true}))
-          # `net/http/serve` is itself the scheduler-driving root loop. Keep
-          # it at the root and make the local entrypoint a sibling Task;
-          # spawning `serve` from inside the TUI fiber would recursively pump
-          # the scheduler and starve curses input in combined mode.
-          (gateway_task ~ Cell/set
-            (spawn
-              (try
-                (run_local_entry launch task)
-              ensure
-                (stop_gateway (gateway_server ~ Cell/get)))))
-          ((gateway_task ~ Cell/get) ~ Task/detach)
-          (serve_gateway (gateway_server ~ Cell/get))
-          (try (await (gateway_task ~ Cell/get)) catch _ nil)
-          # The local task requested and completed gateway shutdown. Clear
-          # both handles so the outer failure-cleanup path does not stop the
-          # already-dropped native listener a second time.
-          (gateway_task ~ Cell/set nil)
-          (gateway_server ~ Cell/set nil))
+            (gateway_server ~ Cell/set
+              (prepare_gateway (gateway_api)
+                {^port launch/port ^quiet true}))
+            # `net/http/serve` is itself the scheduler-driving root loop. Keep
+            # it at the root and make the local entrypoint a sibling Task;
+            # spawning `serve` from inside the TUI fiber would recursively pump
+            # the scheduler and starve curses input in combined mode.
+            (gateway_task ~ Cell/set
+              (spawn
+                (try
+                  (run_local_entry launch task)
+                ensure
+                  (stop_gateway (gateway_server ~ Cell/get)))))
+            ((gateway_task ~ Cell/get) ~ Task/detach)
+            (serve_gateway (gateway_server ~ Cell/get))
+            (try (await (gateway_task ~ Cell/get)) catch _ nil)
+            # The local task requested and completed gateway shutdown. Clear
+            # both handles so the outer failure-cleanup path does not stop the
+            # already-dropped native listener a second time.
+            (gateway_task ~ Cell/set nil)
+            (gateway_server ~ Cell/set nil))
           (else (run_local_entry launch task)))))
   ensure
     (if_yes (gateway_server ~ Cell/get)

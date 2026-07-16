@@ -5672,6 +5672,49 @@ suite "cli — gene parse/fmt/compile":
     check f3.exitCode == 0
     check "# interior comment" in f3.output
 
+  test "style guide is the byte-exact formatter contract":
+    buildGeneCli()
+    let source = readFile("examples/style_guide.gene")
+    let formatted = execCmdEx(
+      shellQuote(geneExe) & " fmt examples/style_guide.gene")
+    check formatted.exitCode == 0
+    check formatted.output == source
+
+    let path = writeCliProgram("fmt_style_layout.gene",
+      "(fn layout [cond]\n" &
+      "    (var value\n" &
+      "        (build_value cond))\n" &
+      "    (if_yes cond\n" &
+      "        (record value)\n" &
+      "        (publish value))\n" &
+      "    (if cond\n" &
+      "      (then\n" &
+      "      (record value)\n" &
+      "      (publish value))\n" &
+      "      (else\n" &
+      "      (discard value)))\n" &
+      "    (if cond (accept value)\n" &
+      "      (reject value))\n" &
+      "    #(item ^value value))\n")
+    let layout = runGene(["fmt", path])
+    check layout.exitCode == 0
+    check layout.output ==
+      "(fn layout [cond]\n" &
+      "  (var value (build_value cond))\n" &
+      "  (if_yes cond\n" &
+      "    (record value)\n" &
+      "    (publish value))\n" &
+      "  (if cond\n" &
+      "    (then\n" &
+      "      (record value)\n" &
+      "      (publish value))\n" &
+      "    (else\n" &
+      "      (discard value)))\n" &
+      "  (if cond\n" &
+      "    (accept value)\n" &
+      "    (reject value))\n" &
+      "  #(item ^value value))\n"
+
   test "compile prints bytecode without executing forms":
     let path = writeCliProgram("compile_subject.gene",
       "(panic \"compile should not run\")")

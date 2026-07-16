@@ -218,12 +218,15 @@ constants:
   ...
 ```
 
-`gene parse <file>` prints the canonical parsed forms without executing them
-(a read → print round-trip; props print immediately after the head). `gene fmt
-<file>` uses that same canonical printer as the MVP formatter. `gene compile
-<file>` prints the compiled GIR bytecode without running it. `gene doc <file>`
-loads the module, skips `main`, and prints module metadata, normalized imports,
-and root and namespace declarations.
+`gene parse <file>` prints canonical parsed forms without executing them (a
+read → print round-trip; props print immediately after the head). `gene fmt
+<file>` uses the human-oriented source formatter: two-space indentation,
+reader sugar, wrapped special forms, and preserved comments. The canonical
+policy and executable example live in [`docs/style.md`](docs/style.md) and
+[`examples/style_guide.gene`](examples/style_guide.gene). `gene compile <file>`
+prints the compiled GIR bytecode without running it. `gene doc <file>` loads
+the module, skips `main`, and prints module metadata, normalized imports, and
+root and namespace declarations.
 
 `gene view [--readonly] [--editor COMMAND] [--path GENE/PATH]
 [--line N[:COLUMN]] <file>` opens a native structural source browser. Arrow,
@@ -247,7 +250,9 @@ src/
     vm.nim            stack VM + runtime built-ins
 docs/spec/            normative implemented language contract
 docs/design.md        architecture, rationale, and deferred directions
+docs/style.md         canonical human source style and formatter contract
 examples/web_demo.gene  end-to-end language showcase
+examples/style_guide.gene  formatter-stable representative source
 tests/                unit tests + executable language specs
 benchmarks/           release-mode core benchmarks
 ```

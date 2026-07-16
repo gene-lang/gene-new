@@ -1,0 +1,222 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene canonical style example
+#
+# This intentionally compact dummy module demonstrates the formatting of most
+# everyday Gene syntax. `gene fmt examples/style_guide.gene` must reproduce it
+# byte for byte.
+# =============================================================================
+
+#< Block comments can contain #< nested comments ># without changing layout. >#
+#_ (this datum is intentionally ignored)
+
+(mod style_guide @doc "canonical formatting for representative Gene source")
+
+(import str [join trim])
+(import std/stream [to_stream map filter into])
+
+# Scalars, collections, nodes, metadata, and immutable data.
+
+(var name "Ada")
+
+(var scalar_examples
+  [
+    nil
+    void
+    true
+    false
+    42
+    -7
+    3.5
+    "text"
+    $"hello ${name}"
+    """line one
+line two"""
+    'λ'
+    0x41
+    0x4869
+    #"[a-z]+"im
+    2026-07-04
+    09:30:15.123456
+    2026-07-04T09:30:15-04:00[America/New_York]])
+
+(var collection_examples
+  [
+    [1 2 3]
+    #[1 2 3]
+    {^name "Ada" ^^active}
+    #{^name "Ada" ^^active}
+    {{"first" : 1 "second" : 2}}
+    (quote (user @source "example" @@generated ^name "Ada" ^^active))
+    #(user ^name "Ada" ^^active)])
+
+# Domain declarations.
+
+(enum Status pending active (failed Str))
+
+(type User @doc "a small styled record" ^props {^name Str ^roles (List Str) ^active Bool?})
+
+(protocol Labelled
+  (message label [self : Self] : Str))
+
+(impl Labelled for User
+  (message label [self] : Str
+    (if self/active
+      self/name
+      $"${self/name} (inactive)")))
+
+(ns fixtures
+  (var default_name "Ada")
+  (fn default_roles [] : (List Str)
+    ["reader" "writer"]))
+
+# Functions, parameters, mutation, paths, calls, and pipelines.
+
+(fn normalize_name [name : Str] : Str
+  (trim name))
+
+(fn make_user [name : Str, ^roles : (List Str) = [], ^active : Bool = true] : User
+  (User ^name (normalize_name name) ^roles roles ^active active))
+
+(fn append_all [target, values...]
+  (for value in values
+    (target ~ List/push! value))
+  target)
+
+(fn active_names [users : (List User)] : (List Str)
+  (users/%to_stream
+    ~ filter (fn [user] user/active)
+    ; ~ map (fn [user] user/name)
+    ; ~ into []))
+
+# Compact conditions, guard sequences, and full clauses.
+
+(fn status_text [status : Status] : Str
+  (match status
+    (when Status/pending "pending")
+    (when Status/active "active")
+    (when (Status/failed message)
+      $"failed: ${message}")))
+
+(fn clamp [value : Int, low : Int, high : Int] : Int
+  (if (< value low)
+    low
+    (if (> value high)
+      high
+      value)))
+
+(fn note_activation [user : User, events]
+  (if_yes user/active
+    (events ~ List/push! $"activated ${user/name}")
+    (events ~ List/push! "notification queued"))
+  events)
+
+(fn load_if_missing [cached, load, save]
+  (if_not cached
+    (var value (load))
+    (save value)
+    value))
+
+(fn record [message]
+  message)
+
+(fn grouped_value [build]
+  (record
+    (do
+      (var value (build))
+      (if value
+        value
+        "a deliberately long fallback value keeps this grouped expression readable"))))
+
+(fn describe_attempt [ready, retryable]
+  (if ready
+    (then
+      (record "start")
+      "started")
+    (elif retryable
+      (record "retry")
+      "retrying")
+    (else
+      (record "skip")
+      "skipped")))
+
+# Destructuring, loops, streams, and control transfer.
+
+(fn indexed_pairs* [items]
+  (repeat index in items/~size
+    (yield [index items/%index])))
+
+(fn first_named [users, wanted]
+  (for user in users
+    (if (== user/name wanted) (return user)))
+  nil)
+
+(fn count_active [users] : Int
+  (var count 0)
+  (for user in users
+    (if_not user/active (continue))
+    (set count (+ count 1)))
+  count)
+
+(fn countdown [start : Int] : Int
+  (var current start)
+  (while (> current 0)
+    (set current (- current 1))
+    (if (== current 2) (continue))
+    (if (== current 1) (break)))
+  current)
+
+(fn inspect_pair [pair]
+  (var [key, value] pair)
+  {^key key ^value value})
+
+# Errors, cleanup, tasks, and structured concurrency.
+
+(type ExampleError ^props {^message Str} ^impl [Error])
+
+(impl Error for ExampleError)
+
+(fn checked_value [value] ^errors [ExampleError]
+  (if_not value (fail (ExampleError ^message "value is required")))
+  value)
+
+(fn recover_value [load, close]
+  (try
+    (checked_value (load))
+  catch (ExampleError ^message message)
+    $"error: ${message}"
+  catch _
+    "unknown error"
+  ensure
+    (close)))
+
+(fn concurrent_pair [left, right]
+  (scope
+    (var left_task (spawn (left)))
+    (var right_task (spawn (right)))
+    [(await left_task) (await right_task)]))
+
+# Syntax values, macros, fexprs, templates, selectors, and spread.
+
+(macro unless! [condition, body...]
+  `(if_not %condition %body...))
+
+(fn! raw_head! [form]
+  (head form))
+
+(fn user_card [user : User]
+  `(article ^class "user-card"
+     (h2 %(user ~ label))
+     (ul %(user/roles/%to_stream ~ map (fn [role] `(li %role)); ~ into []) ...)))
+
+(fn selector_examples [session, field]
+  [session/user/name session/items/-1 /user/name (session ~ (select user %field))])
+
+# A small entry point keeps the example coherent without making formatting
+# depend on external capabilities.
+
+(fn main []
+  (var users
+    [(make_user ^roles ["reader"] " Ada ") (make_user ^roles ["writer"] ^active false "Grace")])
+  (println (join (active_names users) ", "))
+  nil)
