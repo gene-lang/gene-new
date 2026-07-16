@@ -75,6 +75,8 @@ add tools, inspect state, `(session ~ resume)` to continue the turn),
 focus a cancellable foreground shell pane), `/tty` (local user-driven escape
 for interactive or persistent/background shell work), `/remember <note>` / `/memory` /
 `/forget-memory` (durable notes in the system prompt),
+`/effort [level]` (show all reasoning-effort levels and the current choice, or
+set it for subsequent model requests),
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
 `/pane output [title]`, bare `/N` (focus), `/N <input>`, `/close [N]`, and
 `/N cancel|stop|max`
@@ -96,6 +98,7 @@ Key environment variables (all optional beyond the auth token):
 |---|---|
 | `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` | bearer token, checked in that order; unset → offline demo |
 | `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API` | endpoint, model, wire shape (`responses`\|`chat`) |
+| `OPENAI_REASONING_EFFORT` | initial reasoning effort: `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; `default` omits the request field and individual models may support only a subset |
 | `GENE_AGENT_STATE=fs:<path>` | persist config, application/session state, memory, and events as filesystem records under `path`; a bare path remains accepted for compatibility |
 | `GENE_AGENT_STATE=db:sqlite:<path>` | persist the same records in SQLite; additional database URL schemes can be added behind the same Store interface |
 | `GENE_AGENT_HOME=<dir>` | filesystem fallback when `GENE_AGENT_STATE` is unset or blank; reusing the same home restores state automatically |

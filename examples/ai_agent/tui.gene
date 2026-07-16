@@ -113,6 +113,22 @@
 # OPENAI_API=responses|chat.
 (var api_flavor
   (get_env Env "OPENAI_API" (if (== base codex_base) "responses" "chat")))
+(var reasoning_effort_levels
+  ["default" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
+(var reasoning_effort_levels_text (join reasoning_effort_levels ", "))
+(var configured_reasoning_effort (env? Env "OPENAI_REASONING_EFFORT"))
+(var initial_reasoning_effort
+  (if configured_reasoning_effort
+    (lower (trim configured_reasoning_effort))
+    "default"))
+
+(fn valid_reasoning_effort? [level] : Bool
+  (reasoning_effort_levels ~ contains? level))
+
+(if (! (valid_reasoning_effort? initial_reasoning_effort))
+  (fail (OsError
+    ^message $"OPENAI_REASONING_EFFORT must be one of ${reasoning_effort_levels_text}")))
+(var reasoning_effort (cell initial_reasoning_effort))
 (var workspace_root ".")
 (var approve_all (get_env Env "GENE_AGENT_APPROVE_ALL" "1"))
 (var agent_home (get_env Env "GENE_AGENT_HOME" ""))
@@ -3734,22 +3750,31 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn call_model [transport, input_items, render_stream]
   (var started (monotonic_ms))
-  (var body
+  (var request
     (if (== api_flavor "chat")
-      (stringify {^model model
-                  ^messages (items_to_chat_messages input_items)
-                  ^tools (chat_tool_schemas_now)
-                  ^tool_choice "auto"
-                  ^stream true})
-      (stringify {^model model
-                  ^store false
-                  ^stream true
-                  ^input input_items
-                  ^tools (tool_schemas_now)
-                  ^tool_choice "auto"
-                  ^parallel_tool_calls true})))
+      {^model model
+       ^messages (items_to_chat_messages input_items)
+       ^tools (chat_tool_schemas_now)
+       ^tool_choice "auto"
+       ^stream true}
+      {^model model
+       ^store false
+       ^stream true
+       ^input input_items
+       ^tools (tool_schemas_now)
+       ^tool_choice "auto"
+       ^parallel_tool_calls true}))
+  (var effort (reasoning_effort ~ Cell/get))
+  # Omitting the setting preserves the backend/model default. OpenAI's two
+  # wire shapes use different field names for the same user-facing control.
+  (if (!= effort "default")
+    (if (== api_flavor "chat")
+      (request ~ Map/put! "reasoning_effort" effort)
+      (request ~ Map/put! "reasoning" {^effort effort})))
+  (var body (stringify request))
   (debug! model_log "model request started"
     ^payload {^api_flavor api_flavor ^model_name model
+              ^reasoning_effort effort
               ^input_items (input_items ~ size)
               ^tool_count ((tool_names ~ Cell/get) ~ size)
               ^request_bytes (byte_size body)})
@@ -4127,6 +4152,7 @@ State that broader behavior is unverified when no matching successful check ran.
   {^model model
    ^base base
    ^api_flavor api_flavor
+   ^reasoning_effort (reasoning_effort ~ Cell/get)
    ^workspace_root workspace_root
    ^approve_all approve_all
    ^max_tool_rounds max_tool_rounds
@@ -4141,6 +4167,17 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn save_config []
   (state_put "config" (config_snapshot)))
+
+(fn restore_reasoning_effort! []
+  # An explicit environment value is launch configuration and wins over the
+  # durable interactive choice. Otherwise resume the last valid choice.
+  (if (&& (resume_enabled?) (== configured_reasoning_effort nil))
+    (do
+      (var saved (state_get "config" nil))
+      (if (&& saved
+              (present? saved/reasoning_effort)
+              (valid_reasoning_effort? saved/reasoning_effort))
+        (reasoning_effort ~ Cell/set saved/reasoning_effort)))))
 
 (fn prompt_with_memory [memory]
   (if (empty? memory)
@@ -4895,6 +4932,7 @@ State that broader behavior is unverified when no matching successful check ran.
     "agent_spawned" "agent_status" "agent_completed"
     "pane_opened" "pane_closed" "file_change" "check"
     "context_compacted" "confirmation" "memory"
+    "config_changed"
     "supervisor_result_dropped"] ~ contains? type))
 
 (fn progress_checkpoint_event? [type : Str] : Bool
@@ -5026,6 +5064,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn run_one_shot [task : Str]
   (init_agent_state)
+  (restore_reasoning_effort!)
   (save_config)
   (println $"Gene AI agent - model ${model}")
   (println $"user> ${task}")
@@ -7281,7 +7320,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (|| (== app nil) (== app/local_surface nil))
       0
       ((app/local_surface/panes ~ Cell/get) ~ size)))
-  $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
+  $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\neffort: ${(reasoning_effort ~ Cell/get)}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
 
 (fn run_shell_session []
   (suspend_user_input)
@@ -7688,6 +7727,8 @@ State that broader behavior is unverified when no matching successful check ran.
    ^summary "suspend the TUI and run gene view; quitting returns here"}
   {^name "/status" ^section "session" ^usage "/status"
    ^summary "show application and context status"}
+  {^name "/effort" ^section "session" ^usage "/effort [default|none|minimal|low|medium|high|xhigh|max]"
+   ^summary "show or set model reasoning effort"}
   {^name "/progress" ^section "session" ^usage "/progress"
    ^summary "show the main project-progress record"}
   {^name "/trace" ^section "trace" ^usage "/trace [filters] [--detail]"
@@ -7778,8 +7819,33 @@ State that broader behavior is unverified when no matching successful check ran.
     (else (println text)))
   text)
 
+(fn effort_report [] : Str
+  $"reasoning effort levels: ${reasoning_effort_levels_text}\ncurrent effort: ${(reasoning_effort ~ Cell/get)}\navailability depends on the selected model")
+
+(fn handle_effort_command [line : Str, app, transcript, streaming]
+  (var requested (trim (after_prefix line "/effort")))
+  (if (== requested "")
+    (render_agent_text transcript streaming (effort_report))
+    (do
+      (var level (lower requested))
+      (if (! (valid_reasoning_effort? level))
+        (render_agent_text transcript streaming
+          $"invalid reasoning effort '${requested}'\n${(effort_report)}")
+        (do
+          (reasoning_effort ~ Cell/set level)
+          (save_config)
+          (application_emit app "config_changed"
+            {^setting "reasoning_effort" ^value level})
+          (render_agent_text transcript streaming
+            $"reasoning effort set to ${level}"))))))
+
 (fn handle_surface_global_command [line : Str, app, items, transcript, memory,
                                    streaming] : Bool
+  (if (|| (== line "/effort") (starts_with? line "/effort "))
+    (then
+      (handle_effort_command line app transcript streaming)
+      true)
+    (else
   (if (help_command? line)
     (then
       (show_surface_help! app transcript line)
@@ -7883,7 +7949,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (then
             (handle_worker_command line transcript streaming)
             true)
-          (else false)))))))))))))))))))))))))
+          (else false)))))))))))))))))))))))))))
 
 (fn route_surface_input [app, line : Str, items, transcript, memory, streaming]
   (if (&& (starts_with? line "/") (! (starts_with? line "//")))
@@ -7906,6 +7972,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn run_repl []
   (init_agent_state)
+  (restore_reasoning_effort!)
   (save_config)
   (println $"Started Gene AI agent - model ${model}.")
   (var memory (cell (load_memory)))

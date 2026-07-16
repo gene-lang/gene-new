@@ -1875,22 +1875,27 @@ suite "cli — gene run":
       removeDir(stateDir)
 
     let first = execCmdOnce(
-      "printf '/remember project uses Gene\\n/status\\n/quit\\n' | " &
+      "printf '/remember project uses Gene\\n/effort xhigh\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u OPENAI_REASONING_EFFORT " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
       " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check first.exitCode == 0
     check "remembered: project uses Gene" in first.output
     check "state: " & stateDir in first.output
     check "memory: 1" in first.output
+    check "reasoning effort set to xhigh" in first.output
+    check "effort: xhigh" in first.output
     let configText = readFile(stateDir / "config.gene")
+    check "^reasoning_effort \"xhigh\"" in configText
     check "dummy" notin configText
     check "OPENAI_AUTH_TOKEN" notin configText
     check "CODEX_ACCESS_TOKEN" notin configText
 
     let second = execCmdOnce(
-      "printf '/memory\\n/status\\n/quit\\n' | " &
+      "printf '/memory\\n/effort\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "-u OPENAI_REASONING_EFFORT " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
       " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
     check second.exitCode == 0
@@ -1898,12 +1903,66 @@ suite "cli — gene run":
     check "state: " & stateDir in second.output
     check "model: gpt-5.6-terra" in second.output
     check "api: responses" in second.output
+    check "current effort: xhigh" in second.output
+    check "effort: xhigh" in second.output
     check "memory: 1" in second.output
     let sessionText = readFile(stateDir / "session.gene")
     check "/remember project uses Gene\\n" in sessionText
     check "/memory\\n" in sessionText
     check "agent> remembered: project uses Gene" in sessionText
     check "agent> memory:\\nproject uses Gene" in sessionText
+
+    let overridden = execCmdOnce(
+      "printf '/effort\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
+      "OPENAI_REASONING_EFFORT=low CODEX_ACCESS_TOKEN=dummy " &
+      "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+    check overridden.exitCode == 0
+    check "current effort: low" in overridden.output
+
+  test "ai agent serializes reasoning effort for both OpenAI wire shapes":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/reasoning_effort_request_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [call_model] from "./tui.gene")
+(import json [parse stringify])
+(var captured (cell nil))
+(fn transport [body, render_stream]
+  (captured ~ Cell/set (parse body))
+  {^output []})
+(call_model transport [] (fn [text] nil))
+(println (stringify (captured ~ Cell/get)))
+""")
+
+    let responses = execCmdOnce(
+      "env OPENAI_API=responses OPENAI_REASONING_EFFORT=high " &
+      shellQuote(geneExe) & " run " & shellQuote(fixture))
+    if responses.exitCode != 0:
+      checkpoint responses.output
+    check responses.exitCode == 0
+    check "\"reasoning\":{\"effort\":\"high\"}" in responses.output
+    check "reasoning_effort" notin responses.output
+
+    let chat = execCmdOnce(
+      "env OPENAI_API=chat OPENAI_REASONING_EFFORT=low " &
+      shellQuote(geneExe) & " run " & shellQuote(fixture))
+    if chat.exitCode != 0:
+      checkpoint chat.output
+    check chat.exitCode == 0
+    check "\"reasoning_effort\":\"low\"" in chat.output
+    check "\"reasoning\":" notin chat.output
+
+    let defaultEffort = execCmdOnce(
+      "env -u OPENAI_REASONING_EFFORT OPENAI_API=responses " &
+      shellQuote(geneExe) & " run " & shellQuote(fixture))
+    if defaultEffort.exitCode != 0:
+      checkpoint defaultEffort.output
+    check defaultEffort.exitCode == 0
+    check "\"reasoning\":" notin defaultEffort.output
+    check "reasoning_effort" notin defaultEffort.output
 
   test "ai agent checkpoints application state before graceful exit":
     buildGeneCli()
