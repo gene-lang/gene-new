@@ -14,7 +14,23 @@ type CursesPane = object
   maximized: bool
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-  type CursesWindow = pointer
+  type
+    CursesWindow = pointer
+    CursesTranscriptRow = object
+      text: string
+      pair: int
+    CursesTranscriptCache = object
+      valid: bool
+      output: string
+      width: int
+      rows: seq[CursesTranscriptRow]
+
+  var cursesMainTranscriptCache: CursesTranscriptCache
+  var cursesPaneTranscriptCaches: seq[CursesTranscriptCache]
+
+  proc clearCursesTranscriptCaches() =
+    cursesMainTranscriptCache = default(CursesTranscriptCache)
+    cursesPaneTranscriptCaches.setLen(0)
 
   proc cInitscr(): CursesWindow {.importc: "initscr", header: "<ncurses.h>".}
   proc cEndwin(): cint {.importc: "endwin", header: "<ncurses.h>".}
@@ -2291,6 +2307,7 @@ proc biOsReadLine(args: openArray[Value]): Value {.nimcall.} =
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc openCursesInput() =
     if not cursesInputActive:
+      clearCursesTranscriptCaches()
       cInstallRestoreHooks()
       cSaveTermios()
       cSetLocale()
@@ -2339,6 +2356,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       setConsoleLogSuppressed(false)
       cursesColorsReady = false
       cursesPasteReady = false
+      clearCursesTranscriptCaches()
     cRestoreTermios()
     cRestoreDisplay()
 
@@ -2443,10 +2461,6 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     else:
       (line, currentPair)
 
-  type CursesTranscriptRow = object
-    text: string
-    pair: int
-
   proc wrapCursesText(text: string, width: int): seq[string] =
     ## Wrap at the last ASCII whitespace that fits, falling back to a UTF-8
     ## character boundary for long words. Newlines have already been split.
@@ -2490,6 +2504,19 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
         for visualLine in wrapCursesText(rendered.text, width):
           result.add CursesTranscriptRow(text: visualLine,
                                          pair: rendered.pair)
+
+  proc cachedTranscriptRows(cache: var CursesTranscriptCache,
+                            output: string,
+                            width: int): seq[CursesTranscriptRow] =
+    ## Input editing redraws far more often than transcript content changes.
+    ## Retain the parsed/wrapped rows for the active screen so a keypress only
+    ## repaints terminal cells instead of re-splitting all retained output.
+    if not cache.valid or cache.width != width or cache.output != output:
+      cache.valid = true
+      cache.output = output
+      cache.width = width
+      cache.rows = transcriptRows(output, width)
+    cache.rows
 
   proc drawSeparator(row, width: int) =
     discard cMove(row.cint, 0)
@@ -2539,7 +2566,10 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc drawCursesPanes(panes: openArray[CursesPane], outputRows, width: int) =
     if panes.len == 0 or outputRows <= 0 or width < 48:
+      if panes.len == 0:
+        cursesPaneTranscriptCaches.setLen(0)
       return
+    cursesPaneTranscriptCaches.setLen(panes.len)
     let mainWidth = cursesMainOutputWidth(width, panes.len)
     let divider = mainWidth
     let paneWidth = width - divider - 1
@@ -2572,7 +2602,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       if paneHeight <= 0:
         continue
       let bodyHeight = max(0, paneHeight - 1)
-      let rows = transcriptRows(paneOutput, paneWidth)
+      let rows = cachedTranscriptRows(cursesPaneTranscriptCaches[i],
+                                      paneOutput, paneWidth)
       let effectiveScroll = min(max(0, pane.scroll),
                                 max(0, rows.len - bodyHeight))
       let paneTitle =
@@ -2654,7 +2685,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     let requestedScroll =
       if fullPane >= 0: panes[fullPane].scroll
       else: outputScroll
-    let outputLines = transcriptRows(visibleOutput, mainOutputWidth)
+    let outputLines = cachedTranscriptRows(cursesMainTranscriptCache,
+                                           visibleOutput, mainOutputWidth)
     let effectiveScroll = min(max(0, requestedScroll),
                               max(0, outputLines.len - outputRows))
     drawCursesTranscript(outputLines, 0, 0, outputRows, mainOutputWidth,

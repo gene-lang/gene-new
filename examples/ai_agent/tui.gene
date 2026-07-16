@@ -525,6 +525,7 @@
 (var active_editor (cell nil))
 (var confirmation_active (cell false))
 (var active_repaint_pending (cell false))
+(var active_repaint_interval_ms 16)
 (var interactive_transcript (cell nil))
 (var interactive_memory (cell []))
 (var agent_checkpoint_suspended (cell false))
@@ -6669,16 +6670,16 @@ State that broader behavior is unverified when no matching successful check ran.
       (draw_editor editor))))
 
 (fn refresh_active_input []
-  # Background workers may emit many deltas in one scheduler turn. Collapse
-  # those invalidations into one later draw; the editor's own key path still
-  # draws synchronously after consuming input, so output cannot queue ahead of
-  # command acknowledgement.
+  # Background workers may emit many deltas in adjacent scheduler turns. Draw
+  # at most once per terminal frame; the editor's own key path remains
+  # synchronous, so typed input never waits behind the repaint throttle and
+  # its draw includes all output accumulated so far.
   (if_not (active_repaint_pending ~ Cell/get)
     (active_repaint_pending ~ Cell/set true)
     (var repaint
       (spawn
         (do
-          (sleep 0)
+          (sleep active_repaint_interval_ms)
           (active_repaint_pending ~ Cell/set false)
           (var transcript (interactive_transcript ~ Cell/get))
           (if (!= transcript nil) (refresh_user_input transcript)))))
@@ -6721,10 +6722,17 @@ State that broader behavior is unverified when no matching successful check ran.
       (print "\r"))))
 
 (fn output_with_pending [transcript pending dots_visible render]
-  (advance_agent_pending transcript pending)
-  (render)
-  (if (pending ~ Cell/get)
-    (refresh_agent_pending transcript pending dots_visible)))
+  (if (stdin_tty?)
+    (then
+      # The marker is virtual terminal state, not transcript text. Appending
+      # and drawing new output naturally leaves it last, so hiding and
+      # redrawing it around every stream delta only creates redundant frames.
+      (render))
+    (else
+      (advance_agent_pending transcript pending)
+      (render)
+      (if (pending ~ Cell/get)
+        (refresh_agent_pending transcript pending dots_visible)))))
 
 (fn start_agent_pending [transcript]
   (var pending (cell true))
@@ -6780,7 +6788,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (Cell/set streaming true))
     (append_transcript transcript text)
     (if (stdin_tty?)
-      (refresh_user_input transcript)
+      (refresh_active_input)
       (print text))))
 
 (fn finish_agent_stream [transcript streaming]

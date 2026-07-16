@@ -12388,7 +12388,25 @@ proc pumpUntilDone(task: Value) =
     endSchedulerWorkerLease(workerLease)
   while not task.taskDone:
     pollOsExecAsyncCompletions()
-    if not schedulerRunOneRoot(workerLease):
+    # Completion polling may settle the exact task we are awaiting. Do not
+    # enter the scheduler afterward: the poll also ends the external-op count,
+    # so an unrelated distant timer could otherwise put a completed await back
+    # to sleep before this loop observes it.
+    if task.taskDone:
+      break
+    # Polling-backed native tasks (curses input, HTTP, async exec) are settled
+    # only when this root lane calls pollOsExecAsyncCompletions. A distant Gene
+    # timer must not let schedulerRunOneRoot sleep past that polling boundary.
+    # Keep ordinary timer sleeps efficient when no external operation exists.
+    let progressed =
+      when compileOption("threads"):
+        if externalNativeOpsPending():
+          schedulerRunOneRootUntil(timerDeadline(1), workerLease)
+        else:
+          schedulerRunOneRoot(workerLease)
+      else:
+        schedulerRunOneRoot(workerLease)
+    if not progressed:
       if task.taskDone:
         break
       when compileOption("threads") and defined(gcAtomicArc):

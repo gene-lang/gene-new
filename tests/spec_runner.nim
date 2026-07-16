@@ -3796,6 +3796,20 @@ suite "spec — os and json from ai-agent plan":
                "status",
                "0")
 
+  test "root await polls external tasks before unrelated distant timers":
+    let started = getMonoTime()
+    check_eval("(import os [exec_async Exec]) " &
+               "(var status -1) " &
+               "(scope " &
+               "  (var distant (spawn (sleep 1500))) " &
+               "  (var r (await (exec_async Exec ^cmd \"sh\" " &
+               "    ^args [\"-c\" \"sleep 0.05\"]))) " &
+               "  (set status r/status) " &
+               "  (distant ~ Task/cancel)) " &
+               "status",
+               "0")
+    check getMonoTime() - started < initDuration(milliseconds = 800)
+
   test "os/exec_stream_async feeds stdout lines through a channel then closes it":
     check_eval("(import os [exec_stream_async Exec]) " &
                "(import std/stream [to_stream into]) " &
