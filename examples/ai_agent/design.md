@@ -24,7 +24,11 @@ lifecycle, bounded-output, snapshot, and input-admission contracts. Combined
 without starving TUI input, while `--headless` constructs no curses or pane
 state. Snapshot/resume, projection non-amplification, restart identities,
 external editing, typed worker routes, and reject-while-busy admission are
-implemented and covered by deterministic CLI/PTY tests (§10.5).**
+implemented and covered by deterministic CLI/PTY tests (§10.5). Slice C3 is
+now shipped too: isolated restore records, structured terminal agent results,
+registry-derived help and safe slash commands, hidden/focused pane operations,
+and explicit project progress make the worker model discoverable, operable,
+and recoverable under the complex-project dogfood flow (§10.6).**
 Date: 2026-07-15.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
@@ -160,6 +164,17 @@ the invariant wins and the text is stale:
    dropping oldest entries with explicit loss metadata; stale cursors get an
    explicit gap response, never a silent skip.
 10. Remote adapters never require the local TUI to exist.
+11. Command-shaped input is never silently reinterpreted as worker input. An
+   unknown leading-slash command is a local error; literal slash-prefixed input
+   requires `//...` or `/N -- ...`.
+12. Every agent operation has one durable terminal outcome and one structured
+   result, including failure and cancellation. Availability (`idle`/`busy`),
+   lifecycle (`running`/`stopped`), last outcome, and unread result state are
+   separate facts on every surface.
+13. Restore validates records independently. One malformed or obsolete pane,
+   worker, or surface record is quarantined with an attributable event and can
+   never prevent the main session from loading, and never causes a host
+   operation to be retried.
 
 ## 1. What the agent is
 
@@ -215,10 +230,13 @@ Behavior:
   guard
   (§8.5), appends `function_call_output` items, and loops until the model
   returns a final message item;
-- slash commands in the input line (shipped/bootstrap: `/quit`, `/exit`, `/sh`,
-  `/repl`, `/remember`, `/memory`, `/forget-memory`, `/status`, `/trace`,
-  `/diff`, `/undo`, `/ext`, `/N <prompt>`, `/N close`; later as dogfooding
-  demands: the typed pane commands in §7.1, `/model`, `/clear`), and
+- slash commands in the input line. The canonical grammar is `/help`, `/pane
+  ...`, `/agent ...`, and `/worker ...` (§7.1); `/?` is the exact short help
+  alias, while `/0`, `/N ...`, `/ext`, `/sh`, `/repl`, `/tail`, `/stats`, and
+  `/view` remain concise aliases. Unknown
+  command-shaped input is rejected locally rather than sent to the focused
+  worker. Session commands include `/quit`, `/exit`, `/remember`, `/memory`,
+  `/forget-memory`, `/status`, `/progress`, `/trace`, `/diff`, and `/undo`, and
   Ctrl-C interrupting a `/sh` command or `/repl` eval, and Escape/Ctrl-C
   cancelling an in-flight model response (shipped, slice B);
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
@@ -324,6 +342,16 @@ in-flight native task: the persisted operation metadata is normalized to a
 safe terminal/interrupted state, after which the user or supervisor can
 explicitly retry it. Gateway applications use their own persistence path and
 do not overwrite the local CLI application's store.
+
+Restore is record-isolated. The session core (main agent, bounded transcript,
+memory, and event cursor) loads first; workers and each surface/pane descriptor
+are validated and installed independently afterward. Invalid kind, type, path,
+limit, or stale schema data produces a bounded `restore_record_rejected` event
+with record kind/id and redacted error, then that record is skipped. A rejected
+file view, projection, or layout can reduce the restored UI but cannot abort the
+main session. No validator evaluates ad-hoc syntax from persisted data. The
+all-kinds restore fixture covers agent, shell, REPL, output, log-tail, stats,
+and file-view workers together, including one deliberately malformed pane.
 
 Before this work there was no OS-environment access at the Gene surface. The
 `Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
@@ -515,6 +543,14 @@ and demonstrates how types, metadata, functions, and maps compose. Every call
 passes through argument validation and then the narrow catastrophe guard in
 §8.5, and both the call and its result are appended to the event log (§9.2).
 
+The return boundary is typed too. A handler returns either `Str` or
+`{^text Str ^truncated Bool}`; any other shape becomes a bounded tool error
+before rendering, event append, or model reinsertion. Helpers that render
+collections validate or convert each element explicitly — they never pass an
+unchecked list to `str/join`. A formatting failure preserves tool name, call
+id, worker/task ids, and a redacted error in the structured agent result rather
+than unwinding supervision with an empty result.
+
 ## 7. Terminal UI via curses (§7)
 
 A native `curses` namespace backed by linked `libncurses`. ncurses' variadic
@@ -562,9 +598,10 @@ hatch (§8.5; the bootstrap spelled it as interactive `/sh` — C2 gives the two
 meanings distinct commands); the shell and REPL *panes* are scheduler-owned
 and never leave curses (§7.1).
 The mouse wheel moves the focused view by three lines and PageUp/PageDown by
-one viewport. A newly opened extension pane takes navigation focus; `/N focus`
-toggles between pane `N` and the main transcript. The main status line or a
-scrolled pane title shows `[SCROLL +N]` while that view is above its live tail.
+one viewport. A newly opened extension pane takes navigation focus; `/pane
+focus N` (alias `/N focus`) selects it and `/pane focus 0` (aliases `/0` and
+`/focus 0`) returns to main. The main status line or a scrolled pane title
+shows `[SCROLL +N]` while that view is above its live tail.
 While an agent turn is pending, its surface may pulse a final `...` row. That
 row is a presentation overlay: it is never appended to the shared transcript,
 worker output, event journal, or persisted snapshot, and the first real output
@@ -587,6 +624,31 @@ in-flight model response and steering its continuation are shipped (§10).
 Search, selection, and horizontal transcript scrolling remain optional; the
 reusable lifecycle, editor, drawing, vertical scrolling, resize, and
 asynchronous input layer is public and covered by PTY tests.
+
+Status help is route-specific, not one universal “Enter sends” string. An
+agent, shell, or REPL names its worker id, operation state, and send/cancel
+keys. An output, file, stats, or tail view is labeled `read-only` and advertises
+scroll, focus-main, maximize, and close controls; its input editor is inactive
+except for recognized global commands. Every non-main route shows `/0 main`.
+Examples:
+
+```text
+[0 main] Enter send | /pane list | /help
+[1 agent a1: working] /0 main | Esc cancel | PgUp/PgDn scroll
+[2 shell w1: idle] Enter run | /0 main | Ctrl-C cancel
+[4 output w3: read-only] /0 main | PgUp/PgDn scroll | /4 close
+```
+
+Presentation refresh is coalesced: worker/event callbacks mark dirty regions
+and at most one draw runs per scheduler turn. The input queue is drained before
+that draw, so rapid child tool events cannot repeatedly repaint a partially
+typed command or delay its submission behind every delta. PTY acceptance uses
+an event-heavy child and primarily requires exact draft bytes/route plus
+acknowledgement by the second scheduler turn. CI uses a generous wall-clock
+watchdog (default one second) rather than treating host scheduling as product
+behavior; an otherwise idle-host measurement tracks 250 ms as a diagnostic
+performance target. Rendering may drop intermediate frames but never input or
+authoritative events.
 
 ### 7.1 Workers and panes
 
@@ -637,12 +699,13 @@ than event identity.
 
 Interfaces then have three states per surface: the always-present **main pane
 0** (the main agent's transcript), zero or more **visible panes** stacked on
-the right, and **headless workers** with no pane on that surface. A
-materialized "invisible pane" — a detached view that retains scroll/filter
-state — is deliberately deferred: headless workers already cover the useful
-case, and hidden view objects only earn their keep if per-pane view state must
-survive detach/reattach in saved layouts. Detaching a pane discards only view
-state, never worker state.
+the right, bounded **hidden panes** retained by that surface, and **headless
+workers** with no pane on that surface. C3 adds hidden panes because dogfooding
+showed that six useful workers cannot all remain legible in one stacked column:
+`hide` preserves that pane's scroll/filter/view state and counts against the
+surface pane bound, while `close` discards the descriptor. Neither operation
+changes worker lifecycle. A worker with no visible or hidden pane on this
+surface is headless here and can be reattached through `/pane open W`.
 
 | Worker | User input | Output | Stop semantics |
 |---|---|---|---|
@@ -657,7 +720,15 @@ state, never worker state.
 The `output` worker exists so the "one pane, one worker" rule has no
 exception: a pane never owns a mutable buffer itself. `open_pane ^kind
 "output"` creates (or attaches to) an output worker, and the shipped
-`append_pane` operation appends to that worker's bounded buffer.
+`append_pane` operation appends to that worker's bounded buffer. The canonical
+surface addresses the worker directly with `/worker W append <text>`; `/N
+append <text>` is a pane-id convenience alias. `/worker OUT follow SOURCE`
+adds a bounded projection link from another worker (for example a verification
+shell) and `unfollow` removes it. Links are explicit worker state, survive pane
+close, never duplicate source journal events, and are removed when either
+worker stops. The follow graph must remain acyclic: self-links and any link
+that would create a transitive cycle are rejected with a typed
+`worker_follow_cycle` error before state changes or output propagates.
 
 Worker state separates three orthogonal concepts, because one flat status
 cannot describe both request/command workers and continuous projections:
@@ -667,6 +738,20 @@ lifecycle:          running | stopped                (stopped is terminal)
 current operation:  none | busy(task_id, kind)
 last outcome:       completed | cancelled | failed   (observational only)
 ```
+
+An agent additionally retains one bounded structured result for its latest
+operation:
+
+```gene
+{^task_id "t7" ^outcome "failed" ^text ""
+ ^error {^kind "TypeError" ^message "..."}
+ ^finished_v 381 ^read false ^incorporated false}
+```
+
+The result exists for all terminal outcomes; an empty final model message does
+not erase an error. `read` means a surface/user inspected it, while
+`incorporated` means the main model context received the bounded result. Those
+flags are distinct and persisted.
 
 An input-capable worker also has a short-lived **admission reservation**. It is
 set synchronously before an adapter acknowledges input and cleared atomically
@@ -805,6 +890,16 @@ input
 status
 ```
 
+Stacking is used only while every visible right-side pane can retain a useful
+minimum body (default six rows plus header). Beyond that threshold the right
+column becomes a focused-pane stack: one right pane is rendered, and a compact
+header lists the other pane ids with busy/unread markers. `/pane list` is the
+authoritative switcher; Ctrl-PageUp/Ctrl-PageDown cycle visible panes without
+claiming Up/Down, which remain input history. `/pane hide N` removes a pane
+from layout without stopping its worker, `/pane show N` restores it, `/pane
+close N` detaches it, and `/pane max N` remains the deliberate full-worker-area
+view. Focusing a hidden pane shows it first.
+
 Pane 0 is always present and cannot be closed; `/0 text` prompts the main
 agent explicitly. Narrow terminals (the shipped renderer's `width < 48` guard)
 collapse to a single full-width view: pane 0, or the focused pane rendered
@@ -817,21 +912,32 @@ restores the split.
 **Focus routes input, with a deterministic grammar.** Focus is upgraded from
 pane-local navigation to input routing. Parsing is surface-first:
 
-1. the surface parses global commands first — `/quit`, `/exit`, `/status`,
-   `/workers`, `/trace`, `/0`, `/N ...`, and the other §1 slash commands;
-2. everything else is sent verbatim to the focused worker;
-3. `//text` sends `/text` literally to the focused worker, and `/N -- text`
-   remains the routed-literal escape — so a shell path or Gene form needs
-   escaping only when it begins with `/` and collides with a command name.
+1. the surface parses the complete global-command registry first — `/help`,
+   `/?`, `/pane`, `/agent`, `/worker`, session commands, `/0`, `/N ...`, and
+   their documented aliases;
+2. an unrecognized leading `/` is a local `unknown command` error with a
+   `/help` hint; on an input-capable route the diagnostic also teaches the
+   `//...` and `/N -- ...` literal escapes. It is never model, shell, or REPL
+   input;
+3. everything else is sent verbatim to the focused input-capable worker;
+4. `//text` sends `/text` literally to the focused worker, and `/N -- text`
+   is the explicit routed-literal form.
+
+This deliberately collides with legitimate shell input such as
+`/usr/bin/env ...`: typo safety wins, and the contextual diagnostic shows that
+`//usr/bin/env ...` sends the absolute path to the focused shell. The routed
+form `/N -- /usr/bin/env ...` sends it to shell pane N. The status/help text
+for shell and REPL routes includes this escape instead of making the user infer
+it from a rejection.
 
 Both the input row and the status line name the route (for example
 `[3 shell]`) so a prompt can never be typed into a shell silently. `/N focus`
 focuses pane N; newly opened panes start focused (shipped behavior); `/0` or
-Escape on an empty input resets focus to the main agent. Escape keeps one
-deterministic priority order, PTY-tested: cancel the focused worker's active
-operation; else restore a maximized pane; else, **only when the draft is
-empty**, reset focus to pane 0; else nothing. With a composed draft and
-nothing to cancel or restore, Escape leaves both the draft and its route
+`/focus 0` or Escape on an empty input resets focus to the main agent. Escape
+keeps one deterministic priority order, PTY-tested: cancel the focused
+worker's active operation; else restore a maximized pane; else, **only when the
+draft is empty**, reset focus to pane 0; else nothing. With a composed draft
+and nothing to cancel or restore, Escape leaves both the draft and its route
 untouched — an already-composed shell command or Gene form is never silently
 rerouted to the main agent.
 
@@ -851,17 +957,71 @@ accumulating; on editor exit the TUI clears suspension and repaints from its
 event cursor. A failed or non-zero editor exit preserves the prior draft
 unchanged; success replaces only this surface's draft.
 
-Numbered input is dispatched by worker kind:
+**Help always has a known home.** `/help` and `/?` are equivalent global
+commands from every route. With no argument they restore a maximized layout if
+needed, focus pane 0, and print one bounded comprehensive help block in the
+main viewport. The block covers navigation and keys, focus and literal-input
+escapes, pane/worker/agent lifecycle verbs, every worker kind, session
+commands, concise aliases, and where to inspect status, progress, results,
+trace, diff, and undo. `/help <topic>` and `/? <topic>` accept `pane`, `agent`,
+`worker`, `input`, `session`, and `trace`; they still display the selected
+section in pane 0.
+
+Help is generated from the same command registry and key-binding metadata used
+for parsing, so acceptance tests can reject undocumented or stale commands. It
+is a surface-local presentation notice: invoking it never starts a model turn,
+sends worker input, appends to model context or the authoritative event
+journal, marks an agent result read, or checkpoints a duplicate transcript
+item. Repeated help replaces the prior help notice rather than consuming
+unbounded main scrollback.
+
+The canonical command grammar included by comprehensive help begins with:
+
+```text
+/help [pane|agent|worker|input|session|trace]    # /? is identical
+
+/pane list
+/pane new <agent|shell|repl|tail|output|view|stats> [args]
+/pane open <worker-id> [title]
+/pane focus <0|N>
+/pane show|hide|close|max <N>
+
+/agent list
+/agent new [prompt]
+/agent <A> send <prompt>
+/agent <A> result|incorporate|cancel|stop
+
+/worker list
+/worker <W> open|cancel|stop|restart
+/worker <W> append <text>             # output workers
+/worker <OUT> follow|unfollow <SOURCE>
+
+/status          /progress        /trace [filters] [--detail]
+/diff            /undo [change-id]
+/remember ...    /memory          /forget-memory ...
+/edit            /tty             /quit | /exit
+```
+
+`/pane new` is an intentional surface-local composite: it creates the requested
+worker when needed, opens a local pane, and focuses it. `/pane open W` attaches
+a fresh local view to an existing headless worker. Every listing prints pane id,
+worker id, kind, lifecycle/current operation, last outcome, and unread result
+state in one row; pane 0 is reported as `pane=0`, not `headless`. The concise
+aliases below remain part of the interface:
 
 - `/agent new [prompt]` creates a supervised sub-agent and opens its pane;
   `/ext` remains a compatibility alias, while `/agents` lists visible and
-  headless agents and `/agent A open|cancel|stop` controls one by stable id;
+  headless agents. `/agent A result` displays and marks the latest result read
+  without changing model context; `/agent A incorporate` explicitly appends
+  its bounded result to main context. `/agent A send|open|cancel|stop` controls
+  one by stable id;
 - `/workers` lists every worker — kind, stable id, status, plus
   `visible_here`/local pane ids from the invoking surface; the shared worker
-  API has no global attached/headless field. `/worker W open|cancel|stop`
+  API has no global attached/headless field. `/worker W open|cancel|stop|restart`
   controls one by id, where `open`
   attaches a fresh pane to a headless worker;
 - `/pane output [title]` creates a bounded `output` worker and a pane over it;
+  `/N append <text>` and `/worker W append <text>` add user-visible evidence;
 - `/sh` opens or focuses the line-oriented shell worker's pane; `/repl` opens
   or focuses the Gene REPL pane with the stable `session` binding;
 - `/tty` suspends the TUI and hands the terminal to the real interactive
@@ -874,8 +1034,9 @@ Numbered input is dispatched by worker kind:
   file view;
 - `/N text` prompts an idle agent pane, sends a command to a shell pane,
   evaluates a form in a REPL pane, or replaces the filter of a log-tail pane;
-  stats, file-view, and output panes reject text input. `/N -- text` sends
-  text that would otherwise match a control verb such as `close`;
+  stats and file-view panes reject text input, while output panes accept only
+  the explicit `append` verb. `/N -- text` sends text that would otherwise
+  match a control verb such as `close`;
 - `/N close` closes the pane, `/N cancel` cancels its active task/process,
   `/N stop` explicitly stops the attached worker, `/N focus` routes input to
   it, and `/N max` toggles maximize.
@@ -1227,7 +1388,7 @@ layout. The shipped projections are:
 ```text
 session/config       session/items        session/transcript
 session/memory       session/tools        session/events
-session/workspace    session/current_task
+session/workspace    session/current_task session/progress
 ```
 
 (`evidence` arrives with slice B's later evidence work.) Reads use ordinary
@@ -1258,7 +1419,8 @@ session/workers                                           (C2)
 ```
 
 Agent, worker, and pane mutations remain message-based (`spawn_agent`,
-`stop_agent`, `open_pane`, `close_pane`, `send_pane`, `stop_worker`) so
+`stop_agent`, `agent_result`, `incorporate_agent_result`, `update_progress`,
+`open_pane`, `close_pane`, `send_pane`, `stop_worker`) so
 supervision, capability checks, events, and persistence cannot be bypassed by
 mutating a list cell. `session/panes` is the shipped projection of the local
 TUI's panes; slice C2 moves pane/layout state into per-surface attachments
@@ -1323,6 +1485,17 @@ memory, errors, and compaction. Slice C adds the agent/pane lifecycle group:
  ^reason "stopped_worker_limit" ^limit 64}
 {^v 29 ^type "worker_attention_requested" ^worker_id "a2"
  ^preferred_view "pane" ^title "reader review"}
+
+# Dogfood hardening additions
+{^v 30 ^type "worker_operation_finished" ^worker_id "a2" ^task_id "t10"
+ ^operation_kind "agent_turn" ^outcome "failed"}
+{^v 31 ^type "agent_finished" ^worker_id "a2" ^agent_id "a2"
+ ^task_id "t10" ^outcome "failed" ^source_v 30 ^error_kind "TypeError"
+ ^error_text "..." ^result_unread true}
+{^v 32 ^type "restore_record_rejected" ^record_kind "pane"
+ ^record_id "local_tui/6" ^error_kind "invalid_path" ^error_text "..."}
+{^v 33 ^type "progress_updated" ^phase "verifying" ^status "active"
+ ^summary "running repository gates" ^evidence_v [301 304]}
 ```
 
 Slice C2 adds `^worker_id` and `^surface_id` to pane events additively;
@@ -1338,7 +1511,16 @@ The worker boundary is canonical even with no pane: each operation emits one
 start and exactly one finish (`completed|cancelled|failed`), and every produced
 chunk carries the worker id plus a worker-local `seq`; task output also carries
 its task id. `worker_operation_cancelling` is an intermediate request, not a
-second terminal outcome. The shipped agent text/delta and `pane_output` types
+second terminal outcome. Every agent operation also emits exactly one
+`agent_finished` carrying the same task id/outcome and bounded structured
+result metadata. Its `^source_v` points to that operation's
+`worker_operation_finished`; terminal-summary consumers render the richer
+agent record and suppress the linked worker summary. The older
+`agent_completed` remains an additive compatibility alias for successful
+operations only and points to `agent_finished` through `^source_v`. Thus all
+deduplication is structural rather than based on task text or timing. Failure
+and cancellation are never represented as a return to plain `idle`. The
+shipped agent text/delta and `pane_output` types
 remain additive compatibility events. During this compatibility window each
 streamed delta emits its legacy event plus a generic `worker_output`; a
 non-streamed final `agent_text` does the same. The generic record carries
@@ -1369,10 +1551,21 @@ the per-session monotonic **cursor**, not a schema version: the vocabulary
 evolves additively (new types and new props only; shipped types and props are
 never renamed or re-typed), and an explicit envelope `^schema` field is
 introduced only with the first incompatible change, so consumers assume
-schema 1 when it is absent. Every surface consumes the same events. `/trace` exposes a few useful filters first (type, tool name, path,
-event range, current turn), while `/repl` can apply normal selectors and stream
-operations. Full replay/fork/compare and sanitized trajectory fixtures are later
-extensions, not requirements for the first event slice.
+schema 1 when it is absent. Every surface consumes the same events. `/trace`
+exposes type, tool name, path, worker/agent/task, event range, and current-turn
+filters. Its default formatter is event-specific: terminal operations always
+show ids, operation, outcome, duration, and bounded error text; tool and file
+events show their primary target. `/trace ... --detail` prints the full
+redacted, bounded record. `log_tail` uses the same formatters and filter parser,
+while `/repl` can apply normal selectors and stream operations. Full
+replay/fork/compare and sanitized trajectory fixtures are later extensions,
+not requirements for the first event slice.
+
+Persisted cursor fields such as result `^finished_v`, progress `^updated_v`,
+and `^evidence_v` entries are soft references into the bounded journal. When a
+cursor is below `dropped_before`, projections render an explicit placeholder
+such as `evidence expired (v301)`; expiry is neither a restore error nor a
+reason to silently omit the reference.
 
 Events carry correlation ids where needed (`application_id`, `worker_id`,
 `agent_id` — for agents the same value as `worker_id`, kept for compatibility
@@ -1435,10 +1628,16 @@ attach time. A child must not retain a mutable reference into the parent's
 item list or session cells, and the `agent_spawned` delegation event records
 attachment kinds and content digests so the parent can later show exactly what
 context the child received. Its final result is emitted as a structured child
-result into the main agent's bounded, persisted supervisor inbox. At the next safe model boundary,
-the main agent receives a compact child-result item linked to the original
-delegation; the child's private transcript and tool chatter are not copied into
-the main context.
+result into the main agent's bounded, persisted supervisor inbox. Completion,
+failure, and cancellation all create a result; the main surface immediately
+shows a bounded notification such as `a2 failed — /agent a2 result`, and
+`/agents` reports availability and last outcome separately. Results begin
+unread and are never consumed by an unrelated slash command. `/agent A result`
+displays and marks one read without changing model context; `/agent A
+incorporate` explicitly appends a compact child-result item linked to the
+original delegation. Model-driven supervision uses the typed `agent_result`
+operation as its explicit incorporation boundary. The child's private
+transcript and tool chatter are not copied into the main context.
 
 Sub-agents may run concurrently because model and read-only tool work is
 independent. Shared-workspace mutation is coordinated separately from agent
@@ -1530,12 +1729,41 @@ to survive a crash: restoration shows their captured history on a stopped
 worker and requires an explicit reopen. No process-local Task, admission
 reservation, confirmation, lease owner, or lease waiter is resumed. A
 previously busy agent restores running and idle and emits an attributable
-failed `worker_operation_finished` (or a legacy normalization record when an
-old snapshot lacks the task id); a pending reservation emits
-`worker_admission_cancelled`. Mutation execution is never retried from
-snapshot state. No persistence format stores raw terminal state or secrets.
+failed `worker_operation_finished` plus its canonical failed `agent_finished`
+and unread structured result (or a legacy normalization record when an old
+snapshot lacks the task id); a pending reservation emits
+`worker_admission_cancelled`. Records install independently after the session
+core: a malformed pane, confined path, projection, or obsolete worker record
+emits `restore_record_rejected` and is skipped rather than aborting startup.
+Mutation execution is never retried from snapshot state. No persistence format
+stores raw terminal state or secrets.
 
-### 9.4 Dogfood rule
+### 9.4 Main project progress
+
+Runtime `Task` values describe cancellable execution; they are not a project
+plan. The application therefore keeps one bounded, main-agent-owned
+`ProjectProgress` record for the current user objective:
+
+```gene
+{^objective "add durable background jobs"
+ ^phase "verifying"                 ; planning|research|implementing|verifying|handoff
+ ^status "active"                   ; active|blocked|complete
+ ^summary "running repository gates"
+ ^blocked_reason nil ^required_action nil
+ ^updated_v 304
+ ^agent_ids ["a1" "a2"] ^worker_ids ["w1"]
+ ^evidence_v [287 301 304]}
+```
+
+The main agent updates it through a typed `update_progress` operation; the user
+can inspect it with `/progress`. Transitions emit `progress_updated`, checkpoint
+immediately, and appear as one concise status-bar line. Evidence links point to
+bounded authoritative events rather than copying logs. A blocked state carries
+non-nil `^blocked_reason` and `^required_action`; other states omit or nil both.
+Sub-agents may report progress in their own result/event stream but cannot
+overwrite the main project record.
+
+### 9.5 Dogfood rule
 
 The quality bar is whether the author voluntarily uses this agent to build
 Gene. Repeated friction observed during that work chooses the next feature.
@@ -1651,6 +1879,10 @@ already-live local session to the web/API while the TUI remains responsive;
 `--headless` and the temporary `gateway.gene` wrapper expose the same API
 without constructing curses.
 
+This was structural acceptance, not the final operability bar: C3 owns visible
+terminal outcomes, explicit result incorporation, command discovery, dense-pane
+management, and record-isolated restore.
+
 ### 10.5 Slice C2 — one worker model for the TUI
 
 Slice C shipped the registries and concurrency. This follow-up unifies the
@@ -1723,7 +1955,43 @@ spawn another; an arbitrary host file rejected by local `/view` never enters a
 remote or persisted snapshot; and a gateway client sees identical session
 state regardless of local panes, focus, or zoom.
 
-### 10.6 Slice D — expand only where leverage is proven
+### 10.6 Slice C3 — make the worker model operable and recoverable
+
+The worker model is structurally complete, but the tmux 12.0 complex-project
+dogfood flow exposed failures that block routine use. Fix them in this order:
+
+1. **Restore isolation.** Remove executable/ad-hoc type checks from persisted
+   record validation, load the main session before surface records, quarantine
+   bad records, and pass the all-worker/all-pane-kind restart fixture with one
+   malformed pane. No view record may prevent startup.
+2. **Terminal agent results.** Normalize every tool/result value at its
+   boundary, preserve structured failures, emit exactly one `agent_finished`
+   for every outcome, and expose last outcome plus unread result through CLI,
+   REPL, gateway, and snapshots. Successful and failed research turns both
+   notify main; only explicit result/incorporate actions affect model context.
+3. **Safe, discoverable commands.** Ship comprehensive `/help` and identical
+   `/?`, plus the canonical `/pane`, `/agent`, and `/worker` grammar from §7.1;
+   generate help from the parser registry, retain short aliases, accept
+   `/focus 0`, and reject unknown slash commands locally. Help always renders
+   in pane 0, while status help is contextual and teaches `/0 main` off the
+   main route.
+4. **Usable pane operations.** Add pane listing/switching/hiding, the
+   minimum-height focused-right-pane layout, output append/follow operations,
+   pane/worker ids in one report, and read-only editor behavior. Up/Down remain
+   input history.
+5. **Observable coordination.** Add detailed shared trace/tail formatters,
+   explicit `ProjectProgress`, unread-result indicators, and a repaint/input
+   stress test with rapid child events. Coalesce presentation refreshes so
+   worker output cannot starve command acknowledgement.
+
+Slice C3 is complete only when the complex-project dogfood flow works without
+consulting this design: start a research agent, return to main, open and use
+shell/tail/output/file/stats panes, observe a success and a failure, incorporate
+one result explicitly, exit, and restore the session. The TUI must teach every
+required command in context, a command-shaped typo must execute nowhere, and
+one corrupt pane record must be visible but non-fatal.
+
+### 10.7 Slice D — expand only where leverage is proven
 
 - Promote repeated `/repl` experiments into small Gene workflow modules;
   record module/tool version hashes and hot-reload new calls without changing
@@ -1896,14 +2164,25 @@ non-loopback startup without authentication is rejected — single-user posture
 | `POST /api/sessions/:id/cancel` | cancel the in-flight turn and its subprocess | shipped |
 | `POST /api/sessions/:id/agents` | spawn a supervised sub-agent with assignment/context attachment | shipped |
 | `POST /api/sessions/:id/agents/:aid/messages` | prompt a particular idle agent (busy rejects; steering remains explicit cancel-then-prompt) | shipped |
+| `GET /api/sessions/:id/agents/:aid/result` | inspect the bounded latest result without changing its state | C3 |
+| `POST /api/sessions/:id/agents/:aid/result/read` | explicitly mark that result read, idempotently | C3 |
+| `POST /api/sessions/:id/agents/:aid/incorporate` | explicitly add that result to main context, idempotently | C3 |
 | `POST /api/sessions/:id/agents/:aid/cancel` | cancel that agent's active operation without stopping it | shipped |
 | `DELETE /api/sessions/:id/agents/:aid` | stop a sub-agent and preserve its event trail | shipped |
-| `GET /api/sessions/:id/workers` | list workers: kind, lifecycle, current operation | shipped |
+| `GET /api/sessions/:id/workers` | list workers: kind, lifecycle, current operation, last outcome, unread result | C3 extension |
 | `POST /api/sessions/:id/workers` | create a typed worker: `{kind, config}` → `{worker_id}` | shipped |
 | `POST /api/sessions/:id/workers/:wid/input` | send input per worker kind (§7.1 table) | shipped |
 | `POST /api/sessions/:id/workers/:wid/cancel` | cancel the worker's active operation | shipped |
 | `DELETE /api/sessions/:id/workers/:wid` | stop a worker and preserve its event trail | shipped |
+| `GET /api/sessions/:id/progress` | inspect the main `ProjectProgress` record | C3 |
+| `PUT /api/sessions/:id/progress` | main-supervisor update under session serialization | C3 |
 | `GET  /` | the web UI page (12.5) | shipped |
+
+The read-marking asymmetry is intentional. The interactive `/agent A result`
+command both displays and marks the result read as one user action. HTTP `GET`
+remains safe and side-effect-free for polling, previews, and retries; a remote
+client uses the explicit idempotent `POST .../result/read` after it actually
+presents the result. Incorporation is a separate mutation on both surfaces.
 
 Worker control failures are typed at every adapter boundary. HTTP uses 409
 with stable codes such as `worker_busy` (including `worker_id`, current
@@ -2099,3 +2378,36 @@ coverage starts the main program on a loopback test port in combined and
 headless modes, proves that TUI and HTTP commands reach the same session/event
 log, checks explicit-port precedence and bind failure before curses startup,
 and runs the compatibility launcher against the same route fixtures.
+
+Slice C3 adds the exact complex-project dogfood failures as acceptance tests:
+
+- one fake research agent performs several `list_dir`/`grep`/`read_file` rounds
+  and then both succeeds and fails; every tool result is normalized, each run
+  has one `agent_finished` linked by `^source_v` to its worker finish,
+  `/agents` retains its last outcome, and the bounded result survives restart;
+- successful results remain unread and outside main context until explicit
+  inspect/incorporate actions; completion and failure notifications are visible
+  without submitting another command;
+- from every worker kind, `/help` and `/?` focus pane 0 and render the same
+  comprehensive registry-derived help without starting a model turn, appending
+  a journal/transcript item, or marking an unread result. Topic help replaces
+  the prior surface notice and includes the matching command grammar;
+- one PTY types `/0`, `/sh`, `/pane list`, escaped absolute-path shell input,
+  and an unknown `/focus typo` while a child emits rapid tool events. Draft
+  bytes and route are exact, acknowledgement satisfies the scheduler-turn
+  contract under a generous watchdog, Up/Down still browse history, and the
+  typo executes nowhere while its diagnostic teaches the literal escape;
+- the all-kinds state fixture restores agent, shell, REPL, output, tail, stats,
+  and confined file view together. A second run corrupts each descriptor in
+  turn and proves main still loads with one `restore_record_rejected`. It also
+  advances `dropped_before` beyond saved result/progress references and renders
+  explicit expired-evidence placeholders;
+- enough panes to cross the minimum-height threshold exercise list/focus/hide,
+  contextual read-only help, output append/follow, scrolling, maximize, and
+  restart of the selected layout; self-follow and a two-output transitive
+  follow cycle are rejected without changing either buffer;
+- default and `--detail` trace/tail rendering expose terminal ids/outcomes and
+  bounded errors without leaking redacted payloads; progress transitions and
+  unread-result state match CLI, snapshot, and gateway projections. Repeated
+  gateway `GET result` calls do not mark it read; the explicit read and
+  incorporate requests are independently idempotent.

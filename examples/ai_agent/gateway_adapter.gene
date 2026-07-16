@@ -117,6 +117,7 @@
       (+ (event_bytes ~ Cell/get) (byte_size (stringify retained)))))
   (var current_task
     (if shared existing_app/main_agent/current_task (cell nil)))
+  (var current_terminal_emitted (cell false))
   # Reserve admission before the actor dequeues a message. Two concurrent
   # handlers must not both return 202 while the worker still appears idle.
   (var input_pending (cell false))
@@ -191,6 +192,8 @@
         (append_event event)
         event)))
   (fn emit_turn_event [type : Str, props]
+    (if (== type "turn_done")
+      (current_terminal_emitted ~ Cell/set true))
     (match type
       (when "agent_text" nil)
       (when "text_delta" nil)
@@ -211,6 +214,7 @@
     (if (== agent_api/auth_token nil)
       (agent_api/demo_transport_for)
       agent_api/live_transport))
+  (var current_final_text (cell ""))
   # A small detached monitor owns terminal bookkeeping. It is deliberately a
   # separate task: cancelling a turn before its fiber first runs would skip
   # that fiber's ensure blocks, while the monitor starts normally, observes
@@ -227,21 +231,27 @@
     ensure
       (if (== (outcome ~ Cell/get) "running")
         (then
-          (if (cancel_requested ~ Cell/get)
+          (if (&& (! (current_terminal_emitted ~ Cell/get))
+                  (cancel_requested ~ Cell/get))
             (then
               (push_structured "error" {^kind "cancelled" ^text "turn cancelled"})
               (push_structured "turn_done" {^cancelled true}))
-            (else
+            (elif (! (current_terminal_emitted ~ Cell/get))
               (push_structured "error" {^kind "failed" ^text "turn failed"})
               (push_structured "turn_done" {^failed true}))))
         (elif (== (outcome ~ Cell/get) "failed")
-          (push_structured "error" {^kind "failed" ^text "turn failed"})
-          (push_structured "turn_done" {^failed true})))
+          (if_not (current_terminal_emitted ~ Cell/get)
+            (push_structured "error" {^kind "failed" ^text "turn failed"})
+            (push_structured "turn_done" {^failed true}))))
       (var worker_outcome
         (if (== (outcome ~ Cell/get) "done") "completed"
           (if (cancel_requested ~ Cell/get) "cancelled" "failed")))
-      (agent_api/application_finish_worker_operation
-        app app/main_agent worker_outcome)
+      (agent_api/application_finish_agent_operation
+        app app/main_agent worker_outcome (current_final_text ~ Cell/get)
+        (if (== worker_outcome "failed") "AgentError" worker_outcome)
+        (if (== worker_outcome "failed") "turn failed"
+          (if (== worker_outcome "cancelled") "turn cancelled" ""))
+        nil)
       (push_structured "agent_status"
         {^worker_id app/main_agent/id ^agent_id app/main_agent/id
          ^status worker_outcome})
@@ -260,7 +270,6 @@
               {^kind "busy" ^text "turn already in flight"}))
           (else
             (if shared (agent_api/begin_turn))
-            (agent_api/application_drain_supervisor_inbox app)
             (agent_api/record_worker_input
               app/main_agent input/text input/adapter nil)
             (var text input/text)
@@ -271,6 +280,8 @@
             (push_structured "agent_status"
               {^worker_id app/main_agent/id ^agent_id app/main_agent/id
                ^status "working"})
+            (current_terminal_emitted ~ Cell/set false)
+            (current_final_text ~ Cell/set "")
             (var task
               (spawn
                 (items ~ Cell/set
@@ -280,7 +291,7 @@
                             (fn [t]
                               (if_not (== t "")
                                 (push_event "agent_text" t)
-                                (app/main_agent/result ~ Cell/set t)
+                                (current_final_text ~ Cell/set t)
                                 (if shared
                                   (agent_api/gateway_render_event app "agent_text" t))))
                             (fn [d]
@@ -630,6 +641,8 @@
    ^cursor (session_event_cursor s)
    ^dropped_before (s/dropped_before ~ Cell/get)
    ^main_worker_id s/application/main_agent/id
+   ^progress
+     (agent_api/redact_any (s/application/progress ~ Cell/get))
    ^workers
      (agent_api/redact_any
      (agent_api/application_workers_snapshot s/application))})
@@ -641,7 +654,9 @@
   (var ids [])
   (for worker in (agent_api/application_workers_snapshot s/application)
     (if (&& (== worker/lifecycle "running")
-            (["stats" "log_tail"] ~ contains? worker/kind))
+            (|| (["stats" "log_tail"] ~ contains? worker/kind)
+                (&& (== worker/kind "output")
+                    (! (empty? worker/following)))))
       (ids ~ List/push! worker/worker_id)))
   ids)
 
@@ -686,6 +701,18 @@
 
 # Agent routes are explicit aliases over the agent subset of the canonical
 # worker registry. They never maintain a second task, id, or lifecycle.
+(fn list_agents [id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agents [])
+      (for worker in
+           (agent_api/application_workers_snapshot s/application)
+        (if (== worker/kind "agent")
+          (agents ~ List/push! worker)))
+      (json_response 200 {^agents agents}))))
+
 (fn create_agent [id : Str, req]
   (var s (sessions ~ Map/get id))
   (if (== s void)
@@ -714,6 +741,84 @@
       (json_response 400 {^error m})
     catch {^message m}
       (json_response 400 {^error m}))))
+
+(fn get_agent_result [id : Str, agent_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agent (agent_api/application_find_agent s/application agent_id))
+      (if (== agent nil)
+        (json_response 404 {^error "no such agent"})
+        (do
+          (var result (agent/result ~ Cell/get))
+          (if (== result nil)
+            (json_response 404 {^error "no agent result"})
+            (json_response 200 {^agent_id agent/id ^result result})))))))
+
+(fn mark_agent_result_read [id : Str, agent_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agent (agent_api/application_find_agent s/application agent_id))
+      (if (== agent nil)
+        (json_response 404 {^error "no such agent"})
+        (if (== (agent/result ~ Cell/get) nil)
+          (json_response 404 {^error "no agent result"})
+          (do
+            (agent_api/application_inspect_agent_result s/application agent)
+            (persist_gateway_session s)
+            (json_response 200
+              {^agent_id agent/id ^result (agent/result ~ Cell/get)})))))))
+
+(fn incorporate_agent_result [id : Str, agent_id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (do
+      (var agent (agent_api/application_find_agent s/application agent_id))
+      (if (== agent nil)
+        (json_response 404 {^error "no such agent"})
+        (if (agent_api/application_incorporate_agent_result
+              s/application agent)
+          (then
+            (persist_gateway_session s)
+            (json_response 200
+              {^agent_id agent/id ^result (agent/result ~ Cell/get)}))
+          (else (json_response 404 {^error "no agent result"})))))))
+
+(fn get_progress [id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (json_response 200 {^progress (s/application/progress ~ Cell/get)})))
+
+(fn put_progress [id : Str, req]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (json_response 404 {^error "no such session"})
+    (try
+      (var body (parse req/body))
+      (var current (s/application/progress ~ Cell/get))
+      (var updated
+        (agent_api/application_update_progress
+          s/application
+          (if (== body/objective void) current/objective body/objective)
+          (if (== body/phase void) current/phase body/phase)
+          (if (== body/status void) current/status body/status)
+          (if (== body/summary void) current/summary body/summary)
+          (if (== body/blocked_reason void)
+            current/blocked_reason body/blocked_reason)
+          (if (== body/required_action void)
+            current/required_action body/required_action)
+          current/agent_ids current/worker_ids current/evidence_v))
+      (persist_gateway_session s)
+      (json_response 200 {^progress updated})
+    catch (JsonError ^message m)
+      (json_response 400 {^error "invalid_json" ^message m})
+    catch {^message m}
+      (json_response 400 {^error "invalid_progress" ^message m}))))
 
 (fn agent_input [id : Str, agent_id : Str, req]
   (var s (sessions ~ Map/get id))
@@ -982,9 +1087,11 @@ document.getElementById('f').addEventListener('submit', function (e) {
               (json_response 405 {^error "method not allowed"})))
           (when "agents"
             (if (== parts/~size 5)
-              (if (== req/method "POST")
-                (create_agent parts/3 req)
-                (json_response 405 {^error "method not allowed"}))
+              (if (== req/method "GET")
+                (list_agents parts/3)
+                (if (== req/method "POST")
+                  (create_agent parts/3 req)
+                  (json_response 405 {^error "method not allowed"})))
               (if (== parts/~size 6)
                 (if (== req/method "DELETE")
                   (stop_agent parts/3 parts/5)
@@ -999,8 +1106,27 @@ document.getElementById('f').addEventListener('submit', function (e) {
                       (if (== req/method "POST")
                         (cancel_agent parts/3 parts/5)
                         (json_response 405 {^error "method not allowed"})))
+                    (when "result"
+                      (if (== req/method "GET")
+                        (get_agent_result parts/3 parts/5)
+                        (json_response 405 {^error "method not allowed"})))
+                    (when "incorporate"
+                      (if (== req/method "POST")
+                        (incorporate_agent_result parts/3 parts/5)
+                        (json_response 405 {^error "method not allowed"})))
                     (else (json_response 404 {^error "not found"})))
-                  (json_response 404 {^error "not found"})))))
+                  (if (&& (== parts/~size 8)
+                          (== parts/6 "result") (== parts/7 "read"))
+                    (if (== req/method "POST")
+                      (mark_agent_result_read parts/3 parts/5)
+                      (json_response 405 {^error "method not allowed"}))
+                    (json_response 404 {^error "not found"}))))))
+          (when "progress"
+            (if (== req/method "GET")
+              (get_progress parts/3)
+              (if (== req/method "PUT")
+                (put_progress parts/3 req)
+                (json_response 405 {^error "method not allowed"}))))
           (when "workers"
             (if (== parts/~size 5)
               (if (== req/method "GET")

@@ -156,6 +156,13 @@ static void gene_turn_interrupt_end(void) {
 
   const
     CursesErr = -1
+    KeyCtrlPageUp = -2
+    KeyCtrlPageDown = -3
+    # ncurses with extended xterm names enabled decodes CSI 5;5~/6;5~ before
+    # callers can inspect the raw sequence. Keep those common extended codes
+    # alongside the raw-sequence fallbacks above.
+    KeyCtrlPageUpNcurses = 557
+    KeyCtrlPageDownNcurses = 552
     KeyCtrlC = 3
     KeyCtrlD = 4
     KeyEsc = 27
@@ -2526,10 +2533,27 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       discard cMove(row.cint, divider.cint)
       withCursesColor(PairSeparator,
         proc() = addCursesText("│", 1))
-    for i, pane in panes:
+    var firstPane = 0
+    var paneCount = panes.len
+    var denseHeader = ""
+    if outputRows < panes.len * 7:
+      paneCount = 1
+      for i, pane in panes:
+        if pane.focused:
+          firstPane = i
+          break
+      var labels: seq[string]
+      for i, pane in panes:
+        if i != firstPane:
+          labels.add pane.title
+      if labels.len > 0:
+        denseHeader = " | hidden: " & labels.join(" ")
+    for slot in 0 ..< paneCount:
+      let i = firstPane + slot
+      let pane = panes[i]
       let paneOutput = pane.output
-      let paneTop = (outputRows * i) div panes.len
-      let paneBottom = (outputRows * (i + 1)) div panes.len
+      let paneTop = (outputRows * slot) div paneCount
+      let paneBottom = (outputRows * (slot + 1)) div paneCount
       let paneHeight = paneBottom - paneTop
       if paneHeight <= 0:
         continue
@@ -2539,9 +2563,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                                 max(0, rows.len - bodyHeight))
       let paneTitle =
         if effectiveScroll > 0:
-          pane.title & " [SCROLL +" & $effectiveScroll & "]"
+          pane.title & " [SCROLL +" & $effectiveScroll & "]" & denseHeader
         else:
-          pane.title
+          pane.title & denseHeader
       discard cMove(paneTop.cint, divider.cint)
       withCursesColor(PairSeparator,
         proc() =
@@ -2703,6 +2727,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of "[B", "OB": KeyDown
     of "[5~": KeyPageUp
     of "[6~": KeyPageDown
+    of "[5;5~": KeyCtrlPageUp
+    of "[6;5~": KeyCtrlPageDown
     else: CursesErr
 
   proc mouseScrollFromEsc(seq: string): int =
@@ -3248,6 +3274,10 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     of KeyDown: props["type"] = newStr("down")
     of KeyPageUp: props["type"] = newStr("page_up")
     of KeyPageDown: props["type"] = newStr("page_down")
+    of KeyCtrlPageUp, KeyCtrlPageUpNcurses:
+      props["type"] = newStr("pane_previous")
+    of KeyCtrlPageDown, KeyCtrlPageDownNcurses:
+      props["type"] = newStr("pane_next")
     of KeyHome: props["type"] = newStr("home")
     of KeyEnd: props["type"] = newStr("end")
     of KeyMouse:
