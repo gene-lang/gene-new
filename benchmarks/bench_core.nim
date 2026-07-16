@@ -71,6 +71,12 @@ proc main() =
     let chunk = compileSource(simpleProgram)
     checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
 
+  let agentUnit = readAllWithLocs(readFile("examples/ai_agent/tui.gene"),
+                                  "examples/ai_agent/tui.gene")
+  bench("compiler.ai_agent.source_unit_to_gir", 1, i):
+    let chunk = compileSourceUnit(agentUnit)
+    checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
+
   let simpleChunk = compileSource(simpleProgram)
   let simpleScope = newGlobalScope()
   bench("vm.simple_call.compiled_chunk", 500_000, i):

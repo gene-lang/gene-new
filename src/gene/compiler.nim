@@ -17,7 +17,10 @@ type
   Compiler = object
     chunk: Chunk
     sourceName: string
-    sourceLocs: Table[uint64, SourceLoc]
+    # Source positions are immutable compiler input. Child compilers share the
+    # table instead of deep-copying every SourceLoc (and its source-name
+    # string) for each function and scoped body.
+    sourceLocs: ref Table[uint64, SourceLoc]
     formLocs: seq[SourceLoc]
     currentLoc: SourceLoc
     selfAvailable: bool
@@ -134,9 +137,15 @@ proc hasStableSourceIdentity(v: Value): bool =
   v.kind in {vkList, vkMap, vkNode}
 
 proc sourceLocFor(c: Compiler, v: Value): SourceLoc =
-  if v.hasStableSourceIdentity and c.sourceLocs.hasKey(v.bits):
-    return c.sourceLocs[v.bits]
+  if c.sourceLocs != nil and v.hasStableSourceIdentity and
+      c.sourceLocs[].hasKey(v.bits):
+    return c.sourceLocs[][v.bits]
   c.currentLoc
+
+proc sharedSourceLocs(locs: Table[uint64, SourceLoc]):
+    ref Table[uint64, SourceLoc] =
+  new(result)
+  result[] = locs
 
 proc enableLocalSlots(c: var Compiler) =
   c.useLocalSlots = true
@@ -4717,7 +4726,8 @@ proc compileForms*(forms: openArray[Value],
                    useLocalSlots = true): Chunk =
   var c = Compiler(chunk: newChunk(), allowAmbientImports: allowAmbientImports,
                    ffiLibraryNames: initTable[string, bool](),
-                   sourceLocs: initTable[uint64, SourceLoc]())
+                   sourceLocs:
+                     sharedSourceLocs(initTable[uint64, SourceLoc]()))
   compileFormsInto(c, forms, useLocalSlots)
 
 proc compileSourceUnit*(unit: SourceUnit,
@@ -4725,7 +4735,7 @@ proc compileSourceUnit*(unit: SourceUnit,
                         useLocalSlots = true): Chunk =
   var c = Compiler(chunk: newChunk(unit.sourceName),
                    sourceName: unit.sourceName,
-                   sourceLocs: unit.locs,
+                   sourceLocs: sharedSourceLocs(unit.locs),
                    formLocs: unit.formLocs,
                    allowAmbientImports: allowAmbientImports,
                    ffiLibraryNames: initTable[string, bool]())
@@ -4744,7 +4754,8 @@ proc compileFormsWithMacros*(forms: openArray[Value],
   ## ordinary runtime bindings.
   var c = Compiler(chunk: newChunk(), allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
-                   sourceLocs: initTable[uint64, SourceLoc](),
+                   sourceLocs:
+                     sharedSourceLocs(initTable[uint64, SourceLoc]()),
                    importedMacroSets: importedMacros,
                    importedSyntaxFnSets: importedSyntaxFns)
   result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
@@ -4763,7 +4774,7 @@ proc compileFormsWithMacros*(unit: SourceUnit,
           syntaxFnExports: seq[string]] =
   var c = Compiler(chunk: newChunk(unit.sourceName),
                    sourceName: unit.sourceName,
-                   sourceLocs: unit.locs,
+                   sourceLocs: sharedSourceLocs(unit.locs),
                    formLocs: unit.formLocs,
                    allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
