@@ -99,6 +99,7 @@ Key environment variables (all optional beyond the auth token):
 | `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` | bearer token, checked in that order; unset → offline demo |
 | `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API` | endpoint, model, wire shape (`responses`\|`chat`) |
 | `OPENAI_REASONING_EFFORT` | initial reasoning effort: `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; `default` omits the request field and individual models may support only a subset |
+| `OPENAI_REQUEST_TIMEOUT_MS` | model request timeout for both wire shapes; defaults to 300000 ms so high-effort and post-tool rounds can finish |
 | `GENE_AGENT_STATE=fs:<path>` | persist config, application/session state, memory, and events as filesystem records under `path`; a bare path remains accepted for compatibility |
 | `GENE_AGENT_STATE=db:sqlite:<path>` | persist the same records in SQLite; additional database URL schemes can be added behind the same Store interface |
 | `GENE_AGENT_HOME=<dir>` | filesystem fallback when `GENE_AGENT_STATE` is unset or blank; reusing the same home restores state automatically |

@@ -42,6 +42,7 @@ vendor/
 *.out
 coverage/
 .cache/
+.planning/
 tmp/
 examples/ai_agent/logs/
 examples/ai_agent/home/

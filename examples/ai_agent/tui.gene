@@ -154,6 +154,12 @@
     (if (> parsed 0) parsed fallback)
   catch _ fallback))
 
+# High-effort reasoning and tool-result follow-ups can legitimately take more
+# than a minute before the first streamed byte. Keep one timeout for both wire
+# shapes and make it configurable without coupling it to shell-command limits.
+(var model_request_timeout_ms
+  (positive_env_int "OPENAI_REQUEST_TIMEOUT_MS" 300000))
+
 # Context limits are deliberately wire-size approximations rather than
 # provider-specific tokenizers. Four JSON bytes per token is shown as a rough
 # planning number; compaction itself is deterministic and item-structural.
@@ -3791,7 +3797,7 @@ State that broader behavior is unverified when no matching successful check ran.
        "-H" "originator: codex_cli_rs"])))
   (set curl_args (append_all curl_args ["-d" body]))
   (var r (exec_http_lines $"${base}/responses" request_headers body
-               curl_args 60000
+               curl_args model_request_timeout_ms
                (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
@@ -3969,7 +3975,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 "-H" "Accept: text/event-stream"
                 "-d" body])
   (var r (exec_http_lines $"${base}/chat/completions" chat_headers body
-               curl_args 120000
+               curl_args model_request_timeout_ms
                (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
