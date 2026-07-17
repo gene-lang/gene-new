@@ -1,11 +1,12 @@
 #!/usr/bin/env gene run
-# Compatibility launcher. The gateway implementation is UI-neutral in
-# gateway_adapter.gene; tui.gene composes the same adapter for --gateway.
+# Headless gateway launcher (design.md §12, slice C9 Shape B service). The
+# engine lives in core.gene; the HTTP/session adapter in gateway_adapter.gene.
+# No TUI module is loaded — the service never touches curses or a TTY.
 
 (mod agent_gateway
-  @doc "compatibility launcher for the integrated AI-agent gateway")
+  @doc "headless launcher for the AI-agent gateway service")
 
-(import [gateway_api] from "./tui")
+(import [gateway_api] from "./core")
 (import [run_gateway] from "./gateway_adapter")
 
 (fn main [args]

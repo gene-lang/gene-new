@@ -249,11 +249,14 @@ suite "cli — gene run":
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application show_surface_help!
-         application_spawn_agent application_attach_worker_pane
-         application_begin_worker_operation! application_finish_agent_operation!
-         open_shell_pane open_repl_pane open_output_pane
-         open_log_tail_pane open_stats_pane open_file_view_pane]
+(import [active_application make_application application_spawn_agent
+         application_attach_worker_pane
+         application_begin_worker_operation!
+         application_finish_agent_operation!]
+  from "./core.gene")
+(import [show_surface_help! open_shell_pane open_repl_pane
+         open_output_pane open_log_tail_pane open_stats_pane
+         open_file_view_pane]
   from "./tui.gene")
 (import str [starts_with?])
 (var items (cell []))
@@ -373,8 +376,9 @@ suite "cli — gene run":
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_application application_create_worker_from_config
-         application_follow_output! application_append_worker_output!]
-  from "./tui.gene")
+         application_follow_output!
+         application_append_worker_output!]
+  from "./core.gene")
 (import str [contains?])
 (var app
   (make_application (cell []) (cell "") (cell [])
@@ -418,9 +422,11 @@ suite "cli — gene run":
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [active_application make_application
-         application_create_worker_from_config application_call_worker
-         application_find_worker application_spawn_agent_with_attachments
-         open_repl_pane]
+         application_create_worker_from_config
+         application_call_worker application_find_worker
+         application_spawn_agent_with_attachments]
+  from "./core.gene")
+(import [open_repl_pane]
   from "./tui.gene")
 (import str [contains?])
 (var events (cell []))
@@ -528,9 +534,11 @@ catch {^message message} (set duplicate message))
       defer:
         if fileExists(fixture): removeFile(fixture)
       writeFile(fixture, """
-(import [active_application make_application open_terminal_pane
-         application_call_worker application_create_worker_from_config
+(import [active_application make_application application_call_worker
+         application_create_worker_from_config
          application_worker_snapshot application_shutdown]
+  from "./core.gene")
+(import [open_terminal_pane]
   from "./tui.gene")
 (var app
   (make_application (cell []) (cell "") (cell [])
@@ -706,9 +714,11 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application_with_task open_shell_pane
-         open_repl_pane application_close_pane application_send_worker_input
+(import [active_application make_application_with_task
+         application_close_pane application_send_worker_input
          user_item]
+  from "./core.gene")
+(import [open_shell_pane open_repl_pane]
   from "./tui.gene")
 (var items (cell []))
 (var transcript (cell ""))
@@ -757,8 +767,9 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [make_application_with_task make_headless_application_with_task
-         run_tool_call_in] from "./tui.gene")
+(import [make_application_with_task
+         make_headless_application_with_task run_tool_call_in]
+  from "./core.gene")
 (import json [stringify])
 (var events (cell []))
 (fn emit [type props]
@@ -852,9 +863,9 @@ catch {^message message} (set duplicate message))
 (import json [stringify])
 (import [make_application_with_task application_spawn_agent
          application_enqueue_supervisor_result! application_snapshot
-         restore_application_snapshot! application_drain_supervisor_inbox
-         worker_history_push!]
-  from "./tui.gene")
+         restore_application_snapshot!
+         application_drain_supervisor_inbox worker_history_push!]
+  from "./core.gene")
 (var restored_events (cell []))
 (fn sink [type, props]
   ((restored_events ~ Cell/get) ~ List/push! type)
@@ -898,13 +909,14 @@ catch {^message message} (set duplicate message))
     writeFile(fixture, """
 (import [active_application make_application application_spawn_agent
          application_begin_worker_operation!
-         application_finish_agent_operation! application_inspect_agent_result!
-         application_incorporate_agent_result! application_update_progress!
-         application_snapshot restore_application_snapshot!
-         application_find_agent application_stop_agent
-         agent_result_report project_progress_report
-         event_dropped_before]
-  from "./tui.gene")
+         application_finish_agent_operation!
+         application_inspect_agent_result!
+         application_incorporate_agent_result!
+         application_update_progress! application_snapshot
+         restore_application_snapshot! application_find_agent
+         application_stop_agent agent_result_report
+         project_progress_report event_dropped_before]
+  from "./core.gene")
 (import str [contains?])
 (var events (cell []))
 (var next_v (cell 1))
@@ -999,11 +1011,13 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [active_application make_application application_spawn_agent
-         application_attach_worker_pane application_attach_worker_pane_as
-         open_shell_pane open_repl_pane
-         open_output_pane open_log_tail_pane open_stats_pane
-         open_file_view_pane application_snapshot surface_snapshot
-         restore_application_snapshot! restore_surface_snapshot!]
+         application_attach_worker_pane
+         application_attach_worker_pane_as application_snapshot
+         surface_snapshot restore_application_snapshot!
+         restore_surface_snapshot!]
+  from "./core.gene")
+(import [open_shell_pane open_repl_pane open_output_pane
+         open_log_tail_pane open_stats_pane open_file_view_pane]
   from "./tui.gene")
 (import json [parse stringify])
 (var first
@@ -1081,10 +1095,13 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application_with_task application_spawn_agent
-         application_begin_worker_operation! application_cancel_worker
-         application_finish_worker_operation! open_shell_pane
-         run_shell_pane_command_unchecked] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_spawn_agent application_begin_worker_operation!
+         application_cancel_worker
+         application_finish_worker_operation!]
+  from "./core.gene")
+(import [open_shell_pane run_shell_pane_command_unchecked]
+  from "./tui.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [_type, _props] nil) (cell nil)))
@@ -1113,8 +1130,11 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import str [contains?])
-(import [active_application make_application_with_task open_log_tail_pane
-         application_emit handle_surface_escape!] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_emit]
+  from "./core.gene")
+(import [open_log_tail_pane handle_surface_escape!]
+  from "./tui.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [type, props]
@@ -1142,9 +1162,11 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [make_application_with_task application_open_pane
-         application_pane_views application_scroll_target!
-         application_pane_page_rows] from "./tui.gene")
+(import [make_application_with_task application_open_pane]
+  from "./core.gene")
+(import [application_pane_views application_scroll_target!
+         application_pane_page_rows]
+  from "./tui.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [_type, _props] nil) (cell nil)))
@@ -1175,7 +1197,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_application_with_task application_acquire_workspace
-         application_release_workspace application_shutdown] from "./tui.gene")
+         application_release_workspace application_shutdown]
+  from "./core.gene")
 (fn sink [_type, _props] nil)
 (var a (make_application_with_task (cell []) (cell "") (cell []) sink
                                    (cell nil)))
@@ -1214,7 +1237,7 @@ catch {^message message} (set duplicate message))
 (import [make_application_with_task run_tool_call_in
          application_acquire_workspace application_release_workspace
          preflight_tool_mutation mutation_preflight_valid?]
-  from "./tui.gene")
+  from "./core.gene")
 (fn sink [_type, _props] nil)
 (var a (make_application_with_task (cell []) (cell "") (cell []) sink
                                    (cell nil)))
@@ -1266,7 +1289,7 @@ catch {^message message} (set duplicate message))
       removeFile(marker)
     writeFile(fixture, """
 (import [make_application_with_task run_tool_call_in guard_shell_in]
-  from "./tui.gene")
+  from "./core.gene")
 (import json [stringify])
 (fn sink [type, props]
   (if (== type "confirmation")
@@ -1308,9 +1331,12 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
       removeFile(marker)
     writeFile(fixture, """
-(import [active_application make_application_with_task open_shell_pane
-         run_shell_pane_command set_guard_confirm application_cancel_worker
-         application_shutdown] from "./tui.gene")
+(import [active_application make_application_with_task
+         set_guard_confirm application_cancel_worker
+         application_shutdown]
+  from "./core.gene")
+(import [open_shell_pane run_shell_pane_command]
+  from "./tui.gene")
 (fn sink [_type, _props] nil)
 (var app
   (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
@@ -1342,7 +1368,8 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [preflight_tool_mutation] from "./tui.gene")
+(import [preflight_tool_mutation]
+  from "./core.gene")
 (fn sink [_type, _props] nil)
 (var confirmations (cell 0))
 (var args
@@ -1368,8 +1395,11 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application_with_task application_open_pane
-         handle_surface_escape!] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_open_pane]
+  from "./core.gene")
+(import [handle_surface_escape!]
+  from "./tui.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [_type, _props] nil) (cell nil)))
@@ -1395,10 +1425,13 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application_with_task application_open_pane
-         application_cycle_visible_pane! surface_route_draft
-         surface_route_history editor_sync_focused_route! editor_set_text!
-         editor_text application_shutdown] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_open_pane application_shutdown]
+  from "./core.gene")
+(import [application_cycle_visible_pane! surface_route_draft
+         surface_route_history editor_sync_focused_route!
+         editor_set_text! editor_text]
+  from "./tui.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [_type, _props] nil) (cell nil)))
@@ -1586,8 +1619,11 @@ catch {^message message} (set duplicate message))
         if fileExists(fixture): removeFile(fixture)
       removeFile(outputFile)
       writeFile(fixture, """
-(import [active_application application_emit application_find_worker_kind
-         refresh_active_input run_repl] from "./tui.gene")
+(import [active_application application_emit
+         application_find_worker_kind]
+  from "./core.gene")
+(import [refresh_active_input run_repl]
+  from "./tui.gene")
 
 (fn main [_args]
   (var burst
@@ -1652,8 +1688,9 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_application_with_task application_new_worker
-         application_append_worker_output! application_set_projection_output!]
-  from "./tui.gene")
+         application_append_worker_output!
+         application_set_projection_output!]
+  from "./core.gene")
 (import str [byte_size])
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
@@ -1686,8 +1723,11 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import str [byte_size])
-(import [active_application make_application_with_task append_transcript
-         application_workers_snapshot] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_workers_snapshot]
+  from "./core.gene")
+(import [append_transcript]
+  from "./tui.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [_type, _props] nil) (cell nil)))
@@ -1717,8 +1757,11 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application_with_task open_stats_pane
-         open_log_tail_pane application_emit] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_emit]
+  from "./core.gene")
+(import [open_stats_pane open_log_tail_pane]
+  from "./tui.gene")
 (var emitted (cell []))
 (fn sink [type, props]
   (var event {^v (+ ((emitted ~ Cell/get) ~ size) 1) ^type type})
@@ -1765,8 +1808,10 @@ catch {^message message} (set duplicate message))
 (import [make_application_with_task application_open_pane
          application_spawn_agent application_attach_worker_pane
          application_close_pane application_pane_ids_for_worker
-         application_pane_views application_workers_snapshot
-         main_presented_output] from "./tui.gene")
+         application_workers_snapshot]
+  from "./core.gene")
+(import [application_pane_views main_presented_output]
+  from "./tui.gene")
 (import json [stringify])
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
@@ -1820,7 +1865,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_application_with_task application_new_worker
-         application_spawn_agent] from "./tui.gene")
+         application_spawn_agent]
+  from "./core.gene")
 (var app
   (make_application_with_task (cell []) (cell "") (cell [])
     (fn [_type, _props] nil) (cell nil)))
@@ -1843,8 +1889,11 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [active_application make_application_with_task open_shell_pane
-         application_stop_worker] from "./tui.gene")
+(import [active_application make_application_with_task
+         application_stop_worker]
+  from "./core.gene")
+(import [open_shell_pane]
+  from "./tui.gene")
 (fn emit [type, props]
   (if (== type "worker_started")
     (println $"started=${props/worker_id} from=${props/restarted_from}") nil))
@@ -1872,7 +1921,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_headless_application_with_task application_new_worker
-         application_stop_worker application_find_worker] from "./tui.gene")
+         application_stop_worker application_find_worker]
+  from "./core.gene")
 (var dropped (cell []))
 (fn emit [type, props]
   (if (== type "worker_retention_dropped")
@@ -1905,7 +1955,8 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [bounded_event_record] from "./tui.gene")
+(import [bounded_event_record]
+  from "./core.gene")
 (import json [stringify])
 (import str [byte_size join])
 (var pieces [])
@@ -1936,7 +1987,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
       if fileExists(editor): removeFile(editor)
     writeFile(fixture, """
-(import [external_editor_draft] from "./tui.gene")
+(import [external_editor_draft]
+  from "./tui.gene")
 (var ticks (cell 0))
 (var composed (cell ""))
 (scope
@@ -2275,7 +2327,8 @@ catch {^message message} (set duplicate message))
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
-(import [call_model] from "./tui.gene")
+(import [call_model]
+  from "./core.gene")
 (import json [parse stringify])
 (var captured (cell nil))
 (fn transport [body, render_stream]
@@ -2329,20 +2382,22 @@ catch {^message message} (set duplicate message))
     agentProc.inputStream.write("/pane output crash-safe\n")
     agentProc.inputStream.flush()
 
+    # Worker lifecycle checkpoints the session store; the pane record lands in
+    # the TUI's own client store (slice C9, invariant §0.13), never in session
+    # checkpoints.
     let deadline = getMonoTime() + initDuration(seconds = 10)
     var checkpointReady = false
+    let surfacePath = stateDir / "surface_local_tui" / "surface.gene"
     while getMonoTime() < deadline:
-      let checkpointPath = agentStateRecordPath(stateDir, "checkpoint")
-      let surfacePath = agentStateRecordPath(stateDir, "surface")
-      if fileExists(checkpointPath) and fileExists(surfacePath):
-        let checkpointText = readFile(checkpointPath)
-        let surfaceText = readFile(surfacePath)
-        if "^reason \"surface:pane_opened\"" in checkpointText and
-            "crash-safe" in surfaceText:
+      let applicationPath = agentStateRecordPath(stateDir, "application")
+      if fileExists(applicationPath) and fileExists(surfacePath):
+        if "crash-safe" in readFile(applicationPath) and
+            "crash-safe" in readFile(surfacePath):
           checkpointReady = true
           break
       sleep(25)
     check checkpointReady
+    check "surface" notin readFile(agentStateRecordPath(stateDir, "checkpoint"))
 
     # Simulate a crash: no /quit, EOF, or application shutdown may perform the
     # ordinary final save.
@@ -2351,8 +2406,9 @@ catch {^message message} (set duplicate message))
     else:
       agentProc.terminate()
     discard agentProc.waitForExit(5000)
-    check "^reason \"surface:pane_opened\"" in
-      readFile(agentStateRecordPath(stateDir, "checkpoint"))
+    check "crash-safe" in
+      readFile(agentStateRecordPath(stateDir, "application"))
+    check "crash-safe" in readFile(surfacePath)
 
     let restored = execCmdOnce(
       "printf '/status\\n/quit\\n' | " &
@@ -2375,7 +2431,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [init_agent_state make_application active_application
-         application_emit emit_event!] from "./tui.gene")
+         application_emit emit_event!]
+  from "./core.gene")
 (init_agent_state)
 (var app (make_application (cell []) (cell "tool checkpoint\n")
                            (cell []) emit_event!))
@@ -2529,9 +2586,10 @@ catch {^message message} (set duplicate message))
 (import os [get_env Env])
 (import [Tool HandlerRef Operation EmptyArgs OperationAck
          register_tool! register_worker_operation!
-         worker_operation_for init_agent_state restore_dynamic_registrations!
-         save_agent_state close_agent_state find_tool agent_events]
-  from "./tui.gene")
+         worker_operation_for init_agent_state
+         restore_dynamic_registrations! save_agent_state
+         close_agent_state find_tool agent_events]
+  from "./core.gene")
 (var mode (get_env Env "HANDLER_MODE"))
 (var exact (HandlerRef ^module "test/workflows" ^path "run"
                        ^version "sha256:exact"))
@@ -2599,8 +2657,9 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import os [get_env Env])
-(import [init_agent_state start_workspace_heartbeat! close_agent_state]
-  from "./tui.gene")
+(import [init_agent_state start_workspace_heartbeat!
+         close_agent_state]
+  from "./core.gene")
 (init_agent_state)
 (start_workspace_heartbeat!)
 (if (== (get_env Env "OWNER_MODE") "hold") (sleep 10000))
@@ -3080,7 +3139,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(target, "safe\n")
     writeFile(fixture, """
-(import [safe_path] from "./tui.gene")
+(import [safe_path]
+  from "./core.gene")
 (println (safe_path "tmp/agent-v1..v2.txt"))
 (try
   (println (safe_path "tmp/../outside"))
@@ -3567,7 +3627,7 @@ catch {^message message}
     buildGeneCli()
     let stateDir = cliDir / "agent-context-state"
     if dirExists(stateDir): removeDir(stateDir)
-    let tui = "./tui.gene"
+    let tui = "./core.gene"
     let writer = "examples/ai_agent/context_compact_writer_test.gene"
     let reader = "examples/ai_agent/context_compact_reader_test.gene"
     defer:
@@ -3659,9 +3719,9 @@ catch {^message message}
       if fileExists(target): removeFile(target)
       if fileExists(largeTarget): removeFile(largeTarget)
     writeFile(fixture, """
-(import [find_tool compact_context run_turn_ready config_snapshot append
-         edit_mismatch_hint]
-        from "./tui.gene")
+(import [find_tool compact_context run_turn_ready config_snapshot
+         append edit_mismatch_hint]
+  from "./core.gene")
 (import json [stringify])
 (import str [contains? split])
 
@@ -4464,7 +4524,10 @@ catch {^message message}
       if fileExists(fixture): removeFile(fixture)
     writeFile(candidate, "completion\n")
     writeFile(fixture, """
-(import [Tool workspace_path_completion_items shell_route_completion_items]
+(import [Tool]
+  from "./core.gene")
+(import [workspace_path_completion_items
+         shell_route_completion_items]
   from "./tui.gene")
 (type Args ^props {^name Str ^count Int?})
 (var tool
