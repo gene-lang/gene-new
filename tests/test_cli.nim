@@ -225,10 +225,10 @@ suite "cli — gene run":
     check "\"surface_id\":\"local_tui:" in logged
     check "what's in this directory?" notin logged
 
-  test "ai agent slash sh opens a cancellable shell pane":
+  test "ai agent pane new shell opens a cancellable structured shell":
     buildGeneCli()
     let command =
-      "printf '/sh\\n/1 cd tests\\n/1 pwd\\n" &
+      "printf '/pane new shell\\n/1 cd tests\\n/1 pwd\\n" &
       "/1 cd ..\\n/1 pwd\\n" &
       "/1 printf \"shell-line-one\\\\nshell-line-two\\\\n\"\\n" &
       "/close\\n/quit\\n' | " &
@@ -331,7 +331,7 @@ suite "cli — gene run":
       "printf '/pane new output notes\\n/pane 1 max\\n/pane max 1\\n/1 append first\\n" &
       "/worker w1 append second\\n/pane open w1 mirror\\n" &
       "/pane hide 1\\n/pane hide 2\\n/worker w1 open\\n" &
-      "/sh\\n/pane hide 3\\n/sh\\n" &
+      "/pane new shell\\n/pane hide 3\\n/pane new shell\\n" &
       "/stats\\n/pane hide 4\\n/stats\\n" &
       "/repl\\n/pane hide 5\\n/repl\\n" &
       "/pane list\\n/worker list\\n/focus 1\\n/pane list\\n" &
@@ -362,7 +362,7 @@ suite "cli — gene run":
     check "unknown command: /unknown-command" in ran.output
     check "use /help or /?" in ran.output
     check "unknown command: /unknown-command\nuse /help or /?;" notin ran.output
-    check "/pane new <agent|shell|repl|tail|output|view|stats>" in ran.output
+    check "/pane new <agent|shell|terminal|repl|tail|output|view|stats>" in ran.output
     check "/close [N]" in ran.output
     check "/ext" notin ran.output
 
@@ -397,7 +397,7 @@ suite "cli — gene run":
     defer:
       if dirExists(stateDir): removeDir(stateDir)
     let command =
-      "printf '/sh\n/worker w1 stop\n/worker w1 restart\n" &
+      "printf '/pane new shell\n/worker w1 stop\n/worker w1 restart\n" &
       "/worker list\n/trace type=worker_started worker=w2 --detail\n/quit\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
@@ -521,13 +521,159 @@ catch {^message message} (set duplicate message))
     check "denied worker_access_denied delegated true repl worker_access_denied" in ran.output
     check "busy true true cancel true attributed true duplicate true" in ran.output
 
+  test "interactive terminal control stays on its one local surface":
+    when defined(posix):
+      buildGeneCli()
+      let fixture = "examples/ai_agent/terminal_authority_test.gene"
+      defer:
+        if fileExists(fixture): removeFile(fixture)
+      writeFile(fixture, """
+(import [active_application make_application open_terminal_pane
+         application_call_worker application_create_worker_from_config
+         application_worker_snapshot application_shutdown]
+  from "./tui.gene")
+(var app
+  (make_application (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil)))
+(active_application ~ Cell/set app)
+(var pane (open_terminal_pane "/bin/sh" ["-c" "sleep 30"]))
+(var worker pane/worker)
+(var surface_id (app/local_surface/instance_id ~ Cell/get))
+(var wrong_surface
+  (application_call_worker app worker/id "write" {^bytes "forbidden"}
+    {^origin "user" ^surface_id "local_tui:other"
+     ^caller_worker_id "main"}))
+(var wrong_signal
+  (application_call_worker app worker/id "signal" {^name "INT"}
+    {^origin "user" ^surface_id "local_tui:other"
+     ^caller_worker_id "main"}))
+(var wrong_stop
+  (application_call_worker app worker/id "stop" {}
+    {^origin "user" ^surface_id "local_tui:other"
+     ^caller_worker_id "main"}))
+(var remote
+  (application_call_worker app worker/id "snapshot" {}
+    {^origin "remote" ^caller_worker_id "main"}))
+(var model
+  (application_call_worker app worker/id "snapshot" {}
+    {^origin "model" ^caller_worker_id "main"}))
+(var local
+  (application_call_worker app worker/id "resize" {^rows 10 ^cols 40}
+    {^origin "user" ^surface_id surface_id ^caller_worker_id "main"}))
+(var metadata (application_worker_snapshot app worker))
+(var created
+  (application_create_worker_from_config app "terminal" {^title "denied"}))
+(var stopped
+  (application_call_worker app worker/id "stop" {}
+    {^origin "user" ^surface_id surface_id ^caller_worker_id "main"}))
+(while (!= (worker/lifecycle ~ Cell/get) "stopped") (sleep 5))
+(println "wrong" wrong_surface/error/kind
+  wrong_signal/error/kind wrong_stop/error/kind
+  "remote" remote/error/kind "model" model/error/kind
+  "local" local/ok "hidden" (== metadata/output "")
+  "created" (== created nil) "stop" stopped/ok)
+(application_shutdown app)
+""")
+      let ran = runGene(["run", fixture])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check "wrong worker_access_denied worker_access_denied worker_access_denied remote worker_access_denied" in ran.output
+      check "model worker_access_denied local true hidden true created true stop true" in ran.output
+
+  test "ai agent slash sh is a contained interactive terminal":
+    when defined(macosx):
+      buildGeneCli()
+      let outputFile = cliDir / "agent_terminal_c8.out"
+      let viProof = "tmp/agent_terminal_c8_vi.txt"
+      let foregroundPid = "tmp/agent_terminal_c8_foreground.pid"
+      removeFile(outputFile)
+      removeFile(viProof)
+      removeFile(foregroundPid)
+      defer:
+        removeFile(viProof)
+        removeFile(foregroundPid)
+      let inner =
+        "stty rows 24 cols 100; exec /usr/bin/env " &
+        "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
+        "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= GENE_AGENT_RESUME=0 " &
+        "TERM=xterm-256color " & shellQuote(geneExe) &
+        " run examples/ai_agent/tui.gene"
+      let expectScript =
+        "set timeout 20\n" &
+        "log_file -noappend " & outputFile & "\n" &
+        "spawn /bin/sh -c {" & inner & "}\n" &
+        "expect -re {\\[0 main\\]}\n" &
+        "send -- \"/sh\\r\"\n" &
+        "expect -re {terminal w1: direct/unmediated}\n" &
+        "send -- \"printf 'C8_COLOR_\\\\033\\\\[31m_界\\\\033\\\\[0m\\\\n'\\r\"\n" &
+        "expect -re {C8_COLOR_.*界}\n" &
+        "send -- \"cd tests\\r\"\n" &
+        "send -- \"pwd\\r\"\n" &
+        "expect -re {" & (getCurrentDir() / "tests") & "}\n" &
+        "send -- \"python3 -q\\r\"\n" &
+        "expect -re {>>>}\n" &
+        "send -- \"print('C8_REPL_42')\\r\"\n" &
+        "expect -re {C8_REPL_42}\n" &
+        "send -- \"exit()\\r\"\n" &
+        "after 250\n" &
+        "send -- \"cd ..\\r\"\n" &
+        "send -- \"vi " & viProof & "\\r\"\n" &
+        "after 500\n" &
+        "send -- \"iC8_VI_ALT_SCREEN\"\n" &
+        "send -- \"\\033:wq\\r\"\n" &
+        "after 500\n" &
+        # The child may request arbitrary OSC controls, but those bytes must
+        # terminate at libvterm rather than reach the outer terminal.
+        "send -- \"printf '\\\\033]52;c;C8_CLIPBOARD\\\\007'\\r\"\n" &
+        "after 250\n" &
+        # Leader enters the application editor; focus can leave and return to
+        # the same live PTY without creating a second input surface.
+        "send -- \"\\035\"\n" &
+        "expect -re {terminal w1: app commands}\n" &
+        "send -- \"0\\r\"\n" &
+        "expect -re {\\[0 main\\]}\n" &
+        "send -- \"/1\\r\"\n" &
+        "expect -re {terminal w1: direct/unmediated}\n" &
+        # Repeating the leader sends one literal byte to the child.
+        "send -- \"od -An -tu1 -N1\\r\"\n" &
+        "after 200\n" &
+        "send -- \"\\035\\035\\r\"\n" &
+        "expect -re {[[:space:]]29}\n" &
+        # Stop while a job owns a separate foreground process group.
+        "send -- \"sh -c 'echo \\\\$\\\\$ > " & foregroundPid &
+        "; exec sleep 30'\\r\"\n" &
+        "after 300\n" &
+        "send -- \"\\035\"\n" &
+        "send -- \"worker w1 stop\\r\"\n" &
+        "expect -re {stopping worker w1}\n" &
+        "expect -re {terminal w1: stopped}\n" &
+        "send -- \"\\003/quit\\r\"\n" &
+        "expect eof\n"
+      let ran = execCmdOnce(
+        "/usr/bin/expect -c " & shellQuote(expectScript) &
+        " >/dev/null 2>&1")
+      let output = readFile(outputFile)
+      if ran.exitCode != 0: checkpoint output
+      check ran.exitCode == 0
+      check fileExists(viProof)
+      check readFile(viProof) == "C8_VI_ALT_SCREEN"
+      check "\e]52;c;C8_CLIPBOARD" notin output
+      check fileExists(foregroundPid)
+      let childPid = Pid(parseInt(readFile(foregroundPid).strip()))
+      var alive = kill(childPid, 0) == 0
+      let deadline = getMonoTime() + initDuration(seconds = 2)
+      while alive and getMonoTime() < deadline:
+        sleep(10)
+        alive = kill(childPid, 0) == 0
+      check not alive
+
   test "ai agent mediated shell panes deny detached workspace writers":
     buildGeneCli()
     let marker = "tmp/agent-detached-writer-must-not-run"
     removeFile(marker)
     defer: removeFile(marker)
     let command =
-      "printf '/sh\\n" &
+      "printf '/pane new shell\\n" &
       "/1 (sleep 0.1; touch " & marker & ") &\\n" &
       "/1 sleep 0.2; if [ ! -e " & marker & " ]; then echo lease-preserved; fi\\n" &
       "/1 close\\n/quit\\n' | " &
@@ -543,7 +689,7 @@ catch {^message message} (set duplicate message))
   test "ai agent routes bare input to the focused worker and close detaches":
     buildGeneCli()
     let command =
-      "printf '/sh\\necho routed-to-shell\\n/workers\\n/1 close\\n/workers\\n/quit\\n' | " &
+      "printf '/pane new shell\\necho routed-to-shell\\n/workers\\n/1 close\\n/workers\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
@@ -1241,6 +1387,53 @@ catch {^message message} (set duplicate message))
     check "draft=false focus=1" in ran.output
     check "empty=true focus=nil" in ran.output
 
+  test "ai agent pane cycling retargets the live editor without losing drafts":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/editor_route_cycle_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task application_open_pane
+         application_cycle_visible_pane! surface_route_draft
+         surface_route_history editor_sync_focused_route! editor_set_text!
+         editor_text application_shutdown] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(active_application ~ Cell/set app)
+(application_open_pane app "output" nil "one" (cell "") nil "detach")
+(application_open_pane app "output" nil "two" (cell "") nil "detach")
+(app/local_surface/focused_pane ~ Cell/set 1)
+(var first_draft (surface_route_draft app))
+(var first_history (surface_route_history app))
+(var editor
+  {^values (cell ["edited" "-" "one"]) ^cursor (cell 3)
+   ^history (first_history ~ Cell/get)
+   ^history_index (cell ((first_history ~ Cell/get) ~ size))
+   ^draft first_draft ^paste (cell false) ^terminal_pane nil
+   ^terminal_direct (cell false) ^overlay (cell nil)})
+(application_cycle_visible_pane! app 1)
+(editor_sync_focused_route! editor)
+(println $"to_two focus=${(app/local_surface/focused_pane ~ Cell/get)} first=${(first_draft ~ Cell/get)} current=${(editor_text (editor/values ~ Cell/get))}")
+(editor_set_text! editor "edited-two")
+(var second_draft editor/draft)
+(application_cycle_visible_pane! app 1)
+(editor_sync_focused_route! editor)
+(println $"to_main focus=${(app/local_surface/focused_pane ~ Cell/get)} second=${(second_draft ~ Cell/get)} current=${(editor_text (editor/values ~ Cell/get))}")
+(editor_set_text! editor "edited-main")
+(var main_draft editor/draft)
+(application_cycle_visible_pane! app -1)
+(editor_sync_focused_route! editor)
+(println $"back_two focus=${(app/local_surface/focused_pane ~ Cell/get)} main=${(main_draft ~ Cell/get)} current=${(editor_text (editor/values ~ Cell/get))}")
+(application_shutdown app)
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "to_two focus=2 first=edited-one current=" in ran.output
+    check "to_main focus=nil second=edited-two current=" in ran.output
+    check "back_two focus=2 main=edited-main current=edited-two" in ran.output
+
   test "ai agent TUI routes focused input and layers maximize Escape reset":
     when defined(macosx):
       buildGeneCli()
@@ -1260,11 +1453,11 @@ catch {^message message} (set duplicate message))
         "log_file -noappend " & outputFile & "\n" &
         "spawn /bin/sh -c {" & inner & "}\n" &
         "after 500\n" &
-        "send -- \"/sh\\r\"\n" &
+        "send -- \"/pane new shell\\r\"\n" &
         "after 350\n" &
         "send -- \"/0\\r\"\n" &
         "expect -re {focused main agent}\n" &
-        "send -- \"/sh\\r\"\n" &
+        "send -- \"/pane new shell\\r\"\n" &
         "expect -re {shell pane 1}\n" &
         # A literal leading slash reaches the shell only through `//`. The
         # accepted command must remain the shell's latest recall entry even
@@ -1424,7 +1617,7 @@ catch {^message message} (set duplicate message))
         "after 500\n" &
         "send -- \"/tail tool_call\\r\"\n" &
         "expect -re {opened event tail pane 1}\n" &
-        "send -- \"/sh\\r\"\n" &
+        "send -- \"/pane new shell\\r\"\n" &
         "expect -re {shell pane 2}\n" &
         "send -s -- \"printf RAPID_INPUT_OK\"\n" &
         "send -- \"\\r\"\n" &
@@ -2893,15 +3086,15 @@ catch {^message message}
     check "unsafe path rejected (escapes workspace): tmp/../outside" in
       ran.output
 
-  test "ai agent scripted /sh denies a catastrophic line but runs normal ones":
-    ## Review #3: the piped /sh loop reads lines in Gene, so each runs through
+  test "ai agent structured shell denies a catastrophic line but runs normal ones":
+    ## The structured shell route reads lines in Gene, so each runs through
     ## the same §8.5 classifier as model-issued run_shell. A catastrophic line
-    ## is denied; a normal line still executes. (Interactive TTY /sh is a
-    ## documented escape hatch and is not covered here.) The command targets a
+    ## is denied; a normal line still executes. /sh is the interactive PTY
+    ## escape hatch and is intentionally not covered here. The command targets a
     ## nonexistent root-level path: it classifies catastrophic via the
     ## leading-/ rule but deletes nothing if the guard ever regresses.
     buildGeneCli()
-    let command = "printf '/sh\\n/1 rm -rf /nonexistent-gene-guard-root\\n/1 echo ran-normal\\n/1 close\\n/quit\\n' | " &
+    let command = "printf '/pane new shell\\n/1 rm -rf /nonexistent-gene-guard-root\\n/1 echo ran-normal\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
@@ -3263,7 +3456,7 @@ catch {^message message}
           sleep(50)
 
     let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
-    let input = "go\n/diff\n/sh\n/1 printf external > dirty.txt\n/1 close\n" &
+    let input = "go\n/diff\n/pane new shell\n/1 printf external > dirty.txt\n/1 close\n" &
                 "/undo 1\n/undo 3\n/undo 2\n/diff\n" &
                 "/trace type=file_change\n/quit\n"
     let command = "cd " & shellQuote(workspace) & " && printf " &
@@ -4227,7 +4420,7 @@ catch {^message message}
       # Global control commands are presentation history, not accepted worker
       # input. Open a shell route and execute one admitted command instead.
       # Escape dismisses the automatic slash-command palette before submit.
-      terminal.inputStream.write("/sh\x1b\nprintf history-marker\n")
+      terminal.inputStream.write("/pane new shell\x1b\nprintf history-marker\n")
       terminal.inputStream.flush()
       sleep(600)
       # Route-local reverse search restores the prior shell command into the

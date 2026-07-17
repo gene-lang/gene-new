@@ -37,8 +37,12 @@ durable-vs-ephemeral handler registration, pinned artifacts, owner-only state,
 and a cross-process ownership warning provide the durable boundary (§10.8).
 The four-axis help system and completion-capable editor share one bounded
 overlay for the `/` palette, Tab, and Ctrl-R; Ctrl-E uses the same external
-editor composition path as `/edit` (§7.3, §10.9). Slice D remains an optional
-menu driven by measured dogfood leverage, not a required next milestone.**
+editor composition path as `/edit` (§7.3, §10.9). Slice C8 is the next terminal
+target: a local-only interactive terminal worker backed by a PTY and a real
+VT/xterm state machine, rendered as cells by the existing curses UI thread,
+while structured shell workers remain the agent/remote command surface
+(§7.4, §10.11). Slice D remains an optional menu driven by measured dogfood
+leverage, not a required next milestone.**
 Date: 2026-07-16.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
@@ -167,7 +171,9 @@ the invariant wins and the text is stale:
    arbitrary executable can still daemonize internally, so descendant
    containment is explicitly best-effort rather than an OS sandbox. `/tty` is
    the user-originated escape for persistent processes, and explicitly granted
-   raw host capabilities remain outside this guarantee.
+   raw host capabilities remain outside this guarantee. An interactive
+   `terminal` worker is the in-pane form of that same local-user escape: it is
+   never presented as coordinated or classified, and its status must say so.
 2. Every runnable or output-producing entity is a **worker** with exactly one
    session-stable worker id. Agents are a worker subtype; supervision metadata
    never mints a second id or a second lifecycle.
@@ -191,9 +197,12 @@ the invariant wins and the text is stale:
    dropping oldest entries with explicit loss metadata; stale cursors get an
    explicit gap response, never a silent skip.
 10. Remote adapters never require the local TUI to exist.
-11. Command-shaped input is never silently reinterpreted as worker input. An
-   unknown leading-slash command is a local error; literal slash-prefixed input
-   requires `//...` or `/N -- ...`.
+11. Command-shaped input is never silently reinterpreted as worker input. On
+   line-editor routes, an unknown leading-slash command is a local error and
+   literal slash-prefixed input requires `//...` or `/N -- ...`. A focused
+   interactive terminal is deliberately byte-transparent: `/` is ordinary PTY
+   input, and application commands require the explicit terminal command-mode
+   escape (§7.4).
 12. Every agent operation has one durable terminal outcome and one structured
    result, including failure and cancellation. Availability (`idle`/`busy`),
    lifecycle (`running`/`stopped`), last outcome, and unread result state are
@@ -219,6 +228,11 @@ the invariant wins and the text is stale:
    different generations; persisted record schemas are versioned from their
    first release and migrate through pure functions, with quarantine as the
    fallback.
+17. Curses is owned by exactly one UI thread. PTY readers, process launchers,
+   VT parsers, workers, and adapters never call curses; they publish bounded
+   events or immutable cell snapshots. A terminal worker has at most one local
+   controlling surface, and models, peers, gateways, and channels can neither
+   create it nor inject terminal bytes.
 
 ## 1. What the agent is
 
@@ -278,12 +292,15 @@ Behavior:
   ...`, `/agent ...`, and `/worker ...` (§7.1); `/?` is the exact short help
   alias, while `/0`, `/N ...`, `/close [N]`, `/sh`, `/repl`, `/tail`,
   `/stats`, and `/view` remain concise commands. Unknown
-  command-shaped input is rejected locally rather than sent to the focused
-  worker. Session commands include `/quit`, `/exit`, `/remember`, `/memory`,
+  command-shaped input is rejected locally rather than sent to a focused
+  line-oriented worker; C8 terminal-direct mode is byte-transparent and uses
+  `Ctrl-]` to enter application command mode (§7.4). Session commands include
+  `/quit`, `/exit`, `/remember`, `/memory`,
   `/forget-memory`, `/status`, `/effort [level]`, `/progress`, `/trace`,
   `/diff`, and `/undo`, and
-  Ctrl-C interrupting a `/sh` command or `/repl` eval, and Escape/Ctrl-C
-  cancelling an in-flight model response (shipped, slice B);
+  Ctrl-C interrupting the currently shipped structured `/sh` command or
+  `/repl` eval, and Escape/Ctrl-C cancelling an in-flight model response
+  (shipped, slice B). After C8, Ctrl-C on `/sh` is PTY input;
 - the whole session is ordinary Gene code: messages are maps, tools are `fn`s
   registered in a map, and the transcript is a list — homoiconic and testable.
 - the target signature experience makes that last property an official API:
@@ -314,6 +331,7 @@ Host capabilities (gated authority):
 | Env var read (`Os/Env`) | API token, model, base URL | **implemented** | §3 |
 | Outbound HTTPS (`Net/Http`) | call the API | **implemented** through `net/http_client` + libcurl | §4 |
 | Subprocess (`Os/Exec`) | `run_shell`, `grep`, bootstrap `curl` | **implemented** | §6 |
+| PTY process (`Os/Pty`) | local interactive terminal worker | **planned C8** — narrow helper-backed authority | §7.4 |
 | File read/write/list (`Fs/*`) | file tools | **implemented** — sync + async helpers | §6 |
 
 Pure stdlib / runtime pieces (no new authority):
@@ -323,6 +341,7 @@ Pure stdlib / runtime pieces (no new authority):
 | JSON parse / serialize | API request + response bodies | **implemented** | §5 |
 | TLS transport code | native HTTP client | **implemented** through dynamically loaded libcurl | §4 |
 | Terminal UI (curses) | the TUI | **implemented safe API + prompt**, including mouse/page transcript scrolling | §7 |
+| VT/xterm state machine | embedded terminal grid and scrollback | **planned C8** — pinned `libvterm` wrapper | §7.4 |
 
 What already exists and is directly reusable:
 
@@ -680,6 +699,9 @@ use `ensure`, matching the cleanup discipline of db connections. `draw` is a
 non-variadic color-coded renderer, `dimensions` reports live rows/columns, and
 `next_event` returns a cancellable `Task`. It preserves FIFO ordering,
 assembles complete UTF-8 text events, and reports `KEY_RESIZE` as resize.
+Only the TUI thread may call this namespace. Terminal workers introduced in
+§7.4 publish emulator snapshots to it; neither their PTY reader nor their VT
+state machine owns an ncurses `WINDOW` or calls a drawing primitive.
 
 The agent's TTY editor is a Gene-level state machine over public
 `curses/next_event` and `curses/draw`; this is what lets sub-agents and pane
@@ -696,10 +718,18 @@ rows above a second `─` separator, and a status line at the bottom. The agent
 adds a short `─` separator before each user turn in the scrollback, owns one
 `Screen` persistently across prompts to avoid terminal-mode flicker, and calls
 `curses/close` before EOF, process exit, or the whole-terminal `/tty` and
-`/view` escape hatches (§8.5; the bootstrap spelled `/tty` as interactive
-`/sh`, while C2 gives the two meanings distinct commands); the shell and REPL
-*panes* are scheduler-owned
-and never leave curses (§7.1).
+`/view` escape hatches (§8.5). The structured shell and REPL panes are
+scheduler-owned and never leave curses (§7.1); C8 adds a scheduler-integrated
+PTY terminal pane without nesting another curses session (§7.4).
+
+There remains one physical keyboard focus and one bottom application-input
+region. For ordinary routes that region is today's draft editor. When a
+terminal pane is focused it becomes a compact terminal-mode indicator because
+the child must draw its own prompt and cursor inside its VT grid; duplicating
+that line at the bottom would break terminal coordinates and interactive
+programs. `Ctrl-]` temporarily turns the same region back into the application
+command editor. Thus the UI does not grow one text box per pane, but it also
+does not fake a line editor in front of a byte-oriented terminal.
 The mouse wheel moves the focused view by three lines and PageUp/PageDown by
 one viewport. A newly opened extension pane takes navigation focus; `/pane
 focus N` (aliases `/N` and `/N focus`) selects it and `/pane focus 0`
@@ -722,8 +752,9 @@ REPL, Ctrl-C stops the running command/eval or clears a partially typed line
 instead of killing the agent: the interactive repl installs a SIGINT handler
 that arms a VM interrupt (surfaced as a catchable "interrupted" error), and
 the shell loop traps INT while `os/exec_stdio` ignores it in the parent,
-system(3)-style. The shell/REPL panes need none of this — they cancel through
-the ordinary worker `cancel` path. Interrupting an
+system(3)-style. Structured shell/REPL panes need none of this — they cancel
+through the ordinary worker `cancel` path. Terminal-direct Ctrl-C instead goes
+to the PTY foreground process group (§7.4). Interrupting an
 in-flight model response and steering its continuation are shipped (§10).
 Search, selection, and horizontal transcript scrolling remain optional; the
 reusable lifecycle, editor, drawing, vertical scrolling, resize, and
@@ -740,6 +771,7 @@ Examples:
 [0 main] Enter send | /pane list | /help
 [1 agent a1: working] /0 main | Esc cancel | PgUp/PgDn scroll
 [2 shell w1: idle] Enter run | /0 main | Ctrl-C cancel
+[3 terminal t1: direct/unmediated] Ctrl-] commands | Shift-PgUp scroll
 [4 output w3: read-only] /0 main | PgUp/PgDn scroll | /close
 ```
 
@@ -765,6 +797,8 @@ explicit stop controls the agent lifetime. The main model has the equivalent
 compatibility tool. Output, streaming line-oriented shell, and
 declaration-persistent Gene REPL panes are also shipped. Restored shell/REPL
 panes retain captured history in a closed state and require an explicit reopen.
+C8 adds `terminal` as a separate local-only worker and changes the `/sh`
+shortcut without removing this structured shell kind (§7.4).
 
 **Shipped design (slice C2): one worker model.** The shipped slice already
 separates a pane from the thing it displays, but names that thing three ways —
@@ -817,6 +851,7 @@ surface is headless here and can be reattached through `/pane open W`.
 |---|---|---|---|
 | `agent` (main or one sub-agent) | prompt; steering is explicit cancel-then-prompt | streamed turn transcript | cancel model request and subprocesses, release lease, keep the event trail |
 | `shell` | command lines | bounded streamed stdout/stderr | cancel the active command; cwd/env are worker state |
+| `terminal` | local controlling surface sends PTY bytes | bounded VT grid plus normal-screen scrollback; local-only | signal/terminate the foreground process group; process exit stops the worker |
 | `repl` | Gene forms; incomplete forms continue | printed values and diagnostics | close the `repl/Session` |
 | `output` | none; producers append through the typed append operation | bounded append-only buffer (diffs, test runs, model projections) | detach producer links and preserve the bounded terminal snapshot |
 | `log_tail` | a filter expression (same syntax as `/trace`) | matching events as they append | unsubscribe from the event log |
@@ -881,9 +916,12 @@ or command.
 Stopped is genuinely terminal: a stopped worker is never resurrected under
 its old id. `/worker W open` on a stopped worker attaches a view of its
 captured history; restarting mints a **new** worker id whose `worker_started`
-event records `^restarted_from W`. This is also how persistence restores shell
-and REPL workers whose processes cannot survive: the restored worker remains
-stopped for inspection, while `/sh` or `/repl` creates its successor.
+event records `^restarted_from W`. This is also how persistence restores
+shell, terminal, and REPL workers whose processes cannot survive: the restored
+worker remains stopped for inspection, while reopening creates its successor.
+A terminal restore may retain bounded plain scrollback and launch
+configuration, but never a live PTY, emulator mode, process id, or unredacted
+input byte stream (§7.4).
 Visibility is never a status: headless workers
 keep running, `/workers` lists them, and bounded per-kind counts refuse new
 spawns rather than silently expiring idle workers — reclaiming a slot is an
@@ -993,7 +1031,7 @@ right, and reserves full-width input and status rows:
                       │─────────────────
                       │ [3] shell or REPL
 ────────────────────────────────────────
-input
+input / terminal-mode command region
 ────────────────────────────────────────
 status
 ```
@@ -1018,7 +1056,8 @@ while the input and status rows stay; the same command (or Escape, below)
 restores the split.
 
 **Focus routes input, with a deterministic grammar.** Focus is upgraded from
-pane-local navigation to input routing. Parsing is surface-first:
+pane-local navigation to input routing. On main, agent, structured shell,
+REPL, and projection routes, parsing is surface-first:
 
 1. the surface parses the complete global-command registry first — `/help`,
    `/?`, `/pane`, `/agent`, `/worker`, `/close`, session commands, `/0`,
@@ -1032,12 +1071,22 @@ pane-local navigation to input routing. Parsing is surface-first:
 4. `//text` sends `/text` literally to the focused worker, and `/N -- text`
    is the explicit routed-literal form.
 
-This deliberately collides with legitimate shell input such as
-`/usr/bin/env ...`: typo safety wins, and the contextual diagnostic shows that
-`//usr/bin/env ...` sends the absolute path to the focused shell. The routed
-form `/N -- /usr/bin/env ...` sends it to shell pane N. The status/help text
-for shell and REPL routes includes this escape instead of making the user infer
-it from a rejection.
+A focused `terminal` worker uses the §7.4 terminal-direct mode instead: every
+ordinary key, including `/`, Up/Down, Escape, Ctrl-C, and Ctrl-D, is translated
+to terminal bytes and sent to the PTY. `Ctrl-]` enters application command
+mode and activates the same bottom editor used everywhere else; commands
+entered there use the grammar above. This explicit mode boundary is necessary
+for readline, password prompts, `vim`, `top`, mouse-aware programs, and shell
+job control to behave like a terminal rather than a line-submit widget.
+
+On a structured-shell route this deliberately collides with legitimate input
+such as `/usr/bin/env ...`: typo safety wins, and the contextual diagnostic
+shows that `//usr/bin/env ...` sends the absolute path to that worker. The
+routed form `/N -- /usr/bin/env ...` sends it to structured shell pane N. The
+status/help text for structured shell and REPL routes includes this escape
+instead of making the user infer it from a rejection. Terminal-direct mode has
+no collision because slash bytes go to the PTY and application commands require
+`Ctrl-]` first.
 
 Both the input row and the status line name the route (for example
 `[3 shell]`) so a prompt can never be typed into a shell silently. Bare `/N`
@@ -1051,14 +1100,17 @@ maximized pane; else, **only when the
 draft is empty**, reset focus to pane 0; else nothing. With a composed draft
 and nothing to cancel or restore, Escape leaves both the draft and its route
 untouched — an already-composed shell command or Gene form is never silently
-rerouted to the main agent.
+rerouted to the main agent. This Escape ladder applies to line-editor and
+read-only routes. In terminal-direct mode Escape belongs to the child; enter
+application command mode to focus, close, maximize, or stop the terminal.
 
-The input contract is uniform across input-accepting workers: multi-line
+The line-editor contract is uniform across non-terminal input-accepting
+workers: multi-line
 editing, worker-owned accepted-input history with adapter provenance, and
 surface-local recall lists/navigation cursors per route, plus
 **external composition** — `/edit` suspends curses, opens `$VISUAL`/`$EDITOR`
 on the current draft, and returns the saved buffer as the focused worker's
-draft without submitting it. This reuses the `/sh` suspend/resume discipline
+draft without submitting it. This reuses the `/tty`/`/view` suspend/resume discipline
 and the editor-resolution rules in `docs/proposals/editor.md` §7.1; the draft
 is ordinary user input and passes the same redaction-at-append when submitted.
 `/edit` is strictly a surface operation: suspending the TUI's curses session
@@ -1070,7 +1122,8 @@ event cursor. A failed or non-zero editor exit preserves the prior draft
 unchanged; success replaces only this surface's draft.
 
 **Help always has a known home.** `/help` and `/?` are equivalent global
-commands from every route. With no argument they restore a maximized layout if
+commands from every application-command route; terminal-direct users press
+`Ctrl-]` first. With no argument they restore a maximized layout if
 needed, focus pane 0, and print one bounded comprehensive help block in the
 main viewport. The block covers navigation and keys, focus and literal-input
 escapes, pane/worker/agent lifecycle verbs, every worker kind, session
@@ -1126,7 +1179,7 @@ The canonical command grammar included by comprehensive help begins with:
 /help [pane|agent|worker|input|session|trace]    # /? is identical
 
 /pane list
-/pane new <agent|shell|repl|tail|output|view|stats> [args]
+/pane new <agent|shell|terminal|repl|tail|output|view|stats> [args]
 /pane open <worker-id> [title]
 /pane focus <0|N>
 /pane show|hide|close|max <N>
@@ -1141,11 +1194,14 @@ The canonical command grammar included by comprehensive help begins with:
 /worker list
 /worker <W> open|cancel|stop|restart
 /worker <W> status                    # any kind: lifecycle, operation, outcome
-/worker <W> tail [n]                  # any kind: bounded recent output
+/worker <W> tail [n]                  # non-terminal: bounded recent output
 /worker <W> run <command>             # shell workers (stateful cwd/env)
 /worker <W> chdir <workspace-path>    # explicit confined shell cwd update
 /worker <W> set_env <name> <value>    # explicit shell environment update
 /worker <W> unset_env <name>
+/worker <T> snapshot                  # terminal cells/modes; local controller
+/worker <T> write <bytes>             # terminal data plane; local controller
+/worker <T> resize <rows> <cols>      # controlling pane only
 /worker <W> filter <expr>             # log-tail workers
 /worker <W> view <path>|reload|info   # file-view workers
 /worker <W> snapshot                  # stats workers
@@ -1162,7 +1218,7 @@ The canonical command grammar included by comprehensive help begins with:
 /effort [default|none|minimal|low|medium|high|xhigh|max]
 /diff            /undo [change-id]
 /remember ...    /memory          /forget-memory ...
-/edit            /tty             /quit | /exit
+/edit            /sh [-- argv...]  /tty             /quit | /exit
 /view <file>                         # terminal handoff to gene view
 ```
 
@@ -1198,8 +1254,11 @@ aliases below remain part of the interface:
   attaches a fresh pane to a headless worker;
 - `/pane output [title]` creates a bounded `output` worker and a pane over it;
   `/N append <text>` and `/worker W append <text>` add user-visible evidence;
-- `/sh` opens or focuses the line-oriented shell worker's pane; `/repl` opens
-  or focuses the Gene REPL pane with the stable `session` binding;
+- `/sh` opens or focuses the local interactive terminal worker's pane; the
+  default child is `$SHELL`, while `/sh -- argv...` starts an explicit program
+  without shell interpolation. `/pane new shell` remains the structured,
+  line-oriented shell worker used for attributable captured commands;
+  `/repl` opens or focuses the Gene REPL pane with the stable `session` binding;
 - `/tty` suspends the TUI and hands the terminal to the real interactive
   shell — the deliberate, user-originated escape hatch that runs outside
   worker capture and the §8.5 classifier while holding the workspace mutation
@@ -1213,7 +1272,7 @@ aliases below remain part of the interface:
   worker;
 - `/stats` opens or focuses the stats pane; `/tail [filter]` opens a log tail
   (a bare token is `type=` shorthand, as in `/trace`);
-- `/N text` prompts an idle agent pane, sends a command to a shell pane,
+- `/N text` prompts an idle agent pane, sends a command to a structured shell pane,
   evaluates a form in a REPL pane, or replaces the filter of a log-tail pane;
   stats and file-view panes reject text input, while output panes accept only
   the explicit `append` verb. `/N -- text` sends text that would otherwise
@@ -1227,8 +1286,9 @@ aliases below remain part of the interface:
 The close rule is uniform, with no per-kind exceptions: `close` detaches the
 view and never stops any worker — a busy shell or REPL keeps running headless
 and stays visible in `/workers`. `stop` cancels the current operation and ends
-the worker immediately, without confirmation, for agents, shell, output, log
-tail, file view, and stats — a blanket "are you sure" on every busy stop would
+the worker immediately, without confirmation, for agents, shell, terminal,
+output, log tail, file view, and stats — a blanket "are you sure" on every
+busy stop would
 be exactly the permission theater §8.5 rejects, and lifecycle control must
 stay cheap. The one exception: a REPL stop confirms only when the worker has
 explicitly tracked unsaved or transient state worth preserving, not merely
@@ -1236,12 +1296,14 @@ because an eval is running. Destructive confirmation remains about host
 mutation (§8.5), never about worker lifecycle; API/headless callers therefore
 never park on a stop.
 
-Accepted input is kept per worker so shell commands, Gene forms, sub-agent
+Accepted line input is kept per worker so structured shell commands, Gene forms, sub-agent
 prompts, and main-agent prompts do not pollute one another. Draft text, the
 Up/Down recall list, and its navigation cursor belong to the surface: one web
 client cannot move the TUI's editor cursor. The local TUI recalls its own
 accepted submissions for that worker; global control commands are presentation
-history rather than worker input. Unsubmitted drafts may be restored only in
+history rather than worker input. Terminal history belongs to the child shell
+or program and is neither parsed nor duplicated by the application. Unsubmitted
+drafts may be restored only in
 the same local surface snapshot, are byte-bounded on restore, and are never
 placed in the redacted event journal until submitted. The status line identifies
 the routed target and reports all running agents/processes compactly.
@@ -1305,15 +1367,18 @@ waits until dogfooding shows the model uses them productively. An output
 worker accepts structured events or already-redacted text; it is not an
 untracked channel around the authoritative event log.
 
-Input provenance remains explicit, with three distinct channels. User input to
-a shell **pane** is attributable worker input: each line passes the §8.5
-classifier and lands in the event log like scripted `/sh` lines do. The
-`/tty` escape is the one unclassified channel, and it is user-originated by
-construction — the TUI must be suspended by the person at the keyboard. A
-model cannot inject raw input into either: model-initiated commands still go
-through the typed `run_shell` operation, its classifier, and its events, with
-output optionally projected into a shell/output pane. The same rule prevents a
-model from using a visible REPL pane as an unlogged mutation backdoor.
+Input provenance remains explicit, with distinct structured and terminal
+channels. User input to a structured shell **pane** is attributable worker
+input: each submitted line passes the §8.5 classifier and lands in the event
+log. A `terminal` pane is the local user's unmediated host escape inside the
+layout, equivalent in authority to `/tty`: its byte stream is never accepted
+from a model, peer, gateway, or channel, never copied into the authoritative
+event journal, and never described as workspace-coordinated. The event log
+records only bounded metadata such as creation, controller attachment, resize,
+signal, exit status, byte counts, and truncation. Model-initiated commands
+still go through `run_shell` or the typed structured-shell `run` operation,
+their classifier, lease, and events. The same rule prevents a model from using
+a visible REPL pane as an unlogged mutation backdoor.
 Every shared `file_view` resolves its path through the same workspace
 `safe_path` confinement as `read_file`, including `/pane new view`.
 File-view output is session state exposed by snapshots and persistence, so a
@@ -1329,18 +1394,16 @@ user-originated escape hatch just like using an external terminal: they are
 outside application mediation and the coordinator invariant, and the host must
 label that authority rather than implying it is tracked.
 
-The shipped shell and REPL panes run as scheduler-owned, cancellable controllers
-behind the curses renderer rather than entering nested blocking terminal loops.
-The shell pane is line-oriented: it reuses the async command runner, streams
-bounded output, retains cwd/environment fields as controller state, and
-supports cancellation, but does not claim job control or full-screen terminal
-programs.
-Drawing arbitrary PTY bytes inside curses would require a real terminal
-emulator; do not approximate one with ANSI stripping. Add that layer or hand
-off to an external terminal only if dogfooding requires it. The REPL is a
-form-oriented controller over the owned `repl/Session` API, so declarations and
-incomplete forms persist without replaying earlier side effects. This boundary
-is reusable by the TUI, web UI, and gateway; curses remains only a view.
+The currently shipped shell and REPL panes are scheduler-owned, cancellable
+controllers behind the curses renderer. The structured shell remains
+line-oriented: it reuses the async command runner, streams bounded output,
+retains cwd/environment fields as controller state, and is the reusable
+TUI/web/gateway command surface. C8 changes the ordinary `/sh` experience by
+adding a separate local `terminal` worker: PTY process, VT/xterm emulator, and
+cell renderer, never ANSI stripping and never a nested curses loop (§7.4).
+The REPL remains a form-oriented controller over the owned `repl/Session` API,
+so declarations and incomplete forms persist without replaying earlier side
+effects. Curses remains a view for all three worker kinds.
 
 The 2026-07-16 REPL-pane dogfood exposed where that contract is currently
 hollow, and it sharpens three requirements:
@@ -1432,6 +1495,9 @@ values, not a parallel string vocabulary:
   currently installed operation instead of competing with it, and
   `worker_exclusive` (the normal reject-while-busy slot; for `host_write`
   operations the workspace lease is acquired on top, per §9.3 ordering).
+  `terminal_stream` is the local controller's bounded, ordered data plane: it
+  neither competes for the terminal's lifetime operation slot nor takes the
+  workspace lease, and it rejects a stale controller or stopped process.
   `cancel` and `stop` are `interrupt` operations — a `worker_exclusive`
   `cancel` would be rejected exactly when it is needed. `stop` is an atomic
   cancel-then-terminate; `restart` requires a stopped worker and uses ordinary
@@ -1439,22 +1505,24 @@ values, not a parallel string vocabulary:
 - **audit** — the accepted-call journal policy, fixed by the operation
   declaration rather than selected from the caller origin. `none` keeps
   routine bounded observation (`status`, `tail`, `result`, `info`, `snapshot`)
-  event-free on every adapter; `attributed` records one bounded access event
-  for a deliberately sensitive future observation; `full` records start,
-  finish, and effect evidence. Authorization and validation denials always
-  emit one bounded rejection event independently of this success policy, so
-  denied access is visible without making successful polling amplify the
-  journal.
+  event-free on every adapter; `metadata` records bounded lifecycle/counter
+  changes but never one event per terminal input/output chunk; `attributed`
+  records one bounded access event for a deliberately sensitive future
+  observation; `full` records start, finish, and effect evidence.
+  Authorization and validation denials always emit one bounded rejection
+  event independently of this success policy, so denied access is visible
+  without making successful polling amplify the journal.
 
 The per-kind operation table (audience abbreviations: L local user, R remote
 user, S supervisor, D delegated):
 
 | Worker | Operation | Effects | Audience | Admission | Audit |
 |---|---|---|---|---|---|
-| *every kind* | `status`, `tail [n]` | observe | L R S D | none | none |
-| *every kind* | `cancel` | session_write | L R S | interrupt | full |
-| *every kind* | `stop` | session_write | L R S | interrupt (cancel + terminate) | full |
-| *every kind* | `restart` | session_write | L R S | worker_exclusive (stopped only) | full |
+| *every kind* | `status` | observe | L R S D | none | none |
+| *every non-terminal kind* | `tail [n]` | observe | L R S D | none | none |
+| *every non-terminal kind* | `cancel` | session_write | L R S | interrupt | full |
+| *every non-terminal kind* | `stop` | session_write | L R S | interrupt (cancel + terminate) | full |
+| *every non-terminal kind* | `restart` | session_write | L R S | worker_exclusive (stopped only) | full |
 | `agent` | `send <prompt>` | session_write + model_call | L R S | worker_exclusive | full |
 | `agent` | `result` | observe | L R S | none | none |
 | `agent` | `mark_result_read` | session_write (idempotent) | L R S | session_serialized | full |
@@ -1462,6 +1530,9 @@ user, S supervisor, D delegated):
 | `shell` | `run <command>` | host_write | L R S D | worker_exclusive + lease | full |
 | `shell` | `chdir <workspace-path>` | host_read + session_write | L R S D | worker_exclusive | full |
 | `shell` | `set_env <name> <value>`, `unset_env <name>` | session_write | L R S D | worker_exclusive | full |
+| `terminal` | `snapshot` | observe | L only | none | none |
+| `terminal` | `write <bytes>`, `resize <rows> <cols>` | host_write | L controlling surface only | terminal_stream | metadata |
+| `terminal` | `signal <name>`, `stop`, `restart` | host_write + session_write | L only | interrupt/exclusive | full |
 | `repl` | `eval <form>` | session_write (VM state) | L only | worker_exclusive | full |
 | `output` | `append <text>` | session_write | L R S D | session_serialized | full |
 | `output` | `follow`/`unfollow <src>` | session_write | L R S | session_serialized | full |
@@ -1519,7 +1590,9 @@ Decisions the table encodes:
 - **The primary input verb is the default operation.** `/N text` on a shell
   pane is sugar for `run`, on an agent pane for `send`, on a log-tail pane for
   `filter`. The table makes the verb explicit so a non-surface caller can use
-  it; it does not change surface input routing (§7.1).
+  it; it does not change surface input routing (§7.1). A terminal deliberately
+  has no line-primary verb: its controlling local surface coalesces key events
+  into bounded `write` calls, while every other caller is denied.
 
 Callers and attribution: the model reaches operations through one typed
 `call_worker` tool (`^worker_id`, `^op`, `^args`) validated against the target
@@ -1552,13 +1625,16 @@ compositions over canonical operations (create worker if needed, open pane,
 focus, invoke primary verb), never private paths. The user should never have
 to assemble a worker, a pane, focus, and an operation by hand for ordinary
 work — the operation table is what makes the composites cheap to define and
-impossible to drift.
+impossible to drift. After C8, `/sh` composes create-or-restart `terminal`,
+attach local controller, open/focus pane; structured shell workers continue to
+use the same operation table without a private PTY path.
 
 ### 7.3 Input editing, completion, and overlays
 
 The input editor is where system complexity either stays invisible or leaks
-onto the user, so its key contract is specified once and PTY-tested. Shipped
-behavior and C6 targets, in one table:
+onto the user, so its key contract is specified once and PTY-tested. This table
+applies to line-editor routes; terminal-direct keys are specified separately
+in §7.4. Shipped behavior and C6 targets, in one table:
 
 | Key | Behavior | Status |
 |---|---|---|
@@ -1574,8 +1650,10 @@ behavior and C6 targets, in one table:
 `Ctrl-R` searches the same worker-scoped history that Up/Down browses: typing
 narrows incrementally, `Ctrl-R` again steps to the older match, `Enter`
 accepts into the draft (never auto-submits), and `Escape` restores the prior
-draft. Search never crosses routes — a shell pane's `Ctrl-R` cannot surface a
-main-agent prompt — because history is per worker (§7.1).
+draft. Search never crosses routes — a structured shell pane's `Ctrl-R` cannot
+surface a main-agent prompt — because history is per worker (§7.1). In a
+terminal pane, Ctrl-R belongs to the child and usually invokes shell readline
+history.
 
 **Tab completion is context-sensitive by parse position**, derived from the
 same command registry, operation tables, and session state the parser uses —
@@ -1589,7 +1667,7 @@ never a second hardcoded word list:
 - argument position → the operation's declared Gene argument type drives the
   source: workspace-confined paths for path args, `/trace` filter keys for
   filter args, artifact ids for artifact args;
-- on a shell route, plain-text position → workspace-confined path completion
+- on a structured shell route, plain-text position → workspace-confined path completion
   plus tokens from that worker's own history; on a REPL route → the stable
   `session` projections and top-level bindings.
 
@@ -1623,6 +1701,181 @@ On an input-capable route, typing the second slash of the literal `//...`
 escape dismisses the command palette immediately and leaves the literal draft
 in place; discovery never changes §7.1's slash-routing grammar.
 
+### 7.4 Interactive terminal workers
+
+The interactive terminal is a distinct worker kind, not a more permissive
+mode of the structured `shell` worker:
+
+| Concern | `shell` worker | `terminal` worker |
+|---|---|---|
+| Intended caller | user, supervisor, delegated agents, gateway | one controlling local TUI surface |
+| Input | typed `run`/`chdir`/environment operations | terminal byte stream |
+| Process model | one foreground child per `run` | one long-lived PTY session and foreground process group |
+| Output | bounded attributable text, safe to tail/delegate | VT cell grid + normal-screen scrollback, local-only |
+| Guard/coordinator | classified and mutation-leased | explicit unmediated local-user escape |
+| Programs | commands and captured builds/tests | shells, readline, password prompts, `vim`, `top`, interactive REPLs |
+
+`/sh` is the product shortcut for a `terminal` worker;
+`/pane new shell` remains available for the structured worker. `/tty` stays a
+whole-terminal fallback and recovery path, not the implementation underneath a
+terminal pane.
+
+**Process boundary.** Do not call `forkpty()` from the long-running Nim/Gene
+process after scheduler or HTTP threads exist. The preferred Unix launch path
+is:
+
+1. the parent calls `openpty`, marks unrelated descriptors close-on-exec, and
+   keeps the nonblocking master;
+2. the parent uses `posix_spawn` to start a fresh copy of the exact current
+   Gene executable under its hidden `--gene-internal-pty-helper` entrypoint.
+   Spawn file actions connect the slave to fd 0..2 and one close-on-exec
+   status pipe to fd 3; no separately installed helper can drift from the
+   runtime ABI;
+3. that fresh single-threaded image performs `setsid`, `TIOCSCTTY`,
+   `tcsetpgrp`, cwd setup, descriptor closure, and argv-vector `exec` under
+   the sanitized child environment;
+4. the parent owns process-group signalling, exit observation, master-fd
+   closure, and `TIOCSWINSZ` resize followed by `SIGWINCH`.
+
+This gives the desired PTY-to-exec behavior without running allocator, lock,
+logging, GC, or Gene code in a post-fork child. If a platform forces
+`forkpty`, it may occur only inside that fresh helper, with an async-signal-safe
+child branch that immediately performs descriptor setup and `execve`. There is
+no general pre-exec callback. Launch arguments are an argv vector, never a
+shell string. The hidden helper mode is part of every matching Gene executable,
+carries no Gene capability values, and reports setup failure over the
+close-on-exec status pipe. The launched program still has the ordinary OS
+authority of the local user — `unmediated` is a product warning, not an OS
+sandbox.
+
+**Terminal state, not ANSI stripping.** Feed every PTY output byte into one
+real VT/xterm state machine. C8 uses a pinned, vendored `libvterm` build (small
+C terminal-state dependency, no second renderer) behind a narrow native
+wrapper; an implementation spike must confirm licensing, static size, UTF-8,
+alternate-screen, scrollback callback, mouse-mode, bracketed-paste, and
+256/true-color behavior before it lands. Do not grow a TUI-specific escape
+parser or silently downgrade unsupported controls to stripped text.
+
+One terminal controller owns:
+
+- the PTY master, child pid/process group, initial cwd/argv/environment, and
+  exit status;
+- primary and alternate screen grids, cursor, title, modes, dirty rows, and a
+  bounded normal-screen scrollback ring;
+- monotonic `screen_generation`, `output_bytes`, and explicit dropped-line/
+  dropped-byte counters.
+
+The PTY reader performs only nonblocking reads and publishes bounded byte
+chunks. In the current in-process TUI, one detached terminal pump on the root
+scheduler lane serially feeds them to the emulator; curses and VT state are
+therefore never accessed concurrently. Pump notifications carry only bounded
+generation/lifecycle metadata, while explicit local snapshots and checkpoints
+materialize bounded text. If PTY ingestion later moves to an OS thread, this
+same boundary becomes an immutable or double-buffered cell snapshot rather
+than adding a lock around curses. The curses UI renders the newest complete
+generation and lets ncurses emit changed physical cell runs. Intermediate
+frames may coalesce, but PTY bytes are consumed in order and loss is explicit.
+Cells carry Unicode scalar/grapheme content, display width/continuation,
+foreground/background color, bold/dim/italic/underline/reverse/strike, and
+cursor visibility. The renderer never passes child escape bytes to ncurses.
+Wide and combining cells are clipped only at pane boundaries, color pairs use
+a bounded cache, and the focused terminal's logical cursor is mapped into its
+pane body.
+
+**One input surface, two modes.** The application retains one keyboard focus
+and the existing bottom input region:
+
+- main, agent, structured shell, REPL, and writable projection routes use the
+  existing draft editor exactly as today;
+- a focused terminal starts in **terminal-direct** mode. The pane's VT cursor
+  is the editing cursor and the bottom region shows only
+  `[terminal t1: direct/unmediated] Ctrl-] commands`;
+- `Ctrl-]` enters **application-command** mode and activates the same bottom
+  editor with `/` prefilled. `/0`, `/pane`, `/close`, `/worker ... stop`, help,
+  and maximize are then ordinary application commands. Escape with an empty
+  command draft returns to terminal-direct mode; `Ctrl-] Ctrl-]` sends a
+  literal byte `0x1d` to the child.
+
+Terminal-direct mode forwards printable text, Enter, Tab, Backspace, Escape,
+Ctrl-C, Ctrl-D, arrows, function keys, bracketed paste, and mode-dependent
+cursor/keypad sequences to the PTY. Up/Down therefore use the child shell or
+program's history, not the application's accepted-input history. Mouse events
+inside the pane are forwarded only while the emulator reports an enabled mouse
+mode; otherwise they focus or scroll locally. `Shift+PageUp`/`Shift+PageDown`
+and Shift+wheel always operate the emulator's normal-screen scrollback, while
+unmodified keys go to the child. Alternate-screen content is not copied into
+normal scrollback. Resize uses the controlling pane's body dimensions, not the
+whole outer terminal.
+
+This answers "same bottom input if possible" honestly: *possible* is every
+route except a focused live terminal. Main, agent, structured shell, REPL, and
+tail routes keep the bottom draft editor — one composition surface, one
+history/completion model. A focused terminal is the one place where the input
+point must be the child's own cursor, because that is what "like a shell in
+iTerm" means: the shell's prompt (usually the pane's bottom line) is the line
+editor, and pretending otherwise breaks readline, password echo-off, and vim.
+Two mitigations keep the models from diverging further: `Ctrl-]` always
+returns to the real bottom editor for application commands, and a
+**line-composed send** (`/N send <line>`, or composing in the bottom editor
+after `Ctrl-]`) writes a bounded line plus newline to the PTY for the
+paste-a-snippet case — app-side editing, child-side execution, no fidelity
+claim. The `Ctrl-]` leader is a config default, not hardcoded, since vim users
+know it as jump-to-tag; `Ctrl-] Ctrl-]` always forwards the literal byte.
+`GENE_AGENT_TERMINAL_LEADER_CODE=1..31` selects another control byte (29 is
+the default), and the status line renders its conventional key name.
+
+The Gene `/repl` deliberately needs none of this machinery: it is in-process,
+so C7 already gives it the seamless prompt/continuation/result look, bottom-
+editor composition, cancellation, and app-side history — a PTY would only
+add a process boundary. External interactive REPLs (`python`, `psql`, `irb`)
+belong in a `terminal` worker.
+
+A terminal has at most one controlling local surface. Other local views may
+mirror its latest cell snapshot read-only; a controller transfer is explicit
+and updates PTY size atomically. With no controller the process may keep
+running headless at its last size, but no adapter can write to it. Gateway,
+channel, model, and peer callers may observe bounded lifecycle metadata only —
+not cells, scrollback, environment, or input.
+
+**Authority, lifecycle, and persistence.** An interactive terminal is raw
+local user authority. It does not pass the catastrophe classifier and cannot
+honestly participate in the workspace mutation lease because an interactive
+child may fork, background, or mutate long after any submitted line. The pane
+and status line label it `unmediated`; models cannot create it, request
+attention for it, delegate it, or call `write`. Agent API credentials and
+internal state-store handles are removed from the default child environment.
+The user can still launch `/tty` or an external terminal when they want the
+full inherited environment.
+
+Ctrl-C and Ctrl-D are child input in terminal-direct mode. Application `stop`
+sends `SIGHUP`/`SIGTERM` to the process group, waits a short bounded grace
+period, then uses `SIGKILL`; child exit closes the PTY and stops the worker with
+its exit status. Restore never resurrects a PTY or pid. It may retain the
+bounded redacted plain-text scrollback projection, initial launch
+configuration, and final cell snapshot for inspection, but restart mints a new
+worker id and new process. The application never infers the child's current cwd
+or environment from prompt text; OSC 7/title data is display metadata only.
+
+**Outer-terminal compatibility.** The layers are intentionally nested:
+
+```text
+iTerm / Ghostty / Terminal.app -> tmux (optional) -> Gene curses UI
+                               -> pane PTY + libvterm -> child program
+```
+
+The outer terminal interprets only escapes emitted by ncurses. Child escapes
+terminate at libvterm and become attributed cells, so a hostile or buggy child
+cannot switch the outer iTerm/Ghostty/tmux screen, rewrite unrelated panes, or
+inject OSC clipboard commands. Outer resize becomes a curses layout change,
+then `TIOCSWINSZ` on the controlling pane's PTY; the child receives its normal
+`SIGWINCH`. The child sees the fixed emulated `TERM=xterm-256color`, while the
+curses layer separately follows the outer `$TERM` and degrades colors or
+attributes to its capabilities. tmux scrollback records whole Gene frames;
+pane history belongs to Gene, so Shift+PageUp/Shift+wheel remain available
+even when tmux mouse mode captures unmodified gestures. tmux's prefix and
+outer-terminal shortcuts are otherwise untouched, and the configurable
+application leader resolves genuine key collisions.
+
 ## 8. Capabilities and the launcher (§8)
 
 Every new host power is a capability value, consistent with the existing model
@@ -1630,6 +1883,8 @@ Every new host power is a capability value, consistent with the existing model
 
 - `Os/Env` — read environment variables (§3);
 - `Os/Exec` — spawn subprocesses (§6);
+- `Os/Pty` — launch and control one local PTY through the fixed helper surface
+  (§7.4); it is never granted to a model or remote adapter;
 - `Net/Connect` — outbound network (reuse; §4);
 - `Fs/ReadWriteDir` — workspace file tools (reuse; §6).
 
@@ -1648,9 +1903,11 @@ The goal is not to sandbox the author from their own agent or to construct an
 enterprise permission system. Normal workspace reads/edits, shell commands,
 tests, builds, package installs, and network calls should run without prompts.
 
-The shipped guard classifies each `run_shell`/`/sh`-bound command as `normal`,
-`destructive`, or `catastrophic` (`classify_command` in `examples/ai_agent/tui.gene`)
-and acts accordingly:
+The shipped guard classifies each `run_shell` and structured-shell `run` as
+`normal`, `destructive`, or `catastrophic` (`classify_command` in
+`examples/ai_agent/tui.gene`) and acts accordingly. Before C8, the current
+line-oriented `/sh` pane is one such structured-shell route; after C8, `/sh`
+opens the explicitly unmediated terminal from §7.4 instead.
 
 - **Normal:** run immediately.
 - **Destructive but plausibly intentional:** show the exact target and require
@@ -1666,7 +1923,8 @@ small set of explicit detaching launchers (`daemon`/`daemonize`, forking
 `setsid`, non-waiting `systemd-run`, background `start-stop-daemon`, detached
 `tmux`, and detached `screen`) are denied with `risk=detached_process`. This
 check cannot be confirmed or disabled with `GENE_AGENT_GUARD=0`; use the local,
-user-originated `/tty` handoff for persistent/background work. Quoted or escaped
+user-originated terminal worker or `/tty` handoff for persistent/background
+work. Quoted or escaped
 ampersands and ordinary redirections remain valid.
 
 Classification anchors command-name patterns at the start of each simple
@@ -1711,10 +1969,10 @@ Shipped coverage (`classify_command` in `examples/ai_agent/tui.gene`):
 Prefer structured wrappers for database, Git, and deployment tools because
 parsing arbitrary shell is necessarily incomplete. For `run_shell`, block or ask
 only on the high-confidence patterns above; do not pretend this is an OS sandbox.
-`/tty` (the bootstrap's interactive `/sh`) is a deliberate user-driven escape
-hatch — the TTY session hands the loop to the real shell, so the classifier
-does not sit in front of it. Every other shell channel is classified: scripted
-(piped) `/sh` lines, shell-pane input, and model `run_shell` calls alike.
+`/tty` and C8's local terminal worker are deliberate user-driven escape
+hatches, so the classifier does not sit in front of their byte streams. Every
+structured shell channel is classified: scripted input, structured-shell pane
+input, and model `run_shell` calls alike.
 The foreground-lifetime check covers obvious shell syntax and launchers, but
 cannot prove that an arbitrary binary will not fork and daemonize internally;
 such a program is outside the exact lease guarantee once its tracked parent
@@ -1744,7 +2002,8 @@ Known current gaps (documented, not yet classified):
   segment-based rather than argument-parsed, so an unusual spelling can slip a
   destructive command through as normal or trip a false confirmation; DB
   connection awareness (which database, ephemeral vs. not) is not modeled;
-- **`/tty`** — the real-shell TTY loop is outside the classifier (above).
+- **interactive terminal escapes** — `/tty` and C8 `terminal` workers are
+  outside the classifier and coordinator (above).
 
 A general policy language, default-on approval modes, OS/container sandboxing,
 multi-user isolation, and compliance controls are explicit non-goals unless the
@@ -2165,11 +2424,13 @@ by `(application_instance, worker_id)`, never by worker id alone; one session's
 stop or shutdown cannot release another session's lease.
 
 The lease covers a mediated subprocess until its tracked process/task settles.
-To keep that boundary honest, `/sh`, shell-worker input, remote shell-worker
+To keep that boundary honest, structured-shell input, remote shell-worker
 input, and model `run_shell` reject the high-confidence background/detach forms
-listed in §8.5 before admission or lease acquisition. `/tty` is the explicit
-local escape and holds the lease only for the terminal handoff itself. The
-application does not claim OS-level containment: a binary which daemonizes
+listed in §8.5 before admission or lease acquisition. `/tty` remains the
+explicit whole-terminal escape and holds the lease for its handoff lifetime.
+C8 terminal workers are persistent local escapes outside the coordinator; the
+UI labels them unmediated rather than implying serialization it cannot enforce.
+The application does not claim OS-level containment: a binary which daemonizes
 internally can escape descendant tracking, so exact serialization ends with
 the cooperative foreground process while that exceptional descendant is
 best-effort/out-of-contract. An acceptance test proves a recognized background
@@ -2233,9 +2494,11 @@ Persistence splits along the session/surface boundary: the session records
 the worker/agent graph, durable item histories, statuses, assignments, and
 event correlations; each surface persists its own pane descriptors and layout
 under a surface key (the TUI's local layout snapshot). Output workers may
-restore their buffered projection. Shell and REPL processes are not pretended
-to survive a crash: restoration shows their captured history on a stopped
-worker and requires an explicit reopen. No process-local Task, admission
+restore their buffered projection. Shell, terminal, and REPL processes are not
+pretended to survive a crash: restoration shows their bounded captured history
+on a stopped worker and requires an explicit reopen. Terminal records contain
+no PTY descriptors, pids, emulator modes, environment, or input bytes. No
+process-local Task, admission
 reservation, confirmation, lease owner, or lease waiter is resumed. A
 previously busy agent restores running and idle and emits an attributable
 failed `worker_operation_finished` plus its canonical failed `agent_finished`
@@ -2706,7 +2969,63 @@ and one Escape discards it; `session/config` renders indented within the
 pane width; and every advertised key on every route does something on that
 route.
 
-### 10.11 Slice D — expand only where leverage is proven
+### 10.11 Slice C8 — embedded interactive terminal workers
+
+C7 makes in-process evaluation responsive; C8 gives the local user a real
+interactive terminal without weakening structured shell semantics or handing
+ncurses to background threads. It implements §7.4 in this order:
+
+1. **Safe PTY launch primitive.** Add the narrow Unix PTY capability and the
+   version-matched `gene-pty-helper`: parent `openpty` + `posix_spawn`, helper
+   `setsid`/`TIOCSCTTY`/`dup2`/`execve`, nonblocking master reads, process-group
+   signals, resize, bounded shutdown, and exit observation. No generic pre-exec
+   callback and no `forkpty` in the multithreaded main process. Unit-test fd
+   closure, setup errors, cwd/argv fidelity, resize/SIGWINCH, signal delivery,
+   and no surviving child after stop.
+2. **VT state library.** Vendor one pinned `libvterm` revision behind a small
+   wrapper and record its license/version. Expose cells, cursor, modes, dirty
+   rows, title, primary/alternate screen, and scrollback callbacks — never raw
+   ANSI drawing. Replay deterministic xterm fixtures covering UTF-8, combining
+   and wide cells, SGR, 256/true color, erase/insert/delete, scroll regions,
+   alternate screen, bracketed paste, mouse modes, OSC title/7, malformed and
+   split escape sequences, and bounded scrollback loss.
+3. **Terminal worker/control plane.** Add the local-only `terminal` controller,
+   operation declarations from §7.2, one controlling-surface lease, read-only
+   mirrors, process-group lifecycle, metadata-only events, credential-stripped
+   environment, and stopped-snapshot restore. Prove model, delegated peer,
+   gateway, and channel attempts to create/control/read cells/write bytes are
+   denied before touching the PTY.
+4. **Curses cell renderer.** Extend the existing UI-thread renderer with
+   clipped attributed cell runs, width/continuation handling, bounded color
+   pair caching, cursor placement, dirty-generation coalescing, and pane-body
+   resize. Curses remains UI-thread-only and never waits on a PTY read, process
+   exit, emulator lock, or worker operation.
+5. **Single-focus input modes.** Implement terminal-direct and
+   application-command modes over the existing bottom region: `Ctrl-]` leader,
+   literal `Ctrl-] Ctrl-]`, raw key/mouse/paste translation, route-truthful
+   status, forced local scroll with Shift modifiers, and application commands
+   through the existing registry. Change `/sh` to the terminal composite, keep
+   `/pane new shell` and typed shell operations structured, and retain `/tty`
+   as a whole-terminal fallback.
+6. **Persistence, limits, and performance.** Bound PTY read chunks, emulator
+   grids, scrollback rows/bytes, cell snapshots, repaint work, and shutdown
+   time. Persist only the allowed stopped snapshot/configuration. Add parser
+   throughput and repaint benchmarks so a noisy child cannot make agent input
+   or model streaming sluggish; include before/after `nimble perf` numbers and
+   run `nimble verify` plus the Unix PTY matrix before landing.
+
+The slice is complete when one TUI uses its ordinary single keyboard/input
+region to: open `/sh`, edit with real shell readline, `cd` naturally, run an
+interactive REPL, enter and leave `vim`'s alternate screen, resize, use color
+and Unicode, scroll normal history without corrupting the child, enter
+`Ctrl-]` command mode to focus pane 0, return to the same terminal, and stop it
+without leaking a process. During that flow a sub-agent and structured build
+shell continue streaming, curses is called only by the UI thread, terminal
+bytes never enter the event/model/remote surfaces, a hostile escape-sequence
+fixture cannot escape its pane, and restart shows a stopped bounded snapshot
+rather than a fake live session.
+
+### 10.12 Slice D — expand only where leverage is proven
 
 - Promote repeated `/repl` experiments into small Gene workflow modules;
   record module/tool version hashes and hot-reload new calls without changing
@@ -2838,8 +3157,9 @@ additional sessions. Each application session is a **session actor**
 - an agent registry with exactly one main agent and zero or more bounded,
   supervised sub-agents; each agent owns its Responses-style model item list
   (the chat adapter normalizes wire formats at the boundary);
-- the non-agent workers described in §7.1 (shell, REPL, output, log tail,
-  file view, stats; slice C2 indexes all workers in one registry). Pane
+- the non-agent workers described in §7.1 (shell, local-only terminal, REPL,
+  output, log tail, file view, stats; slice C2 indexes all workers in one
+  registry). Pane
   registries now live in per-surface attachments; the session keeps no pane
   state (§7.1, invariant §0.3);
 - a monotonically versioned **authoritative event log** (12.3), from which
@@ -2918,8 +3238,11 @@ are surface state (§7.1, invariant §0.3), so each remote client manages its
 own layout locally (for the web page, in the browser) over the shared worker
 routes above. Worker creation is kind-typed and keeps each kind's capability
 and provenance rules — remote creation of `output`, `log_tail`, `file_view`,
-and `stats` workers is view-harmless, while `shell` and `repl` creation stays
-unavailable remotely at first. Gateway/channel `file_view` paths are
+and `stats` workers is view-harmless, while `shell`, `terminal`, and `repl`
+creation stays unavailable remotely. A terminal is stricter than the other
+kinds: generic input/tail/snapshot/ops routes return a typed
+`local_controller_required`; shared snapshots expose lifecycle/exit/byte-count
+metadata only and never cells, scrollback, environment, or input. Gateway/channel `file_view` paths are
 workspace-confined through `safe_path`; arbitrary host reads remain a local
 TTY action or require a separately granted host-read capability. The
 agent-specific routes are convenience
@@ -2988,6 +3311,9 @@ surface command/event interface. The shipped cancellable `curses/next_event`
 already provides the non-blocking input needed to update sub-agent, output,
 shell, and REPL panes while the user types; neither local nor remote adapters
 may reintroduce a between-turn-only rendering loop.
+C8 adds terminal cell snapshots and terminal-direct/application-command modes
+to this local surface only. Remote surfaces do not receive an ANSI stream or a
+serialized terminal grid and cannot become a terminal controller.
 
 ### 12.5 Web UI
 
@@ -3070,6 +3396,7 @@ This is not a general approval workflow.
 | 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
 | 4 | `crypto/hmac_sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
 | 5 | ~~**Non-blocking TUI input**~~ — **closed**: public cancellable `curses/next_event` polls `getch` without blocking the scheduler and emits UTF-8/resize events | — | — | shipped in `src/gene/stdlib.nim` + PTY tests (§7) |
+| 6 | **Embedded terminal runtime** — Unix PTY helper, process-group control, VT/xterm state, and attributed curses cell rendering (§7.4) | interactive terminal panes | `/tty` handoff plus structured shell panes | Slice C8 (§10.11) |
 
 Gap 1 was the single load-bearing piece: it converts the agent from "one
 blocking conversation" to "N concurrent sessions" and was prerequisite to
@@ -3106,11 +3433,14 @@ Slice C3 adds the exact complex-project dogfood failures as acceptance tests:
 - successful results remain unread and outside main context until explicit
   inspect/incorporate actions; completion and failure notifications are visible
   without submitting another command;
-- from every worker kind, `/help` and `/?` focus pane 0 and render the same
-  comprehensive registry-derived help without starting a model turn, appending
-  a journal/transcript item, or marking an unread result. Topic help replaces
-  the prior surface notice and includes the matching command grammar;
-- one PTY types `/0`, `/sh`, `/pane list`, escaped absolute-path shell input,
+- from every line-oriented worker route, `/help` and `/?` focus pane 0 and
+  render the same comprehensive registry-derived help without starting a model
+  turn, appending a journal/transcript item, or marking an unread result. After
+  C8, a terminal route proves the same behavior after `Ctrl-]` enters
+  application-command mode; in terminal-direct mode `/help` remains ordinary
+  child input. Topic help replaces the prior surface notice and includes the
+  matching command grammar;
+- one PTY types `/0`, `/pane new shell`, `/pane list`, escaped absolute-path shell input,
   and an unknown `/focus typo` while a child emits rapid tool events. Draft
   bytes and route are exact, acknowledgement satisfies the scheduler-turn
   contract under a generous watchdog, Up/Down still browse history, and the
@@ -3165,3 +3495,26 @@ The shipped C4 worker-operations acceptance tests (§10.7) include:
   and the gateway route without further registration — and restores disabled
   after restart unless registered through an exact-version module reference
   (§9.1, invariant §0.15).
+
+Slice C8 adds a native PTY/emulator matrix rather than relying only on terminal
+screenshots:
+
+- helper tests prove exact argv/cwd/env, close-on-exec hygiene, controlling TTY
+  ownership, foreground process-group signals, resize, exit status, and bounded
+  TERM-to-KILL shutdown with no orphan;
+- byte-fixture tests feed every escape sequence in randomized chunk boundaries
+  and compare complete cell/mode/cursor/scrollback snapshots, including malformed
+  sequences and UTF-8 split between reads;
+- one end-to-end PTY opens `/sh`, uses readline history/completion, changes cwd,
+  runs an interactive REPL, enters/leaves `vim` alternate screen, resizes, and
+  uses Shift-scroll before `Ctrl-] /0` and return to the same live terminal;
+- a repaint flood and a high-output child prove bounded memory, ordered emulator
+  input, explicit scrollback loss, responsive main-agent typing, and no curses
+  call outside the UI thread;
+- gateway/model/peer fixtures attempt terminal create, `write`, `snapshot`, and
+  controller claim and receive typed denials while lifecycle metadata remains
+  observable; captured HTTP/events/model items contain no sentinel terminal
+  input, screen text, credentials, or raw escape bytes;
+- restart restores a stopped bounded snapshot and safe launch configuration,
+  then `restart` mints a new worker/process identity rather than replaying PTY
+  input or claiming the child survived.

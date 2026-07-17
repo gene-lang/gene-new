@@ -13,6 +13,11 @@ type
     kind*: TuiEventKind
     text*: string
 
+  TuiMouseEvent* = object
+    direction*: int
+    row*, col*: int
+    shift*, alt*, ctrl*: bool
+
   Terminal* = object
     opened*: bool
 
@@ -25,6 +30,30 @@ proc mouseScrollFromEscape*(sequence: string): int =
     -1
   else:
     0
+
+proc mouseEventFromEscape*(sequence: string): TuiMouseEvent =
+  ## Parse one SGR mouse report without executing or forwarding it. Coordinates
+  ## become zero-based cells; modifier bits follow the xterm protocol.
+  if not sequence.startsWith("[<") or
+      (not sequence.endsWith("M") and not sequence.endsWith("m")):
+    return
+  let fields = sequence[2 .. ^2].split(';')
+  if fields.len != 3:
+    return
+  try:
+    let code = parseInt(fields[0])
+    result.col = max(0, parseInt(fields[1]) - 1)
+    result.row = max(0, parseInt(fields[2]) - 1)
+    result.shift = (code and 4) != 0
+    result.alt = (code and 8) != 0
+    result.ctrl = (code and 16) != 0
+    let button = code and 0xC3
+    if button == 64:
+      result.direction = 1
+    elif button == 65:
+      result.direction = -1
+  except ValueError:
+    result = TuiMouseEvent()
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   {.passL: "-lncurses".}
@@ -69,25 +98,45 @@ static int gene_tui_mouse(void) {
 #endif
   mouseinterval(0);
   mousemask(mask, NULL);
+  if (isatty(STDOUT_FILENO)) {
+    const char *focus = "\033[?1004h";
+    write(STDOUT_FILENO, focus, sizeof("\033[?1004h") - 1);
+  }
   return 1;
 #else
-  const char *seq = "\033[?1000h\033[?1006h";
+  const char *seq = "\033[?1000h\033[?1006h\033[?1004h";
   mousemask(0, NULL);
   if (isatty(STDOUT_FILENO))
-    write(STDOUT_FILENO, seq, sizeof("\033[?1000h\033[?1006h") - 1);
+    write(STDOUT_FILENO, seq,
+          sizeof("\033[?1000h\033[?1006h\033[?1004h") - 1);
   return 0;
 #endif
 }
 static void gene_tui_no_mouse(void) {
-  const char *seq = "\033[?1000l\033[?1002l\033[?1003l\033[?1006l";
+  const char *seq =
+      "\033[?1000l\033[?1002l\033[?1003l\033[?1004l\033[?1006l";
   mousemask(0, NULL);
   if (isatty(STDOUT_FILENO))
     write(STDOUT_FILENO, seq,
-          sizeof("\033[?1000l\033[?1002l\033[?1003l\033[?1006l") - 1);
+          sizeof("\033[?1000l\033[?1002l\033[?1003l\033[?1004l\033[?1006l") - 1);
 }
-static int gene_tui_mouse_scroll(void) {
+static int gene_tui_mouse_event(int *row, int *col, int *modifiers) {
   MEVENT event;
   if (getmouse(&event) != OK) return 0;
+  if (row) *row = event.y;
+  if (col) *col = event.x;
+  if (modifiers) {
+    *modifiers = 0;
+#ifdef BUTTON_SHIFT
+    if (event.bstate & BUTTON_SHIFT) *modifiers |= 1;
+#endif
+#ifdef BUTTON_ALT
+    if (event.bstate & BUTTON_ALT) *modifiers |= 2;
+#endif
+#ifdef BUTTON_CTRL
+    if (event.bstate & BUTTON_CTRL) *modifiers |= 4;
+#endif
+  }
   if (event.bstate & BUTTON4_PRESSED) return 1;
 #ifdef BUTTON5_PRESSED
   if (event.bstate & BUTTON5_PRESSED) return -1;
@@ -120,7 +169,8 @@ static void gene_tui_mark_open(int open) { gene_tui_open = open; }
 
   proc cEnableMouse(): cint {.importc: "gene_tui_mouse".}
   proc cDisableMouse() {.importc: "gene_tui_no_mouse".}
-  proc cMouseScroll(): cint {.importc: "gene_tui_mouse_scroll".}
+  proc cMouseEvent(row, col, modifiers: ptr cint): cint
+    {.importc: "gene_tui_mouse_event".}
   proc cWcwidth(rune: cint): cint {.importc: "gene_tui_wcwidth".}
   proc cInstall() {.importc: "gene_tui_install".}
   proc cMarkOpen(open: cint) {.importc: "gene_tui_mark_open".}
@@ -207,7 +257,16 @@ static void gene_tui_mark_open(int open) { gene_tui_open = open; }
 
   proc enableMouse*(): bool = cEnableMouse() != 0
   proc disableMouse*() = cDisableMouse()
-  proc takeMouseScroll*(): int = int(cMouseScroll())
+  proc takeMouseEvent*(): TuiMouseEvent =
+    var row, col, modifiers: cint
+    result.direction = int(cMouseEvent(addr row, addr col, addr modifiers))
+    result.row = int(row)
+    result.col = int(col)
+    result.shift = (modifiers and 1) != 0
+    result.alt = (modifiers and 2) != 0
+    result.ctrl = (modifiers and 4) != 0
+
+  proc takeMouseScroll*(): int = takeMouseEvent().direction
 
   proc openTerminal*(): Terminal =
     if isatty(STDIN_FILENO) == 0 or isatty(STDOUT_FILENO) == 0:
@@ -327,6 +386,7 @@ else:
   proc enableMouse*(): bool = false
   proc disableMouse*() = discard
   proc takeMouseScroll*(): int = 0
+  proc takeMouseEvent*(): TuiMouseEvent = TuiMouseEvent()
   proc openTerminal*(): Terminal =
     raise newException(IOError, "gene view is unavailable on this platform")
   proc close*(terminal: var Terminal) = discard

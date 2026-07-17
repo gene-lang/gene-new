@@ -4007,11 +4007,21 @@ proc compileSupervisor(c: var Compiler, node: Value) =
                  names = optionNames)
 
 proc compileSpawn(c: var Compiler, node: Value) =
-  if node.props.len != 0 or node.body.len != 1:
-    raise newException(GeneError, "spawn expects one expression")
+  if node.body.len != 1:
+    raise newException(GeneError,
+      "spawn expects one expression and optional ^lane root")
+  var rootLane = false
+  for name, value in node.props:
+    if name != "lane":
+      raise newException(GeneError,
+        "spawn got unexpected property ^" & name & "; expected ^lane root")
+    if value.kind != vkSymbol or value.symVal != "root":
+      raise newException(GeneError, "spawn ^lane currently accepts only root")
+    rootLane = true
   let body = c.compileSubBody(node.body, scoped = true)
   discard c.emit(opSpawn, c.chunk.addSubchunk(body),
-                 flag = not body.chunkMutatesOuterScope() and
+                 flag = not rootLane and
+                   not body.chunkMutatesOuterScope() and
                    not body.chunkContainsSpawn())
 
 proc compileAwait(c: var Compiler, node: Value) =

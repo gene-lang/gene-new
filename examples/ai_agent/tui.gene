@@ -54,7 +54,18 @@
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
-            Env Exec OsError])
+            Env Exec Pty OsError])
+(import terminal [open : terminal_open close : terminal_close
+                  next_update : terminal_next_update
+                  snapshot : terminal_snapshot
+                  capture_text : terminal_capture_text
+                  write : terminal_write key : terminal_key
+                  paste : terminal_paste focus : terminal_focus
+                  mouse : terminal_mouse
+                  resize : terminal_resize
+                  signal : terminal_signal stop : terminal_stop
+                  request_stop : terminal_request_stop
+                  Session : TerminalSession TerminalError])
 (import curses [open : curses_open close : curses_close
                 read_input : curses_read_input
                 refresh_input : curses_refresh_input escape_pressed?
@@ -157,6 +168,35 @@
     (if (> parsed 0) parsed fallback)
   catch _ fallback))
 
+(var configured_terminal_leader
+  (env? Env "GENE_AGENT_TERMINAL_LEADER_CODE"))
+(var terminal_leader_code
+  (if configured_terminal_leader
+    (try
+      (parse_int configured_terminal_leader)
+    catch _
+      (fail (OsError
+        ^message "GENE_AGENT_TERMINAL_LEADER_CODE must be an integer")))
+    29))
+(if (|| (< terminal_leader_code 1) (> terminal_leader_code 31))
+  (fail (OsError
+    ^message "GENE_AGENT_TERMINAL_LEADER_CODE must be between 1 and 31")))
+(fn terminal_control_label [code : Int] : Str
+  (match code
+    (when 1 "Ctrl-A") (when 2 "Ctrl-B") (when 3 "Ctrl-C")
+    (when 4 "Ctrl-D") (when 5 "Ctrl-E") (when 6 "Ctrl-F")
+    (when 7 "Ctrl-G") (when 8 "Ctrl-H") (when 9 "Ctrl-I")
+    (when 10 "Ctrl-J") (when 11 "Ctrl-K") (when 12 "Ctrl-L")
+    (when 13 "Ctrl-M") (when 14 "Ctrl-N") (when 15 "Ctrl-O")
+    (when 16 "Ctrl-P") (when 17 "Ctrl-Q") (when 18 "Ctrl-R")
+    (when 19 "Ctrl-S") (when 20 "Ctrl-T") (when 21 "Ctrl-U")
+    (when 22 "Ctrl-V") (when 23 "Ctrl-W") (when 24 "Ctrl-X")
+    (when 25 "Ctrl-Y") (when 26 "Ctrl-Z") (when 27 "Ctrl-[")
+    (when 28 "Ctrl-\\") (when 29 "Ctrl-]") (when 30 "Ctrl-^")
+    (when 31 "Ctrl-_")
+    (else $"Ctrl-${code}")))
+(var terminal_leader_label (terminal_control_label terminal_leader_code))
+
 # High-effort reasoning and tool-result follow-ups can legitimately take more
 # than a minute before the first streamed byte. Keep one timeout for both wire
 # shapes and make it configurable without coupling it to shell-command limits.
@@ -234,6 +274,24 @@
           catch _ (set finish (- finish 1))))
         out))))
 
+(fn utf8_suffix [text : Str, max_bytes : Int] : Str
+  (var total (byte_size text))
+  (if (<= total max_bytes)
+    text
+    (if (<= max_bytes 0)
+      (then "")
+      (else
+        (var start (- total max_bytes))
+        (var out "")
+        (var sliced (cell false))
+        # Advance at most three bytes to avoid starting inside a UTF-8 scalar.
+        (while (&& (! (sliced ~ Cell/get)) (< start total))
+          (try
+            (set out (slice_bytes text start (- total start)))
+            (sliced ~ Cell/set true)
+          catch _ (set start (+ start 1))))
+        out))))
+
 (fn bounded_list_tail [values, max_count : Int]
   (if (<= values/~size max_count)
     (then values)
@@ -294,6 +352,16 @@
       (try
         (safe_path candidate)
         true
+      catch _ false))
+    (else false)))
+
+(fn confined_absolute_path? [p] : Bool
+  (match p
+    (when (candidate : Str)
+      (try
+        (var resolved (real_path ReadDir candidate))
+        (|| (== resolved workspace_real)
+            (starts_with? resolved $"${workspace_real}/"))
       catch _ false))
     (else false)))
 
@@ -534,7 +602,6 @@
 (var active_editor (cell nil))
 (var confirmation_active (cell false))
 (var active_repaint_pending (cell false))
-(var active_repaint_interval_ms 16)
 (var interactive_transcript (cell nil))
 (var interactive_memory (cell []))
 (var agent_checkpoint_suspended (cell false))
@@ -584,6 +651,10 @@
 (type ShellController
   ^props {^cwd Any ^environment Any})
 
+(type TerminalController
+  ^props {^session Any ^snapshot Any ^restored_text Any ^pump_task Any
+          ^controller_surface_id Any ^command Str ^args Any ^cwd Str})
+
 (type OutputController
   ^props {^source Str ^following Any})
 
@@ -623,6 +694,9 @@
 (type ShellChdirArgs ^props {^path Str})
 (type EnvironmentSetArgs ^props {^name Str ^value Str})
 (type EnvironmentUnsetArgs ^props {^name Str})
+(type TerminalWriteArgs ^props {^bytes Str})
+(type TerminalResizeArgs ^props {^rows Int ^cols Int})
+(type TerminalSignalArgs ^props {^name Str})
 (type ReplEvalArgs ^props {^form Str})
 (type OutputAppendArgs ^props {^text Str})
 (type WorkerSourceArgs ^props {^source Str})
@@ -1448,6 +1522,12 @@
     (if (== (worker/lifecycle ~ Cell/get) "stopped")
       (then false)
       (else
+        (if_yes (&& (== worker/kind "terminal") worker/controller/session)
+          (terminal_request_stop worker/controller/session ^grace_ms 200)
+          (worker/status ~ Cell/set "stopping")
+          (application_emit app "worker_stopping"
+            {^worker_id worker/id ^kind "terminal"})
+          (return true))
         (var had_task (!= (worker/current_task ~ Cell/get) nil))
         # Stop also revokes an input admission that has not created its Task
         # yet. The admitted handler rechecks lifecycle before executing, so a
@@ -1465,6 +1545,16 @@
                 (!= worker/controller nil)
                 (!= worker/controller/session nil))
           (repl_close worker/controller/session))
+        (if_yes (&& (== worker/kind "terminal")
+                    (!= worker/controller nil)
+                    (!= worker/controller/session nil))
+          (var pump_task (worker/controller/pump_task ~ Cell/get))
+          (if pump_task (pump_task ~ Task/cancel))
+          (try
+            (var final (terminal_stop worker/controller/session))
+            (worker/controller/snapshot ~ Cell/set final)
+            (terminal_controller_capture! worker/controller)
+          catch _ nil))
         (application_remove_worker_follow_links! app worker)
         (application_remove_worker_observers! app worker/id)
         (application_emit app "worker_stopped"
@@ -1548,6 +1638,38 @@
   (output_with_pending_marker
     presented (main_pending_marker app)))
 
+(fn terminal_capture_projection [session] : Str
+  (var captured
+    (terminal_capture_text session ^max_bytes worker_output_max_bytes))
+  (var text (redact captured/text))
+  (if captured/truncated
+    (then
+      (var marker "[older terminal rows were dropped]\n")
+      $"${marker}${(utf8_suffix text
+                      (- worker_output_max_bytes (byte_size marker)))}")
+    (else text)))
+
+(fn safe_terminal_snapshot [snapshot]
+  (if (== snapshot nil)
+    nil
+    {^rows snapshot/rows ^cols snapshot/cols
+     ^lines snapshot/lines ^title (redact snapshot/title)
+     ^scrollback_lines snapshot/scrollback_lines
+     ^scrollback_dropped snapshot/scrollback_dropped
+     ^output_bytes snapshot/output_bytes
+     ^stopped snapshot/stopped ^exit_status snapshot/exit_status}))
+
+(fn terminal_controller_capture! [controller]
+  (var snapshot (controller/snapshot ~ Cell/get))
+  (if_yes controller/session
+    (try
+      (set snapshot (terminal_snapshot controller/session))
+      (controller/restored_text ~ Cell/set
+        (terminal_capture_projection controller/session))
+    catch _ nil))
+  (controller/snapshot ~ Cell/set snapshot)
+  snapshot)
+
 (fn application_pane_views [app]
   (var surface app/local_surface)
   (var views (cell []))
@@ -1565,8 +1687,15 @@
         {^title $"[${pane/id}]${marker}${unread} ${pane/title} (${(pane/status ~ Cell/get)})"
          ^output
            (output_with_pending_marker
-             (pane/output ~ Cell/get) (pane_pending_marker pane))
+             (if (== pane/kind "terminal")
+               (pane/worker/controller/restored_text ~ Cell/get)
+               (pane/output ~ Cell/get))
+             (pane_pending_marker pane))
          ^scroll (pane/scroll ~ Cell/get)
+         ^terminal_id
+           (if (&& (== pane/kind "terminal")
+                    pane/worker/controller/session)
+             pane/worker/controller/session/id 0)
          ^focused (== (surface/focused_pane ~ Cell/get) pane/id)
          ^maximized (== (surface/maximized_pane ~ Cell/get) pane/id)})))
   (views ~ Cell/get))
@@ -1650,7 +1779,20 @@
         (application_remove_worker_observers! app worker/id)
         (application_emit app "worker_stopped"
           {^worker_id worker/id ^kind worker/kind
-           ^reason "shutdown"})))
+           ^reason "shutdown"}))
+      # A process may already have exited while its retained VT session is
+      # still serving a stopped pane. Controlled shutdown closes those native
+      # handles too, after preserving the final bounded projection.
+      (if_yes (&& (== worker/kind "terminal") (!= worker/controller nil)
+                  (!= worker/controller/session nil))
+        (var pump_task (worker/controller/pump_task ~ Cell/get))
+        (if pump_task (pump_task ~ Task/cancel))
+        (try
+          (terminal_stop worker/controller/session)
+          (terminal_controller_capture! worker/controller)
+          (terminal_close worker/controller/session)
+          (worker/controller ~ Node/set_prop! `session nil)
+        catch _ nil)))
     (var owner (app/workspace_coordinator/owner ~ Cell/get))
     (if (&& (!= owner nil)
             (starts_with? owner $"${app/coordinator_id}/"))
@@ -4177,7 +4319,7 @@ State that broader behavior is unverified when no matching successful check ran.
     ^payload {^turn_id (current_turn ~ Cell/get) ^budget budget
               ^input_items (input_items ~ size)
               ^prepared_items (prepared_items ~ size)})
-  (var task (spawn
+  (var task (spawn ^lane root
     (try
       (result ~ Cell/set
         (run_turn_ready_in transport prepared_items render render_stream
@@ -4200,7 +4342,7 @@ State that broader behavior is unverified when no matching successful check ran.
       operation_app operation_agent task "agent_turn"))
   (var interrupt_armed (begin_interrupt))
   (var watcher
-    (spawn
+    (spawn ^lane root
       (while (watching ~ Cell/get)
         (sleep 25)
         (if_yes (|| (&& interrupt_armed (take_interrupt))
@@ -4490,7 +4632,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (if_yes (&& (workspace_advisory_owned ~ Cell/get)
               (== (workspace_heartbeat_task ~ Cell/get) nil))
     (var task
-      (spawn
+      (spawn ^lane root
         (loop
           (sleep 5000)
           (write_workspace_heartbeat!))))
@@ -4783,6 +4925,12 @@ State that broader behavior is unverified when no matching successful check ran.
   (var workers [])
   (for worker in (app/workers ~ Cell/get)
     (if_not (== worker/kind "agent")
+      (var terminal_snapshot nil)
+      (var terminal_text void)
+      (if_yes (== worker/kind "terminal")
+        (set terminal_snapshot
+          (terminal_controller_capture! worker/controller))
+        (set terminal_text (worker/controller/restored_text ~ Cell/get)))
       (workers ~ List/push!
         {^id worker/id ^name worker/name
          ^kind worker/kind ^title worker/title
@@ -4807,7 +4955,16 @@ State that broader behavior is unverified when no matching successful check ran.
          ^path (if (== worker/kind "file_view")
                  worker/controller/path void)
          ^following (if (== worker/kind "output")
-                      (worker/controller/following ~ Cell/get) void)})))
+                      (worker/controller/following ~ Cell/get) void)
+         ^terminal_command (if (== worker/kind "terminal")
+                             worker/controller/command void)
+         ^terminal_args (if (== worker/kind "terminal")
+                          worker/controller/args void)
+         ^terminal_cwd (if (== worker/kind "terminal")
+                         worker/controller/cwd void)
+         ^terminal_text terminal_text
+         ^terminal_snapshot (if (== worker/kind "terminal")
+                              (safe_terminal_snapshot terminal_snapshot) void)})))
   (var panes [])
   (var surface app/local_surface)
   (var surface_drafts {})
@@ -5134,7 +5291,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (&& (present? data/name)
               (! (match data/name (when (_name : Str) true) (else false))))
         (fail (OsError ^message "worker name must be a Str or nil")))
-      (if_not (["shell" "repl" "output" "log_tail" "file_view" "stats"]
+      (if_not (["shell" "terminal" "repl" "output" "log_tail" "file_view" "stats"]
                 ~ contains? data/kind)
         (fail (OsError ^message "worker kind is invalid")))
       (if_not (match data/title (when (_title : Str) true) (else false))
@@ -5170,6 +5327,42 @@ State that broader behavior is unverified when no matching successful check ran.
               (! (match data/environment
                    (when (_environment : Map) true) (else false))))
         (fail (OsError ^message "shell environment must be a Map")))
+      (if_yes (== data/kind "terminal")
+        (if_not (match data/terminal_command
+                  (when (_command : Str) true) (else false))
+          (fail (OsError ^message "terminal command must be a Str")))
+        (if_not (list_of_type? data/terminal_args "str")
+          (fail (OsError ^message "terminal args must contain only Str")))
+        (if_not (match data/terminal_cwd
+                  (when (_cwd : Str) true) (else false))
+          (fail (OsError ^message "terminal cwd must be a Str")))
+        (if_not (confined_absolute_path? data/terminal_cwd)
+          (fail (OsError ^message "terminal cwd must stay in the workspace")))
+        (if_not (match data/terminal_text
+                  (when (_text : Str) true) (else false))
+          (fail (OsError ^message "terminal text must be a Str")))
+        (if_not (match data/terminal_snapshot
+                  (when (_snapshot : Map) true) (else false))
+          (fail (OsError ^message "terminal snapshot must be a Map")))
+        (if_not (&& (match data/terminal_snapshot/rows
+                       (when (_rows : Int) true) (else false))
+                    (match data/terminal_snapshot/cols
+                       (when (_cols : Int) true) (else false))
+                    (> data/terminal_snapshot/rows 0)
+                    (<= data/terminal_snapshot/rows 1000)
+                    (> data/terminal_snapshot/cols 0)
+                    (<= data/terminal_snapshot/cols 1000))
+          (fail (OsError ^message "terminal snapshot dimensions are invalid")))
+        (if_not (list_of_type? data/terminal_snapshot/lines "str")
+          (fail (OsError ^message "terminal snapshot lines must contain Str")))
+        (if (> data/terminal_snapshot/lines/~size
+               data/terminal_snapshot/rows)
+          (fail (OsError ^message "terminal snapshot has too many lines")))
+        (var snapshot_bytes 0)
+        (for line in data/terminal_snapshot/lines
+          (set snapshot_bytes (+ snapshot_bytes (byte_size line))))
+        (if (> snapshot_bytes worker_output_max_bytes)
+          (fail (OsError ^message "terminal snapshot exceeds its byte limit"))))
       (if (&& (== data/kind "log_tail") (present? data/filter)
               (! (match data/filter
                    (when (_filter : Map) true) (else false))))
@@ -5201,6 +5394,15 @@ State that broader behavior is unverified when no matching successful check ran.
                               ^memory nil ^streaming (cell false)
                               ^resume_requested (cell false)
                               ^pending (cell false)))
+            (when "terminal"
+              (TerminalController
+                ^session nil
+                ^snapshot (cell (safe_terminal_snapshot data/terminal_snapshot))
+                ^restored_text
+                  (cell (utf8_prefix data/terminal_text worker_output_max_bytes))
+                ^pump_task (cell nil) ^controller_surface_id (cell nil)
+                ^command data/terminal_command
+                ^args data/terminal_args ^cwd data/terminal_cwd))
             (when "log_tail"
               (LogTailController
                 ^filter (cell (if (== data/filter void) {} data/filter))))
@@ -5230,7 +5432,8 @@ State that broader behavior is unverified when no matching successful check ran.
         (worker/history ~ Cell/set restored_history)
         (var restored_lifecycle
           (if (|| unsafe_file_view
-                  (== data/kind "shell") (== data/kind "repl"))
+                  (== data/kind "shell") (== data/kind "terminal")
+                  (== data/kind "repl"))
             "stopped"
             (if (== data/lifecycle "stopped") "stopped" "running")))
         (worker/lifecycle ~ Cell/set restored_lifecycle)
@@ -5318,7 +5521,7 @@ State that broader behavior is unverified when no matching successful check ran.
               (! (match data/worker_id
                    (when (_worker_id : Str) true) (else false))))
         (fail (OsError ^message "pane worker_id must be a Str")))
-      (if_not (["agent" "shell" "repl" "output" "log_tail"
+      (if_not (["agent" "shell" "terminal" "repl" "output" "log_tail"
                 "file_view" "stats"] ~ contains? data/kind)
         (fail (OsError ^message "pane kind is invalid")))
       (if (&& (present? data/title)
@@ -5356,6 +5559,14 @@ State that broader behavior is unverified when no matching successful check ran.
                                 ^memory nil ^streaming (cell false)
                                 ^resume_requested (cell false)
                               ^pending (cell false)))
+              (when "terminal"
+                (TerminalController
+                  ^session nil ^snapshot (cell nil)
+                  ^restored_text
+                    (cell (if (== data/output void) "" data/output))
+                  ^pump_task (cell nil) ^controller_surface_id (cell nil)
+                  ^command (get_env Env "SHELL" "/bin/sh")
+                  ^args [] ^cwd workspace_root))
               (else (OutputController ^source "restored" ^following (cell [])))))
           (set worker
             (make_worker $"w${seq}" data/kind
@@ -5363,7 +5574,8 @@ State that broader behavior is unverified when no matching successful check ran.
               (cell (if (== data/output void) "" data/output))
               controller))
           (worker/lifecycle ~ Cell/set
-            (if (|| (== data/kind "shell") (== data/kind "repl"))
+            (if (|| (== data/kind "shell") (== data/kind "terminal")
+                    (== data/kind "repl"))
               "stopped" "running"))
           (worker/status ~ Cell/set
             (if (== (worker/lifecycle ~ Cell/get) "stopped")
@@ -5388,7 +5600,7 @@ State that broader behavior is unverified when no matching successful check ran.
                                   data/hidden false))
                   ^close_policy "detach"))
           ((surface/panes ~ Cell/get) ~ List/push! pane))
-        (if (== worker nil)
+        (if_yes (== worker nil)
           (fail (OsError ^message "pane references a missing worker")))
       catch {^message message}
         (emit_restore_rejected! app "pane" record_id message)
@@ -5509,7 +5721,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (["tool_call" "tool_result" "turn_done"
     "worker_started" "worker_named" "worker_operation_started"
     "worker_operation_finished" "worker_operation_cancelling"
-    "worker_admission_cancelled" "worker_stopped"
+    "worker_admission_cancelled" "worker_stopping" "worker_stopped"
     "agent_spawned" "agent_status" "agent_completed"
     "pane_opened" "pane_closed" "file_change" "check"
     "context_compacted" "confirmation" "memory"
@@ -5767,6 +5979,30 @@ State that broader behavior is unverified when no matching successful check ran.
         (if pane_id (application_find_pane app pane_id)))
       (if (== pane nil) "[0 main]" $"[${pane/id} ${pane/kind}]"))))
 
+(fn focused_terminal_pane [app]
+  (var result nil)
+  (if_not (|| (== app nil) (== app/local_surface nil))
+    (var pane_id (app/local_surface/focused_pane ~ Cell/get))
+    (var pane (if pane_id (application_find_pane app pane_id)))
+    (if (&& pane (== pane/kind "terminal")) (set result pane)))
+  result)
+
+(fn terminal_pane_controlled? [pane] : Bool
+  (var app (active_application ~ Cell/get))
+  (if (&& pane app app/local_surface
+          (== (app/local_surface/focused_pane ~ Cell/get) pane/id)
+          (== (pane/worker/lifecycle ~ Cell/get) "running")
+          (!= (pane/worker/status ~ Cell/get) "stopping")
+          pane/worker/controller/session
+          (== (pane/worker/controller/controller_surface_id ~ Cell/get)
+              (app/local_surface/instance_id ~ Cell/get)))
+    true false))
+
+(fn editor_terminal_direct? [editor] : Bool
+  (if (&& editor (editor/terminal_direct ~ Cell/get)
+          (terminal_pane_controlled? editor/terminal_pane))
+    true false))
+
 (fn current_input_status []
   (var app (active_application ~ Cell/get))
   (var pane_id
@@ -5793,6 +6029,12 @@ State that broader behavior is unverified when no matching successful check ran.
           $"[${pane/id} shell ${worker/id}: ${state}] Enter run | /0 main | //literal slash | Ctrl-C cancel | PgUp/PgDn scroll")
         (when "repl"
           $"[${pane/id} repl ${worker/id}: ${state}] Enter eval | /0 main | //literal slash | Ctrl-C cancel | PgUp/PgDn scroll")
+        (when "terminal"
+          (if (editor_terminal_direct? (active_editor ~ Cell/get))
+            $"[${pane/id} terminal ${worker/id}: direct/unmediated] ${terminal_leader_label} commands | Shift-PgUp scroll"
+            (if (terminal_pane_controlled? pane)
+              $"[${pane/id} terminal ${worker/id}: app commands] Esc direct | ${terminal_leader_label} literal | /help"
+              $"[${pane/id} terminal ${worker/id}: ${state}] app commands | /worker ${worker/id} restart | /help")))
         (else
           $"[${pane/id} ${pane/kind} ${worker/id}: read-only] /0 main | PgUp/PgDn scroll | /close | /help")))))
 
@@ -6268,7 +6510,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if_yes (== action "new")
         (for item in
             (verb_completion_items
-              ["agent" "shell" "repl" "tail" "output" "view" "stats"]
+              ["agent" "shell" "terminal" "repl" "tail" "output" "view" "stats"]
               prefix "/pane new ")
           (out ~ List/push! item)))
       (if_yes (== action "open")
@@ -6421,16 +6663,187 @@ State that broader behavior is unverified when no matching successful check ran.
   (var values (editor/values ~ Cell/get))
   (var app (active_application ~ Cell/get))
   (var overlay (editor/overlay ~ Cell/get))
+  (var terminal_direct (editor_terminal_direct? editor))
   (curses_draw (ensure_user_screen)
     ^prompt (input_route_label) ^status (current_input_status)
     ^output (main_presented_output app editor/transcript)
-    ^input (editor_text values)
-    ^cursor (editor_cursor_byte values (editor/cursor ~ Cell/get))
+    ^input (if terminal_direct "" (editor_text values))
+    ^cursor (if terminal_direct 0
+              (editor_cursor_byte values (editor/cursor ~ Cell/get)))
     ^output_scroll (editor/output_scroll ~ Cell/get)
     ^panes (extension_views)
-    ^overlay (completion_labels overlay)
+    ^terminal_direct terminal_direct
+    ^overlay (if terminal_direct [] (completion_labels overlay))
     ^overlay_selected (if overlay (overlay/selected ~ Cell/get) 0)
     ^overlay_title (if overlay overlay/title "")))
+
+(fn terminal_editor_enter_command! [editor]
+  (editor/terminal_direct ~ Cell/set false)
+  (editor_set_text! editor "/")
+  (editor/overlay ~ Cell/set nil)
+  (editor_show_completion! editor "palette"))
+
+(fn terminal_editor_return_direct! [editor]
+  (editor/terminal_direct ~ Cell/set true)
+  (editor_clear! editor)
+  (editor/overlay ~ Cell/set nil))
+
+(fn terminal_editor_handle_leader! [editor, event] : Bool
+  (if (&& editor/terminal_pane
+          (terminal_pane_controlled? editor/terminal_pane)
+          (== event/code terminal_leader_code)
+          (! (editor/paste ~ Cell/get)))
+    (then
+      (if (editor_terminal_direct? editor)
+        (terminal_editor_enter_command! editor)
+        (if (== (editor_text (editor/values ~ Cell/get)) "/")
+          (then
+            (var session editor/terminal_pane/worker/controller/session)
+            (terminal_key session ^key "control"
+              ^code terminal_leader_code)
+            (terminal_editor_return_direct! editor))))
+      true)
+    (else false)))
+
+(fn editor_sync_focused_route! [editor]
+  (var app (active_application ~ Cell/get))
+  (if_yes (&& app app/local_surface)
+    # Preserve the draft owned by the route that just lost focus before
+    # retargeting the long-lived input editor to the newly focused route.
+    (if_not (editor_terminal_direct? editor)
+      (editor/draft ~ Cell/set
+        (editor_text (editor/values ~ Cell/get))))
+    (var pane (focused_terminal_pane app))
+    (var draft (surface_route_draft app))
+    (var history (surface_route_history app))
+    (editor ~ Map/put! "terminal_pane" pane)
+    (editor ~ Map/put! "draft" draft)
+    (editor ~ Map/put! "history" (history ~ Cell/get))
+    (editor/history_index ~ Cell/set editor/history/~size)
+    (editor/paste ~ Cell/set false)
+    (editor/overlay ~ Cell/set nil)
+    (if (terminal_pane_controlled? pane)
+      (then
+        (editor/terminal_direct ~ Cell/set true)
+        (editor/values ~ Cell/set [])
+        (editor/cursor ~ Cell/set 0))
+      (else
+        (editor/terminal_direct ~ Cell/set false)
+        (editor_set_text! editor (draft ~ Cell/get))))))
+
+(fn terminal_editor_session [editor]
+  (var pane editor/terminal_pane)
+  (if (terminal_pane_controlled? pane)
+    pane/worker/controller/session))
+
+(fn terminal_editor_write! [editor, text : Str]
+  (var session (terminal_editor_session editor))
+  (if session
+    (terminal_write session ^bytes text)))
+
+(fn terminal_editor_key! [editor, key : Str]
+  (var session (terminal_editor_session editor))
+  (if session
+    (terminal_key session ^key key)))
+
+(fn terminal_editor_escape_sequence! [editor, sequence : Str]
+  (var session (terminal_editor_session editor))
+  (if session
+    (terminal_key session ^key "escape_sequence" ^sequence sequence)))
+
+(fn terminal_editor_mouse! [editor, event] : Bool
+  (var session (terminal_editor_session editor))
+  (var snapshot
+    (if editor/terminal_pane
+      (editor/terminal_pane/worker/controller/snapshot ~ Cell/get)))
+  (if (&& session snapshot event/inside_terminal (! event/shift)
+          (> snapshot/mouse_mode 0)
+          (|| (== event/direction 1) (== event/direction -1)))
+    (then
+      (terminal_mouse session ^row event/row ^col event/col
+        ^direction event/direction ^shift event/shift
+        ^alt event/alt ^ctrl event/ctrl)
+      true)
+    (else false)))
+
+(fn handle_running_terminal_event! [editor, event] : Bool
+  (match event/type
+        (when "text"
+          (terminal_editor_write! editor event/text))
+        (when "paste_start"
+          (editor/paste ~ Cell/set true)
+          (var session (terminal_editor_session editor))
+          (if session (terminal_paste session ^active true)))
+        (when "paste_end"
+          (var session (terminal_editor_session editor))
+          (if session (terminal_paste session ^active false))
+          (editor/paste ~ Cell/set false))
+        (when "focus_in"
+          (var session (terminal_editor_session editor))
+          (if session (terminal_focus session ^active true)))
+        (when "focus_out"
+          (var session (terminal_editor_session editor))
+          (if session (terminal_focus session ^active false)))
+        (when "newline" (terminal_editor_key! editor "enter"))
+        (when "enter" (terminal_editor_key! editor "enter"))
+        (when "eof" (terminal_editor_key! editor "eof"))
+        (when "interrupt" (terminal_editor_key! editor "interrupt"))
+        (when "escape" (terminal_editor_key! editor "escape"))
+        (when "backspace" (terminal_editor_key! editor "backspace"))
+        (when "delete" (terminal_editor_key! editor "delete"))
+        (when "left" (terminal_editor_key! editor "left"))
+        (when "right" (terminal_editor_key! editor "right"))
+        (when "home" (terminal_editor_key! editor "home"))
+        (when "end" (terminal_editor_key! editor "end"))
+        (when "up" (terminal_editor_key! editor "up"))
+        (when "down" (terminal_editor_key! editor "down"))
+        (when "complete" (terminal_editor_key! editor "tab"))
+        (when "reverse_search" (terminal_editor_key! editor "reverse_search"))
+        (when "edit" (terminal_editor_key! editor "edit"))
+        (when "page_up" (terminal_editor_key! editor "page_up"))
+        (when "page_down" (terminal_editor_key! editor "page_down"))
+        (when "function" (terminal_editor_key! editor event/key))
+        (when "escape_sequence"
+          (terminal_editor_escape_sequence! editor event/sequence))
+        (when "scroll_page_up"
+          (var app (active_application ~ Cell/get))
+          (application_scroll_target! app editor/output_scroll 1
+            (application_pane_page_rows app event/rows)))
+        (when "scroll_page_down"
+          (var app (active_application ~ Cell/get))
+          (application_scroll_target! app editor/output_scroll -1
+            (application_pane_page_rows app event/rows)))
+        # Ctrl-PgUp/PgDown remain application-level pane cycling. Shift-wheel
+        # is always local; an unmodified wheel inside the terminal is sent to
+        # the child only when its VT mode requests mouse reports.
+        (when "pane_previous"
+          (application_cycle_visible_pane!
+            (active_application ~ Cell/get) -1)
+          (editor_sync_focused_route! editor))
+        (when "pane_next"
+          (application_cycle_visible_pane!
+            (active_application ~ Cell/get) 1)
+          (editor_sync_focused_route! editor))
+        (when "scroll_up"
+          (if_not (terminal_editor_mouse! editor event)
+            (application_scroll_target!
+              (active_application ~ Cell/get) editor/output_scroll 1 3)))
+        (when "scroll_down"
+          (if_not (terminal_editor_mouse! editor event)
+            (application_scroll_target!
+              (active_application ~ Cell/get) editor/output_scroll -1 3)))
+    (else nil))
+  true)
+
+(fn handle_terminal_direct_event! [editor, event] : Bool
+  (if (editor_terminal_direct? editor)
+    (then
+      (if (terminal_editor_session editor)
+        (then (handle_running_terminal_event! editor event))
+        (else
+          (terminal_editor_enter_command! editor)
+          false)))
+    (else false)))
 
 (fn handle_surface_escape! [editor]
   (var app (active_application ~ Cell/get))
@@ -6472,12 +6885,20 @@ State that broader behavior is unverified when no matching successful check ran.
       (var done (cell false))
       (var app (active_application ~ Cell/get))
       (var route_draft (surface_route_draft app))
-      (var initial_values (editor_chars (route_draft ~ Cell/get)))
+      (var terminal_pane (focused_terminal_pane app))
+      (var terminal_direct
+        (if (terminal_pane_controlled? terminal_pane)
+          true false))
+      (var initial_values
+        (if terminal_direct []
+          (editor_chars (route_draft ~ Cell/get))))
       (var editor
         {^values (cell initial_values)
          ^cursor (cell (initial_values ~ size)) ^history (history ~ Cell/get)
          ^history_index (cell ((history ~ Cell/get) ~ size))
          ^draft route_draft ^paste (cell false)
+         ^terminal_pane terminal_pane
+         ^terminal_direct (cell terminal_direct)
          ^overlay (cell nil)
          ^output_scroll app/local_surface/main_scroll
          ^transcript transcript})
@@ -6491,7 +6912,9 @@ State that broader behavior is unverified when no matching successful check ran.
         (var event_app nil)
         (while (! (done ~ Cell/get))
           (set event (await (curses_next_event (ensure_user_screen))))
-          (match event/type
+          (if_not (terminal_editor_handle_leader! editor event)
+            (if_not (handle_terminal_direct_event! editor event)
+            (match event/type
               (when "text"
                 (var overlay (editor/overlay ~ Cell/get))
                 (if (&& overlay (== overlay/kind "reverse_search"))
@@ -6513,6 +6936,12 @@ State that broader behavior is unverified when no matching successful check ran.
                         (editor_dismiss_overlay! editor false))))))
               (when "paste_start" (editor/paste ~ Cell/set true))
               (when "paste_end" (editor/paste ~ Cell/set false))
+              (when "focus_in"
+                (var session (terminal_editor_session editor))
+                (if session (terminal_focus session ^active true)))
+              (when "focus_out"
+                (var session (terminal_editor_session editor))
+                (if session (terminal_focus session ^active false)))
               (when "newline"
                 (if (surface_route_input_capable?
                       (active_application ~ Cell/get))
@@ -6539,13 +6968,23 @@ State that broader behavior is unverified when no matching successful check ran.
               (when "eof" (done ~ Cell/set true))
               (when "interrupt" (editor_clear! editor))
               (when "escape"
-                (if (editor/overlay ~ Cell/get)
-                  (editor_dismiss_overlay! editor true)
-                (if (confirmation_active ~ Cell/get)
+                (if (&& editor/terminal_pane
+                        (terminal_pane_controlled? editor/terminal_pane)
+                        (|| (== (editor_text (editor/values ~ Cell/get)) "")
+                            (== (editor_text (editor/values ~ Cell/get)) "/")))
+                  (terminal_editor_return_direct! editor)
+                (elif (editor/overlay ~ Cell/get)
+                  (editor_dismiss_overlay! editor true))
+                (elif (confirmation_active ~ Cell/get)
                   (then
                     (submitted ~ Cell/set "n")
-                    (done ~ Cell/set true))
-                  (else (handle_surface_escape! editor)))))
+                    (done ~ Cell/set true)))
+                (else
+                  (if (handle_surface_escape! editor)
+                    (then
+                      (editor_sync_focused_route! editor)
+                      true)
+                    (else false)))))
               (when "backspace"
                 (var overlay (editor/overlay ~ Cell/get))
                 (if (&& overlay (== overlay/kind "reverse_search"))
@@ -6620,18 +7059,28 @@ State that broader behavior is unverified when no matching successful check ran.
                 (set event_app (active_application ~ Cell/get))
                 (application_scroll_target! event_app editor/output_scroll -1
                   (application_pane_page_rows event_app event/rows)))
+              (when "scroll_page_up"
+                (set event_app (active_application ~ Cell/get))
+                (application_scroll_target! event_app editor/output_scroll 1
+                  (application_pane_page_rows event_app event/rows)))
+              (when "scroll_page_down"
+                (set event_app (active_application ~ Cell/get))
+                (application_scroll_target! event_app editor/output_scroll -1
+                  (application_pane_page_rows event_app event/rows)))
               (when "pane_previous"
                 (application_cycle_visible_pane!
-                  (active_application ~ Cell/get) -1))
+                  (active_application ~ Cell/get) -1)
+                (editor_sync_focused_route! editor))
               (when "pane_next"
                 (application_cycle_visible_pane!
-                  (active_application ~ Cell/get) 1))
-            (else nil))
+                  (active_application ~ Cell/get) 1)
+                (editor_sync_focused_route! editor))
+              (else nil))))
           (if (! (done ~ Cell/get)) (draw_editor editor)))
         (if (== (submitted ~ Cell/get) nil)
-          (route_draft ~ Cell/set
+          (editor/draft ~ Cell/set
             (editor_text (editor/values ~ Cell/get)))
-          (route_draft ~ Cell/set ""))
+          (editor/draft ~ Cell/set ""))
         (submitted ~ Cell/get)
       ensure
         (active_editor ~ Cell/set nil)))
@@ -6688,20 +7137,17 @@ State that broader behavior is unverified when no matching successful check ran.
       (draw_editor editor))))
 
 (fn refresh_active_input []
-  # Background workers may emit many deltas in adjacent scheduler turns. Draw
-  # at most once per terminal frame; the editor's own key path remains
-  # synchronous, so typed input never waits behind the repaint throttle and
-  # its draw includes all output accumulated so far.
+  # Background invalidations already run on the single UI/scheduler lane.
+  # Draw synchronously there: a detached/timer repaint can remain parked while
+  # the root fiber awaits curses input, leaving PTY output one key behind.
+  # The guard prevents nested callbacks from recursively redrawing.
   (if_not (active_repaint_pending ~ Cell/get)
     (active_repaint_pending ~ Cell/set true)
-    (var repaint
-      (spawn
-        (do
-          (sleep active_repaint_interval_ms)
-          (active_repaint_pending ~ Cell/set false)
-          (var transcript (interactive_transcript ~ Cell/get))
-          (if (!= transcript nil) (refresh_user_input transcript)))))
-    (repaint ~ Task/detach)))
+    (try
+      (var transcript (interactive_transcript ~ Cell/get))
+      (if (!= transcript nil) (refresh_user_input transcript))
+    ensure
+      (active_repaint_pending ~ Cell/set false))))
 
 # A pending turn owns the final transcript line until it produces visible
 # output. The pulse task alternates the dots and spaces while the scheduler is
@@ -6757,7 +7203,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var dots_visible (cell true))
   (refresh_agent_pending transcript pending dots_visible)
   {^pending pending ^dots_visible dots_visible
-   ^task (spawn
+   ^task (spawn ^lane root
      (while (pending ~ Cell/get)
        (sleep 400)
        (if_yes (pending ~ Cell/get)
@@ -6958,7 +7404,10 @@ State that broader behavior is unverified when no matching successful check ran.
    ^result_unread (if has_agent_result result_unread void)
    ^following (if (== worker/kind "output")
                 (worker/controller/following ~ Cell/get) void)
-   ^output (worker/output ~ Cell/get)
+   # Terminal cells and captured text are local-surface authority. Remote and
+   # model snapshots receive lifecycle metadata only.
+   ^output (if (== worker/kind "terminal") ""
+             (worker/output ~ Cell/get))
    ^output_seq (- (worker/next_output_seq ~ Cell/get) 1)
    ^dropped_bytes (worker/dropped_bytes ~ Cell/get)
    ^dropped_before (worker/dropped_before ~ Cell/get)
@@ -7054,6 +7503,83 @@ State that broader behavior is unverified when no matching successful check ran.
           worker)))
     (else nil)))
 
+(fn terminal_pump_loop [app, worker]
+  (var controller worker/controller)
+  (var session controller/session)
+  (var update nil)
+  (while (&& (! (app/shutting_down ~ Cell/get))
+              (== (worker/lifecycle ~ Cell/get) "running"))
+    (try
+      (set update (await (terminal_next_update session ^max_bytes 65536)))
+      (controller/snapshot ~ Cell/set update/snapshot)
+      (if update/snapshot/stopped
+        (then
+          (terminal_controller_capture! controller)
+          (worker/lifecycle ~ Cell/set "stopped")
+          (worker/status ~ Cell/set "stopped")
+          (worker/last_outcome ~ Cell/set "completed")
+          (application_emit app "worker_stopped"
+            {^worker_id worker/id ^kind "terminal"
+             ^exit_status update/snapshot/exit_status})
+          (refresh_active_input)
+          (return nil))
+        (else
+          (if update/changed (refresh_active_input))))
+    catch {^message message}
+      (worker/lifecycle ~ Cell/set "stopped")
+      (worker/status ~ Cell/set "failed")
+      (worker/last_outcome ~ Cell/set "failed")
+      (application_emit app "worker_stopped"
+        {^worker_id worker/id ^kind "terminal" ^error_kind "pty"})
+      (refresh_active_input)
+      (return nil))
+    nil)
+  nil)
+
+(fn start_terminal_pump! [app, worker]
+  # The pump may redraw curses and must observe live UI Cells, so capture
+  # analysis must never move it to the snapshot-isolated worker lane.
+  (var task (spawn ^lane root (terminal_pump_loop app worker)))
+  (worker/controller/pump_task ~ Cell/set task)
+  (task ~ Task/detach)
+  task)
+
+(fn open_terminal_pane [command, args]
+  (var app (active_application ~ Cell/get))
+  (if_yes app
+    (var worker (application_find_worker_kind app "terminal"))
+    (var existing
+      (if worker (application_find_pane_worker app worker/id)))
+    (if existing
+      (then
+        (application_focus_pane! app existing/id)
+        existing)
+      (else
+        (if_yes (== worker nil)
+          (var executable
+            (if (|| (== command nil) (== command ""))
+              (get_env Env "SHELL" "/bin/sh") command))
+          (var child_args (if (== args nil) [] args))
+          (var session
+            (terminal_open Pty ^cmd executable ^args child_args
+              ^dir workspace_real ^rows 24 ^cols 80
+              ^scrollback_lines 2000))
+          (var controller
+            (TerminalController
+              ^session session ^snapshot (cell (terminal_snapshot session))
+              ^restored_text (cell "")
+              ^pump_task (cell nil)
+              ^controller_surface_id
+                (cell (app/local_surface/instance_id ~ Cell/get))
+              ^command executable ^args child_args
+              ^cwd workspace_real))
+          (set worker
+            (application_new_worker app "terminal" "terminal"
+              (cell "interactive terminal (local/unmediated)\n") controller))
+          (if_yes worker (start_terminal_pump! app worker)))
+        (if worker
+          (application_attach_worker_pane app worker "user" "detach"))))))
+
 (fn open_shell_pane []
   (var app (active_application ~ Cell/get))
   (if_yes app
@@ -7114,7 +7640,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (var process_task (cell nil))
         (var outcome (cell "cancelled"))
         (var task
-          (spawn
+          (spawn ^lane root
             (do
               (var acquired false)
               (try
@@ -7259,7 +7785,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (var last_output (cell ""))
         (var outcome (cell "cancelled"))
         (var task
-          (spawn
+          (spawn ^lane root
             (do
               (try
                 (var guard_armed (repl_eval_guard_begin))
@@ -7390,7 +7916,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var dots_visible (cell true))
   (refresh_extension_pending pane pending dots_visible)
   {^pending pending ^dots_visible dots_visible
-   ^task (spawn
+   ^task (spawn ^lane root
      (while (pending ~ Cell/get)
        (sleep 400)
        (if_yes (pending ~ Cell/get)
@@ -7460,7 +7986,7 @@ State that broader behavior is unverified when no matching successful check ran.
            ^parent_agent_id agent/parent_id
            ^pane_id pane/id ^status "working"})
         (var task
-          (spawn
+          (spawn ^lane root
             (do
               (var placeholder (start_extension_pending pane))
               (var result (cell (agent/items ~ Cell/get)))
@@ -7628,7 +8154,7 @@ State that broader behavior is unverified when no matching successful check ran.
            ^parent_agent_id agent/parent_id
            ^status "working"})
         (var task
-          (spawn
+          (spawn ^lane root
             (do
                 (var result (cell (agent/items ~ Cell/get)))
                 (var final_text (cell ""))
@@ -7877,7 +8403,9 @@ State that broader behavior is unverified when no matching successful check ran.
           (application_stop_agent app worker)
           (application_stop_worker app worker)))
       (operation_ack worker accepted
-        (if accepted $"stopped worker ${worker/id}"
+        (if accepted
+          (if (== worker/kind "terminal")
+            $"stopping worker ${worker/id}" $"stopped worker ${worker/id}")
           $"worker ${worker/id} cannot be stopped")))
     (when "restart"
       (var restarted (restart_process_worker! app worker))
@@ -7931,6 +8459,16 @@ State that broader behavior is unverified when no matching successful check ran.
       (application_shell_set_env! worker args/name args/value))
     (when "unset_env"
       (application_shell_unset_env! worker args/name))
+    (when "write"
+      (terminal_write worker/controller/session ^bytes args/bytes)
+      (operation_ack worker true "terminal input accepted"))
+    (when "resize"
+      (terminal_resize worker/controller/session
+        ^rows args/rows ^cols args/cols)
+      (operation_ack worker true $"terminal resized to ${args/rows}x${args/cols}"))
+    (when "signal"
+      (terminal_signal worker/controller/session ^name args/name)
+      (operation_ack worker true $"terminal signal ${args/name} sent"))
     (when "eval"
       (var detached (invocation_field invocation "detached"))
       (var detach_task (if (== detached false) false true))
@@ -7972,7 +8510,14 @@ State that broader behavior is unverified when no matching successful check ran.
     (when "reload"
       (application_file_view! app worker worker/controller/path))
     (when "snapshot"
-      {^worker_id worker/id ^snapshot (application_worker_snapshot app worker)})
+      (if (== worker/kind "terminal")
+        {^worker_id worker/id
+         ^snapshot
+           (if worker/controller/session
+             (terminal_snapshot worker/controller/session)
+             (worker/controller/snapshot ~ Cell/get))}
+        {^worker_id worker/id
+         ^snapshot (application_worker_snapshot app worker)}))
     (else
       (fail (OsError ^message $"operation handler missing: ${op/name}")))))
 
@@ -8001,9 +8546,10 @@ State that broader behavior is unverified when no matching successful check ran.
       ["local_user" "remote_user" "supervisor" "delegated" "self"]))
   (valid_operation_member! kind operation/name "admission"
     operation/admission
-    ["none" "session_serialized" "interrupt" "worker_exclusive"])
+    ["none" "session_serialized" "interrupt" "worker_exclusive"
+     "terminal_stream"])
   (valid_operation_member! kind operation/name "audit" operation/audit
-    ["none" "attributed" "full"])
+    ["none" "metadata" "attributed" "full"])
   (if (&& (== operation/audit "none")
           (! (operation/effects ~ contains? "observe")))
     (fail (OsError
@@ -8075,6 +8621,12 @@ State that broader behavior is unverified when no matching successful check ran.
     (out ~ Map/put! second_field second)
     out))
 
+(fn parse_cli_terminal_resize [text : Str]
+  (var parts (split (trim text) " "))
+  (if (!= parts/~size 2)
+    (fail (OsError ^message "expected rows and cols")))
+  {^rows (parse_int parts/0) ^cols (parse_int parts/1)})
+
 (fn declare_worker_operation!
   [kind : Str, name : Str, summary : Str, usage : Str, args, result,
    effects, audience, admission : Str, audit : Str, cancellable : Bool,
@@ -8089,7 +8641,11 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn worker_operations_for_kind [kind : Str]
   (var out [])
   (var common (worker_operation_tables ~ Map/get "*"))
-  (if (!= common void) (for op in common (out ~ List/push! op)))
+  (if (!= common void)
+    (for op in common
+      (if_not (&& (== kind "terminal")
+                  (["tail" "cancel" "stop" "restart"] ~ contains? op/name))
+        (out ~ List/push! op))))
   (var specific (worker_operation_tables ~ Map/get kind))
   (if (!= specific void) (for op in specific (out ~ List/push! op)))
   out)
@@ -8128,18 +8684,48 @@ State that broader behavior is unverified when no matching successful check ran.
         "supervisor" "delegated"))
     (else "remote_user")))
 
+(fn terminal_surface_controls? [app, worker, invocation] : Bool
+  (var surface_id (invocation_field invocation "surface_id"))
+  (if (&& app/local_surface surface_id worker/controller
+          worker/controller/controller_surface_id
+          (== surface_id
+              (app/local_surface/instance_id ~ Cell/get))
+          (== surface_id
+              (worker/controller/controller_surface_id ~ Cell/get)))
+    true false))
+
+(fn terminal_surface_local? [app, invocation] : Bool
+  (var surface_id (invocation_field invocation "surface_id"))
+  (if (&& app/local_surface surface_id
+          (== surface_id
+              (app/local_surface/instance_id ~ Cell/get)))
+    true false))
+
 (fn invocation_authorized? [app, worker, operation, invocation] : Bool
   (var audience (invocation_audience app worker invocation))
   (if (operation/audience ~ contains? audience)
     (then
-      (if (== audience "delegated")
+      (if (&& (== worker/kind "terminal")
+              (["write" "resize" "signal" "stop"]
+                ~ contains? operation/name))
+        (terminal_surface_controls? app worker invocation)
+        (if (&& (== worker/kind "terminal")
+                (== operation/name "restart"))
+          # A restored terminal deliberately has no live controller. Its
+          # restart operation may be claimed by this process's exact local
+          # surface; a terminal still leased elsewhere cannot be stolen.
+          (&& (terminal_surface_local? app invocation)
+              (|| (== (worker/controller/controller_surface_id ~ Cell/get)
+                       nil)
+                  (terminal_surface_controls? app worker invocation)))
+        (if (== audience "delegated")
         (then
           (var caller
             (application_find_agent app
               (invocation_field invocation "caller_worker_id")))
           (agent_has_worker_attachment? caller worker/id))
         (else
-          true)))
+          true)))))
     (else
       false)))
 
@@ -8330,6 +8916,32 @@ State that broader behavior is unverified when no matching successful check ran.
   "unset_env <name>" EnvironmentUnsetArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor" "delegated"]
   "worker_exclusive" "full" false false false false (cli_word_parser "name"))
+
+# A terminal's byte stream is local-user-only. Metadata audit coalesces
+# lifecycle/counter changes; it never appends one journal event per key.
+(declare_worker_operation! "terminal" "snapshot" "Inspect local terminal state."
+  "snapshot" EmptyArgs StatsSnapshotResult ["observe"] ["local_user"] "none" "none"
+  false true false false parse_cli_empty)
+(declare_worker_operation! "terminal" "write" "Write bytes from its controller."
+  "write <bytes>" TerminalWriteArgs OperationAck ["host_write"]
+  ["local_user"] "terminal_stream" "metadata"
+  false false false false (cli_rest_parser "bytes"))
+(declare_worker_operation! "terminal" "resize" "Resize its controlling PTY."
+  "resize <rows> <cols>" TerminalResizeArgs OperationAck ["session_write"]
+  ["local_user"] "terminal_stream" "metadata"
+  false true false false parse_cli_terminal_resize)
+(declare_worker_operation! "terminal" "signal" "Signal its process group."
+  "signal <HUP|INT|TERM|WINCH|KILL>" TerminalSignalArgs OperationAck
+  ["host_write" "session_write"] ["local_user"] "interrupt" "full"
+  false false false false (cli_word_parser "name"))
+(declare_worker_operation! "terminal" "stop" "Stop its process group."
+  "stop" EmptyArgs OperationAck ["host_write" "session_write"]
+  ["local_user"] "interrupt" "full"
+  true false false false parse_cli_empty)
+(declare_worker_operation! "terminal" "restart" "Restart a stopped terminal."
+  "restart" EmptyArgs OperationAck ["host_write" "session_write"]
+  ["local_user"] "worker_exclusive" "full"
+  false false false false parse_cli_empty)
 
 (declare_worker_operation! "repl" "eval" "Evaluate one local Gene form."
   "eval <form>" ReplEvalArgs OperationAck ["session_write"] ["local_user"]
@@ -8718,17 +9330,23 @@ State that broader behavior is unverified when no matching successful check ran.
         (application_focus_pane! app id)
         (render_agent_text transcript streaming $"focused pane ${id}"))
     (when "cancel"
-      (application_cancel_worker
-        (active_application ~ Cell/get) pane/worker)
+      (var app (active_application ~ Cell/get))
+      (var response
+        (application_call_worker app pane/worker/id "cancel" {}
+          {^origin "user" ^adapter "local_tui"
+           ^caller_worker_id app/main_agent/id
+           ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
       (render_agent_text transcript streaming
-        $"cancelled worker ${pane/worker_id}"))
+        (worker_operation_cli_text pane/worker "cancel" response)))
     (when "stop"
-      (var stopped
-        (application_stop_worker
-          (active_application ~ Cell/get) pane/worker))
+      (var app (active_application ~ Cell/get))
+      (var response
+        (application_call_worker app pane/worker/id "stop" {}
+          {^origin "user" ^adapter "local_tui"
+           ^caller_worker_id app/main_agent/id
+           ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
       (render_agent_text transcript streaming
-        (if stopped $"stopped worker ${pane/worker_id}"
-          $"worker ${pane/worker_id} is already stopped")))
+        (worker_operation_cli_text pane/worker "stop" response)))
     (when "focus"
       (var app (active_application ~ Cell/get))
       (application_focus_pane! app id)
@@ -8767,6 +9385,26 @@ State that broader behavior is unverified when no matching successful check ran.
           (if (== response "accepted")
             (refresh_user_input transcript)
             (render_agent_text transcript streaming response)))
+        (when "terminal"
+          (if (starts_with? routed "send ")
+            (then
+              (var line_text (after_prefix routed "send "))
+              (var app (active_application ~ Cell/get))
+              (var response
+                (application_call_worker app pane/worker/id "write"
+                  {^bytes $"${line_text}\n"}
+                  {^origin "user" ^adapter "local_tui"
+                   ^caller_worker_id app/main_agent/id
+                   ^surface_id
+                     (app/local_surface/instance_id ~ Cell/get)}))
+              (if response/ok
+                (refresh_user_input transcript)
+                (render_agent_text transcript streaming
+                  (worker_operation_cli_text
+                    pane/worker "write" response))))
+            (else
+              (render_agent_text transcript streaming
+                $"terminal pane ${id} is direct; use /${id} send <line> or focus it"))))
         (when "log_tail"
           (var response (application_send_worker_input
             (active_application ~ Cell/get) pane/worker routed "local_tui"))
@@ -8945,6 +9583,11 @@ State that broader behavior is unverified when no matching successful check ran.
               (if (== args "") "/agent new" $"/agent new ${args}")
               transcript memory streaming))
           (when "shell" (handle_shell_pane transcript streaming))
+          (when "terminal"
+            (var pane (open_terminal_pane nil []))
+            (render_agent_text transcript streaming
+              (if pane $"opened terminal pane ${pane/id}"
+                "worker limit reached")))
           (when "repl" (handle_repl_pane items transcript memory streaming))
           (when "tail"
             (var pane (open_log_tail_pane args))
@@ -8973,7 +9616,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 "worker limit reached")))
           (else
             (render_agent_text transcript streaming
-              "usage: /pane new <agent|shell|repl|tail|output|view|stats> [args]"))))
+              "usage: /pane new <agent|shell|terminal|repl|tail|output|view|stats> [args]"))))
       (else
         (if (starts_with? rest "open ")
           (then
@@ -9114,7 +9757,8 @@ State that broader behavior is unverified when no matching successful check ran.
           (var response
             (application_call_worker app worker/id operation_name {}
               {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
-               ^caller_worker_id app/main_agent/id}))
+               ^caller_worker_id app/main_agent/id
+               ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
           (render_agent_text transcript streaming
             $"${response/error/kind}: ${response/error/message}; ${(worker_operations_usage worker)}"))
         (else
@@ -9123,7 +9767,8 @@ State that broader behavior is unverified when no matching successful check ran.
             (var response
               (application_call_worker app worker/id operation_name raw_args
                 {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
-                 ^caller_worker_id app/main_agent/id}))
+                 ^caller_worker_id app/main_agent/id
+                 ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
             (render_agent_text transcript streaming
               (worker_operation_cli_text worker operation_name response))
           catch {^message message}
@@ -9234,6 +9879,22 @@ State that broader behavior is unverified when no matching successful check ran.
       (application_focus_pane! app pane/id)
       (render_agent_text transcript streaming
         $"shell pane ${pane/id}; use /${pane/id} <command>"))))
+
+(fn handle_terminal_pane [line : Str, transcript, streaming]
+  (var command nil)
+  (var args [])
+  (var words [])
+  (if_yes (starts_with? line "/sh -- ")
+    (set words (split (trim (after_prefix line "/sh -- ")) " "))
+    (if_not (empty? words)
+      (set command words/0)
+      (repeat i in words/~size
+        (if (> i 0) (args ~ List/push! words/%i)))))
+  (var pane (open_terminal_pane command args))
+  (if (== pane nil)
+    (render_agent_text transcript streaming "application is not running")
+    (render_agent_text transcript streaming
+      $"terminal pane ${pane/id}; keys go directly to the child, ${terminal_leader_label} opens agent commands")))
 
 (fn agent_status_report [items, memory] : Str
   (var state_label
@@ -9413,6 +10074,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (application_request_worker_attention self/application worker title)
           worker/id))
       (when "shell" (open_shell_pane))
+      (when "terminal" (open_terminal_pane nil []))
       (when "repl" (open_repl_pane self/items self/transcript self/memory))
       (else nil)))
 
@@ -9518,6 +10180,24 @@ State that broader behavior is unverified when no matching successful check ran.
                 ^environment
                   (cell (previous/controller/environment ~ Cell/get)))
               previous)))
+        (when "terminal"
+          (var session
+            (terminal_open Pty ^cmd previous/controller/command
+              ^args previous/controller/args ^dir previous/controller/cwd
+              ^rows 24 ^cols 80 ^scrollback_lines 2000))
+          (set worker
+            (application_new_worker_from app "terminal" previous/title
+              (cell "interactive terminal (local/unmediated)\n")
+              (TerminalController
+                ^session session ^snapshot (cell (terminal_snapshot session))
+                ^restored_text (cell "")
+                ^pump_task (cell nil)
+                ^controller_surface_id
+                  (cell (app/local_surface/instance_id ~ Cell/get))
+                ^command previous/controller/command
+                ^args previous/controller/args ^cwd previous/controller/cwd)
+              previous))
+          (if_yes worker (start_terminal_pump! app worker)))
         (when "repl"
           (var resume_flag (cell false))
           (var session
@@ -9724,7 +10404,7 @@ State that broader behavior is unverified when no matching successful check ran.
    ^summary "focus main or an extension pane"}
   {^name "/close" ^section "pane" ^usage "/close [N]"
    ^summary "close the focused pane, or pane N; pane 0 is protected"}
-  {^name "/pane" ^section "pane" ^usage "/pane list | /pane new <agent|shell|repl|tail|output|view|stats> [args] | /pane open <W> [title] | /pane focus <0|N> | /pane show|hide|close|max <N> | /pane <N> focus|show|hide|close|max"
+  {^name "/pane" ^section "pane" ^usage "/pane list | /pane new <agent|shell|terminal|repl|tail|output|view|stats> [args] | /pane open <W> [title] | /pane focus <0|N> | /pane show|hide|close|max <N> | /pane <N> focus|show|hide|close|max"
    ^summary "create and manage surface-local panes"}
   {^name "/agent" ^section "agent" ^usage "/agent list | /agent new [prompt] | /agent <A> send <prompt> | /agent <A> open|result|incorporate|cancel|stop"
    ^summary "create and supervise sub-agents"}
@@ -9734,8 +10414,8 @@ State that broader behavior is unverified when no matching successful check ran.
    ^summary "invoke the target kind's declared operation table by id or name"}
   {^name "/workers" ^section "worker" ^usage "/workers"
    ^summary "list workers with pane ids and operation state"}
-  {^name "/sh" ^section "pane" ^usage "/sh"
-   ^summary "open or focus the line-oriented shell; standalone cd persists"}
+  {^name "/sh" ^section "pane" ^usage "/sh [-- argv...]"
+   ^summary "open or focus the local interactive PTY terminal"}
   {^name "/repl" ^section "pane" ^usage "/repl"
    ^summary "open or focus the persistent Gene REPL"}
   {^name "/tail" ^section "pane" ^usage "/tail [filter]"
@@ -9807,7 +10487,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (! (registered_surface_command? line))))
 
 (fn worker_kind_help [kind : Str] : Str
-  (var known ["agent" "shell" "repl" "output" "log_tail" "file_view" "stats"])
+  (var known
+    ["agent" "shell" "terminal" "repl" "output" "log_tail"
+     "file_view" "stats"])
   (var known_text (known ~ join ", "))
   (if_not (known ~ contains? kind)
     (return $"unknown worker kind '${kind}'\nworker kinds: ${known_text}"))
@@ -10212,8 +10894,9 @@ State that broader behavior is unverified when no matching successful check ran.
                   (handle_output_pane_command line transcript streaming))
                 (elif (|| (== line "/close") (starts_with? line "/close "))
                   (handle_close_command line transcript streaming))
-                (elif (== line "/sh")
-                  (handle_shell_pane transcript streaming))
+                (elif (|| (== line "/sh")
+                          (starts_with? line "/sh -- "))
+                  (handle_terminal_pane line transcript streaming))
                 (elif (== line "/repl")
                   (handle_repl_pane items transcript memory streaming))
                 (elif (== line "/memory")
@@ -10431,7 +11114,7 @@ State that broader behavior is unverified when no matching successful check ran.
             # spawning `serve` from inside the TUI fiber would recursively pump
             # the scheduler and starve curses input in combined mode.
             (gateway_task ~ Cell/set
-              (spawn
+              (spawn ^lane root
                 (try
                   (run_local_entry launch task)
                 ensure
@@ -10455,7 +11138,15 @@ State that broader behavior is unverified when no matching successful check ran.
       # ensure. The fallback is intentionally idempotent at this boundary.
       (try (stop_gateway (gateway_server ~ Cell/get)) catch _ nil))
     (var app (active_application ~ Cell/get))
-    (if app (application_shutdown app))
+    (if_yes app
+      (application_shutdown app)
+      # The ordinary /exit checkpoint precedes process teardown. Publish one
+      # final generation after terminal sessions have been stopped, captured,
+      # and closed so restore never sees a fake live PTY.
+      (save_agent_state_with_reason
+        (app/main_agent/items ~ Cell/get)
+        (app/main_agent/transcript ~ Cell/get)
+        (app/memory ~ Cell/get) "application_stopped"))
     (active_application ~ Cell/set nil)
     (close_agent_state)
     (close_user_input)

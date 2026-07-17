@@ -6,6 +6,7 @@ import ./[compiler, diagnostics, equality, gir, logging, printer, reader, types]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import ./tui/terminal as tui_terminal
+  import ./[pty_process, terminal_session, vterm]
 
 when not defined(geneWasm):
   import std/re as nre
@@ -12403,17 +12404,20 @@ proc pumpUntilDone(task: Value) =
     # only when this root lane calls pollOsExecAsyncCompletions. A distant Gene
     # timer must not let schedulerRunOneRoot sleep past that polling boundary.
     # Keep ordinary timer sleeps efficient when no external operation exists.
+    # Curses and local PTY completions are same-thread, nonblocking external
+    # operations even in a non-threaded build. Poll them at a short boundary
+    # instead of sleeping indefinitely for another key or unrelated timer.
     let progressed =
-      when compileOption("threads"):
-        if externalNativeOpsPending():
-          schedulerRunOneRootUntil(timerDeadline(1), workerLease)
-        else:
-          schedulerRunOneRoot(workerLease)
+      if externalNativeOpsPending():
+        schedulerRunOneRootUntil(timerDeadline(1), workerLease)
       else:
         schedulerRunOneRoot(workerLease)
     if not progressed:
       if task.taskDone:
         break
+      if externalNativeOpsPending():
+        os.sleep(1)
+        continue
       when compileOption("threads") and defined(gcAtomicArc):
         if task.taskExternalPending:
           # os/exec-*-async is settled by scheduler polling, not by its worker.

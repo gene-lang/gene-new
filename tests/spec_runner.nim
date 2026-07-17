@@ -2359,6 +2359,10 @@ suite "spec — structured tasks from design":
                "(out ~ Cell/get)",
                "7")
 
+  test "spawn can require the owning root lane":
+    check_eval("(scope (var t (spawn ^lane root (+ 20 22))) (await t))",
+               "42")
+
   test "await propagates recoverable task errors":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &

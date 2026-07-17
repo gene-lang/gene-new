@@ -4,6 +4,9 @@ include test_reader
 include test_source_index
 include test_viewer
 include test_viewer_editor
+include test_vterm
+include test_pty_process
+include test_terminal_session
 include test_values
 include test_vm
 include test_modules

@@ -192,6 +192,9 @@ line two"""
 
 (fn concurrent_pair [left, right]
   (scope
+    # Thread-affine work can opt out of automatic worker placement.
+    (var local_task (spawn ^lane root (left)))
+    (await local_task)
     (var left_task (spawn (left)))
     (var right_task (spawn (right)))
     [(await left_task) (await right_task)]))

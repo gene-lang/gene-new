@@ -295,6 +295,17 @@ suite "compiler — GIR emission":
     check nestedFlags[0] == false
     check nestedFlags[1] == true
 
+    let explicitRoot = compileSource(
+      "(scope (var x 1) (spawn ^lane root (+ x 1)))").disassemble()
+    check explicitRoot.contains("opSpawn body=0")
+    check not explicitRoot.contains("worker-candidate=true")
+
+  test "spawn validates explicit lane placement":
+    expect GeneError:
+      discard compileSource("(spawn ^lane worker 1)")
+    expect GeneError:
+      discard compileSource("(spawn ^unknown true 1)")
+
   test "emits slots for match branch bindings and outer updates":
     let chunk = compileSource(
       "(var total 0) (match [1 2] (when [a b] (set total (+ a b))))")

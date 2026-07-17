@@ -2745,6 +2745,18 @@ Rules:
 - `ensure` cleanup runs during cancellation;
 - detached lifetime is explicit and is not the default MVP behavior.
 
+Placement-sensitive code can require the owning scheduler's root lane:
+
+```gene
+(spawn ^lane root
+  (drive-terminal-ui))
+```
+
+Use this for UI frameworks and other thread-affine native APIs. It disables
+worker-candidate placement and capture snapshotting even when static analysis
+would otherwise consider the body worker-safe. `root` is currently the only
+explicit `^lane` value; omitting `^lane` retains automatic placement.
+
 Task placement has two paths. A root-lane cooperative task may retain local,
 non-`Send` captures such as `Cell`; it never migrates. A worker-candidate task
 is selected only after its complete captured graph passes the worker-safe
