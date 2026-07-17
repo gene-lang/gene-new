@@ -3614,7 +3614,10 @@ proc biReplEval(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   except GeneError as error:
     session.pendingSource.setLen(0)
     session.pendingError.setLen(0)
-    replEvalResult("error", formatDiagnostic("Error", error.msg, error.loc))
+    if error.msg == "interrupted":
+      replEvalResult("cancelled", "[cancelled]")
+    else:
+      replEvalResult("error", formatDiagnostic("Error", error.msg, error.loc))
 
 proc biReplClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("repl/close", args)
@@ -3631,6 +3634,76 @@ proc biReplClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       session.pendingError.setLen(0)
     closed.setCellValue(TRUE)
   NIL
+
+proc biReplDiscardPending(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  ## Drop a session's buffered incomplete-form source (§C7 Escape rung).
+  ## Returns true when pending source existed.
+  requireOne("repl/discard_pending", args)
+  let dispatchScope = if call == nil: nil else: call[].dispatchScope
+  let id = incrementalReplId("repl/discard_pending", args[0], dispatchScope)
+  let session = incrementalReplSessions[id]
+  result = if session.pendingSource.len > 0: TRUE else: FALSE
+  session.pendingSource.setLen(0)
+  session.pendingError.setLen(0)
+
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  # §C7 in-VM cancellation: while a pane REPL eval is in flight the TUI runs
+  # in a no-ISIG terminal mode, so Ctrl-C arrives as a dead keystroke once the
+  # cooperative scheduler is starved by a non-yielding eval. The guard enables
+  # ISIG and routes SIGINT to the VM interrupt flag, which consumeEvalStep
+  # polls on the budgeted-dispatch path; eval_guard_end restores both.
+  import std/termios as pane_termios
+  var paneEvalOldSigint: Sigaction
+  var paneEvalOldTermios: pane_termios.Termios
+  var paneEvalGuardActive = false
+  var paneEvalTermiosChanged = false
+
+  proc paneEvalSigintHandler(sig: cint) {.noconv.} =
+    volatileStore(addr gVmInterrupt, true)
+
+  proc biReplEvalGuardBegin(args: openArray[Value],
+                            call: ptr NativeCall): Value {.nimcall.} =
+    if paneEvalGuardActive:
+      return FALSE
+    var act: Sigaction
+    act.sa_handler = paneEvalSigintHandler
+    discard sigemptyset(act.sa_mask)
+    act.sa_flags = SA_RESTART
+    if sigaction(SIGINT, act, paneEvalOldSigint) != 0:
+      return FALSE
+    paneEvalGuardActive = true
+    volatileStore(addr gVmInterrupt, false)
+    paneEvalTermiosChanged = false
+    if isatty(STDIN_FILENO) != 0:
+      var attrs: pane_termios.Termios
+      if pane_termios.tcGetAttr(STDIN_FILENO, addr attrs) == 0:
+        paneEvalOldTermios = attrs
+        if (attrs.c_lflag.uint64 and pane_termios.ISIG.uint64) == 0'u64:
+          attrs.c_lflag = pane_termios.Cflag(
+            attrs.c_lflag.uint64 or pane_termios.ISIG.uint64)
+          if pane_termios.tcSetAttr(STDIN_FILENO, pane_termios.TCSANOW,
+                                    addr attrs) == 0:
+            paneEvalTermiosChanged = true
+    TRUE
+
+  proc biReplEvalGuardEnd(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+    if not paneEvalGuardActive:
+      return FALSE
+    if paneEvalTermiosChanged:
+      discard pane_termios.tcSetAttr(STDIN_FILENO, pane_termios.TCSANOW,
+                                     addr paneEvalOldTermios)
+      paneEvalTermiosChanged = false
+    discard sigaction(SIGINT, paneEvalOldSigint, nil)
+    paneEvalGuardActive = false
+    volatileStore(addr gVmInterrupt, false)
+    TRUE
+else:
+  proc biReplEvalGuardBegin(args: openArray[Value],
+                            call: ptr NativeCall): Value {.nimcall.} = FALSE
+  proc biReplEvalGuardEnd(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} = FALSE
 
 proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
@@ -7359,6 +7432,15 @@ proc registerStdlibNamespaces(root: Scope) =
                                             acceptsNamed = false))
   replScope.define("eval_source",
     newNativeCallFn("repl/eval_source", biReplEval,
+                    acceptsNamed = false))
+  replScope.define("discard_pending",
+    newNativeCallFn("repl/discard_pending", biReplDiscardPending,
+                    acceptsNamed = false))
+  replScope.define("eval_guard_begin",
+    newNativeCallFn("repl/eval_guard_begin", biReplEvalGuardBegin,
+                    acceptsNamed = false))
+  replScope.define("eval_guard_end",
+    newNativeCallFn("repl/eval_guard_end", biReplEvalGuardEnd,
                     acceptsNamed = false))
   replScope.define("close", newNativeCallFn("repl/close", biReplClose,
                                              acceptsNamed = false))

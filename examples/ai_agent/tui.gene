@@ -74,7 +74,10 @@
 (import store/sqlite [open : store_sqlite_open])
 (import repl [run : run_repl_session open : repl_open
               eval_source : repl_eval
-              close : repl_close])
+              close : repl_close
+              discard_pending : repl_discard_pending
+              eval_guard_begin : repl_eval_guard_begin
+              eval_guard_end : repl_eval_guard_end])
 (import log [new_logger info! warn! error! debug! trace!])
 (import [prepare_gateway serve_gateway stop_gateway run_gateway]
         from "./gateway_adapter")
@@ -665,7 +668,7 @@
 
 (type ReplController
   ^props {^session Any ^items Any ^transcript Any ^memory Any
-          ^streaming Any ^resume_requested Any})
+          ^streaming Any ^resume_requested Any ^pending Any})
 
 (type AgentApplication
   ^props {^coordinator_id Str
@@ -5196,7 +5199,8 @@ State that broader behavior is unverified when no matching successful check ran.
             (when "repl"
               (ReplController ^session nil ^items nil ^transcript nil
                               ^memory nil ^streaming (cell false)
-                              ^resume_requested (cell false)))
+                              ^resume_requested (cell false)
+                              ^pending (cell false)))
             (when "log_tail"
               (LogTailController
                 ^filter (cell (if (== data/filter void) {} data/filter))))
@@ -5350,7 +5354,8 @@ State that broader behavior is unverified when no matching successful check ran.
               (when "repl"
                 (ReplController ^session nil ^items nil ^transcript nil
                                 ^memory nil ^streaming (cell false)
-                                ^resume_requested (cell false)))
+                                ^resume_requested (cell false)
+                              ^pending (cell false)))
               (else (OutputController ^source "restored" ^following (cell [])))))
           (set worker
             (make_worker $"w${seq}" data/kind
@@ -6440,6 +6445,13 @@ State that broader behavior is unverified when no matching successful check ran.
       (var task (worker/current_task ~ Cell/get))
       (if (!= task nil)
         (then (application_cancel_worker app worker) true)
+        (elif (&& (!= pane nil) (== pane/kind "repl")
+                  (worker/controller/pending ~ Cell/get))
+          # §7.1 ladder: discard a pending incomplete form before unmaximize.
+          (repl_discard_pending worker/controller/session)
+          (worker/controller/pending ~ Cell/set false)
+          (append_worker_transcript! app worker "[discarded pending form]\n")
+          true)
         (else
           (if (!= (surface/maximized_pane ~ Cell/get) nil)
             (then (surface/maximized_pane ~ Cell/set nil) true)
@@ -7245,21 +7257,37 @@ State that broader behavior is unverified when no matching successful check ran.
           (spawn
             (do
               (try
-                (var result (repl_eval worker/controller/session source))
+                (var guard_armed (repl_eval_guard_begin))
+                (var result
+                  (try (repl_eval worker/controller/session source)
+                    ensure (if guard_armed (repl_eval_guard_end))))
                 (last_output ~ Cell/set result/text)
+                (worker/controller/pending ~ Cell/set
+                  (== result/status "incomplete"))
                 (match result/status
                   (when "ok"
                     (if_not (== result/text "")
-                      (append_worker_transcript! app worker $"${result/text}\n")))
-                  (when "incomplete"
-                    (append_worker_transcript! app worker "....> \n"))
+                      (append_worker_transcript! app worker
+                        $"${(pretty_result_text result/text 72)}\n")))
+                  (when "incomplete" nil)
                   (else
                     (append_worker_transcript! app worker $"${result/text}\n")))
                 (outcome ~ Cell/set
-                  (if (== result/status "error") "failed" "completed"))
+                  (match result/status
+                    (when "error" "failed")
+                    (when "cancelled" "cancelled")
+                    (else "completed")))
               catch {^message message}
-                (append_worker_transcript! app worker $"[REPL failed: ${message}]\n")
-                (outcome ~ Cell/set "failed")
+                (repl_eval_guard_end)
+                (worker/controller/pending ~ Cell/set false)
+                (if (== message "interrupted")
+                  (then
+                    (append_worker_transcript! app worker "[cancelled]\n")
+                    (outcome ~ Cell/set "cancelled"))
+                  (else
+                    (append_worker_transcript! app worker
+                      $"[REPL failed: ${message}]\n")
+                    (outcome ~ Cell/set "failed")))
               catch _
                 (append_worker_transcript! app worker "[REPL failed]\n")
                 (outcome ~ Cell/set "failed")
@@ -7277,13 +7305,23 @@ State that broader behavior is unverified when no matching successful check ran.
                 (refresh_application_input app)))))
           (application_begin_worker_operation!
             app worker task "repl_eval")
-          (append_worker_transcript! app worker $"gene> ${source}\n")
+          (var echo_prompt
+            (if (worker/controller/pending ~ Cell/get) "....> " "gene> "))
+          (append_worker_transcript! app worker $"${echo_prompt}${source}\n")
           (task ~ Task/detach)
           (if detached
             (then "accepted")
             (else
               (await task)
               $"REPL ${route}: ${(last_output ~ Cell/get)}"))))))
+
+(fn pretty_result_text [text : Str, width : Int] : Str
+  # Break long printed maps at `^` prop boundaries so a REPL result reads as
+  # an indented record instead of one hard-wrapped line. String-content " ^"
+  # sequences are rare enough for a display-only formatter.
+  (if (|| (< (size (bytes text)) width) (! (starts_with? text "{")))
+    text
+    ((split text " ^") ~ join "\n  ^")))
 
 (fn run_repl_pane_command [pane, source : Str]
   (var app (active_application ~ Cell/get))
@@ -8671,17 +8709,23 @@ State that broader behavior is unverified when no matching successful check ran.
             (application_send_worker_input
               (active_application ~ Cell/get) pane/worker routed "local_tui")))
         (when "shell"
-          (render_agent_text transcript streaming
-            (application_send_worker_input
-              (active_application ~ Cell/get) pane/worker routed "local_tui")))
+          (var response (application_send_worker_input
+            (active_application ~ Cell/get) pane/worker routed "local_tui"))
+          (if (== response "accepted")
+            (refresh_user_input transcript)
+            (render_agent_text transcript streaming response)))
         (when "repl"
-          (render_agent_text transcript streaming
-            (application_send_worker_input
-              (active_application ~ Cell/get) pane/worker routed "local_tui")))
+          (var response (application_send_worker_input
+            (active_application ~ Cell/get) pane/worker routed "local_tui"))
+          (if (== response "accepted")
+            (refresh_user_input transcript)
+            (render_agent_text transcript streaming response)))
         (when "log_tail"
-          (render_agent_text transcript streaming
-            (application_send_worker_input
-              (active_application ~ Cell/get) pane/worker routed "local_tui")))
+          (var response (application_send_worker_input
+            (active_application ~ Cell/get) pane/worker routed "local_tui"))
+          (if (== response "accepted")
+            (refresh_user_input transcript)
+            (render_agent_text transcript streaming response)))
         (when "output"
           (if (starts_with? routed "append ")
             (then
@@ -9389,11 +9433,12 @@ State that broader behavior is unverified when no matching successful check ran.
             (repl_open (live_session_env items transcript memory resume_flag)))
           (set worker
             (application_new_worker_from app "repl" "Gene REPL"
-              (cell "session is bound; enter one Gene form per /N command\n")
+              (cell "session is bound; type Gene forms (multi-form ok); Esc discards a pending form\n")
               (ReplController ^session session ^items items
                               ^transcript transcript ^memory memory
                               ^streaming app/main_agent/streaming
-                              ^resume_requested resume_flag)
+                              ^resume_requested resume_flag
+                              ^pending (cell false))
               previous)))
         (application_attach_worker_pane app worker "user" "detach"))))
 
@@ -9434,12 +9479,13 @@ State that broader behavior is unverified when no matching successful check ran.
                 app/main_agent/transcript interactive_memory resume_flag)))
           (set worker
             (application_new_worker_from app "repl" previous/title
-              (cell "session is bound; enter one Gene form per /N command\n")
+              (cell "session is bound; type Gene forms (multi-form ok); Esc discards a pending form\n")
               (ReplController ^session session ^items app/main_agent/items
                               ^transcript app/main_agent/transcript
                               ^memory interactive_memory
                               ^streaming app/main_agent/streaming
-                              ^resume_requested resume_flag)
+                              ^resume_requested resume_flag
+                              ^pending (cell false))
               previous)))
         (when "output"
           (set worker
@@ -10087,7 +10133,13 @@ State that broader behavior is unverified when no matching successful check ran.
             # bypasses both transcript and checkpoint state.
             (if app/local_surface
               (app/local_surface/help_notice ~ Cell/set ""))
-            (append_transcript transcript $"──────\n${line}\n")
+            # Routed bare input echoes once at its destination pane (§C7);
+            # commands and main-agent prompts keep the main-transcript echo.
+            (if (|| (starts_with? line "/")
+                    (== app/local_surface nil)
+                    (== (app/local_surface/focused_pane ~ Cell/get) nil))
+              (append_transcript transcript $"──────\n${line}\n")
+              (refresh_user_input transcript))
             (checkpoint_agent_state! app "input_submitted"))
           (refresh_user_input transcript)
           # Registry recognition is the gate in front of every static slash

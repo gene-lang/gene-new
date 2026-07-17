@@ -1045,7 +1045,9 @@ focuses pane N (`/N focus` remains accepted); newly opened panes start focused
 (shipped behavior); `/0` or
 `/focus 0` or Escape on an empty input resets focus to the main agent. Escape
 keeps one deterministic priority order, PTY-tested: cancel the focused
-worker's active operation; else restore a maximized pane; else, **only when the
+worker's active operation; else discard the focused REPL's pending
+incomplete-form continuation (C7, §7.1 REPL requirements); else restore a
+maximized pane; else, **only when the
 draft is empty**, reset focus to pane 0; else nothing. With a composed draft
 and nothing to cancel or restore, Escape leaves both the draft and its route
 untouched — an already-composed shell command or Gene form is never silently
@@ -1339,6 +1341,36 @@ off to an external terminal only if dogfooding requires it. The REPL is a
 form-oriented controller over the owned `repl/Session` API, so declarations and
 incomplete forms persist without replaying earlier side effects. This boundary
 is reusable by the TUI, web UI, and gateway; curses remains only a view.
+
+The 2026-07-16 REPL-pane dogfood exposed where that contract is currently
+hollow, and it sharpens three requirements:
+
+- **Cancellable means interruptible mid-eval.** "Scheduler-owned, cancellable"
+  is vacuous if the eval never yields: the scheduler is cooperative, so a
+  `(while true nil)` inside `repl/eval_source` starves the input loop — the
+  observed result was a frozen TUI where Ctrl-C, Escape, and even `/0` were
+  dead, with the worker stuck `working`. Worker `cancel` on a REPL (and any
+  future in-VM) operation must arm the same VM interrupt the legacy SIGINT
+  path uses (§7), the eval must poll it on the existing `evalBudget` path,
+  and the surface input loop must never be starved by a worker operation:
+  global commands parse and Escape cancels while any eval runs. This is a
+  PTY-tested liveness bar, not a best effort.
+- **Routed input echoes at its destination, not as main-transcript noise.**
+  The bootstrap echoes every routed form into pane 0 as the pair
+  `(form)` / `agent> accepted`, so a REPL session buries the main
+  conversation. Routed input appears once, in the target pane's transcript
+  (`gene> form`); pane 0 records nothing for accepted routed input, and
+  acknowledgements live in the status line. Only failures surface on pane 0.
+- **Interactive evaluation state is visible and truthful.** A pending
+  incomplete form shows as worker status (`awaiting continuation`, echoed
+  with the `....>` prompt — not a second `gene>`), Escape's §7.1 ladder gains
+  a discard-pending-continuation rung between cancel-operation and
+  restore-maximized, and per-route key adverts list only bindings that work
+  on that route (no advertised-but-inert Tab). REPL results pretty-print:
+  maps and lists render indented with bounded depth/length elision instead of
+  one hard-wrapped line — a 45-column pane showing `session/config` as a
+  single wrapped token stream is unreadable. The §7.2 `status`/`snapshot`
+  observe renderers share the same indented printer.
 
 ### 7.2 Worker operations — one typed surface for user, model, and peers
 
@@ -1864,7 +1896,7 @@ publish a pure declaration/state migration from an old version, but that
 migration selects a new exact handler reference before activation. The same
 rule covers dynamically added worker
 operations, hot-reloaded handlers, and any REPL-created callable retained by
-session state — promoting a proven `/repl` experiment into a module (§10.10)
+session state — promoting a proven `/repl` experiment into a module (§10.11)
 is exactly the act that makes it durable.
 
 The native multi-agent slice extends this stable surface rather than exposing
@@ -2627,7 +2659,50 @@ the draft through `$EDITOR` mid-turn; an unknown command's diagnostic names
 the nearest registered command; and an overlay dismissed with `Escape`
 leaves the draft, route, and journal byte-identical to before it opened.
 
-### 10.10 Slice D — expand only where leverage is proven
+### 10.10 Slice C7 — interactive evaluation liveness and REPL operability
+
+The 2026-07-16 REPL-pane dogfood (§7.1) showed the shipped "scheduler-owned,
+cancellable" REPL contract is hollow under a non-yielding eval, and that
+routed evaluation is noisy and hard to read. Verified findings: a
+`(while true nil)` eval froze the entire TUI (Ctrl-C, Escape, and `/0` all
+dead, worker stuck `working`, process idle — the cooperative scheduler was
+starved inside `repl/eval_source`); every routed form spammed pane 0 with
+`(form)` / `agent> accepted` pairs; results hard-wrapped mid-token in the
+45-column pane; the continuation echo printed `gene>` instead of `....>` and
+the pending state was invisible in status; Tab was advertised on main yet
+inert on the REPL route. Working well and kept: declaration persistence,
+incomplete-form continuation, error locations, route-scoped history, `/1
+max`, multi-form input. Steps:
+
+1. **In-VM cancellation**: worker `cancel` (and the Escape/Ctrl-C paths that
+   invoke it) arms the same VM interrupt as the legacy SIGINT handler (§7);
+   `repl/eval_source` polls it on the `evalBudget` path and raises the
+   catchable interrupted error; the operation finishes `cancelled` and the
+   worker returns to running/idle.
+2. **Input-loop liveness**: the surface event loop is never starved by a
+   worker operation — under a busy eval, global commands parse, focus moves,
+   panes repaint, and Escape cancels. If the scheduler design cannot
+   guarantee this for in-VM evals, the REPL eval moves off the input
+   scheduler rather than weakening the bar.
+3. **Destination-only echo**: routed input echoes once in the target pane;
+   pane 0 stays clean of `accepted` acknowledgements; failures still surface
+   on pane 0.
+4. **Truthful evaluation state**: `awaiting continuation` worker status,
+   `....>` continuation echo, and the Escape discard rung (§7.1 ladder).
+5. **Readable results**: bounded indented pretty-printing for REPL values,
+   shared with the §7.2 `status`/`snapshot` renderers; route-truthful key
+   adverts and registry-generated pane header text (no stale "one form per
+   /N command").
+
+The slice is complete when a PTY test cancels `(while true nil)` within two
+seconds via Escape, Ctrl-C, and `/worker W cancel` while `/0` and `/status`
+stay responsive throughout; a REPL session of ten evals adds zero
+`accepted` lines to pane 0; a pending `(do` shows `awaiting continuation`
+and one Escape discards it; `session/config` renders indented within the
+pane width; and every advertised key on every route does something on that
+route.
+
+### 10.11 Slice D — expand only where leverage is proven
 
 - Promote repeated `/repl` experiments into small Gene workflow modules;
   record module/tool version hashes and hot-reload new calls without changing

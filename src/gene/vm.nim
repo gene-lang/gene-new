@@ -7722,6 +7722,11 @@ proc incrementalReplScopeForEnv*(env: Value): Scope =
   result = newScope(materializeEvalParent(env))
   result.implOverlayRoot = true
   result.evalBudget = evalBudgetForPolicy(env.envPolicy, nil)
+  if result.evalBudget == nil:
+    # The VM interrupt flag is polled only on the budgeted-dispatch path, so
+    # an incremental REPL session must always carry a budget or its evals
+    # cannot be cancelled (§C7 liveness).
+    result.evalBudget = EvalBudget(remaining: high(int64))
 
 proc materializeCallerEvalParent(callerEnv: Value): Scope =
   ## Materialize a read-only overlay for one eval from the live borrowed view.
