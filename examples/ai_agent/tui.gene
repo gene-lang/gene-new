@@ -1370,19 +1370,15 @@
                         (terminal_pane_controlled? editor/terminal_pane)
                         (|| (== (editor_text (editor/values ~ Cell/get)) "")
                             (== (editor_text (editor/values ~ Cell/get)) "/")))
-                  (terminal_editor_return_direct! editor)
-                (elif (editor/overlay ~ Cell/get)
-                  (editor_dismiss_overlay! editor true))
-                (elif (confirmation_active ~ Cell/get)
-                  (then
+                  (then (terminal_editor_return_direct! editor))
+                  (elif (editor/overlay ~ Cell/get)
+                    (editor_dismiss_overlay! editor true))
+                  (elif (confirmation_active ~ Cell/get)
                     (submitted ~ Cell/set "n")
-                    (done ~ Cell/set true)))
-                (else
-                  (if (handle_surface_escape! editor)
-                    (then
-                      (editor_sync_focused_route! editor)
-                      true)
-                    (else false)))))
+                    (done ~ Cell/set true))
+                  (else
+                    (if_yes (handle_surface_escape! editor)
+                      (editor_sync_focused_route! editor)))))
               (when "backspace"
                 (var overlay (editor/overlay ~ Cell/get))
                 (if (&& overlay (== overlay/kind "reverse_search"))

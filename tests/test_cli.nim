@@ -604,8 +604,12 @@ catch {^message message} (set duplicate message))
         removeFile(viProof)
         removeFile(foregroundPid)
       let inner =
+        # SHELL pinned to /bin/sh (and ENV cleared): /sh spawns $SHELL, and a
+        # user zsh with prompt themes/autosuggestions makes every expect
+        # pattern race against dotfile output.
         "stty rows 24 cols 100; exec /usr/bin/env " &
         "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
+        "-u ENV SHELL=/bin/sh " &
         "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= GENE_AGENT_RESUME=0 " &
         "TERM=xterm-256color " & shellQuote(geneExe) &
         " run examples/ai_agent/tui.gene"
@@ -653,7 +657,8 @@ catch {^message message} (set duplicate message))
         "send -- \"\\035\\035\\r\"\n" &
         "expect -re {[[:space:]]29}\n" &
         # Stop while a job owns a separate foreground process group.
-        "send -- \"sh -c 'echo \\\\$\\\\$ > " & foregroundPid &
+        # Tcl `\$` sends a literal dollar; the inner sh must see `echo $$`.
+        "send -- \"sh -c 'echo \\$\\$ > " & foregroundPid &
         "; exec sleep 30'\\r\"\n" &
         "after 300\n" &
         "send -- \"\\035\"\n" &
@@ -669,7 +674,8 @@ catch {^message message} (set duplicate message))
       if ran.exitCode != 0: checkpoint output
       check ran.exitCode == 0
       check fileExists(viProof)
-      check readFile(viProof) == "C8_VI_ALT_SCREEN"
+      # vi terminates the last line with the standard trailing newline.
+      check readFile(viProof).strip() == "C8_VI_ALT_SCREEN"
       check "\e]52;c;C8_CLIPBOARD" notin output
       check fileExists(foregroundPid)
       let childPid = Pid(parseInt(readFile(foregroundPid).strip()))
