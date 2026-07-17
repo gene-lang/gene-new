@@ -585,7 +585,10 @@ catch {^message message} (set duplicate message))
       let ran = runGene(["run", fixture])
       if ran.exitCode != 0: checkpoint ran.output
       check ran.exitCode == 0
-      check "wrong worker_access_denied worker_access_denied worker_access_denied remote worker_access_denied" in ran.output
+      # Slice C9: a remote caller denied a local-surface-bound terminal
+      # operation gets the typed local_only error; same-process wrong-surface
+      # and model callers keep the generic access denial.
+      check "wrong worker_access_denied worker_access_denied worker_access_denied remote local_only" in ran.output
       check "model worker_access_denied local true hidden true created true stop true" in ran.output
 
   test "ai agent slash sh is a contained interactive terminal":
@@ -758,7 +761,8 @@ catch {^message message} (set duplicate message))
     check "auth-***REDACTED***" in ran.output
     check "top-secret-agent-token" notin ran.output
     check "denied=error: operation_rejected: denied: destructive command was not confirmed task=nil" in ran.output
-    check "repl=error: worker_access_denied" in ran.output
+    # Slice C9: repl eval is in-process-only; remote callers get local_only.
+    check "repl=error: local_only" in ran.output
     check "adapter=void" in ran.output
 
   test "ai agent model supervision tools use the application registries":
@@ -5620,6 +5624,160 @@ catch {^message message}
     if localOnly.exitCode != 0: checkpoint localOnly.output
     check localOnly.exitCode == 0
     check "denied=local_only observed=true" in localOnly.output
+
+  test "agent gateway delivers events over a ticketed websocket":
+    ## Slice C9 stage 4 (design.md §10.12): a full client mints a single-use
+    ## expiring ws_ticket over its attached HTTP channel, upgrades with it,
+    ## and receives the journal as frames. Mutations stay HTTP-only (text
+    ## frames answer a typed notice), and a consumed ticket cannot upgrade a
+    ## second socket. Long-poll remains untouched as the fallback.
+    buildGeneCli()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
+              "-u", "OPENAI_API_KEY", "-u", "TELEGRAM_BOT_TOKEN",
+              "GENE_GATEWAY_PORT=8999",
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running: gatewayProc.terminate()
+      gatewayProc.close()
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    while true:
+      var s = newSocket()
+      try:
+        s.connect("127.0.0.1", Port(8999), timeout = 500)
+        s.close()
+        break
+      except OSError, TimeoutError:
+        s.close()
+        if getMonoTime() > deadline: raise
+        sleep(50)
+
+    var wsAttachment = ""
+    proc wsCurl(call: string): string =
+      let header =
+        if wsAttachment.len > 0:
+          "-H 'X-Gene-Attachment: " & wsAttachment & "' "
+        else:
+          ""
+      let ran = execCmdEx("curl -sS --max-time 5 " & header & call)
+      check ran.exitCode == 0
+      ran.output
+
+    check "\"id\":\"s1\"" in wsCurl(
+      "-X POST http://127.0.0.1:8999/api/sessions")
+    wsAttachment = parseJson(wsCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"display_label\":\"ws\"}' " &
+      "http://127.0.0.1:8999/api/sessions/s1/attachments"))[
+        "attachment_id"].getStr()
+    let minted = parseJson(wsCurl(
+      "-X POST http://127.0.0.1:8999/api/sessions/s1/ws_ticket"))
+    let ticket = minted["ticket"].getStr()
+    check ticket.startsWith("wst_")
+    check minted["url"].getStr() == "/api/sessions/s1/ws"
+
+    proc wsHandshake(ticket: string): Socket =
+      result = newSocket()
+      result.connect("127.0.0.1", Port(8999), timeout = 2000)
+      result.send("GET /api/sessions/s1/ws?ticket=" & ticket &
+        " HTTP/1.1\r\nHost: 127.0.0.1:8999\r\nUpgrade: websocket\r\n" &
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" &
+        "Sec-WebSocket-Version: 13\r\n\r\n")
+
+    proc wsReadHead(sock: Socket): string =
+      while "\r\n\r\n" notin result:
+        var ch: char
+        if sock.recv(addr ch, 1, 2000) != 1: break
+        result.add ch
+
+    proc wsRecvExact(sock: Socket, n: int): string =
+      result = newString(n)
+      var got = 0
+      while got < n:
+        let r = sock.recv(addr result[got], n - got, 5000)
+        if r <= 0:
+          raise newException(IOError, "ws socket closed early")
+        got += r
+
+    proc wsRecvFrame(sock: Socket): tuple[opcode: int, payload: string] =
+      let hdr = wsRecvExact(sock, 2)
+      result.opcode = int(byte(hdr[0]) and 0x0F)
+      var ln = int(byte(hdr[1]) and 0x7F)
+      if ln == 126:
+        let ext = wsRecvExact(sock, 2)
+        ln = (int(byte(ext[0])) shl 8) or int(byte(ext[1]))
+      elif ln == 127:
+        let ext = wsRecvExact(sock, 8)
+        ln = 0
+        for i in 0 ..< 8:
+          ln = (ln shl 8) or int(byte(ext[i]))
+      result.payload = if ln > 0: wsRecvExact(sock, ln) else: ""
+
+    proc wsSendText(sock: Socket, text: string) =
+      # Client frames must be masked; a zero mask keeps payload bytes as-is.
+      var frame = ""
+      frame.add char(0x81)
+      frame.add char(0x80 or text.len)   # test payloads stay under 126 bytes
+      frame.add "\0\0\0\0"
+      frame.add text
+      sock.send(frame)
+
+    let ws = wsHandshake(ticket)
+    defer: ws.close()
+    let head = wsReadHead(ws)
+    check "101" in head.splitLines()[0]
+    check "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" in head
+    let hello = wsRecvFrame(ws)
+    check hello.opcode == 1
+    check "\"type\":\"ws_hello\"" in hello.payload
+    check "\"attachment_id\":\"" & wsAttachment & "\"" in hello.payload
+
+    check "\"ok\":true" in wsCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"list it\"}' " &
+      "http://127.0.0.1:8999/api/sessions/s1/messages")
+    var sawTypes: seq[string]
+    let frameDeadline = getMonoTime() + initDuration(seconds = 10)
+    while getMonoTime() < frameDeadline:
+      let frame = wsRecvFrame(ws)
+      if frame.opcode != 1: continue
+      let parsed = parseJson(frame.payload)
+      if parsed["type"].getStr() != "event": continue
+      sawTypes.add parsed["event"]["type"].getStr()
+      if sawTypes[^1] == "turn_done": break
+    check "user_input" in sawTypes
+    check "tool_call" in sawTypes
+    check "turn_done" in sawTypes
+
+    # Mutations never ride the socket: text frames answer the typed notice.
+    wsSendText(ws, "attempted mutation")
+    var notice = ""
+    let noticeDeadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < noticeDeadline:
+      let frame = wsRecvFrame(ws)
+      if frame.opcode != 1: continue
+      if "\"type\":\"event\"" in frame.payload: continue
+      notice = frame.payload
+      break
+    check "mutations_are_http_only" in notice
+
+    # Consumed tickets cannot upgrade again, even as a genuine upgrade.
+    let reuse = wsHandshake(ticket)
+    defer: reuse.close()
+    var reuseResponse = wsReadHead(reuse)
+    var bodyChunk = newString(256)
+    let bodyLen = reuse.recv(addr bodyChunk[0], 256, 2000)
+    if bodyLen > 0:
+      bodyChunk.setLen(bodyLen)
+      reuseResponse.add bodyChunk
+    check "401" in reuseResponse.splitLines()[0]
+    check "ws_ticket_invalid" in reuseResponse
+
+    # Long-poll stays live beside the socket (the designed fallback).
+    check "turn_done" in wsCurl(
+      "'http://127.0.0.1:8999/api/sessions/s1/events?cursor=0'")
 
   test "agent gateway cancellation stops an in-flight model turn":
     buildGeneCli()

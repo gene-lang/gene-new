@@ -1,7 +1,7 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, dynlib, json, locks, math, monotimes, net, os, osproc,
-            sets, strutils, tables, times, unicode]
+import std/[algorithm, base64, dynlib, json, locks, math, monotimes, net, os,
+            osproc, sets, strutils, tables, times, unicode]
 import ./[compiler, diagnostics, equality, gir, logging, printer, reader, types]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):

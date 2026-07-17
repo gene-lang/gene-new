@@ -8108,6 +8108,12 @@ proc registerStdlibNamespaces(root: Scope) =
   httpScope.define("not_found", newNativeCallFn("http/not_found",
                                                 biHttpNotFound,
                                                 acceptsNamed = false))
+  httpScope.define("ws_accept", newNativeCallFn("http/ws_accept",
+                                                biHttpWsAccept))
+  httpScope.define("ws_send", newNativeCallFn("http/ws_send", biHttpWsSend,
+                                              acceptsNamed = false))
+  httpScope.define("ws_close", newNativeCallFn("http/ws_close", biHttpWsClose,
+                                               acceptsNamed = false))
   httpScope.define("HttpError", root.vars["HttpError"])
   let httpClientScope = newScope(root)
   httpClientScope.define("Http", newCapability("Net/Http"))

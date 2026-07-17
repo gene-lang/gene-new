@@ -22,6 +22,11 @@ const httpDefaultMaxInFlight = 256
 const httpDefaultDrainTimeoutMs = 5_000
 const httpDefaultPoolWorkers = 4
 const httpDefaultPoolMailbox = 64
+const wsAcceptGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+const wsMaxClientFrameBytes = 1024 * 1024
+const wsOutboundQueueFrames = 256    # per-connection; ws_send drops oldest
+const wsPingIntervalMs = 30_000
+const wsPongGraceMs = 45_000
 
 let HttpRuntimeLogger = newRuntimeLogger("gene/http")
 
@@ -223,6 +228,12 @@ type
     inFlight: int
     bytesRead: int
     bytesWritten: int
+    # RFC 6455 delivery (slice C9). ws_send runs outside the serve closure,
+    # so open sockets and their bounded outbound frame queues live on the
+    # registered runtime; the loop drains the queues between event batches.
+    wsOpen: Table[int, bool]
+    wsOutbound: Table[int, seq[string]]
+    wsCloseRequested: Table[int, bool]
 
 var gHttpServerRegistry = initTable[int, HttpServerRuntime]()
 var gHttpServerNextId = 0
@@ -624,6 +635,24 @@ proc dispatchHttpHandler(handler, request: Value, scope: Scope): Value =
       return task
   newCompletedTask(applyCall(handler, [request], NamedArgs(), scope))
 
+proc dispatchWsHandler(handler: Value, args: openArray[Value],
+                       scope: Scope): Value =
+  ## dispatchHttpHandler generalized to the WebSocket callback arities
+  ## (on_open/on_close take the conn; on_message takes conn + text). The
+  ## returned task is deliberately never read — delivery callbacks are
+  ## fire-and-forget.
+  if handler.kind == vkFunction and handler.fnCode != nil and
+      handler.fnCode of FunctionProto:
+    let proto = FunctionProto(handler.fnCode)
+    if not proto.isGenerator:
+      let bound = bindCallScope(handler, proto, args, NamedArgs())
+      let task = newPendingTask()
+      enqueueRunnable(Fiber(chunk: proto.chunk, scope: bound.scope,
+                            recycleScope: proto.poolCallScope,
+                            task: task, actorOwner: NIL, started: false))
+      return task
+  newCompletedTask(applyCall(handler, args, NamedArgs(), scope))
+
 proc dispatchHttpToPool(pool: HttpActorPool, request: Value,
                         scope: Scope): tuple[task: Value, overloaded: bool] =
   ## Wrap the request in a RequestMsg with a native-created ReplyTo and
@@ -720,6 +749,7 @@ type
     hcpReading      # accumulating request bytes
     hcpDispatched   # handler task in flight; response not yet started
     hcpWriting      # flushing response bytes
+    hcpWebSocket    # upgraded; frames in both directions until close
 
   HttpConn = ref object
     sock: Socket
@@ -736,6 +766,229 @@ type
     reqMethod: string       # parsed request line, for logging ("" until
     reqPath: string         #   a request parses)
     reqHeaders: Value       # parsed headers map, for redacted logging
+    # WebSocket state (set when an accepted upgrade finishes flushing)
+    wsUpgrading: bool       # 101 handshake queued; enter WS mode after flush
+    wsValue: Value          # Gene-visible WsConn node
+    wsOnMessage: Value
+    wsOnClose: Value
+    wsOnOpen: Value
+    wsCloseAfterFlush: bool # close frame queued; drop the socket once sent
+    wsPingDeadline: MonoTime
+    wsAwaitingPong: bool
+    wsPongDeadline: MonoTime
+
+# --- RFC 6455 WebSocket support (slice C9) -----------------------------------
+#
+# Delivery-only by design: the gateway pushes events/presence over frames;
+# every mutation stays on the HTTP routes. A handler accepts an upgrade by
+# returning (ws_accept req ^on_open f ...); the serve loop performs the
+# handshake, keeps the socket, and drains per-connection bounded outbound
+# queues (ws_send drops oldest frames and reports the drop count so the
+# caller can surface a gap on that client's own stream only).
+
+proc wsSha1Digest(data: string): array[20, byte] =
+  ## Compact dependency-free SHA-1 for the handshake accept key only —
+  ## RFC 6455 mandates it; nothing else in Gene uses SHA-1.
+  var h: array[5, uint32] = [0x67452301'u32, 0xEFCDAB89'u32, 0x98BADCFE'u32,
+                             0x10325476'u32, 0xC3D2E1F0'u32]
+  var message = data
+  let bitLen = uint64(data.len) * 8
+  message.add char(0x80)
+  while message.len mod 64 != 56:
+    message.add char(0)
+  for shift in countdown(7, 0):
+    message.add char((bitLen shr (uint(shift) * 8)) and 0xFF)
+  template rotl(value: uint32, amount: int): uint32 =
+    (value shl amount) or (value shr (32 - amount))
+  var w: array[80, uint32]
+  var offset = 0
+  while offset < message.len:
+    for i in 0 ..< 16:
+      w[i] = (uint32(message[offset + i * 4].ord) shl 24) or
+             (uint32(message[offset + i * 4 + 1].ord) shl 16) or
+             (uint32(message[offset + i * 4 + 2].ord) shl 8) or
+             uint32(message[offset + i * 4 + 3].ord)
+    for i in 16 ..< 80:
+      w[i] = rotl(w[i - 3] xor w[i - 8] xor w[i - 14] xor w[i - 16], 1)
+    var a = h[0]
+    var b = h[1]
+    var c = h[2]
+    var d = h[3]
+    var e = h[4]
+    for i in 0 ..< 80:
+      let (f, k) =
+        if i < 20: ((b and c) or ((not b) and d), 0x5A827999'u32)
+        elif i < 40: (b xor c xor d, 0x6ED9EBA1'u32)
+        elif i < 60: ((b and c) or (b and d) or (c and d), 0x8F1BBCDC'u32)
+        else: (b xor c xor d, 0xCA62C1D6'u32)
+      let temp = rotl(a, 5) + f + e + k + w[i]
+      e = d
+      d = c
+      c = rotl(b, 30)
+      b = a
+      a = temp
+    h[0] += a
+    h[1] += b
+    h[2] += c
+    h[3] += d
+    h[4] += e
+    offset += 64
+  for i in 0 ..< 5:
+    result[i * 4] = byte((h[i] shr 24) and 0xFF)
+    result[i * 4 + 1] = byte((h[i] shr 16) and 0xFF)
+    result[i * 4 + 2] = byte((h[i] shr 8) and 0xFF)
+    result[i * 4 + 3] = byte(h[i] and 0xFF)
+
+proc wsAcceptKey(clientKey: string): string =
+  let digest = wsSha1Digest(clientKey & wsAcceptGuid)
+  var raw = newString(20)
+  for i in 0 ..< 20:
+    raw[i] = char(digest[i])
+  base64.encode(raw)
+
+proc wsEncodeFrame(opcode: byte, payload: string): string =
+  ## Server frames are unmasked (RFC 6455 §5.1).
+  result = newStringOfCap(payload.len + 10)
+  result.add char(0x80'u8 or opcode)
+  if payload.len < 126:
+    result.add char(payload.len)
+  elif payload.len < 65536:
+    result.add char(126)
+    result.add char((payload.len shr 8) and 0xFF)
+    result.add char(payload.len and 0xFF)
+  else:
+    result.add char(127)
+    for shift in countdown(7, 0):
+      result.add char((uint64(payload.len) shr (uint(shift) * 8)) and 0xFF)
+  result.add payload
+
+type WsFrameParse = object
+  needMore: bool
+  invalid: bool
+  opcode: byte
+  fin: bool
+  payload: string
+  consumed: int
+
+proc wsParseClientFrame(buf: string): WsFrameParse =
+  ## One client frame from the head of buf. Client frames must be masked.
+  if buf.len < 2:
+    result.needMore = true
+    return
+  let b0 = byte(buf[0])
+  let b1 = byte(buf[1])
+  result.fin = (b0 and 0x80) != 0
+  result.opcode = b0 and 0x0F
+  if (b1 and 0x80) == 0:
+    result.invalid = true
+    return
+  var payloadLen = int(b1 and 0x7F)
+  var headerLen = 2
+  if payloadLen == 126:
+    if buf.len < 4:
+      result.needMore = true
+      return
+    payloadLen = (int(byte(buf[2])) shl 8) or int(byte(buf[3]))
+    headerLen = 4
+  elif payloadLen == 127:
+    if buf.len < 10:
+      result.needMore = true
+      return
+    var wide: uint64 = 0
+    for i in 0 ..< 8:
+      wide = (wide shl 8) or uint64(byte(buf[2 + i]))
+    if wide > uint64(wsMaxClientFrameBytes):
+      result.invalid = true
+      return
+    payloadLen = int(wide)
+    headerLen = 10
+  if payloadLen > wsMaxClientFrameBytes:
+    result.invalid = true
+    return
+  let total = headerLen + 4 + payloadLen
+  if buf.len < total:
+    result.needMore = true
+    return
+  let maskStart = headerLen
+  result.payload = newString(payloadLen)
+  for i in 0 ..< payloadLen:
+    result.payload[i] = char(byte(buf[maskStart + 4 + i]) xor
+                             byte(buf[maskStart + (i mod 4)]))
+  result.consumed = total
+
+proc wsRuntimeForConnValue(connVal: Value): tuple[rt: HttpServerRuntime,
+                                                  fd: int] =
+  if connVal.kind != vkNode or not connVal.props.hasKey("server_id") or
+      not connVal.props.hasKey("fd"):
+    return (nil, -1)
+  let rt = gHttpServerRegistry.getOrDefault(
+    int(connVal.props["server_id"].intVal), nil)
+  (rt, int(connVal.props["fd"].intVal))
+
+proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (ws_accept req ^on_open f ^on_message g ^on_close h) — returned from a
+  ## handler to upgrade this request. Handlers are optional; delivery-only
+  ## endpoints pass just ^on_open.
+  requireOne("http/ws_accept", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let req = args[0]
+  if req.kind != vkNode or not req.props.hasKey("headers"):
+    raiseHttpError("ws_accept expects a request value", scope)
+  let headers = req.props["headers"]
+  if headers.kind != vkMap:
+    raiseHttpError("ws_accept expects a request value", scope)
+  let upgrade = headers.mapEntries.getOrDefault("upgrade", VOID)
+  if upgrade.kind != vkString or
+      upgrade.strVal.toLowerAscii() != "websocket":
+    raiseHttpError("ws_accept: request is not a websocket upgrade", scope)
+  let key = headers.mapEntries.getOrDefault("sec-websocket-key", VOID)
+  if key.kind != vkString or key.strVal.len == 0:
+    raiseHttpError("ws_accept: missing Sec-WebSocket-Key", scope)
+  var props = initPropTable()
+  props["ws_accept"] = newStr(wsAcceptKey(key.strVal))
+  if call != nil:
+    for name in call[].namedNames:
+      if name notin ["on_open", "on_message", "on_close"]:
+        raise newException(GeneError,
+          "ws_accept got unexpected named argument: " & name)
+    template named(name: string) =
+      block:
+        let index = nativeNamedIndex(call, name)
+        if index >= 0:
+          props[name] = call[].namedValues[index]
+    named("on_open")
+    named("on_message")
+    named("on_close")
+  newNode(newSym("WsUpgrade"), props = props)
+
+proc biHttpWsSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (ws_send conn text) -> Int: oldest frames dropped to fit the bounded
+  ## queue (0 = clean enqueue), or -1 when the connection is closed. The
+  ## caller owns gap semantics on its own stream.
+  if args.len != 2:
+    raise newException(GeneError, "ws_send expects (conn, text)")
+  requireStr("ws_send text", args[1])
+  let (rt, fd) = wsRuntimeForConnValue(args[0])
+  if rt == nil or not rt.wsOpen.getOrDefault(fd, false):
+    return newInt(-1)
+  var queue = rt.wsOutbound.getOrDefault(fd, @[])
+  queue.add wsEncodeFrame(0x1, args[1].strVal)
+  var dropped = 0
+  while queue.len > wsOutboundQueueFrames:
+    queue.delete(0)
+    inc dropped
+  rt.wsOutbound[fd] = queue
+  newInt(dropped)
+
+proc biHttpWsClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## (ws_close conn) — queue a close frame; the loop drops the socket after
+  ## flushing it.
+  requireOne("http/ws_close", args)
+  let (rt, fd) = wsRuntimeForConnValue(args[0])
+  if rt == nil or not rt.wsOpen.getOrDefault(fd, false):
+    return FALSE
+  rt.wsCloseRequested[fd] = true
+  TRUE
 
 proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (serve server handler) / (serve server ^handler h) /
@@ -896,6 +1149,17 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         discard
 
     proc closeConn(conn: HttpConn) =
+      if conn.phase == hcpWebSocket:
+        rt.wsOpen.del(conn.fd)
+        rt.wsOutbound.del(conn.fd)
+        rt.wsCloseRequested.del(conn.fd)
+        if conn.wsOnClose.kind != vkNil:
+          try:
+            discard dispatchWsHandler(conn.wsOnClose, [conn.wsValue], scope)
+          except GeneError as e:
+            HttpRuntimeLogger.emit(llError, "ws on_close error: " & e.msg)
+          except GenePanic as e:
+            HttpRuntimeLogger.emit(llError, "ws on_close panic: " & e.msg)
       unregisterConn(conn)
       conns.del(conn.fd)
       conn.sock.close()
@@ -906,6 +1170,39 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## request slot, matching the old per-connection `served` counting.
       inc served
       closeConn(conn)
+
+    proc wsEnterWebSocket(conn: HttpConn) =
+      ## The 101 handshake flushed; the socket becomes a frame stream.
+      inc served
+      conn.wsUpgrading = false
+      conn.phase = hcpWebSocket
+      conn.buf.setLen(0)
+      conn.writeBuf = ""
+      conn.writePos = 0
+      conn.wsPingDeadline = timerDeadline(wsPingIntervalMs)
+      conn.wsAwaitingPong = false
+      rt.wsOpen[conn.fd] = true
+      try:
+        selector.updateHandle(conn.fd, {Event.Read})
+      except CatchableError:
+        closeConn(conn)
+        return
+      if conn.wsOnOpen.kind != vkNil:
+        try:
+          discard dispatchWsHandler(conn.wsOnOpen, [conn.wsValue], scope)
+        except GeneError as e:
+          HttpRuntimeLogger.emit(llError, "ws on_open error: " & e.msg)
+        except GenePanic as e:
+          HttpRuntimeLogger.emit(llError, "ws on_open panic: " & e.msg)
+
+    proc completeWrite(conn: HttpConn) =
+      ## A fully flushed response either finishes the request or, for an
+      ## accepted upgrade, hands the socket to WebSocket mode. tryFlush also
+      ## reports true for dead sockets — those never enter WS mode.
+      if conn.wsUpgrading and conn.writePos >= conn.writeBuf.len:
+        wsEnterWebSocket(conn)
+      else:
+        finishServed(conn)
 
     proc logAccess(conn: HttpConn, status: int) =
       ## §17 access log: one AccessLog record per chosen response. Runs the
@@ -977,7 +1274,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       conn.phase = hcpWriting
       conn.task = NIL
       if tryFlush(conn):
-        finishServed(conn)
+        completeWrite(conn)
       else:
         try:
           selector.updateHandle(conn.fd, {Event.Write})
@@ -1130,6 +1427,117 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         conn.reqHeaders = reqProps["headers"]
         dispatchConn(conn, parsed.value)
 
+    proc wsFlushConn(conn: HttpConn) =
+      if tryFlush(conn):
+        if conn.writePos >= conn.writeBuf.len:
+          conn.writeBuf = ""
+          conn.writePos = 0
+          if conn.wsCloseAfterFlush:
+            closeConn(conn)
+            return
+          try:
+            selector.updateHandle(conn.fd, {Event.Read})
+          except CatchableError:
+            closeConn(conn)
+        else:
+          closeConn(conn)    # dead socket mid-frame
+      else:
+        try:
+          selector.updateHandle(conn.fd, {Event.Read, Event.Write})
+        except CatchableError:
+          closeConn(conn)
+
+    proc wsAppendFrame(conn: HttpConn, frame: string) =
+      # Compact flushed bytes before growing the buffer.
+      if conn.writePos > 0:
+        conn.writeBuf = conn.writeBuf[conn.writePos .. ^1]
+        conn.writePos = 0
+      conn.writeBuf.add frame
+
+    proc handleWsReadable(conn: HttpConn) =
+      var chunk = newString(httpReadChunkBytes)
+      while true:
+        let n = recv(SocketHandle(conn.fd), addr chunk[0],
+                     httpReadChunkBytes.cint, 0)
+        if n > 0:
+          let start = conn.buf.len
+          conn.buf.setLen(start + n)
+          copyMem(addr conn.buf[start], addr chunk[0], n)
+          rt.bytesRead += n
+          if n < httpReadChunkBytes:
+            break
+        elif n == 0:
+          closeConn(conn)
+          return
+        elif errno == EAGAIN or errno == EWOULDBLOCK:
+          break
+        elif errno == EINTR:
+          continue
+        else:
+          closeConn(conn)
+          return
+      while true:
+        let frame = wsParseClientFrame(conn.buf)
+        if frame.needMore:
+          break
+        if frame.invalid or not frame.fin:
+          closeConn(conn)    # no fragmentation support; protocol error
+          return
+        conn.buf = conn.buf[frame.consumed .. ^1]
+        case frame.opcode
+        of 0x1:
+          # Delivery-only surface: inbound text reaches the optional
+          # on_message callback; mutations stay on the HTTP routes.
+          if conn.wsOnMessage.kind != vkNil:
+            try:
+              discard dispatchWsHandler(conn.wsOnMessage,
+                                        [conn.wsValue,
+                                         newStr(frame.payload)], scope)
+            except GeneError as e:
+              HttpRuntimeLogger.emit(llError, "ws on_message error: " & e.msg)
+            except GenePanic as e:
+              HttpRuntimeLogger.emit(llError, "ws on_message panic: " & e.msg)
+        of 0x8:
+          if not conn.wsCloseAfterFlush:
+            wsAppendFrame(conn, wsEncodeFrame(0x8, frame.payload))
+            conn.wsCloseAfterFlush = true
+          wsFlushConn(conn)
+          return
+        of 0x9:
+          wsAppendFrame(conn, wsEncodeFrame(0xA, frame.payload))
+        of 0xA:
+          conn.wsAwaitingPong = false
+        else:
+          closeConn(conn)
+          return
+      if conn.writeBuf.len > conn.writePos:
+        wsFlushConn(conn)
+
+    proc drainWsOutbound() =
+      ## Move frames queued by ws_send (and requested closes) onto their
+      ## connections and flush.
+      if rt.wsOutbound.len == 0 and rt.wsCloseRequested.len == 0:
+        return
+      var pending: seq[HttpConn]
+      for conn in conns.values:
+        if conn.phase == hcpWebSocket:
+          pending.add conn
+      for conn in pending:
+        if conn.fd notin conns:
+          continue
+        var queued = rt.wsOutbound.getOrDefault(conn.fd, @[])
+        if queued.len > 0:
+          rt.wsOutbound.del(conn.fd)
+          for frame in queued:
+            wsAppendFrame(conn, frame)
+        if rt.wsCloseRequested.getOrDefault(conn.fd, false) and
+            not conn.wsCloseAfterFlush:
+          rt.wsCloseRequested.del(conn.fd)
+          wsAppendFrame(conn, wsEncodeFrame(0x8, ""))
+          conn.wsCloseAfterFlush = true
+        if conn.writeBuf.len > conn.writePos:
+          wsFlushConn(conn)
+
     proc acceptClients() =
       while true:
         var client: Socket
@@ -1185,6 +1593,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         of hcpDispatched:
           if conn.hasTaskDeadline: clampTo(conn.taskDeadline)
         of hcpWriting: discard
+        of hcpWebSocket:
+          clampTo(conn.wsPingDeadline)
+          if conn.wsAwaitingPong: clampTo(conn.wsPongDeadline)
       timeout
 
     proc pumpScheduler() =
@@ -1200,11 +1611,31 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         discard schedulerRunOne()
         dec budget
 
+    proc wsBeginUpgrade(conn: HttpConn, marker: Value) =
+      ## A handler returned (ws_accept req ...): write the 101 handshake;
+      ## completeWrite hands the flushed socket to WebSocket mode.
+      inc rt.completedRequests
+      logAccess(conn, 101)
+      conn.wsUpgrading = true
+      conn.wsOnOpen = marker.props.getOrDefault("on_open", NIL)
+      conn.wsOnMessage = marker.props.getOrDefault("on_message", NIL)
+      conn.wsOnClose = marker.props.getOrDefault("on_close", NIL)
+      var props = initPropTable()
+      props["server_id"] = newInt(rt.id)
+      props["fd"] = newInt(conn.fd)
+      conn.wsValue = newNode(newSym("WsConn"), props = props)
+      startWrite(conn,
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" &
+        "Connection: Upgrade\r\nSec-WebSocket-Accept: " &
+        marker.props["ws_accept"].strVal & "\r\n\r\n")
+
     proc harvest() =
       ## Settle finished handler tasks into responses; time out overdue ones.
       let now = getMonoTime()
       var settled: seq[HttpConn]
       var expiredReads: seq[HttpConn]
+      var wsPing: seq[HttpConn]
+      var wsDead: seq[HttpConn]
       for conn in conns.values:
         case conn.phase
         of hcpDispatched:
@@ -1217,18 +1648,38 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             expiredReads.add conn
         of hcpWriting:
           discard
+        of hcpWebSocket:
+          if conn.wsAwaitingPong and now > conn.wsPongDeadline:
+            wsDead.add conn
+          elif now > conn.wsPingDeadline:
+            wsPing.add conn
       for conn in settled:
         dec rt.inFlight
         if conn.task.kind == vkTask and conn.task.taskDone:
-          let response = httpTaskResponsePayload(conn)
-          logAccess(conn, response.status)
-          startWrite(conn, response.payload)
+          let task = conn.task
+          if not (task.taskHasPanic or task.taskCancelled or
+                  task.taskHasError) and
+              task.taskResult.kind == vkNode and
+              task.taskResult.props.hasKey("ws_accept"):
+            wsBeginUpgrade(conn, task.taskResult)
+          else:
+            let response = httpTaskResponsePayload(conn)
+            logAccess(conn, response.status)
+            startWrite(conn, response.payload)
         else:
           # Orphan the still-running task; its fiber settles into a task no
           # one reads. The client gets a definitive timeout answer.
           respondCounted(conn, 504, "Gateway Timeout")
       for conn in expiredReads:
         respondCounted(conn, 408, "Request Timeout")
+      for conn in wsDead:
+        closeConn(conn)
+      for conn in wsPing:
+        wsAppendFrame(conn, wsEncodeFrame(0x9, ""))
+        conn.wsPingDeadline = timerDeadline(wsPingIntervalMs)
+        conn.wsAwaitingPong = true
+        conn.wsPongDeadline = timerDeadline(wsPongGraceMs)
+        wsFlushConn(conn)
 
     proc beginDrain() =
       ## Graceful stop: close the listener, drop connections that have not
@@ -1244,7 +1695,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       rt.listening = false
       var idle: seq[HttpConn]
       for conn in conns.values:
-        if conn.phase == hcpReading:
+        # WebSocket streams never block a drain: delivery has no response to
+        # finish, so drop them with the idle readers.
+        if conn.phase in [hcpReading, hcpWebSocket]:
           idle.add conn
       for conn in idle:
         closeConn(conn)
@@ -1275,10 +1728,16 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             of hcpWriting:
               if Event.Write in ev.events:
                 if tryFlush(conn):
-                  finishServed(conn)
+                  completeWrite(conn)
+            of hcpWebSocket:
+              if Event.Write in ev.events:
+                wsFlushConn(conn)
+              if Event.Read in ev.events and conn.fd in conns:
+                handleWsReadable(conn)
             of hcpDispatched:
               discard    # not watching; response path re-arms the fd
           pumpScheduler()
+          drainWsOutbound()
           harvest()
     finally:
       var leftover: seq[HttpConn]

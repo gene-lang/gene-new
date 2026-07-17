@@ -24,10 +24,11 @@
 (import os [get_env exec_async monotonic_ms Env Exec])
 (import crypto [random_hex secure_equal?])
 (import json [parse stringify JsonError])
-(import str [split trim join starts_with? contains? byte_size])
+(import str [split trim join starts_with? contains? byte_size lower])
 (import std/stream [to_stream filter each into])
 (import std/parse [parse_int])
-(import net/http [Server serve listen stop Response])
+(import net/http [Server serve listen stop Response
+                  ws_accept ws_send ws_close])
 (import net/http_client [Http request HttpClientError])
 
 (var gw_host (get_env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
@@ -133,6 +134,11 @@
 # the gateway no longer has a second agent/task model.
 (fn make_session [id, on_event, saved, existing_app]
   (var shared (!= existing_app nil))
+  # RFC 6455 delivery (slice C9 stage 4): full clients may hold one or more
+  # sockets per session. Standalone sessions fan out at append_event; the
+  # combined program's shared session journals through the CLI's global log,
+  # where those clients keep the long-poll path (the designed fallback).
+  (var ws_clients (cell []))
   (var events
     (if shared agent_api/agent_events
       (cell (if (== saved nil) [] saved/events))))
@@ -189,12 +195,54 @@
     (if (current_principal ~ Cell/get)
       (props ~ Map/put! "principal" (current_principal ~ Cell/get)))
     props)
+  # WebSocket delivery never runs on the turn fiber (same rationale as the
+  # Telegram outbox): append_event does a non-blocking try_send of the
+  # JSON-encoded frame — even one extra call on the turn fiber measurably
+  # perturbs cancellation observation — and a dedicated sender fiber drains
+  # the queue toward the sockets. The native per-connection queue is bounded
+  # drop-oldest; a positive drop count means that client's own stream
+  # gapped, so it (alone) gets a cursor_gap notice. Dead sockets (-1) fall
+  # out of the registry. An overflowing handoff queue gaps every client.
+  (var ws_outbox (channel ^capacity 1024))
+  (var ws_outbox_overflow (cell false))
+  (var ws_sender_started (cell false))
+  (fn ws_deliver! [payload : Str]
+    (var kept [])
+    (for client in (ws_clients ~ Cell/get)
+      (var dropped (ws_send client/conn payload))
+      (if_yes (>= dropped 0)
+        (if (> dropped 0)
+          (ws_send client/conn
+            (stringify
+              {^type "cursor_gap"
+               ^snapshot_url $"/api/sessions/${id}/snapshot"})))
+        (kept ~ List/push! client)))
+    (ws_clients ~ Cell/set kept))
+  (fn ws_start_sender! []
+    (if_not (ws_sender_started ~ Cell/get)
+      (ws_sender_started ~ Cell/set true)
+      (spawn
+        (do
+          (var raw nil)
+          (loop
+            (set raw (ws_outbox ~ Channel/recv))
+            (if_yes (ws_outbox_overflow ~ Cell/get)
+              (ws_outbox_overflow ~ Cell/set false)
+              (ws_deliver!
+                (stringify
+                  {^type "cursor_gap"
+                   ^snapshot_url $"/api/sessions/${id}/snapshot"})))
+            (ws_deliver! raw))))))
   (fn append_event [event]
     (var stored (agent_api/bounded_event_record event gw_event_max_bytes))
     ((events ~ Cell/get) ~ List/push! stored)
     (event_bytes ~ Cell/set
       (+ (event_bytes ~ Cell/get) (byte_size (stringify stored))))
     (trim_events!)
+    (if_yes (! (empty? (ws_clients ~ Cell/get)))
+      (if_not (ws_outbox ~ Channel/try_send
+                (stringify {^type "event" ^event stored}))
+        (ws_outbox_overflow ~ Cell/set true)))
     (if on_event
       (try (on_event stored) catch _ nil))
     stored)
@@ -319,9 +367,21 @@
               (push_structured "error" {^kind "failed" ^text "turn failed"})
               (push_structured "turn_done" {^failed true}))))
         (elif (== (outcome ~ Cell/get) "failed")
+          # A requested cancel may surface as an ordinary failure when the
+          # cancelled tool unwinds before task cancellation reaches the
+          # awaiting monitor — which of the two lands first is a scheduler
+          # race. The cancel request is the authoritative classification
+          # (matching worker_outcome below), never the race winner.
           (if_not (current_terminal_emitted ~ Cell/get)
-            (push_structured "error" {^kind "failed" ^text "turn failed"})
-            (push_structured "turn_done" {^failed true}))))
+            (if (cancel_requested ~ Cell/get)
+              (then
+                (push_structured "error"
+                  {^kind "cancelled" ^text "turn cancelled"})
+                (push_structured "turn_done" {^cancelled true}))
+              (else
+                (push_structured "error"
+                  {^kind "failed" ^text "turn failed"})
+                (push_structured "turn_done" {^failed true}))))))
       (var worker_outcome
         (if (== (outcome ~ Cell/get) "done") "completed"
           (if (cancel_requested ~ Cell/get) "cancelled" "failed")))
@@ -426,6 +486,7 @@
    ^current_task current_task ^input_pending input_pending
    ^pending_confirmation pending_confirmation
    ^submit_input submit_input ^cancel_requested cancel_requested
+   ^ws_clients ws_clients ^ws_start_sender ws_start_sender!
    ^application app ^shared shared})
 
 (fn events_after [s, cursor : Int]
@@ -1364,19 +1425,34 @@
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (return (json_response 404 {^error "no such session"})))
+  # The cancel flag must be visible BEFORE the operation dispatches: the
+  # cancelled turn can unwind and reach the monitor's classification while
+  # this fiber is still inside application_call_worker, and a cancel that
+  # reads as an ordinary failure would journal "turn failed". Roll the flag
+  # back if the operation is rejected.
+  (var main_worker
+    (agent_api/application_find_worker s/application worker_id))
+  (var main_target
+    (&& (!= main_worker nil)
+        (== main_worker/id s/application/main_agent/id)))
+  (var previous_cancel (s/cancel_requested ~ Cell/get))
+  (if main_target
+    (s/cancel_requested ~ Cell/set true))
   (var response
     (agent_api/application_call_worker s/application worker_id "cancel" {}
       (attachment_invocation attachment)))
   (if_not response/ok
+    (if main_target
+      (s/cancel_requested ~ Cell/set previous_cancel))
     (return (worker_operation_failure_response response)))
   (var result (props response/result))
   (if_not result/accepted
+    (if main_target
+      (s/cancel_requested ~ Cell/set previous_cancel))
     (return
       (json_response 409
         {^error "worker_idle" ^message result/text
          ^worker_id response/worker_id})))
-  (if (== response/worker_id s/application/main_agent/id)
-    (s/cancel_requested ~ Cell/set true))
   (worker_operation_success_response s response "cancel" 202))
 
 (fn stop_worker [id : Str, worker_id : Str, attachment]
@@ -1603,6 +1679,10 @@ document.getElementById('f').addEventListener('submit', function (e) {
             (pin_artifact parts/3 req attachment)
             (json_response 405 {^error "method_not_allowed"})))
         (json_response 404 {^error "not_found"})))
+    (when "ws_ticket"
+      (if (&& (== parts/~size 5) (== req/method "POST"))
+        (mint_ws_ticket parts/3 attachment)
+        (json_response 405 {^error "method_not_allowed"})))
     (when "workers"
       (if (== parts/~size 5)
         (if (== req/method "GET")
@@ -1642,6 +1722,91 @@ document.getElementById('f').addEventListener('submit', function (e) {
                 (json_response 405 {^error "method_not_allowed"}))
               (json_response 404 {^error "not_found"}))))))
     (else (json_response 404 {^error "not_found"}))))
+
+# -----------------------------------------------------------------------------
+# WebSocket delivery (slice C9 stage 4). A full client mints a single-use,
+# expiring ws_ticket over its authorized attached channel, then presents it
+# on the upgrade URL — browsers cannot set headers on a WebSocket, and the
+# bearer token itself never rides a query string. Frames deliver journal
+# events only; every mutation (including acks) stays on the HTTP routes.
+# -----------------------------------------------------------------------------
+(var ws_tickets (cell []))
+(var ws_ticket_ttl_ms 30000)
+
+(fn prune_ws_tickets! []
+  (var now (monotonic_ms))
+  (var kept [])
+  (for record in (ws_tickets ~ Cell/get)
+    (if (< now record/expires_ms)
+      (kept ~ List/push! record)))
+  (ws_tickets ~ Cell/set kept))
+
+(fn mint_ws_ticket [id : Str, attachment]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (then (json_response 404 {^error "no such session"}))
+    (else
+      (prune_ws_tickets!)
+      (var ticket $"wst_${(random_hex 24)}")
+      ((ws_tickets ~ Cell/get) ~ List/push!
+        {^ticket ticket ^session_id id ^attachment_id attachment/id
+         ^expires_ms (+ (monotonic_ms) ws_ticket_ttl_ms)})
+      (json_response 200
+        {^ticket ticket ^expires_in_ms ws_ticket_ttl_ms
+         ^url $"/api/sessions/${id}/ws"}))))
+
+(fn consume_ws_ticket [id : Str, presented]
+  (if (== presented void) (return nil))
+  # Single use: the ticket leaves the table on first presentation, valid or
+  # expired. secure_equal? keeps the comparison timing-independent.
+  (var found (cell nil))
+  (var kept [])
+  (for record in (ws_tickets ~ Cell/get)
+    (if (secure_equal? record/ticket $"${presented}")
+      (found ~ Cell/set record)
+      (kept ~ List/push! record)))
+  (ws_tickets ~ Cell/set kept)
+  (var record (found ~ Cell/get))
+  (if (&& (!= record nil)
+          (== record/session_id id)
+          (< (monotonic_ms) record/expires_ms))
+    record))
+
+(fn ws_route [req, parts]
+  (var session_id parts/3)
+  (var s (sessions ~ Map/get session_id))
+  (if (== s void)
+    (return (json_response 404 {^error "no such session"})))
+  # Reject non-upgrade probes before consuming: a stray GET must not burn a
+  # ticket the real client is about to present.
+  (var upgrade_header (req/headers ~ Map/get "upgrade"))
+  (if_not (&& (!= upgrade_header void)
+              (== (lower $"${upgrade_header}") "websocket"))
+    (return (json_response 400 {^error "websocket_upgrade_required"})))
+  (var ticket (consume_ws_ticket session_id req/params/ticket))
+  (if (== ticket nil)
+    (return (json_response 401 {^error "ws_ticket_invalid"})))
+  (var attachment_id ticket/attachment_id)
+  (ws_accept req
+    ^on_open (fn [conn]
+      (s/ws_start_sender)
+      ((s/ws_clients ~ Cell/get) ~ List/push!
+        {^conn conn ^attachment_id attachment_id})
+      (ws_send conn
+        (stringify
+          {^type "ws_hello" ^session_id session_id
+           ^attachment_id attachment_id
+           ^cursor (session_event_cursor s)})))
+    ^on_message (fn [conn, _text]
+      # Delivery-only: mutations (including acks) stay on HTTP.
+      (ws_send conn
+        (stringify {^type "ws_error" ^error "mutations_are_http_only"})))
+    ^on_close (fn [conn]
+      (var kept [])
+      (for client in (s/ws_clients ~ Cell/get)
+        (if (!= client/conn conn)
+          (kept ~ List/push! client)))
+      (s/ws_clients ~ Cell/set kept))))
 
 (fn attached_session_route [req, parts]
   (var authorization (require_attachment parts/3 req))
@@ -1706,9 +1871,16 @@ document.getElementById('f').addEventListener('submit', function (e) {
         (json_response 404 {^error "not_found"}))))))
 
 (fn handle [req]
-  (if (authorized? req)
-    (route req)
-    (json_response 401 {^error "unauthorized"})))
+  (var parts (split req/path "/"))
+  (if (&& (== req/method "GET") (== parts/~size 5)
+          (== parts/1 "api") (== parts/2 "sessions") (== parts/4 "ws"))
+    # The single-use ws_ticket IS the authorization for an upgrade — it was
+    # minted over an authorized attached channel, and a browser WebSocket
+    # cannot present the bearer header.
+    (then (ws_route req parts))
+    (elif (authorized? req)
+      (route req))
+    (else (json_response 401 {^error "unauthorized"}))))
 
 # -----------------------------------------------------------------------------
 # Persistence bootstrap (§12 milestone 11). Sessions restore with their event
