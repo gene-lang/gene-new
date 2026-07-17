@@ -42,7 +42,10 @@ target: a local-only interactive terminal worker backed by a PTY and a real
 VT/xterm state machine, rendered as cells by the existing curses UI thread,
 while structured shell workers remain the agent/remote command surface
 (§7.4, §10.11). Slice D remains an optional menu driven by measured dogfood
-leverage, not a required next milestone.**
+leverage, not a required next milestone. Slice C9 then splits the code into
+core/surface/gateway/client-transport, runs the gateway as a service with the
+TUI (and later HTML+JS) as parallel remote clients over HTTP+WebSocket, and
+adds the channel-client tier for Telegram/Slack (§12, §10.12).**
 Date: 2026-07-16.
 
 Implemented (see `examples/ai_agent/tui.gene` and `src/gene/stdlib.nim`): the `os`
@@ -207,15 +210,20 @@ the invariant wins and the text is stale:
    result, including failure and cancellation. Availability (`idle`/`busy`),
    lifecycle (`running`/`stopped`), last outcome, and unread result state are
    separate facts on every surface.
-13. Restore validates records independently. One malformed or obsolete pane,
-   worker, or surface record is quarantined with an attributable event and can
+13. Restore validates records independently. One malformed or obsolete
+   worker or session record is quarantined with an attributable event and can
    never prevent the main session from loading, and never causes a host
-   operation to be retried.
+   operation to be retried. Pane/layout records are client-owned (C9): each
+   client validates and quarantines its own, and session checkpoints never
+   contain remote layout records.
 14. A worker's functionality is exposed only as typed, declared operations
    (§7.2). User command, model tool, peer agent/worker, REPL script, and
    remote adapter all invoke the same operation under the same declared
    effects, audience, admission, and audit policies — no caller class has a
-   private path, and no operation bypasses provenance. A worker id is an
+   private path, and no operation bypasses provenance. Authorization is the
+   intersection of the operation's declared audience and the caller's
+   server-assigned principal capability set (client tier, §12) — never an
+   adapter-side filter. A worker id is an
    address, not a capability: a sub-agent reaches another worker only through
    an explicitly delegated handle, and read-only does not mean public.
 15. Persisted state never claims a live closure is durable. Dynamically
@@ -257,6 +265,12 @@ gene run examples/ai_agent/tui.gene -- --gateway=8787
 
 # Gateway and configured remote channels without curses
 gene run examples/ai_agent/tui.gene -- --gateway --headless
+
+# Shape B service (C9): headless core + gateway, no curses
+gene run examples/ai_agent/gateway.gene
+
+# Shape B TUI client (C9): attach to a running service
+gene run examples/ai_agent/tui.gene -- --connect https://host:port
 ```
 
 `--gateway` uses `GENE_GATEWAY_PORT` when set and otherwise port 8090;
@@ -264,9 +278,10 @@ gene run examples/ai_agent/tui.gene -- --gateway --headless
 `--headless` requires `--gateway`, so an accidental invocation cannot start an
 invisible application with no control surface. The existing
 `GENE_GATEWAY_HOST`, `GENE_GATEWAY_TOKEN`, database, and channel settings keep
-their meaning. The listener binds to `127.0.0.1` by default; a non-loopback
-host must be explicit and requires authentication rather than merely printing
-a warning.
+their meaning. The native listener binds loopback only (C9,
+§12.2): external access goes through an authenticated TLS proxy or tunnel to
+that loopback listener; direct non-loopback binding stays disabled until
+native TLS or an explicit trusted-proxy configuration exists.
 
 Behavior:
 
@@ -308,7 +323,8 @@ Behavior:
   declaration, and `/trace` queries the same versioned events used by the CLI,
   gateway, persistence, and tests.
 
-The single main program always constructs the same application core. Within
+In Shape A one main program constructs the application core; in Shapes B/C
+the service process constructs it and clients attach remotely (§12). Within
 one application session, a worker registry owns the main agent, its supervised
 children, and the interactive process/projection workers (§7.1); each attached
 surface owns its own panes and layout over those shared workers. The default
@@ -401,9 +417,11 @@ auth tokens and other secrets.
 
 Persistence is checkpoint-driven, not limited to graceful shutdown. Each
 submitted input and each semantic application transition (tool call/result,
-worker or agent lifecycle, pane lifecycle, file change, check result, memory
+worker or agent lifecycle, file change, check result, memory
 change, compaction, and completed turn) saves the bounded application/session
-snapshot synchronously. Streaming `worker_output` is the only high-volume
+snapshot synchronously. Pane/layout changes checkpoint the owning client's
+own store only (C9, invariant §0.13) — Shape A is one core session store
+plus a separate TUI surface store. Streaming `worker_output` is the only high-volume
 checkpoint source and is rate-limited to once per
 `GENE_AGENT_CHECKPOINT_INTERVAL_MS` (1000 ms by default). A small checkpoint
 record is written after the snapshot records as a boundary marker containing
@@ -414,8 +432,9 @@ explicitly retry it. Gateway applications use their own persistence path and
 do not overwrite the local CLI application's store.
 
 Restore is record-isolated. The session core (main agent, bounded transcript,
-memory, and event cursor) loads first; workers and each surface/pane descriptor
-are validated and installed independently afterward. Invalid kind, type, path,
+memory, and event cursor) loads first; workers are validated and installed
+independently afterward. Each client restores its own surface/pane
+descriptors from its own store under the same isolation rule. Invalid kind, type, path,
 limit, or stale schema data produces a bounded `restore_record_rejected` event
 with record kind/id and redacted error, then that record is skipped. A rejected
 file view, projection, or layout can reduce the restored UI but cannot abort the
@@ -432,7 +451,8 @@ manifest, atomically renames a `CURRENT` pointer, then fsyncs its parent
 directory. Restore selects the
 highest complete generation whose hashes validate and never combines the
 session core of one generation with workers of another. Every persisted record
-kind — checkpoint, session core, worker, surface, tool/operation declaration —
+kind — checkpoint, session core, worker, tool/operation declaration in the
+session store; surface/pane records in each client store —
 carries its schema version from its first release; pure migration functions
 upgrade old records before validation, and record quarantine remains the
 fallback when no migration applies. (The §9.2 rule that the *journal*
@@ -1141,7 +1161,9 @@ surface attachments, and correlation ids are expert surfaces that appear when
 asked for, never prerequisites for ordinary use.
 
 The help system scales along four axes as the system grows, all derived from
-the one registry so none can drift or go stale:
+one **merged client command view** — the core OperationRegistry (served as
+gateway metadata) merged with the client's own SurfaceCommandRegistry (§12)
+— so none can drift or go stale:
 
 - **layered** — bare `/help` (small model) → `/help <topic>` → `/help all`
   → `/help <command>`: one page per command generated from its declaration —
@@ -1160,7 +1182,8 @@ the one registry so none can drift or go stale:
   chosen, `Tab` to accept. The palette, `/help search`, and Tab completion
   are one mechanism with three entry points.
 
-Because help, parsing, completion, and the palette share one registry, a
+Because help, parsing, completion, and the palette share the same merged
+two-source view, a
 command that exists is discoverable in all four ways the moment it is
 declared — including operations added at runtime (§9.1) — and acceptance
 tests reject undocumented or stale entries (shipped, C3).
@@ -1348,9 +1371,12 @@ panes are surface state, model/session operations never open panes directly
 
 Each surface independently decides how to honor a hint — the local TUI
 auto-accepts hints as product policy, a browser may show a notification, and
-headless mode records only the worker and the hint. `pane_opened` is emitted
-only after a real surface creates a pane, and pane events always carry a
-stable `^surface_id`: because pane ids are surface-scoped, correlation is the
+headless mode records only the worker and the hint. `pane_opened` is a
+**client-local presentation event** (C9): it is recorded by the client that
+opened the pane, never broadcast to other clients, and excluded from the
+authoritative session journal and from session checkpoints — a browser
+cannot and need not report its layout to the service. Where pane events
+appear locally they carry a stable `^surface_id`: because pane ids are surface-scoped, correlation is the
 pair `(surface_id, pane_id)`, never `pane_id` alone. The model-facing
 `open_pane` tool is retained as a compatibility name for "create/identify the
 worker, then hint"; for `^kind "output"` it creates the output worker as a
@@ -1478,7 +1504,10 @@ values, not a parallel string vocabulary:
   `session_write`. Reading a workspace file is host authority even though it
   mutates nothing — the capability model already says so.
 - **audience** — who may call. `local_user` is the person at the attached TTY;
-  `remote_user` is an authenticated gateway/channel principal; `supervisor`
+  `remote_user` is an authenticated remote principal carrying its
+  server-assigned capability set — a full client's and a channel client's
+  `remote_user` differ by capabilities, and authorization is audience ∩
+  capabilities (§12); `supervisor`
   is the main agent; `delegated` is a sub-agent that received this worker as
   an explicit handle in its §9.3 context attachment. `self` is available for
   a future worker-internal operation but is never implicit: it must appear in
@@ -2220,6 +2249,10 @@ memory, errors, and compaction. Slice C adds the agent/pane lifecycle group:
  ^parent_agent_id "main" ...}
 {^v 17 ^type "agent_status" ^agent_id "a2" ^status "working" ...}
 {^v 18 ^type "agent_completed" ^agent_id "a2" ^task_id "t7" ...}
+# C9: pane_opened/pane_closed move to each client's local presentation
+# stream — recorded by the owning client, never broadcast, excluded from the
+# session journal and checkpoints. pane_output stays a session compatibility
+# event because it carries worker output, keyed by worker id.
 {^v 19 ^type "pane_opened" ^surface_id "local_tui:1" ^pane_id 2
  ^worker_id "w2" ^kind "output" ...}
 {^v 20 ^type "pane_output" ^surface_id "local_tui:1" ^pane_id 2
@@ -2284,7 +2317,10 @@ operations only and points to `agent_finished` through `^source_v`. Thus all
 deduplication is structural rather than based on task text or timing. Failure
 and cancellation are never represented as a return to plain `idle`. The
 shipped agent text/delta and `pane_output` types
-remain additive compatibility events. During this compatibility window each
+remain additive compatibility events **in Shape A's local stream only**; C9
+makes generic `worker_output` the canonical session record and moves every
+`pane_*` event to the owning client's local presentation stream, so headless,
+remote, and combined shapes emit one session vocabulary. During this compatibility window each
 streamed delta emits its legacy event plus a generic `worker_output`; a
 non-streamed final `agent_text` does the same. The generic record carries
 `^source_v` pointing at its source. After deltas, the complete `agent_text` is
@@ -2490,10 +2526,11 @@ main agent receives the supervision tools; every C2 `parent_agent_id` is
 `main`. The field remains general so a later recursive design can evolve
 additively, but recursion is not part of this contract.
 
-Persistence splits along the session/surface boundary: the session records
+Persistence splits along the session/client boundary: the session records
 the worker/agent graph, durable item histories, statuses, assignments, and
-event correlations; each surface persists its own pane descriptors and layout
-under a surface key (the TUI's local layout snapshot). Output workers may
+event correlations; each client persists its own pane descriptors and layout
+in its **own client store** (the TUI's local layout snapshot, the browser's
+storage) — never inside session checkpoints (C9, invariant §0.13). Output workers may
 restore their buffered projection. Shell, terminal, and REPL processes are not
 pretended to survive a crash: restoration shows their bounded captured history
 on a stopped worker and requires an explicit reopen. Terminal records contain
@@ -3025,7 +3062,47 @@ bytes never enter the event/model/remote surfaces, a hostile escape-sequence
 fixture cannot escape its pane, and restart shows a stopped bounded snapshot
 rather than a fake live session.
 
-### 10.12 Slice D — expand only where leverage is proven
+### 10.12 Slice C9 — gateway/client split and multi-client parity
+
+Implements the §12 deployment shapes with the reviewed contracts
+(client-local layout, opaque attachment ids, HTTP-only mutations with
+idempotency keys, WS ticket auth, initiator-bound confirmations,
+remote-terminal exclusion):
+
+1. **Extract without behavior change**: split `core.gene`, `surface.gene`,
+   `gateway.gene`, `client_transport.gene`; Shape A passes the existing
+   CLI/PTY suite unchanged; `gateway.gene` runs the core headless. As part
+   of the extraction, pane lifecycle records move out of the session journal
+   and checkpoints into the TUI's client store (invariant §0.13).
+2. **Protocol foundation**: attachment lifecycle (attach/resume/detach with
+   server-derived principal/tier), the attachment header on every
+   mutation/event request, (session, attachment, key) idempotency, explicit
+   acks in server-side attachment state, operation-metadata discovery, and
+   confirmation provenance — loopback-tested before any remote client.
+3. **Remote TUI over long-poll**: `client_transport.remote` on the existing
+   routes; Shape B ships with the parity table minus in-process-only
+   capabilities (typed `local_only` errors); two TUIs attach in parallel
+   with independent layouts.
+4. **WebSocket delivery** in `net/http`: RFC 6455 server handshake, frames,
+   ping/pong, per-attachment bounded outbound queues (drop-oldest + gap on
+   that client's own stream only), ws_ticket auth; long-poll remains the
+   fallback.
+5. **HTML client**: JS SurfaceModel over gateway-served registry metadata;
+   protocol conformance tests instead of sharing `surface.gene`; A+B+C on
+   one session simultaneously.
+6. **Channel-tier allowlist**: Telegram (and later Slack) declare their
+   command subset over the same registry; attempts outside it get typed
+   denials.
+
+Acceptance compares **semantics, not bytes**: one scripted scenario (attach,
+delegate, observe, confirm, read a result, `/pin`, reconnect and resume by
+cursor) runs in all three shapes; after normalizing correlation ids,
+timestamps, attachment ids, and provenance fields, the event types, causal
+order, operation results, and bounded snapshots are identical, while a second
+client stays attached throughout and a slow client's stream gaps without
+stalling anyone.
+
+### 10.13 Slice D — expand only where leverage is proven
 
 - Promote repeated `/repl` experiments into small Gene workflow modules;
   record module/tool version hashes and hot-reload new calls without changing
@@ -3083,20 +3160,101 @@ the process/projection workers — it is not synonymous with one model
 conversation. Panes and layout belong to each attached surface (§7.1), and
 workspace coordination is process-level, keyed by workspace root (§9.3,
 invariants §0.1/§0.3). The main program always starts this same core and then
-attaches surfaces:
+attaches clients in one of three **deployment shapes** (slice C9):
 
-- by default, only the in-process terminal TUI;
-- with `--gateway[=PORT]`, the TUI plus HTTP/web and any configured channel
-  adapters;
-- with `--gateway --headless`, only the network/channel adapters.
+- **Shape A — combined**: the TUI attaches in-process (default is TUI-only;
+  `--gateway[=PORT]` additionally starts the gateway listener in-process);
+- **Shape B — service**: `gateway.gene` runs the core headless as a
+  standalone service; the TUI runs as a *separate client process* attaching
+  over HTTP + WebSocket (`tui.gene -- --connect https://host:port` — an
+  `http[s]` origin, since mutations are HTTP and event delivery derives
+  `ws[s]://` when the upgrade is available, long-poll otherwise);
+- **Shape C — web**: the same service; an HTML+JS client in the browser.
 
-The word **gateway** therefore names an optional adapter set and exposed API,
-not a second executable architecture. The local TUI calls application services
-directly; it must not serialize through localhost HTTP merely because the
-gateway is enabled. Remote surfaces use the same commands and event projections
-through the HTTP/channel adapters. A session started in the terminal can thus
-be continued from the phone without copying state between a CLI agent and a
-gateway agent.
+The code splits accordingly, and no client owns application logic:
+
+```text
+core.gene              AgentApplication: workers, operations, journal, guard,
+                       persistence — imports no curses, no HTTP, no client
+surface.gene           the Gene TUI's client-local surface model: panes,
+                       focus, drafts, routing grammar, help rendering
+gateway.gene           the service: auth, attachment registry, HTTP ops,
+                       WS/long-poll event delivery — no pane/layout state
+client_transport.gene  one client interface, two implementations:
+                       direct (in-process, Shape A) and remote (HTTP+WS)
+tui.gene               curses renderer over surface.gene; Shape A launcher
+web/                   HTML+JS client with its own SurfaceModel in JS
+```
+
+`surface.gene` is deliberately *not* shared with the browser: the web client
+implements its own local SurfaceModel in JS. There are exactly two command
+descriptor sources, and every client merges them into one help/parser/
+completion view: the **OperationRegistry** (authoritative core operations,
+served as gateway metadata) and each client's **SurfaceCommandRegistry**
+(purely local commands: focus, layout, `/edit`). Protocol conformance tests
+verify the core portion and shared command semantics — one authoritative
+operation schema, two renderers, never two vocabularies.
+
+Clients come in two **capability tiers**:
+
+- **Full clients** (TUI, web): the complete §7.2 operation surface, panes,
+  help, trace, artifacts, results — identical across shapes except where a
+  transport makes a capability physically impossible, and every such gap is
+  a typed `local_only` error, never a silent absence. `/tty` and the `/view`
+  terminal handoff are in-process-only; `/edit` runs the *client's* own
+  `$EDITOR` (a browser uses its own editor widget); the Gene `/repl` stays
+  **local-only in C9** — service-side evaluation is why it is *sensitive*,
+  not why it is safe: remote eval would be arbitrary code in the service
+  process under one bearer. A remote client's `/repl` returns a typed
+  `local_only` error. A future remote REPL is its own proposal requiring a
+  restricted `Env`, explicitly granted capabilities, and full provenance.
+- **Channel clients** (Telegram — shipped; Slack — future): conversation with
+  the main agent, streamed replies, notifications, and a small safe command
+  subset (`/status`, `/progress`, result inspection) — no panes, no mutating
+  worker operations, no REPL, no terminals. Less powerful by design: a
+  channel is a messaging surface, not an operations console, and its command
+  subset is a declared allowlist over the same registry, never a parallel
+  vocabulary. Channel clients are still surfaces: attributable, journaled,
+  cursor-based. Tiers are enforced in the core: the **server derives**
+  principal, tier, and capability set from authentication — a client can
+  request a label, never a tier — and every attachment carries that
+  server-assigned capability set into the one §7.2 authorization choke point,
+  so an out-of-tier operation is rejected by the operation model itself —
+  never merely filtered by Telegram/Slack command parsing.
+
+**Remote terminal control is out of scope for every client tier.** The §7.4
+`terminal` worker remains in-process-local: `/sh` always means the terminal
+composite and returns a typed `local_only` error remotely — it never
+silently substitutes. A full remote client that wants a shell opens the
+structured worker explicitly (`/pane new shell`), which is authorized for
+full clients. Streaming PTY access to a remote
+client is remote code execution; if ever wanted it is a separate,
+explicitly-secured proposal that must pick exactly one terminal authority —
+client-owned emulator over raw bytes (the xterm.js shape) or gateway-owned
+cell snapshots — never both, and never as part of ordinary client parity. Be honest about
+what full clients already hold: the bearer grants **mediated host
+execution** — structured `shell run` is classified, attributed, bounded, and
+workspace-coordinated, but it runs commands on the host. The terminal
+exclusion is about the *unmediated byte channel*, not about pretending
+remote clients are read-only. Accordingly the enforceable rule is: the
+native gateway listens on **loopback only**; external access goes through an
+authenticated TLS proxy or tunnel pointing at that loopback listener. Direct
+non-loopback binding stays disabled until the service has native TLS or an
+explicit trusted-proxy configuration — a bearer over plain HTTP cannot be
+made safe by a warning.
+
+In Shape A the local TUI attaches through the same `ApplicationService`
+actor boundary as every other client — "direct" means no HTTP
+serialization, never mutating `AgentApplication` outside the session actor,
+so admission and ordering are identical across transports. Ownership is
+similarly fixed: core owns session persistence semantics behind the store
+interface; the gateway owns multi-session storage/backend lifecycle; core
+exposes operation metadata; each client owns its purely local UI commands
+(focus, layout, `/edit` composition). The TUI must not
+serialize through localhost HTTP merely because the gateway is enabled.
+Remote clients use the same typed operations and event projections through
+the gateway. A session started in the terminal can thus be continued from
+the phone without copying state between a CLI agent and a gateway agent.
 
 ```text
                          ┌──────────────────────────────────┐
@@ -3120,6 +3278,32 @@ new host power is a capability value, and each addition is independently
 shippable and testable over loopback with fake endpoints.
 
 ### 12.1 Main process, adapters, and session actors
+
+**Attachment identity and delivery (C9).** The gateway mints two identities: a
+logical **attachment id**, retained across reconnects until its lease
+expires, and an ephemeral **connection id** per WebSocket/long-poll
+connection. A client-supplied name (`local_tui`, `web-<uuid>`) is a display
+label, never authority and never a terminal lease. Reconnection presents a
+bounded, expiring **resume credential** bound to {session, attachment,
+principal, acknowledged cursor, expiry} — never a client-typed id — and
+restores the same logical attachment, so a reconnected initiator can still
+answer its own pending confirmation (§12.8 binds confirmations to the
+logical attachment, not the connection). The credential binds identity, not
+moving state: acknowledged cursors live in server-side attachment state
+updated by `ack`, and the credential is unchanged by acks. WebSocket tickets
+bind {session, attachment, principal, origin, expiry} and are single-use. Layout, panes, focus, and drafts are client-local and persist client-side
+(the TUI in its own snapshot, the browser in its storage); the service keeps
+no pane state (invariant §0.3). Mutations travel over **HTTP only**, and every
+mutation and event request after attach carries the mandatory
+`X-Gene-Attachment: <attachment_id>` header (messages, worker operations,
+snapshots, events, long-poll alike) — without it the service could not implement initiator-bound
+confirmations, per-attachment acks, presence, or reconnect continuity.
+Idempotency keys are scoped to (session, attachment, key) so two clients
+generating the same key never collide; WebSocket (with long-poll as the equivalent fallback) carries
+only journal events, presence, and invalidations. Every mutation enqueues
+into the session actor — no HTTP or WS task touches `AgentApplication`
+directly — and a client's acknowledged cursor advances only on explicit ack,
+not on send. `cursor_gap` is a stream condition, never an operation error.
 
 **Shipped foundation:** `tui.gene` is the primary composition entrypoint and
 parses the §1 flags. `gateway_adapter.gene` is UI-neutral and receives the
@@ -3184,9 +3368,11 @@ in-repo precedent for routing requests into actors via `RequestMsg`/reply.
 When `--gateway[=PORT]` is enabled, the adapter serves this API through the
 existing `net/http` server. It binds to `GENE_GATEWAY_HOST` or `127.0.0.1` by
 default. A single static bearer token (`GENE_GATEWAY_TOKEN`) is checked on every
-request when set. An unset token is permitted only on a loopback bind;
-non-loopback startup without authentication is rejected — single-user posture
-(§11), no accounts.
+request when set. An unset token is permitted only on a loopback bind.
+The native listener binds loopback only (C9): direct non-loopback binding is
+disabled until native TLS or an explicit trusted-proxy configuration exists;
+external access is an authenticated TLS proxy/tunnel to the loopback
+listener — single-user posture (§11), no accounts.
 
 | Route | Meaning | Status |
 |---|---|---|
@@ -3211,6 +3397,12 @@ non-loopback startup without authentication is rejected — single-user posture
 | `DELETE /api/sessions/:id/workers/:wid` | stop a worker and preserve its event trail | shipped |
 | `GET /api/sessions/:id/progress` | inspect the main `ProjectProgress` record | shipped |
 | `PUT /api/sessions/:id/progress` | main-supervisor update under session serialization | shipped |
+| `POST /api/sessions/:id/attachments` | attach: request carries only non-authoritative metadata (display label); the server derives principal, tier, and capability set from authentication → logical `attachment_id` + resume credential | C9 |
+| `POST /api/sessions/:id/attachments/:aid/resume` | present resume credential; restores cursor and pending confirmations | C9 |
+| `DELETE /api/sessions/:id/attachments/:aid` | detach; expires the resume credential | C9 |
+| `POST /api/sessions/:id/attachments/:aid/ack` | explicit cursor acknowledgement (`{^cursor N}`); WS acks are the same message in-band | C9 |
+| `POST /api/ws_ticket` | short-lived single-use WebSocket ticket under `Authorization` | C9 |
+| `GET /api/sessions/:id/ws` | WebSocket upgrade (ticket-authenticated): events, presence, invalidations only | C9 |
 | `GET /api/sessions/:id/workers/:wid/status` | observe: bounded status snapshot (§7.2) | shipped |
 | `GET /api/sessions/:id/workers/:wid/tail?n=` | observe: bounded recent output + loss metadata | shipped |
 | `POST /api/sessions/:id/workers/:wid/ops/:op` | typed kind-specific operation `{args}` under its declared effects/audience/admission | shipped |
@@ -3230,16 +3422,20 @@ with stable codes such as `worker_busy` (including `worker_id`, current
 cancel is distinct from an idle/stale no-op. Channel adapters render the same
 code as a user-visible notice rather than silently dropping rejected input;
 Telegram, for example, sends a `worker_busy` notice. Remote destructive
-operations continue to deny rather than parking on an unavailable local
-confirmation (§12.8).
+operations from full clients park on the initiator-bound confirmation
+contract (§12.8): the initiating attachment (or a configured approver)
+answers from its own surface. Channel clients still receive a deny — they
+are never approvers by default.
 
 There are deliberately no session pane routes: panes, layout, focus, and zoom
 are surface state (§7.1, invariant §0.3), so each remote client manages its
 own layout locally (for the web page, in the browser) over the shared worker
 routes above. Worker creation is kind-typed and keeps each kind's capability
 and provenance rules — remote creation of `output`, `log_tail`, `file_view`,
-and `stats` workers is view-harmless, while `shell`, `terminal`, and `repl`
-creation stays unavailable remotely. A terminal is stricter than the other
+and `stats` workers is view-harmless; the structured `shell` worker is
+available to authenticated **full** clients (`/pane new shell`, §12 intro),
+whose bearer already grants mediated host execution; `terminal` and `repl`
+remain local-only with typed `local_only` denials. A terminal is stricter than the other
 kinds: generic input/tail/snapshot/ops routes return a typed
 `local_controller_required`; shared snapshots expose lifecycle/exit/byte-count
 metadata only and never cells, scrollback, environment, or input. Gateway/channel `file_view` paths are
@@ -3258,7 +3454,22 @@ chunked/SSE response streaming is gap 2 in 12.9. Because the journal is a
 bounded ring (§7.1), a client cursor older than retained history gets an
 explicit **cursor-gap** response carrying the new oldest cursor — the server
 never silently resumes from a later position, so a client can render "N events
-dropped" instead of misrepresenting continuity. A fresh or stale client then
+dropped" instead of misrepresenting continuity. WebSocket attachment
+authenticates with a short-lived single-use ticket obtained via
+`POST /api/ws_ticket` under the normal `Authorization` header (browsers may
+use a same-origin cookie instead); a long-lived bearer never appears in a
+query string, where history, logs, proxies, and referrers leak it. Service
+shutdown is a local action (signal or admin-only local socket), never a route
+exposed to the ordinary session bearer.
+
+Mutating routes accept an `Idempotency-Key` scoped to
+(session, attachment, key): replaying
+the same key with the same request returns the original admission result;
+the same key with a different request is a `409`; retention is bounded
+(count and age). Deduplication is in-memory only and does **not** survive a
+service restart — §11 already excludes crash-safe exactly-once recovery, so
+a client that reconnects after a restart must treat unacknowledged mutations
+as unknown-outcome and re-inspect state rather than blindly retry. A fresh or stale client then
 loads `GET /snapshot`: the response contains the bounded redacted main
 transcript, shared worker lifecycle/admission/current-operation state, bounded
 worker output, `output_seq`/loss metadata, and the session event cursor, but no
@@ -3300,13 +3511,14 @@ not maintain a second gateway-only vocabulary.
 
 ### 12.4 TUI surface
 
-The TUI is always an in-process adapter when it is enabled, regardless of
-whether `--gateway` also exposes HTTP. Slice C moved its rendering onto the
+The TUI attaches through `client_transport`: direct (in-process) in
+Shape A, remote (HTTP+WS) in Shape B — same `surface.gene` model, same
+`ApplicationService` boundary, different transport only (C9). Slice C moved its rendering onto the
 application registries rather than TUI-owned conversation arrays; slice C2
 makes the TUI a **surface attachment** that owns its pane registry, layout,
 focus, and zoom locally while rendering shared session workers (§7.1,
-invariant §0.3). A future TUI running in a different process may be an
-HTTP gateway client, but that transport distinction must stay below the same
+invariant §0.3). The Shape B TUI *is* that different-process
+client (C9), and the transport distinction stays below the same
 surface command/event interface. The shipped cancellable `curses/next_event`
 already provides the non-blocking input needed to update sub-agent, output,
 shell, and REPL panes while the user types; neither local nor remote adapters
@@ -3317,14 +3529,18 @@ serialized terminal grid and cannot become a terminal controller.
 
 ### 12.5 Web UI
 
-A single static page served by the optional gateway adapter (`html` helpers;
-`examples/todo_app.gene` is the in-repo precedent for a self-contained web
-app): vanilla JS, `fetch` to post messages, a long-poll loop for events,
-rare destructive-operation confirmations rendered as allow/deny buttons
-posting to 12.2. No build step, no framework, no external assets — the page is
-a string in the Gene source. Session switcher reads `GET /api/sessions`.
+The `web/` full client (§12 intro): static assets served by the gateway —
+vanilla JS, no build step, no framework, no external assets. It owns its own
+**JS SurfaceModel** (panes, focus, drafts, layout in browser storage) and
+proves equivalence with the TUI through protocol-conformance tests over the
+gateway-served registry metadata, never by executing `surface.gene`.
+Mutations go over `fetch` with idempotency keys; events arrive over the
+ticket-authenticated WebSocket with the long-poll loop as the fallback;
+initiator-bound confirmations render as allow/deny buttons (§12.8). The
+shipped single embedded page is the bootstrap this evolves from; the
+session switcher reads `GET /api/sessions`.
 
-### 12.6 Telegram channel (implemented, milestone 9)
+### 12.6 Telegram channel — the first channel client (implemented)
 
 The cheapest remote surface, and deliberately the first: it needs **outbound
 HTTPS only**, which the native HTTP transport provides. The behavior below is
@@ -3352,10 +3568,13 @@ Optional later work can render the rare destructive-operation confirmation as
 a Telegram message (`/confirm cf_2`). Routine work stays auto-approved, so this
 does not gate the shipped channel.
 
-### 12.7 Slack channel
+### 12.7 Slack channel — future channel client
 
-Two integration modes, both requiring runtime work — hence optional slice-D
-work:
+Slack joins at the same channel-client tier as Telegram (§12 intro):
+conversation, streamed replies, notifications, and the declared read-only
+command allowlist — never panes, mutating worker operations, REPLs, or
+terminals. Two integration modes, both requiring runtime work — hence
+optional slice-D work:
 
 1. **Socket Mode** (preferred; outbound-only like Telegram): needs a
    WebSocket framing/upgrade support over the native TLS-capable client —
@@ -3380,9 +3599,13 @@ the deny as a `confirmation` event in the owning session's log. The planned
 extension: when a structured operation is destructive but plausibly
 intentional, the session emits a `confirmation` event, parks the turn on a
 reply channel with a deadline (default deny on timeout), and broadcasts it to
-authorized attached interaction adapters — y/N in the TUI, buttons on the web,
-`/confirm` in chat. It belongs to the session/worker/task and normalized
+authorized attached clients — y/N in the TUI, buttons on the web. Authorized
+means the **initiating attachment** plus any explicitly configured
+trusted-approver attachments; other clients render it read-only, and channel
+clients (Telegram/Slack) are never approvers unless explicitly configured
+per channel. It belongs to the session/worker/task and normalized
 operation digest, not to one layout surface; the first valid response wins,
+the journal records which attachment answered,
 disconnect does not cancel it, and the deadline covers a headless session.
 Catastrophic operations remain denied; normal operations remain auto-approved.
 This is not a general approval workflow.
@@ -3393,7 +3616,7 @@ This is not a general approval workflow.
 |---|---|---|---|---|
 | 1 | ~~**Async subprocess**~~ — **closed (m8, cancellation extended in slice B/C2)**: `os/exec_async`/`exec_stream_async` run captured children on dedicated OS threads; stdout lines cross through a channel, the Task settles through the scheduler, and `Task/cancel` terminates the child and closes its stdout channel. `os/exec_stdio_async` uses the same settlement/cancellation boundary with inherited terminal streams for `/edit` and `/tty` | — | — | shipped in `src/gene/stdlib.nim` + spec tests |
 | 2 | Streaming HTTP responses (chunked/SSE) in `net/http` | smoother web streaming | cursor long-poll (12.2) | `Response ^stream` fed by a channel |
-| 3 | WebSocket + TLS client | Slack Socket Mode | Events API + tunnel | libcurl / native TLS when justified |
+| 3 | WebSocket: server upgrade path in `net/http` (RFC 6455 handshake, frames, ping/pong) plus a Gene WS client for the remote TUI; TLS client for Slack Socket Mode | C9 event delivery; Shape B TUI; Slack | cursor long-poll (works today); Events API + tunnel | server upgrade + client in `net/http`; libcurl/native TLS when justified |
 | 4 | `crypto/hmac_sha256` (+ constant-time compare) | Slack Events signing | none for public exposure — do not skip | small native namespace beside `json` |
 | 5 | ~~**Non-blocking TUI input**~~ — **closed**: public cancellable `curses/next_event` polls `getch` without blocking the scheduler and emits UTF-8/resize events | — | — | shipped in `src/gene/stdlib.nim` + PTY tests (§7) |
 | 6 | **Embedded terminal runtime** — Unix PTY helper, process-group control, VT/xterm state, and attributed curses cell rendering (§7.4) | interactive terminal panes | `/tty` handoff plus structured shell panes | Slice C8 (§10.11) |
