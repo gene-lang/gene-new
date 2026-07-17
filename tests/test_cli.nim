@@ -6340,11 +6340,19 @@ console.log(JSON.stringify({
 (import std/stream [to_stream into])
 
 (var served-updates (cell false))
+(var served-commands (cell false))
 (var outbox (cell []))
 (var next-mid (cell 100))
 
 (fn append-out [entry]
   (outbox ~ Cell/set ((to_stream [entry]) ~ into (outbox ~ Cell/get))))
+
+(fn outbox-has-answer? []
+  (var found (cell false))
+  (for entry in (outbox ~ Cell/get)
+    (if (contains? (stringify entry) "I listed the workspace")
+      (found ~ Cell/set true)))
+  (found ~ Cell/get))
 
 (fn json_response [value]
   (Response ^status 200
@@ -6354,9 +6362,29 @@ console.log(JSON.stringify({
 (fn handle [req]
   (if (contains? req/path "/getUpdates")
     (if (served-updates ~ Cell/get)
-      (do
-        (sleep 400)
-        (json_response {^ok true ^result []}))
+      (if (&& (! (served-commands ~ Cell/get)) (outbox-has-answer?))
+        (do
+          # C9 stage 6: channel-tier commands go out only after the first
+          # turn's final answer is mirrored, so their responses are
+          # deterministic.
+          (served-commands ~ Cell/set true)
+          (json_response
+            {^ok true
+             ^result [{^update_id 3
+                       ^message {^message_id 12 ^chat {^id 42}
+                                 ^text "/status main"}}
+                      {^update_id 4
+                       ^message {^message_id 13 ^chat {^id 42}
+                                 ^text "/run main printf hi"}}
+                      {^update_id 5
+                       ^message {^message_id 14 ^chat {^id 42}
+                                 ^text "/frobnicate main"}}
+                      {^update_id 6
+                       ^message {^message_id 15 ^chat {^id 42}
+                                 ^text "/operations"}}]}))
+        (do
+          (sleep 400)
+          (json_response {^ok true ^result []})))
       (do
         (served-updates ~ Cell/set true)
         (json_response
@@ -6443,6 +6471,29 @@ console.log(JSON.stringify({
     check outbox.count("I listed the workspace via the list_dir tool.") == 1
     # The unlisted chat never got a message.
     check "\"chat_id\":99" notin outbox
+
+    # C9 stage 6: after the turn, the fake serves channel-tier commands. The
+    # allowlist derives from the operation registry (observe-only effects);
+    # everything else answers a typed denial, and unknown commands point at
+    # /operations.
+    block waitChannelCommands:
+      let deadline = getMonoTime() + initDuration(seconds = 20)
+      while getMonoTime() < deadline:
+        let ran = execCmdEx("curl -sS --max-time 5 http://127.0.0.1:8994/outbox")
+        if ran.exitCode == 0:
+          outbox = ran.output
+          if "observe-only tier" in outbox and "unknown_command" in outbox:
+            break waitChannelCommands
+        sleep(250)
+      checkpoint "telegram channel commands never answered: " & outbox
+      check false
+    check "/status main -> " in outbox
+    check "\\\"kind\\\":\\\"agent\\\"" in outbox
+    check ("channel_denied: /run requires effects [host_write] beyond the " &
+           "observe-only channel tier") in outbox
+    check "unknown_command: /frobnicate" in outbox
+    check "/tail <worker> - Read recent bounded output." in outbox
+    check "/run <worker>" notin outbox
     # The turn also shows up in the gateway session log under tg-42. Reading
     # events is an attached-client action (C9), so establish an attachment
     # and pass its header.

@@ -24,7 +24,8 @@
 (import os [get_env exec_async monotonic_ms Env Exec])
 (import crypto [random_hex secure_equal?])
 (import json [parse stringify JsonError])
-(import str [split trim join starts_with? contains? byte_size lower])
+(import str [split trim join starts_with? contains? byte_size lower
+             slice_bytes])
 (import std/stream [to_stream filter each into])
 (import std/parse [parse_int])
 (import net/http [Server serve listen stop Response
@@ -659,6 +660,68 @@
       s)
     (else s)))
 
+# Channel-tier command subset (design.md §10.12 stage 6). Telegram is a
+# channel client: its allowlist is DERIVED from the same operation registry
+# every other client uses — an operation qualifies only when every declared
+# effect is `observe`. Anything else gets a typed denial naming the effects
+# that exceed the tier; unknown commands point at /operations. Slack later
+# reuses this same derivation.
+(fn tg_channel_allowed? [descriptor] : Bool
+  (var ok (cell true))
+  (for effect in descriptor/effects
+    (if (!= effect "observe") (ok ~ Cell/set false)))
+  (ok ~ Cell/get))
+
+(fn tg_channel_operations_text [] : Str
+  (var lines [])
+  (lines ~ List/push! "channel commands (observe-only tier):")
+  (var seen [])
+  (for descriptor in (agent_api/operation_registry_snapshot)
+    (if_yes (&& (tg_channel_allowed? descriptor)
+                (! (seen ~ contains? descriptor/name)))
+      (seen ~ List/push! descriptor/name)
+      (lines ~ List/push!
+        $"/${descriptor/name} <worker> - ${descriptor/summary}")))
+  (join lines "\n"))
+
+(fn tg_channel_invocation []
+  # No attachment: a channel client can never answer confirmations, and its
+  # principal capabilities carry only observe.
+  {^origin "remote" ^caller_worker_id nil ^attachment_id nil
+   ^principal "telegram" ^principal_capabilities ["observe"]})
+
+(fn tg_channel_command [chat_id, s, text : Str]
+  (var body (trim (slice_bytes text 1 (- (byte_size text) 1))))
+  (var parts (split body " "))
+  (var op (if (empty? parts) "" parts/0))
+  (if (|| (== op "operations") (== op "help"))
+    (return (telegram_notice chat_id (tg_channel_operations_text))))
+  (var found (cell nil))
+  (for descriptor in (agent_api/operation_registry_snapshot)
+    (if (== descriptor/name op) (found ~ Cell/set descriptor)))
+  (var descriptor (found ~ Cell/get))
+  (if (== descriptor nil)
+    (return (telegram_notice chat_id
+      $"unknown_command: /${op}; /operations lists the channel subset")))
+  (if_not (tg_channel_allowed? descriptor)
+    (var effects (join descriptor/effects ","))
+    (return (telegram_notice chat_id
+      $"channel_denied: /${op} requires effects [${effects}] beyond the observe-only channel tier")))
+  (if (< parts/~size 2)
+    (return (telegram_notice chat_id $"usage: /${op} <worker>")))
+  (var worker_ref parts/1)
+  (var args {})
+  (if (&& (== op "tail") (>= parts/~size 3))
+    (try (args ~ Map/put! "n" (parse_int parts/2)) catch _ nil))
+  (var response
+    (agent_api/application_call_worker s/application worker_ref op args
+      (tg_channel_invocation)))
+  (if response/ok
+    (telegram_notice chat_id
+      $"/${op} ${worker_ref} -> ${(stringify (props response/result))}")
+    (telegram_notice chat_id
+      $"${response/error/kind}: ${response/error/message}")))
+
 (fn tg_handle_update [u]
   (var msg u/message)
   (if_not (== msg void)
@@ -668,11 +731,21 @@
       (if (tg_chat_allowed? chat_id)
         (then
           (var s (tg_session_for chat_id))
-          (if_not (s/submit_input text "telegram" nil)
-            (telegram_notice chat_id
-              $"worker_busy: session ${s/id} already has a turn in flight")
-            (gw_notice
-              $"telegram: session ${s/id} is busy; input rejected")))
+          (if (starts_with? text "/")
+            # A failing command answers its chat; it must never abort the
+            # remaining updates in this poll batch.
+            (try
+              (tg_channel_command chat_id s text)
+            catch {^message message}
+              (telegram_notice chat_id
+                $"channel_command_failed: ${message}")
+            catch _
+              (telegram_notice chat_id "channel_command_failed"))
+            (if_not (s/submit_input text "telegram" nil)
+              (telegram_notice chat_id
+                $"worker_busy: session ${s/id} already has a turn in flight")
+              (gw_notice
+                $"telegram: session ${s/id} is busy; input rejected"))))
         (else
           (gw_notice $"telegram: dropped message from unlisted chat ${chat_id} - add it to TELEGRAM_ALLOWED_CHAT_IDS to allow"))))))
 
@@ -699,7 +772,12 @@
   (loop
     (try
       (telegram_poll_once offset)
-    catch _ (sleep 2000))))
+    catch {^message message}
+      (gw_notice $"telegram: update handling failed: ${message}")
+      (sleep 2000)
+    catch _
+      (gw_notice "telegram: update handling failed")
+      (sleep 2000))))
 
 # -----------------------------------------------------------------------------
 # HTTP API.
