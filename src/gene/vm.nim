@@ -451,6 +451,11 @@ when compileOption("threads"):
 
   proc externalNativeOpsPending(): bool =
     externalNativeOps.load(moAcquire) > 0
+else:
+  # Without OS threads (wasm, --threads:off) the dedicated-thread native ops
+  # that feed this counter are compiled out, so nothing is ever pending.
+  proc externalNativeOpsPending(): bool {.inline.} =
+    false
 
 # Schedule a task's own fiber to observe a cancellation request. Awaiters are
 # woken when that fiber finishes cleanup and settles the task as cancelled.
