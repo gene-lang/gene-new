@@ -1002,8 +1002,8 @@ catch {^message message} (set duplicate message))
          application_attach_worker_pane application_attach_worker_pane_as
          open_shell_pane open_repl_pane
          open_output_pane open_log_tail_pane open_stats_pane
-         open_file_view_pane application_snapshot
-         restore_application_snapshot!]
+         open_file_view_pane application_snapshot surface_snapshot
+         restore_application_snapshot! restore_surface_snapshot!]
   from "./tui.gene")
 (import json [parse stringify])
 (var first
@@ -1022,6 +1022,7 @@ catch {^message message} (set duplicate message))
 (open_stats_pane)
 (open_file_view_pane "examples/ai_agent/design.md")
 (var saved (application_snapshot first))
+(var saved_surface (surface_snapshot first))
 (saved/main_worker ~ Map/put! "result" {^outcome 7})
 (saved/agents ~ List/push! {^id "bad-agent" ^title 7})
 (saved/workers ~ List/push!
@@ -1030,14 +1031,14 @@ catch {^message message} (set duplicate message))
 (bad_output_worker ~ Map/put! "id" "bad-output")
 (bad_output_worker ~ Map/put! "output" 7)
 (saved/workers ~ List/push! bad_output_worker)
-(saved/panes ~ List/push!
+(saved_surface/panes ~ List/push!
   {^id 99 ^worker_id "missing" ^kind "output"})
-(var bad_scroll_pane (parse (stringify saved/panes/0)))
+(var bad_scroll_pane (parse (stringify saved_surface/panes/0)))
 (bad_scroll_pane ~ Map/put! "id" 98)
 (bad_scroll_pane ~ Map/put! "scroll" "bad")
-(saved/panes ~ List/push! bad_scroll_pane)
+(saved_surface/panes ~ List/push! bad_scroll_pane)
 (saved ~ Map/put! "progress" {^objective 7})
-(saved/surface ~ Map/put! "next_pane_id" "bad-counter")
+(saved_surface/surface ~ Map/put! "next_pane_id" "bad-counter")
 (var rejected (cell []))
 (var next_v (cell 1))
 (fn sink [type, props]
@@ -1051,6 +1052,7 @@ catch {^message message} (set duplicate message))
 (var restored
   (make_application (cell []) (cell "") (cell []) sink))
 (restore_application_snapshot! restored saved)
+(restore_surface_snapshot! restored saved_surface)
 (var kinds [])
 (var titles [])
 (for worker in (restored/workers ~ Cell/get)
@@ -2013,9 +2015,15 @@ catch {^message message} (set duplicate message))
           break
         sleep(25)
       require fileExists(editorStarted)
+      let editorAtt = execCmdEx(
+        "curl -sS -H 'Authorization: Bearer editor-gateway' -X POST " &
+        "http://127.0.0.1:8996/api/sessions/local/attachments")
+      check editorAtt.exitCode == 0
+      let editorAttId = parseJson(editorAtt.output)["attachment_id"].getStr()
       proc editorGatewayCurl(call: string): string =
         let ran = execCmdEx(
-          "curl -sS -H 'Authorization: Bearer editor-gateway' " & call)
+          "curl -sS -H 'Authorization: Bearer editor-gateway' " &
+          "-H 'X-Gene-Attachment: " & editorAttId & "' " & call)
         if ran.exitCode != 0: checkpoint ran.output
         check ran.exitCode == 0
         ran.output
@@ -2325,12 +2333,12 @@ catch {^message message} (set duplicate message))
     var checkpointReady = false
     while getMonoTime() < deadline:
       let checkpointPath = agentStateRecordPath(stateDir, "checkpoint")
-      let applicationPath = agentStateRecordPath(stateDir, "application")
-      if fileExists(checkpointPath) and fileExists(applicationPath):
+      let surfacePath = agentStateRecordPath(stateDir, "surface")
+      if fileExists(checkpointPath) and fileExists(surfacePath):
         let checkpointText = readFile(checkpointPath)
-        let applicationText = readFile(applicationPath)
-        if "^reason \"pane_opened\"" in checkpointText and
-            "crash-safe" in applicationText:
+        let surfaceText = readFile(surfacePath)
+        if "^reason \"surface:pane_opened\"" in checkpointText and
+            "crash-safe" in surfaceText:
           checkpointReady = true
           break
       sleep(25)
@@ -2343,7 +2351,7 @@ catch {^message message} (set duplicate message))
     else:
       agentProc.terminate()
     discard agentProc.waitForExit(5000)
-    check "^reason \"pane_opened\"" in
+    check "^reason \"surface:pane_opened\"" in
       readFile(agentStateRecordPath(stateDir, "checkpoint"))
 
     let restored = execCmdOnce(
@@ -5058,6 +5066,16 @@ catch {^message message}
       check ran.exitCode == 0
       ran.output
 
+    proc gwAttach(sid: string): string =
+      let body = gwCurl(
+        "-X POST -H 'content-type: application/json' " &
+        "-d '{\"display_label\":\"test\"}' " &
+        "http://127.0.0.1:8989/api/sessions/" & sid & "/attachments")
+      parseJson(body)["attachment_id"].getStr()
+
+    proc gwCurlAs(attachmentId, call: string): string =
+      gwCurl("-H 'X-Gene-Attachment: " & attachmentId & "' " & call)
+
     # Auth is enforced.
     let denied = execCmdEx(
       "curl -s -o /dev/null -w '%{http_code}' " &
@@ -5067,13 +5085,16 @@ catch {^message message}
     # Two sessions, one message each, posted back to back.
     check "\"id\":\"s1\"" in gwCurl("-X POST http://127.0.0.1:8989/api/sessions")
     check "\"id\":\"s2\"" in gwCurl("-X POST http://127.0.0.1:8989/api/sessions")
+    let s1Attachment = gwAttach("s1")
+    let s2Attachment = gwAttach("s2")
     let t0 = getMonoTime()
-    check "\"ok\":true" in gwCurl(
+    check "\"ok\":true" in gwCurlAs(s1Attachment,
       "-X POST -H 'content-type: application/json' -d '{\"text\":\"go\"}' " &
       "http://127.0.0.1:8989/api/sessions/s1/messages")
     let duplicate = execCmdEx(
       "curl -sS -w '\n%{http_code}' " &
       "-H 'Authorization: Bearer gw-secret' " &
+      "-H 'X-Gene-Attachment: " & s1Attachment & "' " &
       "-H 'content-type: application/json' " &
       "-d '{\"text\":\"must-not-queue\"}' " &
       "http://127.0.0.1:8989/api/sessions/s1/messages")
@@ -5081,17 +5102,18 @@ catch {^message message}
     check duplicate.output.strip().endsWith("409")
     check "worker_busy" in duplicate.output
     check "turn already in flight" in duplicate.output
-    check "\"ok\":true" in gwCurl(
+    check "\"ok\":true" in gwCurlAs(s2Attachment,
       "-X POST -H 'content-type: application/json' -d '{\"text\":\"go\"}' " &
       "http://127.0.0.1:8989/api/sessions/s2/messages")
 
     # Long-poll each session until its turn completes.
-    proc waitTurnDone(sid: string): string =
+    proc waitTurnDone(sid, attachmentId: string): string =
       var cursor = 0
       let deadline = getMonoTime() + initDuration(seconds = 15)
       while getMonoTime() < deadline:
-        let body = gwCurl("'http://127.0.0.1:8989/api/sessions/" & sid &
-                          "/events?cursor=" & $cursor & "'")
+        let body = gwCurlAs(attachmentId,
+          "'http://127.0.0.1:8989/api/sessions/" & sid &
+          "/events?cursor=" & $cursor & "'")
         result.add body
         if "turn_done" in result:
           return
@@ -5105,14 +5127,14 @@ catch {^message message}
       checkpoint "timed out waiting for turn_done: " & result
       check false
 
-    let s1Events = waitTurnDone("s1")
-    let s2Events = waitTurnDone("s2")
+    let s1Events = waitTurnDone("s1", s1Attachment)
+    let s2Events = waitTurnDone("s2", s2Attachment)
     var s1Terminal = s1Events
     let terminalDeadline = getMonoTime() + initDuration(seconds = 3)
     while "agent_finished" notin s1Terminal and
           getMonoTime() < terminalDeadline:
       sleep(10)
-      s1Terminal = gwCurl(
+      s1Terminal = gwCurlAs(s1Attachment,
         "'http://127.0.0.1:8989/api/sessions/s1/events?cursor=0'")
     let elapsedMs = (getMonoTime() - t0).inMilliseconds
 
@@ -5156,14 +5178,64 @@ catch {^message message}
         if getMonoTime() > deadline: raise
         sleep(50)
 
+    var workerAttachment = ""
     proc workerCurl(call: string): string =
+      let attachmentHeader =
+        if workerAttachment.len > 0:
+          "-H 'X-Gene-Attachment: " & workerAttachment & "' "
+        else:
+          ""
       let ran = execCmdEx(
-        "curl -sS -H 'Authorization: Bearer gw-workers' " & call)
+        "curl -sS -H 'Authorization: Bearer gw-workers' " &
+        attachmentHeader & call)
       check ran.exitCode == 0
       ran.output
 
+    let operations = workerCurl(
+      "http://127.0.0.1:8993/api/operations")
+    check "\"worker_kind\":\"agent\"" in operations
+    check "\"name\":\"send\"" in operations
+    check "\"effects\":[\"session_write\",\"model_call\"]" in operations
+    check "\"worker_kind\":\"terminal\"" in operations
     check "\"id\":\"s1\"" in workerCurl(
       "-X POST http://127.0.0.1:8993/api/sessions")
+    let missingAttachment = workerCurl(
+      "-w '\n%{http_code}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/snapshot")
+    check "attachment_required" in missingAttachment
+    check missingAttachment.strip().endsWith("428")
+    let attachedText = workerCurl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"display_label\":\"test\",\"tier\":\"channel\",\"capabilities\":[]}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/attachments")
+    let attached = parseJson(attachedText)
+    workerAttachment = attached["attachment_id"].getStr()
+    let resumeCredential = attached["resume_credential"].getStr()
+    check workerAttachment.startsWith("att_")
+    check resumeCredential.startsWith("resume_")
+    check attached["principal"].getStr() == "bearer"
+    check attached["tier"].getStr() == "full"
+    check attached["capabilities"].len == 5
+    check "session_write" in attachedText
+    let acked = workerCurl(
+      "-X POST -H 'content-type: application/json' -d '{\"cursor\":0}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/attachments/" &
+      workerAttachment & "/ack")
+    check "\"acknowledged_cursor\":0" in acked
+    let resumedAttachment = workerCurl(
+      "-X POST -H 'content-type: application/json' -d '{\"resume_credential\":\"" &
+      resumeCredential & "\"}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/attachments/" &
+      workerAttachment & "/resume")
+    check "\"attachment_id\":\"" & workerAttachment & "\"" in
+      resumedAttachment
+    let transportRun = execCmdEx(
+      "/usr/bin/env GENE_AGENT_CONNECT=http://127.0.0.1:8993 " &
+      "GENE_GATEWAY_TOKEN=gw-workers GENE_AGENT_SESSION=s1 " &
+      shellQuote(geneExe) & " run examples/ai_agent/remote_client_smoke.gene")
+    if transportRun.exitCode != 0: checkpoint transportRun.output
+    check transportRun.exitCode == 0
+    check transportRun.output.strip() == "[\"full\" \"s1\" true]"
     let mainStop = workerCurl(
       "-w '\n%{http_code}' -X DELETE " &
       "http://127.0.0.1:8993/api/sessions/s1/workers/main")
@@ -5187,11 +5259,22 @@ catch {^message message}
     check mainSnapshotText.contains("I listed the workspace")
     check mainSnapshotText.count("I listed the workspace") == 1
     let mainSnapshotCursor = mainSnapshot["cursor"].getInt()
-    let created = workerCurl(
-      "-X POST -H 'content-type: application/json' " &
+    let createOutputCall =
+      "-X POST -H 'Idempotency-Key: create-output' " &
+      "-H 'content-type: application/json' " &
       "-d '{\"kind\":\"output\",\"config\":{\"title\":\"checks\",\"text\":\"ready\"}}' " &
-      "http://127.0.0.1:8993/api/sessions/s1/workers")
+      "http://127.0.0.1:8993/api/sessions/s1/workers"
+    let created = workerCurl(createOutputCall)
     check "\"worker_id\":\"w1\"" in created
+    check workerCurl(createOutputCall) == created
+    let reusedKey = workerCurl(
+      "-w '\n%{http_code}' -X POST " &
+      "-H 'Idempotency-Key: create-output' " &
+      "-H 'content-type: application/json' " &
+      "-d '{\"kind\":\"output\",\"config\":{\"title\":\"different\"}}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/workers")
+    check "idempotency_key_reused" in reusedKey
+    check reusedKey.strip().endsWith("409")
     let workers = workerCurl(
       "http://127.0.0.1:8993/api/sessions/s1/workers")
     check "\"kind\":\"output\"" in workers
@@ -5329,6 +5412,14 @@ catch {^message message}
       "'http://127.0.0.1:8993/api/sessions/s1/events?cursor=0'")
     check "cursor_gap" in gap
     check gap.strip().endsWith("409")
+    check "\"ok\":true" in workerCurl(
+      "-X DELETE http://127.0.0.1:8993/api/sessions/s1/attachments/" &
+      workerAttachment)
+    let detached = workerCurl(
+      "-w '\n%{http_code}' " &
+      "http://127.0.0.1:8993/api/sessions/s1/snapshot")
+    check "attachment_invalid" in detached
+    check detached.strip().endsWith("401")
 
   test "agent gateway cancellation stops an in-flight model turn":
     buildGeneCli()
@@ -5375,11 +5466,22 @@ catch {^message message}
             raise
           sleep(50)
 
+    var cancelAttachment = ""
     proc curl(call: string): tuple[output: string, exitCode: int] =
-      execCmdEx("curl -sS --max-time 5 " & call)
+      let attachmentHeader =
+        if cancelAttachment.len > 0:
+          "-H 'X-Gene-Attachment: " & cancelAttachment & "' "
+        else:
+          ""
+      execCmdEx("curl -sS --max-time 5 " & attachmentHeader & call)
 
     check "\"id\":\"s1\"" in
       curl("-X POST http://127.0.0.1:8973/api/sessions").output
+    cancelAttachment = parseJson(curl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"display_label\":\"test\"}' " &
+      "http://127.0.0.1:8973/api/sessions/s1/attachments").output)[
+        "attachment_id"].getStr()
     let started = getMonoTime()
     check "\"ok\":true" in curl(
       "-X POST -H 'content-type: application/json' -d '{\"text\":\"wait\"}' " &
@@ -5418,6 +5520,125 @@ catch {^message message}
     check "turn_done" in events
     check (getMonoTime() - started).inMilliseconds < 2000
 
+  test "agent gateway binds pending confirmations to the initiating attachment":
+    buildGeneCli()
+    let endpoint = writeCliProgram("confirmation_chat_endpoint.gene", """
+(import net/http [Server serve Response])
+(var calls (cell 0))
+(fn handle [req]
+  (calls ~ Cell/set (+ (calls ~ Cell/get) 1))
+  (if (== (calls ~ Cell/get) 1)
+    (Response ^status 200
+              ^headers {^content-type "text/event-stream"}
+              ^body "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"gw_confirm\",\"type\":\"function\",\"function\":{\"name\":\"run_shell\",\"arguments\":\"{\\\"command\\\":\\\"git reset --hard\\\"}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+    (Response ^status 200
+              ^headers {^content-type "text/event-stream"}
+              ^body "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"denial handled\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")))
+(serve (Server ^host "127.0.0.1" ^port 8974) handle ^max_requests 2)
+""")
+    let endpointProc = startProcess(geneExe, args = ["run", endpoint],
+                                    options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if endpointProc.running: endpointProc.terminate()
+      endpointProc.close()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "CODEX_ACCESS_TOKEN", "-u", "OPENAI_API_KEY",
+              "-u", "OPENAI_API", "OPENAI_AUTH_TOKEN=dummy",
+              "OPENAI_BASE_URL=http://127.0.0.1:8974/v1",
+              "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=8975",
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running: gatewayProc.terminate()
+      gatewayProc.close()
+
+    for port in [8974, 8975]:
+      let deadline = getMonoTime() + initDuration(seconds = 10)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(port), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline: raise
+          sleep(50)
+
+    var attachment = ""
+    proc curl(call: string): string =
+      let header =
+        if attachment.len > 0:
+          "-H 'X-Gene-Attachment: " & attachment & "' "
+        else:
+          ""
+      let ran = execCmdEx("curl -sS --max-time 5 " & header & call)
+      check ran.exitCode == 0
+      ran.output
+
+    check "\"id\":\"s1\"" in curl(
+      "-X POST http://127.0.0.1:8975/api/sessions")
+    let initiating = parseJson(curl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"display_label\":\"initiator\"}' " &
+      "http://127.0.0.1:8975/api/sessions/s1/attachments"))
+    let initiatingId = initiating["attachment_id"].getStr()
+    let resumeCredential = initiating["resume_credential"].getStr()
+    attachment = initiatingId
+    check "\"ok\":true" in curl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"text\":\"do the destructive thing\"}' " &
+      "http://127.0.0.1:8975/api/sessions/s1/messages")
+
+    var events = ""
+    let confirmationDeadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < confirmationDeadline:
+      events = curl(
+        "'http://127.0.0.1:8975/api/sessions/s1/events?cursor=0'")
+      if "confirmation_requested" in events: break
+      sleep(20)
+    check "confirmation_requested" in events
+    check "\"confirmation_id\":\"c1\"" in events
+    check "\"attachment_id\":\"" & initiatingId & "\"" in events
+
+    let resumed = curl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"resume_credential\":\"" & resumeCredential & "\"}' " &
+      "http://127.0.0.1:8975/api/sessions/s1/attachments/" &
+      initiatingId & "/resume")
+    check "\"pending_confirmations\":[{\"confirmation_id\":\"c1\"" in
+      resumed
+
+    let observer = parseJson(curl(
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"display_label\":\"observer\"}' " &
+      "http://127.0.0.1:8975/api/sessions/s1/attachments"))
+    attachment = observer["attachment_id"].getStr()
+    let rejected = curl(
+      "-w '\n%{http_code}' -X POST -H 'content-type: application/json' " &
+      "-d '{\"decision\":\"deny\"}' " &
+      "http://127.0.0.1:8975/api/sessions/s1/confirmations/c1")
+    check "confirmation_not_owned" in rejected
+    check rejected.strip().endsWith("403")
+
+    attachment = initiatingId
+    check "\"decision\":\"deny\"" in curl(
+      "-X POST -H 'Idempotency-Key: confirmation-c1' " &
+      "-H 'content-type: application/json' " &
+      "-d '{\"decision\":\"deny\"}' " &
+      "http://127.0.0.1:8975/api/sessions/s1/confirmations/c1")
+    let doneDeadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < doneDeadline:
+      events = curl(
+        "'http://127.0.0.1:8975/api/sessions/s1/events?cursor=0'")
+      if "turn_done" in events: break
+      sleep(20)
+    check "confirmation_resolved" in events
+    check "destructive command was not confirmed" in events
+    check "denial handled" in events
+    check "turn_done" in events
+
   test "agent gateway persists sessions across restarts":
     ## Milestone 11 e2e: run a turn with GENE_GATEWAY_DB set, kill the
     ## gateway, restart on the same db — the event history must be intact,
@@ -5425,7 +5646,11 @@ catch {^message message}
     ## and new session ids must not collide with restored ones.
     buildGeneCli()
     let dbPath = cliDir / "gateway_persist.sqlite"
-    removeFile(dbPath)
+    # A prior run's WAL/journal sidecars would replay old sessions into the
+    # "fresh" db (session ids start at s2+, breaking the s1 expectations), so
+    # every SQLite file must go, not just the main db.
+    for suffix in ["", "-wal", "-shm", "-journal"]:
+      removeFile(dbPath & suffix)
 
     proc startGw(): Process =
       startProcess(
@@ -5452,11 +5677,28 @@ catch {^message message}
             raise
           sleep(50)
 
+    var persistAttachment = ""
+
+    proc persistCurl(call: string): tuple[output: string, exitCode: int] =
+      let attachmentHeader =
+        if persistAttachment.len > 0:
+          "-H 'X-Gene-Attachment: " & persistAttachment & "' "
+        else:
+          ""
+      execCmdEx("curl -sS --max-time 5 " & attachmentHeader & call)
+
+    proc attachPersistedSession() =
+      persistAttachment = ""
+      persistAttachment = parseJson(persistCurl(
+        "-X POST -H 'content-type: application/json' " &
+        "-d '{\"display_label\":\"persistence-test\"}' " &
+        "http://127.0.0.1:8997/api/sessions/s1/attachments").output)[
+          "attachment_id"].getStr()
+
     proc waitTurn(cursor: int): string =
       let deadline = getMonoTime() + initDuration(seconds = 15)
       while getMonoTime() < deadline:
-        let ran = execCmdEx(
-          "curl -sS --max-time 5 " &
+        let ran = persistCurl(
           "'http://127.0.0.1:8997/api/sessions/s1/events?cursor=" &
           $cursor & "'")
         if ran.exitCode == 0:
@@ -5467,13 +5709,35 @@ catch {^message message}
       checkpoint "turn never completed: " & result
       check false
 
+    # A crashed earlier run can orphan a gateway that still owns the port; the
+    # fresh gateway then fails to bind and every request below hits the stale
+    # process instead (session ids drift past s1). Reclaim the port up front,
+    # and wait for the kill to actually release it before binding.
+    discard execCmdEx("lsof -ti tcp:8997 | xargs kill 2>/dev/null")
+    block waitPortFree:
+      let deadline = getMonoTime() + initDuration(seconds = 5)
+      while getMonoTime() < deadline:
+        var probe = newSocket()
+        try:
+          probe.connect("127.0.0.1", Port(8997), timeout = 200)
+          probe.close()
+          sleep(50)
+        except OSError, TimeoutError:
+          probe.close()
+          break waitPortFree
+
     var gw = startGw()
+    defer:
+      if gw.running:
+        gw.terminate()
+      gw.close()
     waitPort()
-    let created = execCmdEx(
-      "curl -sS -X POST http://127.0.0.1:8997/api/sessions")
+    let created = persistCurl(
+      "-X POST http://127.0.0.1:8997/api/sessions")
     check "\"id\":\"s1\"" in created.output
-    discard execCmdEx(
-      "curl -sS -X POST -H 'content-type: application/json' " &
+    attachPersistedSession()
+    discard persistCurl(
+      "-X POST -H 'content-type: application/json' " &
       "-d '{\"text\":\"list it\"}' " &
       "http://127.0.0.1:8997/api/sessions/s1/messages")
     let firstTurn = waitTurn(0)
@@ -5482,8 +5746,8 @@ catch {^message message}
     # just streamed text — the demo transport invokes list_dir.
     check "tool_call" in firstTurn
     check "tool_result" in firstTurn
-    let durableWorker = execCmdEx(
-      "curl -sS -X POST -H 'content-type: application/json' " &
+    let durableWorker = persistCurl(
+      "-X POST -H 'content-type: application/json' " &
       "-d '{\"kind\":\"output\",\"config\":{\"title\":\"durable-checks\",\"text\":\"saved\"}}' " &
       "http://127.0.0.1:8997/api/sessions/s1/workers")
     check "\"worker_id\":\"w1\"" in durableWorker.output
@@ -5492,26 +5756,22 @@ catch {^message message}
     gw.close()
 
     gw = startGw()
-    defer:
-      if gw.running:
-        gw.terminate()
-      gw.close()
     waitPort()
+    attachPersistedSession()
     # History restored verbatim, including the structured tool events.
-    let restored = execCmdEx(
-      "curl -sS --max-time 5 " &
+    let restored = persistCurl(
       "'http://127.0.0.1:8997/api/sessions/s1/events?cursor=0'")
     check "\"v\":1" in restored.output
     check "list it" in restored.output
     check "list_dir tool" in restored.output
     check "tool_call" in restored.output
     check "tool_result" in restored.output
-    let restoredWorkers = execCmdEx(
-      "curl -sS http://127.0.0.1:8997/api/sessions/s1/workers")
+    let restoredWorkers = persistCurl(
+      "http://127.0.0.1:8997/api/sessions/s1/workers")
     check "\"worker_id\":\"w1\"" in restoredWorkers.output
     check "\"title\":\"durable-checks\"" in restoredWorkers.output
-    let restoredSnapshot = execCmdEx(
-      "curl -sS http://127.0.0.1:8997/api/sessions/s1/snapshot")
+    let restoredSnapshot = persistCurl(
+      "http://127.0.0.1:8997/api/sessions/s1/snapshot")
     check "list it" in restoredSnapshot.output
     check "I listed the workspace" in restoredSnapshot.output
     # Highest version in the restored log (robust to per-turn event count).
@@ -5525,12 +5785,12 @@ catch {^message message}
           discard
     check maxV >= 1
     # New ids continue past restored ones.
-    let second = execCmdEx(
-      "curl -sS -X POST http://127.0.0.1:8997/api/sessions")
+    let second = persistCurl(
+      "-X POST http://127.0.0.1:8997/api/sessions")
     check "\"id\":\"s2\"" in second.output
     # The restored session keeps working, with versions continuing past maxV.
-    discard execCmdEx(
-      "curl -sS -X POST -H 'content-type: application/json' " &
+    discard persistCurl(
+      "-X POST -H 'content-type: application/json' " &
       "-d '{\"text\":\"again\"}' " &
       "http://127.0.0.1:8997/api/sessions/s1/messages")
     let contTurn = waitTurn(maxV)
@@ -5654,9 +5914,16 @@ catch {^message message}
     check outbox.count("I listed the workspace via the list_dir tool.") == 1
     # The unlisted chat never got a message.
     check "\"chat_id\":99" notin outbox
-    # The turn also shows up in the gateway session log under tg-42.
+    # The turn also shows up in the gateway session log under tg-42. Reading
+    # events is an attached-client action (C9), so establish an attachment
+    # and pass its header.
+    let att = execCmdEx(
+      "curl -sS --max-time 5 -X POST " &
+      "'http://127.0.0.1:8995/api/sessions/tg-42/attachments'")
+    check att.exitCode == 0
+    let attId = parseJson(att.output)["attachment_id"].getStr()
     let events = execCmdEx(
-      "curl -sS --max-time 5 " &
+      "curl -sS --max-time 5 -H 'X-Gene-Attachment: " & attId & "' " &
       "'http://127.0.0.1:8995/api/sessions/tg-42/events?cursor=0'")
     check events.exitCode == 0
     check "turn_done" in events.output

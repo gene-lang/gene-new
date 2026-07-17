@@ -1,0 +1,223 @@
+# =============================================================================
+# AI-agent client transport — examples/ai_agent/design.md §12 / slice C9.
+#
+# A surface talks only through this interface. The remote implementation owns
+# HTTP authentication, logical attachment identity, idempotency keys, cursor
+# recovery, and explicit acknowledgement. It owns no panes or drafts.
+# =============================================================================
+
+(mod ai_agent_client_transport
+  @doc "direct/remote client boundary for the Gene AI-agent service")
+
+(import net/http_client [Http request HttpClientError])
+(import crypto [random_hex])
+(import json [parse stringify JsonError])
+(import str [starts_with? ends_with? trim byte_size slice_bytes])
+
+(type ClientTransportError
+  ^props {^message Str ^kind Str ^status Int? ^details Any?}
+  ^impl [Error])
+
+(impl Error for ClientTransportError)
+
+(fn transport_error [kind : Str, message : Str, status, details]
+  (fail
+    (ClientTransportError
+      ^kind kind ^message message ^status status ^details details)))
+
+(fn normalized_origin [value : Str] : Str
+  (var origin (trim value))
+  (if_not (|| (starts_with? origin "http://")
+              (starts_with? origin "https://"))
+    (transport_error "invalid_origin"
+      "--connect expects an http:// or https:// origin" nil nil))
+  (while (&& (> (byte_size origin) 0) (ends_with? origin "/"))
+    (set origin (slice_bytes origin 0 (- (byte_size origin) 1))))
+  origin)
+
+(fn parsed_response [response]
+  (var value
+    (if (== (trim response/body) "") {}
+      (try
+        (parse response/body)
+      catch (JsonError ^message message)
+        (transport_error "invalid_response"
+          $"gateway returned invalid JSON: ${message}"
+          response/status response/body))))
+  {^ok (&& (>= response/status 200) (< response/status 300))
+   ^status response/status ^value value ^headers response/headers})
+
+(fn require_success [response]
+  (if_not response/ok
+    (var kind
+      (if (== response/value/error void)
+        "http_error" $"${response/value/error}"))
+    (var message
+      (if (== response/value/message void)
+        $"gateway request failed with HTTP ${response/status}"
+        $"${response/value/message}"))
+    (transport_error kind message response/status response/value))
+  response/value)
+
+(fn remote_transport [raw_origin : Str, bearer : Str]
+  (var origin (normalized_origin raw_origin))
+  (var session_id (cell nil))
+  (var attachment_id (cell nil))
+  (var resume_credential (cell nil))
+  (var cursor (cell 0))
+  (var request_seq (cell 0))
+
+  (fn next_idempotency_key [] : Str
+    (request_seq ~ Cell/set (+ (request_seq ~ Cell/get) 1))
+    $"client-${(request_seq ~ Cell/get)}-${(random_hex 12)}")
+
+  (fn call
+    [method : Str, path : Str, body, attached : Bool, mutation : Bool]
+    (var headers {})
+    (if_not (== bearer "")
+      (headers ~ Map/put! "authorization" $"Bearer ${bearer}"))
+    (if_yes attached
+      (var aid (attachment_id ~ Cell/get))
+      (if (== aid nil)
+        (transport_error "not_attached"
+          "client has no logical gateway attachment" nil nil))
+      (headers ~ Map/put! "x-gene-attachment" aid))
+    (var encoded "")
+    (if_not (== body nil)
+      (set encoded (stringify body))
+      (headers ~ Map/put! "content-type" "application/json"))
+    (if mutation
+      (headers ~ Map/put! "idempotency-key" (next_idempotency_key)))
+    (try
+      (parsed_response
+        (await
+          (request Http ^method method ^url $"${origin}${path}"
+            ^headers headers ^body encoded ^timeout_ms 30000
+            ^max_bytes 4194304)))
+    catch (HttpClientError ^kind kind ^message message)
+      (transport_error kind message nil nil)))
+
+  (fn create_session []
+    (var created (require_success
+      (call "POST" "/api/sessions" nil false false)))
+    (session_id ~ Cell/set created/id)
+    created)
+
+  (fn attach [label : Str]
+    (var sid (session_id ~ Cell/get))
+    (if (== sid nil)
+      (transport_error "no_session" "create or select a session first" nil nil))
+    (var attached (require_success
+      (call "POST" $"/api/sessions/${sid}/attachments"
+        {^display_label label} false false)))
+    (attachment_id ~ Cell/set attached/attachment_id)
+    (resume_credential ~ Cell/set attached/resume_credential)
+    (cursor ~ Cell/set attached/acknowledged_cursor)
+    attached)
+
+  (fn connect [requested_session, label : Str]
+    (if (|| (== requested_session nil) (== (trim requested_session) ""))
+      (create_session)
+      (session_id ~ Cell/set requested_session))
+    (attach label))
+
+  (fn resume []
+    (var sid (session_id ~ Cell/get))
+    (var aid (attachment_id ~ Cell/get))
+    (var credential (resume_credential ~ Cell/get))
+    (if (|| (== sid nil) (== aid nil) (== credential nil))
+      (transport_error "not_resumable"
+        "session, attachment, and resume credential are required" nil nil))
+    (var resumed (require_success
+      (call "POST" $"/api/sessions/${sid}/attachments/${aid}/resume"
+        {^resume_credential credential} false false)))
+    (cursor ~ Cell/set resumed/acknowledged_cursor)
+    resumed)
+
+  (fn snapshot []
+    (var sid (session_id ~ Cell/get))
+    (var value (require_success
+      (call "GET" $"/api/sessions/${sid}/snapshot" nil true false)))
+    (cursor ~ Cell/set value/cursor)
+    value)
+
+  (fn acknowledge [value : Int]
+    (var sid (session_id ~ Cell/get))
+    (var aid (attachment_id ~ Cell/get))
+    (var acked (require_success
+      (call "POST" $"/api/sessions/${sid}/attachments/${aid}/ack"
+        {^cursor value} true true)))
+    (cursor ~ Cell/set acked/acknowledged_cursor)
+    acked)
+
+  (fn poll []
+    (var sid (session_id ~ Cell/get))
+    (var current (cursor ~ Cell/get))
+    (var response
+      (call "GET" $"/api/sessions/${sid}/events?cursor=${current}"
+        nil true false))
+    (if (&& (! response/ok)
+            (== response/value/error "cursor_gap"))
+      (return {^gap true ^snapshot (snapshot) ^events []
+               ^cursor (cursor ~ Cell/get)}))
+    (var value (require_success response))
+    (if (> value/cursor current)
+      (cursor ~ Cell/set value/cursor))
+    {^gap false ^events value/events ^cursor value/cursor
+     ^changed_worker_ids value/changed_worker_ids})
+
+  (fn send_message [text : Str]
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "POST" $"/api/sessions/${sid}/messages"
+        {^text text} true true)))
+
+  (fn operations []
+    (require_success (call "GET" "/api/operations" nil false false)))
+
+  (fn workers []
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "GET" $"/api/sessions/${sid}/workers" nil true false)))
+
+  (fn call_worker [worker_id : Str, operation : Str, args]
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "POST"
+        $"/api/sessions/${sid}/workers/${worker_id}/ops/${operation}"
+        {^args args} true true)))
+
+  (fn resolve_confirmation [confirmation_id : Str, decision : Str]
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "POST"
+        $"/api/sessions/${sid}/confirmations/${confirmation_id}"
+        {^decision decision} true true)))
+
+  (fn detach []
+    (var sid (session_id ~ Cell/get))
+    (var aid (attachment_id ~ Cell/get))
+    (if (|| (== sid nil) (== aid nil))
+      (return {^ok true}))
+    (var detached (require_success
+      (call "DELETE" $"/api/sessions/${sid}/attachments/${aid}"
+        nil true true)))
+    (attachment_id ~ Cell/set nil)
+    (resume_credential ~ Cell/set nil)
+    detached)
+
+  {^mode "remote" ^origin origin
+   ^session_id session_id ^attachment_id attachment_id
+   ^resume_credential resume_credential ^cursor cursor
+   ^connect connect ^resume resume ^snapshot snapshot ^poll poll
+   ^acknowledge acknowledge ^send_message send_message
+   ^operations operations ^workers workers ^call_worker call_worker
+   ^resolve_confirmation resolve_confirmation ^detach detach
+   ^call call})
+
+(fn direct_transport [service]
+  # Shape A injects the same method set over direct application calls. Keeping
+  # this constructor intentionally boring makes the interface, not localhost
+  # serialization, the architectural boundary.
+  (service ~ Map/put! "mode" "direct")
+  service)

@@ -7205,6 +7205,42 @@ proc biCryptoSha256(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   requireStr("crypto/sha256", args[0])
   newStr(sha256Hex(args[0].strVal))
 
+proc biCryptoRandomHex(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("crypto/random_hex", args)
+  let size = requireInt64("crypto/random_hex", args[0])
+  if size < 1 or size > 1024:
+    raise newException(GeneError,
+      "crypto/random_hex byte count must be between 1 and 1024")
+  when not defined(emscripten) and not defined(geneWasm):
+    try:
+      let bytes = urandom(Natural(size))
+      var encoded = newStringOfCap(bytes.len * 2)
+      for value in bytes:
+        encoded.add toHex(value, 2).toLowerAscii()
+      newStr(encoded)
+    except OSError as error:
+      raise newException(GeneError,
+        "crypto/random_hex could not read the operating-system random source: " &
+        error.msg)
+  else:
+    raise newException(GeneError,
+      "crypto/random_hex is unavailable on this target")
+
+proc biCryptoSecureEqual(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "crypto/secure_equal? expects 2 arguments, got " & $args.len)
+  requireStr("crypto/secure_equal? left", args[0])
+  requireStr("crypto/secure_equal? right", args[1])
+  let left = args[0].strVal
+  let right = args[1].strVal
+  var difference = left.len xor right.len
+  for i in 0 ..< max(left.len, right.len):
+    let a = if i < left.len: ord(left[i]) else: 0
+    let b = if i < right.len: ord(right[i]) else: 0
+    difference = difference or (a xor b)
+  newBool(difference == 0)
+
 proc storeOwnerOnly(path: string, directory = false) =
   try:
     if directory:
@@ -8271,6 +8307,12 @@ proc registerStdlibNamespaces(root: Scope) =
   cryptoScope.define("sha256", newNativeCallFn("crypto/sha256",
                                                biCryptoSha256,
                                                acceptsNamed = false))
+  cryptoScope.define("random_hex", newNativeCallFn("crypto/random_hex",
+                                                   biCryptoRandomHex,
+                                                   acceptsNamed = false))
+  cryptoScope.define("secure_equal?", newNativeCallFn("crypto/secure_equal?",
+                                                      biCryptoSecureEqual,
+                                                      acceptsNamed = false))
   root.define("crypto", newNamespace("crypto", cryptoScope))
 
   # os: env, subprocess, line input (examples/ai_agent/design.md §3,§6). Capabilities are

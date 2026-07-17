@@ -21,7 +21,8 @@
 (mod agent_gateway_adapter
   @doc "multi-session gateway over the ai_agent turn loop (§12 milestone 8)")
 
-(import os [get_env exec_async Env Exec])
+(import os [get_env exec_async monotonic_ms Env Exec])
+(import crypto [random_hex secure_equal?])
 (import json [parse stringify JsonError])
 (import str [split trim join starts_with? contains? byte_size])
 (import std/stream [to_stream filter each into])
@@ -79,6 +80,37 @@
 
 (var gw_store (cell nil))
 
+# C9 logical client attachments are process-local delivery/authorization state.
+# Durable session state never contains them; a service restart intentionally
+# invalidates resume credentials and leaves mutation outcomes unknown.
+(type GatewayAttachment
+  ^props {^id Str ^session_id Str ^principal Str ^tier Str
+          ^capabilities List ^label Str ^resume_credential Str
+          ^ack_cursor Cell ^expires_at_ms Cell})
+
+(type IdempotencyRecord
+  ^props {^session_id Str ^attachment_id Str ^key Str ^fingerprint Str
+          ^status Int ^headers Map ^body Str ^expires_at_ms Int})
+
+(var gateway_attachments (cell []))
+(var gateway_idempotency_records (cell []))
+(var gateway_attachment_max
+  (positive_env_int "GENE_GATEWAY_ATTACHMENT_MAX_COUNT" 64))
+(var gateway_attachment_lease_ms
+  (positive_env_int "GENE_GATEWAY_ATTACHMENT_LEASE_MS" 3600000))
+(var gateway_idempotency_max
+  (positive_env_int "GENE_GATEWAY_IDEMPOTENCY_MAX_COUNT" 1024))
+(var gateway_idempotency_ttl_ms
+  (positive_env_int "GENE_GATEWAY_IDEMPOTENCY_TTL_MS" 300000))
+
+(var full_client_capabilities
+  ["observe" "session_write" "model_call" "host_read" "host_write"])
+
+(fn attachment_invocation [attachment]
+  {^origin "remote" ^caller_worker_id nil
+   ^attachment_id attachment/id ^principal attachment/principal
+   ^principal_capabilities attachment/capabilities})
+
 (fn persist_session [id, items, events, next_v, dropped_before, app]
   (if (gw_store ~ Cell/get)
     (try
@@ -122,6 +154,10 @@
   # handlers must not both return 202 while the worker still appears idle.
   (var input_pending (cell false))
   (var cancel_requested (cell false))
+  (var pending_confirmation (cell nil))
+  (var confirmation_seq (cell 0))
+  (var current_attachment_id (cell nil))
+  (var current_principal (cell nil))
   (var items
     (if shared existing_app/main_agent/items
       (cell (if (== saved nil)
@@ -146,6 +182,13 @@
       (events ~ Cell/set kept)
       (event_bytes ~ Cell/set retained_bytes)))
   (trim_events!)
+  (fn add_turn_provenance! [props]
+    (if (current_attachment_id ~ Cell/get)
+      (props ~ Map/put! "attachment_id"
+        (current_attachment_id ~ Cell/get)))
+    (if (current_principal ~ Cell/get)
+      (props ~ Map/put! "principal" (current_principal ~ Cell/get)))
+    props)
   (fn append_event [event]
     (var stored (agent_api/bounded_event_record event gw_event_max_bytes))
     ((events ~ Cell/get) ~ List/push! stored)
@@ -158,15 +201,18 @@
   (fn push_event [type : Str, text : Str]
     (if shared
       (then
-        (agent_api/application_emit app type
+        (var props
           {^worker_id app/main_agent/id ^agent_id app/main_agent/id
-           ^text text ^surface "gateway"}))
+           ^text text ^surface "gateway"})
+        (add_turn_provenance! props)
+        (agent_api/application_emit app type props))
       (else
         (next_v ~ Cell/set (+ (next_v ~ Cell/get) 1))
         (var event
           {^v (next_v ~ Cell/get) ^type type
            ^worker_id app/main_agent/id ^agent_id app/main_agent/id
            ^text (agent_api/redact_any text)})
+        (add_turn_provenance! event)
         (append_event event)
         # The application observes the same event and derives canonical
         # worker_output records; its sink intentionally skips the already
@@ -182,6 +228,7 @@
   # keeps its full tool trail. agent_text/text_delta come from the render
   # callbacks below, so the sink skips them to avoid double-logging.
   (fn push_structured [type : Str, props]
+    (add_turn_provenance! props)
     (if shared
       (then (agent_api/application_emit app type props))
       (else
@@ -204,6 +251,38 @@
             (agent_api/gateway_render_event app "turn_done" "")
             (agent_api/gateway_project_event app "turn_done" "")))
         emitted)))
+  (fn request_confirmation [cmd : Str, input] : Bool
+    # Channel clients and unattached internal producers cannot approve host
+    # mutations. A full attachment gets one initiator-bound pending request;
+    # waiting here parks only this model Task, never the HTTP scheduler.
+    (if (== input/attachment_id nil)
+      (return false))
+    (if (!= (pending_confirmation ~ Cell/get) nil)
+      (return false))
+    (confirmation_seq ~ Cell/set (+ (confirmation_seq ~ Cell/get) 1))
+    (var id $"c${(confirmation_seq ~ Cell/get)}")
+    (var reply (channel ^capacity 1))
+    (var record
+      {^id id ^attachment_id input/attachment_id
+       ^principal input/principal ^risk "destructive"
+       ^target (agent_api/redact_any cmd) ^reply reply
+       ^created_ms (monotonic_ms)})
+    (pending_confirmation ~ Cell/set record)
+    (push_structured "confirmation_requested"
+      {^confirmation_id id ^attachment_id input/attachment_id
+       ^principal input/principal ^risk "destructive"
+       ^target (agent_api/redact_any cmd)})
+    (try
+      (var allowed (reply ~ Channel/recv))
+      (push_structured "confirmation_resolved"
+        {^confirmation_id id ^attachment_id input/attachment_id
+         ^principal input/principal
+         ^decision (if allowed "allow" "deny")})
+      allowed
+    ensure
+      (var pending (pending_confirmation ~ Cell/get))
+      (if (&& pending (== pending/id id))
+        (pending_confirmation ~ Cell/set nil))))
   (if (== app nil)
     (set app
       (agent_api/make_application items (cell "") (cell [])
@@ -269,6 +348,8 @@
             (push_structured "error"
               {^kind "busy" ^text "turn already in flight"}))
           (else
+            (current_attachment_id ~ Cell/set input/attachment_id)
+            (current_principal ~ Cell/set input/principal)
             (if shared (agent_api/begin_turn))
             (agent_api/record_worker_input
               app/main_agent input/text input/adapter nil)
@@ -302,7 +383,9 @@
                             agent_api/max_tool_rounds
                             emit_turn_event
                             {^app app ^agent app/main_agent ^pane nil
-                             ^guard_confirm (fn [cmd] false)}))))
+                             ^guard_confirm
+                               (fn [cmd]
+                                 (request_confirmation cmd input))}))))
             (agent_api/application_begin_worker_operation
               app app/main_agent task "agent_turn")
             # The canonical task is now visible. Release only the admission
@@ -311,7 +394,7 @@
             (task ~ Task/detach)
             ((spawn (monitor_turn task)) ~ Task/detach)))
         (actor/continue state))))
-  (fn submit_input [text : Str, adapter : Str] : Bool
+  (fn submit_input [text : Str, adapter : Str, attachment] : Bool
     (if (|| (input_pending ~ Cell/get)
             (app/main_agent/input_reserved ~ Cell/get)
             (!= (current_task ~ Cell/get) nil))
@@ -321,7 +404,11 @@
         # Shared worker state lets the TUI observe admission before this
         # adapter's actor installs the Task.
         (app/main_agent/input_reserved ~ Cell/set true)
-        (turn_actor ~ actor/send (freeze {^text text ^adapter adapter}))
+        (turn_actor ~ actor/send
+          (freeze
+            {^text text ^adapter adapter
+             ^attachment_id (if attachment attachment/id)
+             ^principal (if attachment attachment/principal)}))
         true)))
   # Persist terminal worker transitions even when no main-agent message runs.
   # Projection deltas are captured by the terminal operation snapshot (or by
@@ -337,6 +424,7 @@
    ^event_bytes event_bytes
    ^items items
    ^current_task current_task ^input_pending input_pending
+   ^pending_confirmation pending_confirmation
    ^submit_input submit_input ^cancel_requested cancel_requested
    ^application app ^shared shared})
 
@@ -506,7 +594,7 @@
       (if (tg_chat_allowed? chat_id)
         (then
           (var s (tg_session_for chat_id))
-          (if_not (s/submit_input text "telegram")
+          (if_not (s/submit_input text "telegram" nil)
             (telegram_notice chat_id
               $"worker_busy: session ${s/id} already has a turn in flight")
             (gw_notice
@@ -555,7 +643,274 @@
       (var h req/headers/authorization)
       (if (== h void)
         false
-        (== h $"Bearer ${gw_token}")))))
+        (secure_equal? h $"Bearer ${gw_token}")))))
+
+(fn request_header [req, name : Str]
+  (var value (req/headers ~ Map/get name))
+  (if (== value void) nil value))
+
+(fn gateway_principal [] : Str
+  (if (== gw_token "") "loopback" "bearer"))
+
+(fn attachment_expired? [attachment] : Bool
+  (>= (monotonic_ms) (attachment/expires_at_ms ~ Cell/get)))
+
+(fn prune_gateway_attachments! []
+  (var retained [])
+  (for attachment in (gateway_attachments ~ Cell/get)
+    (if_not (attachment_expired? attachment)
+      (retained ~ List/push! attachment)))
+  (gateway_attachments ~ Cell/set retained))
+
+(fn gateway_attachment [id : Str]
+  (prune_gateway_attachments!)
+  (for attachment in (gateway_attachments ~ Cell/get)
+    (if (== attachment/id id)
+      (return attachment)))
+  nil)
+
+(fn remove_gateway_attachment! [id : Str] : Bool
+  (var retained [])
+  (var removed (cell false))
+  (for attachment in (gateway_attachments ~ Cell/get)
+    (if (== attachment/id id)
+      (removed ~ Cell/set true)
+      (retained ~ List/push! attachment)))
+  (gateway_attachments ~ Cell/set retained)
+  (removed ~ Cell/get))
+
+(fn touch_gateway_attachment! [attachment]
+  (attachment/expires_at_ms ~ Cell/set
+    (+ (monotonic_ms) gateway_attachment_lease_ms))
+  attachment)
+
+(fn attachment_response [attachment]
+  (var pending [])
+  (var s (sessions ~ Map/get attachment/session_id))
+  (if_yes (!= s void)
+    (var request (s/pending_confirmation ~ Cell/get))
+    (if (&& request (== request/attachment_id attachment/id))
+      (pending ~ List/push!
+        {^confirmation_id request/id ^risk request/risk
+         ^target request/target ^created_ms request/created_ms})))
+  {^attachment_id attachment/id
+   ^resume_credential attachment/resume_credential
+   ^principal attachment/principal ^tier attachment/tier
+   ^capabilities attachment/capabilities
+   ^acknowledged_cursor (attachment/ack_cursor ~ Cell/get)
+   ^pending_confirmations pending
+   ^lease_ms gateway_attachment_lease_ms})
+
+(fn create_attachment [session_id : Str, req]
+  (var s (sessions ~ Map/get session_id))
+  (if (== s void)
+    (return (json_response 404 {^error "no_such_session"})))
+  (prune_gateway_attachments!)
+  (if (>= ((gateway_attachments ~ Cell/get) ~ size) gateway_attachment_max)
+    (return
+      (json_response 429
+        {^error "attachment_limit"
+         ^limit gateway_attachment_max})))
+  (try
+    (var body
+      (if (== (trim req/body) "") {} (parse req/body)))
+    (var raw_label
+      (if (== body/display_label void) "client" body/display_label))
+    (match raw_label
+      (when (label : Str)
+        (if (> (byte_size label) 128)
+          (return
+            (json_response 400
+              {^error "invalid_display_label"
+               ^message "display_label exceeds 128 bytes"})))
+        (var attachment
+          (GatewayAttachment
+            ^id $"att_${(random_hex 16)}"
+            ^session_id session_id
+            ^principal (gateway_principal)
+            ^tier "full"
+            ^capabilities full_client_capabilities
+            ^label label
+            ^resume_credential $"resume_${(random_hex 32)}"
+            ^ack_cursor (cell (session_event_cursor s))
+            ^expires_at_ms
+              (cell (+ (monotonic_ms) gateway_attachment_lease_ms))))
+        ((gateway_attachments ~ Cell/get) ~ List/push! attachment)
+        (json_response 201 (attachment_response attachment)))
+      (else
+        (json_response 400
+          {^error "invalid_display_label"
+           ^message "display_label must be a string"})))
+  catch (JsonError ^message message)
+    (json_response 400 {^error "invalid_json" ^message message})))
+
+(fn resume_attachment [session_id : Str, attachment_id : Str, req]
+  (var attachment (gateway_attachment attachment_id))
+  (if (|| (== attachment nil) (!= attachment/session_id session_id))
+    (return (json_response 401 {^error "attachment_invalid"})))
+  (try
+    (var body (parse req/body))
+    (if (|| (== body/resume_credential void)
+            (! (match body/resume_credential
+                 (when (credential : Str)
+                   (secure_equal? credential attachment/resume_credential))
+                 (else false))))
+      (return
+        (json_response 401 {^error "resume_credential_invalid"})))
+    (touch_gateway_attachment! attachment)
+    (json_response 200 (attachment_response attachment))
+  catch (JsonError ^message message)
+    (json_response 400 {^error "invalid_json" ^message message})))
+
+(fn require_attachment [session_id : Str, req]
+  (var id (request_header req "x-gene-attachment"))
+  (if (== id nil)
+    (return
+      {^ok false
+       ^response
+         (json_response 428
+           {^error "attachment_required"
+            ^header "X-Gene-Attachment"})}))
+  (var attachment (gateway_attachment id))
+  (if (|| (== attachment nil) (!= attachment/session_id session_id))
+    (return
+      {^ok false
+       ^response (json_response 401 {^error "attachment_invalid"})}))
+  (touch_gateway_attachment! attachment)
+  {^ok true ^attachment attachment})
+
+(fn detach_attachment [session_id : Str, attachment_id : Str, attachment]
+  (if (!= attachment/id attachment_id)
+    (return (json_response 403 {^error "attachment_mismatch"})))
+  (var s (sessions ~ Map/get session_id))
+  (if (!= s void)
+    (var pending (s/pending_confirmation ~ Cell/get))
+    (if_yes (&& pending (== pending/attachment_id attachment_id))
+      (pending/reply ~ Channel/try_send false)
+      (s/pending_confirmation ~ Cell/set nil)))
+  (remove_gateway_attachment! attachment_id)
+  (json_response 200 {^ok true}))
+
+(fn resolve_confirmation
+  [session_id : Str, confirmation_id : Str, req, attachment]
+  (var s (sessions ~ Map/get session_id))
+  (if (== s void)
+    (return (json_response 404 {^error "no_such_session"})))
+  (var pending (s/pending_confirmation ~ Cell/get))
+  (if (|| (== pending nil) (!= pending/id confirmation_id))
+    (return
+      (json_response 404
+        {^error "confirmation_not_found"
+         ^confirmation_id confirmation_id})))
+  (if (!= pending/attachment_id attachment/id)
+    (return
+      (json_response 403
+        {^error "confirmation_not_owned"
+         ^confirmation_id confirmation_id})))
+  (try
+    (var body (parse req/body))
+    (if_not (["allow" "deny"] ~ contains? body/decision)
+      (return
+        (json_response 400
+          {^error "invalid_confirmation_decision"
+           ^message "decision must be allow or deny"})))
+    (var accepted
+      (pending/reply ~ Channel/try_send (== body/decision "allow")))
+    (if_not accepted
+      (return
+        (json_response 409
+          {^error "confirmation_already_resolved"
+           ^confirmation_id confirmation_id})))
+    (s/pending_confirmation ~ Cell/set nil)
+    (json_response 200
+      {^ok true ^confirmation_id confirmation_id
+       ^decision body/decision})
+  catch (JsonError ^message message)
+    (json_response 400 {^error "invalid_json" ^message message})))
+
+(fn acknowledge_attachment
+  [session_id : Str, attachment_id : Str, attachment, req]
+  (if (!= attachment/id attachment_id)
+    (return (json_response 403 {^error "attachment_mismatch"})))
+  (try
+    (var body (parse req/body))
+    (match body/cursor
+      (when (cursor : Int)
+        (var s (sessions ~ Map/get session_id))
+        (var high_water (session_event_cursor s))
+        (if (|| (< cursor 0) (> cursor high_water))
+          (return
+            (json_response 400
+              {^error "invalid_cursor" ^cursor cursor
+               ^high_water high_water})))
+        (if (> cursor (attachment/ack_cursor ~ Cell/get))
+          (attachment/ack_cursor ~ Cell/set cursor))
+        (json_response 200
+          {^ok true
+           ^acknowledged_cursor
+             (attachment/ack_cursor ~ Cell/get)}))
+      (else
+        (json_response 400
+          {^error "invalid_cursor"
+           ^message "cursor must be an integer"})))
+  catch (JsonError ^message message)
+    (json_response 400 {^error "invalid_json" ^message message})))
+
+(fn prune_idempotency_records! []
+  (var now (monotonic_ms))
+  (var retained [])
+  (for record in (gateway_idempotency_records ~ Cell/get)
+    (if (> record/expires_at_ms now)
+      (retained ~ List/push! record)))
+  (var overflow (- retained/~size gateway_idempotency_max))
+  (if_yes (> overflow 0)
+    (var bounded [])
+    (repeat index in retained/~size
+      (if (>= index overflow)
+        (bounded ~ List/push! retained/%index)))
+    (set retained bounded))
+  (gateway_idempotency_records ~ Cell/set retained))
+
+(fn idempotency_record [session_id : Str, attachment_id : Str, key : Str]
+  (prune_idempotency_records!)
+  (for record in (gateway_idempotency_records ~ Cell/get)
+    (if (&& (== record/session_id session_id)
+            (== record/attachment_id attachment_id)
+            (== record/key key))
+      (return record)))
+  nil)
+
+(fn cached_response [record]
+  (Response ^status record/status ^headers record/headers ^body record/body))
+
+(fn dispatch_idempotent [session_id : Str, attachment, req, dispatch]
+  (var key (request_header req "idempotency-key"))
+  (if (|| (== key nil) (== key ""))
+    (return (dispatch)))
+  (if (> (byte_size key) 128)
+    (return
+      (json_response 400
+        {^error "invalid_idempotency_key"
+         ^message "Idempotency-Key exceeds 128 bytes"})))
+  (var fingerprint $"${req/method}\n${req/path}\n${req/body}")
+  (var existing
+    (idempotency_record session_id attachment/id key))
+  (if existing
+    (return
+      (if (== existing/fingerprint fingerprint)
+        (cached_response existing)
+        (json_response 409
+          {^error "idempotency_key_reused"
+           ^message "Idempotency-Key was already used for a different request"}))))
+  (var response (dispatch))
+  ((gateway_idempotency_records ~ Cell/get) ~ List/push!
+    (IdempotencyRecord
+      ^session_id session_id ^attachment_id attachment/id ^key key
+      ^fingerprint fingerprint ^status response/status
+      ^headers response/headers ^body response/body
+      ^expires_at_ms (+ (monotonic_ms) gateway_idempotency_ttl_ms)))
+  (prune_idempotency_records!)
+  response)
 
 (fn create_session []
   (session_seq ~ Cell/set (+ (session_seq ~ Cell/get) 1))
@@ -579,7 +934,7 @@
                      (!= (s/current_task ~ Cell/get) nil))})))
   (json_response 200 {^sessions (out ~ Cell/get)}))
 
-(fn post_message [id : Str, req]
+(fn post_message [id : Str, req, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
@@ -587,7 +942,7 @@
       (var body (parse req/body))
       (if (|| (== body/text void) (== body/text nil) (== body/text ""))
         (json_response 400 {^error "missing text"})
-        (if (s/submit_input body/text "http")
+        (if (s/submit_input body/text $"http:${attachment/id}" attachment)
           (then (json_response 202 {^ok true}))
           (else
             (var operation
@@ -601,11 +956,11 @@
       catch (JsonError ^message m)
         (json_response 400 {^error m}))))
 
-(fn cancel_turn [id : Str]
+(fn cancel_turn [id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
-    (cancel_worker id s/application/main_agent/id)))
+    (cancel_worker id s/application/main_agent/id attachment)))
 
 (fn list_workers [id : Str]
   (var s (sessions ~ Map/get id))
@@ -732,14 +1087,14 @@
     catch {^message m}
       (json_response 400 {^error m}))))
 
-(fn get_agent_result [id : Str, agent_id : Str]
+(fn get_agent_result [id : Str, agent_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (do
       (var response
         (agent_api/application_call_worker s/application agent_id "result" {}
-          {^origin "remote" ^caller_worker_id nil}))
+          (attachment_invocation attachment)))
       (if_not response/ok
         (return (json_response
           (if (== response/error/kind "worker_not_found") 404 403)
@@ -749,14 +1104,14 @@
         (return (json_response 404 {^error "no agent result"})))
       (json_response 200 {^agent_id response/worker_id ^result result/result}))))
 
-(fn mark_agent_result_read [id : Str, agent_id : Str]
+(fn mark_agent_result_read [id : Str, agent_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (do
       (var response
         (agent_api/application_call_worker s/application agent_id
-          "mark_result_read" {} {^origin "remote" ^caller_worker_id nil}))
+          "mark_result_read" {} (attachment_invocation attachment)))
       (if_not response/ok
         (return (json_response 409 {^error response/error})))
       (persist_gateway_session s)
@@ -764,14 +1119,14 @@
       (json_response 200
         {^agent_id response/worker_id ^result (agent/result ~ Cell/get)}))))
 
-(fn incorporate_agent_result [id : Str, agent_id : Str]
+(fn incorporate_agent_result [id : Str, agent_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (json_response 404 {^error "no such session"})
     (do
       (var response
         (agent_api/application_call_worker s/application agent_id
-          "incorporate" {} {^origin "remote" ^caller_worker_id nil}))
+          "incorporate" {} (attachment_invocation attachment)))
       (if_not response/ok
         (return (json_response 409 {^error response/error})))
       (persist_gateway_session s)
@@ -811,7 +1166,7 @@
     catch {^message m}
       (json_response 400 {^error "invalid_progress" ^message m}))))
 
-(fn agent_input [id : Str, agent_id : Str, req]
+(fn agent_input [id : Str, agent_id : Str, req, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (then (json_response 404 {^error "no such session"}))
@@ -819,9 +1174,9 @@
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
-        (worker_input id agent_id req)))))
+        (worker_input id agent_id req attachment)))))
 
-(fn cancel_agent [id : Str, agent_id : Str]
+(fn cancel_agent [id : Str, agent_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (then (json_response 404 {^error "no such session"}))
@@ -829,9 +1184,9 @@
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
-        (cancel_worker id agent/id)))))
+        (cancel_worker id agent/id attachment)))))
 
-(fn stop_agent [id : Str, agent_id : Str]
+(fn stop_agent [id : Str, agent_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (then (json_response 404 {^error "no such session"}))
@@ -839,7 +1194,7 @@
       (var agent (agent_api/application_find_agent s/application agent_id))
       (if (|| (== agent nil) (== agent/id "main"))
         (json_response 404 {^error "no such sub-agent"})
-        (stop_worker id agent/id)))))
+        (stop_worker id agent/id attachment)))))
 
 (fn worker_operation_failure_response [response]
   (var kind response/error/kind)
@@ -860,7 +1215,8 @@
     {^ok true ^worker_id response/worker_id ^operation operation
      ^result (props response/result)}))
 
-(fn worker_operation [id : Str, worker_id : Str, operation : Str, req]
+(fn worker_operation
+  [id : Str, worker_id : Str, operation : Str, req, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (return (json_response 404 {^error "no such session"})))
@@ -870,7 +1226,8 @@
       (if (== body/args void) body body/args))
     (var response
       (agent_api/application_call_worker s/application worker_id operation
-        raw_args {^origin "remote" ^caller_worker_id nil}))
+        raw_args
+        (attachment_invocation attachment)))
     (if response/ok
       (worker_operation_success_response s response operation 200)
       (worker_operation_failure_response response))
@@ -879,7 +1236,8 @@
   catch {^message m}
     (json_response 400 {^error "invalid_operation" ^message m})))
 
-(fn worker_observation [id : Str, worker_id : Str, operation : Str, req]
+(fn worker_observation
+  [id : Str, worker_id : Str, operation : Str, req, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (return (json_response 404 {^error "no such session"})))
@@ -889,14 +1247,14 @@
       (args ~ Map/put! "n" (parse_int req/params/n)))
     (var response
       (agent_api/application_call_worker s/application worker_id operation args
-        {^origin "remote" ^caller_worker_id nil}))
+        (attachment_invocation attachment)))
     (if response/ok
       (worker_operation_success_response s response operation 200)
       (worker_operation_failure_response response))
   catch {^message m}
     (json_response 400 {^error "invalid_arguments" ^message m})))
 
-(fn worker_input [id : Str, worker_id : Str, req]
+(fn worker_input [id : Str, worker_id : Str, req, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (then (json_response 404 {^error "no such session"}))
@@ -926,8 +1284,10 @@
                   (then (json_response 400 {^error "missing_text"}))
                   (else
                     (var result
-                      (agent_api/application_send_worker_input
-                        s/application worker body/text "http"))
+                      (agent_api/application_send_worker_input_invoked
+                        s/application worker body/text
+                        $"http:${attachment/id}"
+                        (attachment_invocation attachment)))
                     (if (starts_with? result "error:")
                       (then
                         (json_response 409
@@ -939,13 +1299,13 @@
               catch (JsonError ^message m)
                 (json_response 400 {^error "invalid_json" ^message m})))))))))
 
-(fn cancel_worker [id : Str, worker_id : Str]
+(fn cancel_worker [id : Str, worker_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (return (json_response 404 {^error "no such session"})))
   (var response
     (agent_api/application_call_worker s/application worker_id "cancel" {}
-      {^origin "remote" ^caller_worker_id nil}))
+      (attachment_invocation attachment)))
   (if_not response/ok
     (return (worker_operation_failure_response response)))
   (var result (props response/result))
@@ -958,7 +1318,7 @@
     (s/cancel_requested ~ Cell/set true))
   (worker_operation_success_response s response "cancel" 202))
 
-(fn stop_worker [id : Str, worker_id : Str]
+(fn stop_worker [id : Str, worker_id : Str, attachment]
   (var s (sessions ~ Map/get id))
   (if (== s void)
     (return (json_response 404 {^error "no such session"})))
@@ -969,7 +1329,7 @@
          ^message "main worker cannot be stopped" ^worker_id worker_id})))
   (var response
     (agent_api/application_call_worker s/application worker_id "stop" {}
-      {^origin "remote" ^caller_worker_id nil}))
+      (attachment_invocation attachment)))
   (if_not response/ok
     (return (worker_operation_failure_response response)))
   (var result (props response/result))
@@ -1034,10 +1394,18 @@ function hdrs(json) {
   var h = {};
   if (json) h['content-type'] = 'application/json';
   if (tok) h['authorization'] = 'Bearer ' + tok;
+  if (attachmentId) h['x-gene-attachment'] = attachmentId;
   return h;
 }
 var log = document.getElementById('log');
-var sid = null, cursor = 0, streaming = false;
+var sid = null, attachmentId = null, cursor = 0, streaming = false;
+function mutationHeaders() {
+  var h = hdrs(true);
+  h['idempotency-key'] =
+    (crypto.randomUUID ? crypto.randomUUID() :
+      Date.now().toString(36) + Math.random().toString(36).slice(2));
+  return h;
+}
 function show(cls, text) {
   if (log.classList.contains('muted')) { log.textContent = ''; log.classList.remove('muted'); }
   var span = document.createElement('span');
@@ -1078,17 +1446,169 @@ function poll() {
 }
 fetch('/api/sessions', { method: 'POST', headers: hdrs(false) })
   .then(function (r) { return r.json(); })
-  .then(function (d) { sid = d.id; show('muted', 'session ' + sid + '\n'); poll(); });
+  .then(function (d) {
+    sid = d.id;
+    return fetch('/api/sessions/' + sid + '/attachments',
+      { method: 'POST', headers: hdrs(true),
+        body: JSON.stringify({ display_label: 'web' }) });
+  })
+  .then(function (r) { return r.json(); })
+  .then(function (d) {
+    attachmentId = d.attachment_id;
+    show('muted', 'session ' + sid + '\n');
+    poll();
+  });
 document.getElementById('f').addEventListener('submit', function (e) {
   e.preventDefault();
   var t = document.getElementById('t');
   if (!t.value || !sid) return;
   fetch('/api/sessions/' + sid + '/messages',
-        { method: 'POST', headers: hdrs(true), body: JSON.stringify({ text: t.value }) });
+        { method: 'POST', headers: mutationHeaders(),
+          body: JSON.stringify({ text: t.value }) });
   t.value = '';
 });
 </script>
 """)
+
+(fn dispatch_attached_session [req, parts, attachment]
+  (match parts/4
+    (when "messages"
+      (if (== req/method "POST")
+        (post_message parts/3 req attachment)
+        (json_response 405 {^error "method_not_allowed"})))
+    (when "events"
+      (if (== req/method "GET")
+        (get_events parts/3 req)
+        (json_response 405 {^error "method_not_allowed"})))
+    (when "snapshot"
+      (if (== req/method "GET")
+        (get_snapshot parts/3)
+        (json_response 405 {^error "method_not_allowed"})))
+    (when "cancel"
+      (if (== req/method "POST")
+        (cancel_turn parts/3 attachment)
+        (json_response 405 {^error "method_not_allowed"})))
+    (when "agents"
+      (if (== parts/~size 5)
+        (if (== req/method "GET")
+          (list_agents parts/3)
+          (if (== req/method "POST")
+            (create_agent parts/3 req)
+            (json_response 405 {^error "method_not_allowed"})))
+        (if (== parts/~size 6)
+          (if (== req/method "DELETE")
+            (stop_agent parts/3 parts/5 attachment)
+            (json_response 405 {^error "method_not_allowed"}))
+          (if (== parts/~size 7)
+            (match parts/6
+              (when "messages"
+                (if (== req/method "POST")
+                  (agent_input parts/3 parts/5 req attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (when "cancel"
+                (if (== req/method "POST")
+                  (cancel_agent parts/3 parts/5 attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (when "result"
+                (if (== req/method "GET")
+                  (get_agent_result parts/3 parts/5 attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (when "incorporate"
+                (if (== req/method "POST")
+                  (incorporate_agent_result parts/3 parts/5 attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (else (json_response 404 {^error "not_found"})))
+            (if (&& (== parts/~size 8)
+                    (== parts/6 "result") (== parts/7 "read"))
+              (if (== req/method "POST")
+                (mark_agent_result_read parts/3 parts/5 attachment)
+                (json_response 405 {^error "method_not_allowed"}))
+              (json_response 404 {^error "not_found"}))))))
+    (when "progress"
+      (if (== req/method "GET")
+        (get_progress parts/3)
+        (if (== req/method "PUT")
+          (put_progress parts/3 req)
+          (json_response 405 {^error "method_not_allowed"}))))
+    (when "confirmations"
+      (if (&& (== parts/~size 6) (== req/method "POST"))
+        (resolve_confirmation parts/3 parts/5 req attachment)
+        (json_response 405 {^error "method_not_allowed"})))
+    (when "workers"
+      (if (== parts/~size 5)
+        (if (== req/method "GET")
+          (list_workers parts/3)
+          (if (== req/method "POST")
+            (create_worker parts/3 req)
+            (json_response 405 {^error "method_not_allowed"})))
+        (if (== parts/~size 6)
+          (if (== req/method "DELETE")
+            (stop_worker parts/3 parts/5 attachment)
+            (json_response 405 {^error "method_not_allowed"}))
+          (if (== parts/~size 7)
+            (match parts/6
+              (when "input"
+                (if (== req/method "POST")
+                  (worker_input parts/3 parts/5 req attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (when "cancel"
+                (if (== req/method "POST")
+                  (cancel_worker parts/3 parts/5 attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (when "status"
+                (if (== req/method "GET")
+                  (worker_observation
+                    parts/3 parts/5 "status" req attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (when "tail"
+                (if (== req/method "GET")
+                  (worker_observation
+                    parts/3 parts/5 "tail" req attachment)
+                  (json_response 405 {^error "method_not_allowed"})))
+              (else (json_response 404 {^error "not_found"})))
+            (if (&& (== parts/~size 8) (== parts/6 "ops"))
+              (if (== req/method "POST")
+                (worker_operation
+                  parts/3 parts/5 parts/7 req attachment)
+                (json_response 405 {^error "method_not_allowed"}))
+              (json_response 404 {^error "not_found"}))))))
+    (else (json_response 404 {^error "not_found"}))))
+
+(fn attached_session_route [req, parts]
+  (var authorization (require_attachment parts/3 req))
+  (if_not authorization/ok
+    (return authorization/response))
+  (var attachment authorization/attachment)
+  (if (["POST" "PUT" "DELETE"] ~ contains? req/method)
+    (dispatch_idempotent parts/3 attachment req
+      (fn [] (dispatch_attached_session req parts attachment)))
+    (dispatch_attached_session req parts attachment)))
+
+(fn attachment_route [req, parts]
+  (var session_id parts/3)
+  (if (== parts/~size 5)
+    (return
+      (if (== req/method "POST")
+        (create_attachment session_id req)
+        (json_response 405 {^error "method_not_allowed"}))))
+  (if (&& (== parts/~size 7) (== parts/6 "resume"))
+    (return
+      (if (== req/method "POST")
+        (resume_attachment session_id parts/5 req)
+        (json_response 405 {^error "method_not_allowed"}))))
+  (var authorization (require_attachment session_id req))
+  (if_not authorization/ok
+    (return authorization/response))
+  (var attachment authorization/attachment)
+  (if (== parts/~size 6)
+    (if (== req/method "DELETE")
+      (detach_attachment session_id parts/5 attachment)
+      (json_response 405 {^error "method_not_allowed"}))
+    (if (&& (== parts/~size 7) (== parts/6 "ack"))
+      (if (== req/method "POST")
+        (acknowledge_attachment session_id parts/5 attachment req)
+        (json_response 405 {^error "method_not_allowed"}))
+      (json_response 404 {^error "not_found"}))))
 
 (fn route [req]
   (ensure_local_session)
@@ -1097,106 +1617,24 @@ document.getElementById('f').addEventListener('submit', function (e) {
     (Response ^status 200
               ^headers {^content-type "text/html; charset=utf-8"}
               ^body web_page)
+    (if (== req/path "/api/operations")
+      (if (== req/method "GET")
+        (json_response 200
+          {^operations (agent_api/operation_registry_snapshot)})
+        (json_response 405 {^error "method_not_allowed"}))
     (if (== req/path "/api/sessions")
       (if (== req/method "POST")
         (create_session)
-        (list_sessions))
+        (if (== req/method "GET")
+          (list_sessions)
+          (json_response 405 {^error "method_not_allowed"})))
       (if (&& (>= parts/~size 5)
               (== parts/1 "api")
               (== parts/2 "sessions"))
-        (match parts/4
-          (when "messages"
-            (if (== req/method "POST")
-              (post_message parts/3 req)
-              (json_response 405 {^error "method not allowed"})))
-          (when "events" (get_events parts/3 req))
-          (when "snapshot"
-            (if (== req/method "GET")
-              (get_snapshot parts/3)
-              (json_response 405 {^error "method not allowed"})))
-          (when "cancel"
-            (if (== req/method "POST")
-              (cancel_turn parts/3)
-              (json_response 405 {^error "method not allowed"})))
-          (when "agents"
-            (if (== parts/~size 5)
-              (if (== req/method "GET")
-                (list_agents parts/3)
-                (if (== req/method "POST")
-                  (create_agent parts/3 req)
-                  (json_response 405 {^error "method not allowed"})))
-              (if (== parts/~size 6)
-                (if (== req/method "DELETE")
-                  (stop_agent parts/3 parts/5)
-                  (json_response 405 {^error "method not allowed"}))
-                (if (== parts/~size 7)
-                  (match parts/6
-                    (when "messages"
-                      (if (== req/method "POST")
-                        (agent_input parts/3 parts/5 req)
-                        (json_response 405 {^error "method not allowed"})))
-                    (when "cancel"
-                      (if (== req/method "POST")
-                        (cancel_agent parts/3 parts/5)
-                        (json_response 405 {^error "method not allowed"})))
-                    (when "result"
-                      (if (== req/method "GET")
-                        (get_agent_result parts/3 parts/5)
-                        (json_response 405 {^error "method not allowed"})))
-                    (when "incorporate"
-                      (if (== req/method "POST")
-                        (incorporate_agent_result parts/3 parts/5)
-                        (json_response 405 {^error "method not allowed"})))
-                    (else (json_response 404 {^error "not found"})))
-                  (if (&& (== parts/~size 8)
-                          (== parts/6 "result") (== parts/7 "read"))
-                    (if (== req/method "POST")
-                      (mark_agent_result_read parts/3 parts/5)
-                      (json_response 405 {^error "method not allowed"}))
-                    (json_response 404 {^error "not found"}))))))
-          (when "progress"
-            (if (== req/method "GET")
-              (get_progress parts/3)
-              (if (== req/method "PUT")
-                (put_progress parts/3 req)
-                (json_response 405 {^error "method not allowed"}))))
-          (when "workers"
-            (if (== parts/~size 5)
-              (if (== req/method "GET")
-                (list_workers parts/3)
-                (if (== req/method "POST")
-                  (create_worker parts/3 req)
-                  (json_response 405 {^error "method not allowed"})))
-              (if (== parts/~size 6)
-                (if (== req/method "DELETE")
-                  (stop_worker parts/3 parts/5)
-                  (json_response 405 {^error "method not allowed"}))
-                (if (== parts/~size 7)
-                  (match parts/6
-                    (when "input"
-                      (if (== req/method "POST")
-                        (worker_input parts/3 parts/5 req)
-                        (json_response 405 {^error "method not allowed"})))
-                    (when "cancel"
-                      (if (== req/method "POST")
-                        (cancel_worker parts/3 parts/5)
-                        (json_response 405 {^error "method not allowed"})))
-                    (when "status"
-                      (if (== req/method "GET")
-                        (worker_observation parts/3 parts/5 "status" req)
-                        (json_response 405 {^error "method not allowed"})))
-                    (when "tail"
-                      (if (== req/method "GET")
-                        (worker_observation parts/3 parts/5 "tail" req)
-                        (json_response 405 {^error "method not allowed"})))
-                    (else (json_response 404 {^error "not found"})))
-                  (if (&& (== parts/~size 8) (== parts/6 "ops"))
-                    (if (== req/method "POST")
-                      (worker_operation parts/3 parts/5 parts/7 req)
-                      (json_response 405 {^error "method not allowed"}))
-                    (json_response 404 {^error "not found"}))))))
-          (else (json_response 404 {^error "not found"})))
-        (json_response 404 {^error "not found"})))))
+        (if (== parts/4 "attachments")
+          (attachment_route req parts)
+          (attached_session_route req parts))
+        (json_response 404 {^error "not_found"}))))))
 
 (fn handle [req]
   (if (authorized? req)
@@ -1270,10 +1708,10 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (parse_int (get_env Env "GENE_GATEWAY_PORT" "8090"))))
   (if (|| (< gw_port 1) (> gw_port 65535))
     (fail (OsError ^message "gateway port must be between 1 and 65535")))
-  (if (&& (== gw_token "")
-          (! (["127.0.0.1" "::1" "localhost"] ~ contains? gw_host)))
+  (if_not (["127.0.0.1" "::1" "localhost"] ~ contains? gw_host)
     (fail (OsError
-      ^message "a non-loopback GENE_GATEWAY_HOST requires GENE_GATEWAY_TOKEN")))
+      ^message
+        "GENE_GATEWAY_HOST must be loopback; use an authenticated TLS proxy or tunnel for remote access")))
   (open_gateway_store)
   (gw_notice $"Gene agent gateway - http://${gw_host}:${gw_port} (model ${agent_api/model})")
   (if (== agent_api/auth_token nil)

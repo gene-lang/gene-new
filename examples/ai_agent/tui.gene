@@ -92,6 +92,10 @@
 (import log [new_logger info! warn! error! debug! trace!])
 (import [prepare_gateway serve_gateway stop_gateway run_gateway]
         from "./gateway_adapter")
+(import [remote_transport ClientTransportError]
+        from "./client_transport")
+(import [Pane SurfaceAttachment create_surface emit_surface_event!]
+        from "./surface")
 
 # Diagnostic logging is intentionally separate from the authoritative event
 # log below. It records lifecycle, routing, sizes, durations, and outcomes, but
@@ -611,7 +615,6 @@
 (var agent_checkpoint_interval_ms
   (positive_env_int "GENE_AGENT_CHECKPOINT_INTERVAL_MS" 1000))
 (var workspace_coordinators {})
-(var next_surface_instance (cell 1))
 (var next_application_instance (cell 1))
 
 # Slice C application model. Agents and panes are independent values: an
@@ -632,18 +635,6 @@
           ^streaming Any ^result Any ^attachments Any
           ^transcript_seq Any ^transcript_dropped_bytes Any
           ^transcript_dropped_before Any ^transcript_retained Any})
-
-(type Pane
-  ^props {^id Int ^worker_id Str ^worker Any
-          ^kind Str ^owner_id Any ^title Str ^output Any
-          ^status Any ^current_task Any ^history Any ^scroll Any ^controller Any
-          ^pending_visible Any ^hidden Any ^close_policy Str})
-
-(type SurfaceAttachment
-  ^props {^id Str ^instance_id Any ^panes Any ^next_pane_id Any
-          ^focused_pane Any ^maximized_pane Any ^main_scroll Any
-          ^main_pending_visible Any ^help_notice Any
-          ^drafts Any ^input_histories Any ^max_panes Int})
 
 (type WorkspaceCoordinator
   ^props {^root Str ^owner Any ^waiters Any ^next_request Any})
@@ -753,16 +744,19 @@
           ^shutting_down Any})
 
 (fn make_surface_attachment [id : Str]
-  (var seq (next_surface_instance ~ Cell/get))
-  (next_surface_instance ~ Cell/set (+ seq 1))
-  (SurfaceAttachment
-    ^id id ^instance_id (cell $"${id}:${seq}")
-    ^panes (cell []) ^next_pane_id (cell 1)
-    ^focused_pane (cell nil) ^maximized_pane (cell nil)
-    ^main_scroll (cell 0) ^main_pending_visible (cell false)
-    ^help_notice (cell "")
-    ^drafts (cell {}) ^input_histories (cell {})
-    ^max_panes surface_pane_max_count))
+  (create_surface id surface_pane_max_count))
+
+(fn surface_emit! [surface, type : Str, props]
+  (var safe_props {})
+  (for [key value] in props
+    (safe_props ~ Map/put! key (redact_any value)))
+  (var event (emit_surface_event! surface type safe_props))
+  (if (== event nil) (return nil))
+  (trace! event_log "surface event appended"
+    ^payload {^event_type type ^event_v event/v
+              ^surface_id event/surface_id ^pane_id event/pane_id
+              ^worker_id event/worker_id})
+  event)
 
 (fn workspace_coordinator_for [root : Str]
   (var existing (workspace_coordinators ~ Map/get root))
@@ -1126,10 +1120,10 @@
     ((surface/panes ~ Cell/get) ~ List/push! pane)
     # A newly opened pane is the natural target for pane-local navigation.
     (surface/focused_pane ~ Cell/set id)
-    (application_emit app "pane_opened"
+    (surface_emit! surface "pane_opened"
       {^pane_id id ^worker_id worker/id ^kind worker/kind
-       ^owner_id owner_id ^title pane_title
-       ^surface_id (surface/instance_id ~ Cell/get)})
+       ^owner_id owner_id ^title pane_title})
+    (checkpoint_agent_state! app "surface:pane_opened")
     pane))
 
 (fn application_attach_worker_pane [app, worker, owner_id,
@@ -1360,12 +1354,12 @@
     (else
       (bounded_worker_append! worker text)
       (application_emit_worker_output! app worker text source false)
-      # Preserve the shipped pane event additively for local consumers.
+      # Pane projections belong only to the concrete local surface. The
+      # authoritative journal already contains canonical worker_output.
       (var pane (application_find_pane_worker app worker/id))
       (if pane
-        (application_emit app "pane_output"
-          {^surface_id (app/local_surface/instance_id ~ Cell/get)
-           ^pane_id pane/id
+        (surface_emit! app/local_surface "pane_output"
+          {^pane_id pane/id
            ^worker_id worker/id ^text text ^source source}))
       (application_propagate_followers! app worker text)
       true)))
@@ -1436,11 +1430,16 @@
     (var origin (invocation_field invocation "origin"))
     (var caller_worker_id
       (invocation_field invocation "caller_worker_id"))
+    (var attachment_id
+      (invocation_field invocation "attachment_id"))
+    (var principal
+      (invocation_field invocation "principal"))
     (var declared_kind (invocation_field invocation "operation_name"))
     (var operation_kind (if declared_kind declared_kind kind))
     (var operation
       {^task_id (application_next_task_id! app) ^kind operation_kind
-       ^origin origin ^caller_worker_id caller_worker_id})
+       ^origin origin ^caller_worker_id caller_worker_id
+       ^attachment_id attachment_id ^principal principal})
     (worker/current_task ~ Cell/set task)
     (worker/current_operation ~ Cell/set operation)
     (worker/last_finish_event ~ Cell/set nil)
@@ -1452,6 +1451,10 @@
     (if origin (props ~ Map/put! "origin" origin))
     (if caller_worker_id
       (props ~ Map/put! "caller_worker_id" caller_worker_id))
+    (if attachment_id
+      (props ~ Map/put! "attachment_id" attachment_id))
+    (if principal
+      (props ~ Map/put! "principal" principal))
     (application_emit app "worker_operation_started" props)
     operation))
 
@@ -1474,6 +1477,10 @@
       (props ~ Map/put! "origin" operation/origin))
     (if (&& operation operation/caller_worker_id)
       (props ~ Map/put! "caller_worker_id" operation/caller_worker_id))
+    (if (&& operation operation/attachment_id)
+      (props ~ Map/put! "attachment_id" operation/attachment_id))
+    (if (&& operation operation/principal)
+      (props ~ Map/put! "principal" operation/principal))
     (set emitted
       (application_emit app "worker_operation_finished" props))
     (worker/last_finish_event ~ Cell/set emitted)
@@ -1597,10 +1604,10 @@
             (surface/focused_pane ~ Cell/set nil))
           (if (== (surface/maximized_pane ~ Cell/get) id)
             (surface/maximized_pane ~ Cell/set nil))
-          (application_emit app "pane_closed"
+          (surface_emit! surface "pane_closed"
             {^pane_id id ^worker_id pane/worker_id
-             ^kind pane/kind ^owner_id pane/owner_id
-             ^surface_id (surface/instance_id ~ Cell/get)})
+             ^kind pane/kind ^owner_id pane/owner_id})
+          (checkpoint_agent_state! app "surface:pane_closed")
           (application_prune_stopped_workers! app)
           true)))))
 
@@ -4550,6 +4557,8 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn migrate_session_record [record] (state_record_v1 "session" record))
 (fn migrate_application_record [record]
   (state_record_v1 "application" record))
+(fn migrate_surface_record [record]
+  (state_record_v1 "surface" record))
 (fn migrate_registrations_record [record]
   (state_record_v1 "registrations" record))
 (fn migrate_checkpoint_record [record]
@@ -4564,6 +4573,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (when "events" (migrate_events_record record))
     (when "session" (migrate_session_record record))
     (when "application" (migrate_application_record record))
+    (when "surface" (migrate_surface_record record))
     (when "registrations" (migrate_registrations_record record))
     (when "checkpoint" (migrate_checkpoint_record record))
     (else
@@ -4883,6 +4893,33 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (resume_enabled?)
     (state_get "session" nil)))
 
+(fn surface_snapshot [app]
+  (var surface app/local_surface)
+  (if (== surface nil) (return nil))
+  (var panes [])
+  (var drafts {})
+  (var histories {})
+  (for [worker_id draft] in (surface/drafts ~ Cell/get)
+    (drafts ~ Map/put! worker_id (draft ~ Cell/get)))
+  (for [worker_id history] in (surface/input_histories ~ Cell/get)
+    (histories ~ Map/put! worker_id (history ~ Cell/get)))
+  (for pane in (surface/panes ~ Cell/get)
+    (panes ~ List/push!
+      {^id pane/id ^worker_id pane/worker_id ^kind pane/kind
+       ^owner_id pane/owner_id ^title pane/title
+       ^scroll (pane/scroll ~ Cell/get)
+       ^hidden (pane/hidden ~ Cell/get)}))
+  {^panes panes
+   ^surface
+     {^id surface/id ^instance_id (surface/instance_id ~ Cell/get)
+      ^next_pane_id (surface/next_pane_id ~ Cell/get)
+      ^focused_pane (surface/focused_pane ~ Cell/get)
+      ^maximized_pane (surface/maximized_pane ~ Cell/get)
+      ^main_scroll (surface/main_scroll ~ Cell/get)
+      ^drafts drafts ^input_histories histories}
+   ^presentation_events (surface/events ~ Cell/get)
+   ^next_presentation_v (surface/next_event_v ~ Cell/get)})
+
 (fn application_snapshot [app]
   (var main app/main_agent)
   (var main_worker
@@ -4965,36 +5002,13 @@ State that broader behavior is unverified when no matching successful check ran.
          ^terminal_text terminal_text
          ^terminal_snapshot (if (== worker/kind "terminal")
                               (safe_terminal_snapshot terminal_snapshot) void)})))
-  (var panes [])
-  (var surface app/local_surface)
-  (var surface_drafts {})
-  (var surface_histories {})
-  (if_yes surface
-    (for [worker_id draft] in (surface/drafts ~ Cell/get)
-      (surface_drafts ~ Map/put! worker_id (draft ~ Cell/get)))
-    (for [worker_id history] in (surface/input_histories ~ Cell/get)
-      (surface_histories ~ Map/put! worker_id (history ~ Cell/get))))
-  (for pane in (if (== surface nil) [] (surface/panes ~ Cell/get))
-    (panes ~ List/push!
-      {^id pane/id ^worker_id pane/worker_id ^kind pane/kind
-       ^owner_id pane/owner_id ^title pane/title
-       ^scroll (pane/scroll ~ Cell/get)
-       ^hidden (pane/hidden ~ Cell/get)}))
   {^main_worker main_worker
    ^supervisor_inbox (app/supervisor_inbox ~ Cell/get)
    ^progress (app/progress ~ Cell/get)
-   ^agents agents ^workers workers ^panes panes
+   ^agents agents ^workers workers
    ^next_agent_id (app/next_agent_id ~ Cell/get)
    ^next_worker_id (app/next_worker_id ~ Cell/get)
-   ^next_task_id (app/next_task_id ~ Cell/get)
-   ^surface
-     (if surface
-       {^id surface/id ^instance_id (surface/instance_id ~ Cell/get)
-        ^next_pane_id (surface/next_pane_id ~ Cell/get)
-        ^focused_pane (surface/focused_pane ~ Cell/get)
-        ^maximized_pane (surface/maximized_pane ~ Cell/get)
-        ^main_scroll (surface/main_scroll ~ Cell/get)
-        ^drafts surface_drafts ^input_histories surface_histories})})
+   ^next_task_id (app/next_task_id ~ Cell/get)})
 
 (fn emit_restore_normalization! [app, worker, data]
   # Process-local Tasks, confirmations, and lease requests are never durable.
@@ -5607,10 +5621,11 @@ State that broader behavior is unverified when no matching successful check ran.
       catch _
         (emit_restore_rejected! app "pane" record_id
           "unknown pane restore failure")))
-    (if (match saved/next_agent_id (when (_id : Int) true) (else false))
-      (app/next_agent_id ~ Cell/set saved/next_agent_id)
-      (emit_restore_rejected! app "counter" "next_agent_id"
-        "counter must be an Int"))
+    (if_yes (present? saved/next_agent_id)
+      (if (match saved/next_agent_id (when (_id : Int) true) (else false))
+        (app/next_agent_id ~ Cell/set saved/next_agent_id)
+        (emit_restore_rejected! app "counter" "next_agent_id"
+          "counter must be an Int")))
     (if (present? saved/next_worker_id)
       (if (match saved/next_worker_id (when (_id : Int) true) (else false))
         (app/next_worker_id ~ Cell/set saved/next_worker_id)
@@ -5650,12 +5665,31 @@ State that broader behavior is unverified when no matching successful check ran.
                   (surface/maximized_pane ~ Cell/get)) nil))
       (surface/maximized_pane ~ Cell/set nil))
     (application_prune_stopped_workers! app)
-    (application_emit app "application_restored"
-      {^agents ((if (present? saved/agents) saved/agents []) ~ size)
-       ^workers ((if (present? saved/workers) saved/workers []) ~ size)
-       ^panes (if (== surface nil) 0 ((surface/panes ~ Cell/get) ~ size))
-       ^dropped_panes dropped_panes})
+    (if_not (== saved/surface_only true)
+      (application_emit app "application_restored"
+        {^agents ((if (present? saved/agents) saved/agents []) ~ size)
+         ^workers ((if (present? saved/workers) saved/workers []) ~ size)}))
     true))
+
+(fn restore_surface_snapshot! [app, saved]
+  (if (== saved nil) (return false))
+  (var compatibility
+    {^surface_only true
+     ^panes (if (present? saved/panes) saved/panes [])
+     ^surface (if (present? saved/surface) saved/surface nil)})
+  (restore_application_snapshot! app compatibility)
+  (var surface app/local_surface)
+  (if_yes (&& surface (present? saved/presentation_events))
+    (match saved/presentation_events
+      (when (events : List)
+        (surface/events ~ Cell/set (bounded_list_tail events 256)))
+      (else nil)))
+  (if_yes (&& surface (present? saved/next_presentation_v))
+    (match saved/next_presentation_v
+      (when (next_v : Int)
+        (surface/next_event_v ~ Cell/set next_v))
+      (else nil)))
+  true)
 
 (fn restore_application! [app]
   (var restored false)
@@ -5665,6 +5699,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (set restored
         (restore_application_snapshot! app
           (if (resume_enabled?) (state_get "application" nil))))
+      (if (resume_enabled?)
+        (restore_surface_snapshot! app (state_get "surface" nil)))
     catch {^message message}
       (emit_restore_rejected! app "application" "application" message)
       (set restored false)
@@ -5699,6 +5735,9 @@ State that broader behavior is unverified when no matching successful check ran.
        ^application
          {^schema 1 ^kind "application"
           ^data (if app (application_snapshot app) nil)}
+       ^surface
+         {^schema 1 ^kind "surface"
+          ^data (if app (surface_snapshot app) nil)}
        ^registrations
          {^schema 1 ^kind "registrations"
           ^data (dynamic_registration_records ~ Cell/get)}
@@ -5723,7 +5762,7 @@ State that broader behavior is unverified when no matching successful check ran.
     "worker_operation_finished" "worker_operation_cancelling"
     "worker_admission_cancelled" "worker_stopping" "worker_stopped"
     "agent_spawned" "agent_status" "agent_completed"
-    "pane_opened" "pane_closed" "file_change" "check"
+    "file_change" "check"
     "context_compacted" "confirmation" "memory"
     "config_changed" "artifact_pinned" "artifact_deleted"
     "supervisor_result_dropped"] ~ contains? type))
@@ -8241,7 +8280,17 @@ State that broader behavior is unverified when no matching successful check ran.
           nil
           path)))))
 
-(fn application_send_worker_input [app, worker, text : Str, adapter : Str]
+# Client capability tiers (§12): full clients (local TUI, remote TUI/web,
+# model) carry mediated host execution; channel clients (Telegram/Slack) are
+# observe-only. The gateway derives capabilities from authentication and passes
+# a full invocation; this synthesized default covers the direct-call path.
+(fn adapter_principal_capabilities [adapter : Str]
+  (if (["telegram" "slack"] ~ contains? adapter)
+    ["observe"]
+    ["observe" "session_write" "host_read" "host_write" "model_call"]))
+
+(fn application_send_worker_input_invoked
+  [app, worker, text : Str, adapter : Str, invocation]
   (var operation (worker_primary_operation worker/kind))
   (var operation_text text)
   (var shell_chdir_path
@@ -8263,16 +8312,20 @@ State that broader behavior is unverified when no matching successful check ran.
           (app/local_surface/instance_id ~ Cell/get)))
       (var route
         (if local_pane $"pane ${local_pane/id}" $"worker ${worker/id}"))
-      (var response
-        (application_call_worker app worker/id operation/name raw_args
+      (var effective_invocation
+        (if invocation invocation
           {^origin (if (== adapter "local_tui") "user"
                      (if (== adapter "model") "model" "remote"))
            ^adapter adapter
            ^route route
            ^surface_id surface_id
            ^detached (if (== adapter "local_tui") (stdin_tty?) true)
+           ^principal_capabilities (adapter_principal_capabilities adapter)
            ^caller_worker_id
              (if (== adapter "model") app/main_agent/id nil)}))
+      (var response
+        (application_call_worker app worker/id operation/name raw_args
+          effective_invocation))
       (var rendered (worker_call_text response))
       (if_yes (&& response/ok shell_chdir_path (== adapter "local_tui"))
         (worker_history_push! worker text adapter surface_id)
@@ -8283,6 +8336,9 @@ State that broader behavior is unverified when no matching successful check ran.
         (return
           (if pane $"extension ${pane/id} completed: ${rendered}" rendered)))
       rendered)))
+
+(fn application_send_worker_input [app, worker, text : Str, adapter : Str]
+  (application_send_worker_input_invoked app worker text adapter nil))
 
 # ---------------------------------------------------------------------------
 # Slice C4: one typed worker-operation surface.
@@ -8656,6 +8712,27 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (== op/name name) (found ~ Cell/set op)))
   (found ~ Cell/get))
 
+(fn operation_registry_snapshot []
+  # Transport-safe descriptors only: handlers and CLI parser closures remain
+  # process-local, while every client receives the same authoritative policy
+  # and schema metadata used by application_call_worker.
+  (var descriptors [])
+  (for [kind operations] in worker_operation_tables
+    (for operation in operations
+      (descriptors ~ List/push!
+        {^worker_kind kind ^name operation/name
+         ^summary operation/summary ^usage operation/usage
+         ^args_schema $"${operation/args}"
+         ^result_schema $"${operation/result}"
+         ^errors operation/errors ^effects operation/effects
+         ^audience operation/audience ^admission operation/admission
+         ^audit operation/audit ^cancellable operation/cancellable
+         ^idempotent operation/idempotent
+         ^task_managed operation/task_managed
+         ^primary_input operation/primary_input
+         ^enabled operation/enabled})))
+  descriptors)
+
 (fn worker_primary_operation [kind : Str]
   (var found (cell nil))
   (for operation in (worker_operations_for_kind kind)
@@ -8701,9 +8778,23 @@ State that broader behavior is unverified when no matching successful check ran.
               (app/local_surface/instance_id ~ Cell/get)))
     true false))
 
+(fn invocation_capabilities_allow?
+  [audience : Str, operation, invocation] : Bool
+  (if (!= audience "remote_user")
+    (return true))
+  (var capabilities
+    (invocation_field invocation "principal_capabilities"))
+  (if (== capabilities nil)
+    (return false))
+  (for effect in operation/effects
+    (if_not (capabilities ~ contains? effect)
+      (return false)))
+  true)
+
 (fn invocation_authorized? [app, worker, operation, invocation] : Bool
   (var audience (invocation_audience app worker invocation))
-  (if (operation/audience ~ contains? audience)
+  (if (&& (operation/audience ~ contains? audience)
+          (invocation_capabilities_allow? audience operation invocation))
     (then
       (if (&& (== worker/kind "terminal")
               (["write" "resize" "signal" "stop"]
@@ -8736,8 +8827,12 @@ State that broader behavior is unverified when no matching successful check ran.
      ^operation_kind operation/name})
   (var origin (invocation_field invocation "origin"))
   (var caller (invocation_field invocation "caller_worker_id"))
+  (var attachment_id (invocation_field invocation "attachment_id"))
+  (var principal (invocation_field invocation "principal"))
   (if origin (props ~ Map/put! "origin" origin))
   (if caller (props ~ Map/put! "caller_worker_id" caller))
+  (if attachment_id (props ~ Map/put! "attachment_id" attachment_id))
+  (if principal (props ~ Map/put! "principal" principal))
   (if outcome (props ~ Map/put! "outcome" outcome))
   (application_emit app $"worker_operation_${phase}" props))
 
@@ -8755,8 +8850,12 @@ State that broader behavior is unverified when no matching successful check ran.
      ^error_kind kind ^error_text (redact message)})
   (var origin (invocation_field invocation "origin"))
   (var caller (invocation_field invocation "caller_worker_id"))
+  (var attachment_id (invocation_field invocation "attachment_id"))
+  (var principal (invocation_field invocation "principal"))
   (if origin (props ~ Map/put! "origin" origin))
   (if caller (props ~ Map/put! "caller_worker_id" caller))
+  (if attachment_id (props ~ Map/put! "attachment_id" attachment_id))
+  (if principal (props ~ Map/put! "principal" principal))
   (application_emit app "worker_operation_rejected" props)
   (operation_failure kind message (if worker worker/id worker_ref)
                      operation_name))
@@ -8784,7 +8883,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (return
       (application_reject_worker_operation! app worker worker_ref operation_name
         invocation "worker_access_denied"
-        "caller is not in the operation audience or lacks delegation")))
+        "caller is not in the operation audience, lacks principal capabilities, or lacks delegation")))
   (if (&& (== operation/admission "worker_exclusive")
           (worker_busy? worker))
     (return
@@ -11021,7 +11120,9 @@ State that broader behavior is unverified when no matching successful check ran.
    ^spawn_supervised_named_agent_with_context spawn_supervised_named_agent_with_context
    ^application_create_worker application_create_worker_from_config
    ^application_call_worker application_call_worker
+   ^operation_registry_snapshot operation_registry_snapshot
    ^application_send_worker_input application_send_worker_input
+   ^application_send_worker_input_invoked application_send_worker_input_invoked
    ^application_cancel_worker application_cancel_worker
    ^application_cancel_agent application_cancel_agent
    ^application_stop_worker application_stop_worker
@@ -11047,27 +11148,130 @@ State that broader behavior is unverified when no matching successful check ran.
   (var gateway (cell false))
   (var headless (cell false))
   (var port (cell void))
+  (var connect (cell nil))
+  (var session (cell nil))
+  (var pending_option (cell nil))
   (var task_parts [])
   (for token in (split (trim raw) " ")
     (if_not (== token "")
-      (if (== token "--gateway")
-        (gateway ~ Cell/set true)
-        (if (starts_with? token "--gateway=")
-          (then
+      (var pending (pending_option ~ Cell/get))
+      (if pending
+        (then
+          (if (== pending "connect")
+            (connect ~ Cell/set token)
+            (session ~ Cell/set token))
+          (pending_option ~ Cell/set nil))
+        (else
+          (if (== token "--gateway")
             (gateway ~ Cell/set true)
-            (port ~ Cell/set
-              (parse_int (after_prefix token "--gateway="))))
-          (else
-            (if (== token "--headless")
-              (headless ~ Cell/set true)
-              (task_parts ~ List/push! token)))))))
+            (if (starts_with? token "--gateway=")
+              (then
+                (gateway ~ Cell/set true)
+                (port ~ Cell/set
+                  (parse_int (after_prefix token "--gateway="))))
+              (else
+                (match token
+                  (when "--headless" (headless ~ Cell/set true))
+                  (when "--connect" (pending_option ~ Cell/set "connect"))
+                  (when "--session" (pending_option ~ Cell/set "session"))
+                  (else
+                    (if (starts_with? token "--connect=")
+                      (connect ~ Cell/set
+                        (after_prefix token "--connect="))
+                      (if (starts_with? token "--session=")
+                        (session ~ Cell/set
+                          (after_prefix token "--session="))
+                        (task_parts ~ List/push! token))))))))))))
+  (if (pending_option ~ Cell/get)
+    (fail (OsError
+      ^message $"--${(pending_option ~ Cell/get)} requires a value")))
   (if (&& (headless ~ Cell/get) (! (gateway ~ Cell/get)))
     (fail (OsError ^message "--headless requires --gateway")))
+  (if (&& (connect ~ Cell/get)
+          (|| (gateway ~ Cell/get) (headless ~ Cell/get)))
+    (fail (OsError
+      ^message "--connect cannot be combined with --gateway or --headless")))
   (if (&& (!= (port ~ Cell/get) void)
           (|| (< (port ~ Cell/get) 1) (> (port ~ Cell/get) 65535)))
     (fail (OsError ^message "--gateway port must be between 1 and 65535")))
   {^gateway (gateway ~ Cell/get) ^headless (headless ~ Cell/get)
-   ^port (port ~ Cell/get) ^task (join task_parts " ")})
+   ^port (port ~ Cell/get) ^connect (connect ~ Cell/get)
+   ^session (session ~ Cell/get) ^task (join task_parts " ")})
+
+(fn remote_confirmation_decision [event, interactive : Bool] : Str
+  (if_not interactive (return "deny"))
+  (print
+    $"confirm ${event/risk}: ${event/target}\nallow once? [y/N] ")
+  (var answer (read_line))
+  (if (&& answer (["y" "yes"] ~ contains? (lower (trim answer))))
+    "allow" "deny"))
+
+(fn run_remote_turn [client, text : Str, interactive : Bool]
+  (client/send_message text)
+  (var streaming (cell false))
+  (var done (cell false))
+  (while (! (done ~ Cell/get))
+    (var batch (client/poll))
+    (for event in batch/events
+      (match event/type
+        (when "text_delta"
+          (if_not (streaming ~ Cell/get)
+            (print "agent> ")
+            (streaming ~ Cell/set true))
+          (print event/text))
+        (when "agent_text"
+          (if_not (streaming ~ Cell/get)
+            (println $"agent> ${event/text}")))
+        (when "confirmation_requested"
+          (if_yes (streaming ~ Cell/get)
+            (println "")
+            (streaming ~ Cell/set false))
+          (var decision
+            (remote_confirmation_decision event interactive))
+          (client/resolve_confirmation event/confirmation_id decision)
+          (println $"confirmation ${decision}"))
+        (when "turn_done"
+          (if_yes (streaming ~ Cell/get)
+            (println "")
+            (streaming ~ Cell/set false))
+          (done ~ Cell/set true))
+        (else nil)))
+    (client/acknowledge batch/cursor)))
+
+(fn run_remote_entry [launch, task : Str]
+  (var gateway_token (get_env Env "GENE_GATEWAY_TOKEN" ""))
+  (var client (remote_transport launch/connect gateway_token))
+  (try
+    (var attached (client/connect launch/session "gene-tui"))
+    (println
+      $"Gene AI agent - remote session ${(client/session_id ~ Cell/get)} at ${launch/connect}")
+    (if_not (blank_line? task)
+      (println $"user> ${task}")
+      (run_remote_turn client task false)
+      (return nil))
+    (loop
+      (print "user> ")
+      (var line (read_line))
+      (if (== line nil) (return nil))
+      (set line (trim line))
+      (match line
+        (when "/quit" (return nil))
+        (when "/exit" (return nil))
+        (when "/help"
+          (println
+            "/help  /operations  /quit  /exit\nOther input is sent to the remote main agent."))
+        (when "/operations"
+          (var metadata (client/operations))
+          (for operation in metadata/operations
+            (println
+              $"${operation/worker_kind}/${operation/name} - ${operation/summary}")))
+        (else
+          (if_not (== line "")
+            (run_remote_turn client line true)))))
+  catch (ClientTransportError ^kind kind ^message message)
+    (println $"remote ${kind}: ${message}")
+  ensure
+    (try (client/detach) catch _ nil)))
 
 (fn run_local_entry [launch, task : Str]
   (if (blank_line? task)
@@ -11084,13 +11288,15 @@ State that broader behavior is unverified when no matching successful check ran.
   (var launch (parse_launch_options args/raw))
   (var task launch/task)
   (var run_mode
+    (if launch/connect
+      "remote_client"
     (if launch/headless
       "gateway_headless"
       (if launch/gateway
         "gateway_tui"
         (if (blank_line? task)
       (if (== auth_token nil) "offline_demo" "interactive")
-          "one_shot"))))
+          "one_shot")))))
   (info! agent_log "agent starting"
     ^payload {^run_mode run_mode ^api_flavor api_flavor ^model_name model
               ^live_auth (present? auth_token) ^state_enabled (state_enabled?)
@@ -11101,6 +11307,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (var gateway_server (cell nil))
   (var gateway_task (cell nil))
   (try
+    (if launch/connect
+      (run_remote_entry launch task)
     (if launch/headless
       (then (run_gateway (gateway_api) {^port launch/port}))
       (else
@@ -11127,7 +11335,7 @@ State that broader behavior is unverified when no matching successful check ran.
             # already-dropped native listener a second time.
             (gateway_task ~ Cell/set nil)
             (gateway_server ~ Cell/set nil))
-          (else (run_local_entry launch task)))))
+          (else (run_local_entry launch task))))))
   ensure
     (if_yes (gateway_server ~ Cell/get)
       (var task (gateway_task ~ Cell/get))

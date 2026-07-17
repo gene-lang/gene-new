@@ -47,8 +47,11 @@ Implementation status:
   hash-validated checkpoint generations (`checkpoint`/`load_checkpoint`),
   owner-only storage, and `Fs/make_dir`/`Fs/remove`, per
   docs/proposals/persistence.md. The `crypto/sha256` helper used by manifests
-  and content-addressed artifacts and `os/process_id` used by ownership
-  advisories are also public, dependency-free primitives.
+  and content-addressed artifacts, `crypto/random_hex` for opaque credentials
+  and tickets, `crypto/secure_equal?` for credential comparison without an
+  early-exit API, and `os/process_id` used by ownership advisories are also public,
+  dependency-free primitives. `crypto/random_hex` reads the operating-system
+  cryptographic random source and is unavailable on WASM targets.
 
 ## Goals
 
@@ -82,7 +85,7 @@ Initial modules should be available through namespace imports:
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
 (import net/http_client [Http request stream HttpClientError])
-(import crypto [sha256])
+(import crypto [sha256 random_hex secure_equal?])
 (import os [process_id])
 (import log [Logger LogLevel new_logger info! debug!])
 (import curses [Screen open close dimensions draw read_input refresh_input

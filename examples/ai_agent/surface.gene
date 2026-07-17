@@ -1,0 +1,57 @@
+# =============================================================================
+# Client-local surface model — examples/ai_agent/design.md §7.1 / slice C9.
+#
+# This module contains presentation state only. It deliberately imports no
+# agent core, HTTP, curses, terminal, store, or host capability. A TUI surface
+# and a remote TUI surface therefore use the same pane identity/layout model
+# without granting either one application authority.
+# =============================================================================
+
+(mod ai_agent_surface
+  @doc "client-owned panes, layout, drafts, history, and presentation events")
+
+(type Pane
+  ^props {^id Int ^worker_id Str ^worker Any
+          ^kind Str ^owner_id Any ^title Str ^output Any
+          ^status Any ^current_task Any ^history Any ^scroll Any ^controller Any
+          ^pending_visible Any ^hidden Any ^close_policy Str})
+
+(type SurfaceAttachment
+  ^props {^id Str ^instance_id Any ^panes Any ^next_pane_id Any
+          ^focused_pane Any ^maximized_pane Any ^main_scroll Any
+          ^main_pending_visible Any ^help_notice Any
+          ^drafts Any ^input_histories Any ^events Any ^next_event_v Any
+          ^max_panes Int})
+
+(var next_surface_instance (cell 1))
+
+(fn create_surface [id : Str, max_panes : Int]
+  (var seq (next_surface_instance ~ Cell/get))
+  (next_surface_instance ~ Cell/set (+ seq 1))
+  (SurfaceAttachment
+    ^id id ^instance_id (cell $"${id}:${seq}")
+    ^panes (cell []) ^next_pane_id (cell 1)
+    ^focused_pane (cell nil) ^maximized_pane (cell nil)
+    ^main_scroll (cell 0) ^main_pending_visible (cell false)
+    ^help_notice (cell "")
+    ^drafts (cell {}) ^input_histories (cell {})
+    ^events (cell []) ^next_event_v (cell 1)
+    ^max_panes max_panes))
+
+(fn emit_surface_event! [surface, type : Str, props]
+  (if (== surface nil) (return nil))
+  (var v (surface/next_event_v ~ Cell/get))
+  (surface/next_event_v ~ Cell/set (+ v 1))
+  (var event
+    {^v v ^type type ^surface_id (surface/instance_id ~ Cell/get)})
+  (for [key value] in props
+    (event ~ Map/put! key value))
+  ((surface/events ~ Cell/get) ~ List/push! event)
+  (if_yes (> ((surface/events ~ Cell/get) ~ size) 256)
+    (var current (surface/events ~ Cell/get))
+    (var kept [])
+    (var first (- current/~size 256))
+    (repeat i in current/~size
+      (if (>= i first) (kept ~ List/push! current/%i)))
+    (surface/events ~ Cell/set kept))
+  event)

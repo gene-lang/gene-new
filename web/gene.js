@@ -3593,7 +3593,7 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   };
   function ___syscall_chdir(path) {
   try {
-
+  
       path = SYSCALLS.getStr(path);
       FS.chdir(path);
       return 0;
@@ -3605,7 +3605,7 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
 
   function ___syscall_chmod(path, mode) {
   try {
-
+  
       path = SYSCALLS.getStr(path);
       FS.chmod(path, mode);
       return 0;
@@ -4507,7 +4507,7 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
     };
   function ___syscall_connect(fd, addr, addrlen, d1, d2, d3) {
   try {
-
+  
       var sock = getSocketFromFD(fd);
       var info = getSocketAddress(addr, addrlen);
       sock.sock_ops.connect(sock, info.addr, info.port);
@@ -5227,7 +5227,7 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
 
   function ___syscall_renameat(olddirfd, oldpath, newdirfd, newpath) {
   try {
-
+  
       oldpath = SYSCALLS.getStr(oldpath);
       newpath = SYSCALLS.getStr(newpath);
       oldpath = SYSCALLS.calculateAt(olddirfd, oldpath);
@@ -5242,7 +5242,7 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
 
   function ___syscall_rmdir(path) {
   try {
-
+  
       path = SYSCALLS.getStr(path);
       FS.rmdir(path);
       return 0;
@@ -6833,3 +6833,4 @@ if (typeof exports === 'object' && typeof module === 'object') {
   module.exports.default = GeneModule;
 } else if (typeof define === 'function' && define['amd'])
   define([], () => GeneModule);
+

@@ -1,0 +1,23 @@
+#!/usr/bin/env gene run
+# Headless protocol smoke client used by the CLI suite and useful when
+# diagnosing a gateway without starting curses.
+
+(mod ai_agent_remote_client_smoke
+  @doc "attach, inspect, acknowledge, and detach through client_transport")
+
+(import os [get_env Env])
+(import [remote_transport] from "./client_transport")
+
+(fn main [args]
+  (var origin
+    (get_env Env "GENE_AGENT_CONNECT" "http://127.0.0.1:8090"))
+  (var token (get_env Env "GENE_GATEWAY_TOKEN" ""))
+  (var session (get_env Env "GENE_AGENT_SESSION" "local"))
+  (var client (remote_transport origin token))
+  (var attached (client/connect session "transport-smoke"))
+  (var metadata (client/operations))
+  (var snapshot (client/snapshot))
+  (client/acknowledge snapshot/cursor)
+  (client/detach)
+  (println
+    [attached/tier snapshot/session_id (> metadata/operations/~size 0)]))

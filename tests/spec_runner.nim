@@ -3616,6 +3616,20 @@ suite "spec — store persistence protocol":
     check_eval("(import crypto [sha256]) (sha256 \"abc\")",
                "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"")
 
+  test "crypto random_hex returns the requested number of random bytes":
+    check_eval("(import crypto [random_hex]) " &
+               "(import str [byte_size]) " &
+               "(byte_size (random_hex 16))", "32")
+    check_eval("(import crypto [random_hex]) " &
+      "(try (random_hex 0) catch {^message m} m)",
+      "\"crypto/random_hex byte count must be between 1 and 1024\"")
+
+  test "crypto secure_equal? compares credentials without an early-exit API":
+    check_eval("(import crypto [secure_equal?]) " &
+      "[(secure_equal? \"secret\" \"secret\") " &
+      " (secure_equal? \"secret\" \"secrex\") " &
+      " (secure_equal? \"secret\" \"short\")]", "[true false false]")
+
   test "sqlite store round-trips data records and missing/default semantics":
     check_eval("(import db/sqlite [open]) " &
                "(import store/sqlite [open : store-open StoreError]) " &

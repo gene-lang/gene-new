@@ -11,6 +11,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 when not defined(geneWasm):
   import std/re as nre
 
+when not defined(emscripten) and not defined(geneWasm):
+  import std/sysrand
+
 when compileOption("threads") and defined(gcAtomicArc):
   import std/cpuinfo
 
