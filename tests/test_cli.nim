@@ -1,5 +1,5 @@
-import std/[json, monotimes, net, os, osproc, sequtils, streams, strutils,
-            times, unittest]
+import std/[algorithm, json, monotimes, net, os, osproc, sequtils, streams,
+            strutils, times, unittest]
 when defined(posix):
   import std/posix
 when defined(macosx):
@@ -5624,6 +5624,177 @@ catch {^message message}
     if localOnly.exitCode != 0: checkpoint localOnly.output
     check localOnly.exitCode == 0
     check "denied=local_only observed=true" in localOnly.output
+
+  test "web surface model conforms to the Gene surface semantics":
+    ## Slice C9 stage 5 (design.md §10.12): the HTML client's SurfaceModel is
+    ## an independent JS implementation — it never shares surface.gene.
+    ## Conformance is one scripted scenario (pane open/title default/cap,
+    ## focus rules, maximize/close interaction, bounded 256-event
+    ## presentation ring) run through BOTH implementations; after
+    ## normalizing surface instance ids the results must be identical.
+    ## The JS under test is the exact bytes the gateway serves.
+    buildGeneCli()
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
+              "-u", "OPENAI_API_KEY", "-u", "TELEGRAM_BOT_TOKEN",
+              "GENE_GATEWAY_PORT=9001",
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running: gatewayProc.terminate()
+      gatewayProc.close()
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    while true:
+      var s = newSocket()
+      try:
+        s.connect("127.0.0.1", Port(9001), timeout = 500)
+        s.close()
+        break
+      except OSError, TimeoutError:
+        s.close()
+        if getMonoTime() > deadline: raise
+        sleep(50)
+    let modelJsPath = cliDir / "surface_model_under_test.js"
+    let fetched = execCmdEx(
+      "curl -sS --max-time 5 -o " & shellQuote(modelJsPath) &
+      " http://127.0.0.1:9001/surface_model.js")
+    check fetched.exitCode == 0
+    check "GeneSurfaceModel" in readFile(modelJsPath)
+    gatewayProc.terminate()
+
+    let jsDriver = cliDir / "surface_conformance.mjs"
+    writeFile(jsDriver, """
+const SurfaceModel = require(process.argv[2]);
+const model = new SurfaceModel('local_tui', 3);
+const p4holder = [];
+model.openPane({workerId: 'w1', kind: 'output', title: 'notes'},
+               null, 'detach', null);
+model.openPane({workerId: 'w2', kind: 'shell', title: 'shell'},
+               null, 'detach', 'custom title');
+model.openPane({workerId: 'w3', kind: 'output', title: 'third'},
+               null, 'detach', '');
+p4holder.push(model.openPane(
+  {workerId: 'w4', kind: 'output', title: 'fourth'}, null, 'detach', null));
+model.focusPane(1);
+model.maximizedPane = 2;
+model.closePane(2);
+model.focusPane(0);
+const strip = function (event) {
+  const out = {};
+  for (const key of Object.keys(event)) {
+    if (key !== 'surface_id') out[key] = event[key];
+  }
+  return out;
+};
+const lifecycle = model.events.map(strip);
+for (let i = 0; i < 300; i++) model.emit('note', { i: i });
+const ring = model.events;
+console.log(JSON.stringify({
+  panes: model.panes.map(function (p) {
+    return { id: p.id, worker_id: p.worker_id, kind: p.kind,
+             title: p.title, hidden: p.hidden };
+  }),
+  focused: model.focusedPane,
+  maximized: model.maximizedPane,
+  next_pane_id: model.nextPaneId,
+  cap_rejected: p4holder[0] === null,
+  lifecycle_events: lifecycle,
+  ring: { count: ring.length, first_v: ring[0].v,
+          last_v: ring[ring.length - 1].v,
+          next_event_v: model.nextEventV }
+}));
+""")
+    # `.mjs` would force ESM; the model is UMD, so drive it through CJS.
+    let cjsDriver = cliDir / "surface_conformance.cjs"
+    moveFile(jsDriver, cjsDriver)
+    let jsRun = execCmdEx("node " & shellQuote(cjsDriver) & " " &
+                          shellQuote(modelJsPath))
+    if jsRun.exitCode != 0: checkpoint jsRun.output
+    check jsRun.exitCode == 0
+
+    let fixture = "examples/ai_agent/surface_conformance_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [make_application application_new_worker
+         application_attach_worker_pane_as application_close_pane
+         surface_emit! OutputController ShellController]
+  from "./core.gene")
+(import [application_focus_pane!] from "./tui.gene")
+(import json [stringify])
+(var app (make_application (cell []) (cell "") (cell []) (fn [_t, _p] nil)))
+(var surface app/local_surface)
+(var w1 (application_new_worker app "output" "notes" (cell "")
+          (OutputController ^source "test" ^following (cell []))))
+(application_attach_worker_pane_as app w1 nil "detach" nil)
+(var w2 (application_new_worker app "shell" "shell" (cell "")
+          (ShellController ^cwd (cell ".") ^environment (cell {}))))
+(application_attach_worker_pane_as app w2 nil "detach" "custom title")
+(var w3 (application_new_worker app "output" "third" (cell "")
+          (OutputController ^source "test" ^following (cell []))))
+(application_attach_worker_pane_as app w3 nil "detach" "")
+(var w4 (application_new_worker app "output" "fourth" (cell "")
+          (OutputController ^source "test" ^following (cell []))))
+(var p4 (application_attach_worker_pane_as app w4 nil "detach" nil))
+(application_focus_pane! app 1)
+(surface/maximized_pane ~ Cell/set 2)
+(application_close_pane app 2)
+(application_focus_pane! app 0)
+(fn strip_surface [event]
+  (var out {})
+  (for [key value] in event
+    (if (!= $"${key}" "surface_id") (out ~ Map/put! key value)))
+  out)
+(var lifecycle [])
+(for event in (surface/events ~ Cell/get)
+  (lifecycle ~ List/push! (strip_surface event)))
+(repeat i in 300 (surface_emit! surface "note" {^i i}))
+(var ring (surface/events ~ Cell/get))
+(var last_v (cell 0))
+(for event in ring (last_v ~ Cell/set event/v))
+(var panes [])
+(for pane in (surface/panes ~ Cell/get)
+  (panes ~ List/push!
+    {^id pane/id ^worker_id pane/worker_id ^kind pane/kind
+     ^title pane/title ^hidden (pane/hidden ~ Cell/get)}))
+(println (stringify
+  {^panes panes
+   ^focused (surface/focused_pane ~ Cell/get)
+   ^maximized (surface/maximized_pane ~ Cell/get)
+   ^next_pane_id (surface/next_pane_id ~ Cell/get)
+   ^cap_rejected (== p4 nil)
+   ^lifecycle_events lifecycle
+   ^ring {^count (ring ~ size) ^first_v ring/0/v
+          ^last_v (last_v ~ Cell/get)
+          ^next_event_v (surface/next_event_v ~ Cell/get)}}))
+""")
+    let geneRun = execCmdEx(
+      "GENE_AGENT_PANE_MAX_COUNT=3 " & shellQuote(geneExe) & " run " &
+      shellQuote(fixture))
+    if geneRun.exitCode != 0: checkpoint geneRun.output
+    check geneRun.exitCode == 0
+
+    proc canonJson(node: JsonNode): JsonNode =
+      ## Key-order-insensitive comparison form: Gene map iteration order is
+      ## an implementation detail (id-keyed PropTable), so sort keys.
+      case node.kind
+      of JObject:
+        result = newJObject()
+        var keys: seq[string]
+        for key in node.keys: keys.add key
+        for key in sorted(keys): result[key] = canonJson(node[key])
+      of JArray:
+        result = newJArray()
+        for item in node: result.add canonJson(item)
+      else:
+        result = node
+    let jsResult = canonJson(parseJson(jsRun.output.strip()))
+    let geneResult = canonJson(parseJson(geneRun.output.strip().splitLines()[^1]))
+    if jsResult != geneResult:
+      checkpoint "js:   " & $jsResult
+      checkpoint "gene: " & $geneResult
+    check jsResult == geneResult
 
   test "agent gateway delivers events over a ticketed websocket":
     ## Slice C9 stage 4 (design.md §10.12): a full client mints a single-use

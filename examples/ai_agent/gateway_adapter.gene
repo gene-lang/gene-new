@@ -479,6 +479,19 @@
        (if (["worker_operation_finished" "worker_stopped" "agent_spawned"]
              ~ contains? event/type)
          (persist_session id items events next_v dropped_before app)))})
+  # Shared (combined-program) sessions journal through the CLI's global log,
+  # bypassing append_event, so their WebSocket fan-out hooks the observer
+  # boundary instead. Standalone sessions fan out in append_event; installing
+  # both would double-deliver.
+  (if shared
+    ((app/event_observers ~ Cell/get) ~ List/push!
+      {^worker_id "__gateway_ws__"
+       ^handler (fn [event]
+         (if_yes (&& (! (empty? (ws_clients ~ Cell/get)))
+                     (present? event/v))
+           (if_not (ws_outbox ~ Channel/try_send
+                     (stringify {^type "event" ^event event}))
+             (ws_outbox_overflow ~ Cell/set true))))}))
   {^id id ^actor turn_actor ^events events ^next_v next_v
    ^dropped_before dropped_before
    ^event_bytes event_bytes
@@ -1511,6 +1524,131 @@
                                 (if (empty? evs) []
                                   (projection_worker_ids s))}))))))
 
+# Client-local surface model for the HTML client (design.md §10.12 stage 5).
+# This is the web analogue of surface.gene: panes, layout, focus, drafts,
+# history, and bounded presentation events live in the CLIENT, keyed by a
+# surface instance id — never in the session. The gateway serves this file at
+# /surface_model.js for the page AND for the node conformance harness, so the
+# tested bytes are the served bytes. Semantics must track surface.gene +
+# core.gene pane functions; the conformance test in tests/test_cli.nim runs
+# one scripted scenario through both implementations and compares the
+# id-normalized results.
+(var surface_model_js """(function (root, factory) {
+  if (typeof module === 'object' && module.exports) { module.exports = factory(); }
+  else { root.GeneSurfaceModel = factory(); }
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var nextSurfaceInstance = 1;
+  var EVENT_RING_MAX = 256;
+  var HISTORY_MAX = 200;
+  function SurfaceModel(id, maxPanes) {
+    this.id = id;
+    this.instanceId = id + ':' + nextSurfaceInstance;
+    nextSurfaceInstance += 1;
+    this.panes = [];
+    this.nextPaneId = 1;
+    this.focusedPane = null;
+    this.maximizedPane = null;
+    this.mainScroll = 0;
+    this.drafts = {};
+    this.inputHistories = {};
+    this.events = [];
+    this.nextEventV = 1;
+    this.maxPanes = maxPanes;
+  }
+  SurfaceModel.prototype.emit = function (type, props) {
+    var v = this.nextEventV;
+    this.nextEventV = v + 1;
+    var event = { v: v, type: type, surface_id: this.instanceId };
+    if (props) {
+      for (var key in props) {
+        if (Object.prototype.hasOwnProperty.call(props, key)) {
+          event[key] = props[key];
+        }
+      }
+    }
+    this.events.push(event);
+    if (this.events.length > EVENT_RING_MAX) {
+      this.events = this.events.slice(this.events.length - EVENT_RING_MAX);
+    }
+    return event;
+  };
+  SurfaceModel.prototype.findPane = function (id) {
+    for (var i = 0; i < this.panes.length; i++) {
+      if (this.panes[i].id === id) { return this.panes[i]; }
+    }
+    return null;
+  };
+  SurfaceModel.prototype.paneForWorker = function (workerId) {
+    for (var i = 0; i < this.panes.length; i++) {
+      if (this.panes[i].worker_id === workerId) { return this.panes[i]; }
+    }
+    return null;
+  };
+  SurfaceModel.prototype.openPane = function (worker, ownerId, closePolicy,
+                                              requestedTitle) {
+    if (this.panes.length >= this.maxPanes) { return null; }
+    var id = this.nextPaneId;
+    this.nextPaneId = id + 1;
+    var blank = requestedTitle === null || requestedTitle === undefined ||
+                String(requestedTitle).trim() === '';
+    var title = blank ? worker.title : requestedTitle;
+    var owner = ownerId === undefined ? null : ownerId;
+    var pane = { id: id, worker_id: worker.workerId, kind: worker.kind,
+                 owner_id: owner, title: title, scroll: 0,
+                 pending_visible: false, hidden: false,
+                 close_policy: closePolicy };
+    this.panes.push(pane);
+    this.focusedPane = id;
+    this.emit('pane_opened', { pane_id: id, worker_id: worker.workerId,
+                               kind: worker.kind, owner_id: owner,
+                               title: title });
+    return pane;
+  };
+  SurfaceModel.prototype.closePane = function (id) {
+    var removed = null;
+    var kept = [];
+    for (var i = 0; i < this.panes.length; i++) {
+      if (this.panes[i].id === id) { removed = this.panes[i]; }
+      else { kept.push(this.panes[i]); }
+    }
+    if (removed === null) { return false; }
+    this.panes = kept;
+    if (this.focusedPane === id) { this.focusedPane = null; }
+    if (this.maximizedPane === id) { this.maximizedPane = null; }
+    this.emit('pane_closed', { pane_id: id, worker_id: removed.worker_id,
+                               kind: removed.kind,
+                               owner_id: removed.owner_id });
+    return true;
+  };
+  SurfaceModel.prototype.focusPane = function (id) {
+    if (id === 0) {
+      this.focusedPane = null;
+      this.maximizedPane = null;
+      return true;
+    }
+    var pane = this.findPane(id);
+    if (pane === null) { return false; }
+    pane.hidden = false;
+    this.focusedPane = id;
+    return true;
+  };
+  SurfaceModel.prototype.pushHistory = function (workerId, value) {
+    var history = this.inputHistories[workerId];
+    if (!history) {
+      history = [];
+      this.inputHistories[workerId] = history;
+    }
+    history.push(value);
+    if (history.length > HISTORY_MAX) {
+      this.inputHistories[workerId] = history.slice(history.length -
+                                                    HISTORY_MAX);
+    }
+  };
+  return SurfaceModel;
+}));
+""")
+
 (var web_page """<!doctype html>
 <meta charset="utf-8">
 <title>Gene Agent Gateway</title>
@@ -1522,8 +1660,10 @@ form { display: flex; gap: .5rem; margin-top: .75rem; }
 input { flex: 1; font: inherit; padding: .4rem; }
 </style>
 <h1>Gene Agent Gateway</h1>
+<div id="panes"></div>
 <div id="log" class="muted">connecting...</div>
 <form id="f"><input id="t" autofocus placeholder="message..."><button>send</button></form>
+<script src="/surface_model.js"></script>
 <script>
 var tok = localStorage.gwToken || new URLSearchParams(location.search).get('token') || '';
 if (tok) localStorage.gwToken = tok;
@@ -1535,7 +1675,11 @@ function hdrs(json) {
   return h;
 }
 var log = document.getElementById('log');
-var sid = null, attachmentId = null, cursor = 0, streaming = false;
+var sid = null, attachmentId = null, cursor = 0, acked = 0;
+var streaming = false, mainWorkerId = null, pollFallback = false;
+// Layout is CLIENT state (slice C9): panes/focus live in this SurfaceModel
+// instance, never in the session. Another attached client keeps its own.
+var model = new GeneSurfaceModel('local_web', 16);
 function mutationHeaders() {
   var h = hdrs(true);
   h['idempotency-key'] =
@@ -1551,13 +1695,36 @@ function show(cls, text) {
   log.appendChild(span);
   log.scrollTop = log.scrollHeight;
 }
-function render(ev) {
+function renderPanes() {
+  var el = document.getElementById('panes');
+  el.textContent = '';
+  model.panes.forEach(function (p) {
+    var b = document.createElement('button');
+    b.textContent = '[' + p.id + '] ' + p.title +
+      (model.focusedPane === p.id ? ' *' : '');
+    b.onclick = function () { model.focusPane(p.id); renderPanes(); };
+    var x = document.createElement('button');
+    x.textContent = 'x';
+    x.onclick = function () { model.closePane(p.id); renderPanes(); };
+    el.appendChild(b);
+    el.appendChild(x);
+  });
+}
+function handleEvent(ev) {
+  if (ev.v && ev.v > cursor) cursor = ev.v;
+  if (ev.type === 'worker_started' && ev.worker_id &&
+      ev.worker_id !== mainWorkerId && !model.paneForWorker(ev.worker_id)) {
+    model.openPane({ workerId: ev.worker_id, kind: ev.kind || 'output',
+                     title: ev.title || ev.worker_id }, null, 'detach', null);
+    renderPanes();
+  }
   if (ev.type === 'user_input') { if (streaming) { show('text', '\n'); streaming = false; } show('user', 'you> ' + ev.text + '\n'); }
   else if (ev.type === 'text_delta') { if (!streaming) { show('text', 'agent> '); streaming = true; } show('text', ev.text); }
   else if (ev.type === 'agent_text') { if (streaming) { show('text', '\n'); streaming = false; } else { show('text', 'agent> ' + ev.text + '\n'); } }
   else if (ev.type === 'turn_done') { if (streaming) { show('text', '\n'); streaming = false; } }
 }
 function installSnapshot(s) {
+  mainWorkerId = s.main_worker_id;
   var main = (s.workers || []).find(function (w) { return w.worker_id === s.main_worker_id; });
   log.textContent = main && main.output ? main.output : '';
   log.classList.remove('muted');
@@ -1575,12 +1742,47 @@ function poll() {
     .then(function (r) { return r.json(); })
     .then(function (d) {
       if (d.error === 'cursor_gap') { return resync().then(poll); }
-      (d.events || []).forEach(render);
+      (d.events || []).forEach(handleEvent);
       if (d.cursor > cursor) cursor = d.cursor;
       poll();
     })
     .catch(function () { setTimeout(poll, 1000); });
 }
+function startPollFallback() {
+  if (pollFallback) return;
+  pollFallback = true;
+  show('muted', 'long-poll delivery\n');
+  poll();
+}
+function connectWs() {
+  fetch('/api/sessions/' + sid + '/ws_ticket',
+        { method: 'POST', headers: mutationHeaders() })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.ticket) { startPollFallback(); return; }
+      var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+      var ws = new WebSocket(proto + location.host + '/api/sessions/' + sid +
+                             '/ws?ticket=' + d.ticket);
+      ws.onmessage = function (m) {
+        var frame = JSON.parse(m.data);
+        if (frame.type === 'event') { handleEvent(frame.event); }
+        else if (frame.type === 'cursor_gap') { resync(); }
+      };
+      ws.onclose = startPollFallback;
+      ws.onerror = startPollFallback;
+    })
+    .catch(startPollFallback);
+}
+// Explicit acknowledgement is a mutation, so it rides HTTP with an
+// idempotency key — never the delivery socket.
+setInterval(function () {
+  if (!sid || !attachmentId || cursor <= acked) return;
+  var c = cursor;
+  fetch('/api/sessions/' + sid + '/attachments/' + attachmentId + '/ack',
+        { method: 'POST', headers: mutationHeaders(),
+          body: JSON.stringify({ cursor: c }) })
+    .then(function () { acked = c; });
+}, 3000);
 fetch('/api/sessions', { method: 'POST', headers: hdrs(false) })
   .then(function (r) { return r.json(); })
   .then(function (d) {
@@ -1593,7 +1795,7 @@ fetch('/api/sessions', { method: 'POST', headers: hdrs(false) })
   .then(function (d) {
     attachmentId = d.attachment_id;
     show('muted', 'session ' + sid + '\n');
-    poll();
+    connectWs();
   });
 document.getElementById('f').addEventListener('submit', function (e) {
   e.preventDefault();
@@ -1851,6 +2053,10 @@ document.getElementById('f').addEventListener('submit', function (e) {
     (Response ^status 200
               ^headers {^content-type "text/html; charset=utf-8"}
               ^body web_page)
+    (if (== req/path "/surface_model.js")
+      (Response ^status 200
+                ^headers {^content-type "application/javascript; charset=utf-8"}
+                ^body surface_model_js)
     (if (== req/path "/api/operations")
       (if (== req/method "GET")
         (json_response 200
@@ -1868,7 +2074,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
         (if (== parts/4 "attachments")
           (attachment_route req parts)
           (attached_session_route req parts))
-        (json_response 404 {^error "not_found"}))))))
+        (json_response 404 {^error "not_found"})))))))
 
 (fn handle [req]
   (var parts (split req/path "/"))
