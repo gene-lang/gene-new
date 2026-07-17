@@ -616,7 +616,9 @@ catch {^message message} (set duplicate message))
         "expect -re {\\[0 main\\]}\n" &
         "send -- \"/sh\\r\"\n" &
         "expect -re {terminal w1: direct/unmediated}\n" &
-        "send -- \"printf 'C8_COLOR_\\\\033\\\\[31m_界\\\\033\\\\[0m\\\\n'\\r\"\n" &
+        # Tcl: inside a double-quoted word `\\[` is backslash + live command
+        # substitution ("missing close-bracket"); `\[` is a literal bracket.
+        "send -- \"printf 'C8_COLOR_\\\\033\\[31m_界\\\\033\\[0m\\\\n'\\r\"\n" &
         "expect -re {C8_COLOR_.*界}\n" &
         "send -- \"cd tests\\r\"\n" &
         "send -- \"pwd\\r\"\n" &
@@ -6324,6 +6326,421 @@ console.log(JSON.stringify({
       "http://127.0.0.1:8997/api/sessions/s1/messages")
     let contTurn = waitTurn(maxV)
     check ("\"v\":" & $(maxV + 1)) in contTurn
+
+  test "C9 acceptance: one scenario is semantically identical across shapes":
+    ## design.md §10.12 acceptance: one scripted scenario — attach two
+    ## clients, run a destructive turn to a confirmation and deny it as the
+    ## initiator (the observer's answer is rejected), delegate to a
+    ## sub-agent, observe it, read+incorporate its result, /pin it, and
+    ## resume the initiating attachment by credential — runs in Shape A
+    ## (combined TUI+gateway under a PTY), Shape B (headless service,
+    ## long-poll), and Shape C (headless service, WebSocket delivery).
+    ## Comparison is SEMANTIC: after dropping provenance (v, attachment,
+    ## principal, surface, timing), renaming correlation ids by first
+    ## appearance, and collapsing the standalone journal's compatibility
+    ## double-write, the event type sequence, causal order, and operation
+    ## results must be identical across shapes. The observer stays attached
+    ## throughout; a silent third client neither stalls anyone nor loses
+    ## its from-zero read (journal-trim gaps + recovery are separately
+    ## covered by the headless-lifecycle test; WS bounded-queue gaps by the
+    ## stage-4 test).
+    buildGeneCli()
+    let endpoint = writeCliProgram("acceptance_chat_endpoint.gene", """
+(import net/http [Server serve Response])
+(import str [contains?])
+(var calls (cell 0))
+(fn sse [body]
+  (Response ^status 200
+            ^headers {^content-type "text/event-stream"}
+            ^body body))
+(fn handle [req]
+  (if (contains? req/path "/reset")
+    (do
+      (calls ~ Cell/set 0)
+      (Response ^status 200 ^body "reset"))
+    (do
+      (calls ~ Cell/set (+ (calls ~ Cell/get) 1))
+      (match (calls ~ Cell/get)
+        (when 1
+          (sse "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"acc_confirm\",\"type\":\"function\",\"function\":{\"name\":\"run_shell\",\"arguments\":\"{\\\"command\\\":\\\"git reset --hard\\\"}\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"))
+        (when 2
+          (sse "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"denial handled\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+        (else
+          (sse "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"sub agent report\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))))))
+(serve (Server ^host "127.0.0.1" ^port 9002) handle)
+""")
+    let endpointProc = startProcess(geneExe, args = ["run", endpoint],
+                                    options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if endpointProc.running: endpointProc.terminate()
+      endpointProc.close()
+
+    proc waitPort(port: int) =
+      let deadline = getMonoTime() + initDuration(seconds = 15)
+      while true:
+        var s = newSocket()
+        try:
+          s.connect("127.0.0.1", Port(port), timeout = 500)
+          s.close()
+          break
+        except OSError, TimeoutError:
+          s.close()
+          if getMonoTime() > deadline: raise
+          sleep(50)
+    waitPort(9002)
+
+    type ShapeResult = object
+      events: JsonNode        # normalized scenario events, in order
+      results: JsonNode       # scalar operation results
+
+    proc runScenario(port: int, sessionId: string): ShapeResult =
+      let base = "http://127.0.0.1:" & $port
+      proc api(attachment, call: string): string =
+        let header =
+          if attachment.len > 0:
+            "-H 'X-Gene-Attachment: " & attachment & "' "
+          else:
+            ""
+        let ran = execCmdEx("curl -sS --max-time 10 " & header & call)
+        check ran.exitCode == 0
+        ran.output
+      proc attach(label: string): JsonNode =
+        parseJson(api("",
+          "-X POST -H 'content-type: application/json' " &
+          "-d '{\"display_label\":\"" & label & "\"}' " &
+          base & "/api/sessions/" & sessionId & "/attachments"))
+      let c1 = attach("initiator")
+      let c2 = attach("observer")
+      let c3 = attach("silent")
+      let c1Id = c1["attachment_id"].getStr()
+      let c2Id = c2["attachment_id"].getStr()
+      let baseline = c2["acknowledged_cursor"].getInt()
+      let credential = c1["resume_credential"].getStr()
+
+      proc eventsFrom(attachment: string, cursor: int): JsonNode =
+        parseJson(api(attachment,
+          "'" & base & "/api/sessions/" & sessionId & "/events?cursor=" &
+          $cursor & "'"))
+      proc waitEvent(kind: string): JsonNode =
+        let deadline = getMonoTime() + initDuration(seconds = 20)
+        while getMonoTime() < deadline:
+          let batch = eventsFrom(c2Id, baseline)
+          for ev in batch["events"]:
+            if ev["type"].getStr() == kind:
+              return ev
+          sleep(100)
+        checkpoint "event never arrived: " & kind
+        check false
+      proc waitTurnDone(count: int) =
+        let deadline = getMonoTime() + initDuration(seconds = 25)
+        while getMonoTime() < deadline:
+          let batch = eventsFrom(c2Id, baseline)
+          var seen = 0
+          for ev in batch["events"]:
+            if ev["type"].getStr() == "turn_done": inc seen
+          if seen >= count: return
+          sleep(100)
+        checkpoint "turn " & $count & " never completed"
+        check false
+
+      # 1. Destructive turn -> initiator-bound confirmation, denied by c1.
+      discard api(c1Id,
+        "-X POST -H 'Idempotency-Key: acc-m1' " &
+        "-H 'content-type: application/json' " &
+        "-d '{\"text\":\"please reset\"}' " &
+        base & "/api/sessions/" & sessionId & "/messages")
+      let confirmation = waitEvent("confirmation_requested")
+      let confirmationId = confirmation["confirmation_id"].getStr()
+      let rejected = api(c2Id,
+        "-w '\n%{http_code}' -X POST -H 'content-type: application/json' " &
+        "-d '{\"decision\":\"deny\"}' " &
+        base & "/api/sessions/" & sessionId & "/confirmations/" &
+        confirmationId)
+      check "confirmation_not_owned" in rejected
+      check rejected.strip().endsWith("403")
+      discard api(c1Id,
+        "-X POST -H 'Idempotency-Key: acc-c1' " &
+        "-H 'content-type: application/json' " &
+        "-d '{\"decision\":\"deny\"}' " &
+        base & "/api/sessions/" & sessionId & "/confirmations/" &
+        confirmationId)
+      waitTurnDone(1)
+
+      # 2. Delegate, observe, read + incorporate the sub-agent result.
+      let agentCreated = parseJson(api(c1Id,
+        "-X POST -H 'Idempotency-Key: acc-a1' " &
+        "-H 'content-type: application/json' " &
+        "-d '{\"assignment\":\"review the reset\",\"title\":\"reviewer\"}' " &
+        base & "/api/sessions/" & sessionId & "/agents"))
+      let agentId = agentCreated["agent_id"].getStr()
+      discard api(c1Id,
+        "-X POST -H 'Idempotency-Key: acc-a1m' " &
+        "-H 'content-type: application/json' " &
+        "-d '{\"text\":\"report\"}' " &
+        base & "/api/sessions/" & sessionId & "/agents/" & agentId &
+        "/messages")
+      var agentResult = ""
+      block waitAgentResult:
+        let deadline = getMonoTime() + initDuration(seconds = 25)
+        while getMonoTime() < deadline:
+          agentResult = api(c1Id,
+            base & "/api/sessions/" & sessionId & "/agents/" & agentId &
+            "/result")
+          if "sub agent report" in agentResult: break waitAgentResult
+          sleep(150)
+        checkpoint "sub-agent result never arrived: " & agentResult
+        check false
+      let status = parseJson(api(c2Id,
+        base & "/api/sessions/" & sessionId & "/workers/" & agentId &
+        "/status"))
+      let tail = api(c2Id,
+        "'" & base & "/api/sessions/" & sessionId & "/workers/" & agentId &
+        "/tail?n=3'")
+      discard api(c1Id,
+        "-X POST " & base & "/api/sessions/" & sessionId & "/agents/" &
+        agentId & "/result/read")
+      discard api(c1Id,
+        "-X POST " & base & "/api/sessions/" & sessionId & "/agents/" &
+        agentId & "/incorporate")
+
+      # 3. Pin the result as durable evidence.
+      let pinned = parseJson(api(c1Id,
+        "-X POST -H 'Idempotency-Key: acc-pin' " &
+        "-H 'content-type: application/json' " &
+        "-d '{\"source\":\"result\",\"worker_id\":\"" & agentId & "\"}' " &
+        base & "/api/sessions/" & sessionId & "/artifacts"))
+
+      # 4. Reconnect: resume the initiating attachment by credential, then
+      # acknowledge the current cursor.
+      let resumed = parseJson(api("",
+        "-X POST -H 'content-type: application/json' " &
+        "-d '{\"resume_credential\":\"" & credential & "\"}' " &
+        base & "/api/sessions/" & sessionId & "/attachments/" & c1Id &
+        "/resume"))
+      let latest = eventsFrom(c2Id, baseline)
+      let lastCursor = latest["cursor"].getInt()
+      let ackedNode = parseJson(api(c1Id,
+        "-X POST -H 'Idempotency-Key: acc-ack' " &
+        "-H 'content-type: application/json' " &
+        "-d '{\"cursor\":" & $lastCursor & "}' " &
+        base & "/api/sessions/" & sessionId & "/attachments/" & c1Id &
+        "/ack"))
+
+      # The silent third client never stalled anyone; its from-zero read
+      # still works after the whole scenario.
+      let silentRead = eventsFrom(c3["attachment_id"].getStr(), baseline)
+      check silentRead.hasKey("events")
+
+      result.events = latest["events"]
+      result.results = %*{
+        "confirmation_rejected_for_observer": true,
+        "agent_status_kind": status["result"]["kind"].getStr(),
+        "agent_status_lifecycle": status["result"]["lifecycle"].getStr(),
+        "tail_has_report": "sub agent report" in tail,
+        "result_text_seen": "sub agent report" in agentResult,
+        "artifact_ok": pinned["ok"].getBool(),
+        "resume_attachment_matches":
+          resumed["attachment_id"].getStr() == c1Id,
+        "acked_cursor_advanced":
+          ackedNode["acknowledged_cursor"].getInt() > 0}
+
+    proc normalize(shape: ShapeResult): JsonNode =
+      ## Provenance-normalized semantic view (the acceptance rule): drop
+      ## journal cursors/attachment/principal/surface/timing, rename
+      ## correlation ids by first appearance, collapse the standalone
+      ## compatibility double-write of identical adjacent events.
+      var idMap = newJObject()
+      var counters = %*{"T": 0, "A": 0, "W": 0, "C": 0}
+      proc mapId(prefix, raw: string): string =
+        let key = prefix & ":" & raw
+        if not idMap.hasKey(key):
+          counters[prefix] = %(counters[prefix].getInt() + 1)
+          idMap[key] = %(prefix & $counters[prefix].getInt())
+        idMap[key].getStr()
+      proc normWorker(raw: string): string =
+        if raw == "main": "main"
+        elif raw.startsWith("a"): mapId("A", raw)
+        else: mapId("W", raw)
+      result = newJArray()
+      var previous = ""
+      for ev in shape.events:
+        # text_delta/agent_text are the additive agent-protocol
+        # compatibility records; the canonical producer boundary both
+        # shapes share is the derived worker_output event (same text), so
+        # the semantic comparison runs on that.
+        if ev["type"].getStr() in ["text_delta", "agent_text"]:
+          continue
+        var obj = newJObject()
+        for key in ev.keys:
+          if key in ["v", "attachment_id", "principal", "surface",
+                     "duration_ms", "turn", "seq", "source_v",
+                     "created_ms", "pane_id"]:
+            continue
+          obj[key] = ev[key]
+        if obj.hasKey("task_id") and obj["task_id"].kind == JString:
+          obj["task_id"] = %mapId("T", obj["task_id"].getStr())
+        if obj.hasKey("confirmation_id"):
+          obj["confirmation_id"] = %mapId("C", obj["confirmation_id"].getStr())
+        for key in ["worker_id", "agent_id", "caller_worker_id",
+                    "parent_agent_id"]:
+          if obj.hasKey(key) and obj[key].kind == JString:
+            obj[key] = %normWorker(obj[key].getStr())
+        let canonical = $obj
+        if canonical == previous:
+          continue
+        previous = canonical
+        result.add obj
+
+    # ---- Shape B: headless service over long-poll --------------------------
+    let stateB = cliDir / "acceptance_state_b"
+    if dirExists(stateB): removeDir(stateB)
+    defer:
+      if dirExists(stateB): removeDir(stateB)
+    var shapeBProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "CODEX_ACCESS_TOKEN", "-u", "OPENAI_API_KEY",
+              "-u", "OPENAI_API", "-u", "TELEGRAM_BOT_TOKEN",
+              "OPENAI_AUTH_TOKEN=dummy",
+              "OPENAI_BASE_URL=http://127.0.0.1:9002/v1",
+              "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=9102",
+              "GENE_AGENT_STATE=fs:" & stateB,
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if shapeBProc.running: shapeBProc.terminate()
+      shapeBProc.close()
+    waitPort(9102)
+    check "\"id\":\"s1\"" in execCmdEx(
+      "curl -sS --max-time 5 -X POST http://127.0.0.1:9102/api/sessions").output
+    let shapeB = runScenario(9102, "s1")
+    shapeBProc.terminate()
+    discard shapeBProc.waitForExit(5000)
+    discard execCmdEx("curl -sS --max-time 5 http://127.0.0.1:9002/reset")
+
+    # ---- Shape C: headless service, WebSocket delivery ---------------------
+    let stateC = cliDir / "acceptance_state_c"
+    if dirExists(stateC): removeDir(stateC)
+    defer:
+      if dirExists(stateC): removeDir(stateC)
+    var shapeCProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "CODEX_ACCESS_TOKEN", "-u", "OPENAI_API_KEY",
+              "-u", "OPENAI_API", "-u", "TELEGRAM_BOT_TOKEN",
+              "OPENAI_AUTH_TOKEN=dummy",
+              "OPENAI_BASE_URL=http://127.0.0.1:9002/v1",
+              "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=9103",
+              "GENE_AGENT_STATE=fs:" & stateC,
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if shapeCProc.running: shapeCProc.terminate()
+      shapeCProc.close()
+    waitPort(9103)
+    check "\"id\":\"s1\"" in execCmdEx(
+      "curl -sS --max-time 5 -X POST http://127.0.0.1:9103/api/sessions").output
+    # WS delivery rides beside the scenario: attach, mint a ticket, upgrade,
+    # and count delivered event frames while the same scenario runs over
+    # HTTP. Frame delivery must reach the same terminal event.
+    let wsAttachment = parseJson(execCmdEx(
+      "curl -sS --max-time 5 -X POST -H 'content-type: application/json' " &
+      "-d '{\"display_label\":\"ws-observer\"}' " &
+      "http://127.0.0.1:9103/api/sessions/s1/attachments").output)[
+        "attachment_id"].getStr()
+    let wsTicket = parseJson(execCmdEx(
+      "curl -sS --max-time 5 -X POST -H 'X-Gene-Attachment: " &
+      wsAttachment & "' " &
+      "http://127.0.0.1:9103/api/sessions/s1/ws_ticket").output)[
+        "ticket"].getStr()
+    var wsSock = newSocket()
+    wsSock.connect("127.0.0.1", Port(9103), timeout = 2000)
+    wsSock.send("GET /api/sessions/s1/ws?ticket=" & wsTicket &
+      " HTTP/1.1\r\nHost: 127.0.0.1:9103\r\nUpgrade: websocket\r\n" &
+      "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" &
+      "Sec-WebSocket-Version: 13\r\n\r\n")
+    var wsHead = ""
+    while "\r\n\r\n" notin wsHead:
+      var ch: char
+      if wsSock.recv(addr ch, 1, 2000) != 1: break
+      wsHead.add ch
+    check "101" in wsHead.splitLines()[0]
+    let shapeC = runScenario(9103, "s1")
+    # Drain WS frames accumulated during the scenario; the stream must have
+    # delivered the same terminal turn_done the journal shows.
+    proc wsRecvAll(sock: Socket): seq[string] =
+      var buf = ""
+      var chunk = newString(4096)
+      while true:
+        var n: int
+        try:
+          n = sock.recv(addr chunk[0], 4096, 500)
+        except OSError, TimeoutError:
+          break
+        if n <= 0: break
+        buf.add chunk[0 ..< n]
+      var pos = 0
+      while pos + 2 <= buf.len:
+        let b1 = int(byte(buf[pos + 1])) and 0x7F
+        var ln = b1
+        var header = 2
+        if b1 == 126:
+          if pos + 4 > buf.len: break
+          ln = (int(byte(buf[pos + 2])) shl 8) or int(byte(buf[pos + 3]))
+          header = 4
+        elif b1 == 127:
+          break
+        if pos + header + ln > buf.len: break
+        result.add buf[pos + header ..< pos + header + ln]
+        pos += header + ln
+    let wsFrames = wsRecvAll(wsSock)
+    wsSock.close()
+    var wsSawTurnDone = false
+    for frame in wsFrames:
+      if "\"turn_done\"" in frame: wsSawTurnDone = true
+    check wsSawTurnDone
+    shapeCProc.terminate()
+    discard shapeCProc.waitForExit(5000)
+    discard execCmdEx("curl -sS --max-time 5 http://127.0.0.1:9002/reset")
+
+    # ---- Shape A: combined TUI + gateway under a PTY -----------------------
+    let stateA = cliDir / "acceptance_state_a"
+    if dirExists(stateA): removeDir(stateA)
+    defer:
+      if dirExists(stateA): removeDir(stateA)
+    let shapeALog = cliDir / "acceptance_shape_a.ts"
+    let shapeACmd =
+      "tail -f /dev/null | script -q " & shellQuote(shapeALog) &
+      " /usr/bin/env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
+      "-u TELEGRAM_BOT_TOKEN OPENAI_AUTH_TOKEN=dummy " &
+      "OPENAI_BASE_URL=http://127.0.0.1:9002/v1 OPENAI_MODEL=fake-chat " &
+      "GENE_AGENT_STATE=fs:" & shellQuote(stateA) & " " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene --gateway=9104"
+    var shapeAProc = startProcess("/bin/sh", args = ["-c", shapeACmd],
+                                  options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if shapeAProc.running: shapeAProc.terminate()
+      shapeAProc.close()
+      discard execCmdEx("lsof -ti tcp:9104 | xargs kill 2>/dev/null")
+    waitPort(9104)
+    let shapeA = runScenario(9104, "local")
+
+    # ---- Semantic comparison ----------------------------------------------
+    let normA = normalize(shapeA)
+    let normB = normalize(shapeB)
+    let normC = normalize(shapeC)
+    if normB != normC:
+      checkpoint "shape B: " & $normB
+      checkpoint "shape C: " & $normC
+    check normB == normC
+    if normA != normB:
+      checkpoint "shape A: " & $normA
+      checkpoint "shape B: " & $normB
+    check normA == normB
+    if shapeA.results != shapeB.results or shapeB.results != shapeC.results:
+      checkpoint "results A: " & $shapeA.results
+      checkpoint "results B: " & $shapeB.results
+      checkpoint "results C: " & $shapeC.results
+    check shapeA.results == shapeB.results
+    check shapeB.results == shapeC.results
 
   test "agent gateway bridges telegram chats through the bot api":
     ## Milestone 9 e2e (examples/ai_agent/design.md §12.6) over loopback: a fake Telegram
