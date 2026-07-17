@@ -1202,7 +1202,8 @@
     (if (== kind "worker_not_found") 404
       (if (== kind "unknown_operation") 404
         (if (== kind "worker_access_denied") 403
-          (if (== kind "invalid_arguments") 400 409)))))
+          (if (== kind "local_only") 403
+            (if (== kind "invalid_arguments") 400 409))))))
   (json_response status {^ok false ^error response/error}))
 
 (fn worker_operation_success_response
@@ -1253,6 +1254,66 @@
       (worker_operation_failure_response response))
   catch {^message m}
     (json_response 400 {^error "invalid_arguments" ^message m})))
+
+(fn list_artifacts [id : Str]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (then (json_response 404 {^error "no such session"}))
+    (else
+      (var artifacts [])
+      (for artifact in (agent_api/agent_artifacts ~ Cell/get)
+        (artifacts ~ List/push!
+          {^id artifact/id ^kind artifact/kind
+           ^source_worker artifact/source_worker
+           ^task_id artifact/task_id ^size artifact/size
+           ^blob_id artifact/blob_id}))
+      (json_response 200 {^artifacts artifacts}))))
+
+(fn pin_artifact_response [s, pinned]
+  (if pinned/ok
+    (then
+      (persist_gateway_session s)
+      (json_response 200
+        {^ok true
+         ^artifact {^id pinned/artifact/id
+                    ^blob_id pinned/artifact/blob_id}}))
+    (else (json_response 409 {^ok false ^error pinned/error}))))
+
+(fn pin_artifact [id : Str, req, attachment]
+  (var s (sessions ~ Map/get id))
+  (if (== s void)
+    (return (json_response 404 {^error "no such session"})))
+  (try
+    (var body (parse req/body))
+    (match body/source
+      (when "result"
+        (var agent
+          (agent_api/application_find_agent s/application body/worker_id))
+        (var result (if agent (agent/result ~ Cell/get)))
+        (if (== result nil)
+          (json_response 404 {^error "no_result"})
+          (pin_artifact_response s
+            (agent_api/application_pin_artifact s/application "result"
+              (agent_api/agent_result_text result) agent/id
+              result/task_id))))
+      (when "tail"
+        (var worker
+          (agent_api/application_find_worker s/application body/worker_id))
+        (if (== worker nil)
+          (then (json_response 404 {^error "worker_not_found"}))
+          (else
+            (var operation (worker/current_operation ~ Cell/get))
+            (pin_artifact_response s
+              (agent_api/application_pin_artifact s/application "capture"
+                (worker/output ~ Cell/get) worker/id
+                (if operation operation/task_id nil))))))
+      (else
+        (json_response 400 {^error "invalid_source"
+                            ^message "source must be result or tail"})))
+  catch (JsonError ^message m)
+    (json_response 400 {^error "invalid_json" ^message m})
+  catch {^message m}
+    (json_response 400 {^error "invalid_pin" ^message m})))
 
 (fn worker_input [id : Str, worker_id : Str, req, attachment]
   (var s (sessions ~ Map/get id))
@@ -1534,6 +1595,14 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (if (&& (== parts/~size 6) (== req/method "POST"))
         (resolve_confirmation parts/3 parts/5 req attachment)
         (json_response 405 {^error "method_not_allowed"})))
+    (when "artifacts"
+      (if (== parts/~size 5)
+        (if (== req/method "GET")
+          (list_artifacts parts/3)
+          (if (== req/method "POST")
+            (pin_artifact parts/3 req attachment)
+            (json_response 405 {^error "method_not_allowed"})))
+        (json_response 404 {^error "not_found"})))
     (when "workers"
       (if (== parts/~size 5)
         (if (== req/method "GET")

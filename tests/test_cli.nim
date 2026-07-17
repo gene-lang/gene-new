@@ -5484,6 +5484,143 @@ catch {^message message}
     check "attachment_invalid" in detached
     check detached.strip().endsWith("401")
 
+  test "agent gateway remote parity spans two attachments with local_only":
+    ## Slice C9 stage 3 (design.md §10.12): the remote client surface reaches
+    ## worker operations, artifacts, and snapshots over the long-poll routes;
+    ## two attachments on one session hold independent acknowledgement
+    ## cursors; in-process-only operations answer the typed local_only error.
+    buildGeneCli()
+    let stateDir = cliDir / "gateway_remote_parity_state"
+    if dirExists(stateDir): removeDir(stateDir)
+    defer:
+      if dirExists(stateDir): removeDir(stateDir)
+    let gatewayProc = startProcess(
+      "/usr/bin/env",
+      args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
+              "-u", "OPENAI_API_KEY", "-u", "TELEGRAM_BOT_TOKEN",
+              "GENE_GATEWAY_PORT=8998",
+              "GENE_AGENT_STATE=fs:" & stateDir,
+              geneExe, "run", "examples/ai_agent/gateway.gene"],
+      options = {poUsePath, poStdErrToStdOut})
+    defer:
+      if gatewayProc.running: gatewayProc.terminate()
+      gatewayProc.close()
+    let deadline = getMonoTime() + initDuration(seconds = 10)
+    while true:
+      var s = newSocket()
+      try:
+        s.connect("127.0.0.1", Port(8998), timeout = 500)
+        s.close()
+        break
+      except OSError, TimeoutError:
+        s.close()
+        if getMonoTime() > deadline: raise
+        sleep(50)
+
+    proc parityCurl(attachment, call: string): string =
+      let header =
+        if attachment.len > 0:
+          "-H 'X-Gene-Attachment: " & attachment & "' "
+        else:
+          ""
+      let ran = execCmdEx("curl -sS --max-time 5 " & header & call)
+      check ran.exitCode == 0
+      ran.output
+
+    check "\"id\":\"s1\"" in parityCurl("",
+      "-X POST http://127.0.0.1:8998/api/sessions")
+    proc attachClient(label: string): string =
+      parseJson(parityCurl("",
+        "-X POST -H 'content-type: application/json' " &
+        "-d '{\"display_label\":\"" & label & "\"}' " &
+        "http://127.0.0.1:8998/api/sessions/s1/attachments"))[
+          "attachment_id"].getStr()
+    let clientA = attachClient("tui-a")
+    let clientB = attachClient("tui-b")
+    check clientA != clientB
+
+    # Client A drives a stateful shell worker through declared operations.
+    let shellCreated = parityCurl(clientA,
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"kind\":\"shell\",\"config\":{\"title\":\"remote shell\"}}' " &
+      "http://127.0.0.1:8998/api/sessions/s1/workers")
+    check "\"worker_id\":\"w1\"" in shellCreated
+    let ran = parityCurl(clientA,
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"args\":{\"command\":\"printf remote-parity-ok\"}}' " &
+      "http://127.0.0.1:8998/api/sessions/s1/workers/w1/ops/run")
+    check "\"ok\":true" in ran
+    var tailText = ""
+    let tailDeadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < tailDeadline:
+      tailText = parityCurl(clientA,
+        "'http://127.0.0.1:8998/api/sessions/s1/workers/w1/tail?n=5'")
+      if "remote-parity-ok" in tailText: break
+      sleep(25)
+    check "remote-parity-ok" in tailText
+
+    # Client B observes the same session while holding its own cursor.
+    let workersForB = parityCurl(clientB,
+      "http://127.0.0.1:8998/api/sessions/s1/workers")
+    check "remote shell" in workersForB
+    check "\"acknowledged_cursor\":4" in parityCurl(clientA,
+      "-X POST -H 'content-type: application/json' -d '{\"cursor\":4}' " &
+      "http://127.0.0.1:8998/api/sessions/s1/attachments/" & clientA & "/ack")
+    check "\"acknowledged_cursor\":1" in parityCurl(clientB,
+      "-X POST -H 'content-type: application/json' -d '{\"cursor\":1}' " &
+      "http://127.0.0.1:8998/api/sessions/s1/attachments/" & clientB & "/ack")
+
+    # Artifacts pin over the wire and both clients list the same evidence.
+    let pinned = parityCurl(clientA,
+      "-X POST -H 'content-type: application/json' " &
+      "-d '{\"source\":\"tail\",\"worker_id\":\"w1\"}' " &
+      "http://127.0.0.1:8998/api/sessions/s1/artifacts")
+    check "\"id\":\"artifact:1\"" in pinned
+    let artifactsForB = parityCurl(clientB,
+      "http://127.0.0.1:8998/api/sessions/s1/artifacts")
+    check "\"id\":\"artifact:1\"" in artifactsForB
+    check "\"source_worker\":\"w1\"" in artifactsForB
+
+    # Attachment provenance lands in the journal for A's mutations.
+    let events = parityCurl(clientB,
+      "'http://127.0.0.1:8998/api/sessions/s1/events?cursor=0'")
+    check "\"attachment_id\":\"" & clientA & "\"" in events
+
+    # In-process-only operations answer the typed local_only error remotely
+    # (repl eval is bound to the local surface; the policy is enforced by the
+    # core, so exercise it directly with a remote-shaped invocation).
+    let fixture = "examples/ai_agent/remote_local_only_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import [active_application make_application_with_task
+         application_call_worker]
+  from "./core.gene")
+(import [open_repl_pane] from "./tui.gene")
+(var app
+  (make_application_with_task (cell []) (cell "") (cell [])
+    (fn [_type, _props] nil) (cell nil)))
+(active_application ~ Cell/set app)
+(var pane (open_repl_pane app/main_agent/items app/main_agent/transcript
+                          (cell [])))
+(var repl pane/worker)
+(var remote_invocation
+  {^origin "remote" ^caller_worker_id nil ^attachment_id "att_test"
+   ^principal "loopback"
+   ^principal_capabilities
+     ["observe" "session_write" "model_call" "host_read" "host_write"]})
+(var denied
+  (application_call_worker app repl/id "eval" {^form "(+ 1 2)"}
+    remote_invocation))
+(var observed
+  (application_call_worker app repl/id "status" {} remote_invocation))
+(println $"denied=${denied/error/kind} observed=${observed/ok}")
+""")
+    let localOnly = runGene(["run", fixture])
+    if localOnly.exitCode != 0: checkpoint localOnly.output
+    check localOnly.exitCode == 0
+    check "denied=local_only observed=true" in localOnly.output
+
   test "agent gateway cancellation stops an in-flight model turn":
     buildGeneCli()
     let commandStarted = "tmp/gateway-cancel-command-started"

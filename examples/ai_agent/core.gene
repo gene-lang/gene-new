@@ -7030,10 +7030,21 @@ State that broader behavior is unverified when no matching successful check ran.
         invocation "handler_unavailable"
         "operation handler is disabled because its saved version is unavailable")))
   (if_not (invocation_authorized? app worker operation invocation)
+    # Remote parity excludes in-process-only capabilities by design (§12
+    # slice C9): a remote caller denied an operation whose audience is bound
+    # to the local surface gets the typed local_only error, not a generic
+    # access denial.
+    (var denied_audience (invocation_audience app worker invocation))
     (return
-      (application_reject_worker_operation! app worker worker_ref operation_name
-        invocation "worker_access_denied"
-        "caller is not in the operation audience, lacks principal capabilities, or lacks delegation")))
+      (if (&& (== denied_audience "remote_user")
+              (! (operation/audience ~ contains? "remote_user"))
+              (operation/audience ~ contains? "local_user"))
+        (application_reject_worker_operation! app worker worker_ref
+          operation_name invocation "local_only"
+          "operation requires the in-process owning surface; remote parity excludes it")
+        (application_reject_worker_operation! app worker worker_ref
+          operation_name invocation "worker_access_denied"
+          "caller is not in the operation audience, lacks principal capabilities, or lacks delegation"))))
   (if (&& (== operation/admission "worker_exclusive")
           (worker_busy? worker))
     (return
@@ -7740,6 +7751,9 @@ State that broader behavior is unverified when no matching successful check ran.
    ^application_drain_supervisor_inbox application_drain_supervisor_inbox
    ^application_snapshot application_snapshot
    ^restore_application restore_application_snapshot!
+   ^application_pin_artifact application_pin_artifact!
+   ^agent_result_text agent_result_text
+   ^agent_artifacts agent_artifacts
    ^gateway_project_event gateway_project_event
    ^gateway_render_event gateway_render_event
    ^gateway_save_application gateway_save_application ^begin_turn begin_turn!})

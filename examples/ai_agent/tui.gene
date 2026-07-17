@@ -3662,6 +3662,108 @@
         (else nil)))
     (client/acknowledge batch/cursor)))
 
+# Remote parity (§10.12 stage 3): the operation registry served by
+# /api/operations drives the remote /worker command exactly as the local
+# declarations drive the local one. A single-placeholder usage string
+# ("run <command>", "tail [n]") maps the rest of the line onto that field;
+# anything richer takes literal JSON args. In-process-only operations reach
+# the gateway and come back as typed local_only errors — never hidden here.
+(fn remote_usage_placeholder [usage : Str]
+  (var parts (split (trim usage) " "))
+  (if (== parts/~size 2)
+    (then
+      (var token parts/1)
+      (if (&& (starts_with? token "<") (ends_with? token ">"))
+        {^field (slice_bytes token 1 (- (byte_size token) 2)) ^optional false}
+        (if (&& (starts_with? token "[") (ends_with? token "]"))
+          {^field (slice_bytes token 1 (- (byte_size token) 2)) ^optional true})))))
+
+(fn remote_operation_args [metadata, kind : Str, op : Str, rest : Str]
+  (if (== (trim rest) "") (return {}))
+  (if (starts_with? (trim rest) "{")
+    (return (parse (trim rest))))
+  (var descriptor (cell nil))
+  (for operation in metadata/operations
+    (if (&& (== operation/name op)
+            (|| (== operation/worker_kind kind)
+                (== operation/worker_kind "*"))
+            (|| (== (descriptor ~ Cell/get) nil)
+                (== operation/worker_kind kind)))
+      (descriptor ~ Cell/set operation)))
+  (var found (descriptor ~ Cell/get))
+  (if (== found nil)
+    (fail (ClientTransportError
+      ^kind "unknown_operation"
+      ^message $"no ${kind} operation named ${op}; see /operations")))
+  (var placeholder (remote_usage_placeholder found/usage))
+  (if (== placeholder nil)
+    (fail (ClientTransportError
+      ^kind "invalid_arguments"
+      ^message $"${op} takes JSON args here: /worker <id> ${op} {...}")))
+  (var value
+    (if placeholder/optional
+      (try (parse_int (trim rest)) catch _ (trim rest))
+      (trim rest)))
+  (var args {})
+  (args ~ Map/put! placeholder/field value)
+  args)
+
+(fn remote_worker_kind [client, worker_ref : Str]
+  (var listing (client/workers))
+  (var kind (cell nil))
+  (for worker in listing/workers
+    (if (|| (== worker/worker_id worker_ref)
+            (== worker/name worker_ref))
+      (kind ~ Cell/set worker/kind)))
+  (kind ~ Cell/get))
+
+(fn remote_workers_report [client]
+  (var listing (client/workers))
+  (for worker in listing/workers
+    (println
+      $"${worker/worker_id} ${worker/kind} ${worker/lifecycle} ${worker/title}")))
+
+(fn remote_worker_command [client, line : Str]
+  (var rest (trim (after_prefix line "/worker")))
+  (var parts (split rest " "))
+  (if (< parts/~size 2)
+    (return (println "usage: /worker <id> <op> [args]")))
+  (var worker_ref parts/0)
+  (var op parts/1)
+  (var arg_rest (trim (after_prefix (trim (after_prefix rest worker_ref)) op)))
+  (var kind (remote_worker_kind client worker_ref))
+  (if (== kind nil)
+    (return (println $"worker ${worker_ref} not found")))
+  (var args (remote_operation_args (client/operations) kind op arg_rest))
+  (var response (client/call_worker worker_ref op args))
+  (println (stringify response/result)))
+
+(fn remote_pin_command [client, line : Str]
+  (var rest (trim (after_prefix line "/pin")))
+  (if (starts_with? rest "result")
+    (then
+      (var agent_ref (trim (after_prefix rest "result")))
+      (var pinned (client/pin "result" agent_ref))
+      (println $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"))
+    (elif (starts_with? rest "worker ")
+      (var worker_rest (trim (after_prefix rest "worker ")))
+      (var parts (split worker_rest " "))
+      (if (&& (== parts/~size 2) (== parts/1 "tail"))
+        (then
+          (var pinned (client/pin "tail" parts/0))
+          (println $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"))
+        (println "usage: /pin worker <id> tail")))
+    (else
+      (println "usage: /pin result <agent_id> | /pin worker <id> tail"))))
+
+(fn remote_artifacts_report [client]
+  (var listing (client/artifacts))
+  (if (empty? listing/artifacts)
+    (println "no artifacts")
+    (for artifact in listing/artifacts
+      (println
+        $"${artifact/id} ${artifact/kind} source=${artifact/source_worker} bytes=${artifact/size} blob=${artifact/blob_id}"))))
+
 (fn run_remote_entry [launch, task : Str]
   (var gateway_token (get_env Env "GENE_GATEWAY_TOKEN" ""))
   (var client (remote_transport launch/connect gateway_token))
@@ -3673,25 +3775,50 @@
       (println $"user> ${task}")
       (run_remote_turn client task false)
       (return nil))
+    (var line nil)
+    (var metadata nil)
+    (var snapshot nil)
     (loop
       (print "user> ")
-      (var line (read_line))
+      (set line (read_line))
       (if (== line nil) (return nil))
       (set line (trim line))
-      (match line
-        (when "/quit" (return nil))
-        (when "/exit" (return nil))
-        (when "/help"
-          (println
-            "/help  /operations  /quit  /exit\nOther input is sent to the remote main agent."))
-        (when "/operations"
-          (var metadata (client/operations))
-          (for operation in metadata/operations
+      (try
+        (match line
+          (when "/quit" (return nil))
+          (when "/exit" (return nil))
+          (when "/help"
             (println
-              $"${operation/worker_kind}/${operation/name} - ${operation/summary}")))
-        (else
-          (if_not (== line "")
-            (run_remote_turn client line true)))))
+              (join
+                ["/workers                  list session workers"
+                 "/worker <id> <op> [args]  invoke a declared operation"
+                 "/pin result <agent_id>    pin an agent result"
+                 "/pin worker <id> tail     pin a worker tail capture"
+                 "/artifacts                list pinned artifacts"
+                 "/snapshot                 show the bounded session snapshot"
+                 "/operations               list declared operations"
+                 "/quit                     detach and exit"
+                 "Other input is sent to the remote main agent."] "\n")))
+          (when "/operations"
+            (set metadata (client/operations))
+            (for operation in metadata/operations
+              (println
+                $"${operation/worker_kind}/${operation/name} - ${operation/summary}")))
+          (when "/workers" (remote_workers_report client))
+          (when "/artifacts" (remote_artifacts_report client))
+          (when "/snapshot"
+            (set snapshot (client/snapshot))
+            (println
+              $"session ${snapshot/session_id} cursor ${snapshot/cursor} workers ${(snapshot/workers ~ size)}"))
+          (else
+            (if (starts_with? line "/worker ")
+              (remote_worker_command client line)
+              (if (starts_with? line "/pin")
+                (remote_pin_command client line)
+                (if_not (== line "")
+                  (run_remote_turn client line true))))))
+      catch (ClientTransportError ^kind kind ^message message)
+        (println $"remote ${kind}: ${message}")))
   catch (ClientTransportError ^kind kind ^message message)
     (println $"remote ${kind}: ${message}")
   ensure

@@ -6,8 +6,13 @@
 (mod agent_gateway
   @doc "headless launcher for the AI-agent gateway service")
 
-(import [gateway_api] from "./core")
+(import [gateway_api init_agent_state] from "./core")
 (import [run_gateway] from "./gateway_adapter")
 
 (fn main [args]
+  # Durable artifacts (/pin) ride the agent store when GENE_AGENT_STATE /
+  # GENE_AGENT_HOME configure one; session persistence stays on
+  # GENE_GATEWAY_DB. Headless sessions never write session checkpoints, so
+  # opening the store here only enables the artifact surface.
+  (init_agent_state)
   (run_gateway (gateway_api) {}))

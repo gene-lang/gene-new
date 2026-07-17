@@ -180,12 +180,29 @@
     (require_success
       (call "GET" $"/api/sessions/${sid}/workers" nil true false)))
 
+  (fn create_worker [kind : Str, config]
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "POST" $"/api/sessions/${sid}/workers"
+        {^kind kind ^config config} true true)))
+
   (fn call_worker [worker_id : Str, operation : Str, args]
     (var sid (session_id ~ Cell/get))
     (require_success
       (call "POST"
         $"/api/sessions/${sid}/workers/${worker_id}/ops/${operation}"
         {^args args} true true)))
+
+  (fn artifacts []
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "GET" $"/api/sessions/${sid}/artifacts" nil true false)))
+
+  (fn pin [source : Str, worker_id : Str]
+    (var sid (session_id ~ Cell/get))
+    (require_success
+      (call "POST" $"/api/sessions/${sid}/artifacts"
+        {^source source ^worker_id worker_id} true true)))
 
   (fn resolve_confirmation [confirmation_id : Str, decision : Str]
     (var sid (session_id ~ Cell/get))
@@ -211,7 +228,8 @@
    ^resume_credential resume_credential ^cursor cursor
    ^connect connect ^resume resume ^snapshot snapshot ^poll poll
    ^acknowledge acknowledge ^send_message send_message
-   ^operations operations ^workers workers ^call_worker call_worker
+   ^operations operations ^workers workers ^create_worker create_worker
+   ^call_worker call_worker ^artifacts artifacts ^pin pin
    ^resolve_confirmation resolve_confirmation ^detach detach
    ^call call})
 
