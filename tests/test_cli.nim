@@ -227,13 +227,20 @@ suite "cli — gene run":
 
   test "ai agent slash sh opens a cancellable shell pane":
     buildGeneCli()
-    let command = "printf '/sh\\n/1 printf hi\\n/close\\n/quit\\n' | " &
+    let command =
+      "printf '/sh\\n/1 cd tests\\n/1 pwd\\n" &
+      "/1 cd ..\\n/1 pwd\\n" &
+      "/1 printf \"shell-line-one\\\\nshell-line-two\\\\n\"\\n" &
+      "/close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
                   shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "shell pane 1" in ran.output
-    check "hi" in ran.output
+    check ("shell pane 1: " & getCurrentDir() / "tests" & "\n[exit") in
+      ran.output
+    check ("shell pane 1: " & getCurrentDir() & "\n[exit") in ran.output
+    check "shell-line-one\nshell-line-two\n" in ran.output
     check "closed pane 1" in ran.output
 
   test "ai agent comprehensive help is global and presentation-only":
@@ -437,6 +444,9 @@ suite "cli — gene run":
 (var changed
   (application_call_worker app "build-shell" "chdir" {^path "tests"}
     invocation))
+(var escaped
+  (application_call_worker app "build-shell" "chdir" {^path "../.."}
+    invocation))
 (var env_set
   (application_call_worker app "build-shell" "set_env"
     {^name "C4_MARKER" ^value "stateful"} invocation))
@@ -493,6 +503,7 @@ suite "cli — gene run":
 catch {^message message} (set duplicate message))
 (println "named" (== addressed/id shell/id)
   "changed" changed/ok "env" env_set/ok "run" ran/ok
+  "escape" escaped/error/kind
   "stateful" (contains? (shell/output ~ Cell/get) "stateful")
   "cwd" (contains? (shell/output ~ Cell/get) "/tests")
   "observe_events" observe_events "status" status/result/status "tail" tail/ok
@@ -504,7 +515,8 @@ catch {^message message} (set duplicate message))
     let ran = runGene(["run", fixture])
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
-    check "named true changed true env true run true stateful true cwd true" in ran.output
+    check "named true changed true env true run true escape operation_failed" in ran.output
+    check "stateful true cwd true" in ran.output
     check "observe_events 0 status idle tail true" in ran.output
     check "denied worker_access_denied delegated true repl worker_access_denied" in ran.output
     check "busy true true cancel true attributed true duplicate true" in ran.output
@@ -1305,7 +1317,10 @@ catch {^message message} (set duplicate message))
       defer:
         if terminal.running: terminal.terminate()
         terminal.close()
-      let exitCode = terminal.waitForExit(20000)
+      # The Expect script retains its 15-second per-step timeout. Allow extra
+      # time here for application shutdown when the full suite leaves the host
+      # under load; this outer bound must not kill an already-closing session.
+      let exitCode = terminal.waitForExit(30000)
       sleep(100)
       let output = readFile(outputFile)
       if exitCode != 0: checkpoint output

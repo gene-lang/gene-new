@@ -7138,6 +7138,11 @@ State that broader behavior is unverified when no matching successful check ran.
                     (try
                       (loop
                         (set chunk (stdout_chan ~ Channel/recv))
+                        # exec_stream_async is deliberately line-oriented and
+                        # strips the delimiter from each channel item. Restore
+                        # it at the shell adapter boundary so commands such as
+                        # ls and tail keep their row structure.
+                        (set chunk $"${chunk}\n")
                         (last_output ~ Cell/set
                           $"${(last_output ~ Cell/get)}${chunk}")
                         (append_worker_transcript! app worker chunk))
@@ -7690,16 +7695,46 @@ State that broader behavior is unverified when no matching successful check ran.
           (var report (agent_result_report agent))
           $"error: ${report}")))))
 
+(fn standalone_shell_chdir_path [text : Str]
+  (var line (trim text))
+  (if (== line "cd")
+    workspace_real
+    (if (starts_with? line "cd ")
+      (then
+        (var path (trim (after_prefix line "cd ")))
+        # This is a small surface composite, not a shell parser. Compound
+        # commands continue through `run` as one ordinary subprocess.
+        (if (|| (== path "")
+                (contains? path "\n") (contains? path ";")
+                (contains? path "&") (contains? path "|")
+                (contains? path "<") (contains? path ">")
+                (contains? path "(") (contains? path ")")
+                (contains? path "$") (contains? path "`")
+                (contains? path "\"") (contains? path "'")
+                (contains? path "\\"))
+          nil
+          path)))))
+
 (fn application_send_worker_input [app, worker, text : Str, adapter : Str]
   (var operation (worker_primary_operation worker/kind))
+  (var operation_text text)
+  (var shell_chdir_path
+    (if (&& (== worker/kind "shell") (== adapter "local_tui"))
+      (standalone_shell_chdir_path text)))
+  (if_yes shell_chdir_path
+    (set operation (worker_operation_for "shell" "chdir"))
+    (set operation_text shell_chdir_path))
   (if (== operation nil)
     (then
       "error: worker does not accept input")
     (else
-      (var raw_args (operation/parse_cli text))
+      (var raw_args (operation/parse_cli operation_text))
       (var local_pane
         (if (== adapter "local_tui")
           (application_find_pane_worker app worker/id)))
+      (var surface_id
+        (if (&& (== adapter "local_tui") app/local_surface)
+          (app/local_surface/instance_id ~ Cell/get)))
       (var route
         (if local_pane $"pane ${local_pane/id}" $"worker ${worker/id}"))
       (var response
@@ -7708,20 +7743,20 @@ State that broader behavior is unverified when no matching successful check ran.
                      (if (== adapter "model") "model" "remote"))
            ^adapter adapter
            ^route route
-           ^surface_id
-             (if (&& (== adapter "local_tui") app/local_surface)
-               (app/local_surface/instance_id ~ Cell/get))
+           ^surface_id surface_id
            ^detached (if (== adapter "local_tui") (stdin_tty?) true)
            ^caller_worker_id
              (if (== adapter "model") app/main_agent/id nil)}))
       (var rendered (worker_call_text response))
-      (if (&& response/ok (== adapter "local_tui") (! (stdin_tty?))
-              (== operation/name "send"))
-        (then
-          (var pane (application_find_pane_worker app worker/id))
-          (if pane $"extension ${pane/id} completed: ${rendered}" rendered))
-        (else
-          rendered)))))
+      (if_yes (&& response/ok shell_chdir_path (== adapter "local_tui"))
+        (worker_history_push! worker text adapter surface_id)
+        (if (stdin_tty?) (return "accepted")))
+      (if_yes (&& response/ok (== adapter "local_tui") (! (stdin_tty?))
+                  (== operation/name "send"))
+        (var pane (application_find_pane_worker app worker/id))
+        (return
+          (if pane $"extension ${pane/id} completed: ${rendered}" rendered)))
+      rendered)))
 
 # ---------------------------------------------------------------------------
 # Slice C4: one typed worker-operation surface.
@@ -7784,11 +7819,23 @@ State that broader behavior is unverified when no matching successful check ran.
   name)
 
 (fn application_shell_chdir! [app, worker, path : Str]
-  (safe_path path)
-  # list_dir is the capability-aware directory check; it rejects files while
-  # real_path gives the subprocess an immutable, symlink-resolved cwd.
-  (list_dir ReadDir path)
-  (var resolved (real_path ReadDir path))
+  (var requested (trim path))
+  (if_yes (== requested "")
+    (fail (OsError ^message "directory path must not be empty")))
+  (var candidate
+    (if (starts_with? requested "/")
+      requested
+      $"${(worker/controller/cwd ~ Cell/get)}/${requested}"))
+  # Resolve and confine before listing the target. Validating the result,
+  # rather than rejecting .., permits normal shell navigation without
+  # allowing the worker to escape its workspace.
+  (var resolved (real_path ReadDir candidate))
+  (if_not (|| (== resolved workspace_real)
+              (starts_with? resolved $"${workspace_real}/"))
+    (fail (OsError
+      ^message $"unsafe path rejected (resolves outside workspace): ${path}")))
+  # list_dir is the capability-aware directory check and rejects files.
+  (list_dir ReadDir resolved)
   (worker/controller/cwd ~ Cell/set resolved)
   (append_worker_transcript! app worker $"[cwd ${resolved}]\n")
   (operation_ack worker true $"cwd: ${resolved}"))
@@ -9688,7 +9735,7 @@ State that broader behavior is unverified when no matching successful check ran.
   {^name "/workers" ^section "worker" ^usage "/workers"
    ^summary "list workers with pane ids and operation state"}
   {^name "/sh" ^section "pane" ^usage "/sh"
-   ^summary "open or focus the line-oriented shell"}
+   ^summary "open or focus the line-oriented shell; standalone cd persists"}
   {^name "/repl" ^section "pane" ^usage "/repl"
    ^summary "open or focus the persistent Gene REPL"}
   {^name "/tail" ^section "pane" ^usage "/tail [filter]"

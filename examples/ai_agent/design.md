@@ -1494,11 +1494,15 @@ Decisions the table encodes:
   that persistence is the feature. Both pass the same classifier, take the
   same lease, and emit the same events; only the execution context differs.
   Each `run` still launches one ordinary foreground subprocess under the
-  worker's stored cwd/environment; arbitrary shell text never mutates that
-  controller state. Callers use typed `chdir`, `set_env`, and `unset_env`
-  operations between runs. `chdir` realpaths and confines the target before
-  updating state; environment values are redacted from events and diagnostics.
-  This avoids parsing `cd`/`export` shell syntax or inventing a fragile command
+  worker's stored cwd/environment. A standalone `cd` or `cd <path>` entered in
+  a local shell pane is a declared surface composite that invokes the typed
+  `chdir` operation; it is not executed by a transient child shell. Bare `cd`
+  returns to the workspace root, and relative paths resolve from the worker's
+  current cwd. Compound or quoted shell syntax is not parsed by the adapter and
+  cannot persist controller changes. Other callers use typed `chdir`, `set_env`,
+  and `unset_env` operations between runs. `chdir` realpaths and confines the
+  target before updating state; environment values are redacted from events
+  and diagnostics. This avoids a general shell parser or fragile command
   framing protocol. A model composing a build uses `chdir build`, then
   `run cmake ..`, then `run make`.
 - **`repl eval` stays local-user-originated.** §7.1's rule that a model must
