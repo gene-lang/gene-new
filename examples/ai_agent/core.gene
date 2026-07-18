@@ -39,7 +39,7 @@
 (import str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
 (import std/stream [to_stream map filter take into each])
-(import std/parse [parse_int read_all ParseError])
+(import std/parse [parse_int read_all format ParseError])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])
@@ -6220,12 +6220,18 @@ State that broader behavior is unverified when no matching successful check ran.
               $"REPL ${route}: ${(last_output ~ Cell/get)}"))))))
 
 (fn pretty_result_text [text : Str, width : Int] : Str
-  # Break long printed maps at `^` prop boundaries so a REPL result reads as
-  # an indented record instead of one hard-wrapped line. String-content " ^"
-  # sequences are rare enough for a display-only formatter.
-  (if (|| (< (size (bytes text)) width) (! (starts_with? text "{")))
+  # Long results go through the canonical formatter so nested structures
+  # indent by depth (the old " ^"-split rendering flattened nested maps and
+  # made their stacked closers read as an extra brace). Display-only: short
+  # results echo the canonical print untouched, and text that does not parse
+  # (a truncated transcript line) falls back to itself.
+  (if (< (size (bytes text)) width)
     text
-    ((split text " ^") ~ join "\n  ^")))
+    (try
+      # trim: format ends with the source-unit trailing newline and the
+      # transcript appender adds its own.
+      (trim (format text))
+    catch _ text)))
 
 (fn refresh_application_input [app]
   (var local (active_application ~ Cell/get))

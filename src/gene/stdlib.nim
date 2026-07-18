@@ -8011,6 +8011,8 @@ proc registerStdlibNamespaces(root: Scope) =
   stdParseScope.define("parse_int", newNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
   stdParseScope.define("read_all", root.vars["read_all"])
+  stdParseScope.define("format", newNativeCallFn("format", biParseFormat,
+                                                 acceptsNamed = false))
   stdParseScope.define("ParseError", root.vars["ParseError"])
   let stdScope = newScope(root)
   stdScope.define("stream", newNamespace("std/stream", stdStreamScope))

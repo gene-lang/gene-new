@@ -2,7 +2,8 @@
 
 import std/[algorithm, base64, dynlib, json, locks, math, monotimes, net, os,
             osproc, sets, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, equality, gir, logging, printer, reader, types]
+import ./[compiler, diagnostics, equality, fmt, gir, logging, printer, reader,
+          types]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import ./tui/terminal as tui_terminal
@@ -2536,6 +2537,19 @@ proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   requireOne("read_all", args)
   let scope = if call == nil: nil else: call.dispatchScope
   newStream(readFormsFromString("read_all", args[0], scope))
+
+proc biParseFormat(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Canonical human-friendly formatting of a source string (the `gene fmt`
+  ## contract): sugar restored, comments kept, forms wrapped by depth.
+  requireOne("format", args)
+  if args[0].kind != vkString:
+    raise newException(GeneError, "format expects a Str")
+  let scope = if call == nil: nil else: call.dispatchScope
+  try:
+    result = newStr(formatSource(args[0].strVal, "<format>"))
+  except ReadError as e:
+    raiseReaderError("format", e.msg, "ParseError", scope,
+                     e.sourceName, e.line, e.col, e.contextFrames)
 
 proc tokenValue(token: Token, tokenType: Value): Value =
   var props = initPropTable()

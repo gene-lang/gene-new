@@ -3718,7 +3718,10 @@ catch {^message message}
     check "tool rounds: max 12" in status.output
     check "context limits: 1234 bytes, 12 items, keep 2 turns" in status.output
     check "memory: 1 items" in status.output
-    check "^context {^bytes" in status.output
+    # The REPL result is rendered through the canonical formatter, which may
+    # wrap the nested context map — assert the pieces, not the line shape.
+    check "^context {" in status.output
+    check "^bytes " in status.output
     check "^context_max_bytes 1234" in status.output
 
   test "ai agent improvement tools return structural, bounded guidance":

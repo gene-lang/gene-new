@@ -3422,6 +3422,12 @@ suite "spec — stdlib namespaces from stdlib plan":
     check_eval("(import std/parse [parse_int ParseError]) " &
                "(try (parse_int \"4x\") catch (ParseError ^message _) -1)",
                "-1")
+    # format ends with a newline: it is the gene-fmt source-unit contract.
+    check_eval("(import std/parse [format]) (format \"( + 1   2 )\")",
+               "\"(+ 1 2)\\n\"")
+    check_eval("(import std/parse [format ParseError]) " &
+               "(try (format \"(((\") catch (ParseError ^message _) -1)",
+               "-1")
 
   test "str module covers join/split/trim/lower and predicates":
     check_eval("(import str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")

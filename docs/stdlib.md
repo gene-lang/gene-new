@@ -341,6 +341,9 @@ Initial parsing helpers:
 
 - `parse_int : Str -> Int ^errors [ParseError]`
 - `read_all : Str -> (Stream Any ParseError)`
+- `format : Str -> Str ^errors [ParseError]` — canonical human-friendly
+  formatting of a source string (the `gene fmt` contract: sugar restored,
+  comments kept, forms wrapped and indented by depth, trailing newline).
 - `ParseError` from the existing reader error family. Reader failures expose
   `source`, `line`, `col`, and `contexts`; each context records an opener,
   expected closer, and opening location. Numeric conversion failures may omit
