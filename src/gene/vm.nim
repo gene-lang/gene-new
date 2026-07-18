@@ -5742,6 +5742,38 @@ proc pop(stack: var seq[Value]): Value {.inline.} =
   result = move stack[index]
   stack.setLen(index)
 
+proc spGrow(stack: var seq[Value]) {.noinline.} =
+  ## Cold path of runLoop's spush: extend working capacity. setLenUninit +
+  ## one zeroMem instead of setLen — zero bits are a valid nil Value, a
+  ## single memset beats per-element managed init, and unconditional
+  ## zeroing stays safe when an external add realloc'd the seq.
+  let oldLen = stack.len
+  let newLen = max(oldLen * 2, 64)
+  setLenUninit(stack, newLen)
+  zeroMem(addr stack[oldLen], (newLen - oldLen) * sizeof(Value))
+
+proc spRelease(stack: var seq[Value], sp: var int, target: int) {.noinline.} =
+  ## Cold path of runLoop's strunc: release abandoned live values above
+  ## target. Balanced returns never get here.
+  while sp > target:
+    dec sp
+    stack[sp] = NIL
+
+template setStackLenRaw(stack: var seq[Value], n: int) =
+  ## Direct length-field write for runLoop's escape normalization. Every
+  ## slot in [n, len) is zeroed (spop moves out, spRelease NILs, spGrow
+  ## memsets), so no destructors are due — but both setLen and setLenUninit
+  ## run the per-element destroy loop on shrink, which at ~64 dead slots
+  ## per runLoop invocation dominated call-heavy workloads. Relies on the
+  ## Nim 2 seqs-v2 layout (len is the first field of the seq struct).
+  when defined(gcArc) or defined(gcOrc) or defined(gcAtomicArc):
+    static:
+      doAssert sizeof(seq[Value]) == 2 * sizeof(int),
+        "seqs-v2 {len, payload} layout assumption broken; fix setStackLenRaw"
+    cast[ptr int](addr stack)[] = n
+  else:
+    stack.setLen(n)
+
 const MaxRunStackPool = 64
 const MaxFrameStackPool = 64
 const MaxCallScopePool = 64
@@ -7495,12 +7527,15 @@ proc isErrorType(scope: Scope, typ: Value): bool =
     return false
   scope.typeImplementsProtocol(typ, errorProtocol)
 
-proc popCheckedErrorTypes(stack: var seq[Value], count: int,
+proc popCheckedErrorTypes(stack: var seq[Value], sp: var int, count: int,
                           scope: Scope): seq[Value] =
+  ## Pops below runLoop's sp register (the seq's len is working capacity
+  ## there, not the live top).
   result = newSeq[Value](count)
   if count > 0:
     for i in countdown(count - 1, 0):
-      let typ = stack.pop()
+      dec sp
+      let typ = move stack[sp]
       if not scope.isErrorType(typ):
         raise newException(GeneError, "^errors entries must be Error types")
       result[i] = typ
@@ -8357,9 +8392,44 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var scope = scopeArg
   var recycleScope = false
   var stack = move stackArg
+  # --- sp-register operand stack ---------------------------------------------
+  # `sp` is the live stack top; the seq's len is working capacity (slots at or
+  # above sp are dead: zeroed by spop's move-out, released by strunc, or
+  # default-initialized by growth). Pushes and pops compile to inline
+  # index ops instead of out-of-line seq add/shrink calls. The live region
+  # is re-materialized as the seq len (stack.setLen(sp)) wherever the stack
+  # escapes runLoop: fiber capture and the stackArg hand-back.
+  var sp = stack.len
+
+  template spush(v: Value) =
+    ## Fast path inline (compare + store + inc); growth in spGrow
+    ## ({.noinline.} — inline expansions at ~90 dispatch sites otherwise
+    ## bloat runLoop's I-cache footprint, the documented layout trap).
+    ## The pushed expression MUST be evaluated before sp or the slot is
+    ## touched: arguments like `iteratorStream(spop())` mutate sp.
+    block:
+      var spushVal = v
+      if sp >= stack.len:
+        spGrow(stack)
+      stack[sp] = move spushVal
+      inc sp
+
+  template spop(): Value =
+    dec sp
+    move stack[sp]
+
+  template strunc(n: int) =
+    ## Inline compare only; the release loop lives in spRelease
+    ## ({.noinline.}) — 80+ inline while-loops in the dispatch switch are
+    ## an I-cache disaster, and balanced returns run zero iterations.
+    block:
+      let spTarget = int(n)
+      if sp > spTarget:
+        spRelease(stack, sp, spTarget)
+
   # The operand stack is shared across frames: each frame's region starts at
   # its recorded base. The outermost frame owns [0..]; pushing a call records
-  # the caller's base in its Frame and the callee continues at stack.len.
+  # the caller's base in its Frame and the callee continues at sp.
   var curStackBase = 0
   var ip = ipArg
   var validateImplRequirements = validateArg
@@ -8402,6 +8472,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope = fiber.scope
     recycleScope = fiber.recycleScope
     stack = move fiber.stack
+    sp = stack.len
     curStackBase = fiber.stackBase
     ip = fiber.ip
     frames = move fiber.frames
@@ -8555,7 +8626,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope = nextScope
     recycleScope = false
     scope.prepareChunkScope(chunk)
-    curStackBase = stack.len
+    curStackBase = sp
     ip = 0
     validateImplRequirements = nextValidate
     returnType = NIL
@@ -8614,6 +8685,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.frames = move frames
     fiber.tailTraceFrames = move tailTraceFrames
     fiber.handlers = move handlers
+    setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
     fiber.stack = move stack
     fiber.stackBase = curStackBase
 
@@ -8661,7 +8733,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         loopScope.bindMatchedValues(binds, replaceExisting = false)
         chunk = curForBody
         scope = loopScope
-        curStackBase = stack.len
+        curStackBase = sp
         ip = 0
         validateImplRequirements = true
         returnType = NIL
@@ -8675,9 +8747,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curForStream.closeStream()
         curForStream = NIL
         var owner = frames.pop()
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         loadFrameRegs(owner)
-        stack.add NIL
+        spush NIL
     elif curForIndex < curForItems.len:
       let item = curForItems[curForIndex]
       inc curForIndex
@@ -8690,7 +8762,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       loopScope.bindMatchedValues(binds, replaceExisting = false)
       chunk = curForBody
       scope = loopScope
-      curStackBase = stack.len
+      curStackBase = sp
       ip = 0
       validateImplRequirements = true
       returnType = NIL
@@ -8702,18 +8774,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       evalBudget = scope.evalBudget
     else:
       var owner = frames.pop()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       loadFrameRegs(owner)
-      stack.add NIL
+      spush NIL
 
   template breakForLoop() =
     if curForStream.kind == vkStream:
       curForStream.closeStream()
       curForStream = NIL
     var owner = frames.pop()
-    stack.setLen(curStackBase)
+    strunc(curStackBase)
     loadFrameRegs(owner)
-    stack.add NIL
+    spush NIL
 
   template finishFrameReturn(retValue: Value) =
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
@@ -8722,12 +8794,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     releaseCurrentCallScope()
     if curFrameKind == fkNormal:
       if frames.len == 0:
+        setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
         stackArg = move stack
         ipArg = ip
         releaseFrameStack(gVmPools, frames)
         return RunStop(kind: rskReturn, value: retValue)
       else:
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         # Restore from the frame in place (moves), then shrink — skips the
         # struct move a frames.pop() into a local would do.
         let callerIndex = frames.len - 1
@@ -8746,7 +8819,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         else:
           loadFrameRegs(caller)
         frames.setLen(callerIndex)
-        stack.add retValue
+        spush retValue
     elif curFrameKind == fkEnsureErrorBody:
       raise curPendingError
     elif curFrameKind == fkEnsurePanicBody:
@@ -8756,14 +8829,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     elif curFrameKind == fkEnsureReturnBody:
       raise curPendingReturn
     elif curFrameKind == fkEnsureValueBody:
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       let preserved = curEnsureValue
       var owner = frames.pop()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       loadFrameRegs(owner)
-      stack.add preserved
+      spush preserved
     elif curFrameKind == fkForBody:
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       advanceForLoop()
     elif curFrameKind == fkTaskScopeBody:
       let owned = curOwnedScope
@@ -8772,45 +8845,45 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         owned.waitOwnedTasks()
       finally:
         owned.closeOwnedActors()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       var owner = frames.pop()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       loadFrameRegs(owner)
-      stack.add retValue
+      spush retValue
     elif curFrameKind == fkSupervisorBody:
       let owned = curOwnedScope
       curFrameKind = fkNormal
       owned.closeOwnedActors()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       var owner = frames.pop()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       loadFrameRegs(owner)
-      stack.add retValue
+      spush retValue
     elif curFrameKind == fkNamespaceBody:
       let nsScope = curOwnedScope
       let nsName = curNamespaceName
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       var owner = frames.pop()
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       loadFrameRegs(owner)
       let ns = newNamespace(nsName, nsScope)
       scope.define(nsName, ns)
-      stack.add ns
+      spush ns
     elif curFrameKind == fkTryBody:
       # The try body succeeded: drop its handler, run ensure, then hand its value
       # back to the enclosing frame (the owner pushed by opTry).
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       let h = handlers.pop()
       if h.tp.ensureBody != nil:
         enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureValueBody)
         curEnsureValue = retValue
       else:
         var owner = frames.pop()
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         loadFrameRegs(owner)
-        stack.add retValue
+        spush retValue
     elif curFrameKind == fkCatchBody:
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       if curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
@@ -8818,30 +8891,32 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curEnsureValue = retValue
       else:
         var owner = frames.pop()
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         loadFrameRegs(owner)
-        stack.add retValue
+        spush retValue
     elif frames.len == 0:
+      setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
       stackArg = move stack
       ipArg = ip
       releaseFrameStack(gVmPools, frames)
       return RunStop(kind: rskReturn, value: retValue)
     else:
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       var caller = frames.pop()
       loadFrameRegs(caller)
-      stack.add retValue
+      spush retValue
 
   template finishFastNormalReturn(retValue: Value) =
     trimTailTraceFrames(frames.len)
     releaseCurrentCallScope()
     if frames.len == 0:
+      setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
       stackArg = move stack
       ipArg = ip
       releaseFrameStack(gVmPools, frames)
       return RunStop(kind: rskReturn, value: retValue)
     else:
-      stack.setLen(curStackBase)
+      strunc(curStackBase)
       # In-place restore + shrink; see finishFrameReturn.
       let callerIndex = frames.len - 1
       template caller: untyped = frames[callerIndex]
@@ -8859,7 +8934,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       else:
         loadFrameRegs(caller)
       frames.setLen(callerIndex)
-      stack.add retValue
+      spush retValue
 
   template frameReturn(rawValue: Value) =
     ## Return `rawValue` from the current frame: adapt it to the frame's declared
@@ -8907,7 +8982,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = proto.chunk
     scope = callScope
     recycleScope = true
-    curStackBase = stack.len
+    curStackBase = sp
     ip = 0
     validateImplRequirements = false
     returnType =
@@ -8945,7 +9020,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      restoreSlot: slot, restoreValue: previous)
     returnDepth = frames.len
     scope.slots[slot] = arg
-    curStackBase = stack.len
+    curStackBase = sp
     ip = 0
     validateImplRequirements = false
     returnType =
@@ -8967,7 +9042,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         proto.paramTypes[0].isBareIntType and arg.kind != vkInt:
       raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
     scope.slots[proto.positionalSlots[0]] = arg
-    stack.setLen(curStackBase)
+    strunc(curStackBase)
     ip = 0
     evalBudget = scope.evalBudget
     continue
@@ -8999,7 +9074,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     chunk = nextProto.chunk
     scope = nextScope
     recycleScope = nextRecycleScope
-    stack.setLen(curStackBase)
+    strunc(curStackBase)
     ip = 0
     validateImplRequirements = nextValidateImpls
     returnType = nextReturnType
@@ -9038,23 +9113,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opNoop:
           discard
         of opPushConst:
-          stack.add chunk.constants[inst[].intArg]
+          spush chunk.constants[inst[].intArg]
         of opLoadName:
-          stack.add scope.lookup(inst[].name)
+          spush scope.lookup(inst[].name)
         of opLoadNativeFast:
-          stack.add scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
+          spush scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
           let slot = inst[].intArg
           if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
-            stack.add scope.slots[slot]
+            spush scope.slots[slot]
           else:
-            stack.add scope.loadSlot(slot, inst[].name)
+            spush scope.loadSlot(slot, inst[].name)
         of opLoadLocalFast:
-          stack.add scope.slots[inst[].intArg]
+          spush scope.slots[inst[].intArg]
         of opLoadArg:
           # Scopeless calls: arguments live on the shared operand stack at the
           # frame's base (they were never popped into a scope).
-          stack.add stack[curStackBase + inst[].intArg]
+          spush stack[curStackBase + inst[].intArg]
         of opLoadOuterLocal:
           let slot = inst[].intArg
           let outer =
@@ -9064,49 +9139,49 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.scopeAtDepth(inst[].depth, inst[].name)
           if outer != nil and slot >= 0 and slot < outer.slots.len and
               outer.slotDefined(slot):
-            stack.add outer.slots[slot]
+            spush outer.slots[slot]
           else:
-            stack.add scope.loadSlotAt(inst[].depth, slot, inst[].name)
+            spush scope.loadSlotAt(inst[].depth, slot, inst[].name)
         of opDefineName:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in var")
-          scope.define(inst[].name, stack[^1])
+          scope.define(inst[].name, stack[sp - 1])
         of opDefineLocal:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in var")
-          scope.defineSlot(inst[].intArg, inst[].name, stack[^1])
+          scope.defineSlot(inst[].intArg, inst[].name, stack[sp - 1])
         of opSetName:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
           rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
-                                stack[^1])
-          scope.assign(inst[].name, stack[^1])
+                                stack[sp - 1])
+          scope.assign(inst[].name, stack[sp - 1])
         of opSetLocal:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
-          scope.assignSlot(inst[].intArg, inst[].name, stack[^1])
+          scope.assignSlot(inst[].intArg, inst[].name, stack[sp - 1])
         of opSetOuterLocal:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
           rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
-                                stack[^1])
-          scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[^1])
+                                stack[sp - 1])
+          scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[sp - 1])
         of opPop:
-          discard stack.pop()
+          discard spop()
         of opMakeList:
           var items = newSeq[Value](inst[].intArg)
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
-              items[i] = stack.pop()
+              items[i] = spop()
           for item in items:
             rejectCallerEnvEscape("list construction", item)
-          stack.add newList(items, inst[].flag)
+          spush newList(items, inst[].flag)
         of opMakeListSplice:
           let proto = chunk.listBuilds[inst[].intArg]
           var parts = newSeq[Value](proto.splices.len)
           if proto.splices.len > 0:
             for i in countdown(proto.splices.len - 1, 0):
-              parts[i] = stack.pop()
+              parts[i] = spop()
           var items: seq[Value]
           for i, part in parts:
             if proto.splices[i]:
@@ -9115,39 +9190,39 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               items.add part
           for item in items:
             rejectCallerEnvEscape("list construction", item)
-          stack.add newList(items, proto.immutable)
+          spush newList(items, proto.immutable)
         of opMakeMap:
           var values = newSeq[Value](inst[].intArg)
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
-              values[i] = stack.pop()
+              values[i] = spop()
           var entries = initPropTable()
           for i, key in inst[].names:
             if values[i].kind != vkVoid:
               rejectCallerEnvEscape("map construction", values[i])
               entries[key] = values[i]
-          stack.add newMap(entries, inst[].flag)
+          spush newMap(entries, inst[].flag)
         of opMakeHashMap:
           var entries = newSeq[HashMapEntry](inst[].intArg)
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
-              let val = stack.pop()
-              let key = stack.pop()
+              let val = spop()
+              let key = spop()
               rejectCallerEnvEscape("hash-map key construction", key)
               rejectCallerEnvEscape("hash-map value construction", val)
               entries[i] = HashMapEntry(key: key, val: val)
-          stack.add buildHashMap("general map literal", entries)
+          spush buildHashMap("general map literal", entries)
         of opMakeNode:
           let proto = chunk.nodeBuilds[inst[].intArg]
           var bodyParts = newSeq[Value](proto.bodyCount)
           if proto.bodyCount > 0:
             for i in countdown(proto.bodyCount - 1, 0):
-              bodyParts[i] = stack.pop()
+              bodyParts[i] = spop()
           var props = initPropTable()
           if proto.propNames.len > 0:
             var propValues = newSeq[Value](proto.propNames.len)
             for i in countdown(proto.propNames.len - 1, 0):
-              propValues[i] = stack.pop()
+              propValues[i] = spop()
             for i, key in proto.propNames:
               if propValues[i].kind != vkVoid:
                 props[key] = propValues[i]
@@ -9155,11 +9230,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if proto.metaNames.len > 0:
             var metaValues = newSeq[Value](proto.metaNames.len)
             for i in countdown(proto.metaNames.len - 1, 0):
-              metaValues[i] = stack.pop()
+              metaValues[i] = spop()
             for i, key in proto.metaNames:
               if metaValues[i].kind != vkVoid:
                 meta[key] = metaValues[i]
-          let head = stack.pop()
+          let head = spop()
           rejectCallerEnvEscape("node head construction", head)
           var body: seq[Value]
           for i, part in bodyParts:
@@ -9173,41 +9248,41 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             rejectCallerEnvEscape("node body construction", value)
           for _, value in meta:
             rejectCallerEnvEscape("node meta construction", value)
-          stack.add newNode(head, props = props, body = body, meta = meta,
+          spush newNode(head, props = props, body = body, meta = meta,
                             immutable = proto.immutable)
         of opMakeSelector:
           var body = newSeq[Value](inst[].intArg)
           if inst[].intArg > 0:
             for i in countdown(inst[].intArg - 1, 0):
-              body[i] = stack.pop()
+              body[i] = spop()
           for item in body:
             rejectCallerEnvEscape("selector construction", item)
-          stack.add newNode(newSym("select"), body = body)
+          spush newNode(newSym("select"), body = body)
         of opApplySelector:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
-          let target = stack.pop()
-          let selector = stack.pop()
-          stack.add applySelector(selector, target)
+          let target = spop()
+          let selector = spop()
+          spush applySelector(selector, target)
         of opApplySelectorTop:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
-          let selector = stack.pop()
-          let target = stack.pop()
-          stack.add applySelector(selector, target)
+          let selector = spop()
+          let target = spop()
+          spush applySelector(selector, target)
         of opMakeFn:
           let proto = chunk.functions[inst[].intArg]
-          let errorTypes = stack.popCheckedErrorTypes(proto.errorTypeCount, scope)
-          stack.add newFunction(proto.name, proto.params, proto, scope,
+          let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
+          spush newFunction(proto.name, proto.params, proto, scope,
                                 proto.checksErrors, errorTypes,
                                 syntaxFn = proto.isSyntaxFn)
         of opMakeEnv:
-          let policy = stack.pop()
-          let capabilities = stack.pop()
-          let module = stack.pop()
-          let importsValue = stack.pop()
-          let parent = stack.pop()
-          let bindingMap = stack.pop()
+          let policy = spop()
+          let capabilities = spop()
+          let module = spop()
+          let importsValue = spop()
+          let parent = spop()
+          let bindingMap = spop()
           if bindingMap.kind != vkMap:
             raise newException(GeneError, "env ^bindings must be a map")
           if parent.kind != vkNil and parent.kind != vkEnv:
@@ -9223,12 +9298,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let app = scope.application()
           for item in importsValue.listItems:
             imports.add normalizeEnvImport(app, item)
-          stack.add newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
+          spush newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
                            imports, module, capabilities, policy,
                            bindingScope = scope)
         of opEval:
-          let env = stack.pop()
-          let node = stack.pop()
+          let env = spop()
+          let node = spop()
           if env.kind notin {vkEnv, vkCallerEnv}:
             raise newException(GeneError,
               "eval ^in must be an Env or live CallerEnv")
@@ -9255,20 +9330,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           continue
         of opMakeType:
           let proto = chunk.typeProtos[inst[].intArg]
-          let parent = stack.pop()
+          let parent = spop()
           if parent.kind != vkNil and parent.kind != vkType:
             raise newException(GeneError, "type ^is must be a type")
           var derivedProtocols = newSeq[Value](proto.deriveProtocolCount)
           if proto.deriveProtocolCount > 0:
             for i in countdown(proto.deriveProtocolCount - 1, 0):
-              let protocol = stack.pop()
+              let protocol = spop()
               if protocol.kind != vkProtocol:
                 raise newException(GeneError, "type ^derive entries must be protocols")
               derivedProtocols[i] = protocol
           var requiredProtocols = newSeq[Value](proto.requiredImplCount)
           if proto.requiredImplCount > 0:
             for i in countdown(proto.requiredImplCount - 1, 0):
-              let protocol = stack.pop()
+              let protocol = spop()
               if protocol.kind != vkProtocol:
                 raise newException(GeneError, "type ^impl entries must be protocols")
               requiredProtocols[i] = protocol
@@ -9276,7 +9351,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var inlineErrorTypes = newSeq[seq[seq[Value]]](proto.inlineImpls.len)
           if proto.inlineImpls.len > 0:
             for i in countdown(proto.inlineImpls.len - 1, 0):
-              let protocolValue = stack.pop()
+              let protocolValue = spop()
               if protocolValue.kind != vkProtocol:
                 raise newException(GeneError, "impl target must be a protocol")
               inlineProtocols[i] = protocolValue
@@ -9284,13 +9359,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               inlineErrorTypes[i] = newSeq[seq[Value]](inlineMessages.len)
               for j in countdown(inlineMessages.len - 1, 0):
                 inlineErrorTypes[i][j] =
-                  stack.popCheckedErrorTypes(inlineMessages[j].fn.errorTypeCount,
+                  stack.popCheckedErrorTypes(sp, inlineMessages[j].fn.errorTypeCount,
                                              scope)
           var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
           if proto.messages.len > 0:
             for i in countdown(proto.messages.len - 1, 0):
               messageErrorTypes[i] =
-                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
+                stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount, scope)
           var messages = initTable[string, Value]()
           for i, message in proto.messages:
             let fn = newFunction(message.fn.name, message.fn.params, message.fn,
@@ -9307,7 +9382,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var ctorFn = NIL
           if proto.ctorFn != nil:
             let ctorErrorTypes =
-              stack.popCheckedErrorTypes(proto.ctorFn.errorTypeCount, scope)
+              stack.popCheckedErrorTypes(sp, proto.ctorFn.errorTypeCount, scope)
             let fn = newFunction(proto.ctorFn.name, proto.ctorFn.params,
                                  proto.ctorFn, scope, proto.ctorFn.checksErrors,
                                  ctorErrorTypes)
@@ -9334,14 +9409,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             scope.requiredImplTypes.add typ
           for i, protocol in derivedProtocols:
             applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
-          stack.add typ
+          spush typ
         of opMakeEnum:
           let proto = chunk.enumProtos[inst[].intArg]
           var inlineProtocols = newSeq[Value](proto.inlineImpls.len)
           var inlineErrorTypes = newSeq[seq[seq[Value]]](proto.inlineImpls.len)
           if proto.inlineImpls.len > 0:
             for i in countdown(proto.inlineImpls.len - 1, 0):
-              let protocolValue = stack.pop()
+              let protocolValue = spop()
               if protocolValue.kind != vkProtocol:
                 raise newException(GeneError, "impl target must be a protocol")
               inlineProtocols[i] = protocolValue
@@ -9349,13 +9424,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               inlineErrorTypes[i] = newSeq[seq[Value]](inlineMessages.len)
               for j in countdown(inlineMessages.len - 1, 0):
                 inlineErrorTypes[i][j] =
-                  stack.popCheckedErrorTypes(inlineMessages[j].fn.errorTypeCount,
+                  stack.popCheckedErrorTypes(sp, inlineMessages[j].fn.errorTypeCount,
                                              scope)
           var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
           if proto.messages.len > 0:
             for i in countdown(proto.messages.len - 1, 0):
               messageErrorTypes[i] =
-                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
+                stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount, scope)
           var messages = initTable[string, Value]()
           for i, message in proto.messages:
             let fn = newFunction(message.fn.name, message.fn.params, message.fn,
@@ -9398,13 +9473,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               entries.add ImplMessage(message: resolved,
                                       fn: functionForScopeStorage(fn, scope))
             scope.registerImpl(inlineProtocols[i], enumType, entries)
-          stack.add enumType
+          spush enumType
         of opMakeProtocol:
           let proto = chunk.protocolProtos[inst[].intArg]
           var parents = newSeq[Value](proto.parentCount)
           if proto.parentCount > 0:
             for i in countdown(proto.parentCount - 1, 0):
-              let parentProtocol = stack.pop()
+              let parentProtocol = spop()
               if parentProtocol.kind != vkProtocol:
                 raise newException(GeneError,
                   "protocol ^inherit entries must be protocols")
@@ -9413,7 +9488,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if proto.messages.len > 0:
             for i in countdown(proto.messages.len - 1, 0):
               messageErrorTypes[i] =
-                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount,
+                stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount,
                                            scope)
           var deriveFn = NIL
           if proto.deriveFn != nil:
@@ -9436,16 +9511,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                      proto.universal)
           # Message names are not bound in the enclosing scope (docs/core.md
           # §1, OQ-I): messages are reached via Protocol/name and sends.
-          stack.add protocol
+          spush protocol
         of opMakeImpl:
           let proto = chunk.implProtos[inst[].intArg]
           var messageErrorTypes = newSeq[seq[Value]](proto.messages.len)
           if proto.messages.len > 0:
             for i in countdown(proto.messages.len - 1, 0):
               messageErrorTypes[i] =
-                stack.popCheckedErrorTypes(proto.messages[i].fn.errorTypeCount, scope)
-          let receiver = stack.pop()
-          let protocol = stack.pop()
+                stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount, scope)
+          let receiver = spop()
+          let protocol = spop()
           if protocol.kind != vkProtocol:
             raise newException(GeneError, "impl target must be a protocol")
           var entries: seq[ImplMessage]
@@ -9459,7 +9534,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             entries.add ImplMessage(message: resolved,
                                     fn: functionForScopeStorage(fn, scope))
           scope.registerImpl(protocol, receiver, entries)
-          stack.add NIL
+          spush NIL
         of opMakeNamespace:
           # Run the ns body in a fresh child scope; its bindings become the
           # namespace's exports. Bind the namespace in the enclosing scope.
@@ -9483,7 +9558,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   module.setModuleMeta(copyEntries(metaValue.mapEntries))
             elif module.kind == vkNamespace and module.nsIsModuleRoot:
               module.setNsName(inst[].name)
-          stack.add NIL
+          spush NIL
         of opImport:
           let spec = chunk.imports[inst[].intArg]
           var source: Value
@@ -9518,7 +9593,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if v.kind == vkVoid:
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
-          stack.add NIL
+          spush NIL
         of opCallLocal0:
           let slot = inst[].intArg
           var callee =
@@ -9533,7 +9608,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if proto.nativeOp != ncoNone:
                 let native = applyNativeCompiled(callee, proto, [], NamedArgs())
                 if native.handled:
-                  stack.add native.value
+                  spush native.value
                   continue
               if proto.scopelessChunk != nil and proto.params.len == 0:
                 # Scopeless 0-arg call (see the direct-call site).
@@ -9541,7 +9616,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 scope = frames[^1].scope
                 chunk = proto.scopelessChunk
                 recycleScope = false
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = false
                 returnType = NIL
@@ -9573,7 +9648,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -9596,7 +9671,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = bound.scope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = frameReturnType
@@ -9622,12 +9697,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
-            stack.add NIL
+            spush NIL
             captureContinuation(ip)
             fiber.waitTimer = true
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
-          stack.add value
+          spush value
         of opCallName0, opCallName1, opCallNameN, opCallLocal1, opCallLocalN,
             opCallParentLocal0, opCallParentLocal1, opCallOuterLocal0,
             opCallOuterLocal1:
@@ -9636,9 +9711,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                              opCallOuterLocal0}: 0
             elif inst[].op in {opCallNameN, opCallLocalN}: inst[].depth
             else: 1
-          if stack.len < argCount:
+          if sp < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
-          let argsStart = stack.len - argCount
+          let argsStart = sp - argCount
           var callee =
             if inst[].op in {opCallName0, opCallName1, opCallNameN}:
               scope.lookup(inst[].name)
@@ -9681,10 +9756,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     applyNativeCompiled(callee, proto, [], NamedArgs())
                   else:
                     applyNativeCompiled(callee, proto,
-                      stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                      stack.toOpenArray(argsStart, (sp - 1)), NamedArgs())
                 if native.handled:
-                  stack.setLen(argsStart)
-                  stack.add native.value
+                  strunc(argsStart)
+                  spush native.value
                   continue
               if proto.scopelessChunk != nil and argCount == proto.params.len:
                 # Scopeless call: the args already on the shared stack become
@@ -9728,11 +9803,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         fresh
                     if argCount > 0:
                       created.bindSimpleCallSlots(
-                        proto, stack.toOpenArray(argsStart, stack.high))
+                        proto, stack.toOpenArray(argsStart, (sp - 1)))
                     created
                   else:
                     callee.fnScope
-                stack.setLen(argsStart)
+                strunc(argsStart)
                 if argsStart == 0 and canReplaceCurrentTailCall(callee.fnScope):
                   enterTailCallFrame(proto, callScope, proto.poolCallScope,
                     proto.frameNeedsImplValidation, NIL, "", false, @[],
@@ -9741,7 +9816,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -9757,12 +9832,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   (inst[].flag or stack[argsStart].kind == vkInt):
                 let callScope = bindUnaryIntCallScope(callee.fnScope, proto,
                                                       stack[argsStart])
-                stack.setLen(argsStart)
+                strunc(argsStart)
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -9777,14 +9852,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   proto.returnKnownBareInt and argCount == proto.params.len and
                   inst[].flag:
                 let callScope = bindPositionalIntCallScope(callee.fnScope, proto,
-                  stack.toOpenArray(argsStart, stack.high),
+                  stack.toOpenArray(argsStart, (sp - 1)),
                   argsKnownBareInt = true)
-                stack.setLen(argsStart)
+                strunc(argsStart)
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -9810,7 +9885,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 elif proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee.fnScope, proto,
-                    stack.toOpenArray(argsStart, stack.high),
+                    stack.toOpenArray(argsStart, (sp - 1)),
                     argsKnownBareInt = inst[].flag)
                   boundReturnType = proto.returnType
                 else:
@@ -9819,10 +9894,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       bindCallScope(callee, proto, [], NamedArgs())
                     else:
                       bindCallScope(callee, proto,
-                        stack.toOpenArray(argsStart, stack.high), NamedArgs())
+                        stack.toOpenArray(argsStart, (sp - 1)), NamedArgs())
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
-                stack.setLen(argsStart)
+                strunc(argsStart)
                 boundReturnType = proto.checkedFrameReturnType(boundReturnType)
                 var lbl = ""
                 if boundReturnType.kind != vkNil and not usedUnaryIntFast:
@@ -9831,7 +9906,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = boundScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = boundReturnType
@@ -9855,7 +9930,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 applyCall(callee, [], NamedArgs(), scope, site,
                           instructionLocAt(chunk, ip - 1))
               else:
-                applyCall(callee, stack.toOpenArray(argsStart, stack.high),
+                applyCall(callee, stack.toOpenArray(argsStart, (sp - 1)),
                           NamedArgs(), scope, site,
                           instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
@@ -9863,20 +9938,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
-            stack.setLen(argsStart)
-            stack.add NIL
+            strunc(argsStart)
+            spush NIL
             captureContinuation(ip)
             fiber.waitTimer = true
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
-          stack.setLen(argsStart)
-          stack.add value
+          strunc(argsStart)
+          spush value
         of opRecur1:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in recur call")
-          let argsStart = stack.len - 1
+          let argsStart = sp - 1
           var arg = stack[argsStart]
-          stack.setLen(argsStart)
+          strunc(argsStart)
           enterRecur1Frame(arg, inst[].flag)
         of opRecur1LocalIntSubConst, opRecur1LocalIntSubImm,
             opRecur1LocalIntSubConstSameScope, opRecur1LocalIntSubImmSameScope:
@@ -9957,7 +10032,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # lexical binding. The resolved callee is inserted below any named
           # argument values already on the stack, then the receiver goes back
           # on top as the first positional argument.
-          let receiver = stack.pop()
+          let receiver = spop()
           if receiver.nodeConstructing and inst[].name notin
               ["Node/set_prop!", "Node/set_body!", "Node/push_body!"]:
             raise newException(GeneError,
@@ -9977,22 +10052,33 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
-            stack.insert(callee, stack.len - inst[].intArg)
+            # Insert the callee below its intArg already-pushed args: shift
+            # them up one slot in place (seq insert would grow len, breaking
+            # the sp-register capacity invariant).
+            if sp >= stack.len:
+              stack.setLen(max(stack.len * 2, 64))
+            var insertAt = sp - inst[].intArg
+            var shiftIndex = sp
+            while shiftIndex > insertAt:
+              stack[shiftIndex] = move stack[shiftIndex - 1]
+              dec shiftIndex
+            stack[insertAt] = callee
+            inc sp
           else:
-            stack.add callee
-          stack.add receiver
+            spush callee
+          spush receiver
         of opPlaceSendReceiver:
           # [callee, receiver, named...] -> [callee, named..., receiver]. The
           # resolution itself happened before named argument evaluation.
           let namedCount = inst[].intArg
-          if namedCount <= 0 or stack.len < namedCount + 2:
+          if namedCount <= 0 or sp < namedCount + 2:
             raise newException(GeneError,
               "VM stack underflow placing message receiver")
-          let receiverIndex = stack.len - namedCount - 1
+          let receiverIndex = sp - namedCount - 1
           var receiver = move stack[receiverIndex]
-          for i in receiverIndex ..< stack.len - 1:
+          for i in receiverIndex ..< sp - 1:
             stack[i] = move stack[i + 1]
-          stack[stack.len - 1] = move receiver
+          stack[sp - 1] = move receiver
         of opCall0, opCall1, opCall2, opCall:
           let argCount =
             case inst[].op
@@ -10005,7 +10091,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               inst[].names.len
             else:
               0
-          let argsStart = stack.len - argCount
+          let argsStart = sp - argCount
           if argsStart < 0 or argsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")
           let calleeIndex = argsStart - namedCount - 1
@@ -10033,20 +10119,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     applyNativeCompiled(callee, proto, [], nativeNamed)
                   else:
                     applyNativeCompiled(callee, proto,
-                                        stack.toOpenArray(argsStart, stack.high),
+                                        stack.toOpenArray(argsStart, (sp - 1)),
                                         nativeNamed)
                 if native.handled:
-                  stack.setLen(calleeIndex)
-                  stack.add native.value
+                  strunc(calleeIndex)
+                  spush native.value
                   continue
               if namedCount == 0 and proto.scopelessChunk != nil and
                   argCount == proto.params.len:
                 # Scopeless call (see the direct-call site): shift the args
                 # down over the callee so they sit at the frame base, then
                 # enter without any scope acquire/bind/release.
-                for i in calleeIndex ..< stack.len - 1:
+                for i in calleeIndex ..< sp - 1:
                   stack[i] = stack[i + 1]
-                stack.setLen(stack.len - 1)
+                strunc(sp - 1)
                 pushCallFrame()
                 scope = frames[^1].scope
                 chunk = proto.scopelessChunk
@@ -10082,11 +10168,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         fresh
                     if argCount > 0:
                       created.bindSimpleCallSlots(
-                        proto, stack.toOpenArray(argsStart, stack.high))
+                        proto, stack.toOpenArray(argsStart, (sp - 1)))
                     created
                 else:
                   callee.fnScope
-                stack.setLen(calleeIndex)        # consume callee + args
+                strunc(calleeIndex)        # consume callee + args
                 if calleeIndex == 0 and canReplaceCurrentTailCall(callee.fnScope):
                   enterTailCallFrame(proto, callScope, proto.poolCallScope,
                     proto.frameNeedsImplValidation, NIL, "", false, @[],
@@ -10095,7 +10181,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = NIL
@@ -10116,13 +10202,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var boundReturnType: Value
                 if namedCount > 0 and proto.canFastBindRequiredNamed:
                   boundScope = bindRequiredNamedCallScope(callee.fnScope, proto,
-                    callee.fnName, stack.toOpenArray(argsStart, stack.high),
+                    callee.fnName, stack.toOpenArray(argsStart, (sp - 1)),
                     inst[].names, stack, calleeIndex + 1)
                   boundReturnType = proto.returnType
                 elif namedCount == 0 and proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee.fnScope, proto,
-                    stack.toOpenArray(argsStart, stack.high))
+                    stack.toOpenArray(argsStart, (sp - 1)))
                   boundReturnType = proto.returnType
                 else:
                   var named: NamedArgs
@@ -10134,11 +10220,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       bindCallScope(callee, proto, [], named)
                     else:
                       bindCallScope(callee, proto,
-                                    stack.toOpenArray(argsStart, stack.high), named)
+                                    stack.toOpenArray(argsStart, (sp - 1)), named)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
                 let frameReturnType = proto.checkedFrameReturnType(boundReturnType)
-                stack.setLen(calleeIndex)
+                strunc(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
@@ -10146,7 +10232,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = proto.chunk
                 scope = boundScope
                 recycleScope = proto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = proto.frameNeedsImplValidation
                 returnType = frameReturnType
@@ -10160,8 +10246,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if namedCount == 0 and argCount == 2 and callee.kind == vkNativeFn:
             let fastNative = tryFastNative2(callee, stack[argsStart], stack[argsStart + 1])
             if fastNative.handled:
-              stack.setLen(calleeIndex)
-              stack.add fastNative.value
+              strunc(calleeIndex)
+              spush fastNative.value
               continue
           var named: NamedArgs
           if namedCount > 0:
@@ -10181,7 +10267,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 applyCall(callee, [], named, scope, site,
                           instructionLocAt(chunk, ip - 1))
               else:
-                applyCall(callee, stack.toOpenArray(argsStart, stack.high),
+                applyCall(callee, stack.toOpenArray(argsStart, (sp - 1)),
                           named, scope, site,
                           instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
@@ -10189,20 +10275,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
-            stack.setLen(calleeIndex)
-            stack.add NIL
+            strunc(calleeIndex)
+            spush NIL
             captureContinuation(ip)   # resume after sleep; nil is already pushed
             fiber.waitTimer = true
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
-          stack.setLen(calleeIndex)
-          stack.add value
+          strunc(calleeIndex)
+          spush value
         of opCallSplice:
           var named: NamedArgs
           let proto = chunk.listBuilds[inst[].intArg]
           let partCount = proto.splices.len
           let namedCount = inst[].names.len
-          let partsStart = stack.len - partCount
+          let partsStart = sp - partCount
           if partsStart < 0 or partsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")
           let calleeIndex = partsStart - namedCount - 1
@@ -10210,7 +10296,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if namedCount > 0:
             named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
           var args: seq[Value]
-          for i, part in stack.toOpenArray(partsStart, stack.high):
+          for i, part in stack.toOpenArray(partsStart, (sp - 1)):
             if proto.splices[i]:
               appendSplicedBody(args, part)
             else:
@@ -10228,8 +10314,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if fnProto.nativeOp != ncoNone:
                 let native = applyNativeCompiled(callee, fnProto, args, named)
                 if native.handled:
-                  stack.setLen(calleeIndex)
-                  stack.add native.value
+                  strunc(calleeIndex)
+                  spush native.value
                   continue
               if namedCount == 0 and fnProto.simpleCall and
                   args.len == fnProto.params.len:
@@ -10249,12 +10335,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     created
                   else:
                     callee.fnScope
-                stack.setLen(calleeIndex)
+                strunc(calleeIndex)
                 pushFrame()
                 chunk = fnProto.chunk
                 scope = callScope
                 recycleScope = fnProto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = fnProto.frameNeedsImplValidation
                 returnType = NIL
@@ -10280,7 +10366,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
                 let frameReturnType = fnProto.checkedFrameReturnType(boundReturnType)
-                stack.setLen(calleeIndex)
+                strunc(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
@@ -10288,7 +10374,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 chunk = fnProto.chunk
                 scope = boundScope
                 recycleScope = fnProto.poolCallScope
-                curStackBase = stack.len
+                curStackBase = sp
                 ip = 0
                 validateImplRequirements = fnProto.frameNeedsImplValidation
                 returnType = frameReturnType
@@ -10319,144 +10405,144 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
-            stack.setLen(calleeIndex)
-            stack.add NIL
+            strunc(calleeIndex)
+            spush NIL
             captureContinuation(ip)
             fiber.waitTimer = true
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
-          stack.setLen(calleeIndex)
-          stack.add value
+          strunc(calleeIndex)
+          spush value
         of opIntAdd2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int add")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             var value: Value
             if smallIntAddKnown(a, b, value):
               stack[top - 2] = value
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = intAdd(a, b)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkAdd, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntSub2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int sub")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             var value: Value
             if smallIntSubKnown(a, b, value):
               stack[top - 2] = value
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = intSub(a, b)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkSub, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntMul2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int mul")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = intMul(a, b)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkMul, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntLt2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int lt")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             stack[top - 2] = newBool(a.smallIntVal < b.smallIntVal)
-            setLenUninit(stack, top - 1)
+            sp = (top - 1)
             continue
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = newBool(intCompare(a, b) < 0)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkLt, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntGt2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int gt")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             stack[top - 2] = newBool(a.smallIntVal > b.smallIntVal)
-            setLenUninit(stack, top - 1)
+            sp = (top - 1)
             continue
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = newBool(intCompare(a, b) > 0)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkGt, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntLe2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int le")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             stack[top - 2] = newBool(a.smallIntVal <= b.smallIntVal)
-            setLenUninit(stack, top - 1)
+            sp = (top - 1)
             continue
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = newBool(intCompare(a, b) <= 0)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkLe, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntGe2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int ge")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           if a.isSmallInt and b.isSmallInt:
             stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
-            setLenUninit(stack, top - 1)
+            sp = (top - 1)
             continue
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 2] = newBool(intCompare(a, b) >= 0)
-            stack.setLen(top - 1)
+            strunc(top - 1)
             continue
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let callee = scope.loadNativeFast(nfkGe, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntAddConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int add const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
@@ -10467,14 +10553,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = intAdd(a, b)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkAdd, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntSubConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int sub const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
@@ -10485,27 +10571,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = intSub(a, b)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkSub, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntMulConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int mul const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = intMul(a, b)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkMul, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntLtConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int lt const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
@@ -10514,14 +10600,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = newBool(intCompare(a, b) < 0)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkLt, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntGtConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int gt const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
@@ -10530,14 +10616,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = newBool(intCompare(a, b) > 0)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkGt, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntLeConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int le const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
@@ -10546,14 +10632,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = newBool(intCompare(a, b) <= 0)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkLe, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntGeConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int ge const")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           if a.isSmallInt and (inst[].flag or b.isSmallInt):
@@ -10562,14 +10648,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if a.kind == vkInt and b.kind == vkInt:
             stack[top - 1] = newBool(intCompare(a, b) >= 0)
             continue
-          stack.setLen(top - 1)
+          strunc(top - 1)
           let callee = scope.loadNativeFast(nfkGe, inst[].name)
           var args = [a, b]
-          stack.add applyCall(callee, args, NamedArgs(), scope)
+          spush applyCall(callee, args, NamedArgs(), scope)
         of opIntFast2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int fast call")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           let kind = NativeFastKind(inst[].intArg)
@@ -10579,37 +10665,37 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               var value: Value
               if smallIntAddKnown(a, b, value):
                 stack[top - 2] = value
-                setLenUninit(stack, top - 1)
+                sp = (top - 1)
                 continue
             of nfkSub:
               var value: Value
               if smallIntSubKnown(a, b, value):
                 stack[top - 2] = value
-                setLenUninit(stack, top - 1)
+                sp = (top - 1)
                 continue
             of nfkLt:
               stack[top - 2] = newBool(a.smallIntVal < b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             of nfkGt:
               stack[top - 2] = newBool(a.smallIntVal > b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             of nfkLe:
               stack[top - 2] = newBool(a.smallIntVal <= b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             of nfkGe:
               stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             else:
               discard
           if a.kind != vkInt or b.kind != vkInt:
-            stack.setLen(top - 2)
+            strunc(top - 2)
             let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
-            stack.add applyCall(callee, args, NamedArgs(), scope)
+            spush applyCall(callee, args, NamedArgs(), scope)
             continue
           case kind
           of nfkAdd:
@@ -10628,11 +10714,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             stack[top - 2] = newBool(intCompare(a, b) >= 0)
           else:
             raise newException(GeneError, "internal: unsupported int fast op")
-          stack.setLen(top - 1)
+          strunc(top - 1)
         of opIntFastConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in int fast const call")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
@@ -10663,10 +10749,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             else:
               discard
           if a.kind != vkInt or b.kind != vkInt:
-            stack.setLen(top - 1)
+            strunc(top - 1)
             let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
-            stack.add applyCall(callee, args, NamedArgs(), scope)
+            spush applyCall(callee, args, NamedArgs(), scope)
             continue
           case kind
           of nfkAdd:
@@ -10686,9 +10772,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             raise newException(GeneError, "internal: unsupported int fast const op")
         of opNativeFast2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in native fast call")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
           let kind = NativeFastKind(inst[].intArg)
@@ -10698,44 +10784,44 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               var value: Value
               if smallIntAddKnown(a, b, value):
                 stack[top - 2] = value
-                setLenUninit(stack, top - 1)
+                sp = (top - 1)
                 continue
             of nfkSub:
               var value: Value
               if smallIntSubKnown(a, b, value):
                 stack[top - 2] = value
-                setLenUninit(stack, top - 1)
+                sp = (top - 1)
                 continue
             of nfkLt:
               stack[top - 2] = newBool(a.smallIntVal < b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             of nfkGt:
               stack[top - 2] = newBool(a.smallIntVal > b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             of nfkLe:
               stack[top - 2] = newBool(a.smallIntVal <= b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             of nfkGe:
               stack[top - 2] = newBool(a.smallIntVal >= b.smallIntVal)
-              setLenUninit(stack, top - 1)
+              sp = (top - 1)
               continue
             else:
               discard
-          stack.setLen(top - 2)
+          strunc(top - 2)
           let fastNative = tryFastNativeKind2(kind, a, b)
           if fastNative.handled:
-            stack.add fastNative.value
+            spush fastNative.value
           else:
             let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
-            stack.add applyCall(callee, args, NamedArgs(), scope)
+            spush applyCall(callee, args, NamedArgs(), scope)
         of opNativeFastConst:
-          if stack.len < 1:
+          if sp < 1:
             raise newException(GeneError, "VM stack underflow in native fast const call")
-          let top = stack.len
+          let top = sp
           let a = stack[top - 1]
           let b = chunk.constants[inst[].depth]
           let kind = NativeFastKind(inst[].intArg)
@@ -10765,41 +10851,41 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               continue
             else:
               discard
-          stack.setLen(top - 1)
+          strunc(top - 1)
           if a.kind == vkInt and b.kind == vkInt:
             case kind
             of nfkAdd:
-              stack.add intAdd(a, b)
+              spush intAdd(a, b)
               continue
             of nfkSub:
-              stack.add intSub(a, b)
+              spush intSub(a, b)
               continue
             of nfkMul:
-              stack.add intMul(a, b)
+              spush intMul(a, b)
               continue
             of nfkLt:
-              stack.add newBool(intCompare(a, b) < 0)
+              spush newBool(intCompare(a, b) < 0)
               continue
             of nfkGt:
-              stack.add newBool(intCompare(a, b) > 0)
+              spush newBool(intCompare(a, b) > 0)
               continue
             of nfkLe:
-              stack.add newBool(intCompare(a, b) <= 0)
+              spush newBool(intCompare(a, b) <= 0)
               continue
             of nfkGe:
-              stack.add newBool(intCompare(a, b) >= 0)
+              spush newBool(intCompare(a, b) >= 0)
               continue
             else:
               discard
           let fastNative = tryFastNativeKind2(kind, a, b)
           if fastNative.handled:
-            stack.add fastNative.value
+            spush fastNative.value
           else:
             let callee = scope.loadNativeFast(kind, inst[].name)
             var args = [a, b]
-            stack.add applyCall(callee, args, NamedArgs(), scope)
+            spush applyCall(callee, args, NamedArgs(), scope)
         of opMatch:
-          let target = stack.pop()
+          let target = spop()
           let mp = chunk.matches[inst[].intArg]
           var handled = false
           for cl in mp.clauses:
@@ -10823,21 +10909,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if handled or mp.elseBody != nil:
             continue
         of opMatchBind:
-          let target = stack.pop()
+          let target = spop()
           var binds = initTable[string, Value]()
           if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
             raiseMatchError(scope, "destructuring pattern did not match")
           scope.bindMatchedValues(binds, replaceExisting = false)
-          stack.add target
+          spush target
         of opMatchBindReplace:
-          let target = stack.pop()
+          let target = spop()
           var binds = initTable[string, Value]()
           if not tryMatch(chunk.constants[inst[].intArg], target, scope, binds):
             raiseMatchError(scope, "destructuring pattern did not match")
           scope.bindMatchedValues(binds, replaceExisting = true)
-          stack.add target
+          spush target
         of opForEach:
-          var coll = stack.pop()
+          var coll = spop()
           let fp = chunk.forLoops[inst[].intArg]
           if coll.kind == vkRange:
             coll = rangeStream(coll)
@@ -10846,7 +10932,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             try:
               if not coll.streamHasNext:
                 coll.closeStream()
-                stack.add NIL
+                spush NIL
                 continue
               item = checkedStreamNext(coll, "for item")
             except GeneError:
@@ -10867,7 +10953,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
           let items = forItems(coll)
           if items.len == 0:
-            stack.add NIL
+            spush NIL
             continue
           block enterFirstForItem:
             let item = items[0]
@@ -10885,31 +10971,31 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             curForBody = fp.body
             continue
         of opMakeIterator:
-          stack.add iteratorStream(stack.pop())
+          spush iteratorStream(spop())
         of opIteratorHasNext:
-          let stream = stack.pop()
+          let stream = spop()
           requireStream("for iterator", stream)
-          stack.add newBool(stream.streamHasNext)
+          spush newBool(stream.streamHasNext)
         of opIteratorNext:
-          let stream = stack.pop()
+          let stream = spop()
           requireStream("for iterator", stream)
           if not stream.streamHasNext:
             raiseEndOfStream()
-          stack.add checkedStreamNext(stream, "for item")
+          spush checkedStreamNext(stream, "for item")
         of opIteratorClose:
-          let stream = stack.pop()
+          let stream = spop()
           requireStream("for iterator", stream)
           stream.closeStream()
         of opLoopBreak:
           if curFrameKind != fkForBody:
             raise newException(GeneError, "break is only valid inside a loop")
-          stack.setLen(curStackBase)
+          strunc(curStackBase)
           breakForLoop()
           continue
         of opLoopContinue:
           if curFrameKind != fkForBody:
             raise newException(GeneError, "continue is only valid inside a loop")
-          stack.setLen(curStackBase)
+          strunc(curStackBase)
           advanceForLoop()
           continue
         of opTry:
@@ -10925,7 +11011,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           scope = frames[^1].scope
           handlers.add TryHandler(tp: tp, scope: scope, framesLen: frames.len)
           chunk = tp.body                 # shares the enclosing scope
-          curStackBase = stack.len
+          curStackBase = sp
           ip = 0
           validateImplRequirements = false
           returnType = NIL
@@ -10964,24 +11050,24 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # within_ms; pop in reverse.
           let withinMs =
             if hasWithinMs:
-              int(requireInt64("supervisor ^within_ms", stack.pop()))
+              int(requireInt64("supervisor ^within_ms", spop()))
             else:
               0
           let maxRestarts =
             if hasMaxRestarts:
-              int(requireInt64("supervisor ^max_restarts", stack.pop()))
+              int(requireInt64("supervisor ^max_restarts", spop()))
             else:
               0
           let deadLetterSink =
             if hasDeadLetters:
-              let sink = stack.pop()
+              let sink = spop()
               requireChannel("supervisor ^dead_letter", sink)
               sink
             else:
               NIL
           let eventSink =
             if hasEvents:
-              let sink = stack.pop()
+              let sink = spop()
               requireChannel("supervisor ^events", sink)
               sink
             else:
@@ -11026,12 +11112,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let taskScope = newScope(taskParent)
           let task = spawnFiber(body, taskScope, workerSafe)
           scope.registerOwnedTask(task)
-          stack.add task
+          spush task
         of opAwait:
           # Await a task. Inside a scheduled fiber, park on the task (the scheduler
           # runs others and wakes us when it settles) and re-execute opAwait on
           # resume — the task is still on the stack. At the root, drive the queue.
-          let task = stack[^1]
+          let task = stack[sp - 1]
           if task.kind == vkTask and not task.taskDone:
             if currentFiberActive and fiber != nil:
               captureContinuation(ip - 1)   # task stays on the stack for re-execution
@@ -11065,35 +11151,36 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   "move the await out of the callback")
             else:
               pumpUntilDone(task)
-          discard stack.pop()
-          stack.add awaitTaskValue(task)
+          discard spop()
+          spush awaitTaskValue(task)
         of opFail:
-          let errVal = stack.pop()
+          let errVal = spop()
           rejectCallerEnvEscape("fail payload", errVal)
           if not scope.isErrorValue(errVal):
             raise newException(GeneError, "fail expects an Error value")
           raiseFailedValue(errVal)
         of opPanic:
-          let panicVal = stack.pop()
+          let panicVal = spop()
           rejectCallerEnvEscape("panic payload", panicVal)
           raisePanicValue(panicVal)
         of opYield:
           if not stopOnYield:
             raise newException(GeneError, "yield is only valid in a generator")
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in yield")
           # A generator suspends in its own (outermost) frame; simpleCall callees
           # never yield, so `frames` is empty here and stack/ip persist via the args.
-          let yielded = escapeWeakFunctions(stack[^1])
+          let yielded = escapeWeakFunctions(stack[sp - 1])
           if fiber != nil:
             captureContinuation(ip)
           else:
+            setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
             stackArg = move stack
             ipArg = ip
             releaseFrameStack(gVmPools, frames)
           return RunStop(kind: rskYield, value: yielded)
         of opExplicitReturn:
-          let returnValue = if stack.len > 0: stack.pop() else: VOID
+          let returnValue = if sp > 0: spop() else: VOID
           if curFrameKind == fkNormal and frames.len == returnDepth:
             frameReturn(returnValue)
           else:
@@ -11103,69 +11190,69 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             signal.targetDepth = returnDepth
             raise signal
         of opJumpIfFalse:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
-          let top = stack.len - 1
+          let top = sp - 1
           let cond = stack[top]
-          stack.setLen(top)
+          strunc(top)
           if not cond.isTruthy:
             ip = inst[].intArg
         of opJumpIfFalseOrPop:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
-          if stack[stack.len - 1].isTruthy:
-            stack.setLen(stack.len - 1)
+          if stack[sp - 1].isTruthy:
+            strunc(sp - 1)
           else:
             ip = inst[].intArg
         of opJumpIfTrueOrPop:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
-          if stack[stack.len - 1].isTruthy:
+          if stack[sp - 1].isTruthy:
             ip = inst[].intArg
           else:
-            stack.setLen(stack.len - 1)
+            strunc(sp - 1)
         of opNot:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in not")
-          let top = stack.len - 1
+          let top = sp - 1
           stack[top] = if stack[top].isTruthy: FALSE else: TRUE
         of opJump:
           ip = inst[].intArg
         of opSyntaxCall:
           # Stack: [.. callee, raw call node] (design §3 step 4).
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in syntax call")
-          let callNode = stack.pop()
-          let callee = stack.pop()
-          stack.add applySyntaxCall(callee, callNode, scope)
+          let callNode = spop()
+          let callee = spop()
+          spush applySyntaxCall(callee, callNode, scope)
         of opSyntaxGuard:
           # Generic evaluated-head call site (design §3): if the callee on top
           # is a fn!, perform the syntax call from the const raw node and jump
           # past the ordinary argument-evaluation + call sequence.
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in syntax guard")
-          if stack[stack.len - 1].isSyntaxFn:
-            let callee = stack.pop()
-            stack.add applySyntaxCall(callee, chunk.constants[inst[].depth],
+          if stack[sp - 1].isSyntaxFn:
+            let callee = spop()
+            spush applySyntaxCall(callee, chunk.constants[inst[].depth],
                                       scope)
             ip = inst[].intArg
         of opRejectSyntaxSend:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError,
               "VM stack underflow checking message callable")
-          if stack[stack.len - 1].isSyntaxFn:
-            rejectSyntaxSend(stack[stack.len - 1], scope)
+          if stack[sp - 1].isSyntaxFn:
+            rejectSyntaxSend(stack[sp - 1], scope)
         of opReturn:
-          frameReturn(if stack.len > 0: stack.pop() else: NIL)
+          frameReturn(if sp > 0: spop() else: NIL)
         of opReturnBareInt:
-          frameReturnBareInt(if stack.len > 0: stack.pop() else: NIL)
+          frameReturnBareInt(if sp > 0: spop() else: NIL)
         of opReturnIntAdd2:
-          if stack.len < 2:
+          if sp < 2:
             raise newException(GeneError, "VM stack underflow in int add return")
-          let top = stack.len
+          let top = sp
           let b = stack[top - 1]
           let a = stack[top - 2]
-          stack.setLen(top - 2)
+          strunc(top - 2)
           var value: Value
           if a.isSmallInt and b.isSmallInt and smallIntAddKnown(a, b, value):
             frameReturnBareInt(value)
@@ -11177,10 +11264,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var args = [a, b]
           frameReturnBareInt(applyCall(callee, args, NamedArgs(), scope))
         of opCheckType:
-          if stack.len == 0:
+          if sp == 0:
             raise newException(GeneError, "VM stack underflow in type check")
-          stack[^1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
-                                    stack[^1], scope)
+          stack[sp - 1] = adaptBoundary(inst[].name, chunk.constants[inst[].intArg],
+                                    stack[sp - 1], scope)
         of opDeclareType:
           scope.declareType(inst[].name, chunk.constants[inst[].intArg])
         # All exits are via frameReturn / opYield above; the loop never falls through.
@@ -11221,7 +11308,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsureErrorBody)
         curPendingError = err
         continue
@@ -11231,7 +11318,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # while catch/ensure bodies run as ordinary VM frames, so they can park
           # and resume like the original try body.
           let h = handlers.pop()
-          stack.setLen(curStackBase)        # discard the try body's operand stack
+          strunc(curStackBase)        # discard the try body's operand stack
           let ownerValidate = frames[^1].validateImpls
           let errVal =
             if err.hasErrVal: err.errVal
@@ -11260,7 +11347,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             # No catch matched: keep unwinding the (possibly re-labelled) error.
             var f = frames.pop()
-            stack.setLen(curStackBase)
+            strunc(curStackBase)
             loadFrameRegs(f)
             closeCurrentForStream()
             err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
@@ -11269,7 +11356,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           releaseFrameStack(gVmPools, frames)
           raise err
         else:
-          stack.setLen(curStackBase)    # drop the failing frame's region
+          strunc(curStackBase)    # drop the failing frame's region
           var f = frames.pop()
           loadFrameRegs(f)
           closeCurrentForStream()
@@ -11298,7 +11385,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsurePanicBody)
         curPendingPanic = p
         continue
@@ -11306,7 +11393,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
-          stack.setLen(curStackBase)
+          strunc(curStackBase)
           enterFrame(h.tp.ensureBody, h.scope, false, fkEnsurePanicBody)
           curPendingPanic = p
           cleanupStarted = true
@@ -11338,7 +11425,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsureCancelBody)
         curPendingCancel = c
         continue
@@ -11346,7 +11433,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while handlers.len > 0:
         let h = handlers.pop()
         if h.tp.ensureBody != nil:
-          stack.setLen(curStackBase)
+          strunc(curStackBase)
           enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureCancelBody)
           curPendingCancel = c
           cleanupStarted = true
@@ -11381,7 +11468,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curFrameKind == fkCatchBody and curEnsureBody != nil:
         let body = curEnsureBody
         let cleanupScope = curEnsureScope
-        stack.setLen(curStackBase)
+        strunc(curStackBase)
         enterFrame(body, cleanupScope, false, fkEnsureReturnBody)
         curPendingReturn = r
         continue
@@ -11389,7 +11476,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while true:
         if handlers.len > 0 and handlers[^1].framesLen == frames.len:
           let h = handlers.pop()
-          stack.setLen(curStackBase)
+          strunc(curStackBase)
           if h.tp.ensureBody != nil:
             enterFrame(h.tp.ensureBody, h.scope, false, fkEnsureReturnBody)
             curPendingReturn = r
@@ -11407,7 +11494,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           releaseFrameStack(gVmPools, frames)
           return RunStop(kind: rskReturn, value: r.value)
         else:
-          stack.setLen(curStackBase)
+          strunc(curStackBase)
           var owner = frames.pop()
           loadFrameRegs(owner)
           closeCurrentForStream()
