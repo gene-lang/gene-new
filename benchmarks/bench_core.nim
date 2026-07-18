@@ -211,6 +211,14 @@ proc main() =
     let v = run(varHeavyChunk, varHeavyScope)
     checksum = checksum + v.intVal
 
+  let listFnScope = newGlobalScope()
+  listFnScope.define("pair", run(compileSource(
+    "(fn [x y] [x y])"), listFnScope))
+  let listFnChunk = compileSource("((pair 1 2) ~ size)")
+  bench("vm.list_leaf_fn.compiled_chunk", 500_000, i):
+    let v = run(listFnChunk, listFnScope)
+    checksum = checksum + v.intVal
+
   let oneArgScope = newGlobalScope()
   oneArgScope.define("inc1", run(compileSource("(fn [x] (+ x 1))"), oneArgScope))
   let oneArgChunk = compileSource("(inc1 9)")

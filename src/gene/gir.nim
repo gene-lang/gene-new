@@ -1954,6 +1954,10 @@ const scopelessOps = {
   opIntAddConst, opIntSubConst, opIntMulConst,
   opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
   opIntFast2, opIntFastConst, opNativeFast2, opNativeFastConst,
+  # Stack-only constructors carrying all data on the instruction itself
+  # (opMakeListSplice is excluded: it indexes chunk.listBuilds, which the
+  # derived scopeless chunk does not copy).
+  opMakeList, opMakeMap,
   opExplicitReturn, opReturn, opReturnBareInt}
 
 proc deriveScopelessChunk*(proto: FunctionProto) =
