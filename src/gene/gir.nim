@@ -158,7 +158,7 @@ type
     typeExpr*: Value
     defaultValue*: ParamDefault
 
-  FunctionProto* = ref object of FunctionCode
+  FunctionProto* {.acyclic.} = ref object of FunctionCode
     name*: string
     sourceLoc*: SourceLoc
     typeParams*: seq[string]
@@ -372,7 +372,15 @@ type
     label*: string
     nodeLike*: bool
 
-  Chunk* = ref object
+  # Chunks, protos, and their loop/match bodies form a strictly nested tree
+  # built by the compiler and immutable at runtime: parent chunk → proto →
+  # child chunk → …, with the only upward edge (Chunk.owner) already a
+  # {.cursor.}. Compile-time Values reachable from here (constants, type
+  # exprs, defaults, quoted forms) are reader data and cannot reference
+  # code objects. {.acyclic.} matters for VM speed: the runLoop releases a
+  # Chunk and a FunctionProto ref on every call/return, and without the
+  # pragma each release-not-to-zero registers an ORC cycle candidate.
+  Chunk* {.acyclic.} = ref object
     sourceName*: string
     constants*: seq[Value]
     instructions*: seq[Instruction]
