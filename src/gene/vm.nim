@@ -981,6 +981,22 @@ proc isNumber(v: Value): bool = v.kind == vkInt or v.kind == vkFloat
 proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intToFloat else: v.floatVal)
 proc isBareIntType(expr: Value): bool {.inline.} =
   expr.kind == vkSymbol and expr.symVal == "Int"
+
+proc scopelessIntArgsOk(stack: seq[Value], argsStart, argCount: int):
+    bool {.noinline.} =
+  ## Typed scopeless admission requires every positional param to be bare
+  ## Int, so binding-time adaptation reduces to this kind sweep over the
+  ## already-pushed args. A miss falls back to the classic convention,
+  ## whose binding raises the canonical parameter type error. noinline:
+  ## untyped calls short-circuit before the call, and expanding the loop
+  ## at two dispatch sites is the documented I-cache trap. The sweep, not
+  ## the compile-time flag, carries the win at the generic evaluated-head
+  ## site — runtime-defined callees compile without arg proofs.
+  for i in 0 ..< argCount:
+    if stack[argsStart + i].kind != vkInt:
+      return false
+  true
+
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
@@ -9814,7 +9830,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   strunc(argsStart)
                   spush native.value
                   continue
-              if proto.scopelessChunk != nil and argCount == proto.params.len:
+              if proto.scopelessChunk != nil and argCount == proto.params.len and
+                  (not proto.scopelessNeedsIntArgs or inst[].flag or
+                   scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call: the args already on the shared stack become
                 # the callee's frame region (opLoadArg reads them at
                 # base+index) and the callee keeps the CALLER's scope register
@@ -10181,7 +10199,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   spush native.value
                   continue
               if namedCount == 0 and proto.scopelessChunk != nil and
-                  argCount == proto.params.len:
+                  argCount == proto.params.len and
+                  (not proto.scopelessNeedsIntArgs or
+                   scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call (see the direct-call site): shift the args
                 # down over the callee so they sit at the frame base, then
                 # enter without any scope acquire/bind/release.

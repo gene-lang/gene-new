@@ -204,6 +204,9 @@ type
     scopelessChunk*: Chunk       # opLoadArg rewrite of chunk for leaf
                                  # param-only bodies, or nil (see
                                  # deriveScopelessChunk)
+    scopelessNeedsIntArgs*: bool # typed admission: every arg must be vkInt;
+                                 # VM sites verify (or trust inst.flag) before
+                                 # entering scopelessChunk, else classic path
 
   ImportSelection* = object
     name*: string         # exported name in the source
@@ -1969,10 +1972,20 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
   ## only the VM's direct-call fast path uses scopelessChunk, so a call path
   ## without the integration degrades to the classic convention instead of
   ## misreading the stack.
+  # Typed admission: all-bare-Int params with a body-proven Int return
+  # (fastBind*Int + returnKnownBareInt) are as scopeless-safe as untyped —
+  # binding-time adaptation reduces to "each arg is vkInt", which the VM
+  # sites check on the stack (or trust inst.flag for compile-time-proven
+  # int args) and otherwise fall back to the classic convention, whose
+  # binding raises the canonical parameter type error.
+  let typedIntOk =
+    (proto.fastBindUnaryInt or proto.fastBindPositionalInt) and
+    proto.returnKnownBareInt
   if proto.isGenerator or proto.isSyntaxFn or proto.checksErrors or
-      not proto.simpleCall or proto.restParam.len != 0 or
+      not (proto.simpleCall or typedIntOk) or proto.restParam.len != 0 or
       proto.namedParams.len != 0 or proto.typeParams.len != 0 or
-      proto.hasParamTypes or proto.hasReturnType or
+      (proto.hasParamTypes and not typedIntOk) or
+      (proto.hasReturnType and not typedIntOk) or
       proto.requiredPositional != proto.params.len or
       proto.localNames.len != proto.params.len:
     return
@@ -1998,4 +2011,5 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
   alt.instructionLocs = chunk.instructionLocs
   alt.localNames = chunk.localNames
   alt.owner = proto
+  proto.scopelessNeedsIntArgs = proto.hasParamTypes
   proto.scopelessChunk = alt
