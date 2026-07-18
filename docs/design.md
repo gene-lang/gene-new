@@ -2257,7 +2257,11 @@ or `^as` — activates its impls; impls are not name-selected and
 cannot be aliased or renamed.
 At most one impl per `(protocol, receiver)` pair may be active; a
 second makes the conflicting module activation fail without
-publishing any of that module's impls. A pair with no active impl is a missing-implementation
+publishing any of that module's impls. Re-activating the identical
+registration (same message functions) through another module path —
+two modules importing the same impl-carrying module, in any order —
+is idempotent, never a conflict.
+A pair with no active impl is a missing-implementation
 error at the use site.
 Impls are not value bindings: they cannot be renamed, selectively
 imported, or re-exported. An import that binds no values still

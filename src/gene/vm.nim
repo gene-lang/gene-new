@@ -6368,23 +6368,6 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
   if not target.implOverlayRoot and not target.implStageRoot:
     inc target.application().implEpoch
 
-proc activateStagedImpls(stage: Scope) =
-  if stage == nil or not stage.implStageRoot or stage.impls.len == 0:
-    return
-  var root = stage
-  while root.parent != nil:
-    root = root.parent
-  # Validate the whole batch before mutating the application registry.
-  for pending in stage.impls:
-    if root.duplicateImplIn(pending.protocol, pending.receiver):
-      raise newException(GeneError,
-        "duplicate visible impl " & pending.protocol.protocolName &
-        " for " & pending.receiver.typeName)
-  for pending in stage.impls:
-    root.impls.add pending
-  stage.impls.setLen(0)
-  inc root.application().implEpoch
-
 proc sameImplMessages(a, b: ProtocolImpl): bool =
   if a.messages.len != b.messages.len:
     return false
@@ -6397,6 +6380,40 @@ proc sameImplMessages(a, b: ProtocolImpl): bool =
     if not found:
       return false
   true
+
+proc activateStagedImpls(stage: Scope) =
+  if stage == nil or not stage.implStageRoot or stage.impls.len == 0:
+    return
+  var root = stage
+  while root.parent != nil:
+    root = root.parent
+  # Validate the whole batch before mutating the application registry. An
+  # impl already activated with the exact same message functions is a
+  # re-import of the same registration through another module path (e.g. two
+  # modules both importing db/sqlite, in either order) — skip it silently,
+  # matching makeImplsVisible. Only a same-protocol/receiver impl with
+  # DIFFERENT messages is a genuine conflict.
+  var activate = newSeq[bool](stage.impls.len)
+  for index, pending in stage.impls:
+    var duplicate = false
+    for existing in root.impls:
+      if same(existing.protocol, pending.protocol) and
+          same(existing.receiver, pending.receiver):
+        if existing.sameImplMessages(pending):
+          duplicate = true
+          break
+        raise newException(GeneError,
+          "duplicate visible impl " & pending.protocol.protocolName &
+          " for " & pending.receiver.typeName)
+    activate[index] = not duplicate
+  var activated = false
+  for index, pending in stage.impls:
+    if activate[index]:
+      root.impls.add pending
+      activated = true
+  stage.impls.setLen(0)
+  if activated:
+    inc root.application().implEpoch
 
 proc makeImplsVisible(importingScope, sourceScope: Scope) =
   for imported in sourceScope.impls:

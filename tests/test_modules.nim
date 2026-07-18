@@ -346,3 +346,45 @@ suite "modules — Env imports":
       "(impl Show for T (message show [self] : Str \"ok\"))")
     check runProgram("(var e (env ^imports [\"./showlib\"])) " &
       "(eval (quote ((T) ~ show)) ^in e)").print() == "\"ok\""
+
+suite "modules — impl activation across module paths":
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+
+  test "identical impls re-imported through two module paths activate once":
+    ## Regression: module activation (activateStagedImpls) used the strict
+    ## protocol+receiver duplicate check, so importing a native namespace
+    ## carrying impls (db/sqlite) BEFORE a local module that also imports it
+    ## raised "duplicate visible impl" — while the reverse order worked.
+    ## Identical registrations reached through different module paths must
+    ## activate once, in either order; the shared common-module shape must
+    ## work too.
+    writeModule("shared.gene",
+      "(protocol Show (message show [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(impl Show for T (message show [self] : Str \"shared\"))")
+    writeModule("uses_shared.gene",
+      "(import [T] from \"./shared\") (fn marker [] 1)")
+    # shared-first, then the local module that also imports it
+    check runProgram("(import [T] from \"./shared\") " &
+      "(import [marker] from \"./uses_shared\") " &
+      "[((T) ~ show) (marker)]").print() == "[\"shared\" 1]"
+    # local-module-first (the previously working order must stay working)
+    check runProgram("(import [marker] from \"./uses_shared\") " &
+      "(import [T] from \"./shared\") " &
+      "[((T) ~ show) (marker)]").print() == "[\"shared\" 1]"
+
+  test "conflicting impls for one protocol and receiver still raise":
+    writeModule("conflict_shared.gene",
+      "(protocol Show2 (message show2 [self] : Str)) " &
+      "(type U ^props {})")
+    writeModule("impl_one.gene",
+      "(import [Show2 U] from \"./conflict_shared\") " &
+      "(impl Show2 for U (message show2 [self] : Str \"one\"))")
+    writeModule("impl_two.gene",
+      "(import [Show2 U] from \"./conflict_shared\") " &
+      "(impl Show2 for U (message show2 [self] : Str \"two\"))")
+    expect GeneError:
+      discard runProgram("(import from \"./impl_one\" ^as a) " &
+        "(import from \"./impl_two\" ^as b) nil")
