@@ -5746,14 +5746,25 @@ proc pop(stack: var seq[Value]): Value {.inline.} =
   stack.setLen(index)
 
 proc spGrow(stack: var seq[Value]) {.noinline.} =
-  ## Cold path of runLoop's spush: extend working capacity. setLenUninit +
-  ## one zeroMem instead of setLen — zero bits are a valid nil Value, a
-  ## single memset beats per-element managed init, and unconditional
-  ## zeroing stays safe when an external add realloc'd the seq.
+  ## Cold path of runLoop's spush: extend working capacity. Every stack
+  ## reaching here satisfies the all-zero invariant: slots in [len, capacity)
+  ## hold zero bits (a valid nil Value). Growth within capacity is then just
+  ## a length write; only a realloc exposes fresh garbage, and zeroing the
+  ## new buffer to its full capacity re-establishes the invariant once per
+  ## realloc instead of once per runLoop invocation (pooled stacks re-enter
+  ## with len collapsed to 0 but capacity warm, so the invocation-hot first
+  ## spush lands in the memset-free branch).
+  ## Invariant holders: spop's move-out zeroes the source, spRelease
+  ## NIL-assigns, setStackLenRaw shrinks over already-zeroed slots,
+  ## releaseRunStack NIL-assigns the live region before pooling, and fresh
+  ## seqs start with capacity 0. Any new out-of-band mutation of a run
+  ## stack (add/setLen/insert) must grow through this proc.
   let oldLen = stack.len
   let newLen = max(oldLen * 2, 64)
+  let oldCap = stack.capacity
   setLenUninit(stack, newLen)
-  zeroMem(addr stack[oldLen], (newLen - oldLen) * sizeof(Value))
+  if newLen > oldCap:
+    zeroMem(addr stack[oldLen], (stack.capacity - oldLen) * sizeof(Value))
 
 proc spRelease(stack: var seq[Value], sp: var int, target: int) {.noinline.} =
   ## Cold path of runLoop's strunc: release abandoned live values above
@@ -5765,7 +5776,8 @@ proc spRelease(stack: var seq[Value], sp: var int, target: int) {.noinline.} =
 template setStackLenRaw(stack: var seq[Value], n: int) =
   ## Direct length-field write for runLoop's escape normalization. Every
   ## slot in [n, len) is zeroed (spop moves out, spRelease NILs, spGrow
-  ## memsets), so no destructors are due — but both setLen and setLenUninit
+  ## zeroes realloc'd buffers to capacity), so no destructors are due —
+  ## but both setLen and setLenUninit
   ## run the per-element destroy loop on shrink, which at ~64 dead slots
   ## per runLoop invocation dominated call-heavy workloads. Relies on the
   ## Nim 2 seqs-v2 layout (len is the first field of the seq struct).
@@ -5807,7 +5819,15 @@ proc acquireRunStack(): seq[Value] {.inline.} =
   acquireRunStack(gVmPools)
 
 proc releaseRunStack(pools: var VmPools, stack: var seq[Value]) {.inline.} =
-  stack.setLen(0)
+  ## NIL-assign the live region (drops refs and zeroes bits in one pass)
+  ## instead of setLen(0)'s destroy loop, then collapse len directly:
+  ## pooled stacks stay all-zero through their full capacity so spGrow can
+  ## skip its growth memset. Balanced exits hand back len == 0, so the loop
+  ## almost never runs; the yield-outside-generator error path is the one
+  ## producer of a non-empty hand-back.
+  for i in 0 ..< stack.len:
+    stack[i] = NIL
+  setStackLenRaw(stack, 0)
   if pools.runStacksLen < MaxRunStackPool:
     pools.runStacks[pools.runStacksLen] = move stack
     inc pools.runStacksLen
@@ -10057,9 +10077,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if inst[].intArg > 0:
             # Insert the callee below its intArg already-pushed args: shift
             # them up one slot in place (seq insert would grow len, breaking
-            # the sp-register capacity invariant).
+            # the sp-register capacity invariant). Growth must go through
+            # spGrow: managed setLen would leave realloc slack above the new
+            # len unzeroed, breaking spGrow's all-zero-above-len invariant.
             if sp >= stack.len:
-              stack.setLen(max(stack.len * 2, 64))
+              spGrow(stack)
             var insertAt = sp - inst[].intArg
             var shiftIndex = sp
             while shiftIndex > insertAt:
