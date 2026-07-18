@@ -3208,7 +3208,9 @@ suite "spec — macros across modules (design §11/§15)":
       "(fn use_it [] (triple! 5))\n")
 
   proc moduleVar(m: Value, name: string): string =
-    m.moduleRootNamespace.nsScope.vars[name].print()
+    let nsScope = m.moduleRootNamespace.nsScope
+    nsScope.materializeMirroredVars()
+    nsScope.vars[name].print()
 
   test "module macros import alongside values and expand at compile time":
     let dir = macroModuleDir()
@@ -3259,6 +3261,7 @@ suite "spec — macros across modules (design §11/§15)":
     let user = app.loadFileModule(dir / "phase_user.gene")
     check moduleVar(user, "answer") == "42"
     let dependency = app.loadFileModule(dir / "phase_dep.gene")
+    dependency.moduleRootNamespace.nsScope.materializeMirroredVars()
     let starts = dependency.moduleRootNamespace.nsScope.vars["starts"]
     check starts.cellValue.intVal == 1
     discard app.loadFileModule(dir / "phase_user.gene")
@@ -3349,6 +3352,7 @@ suite "spec — fn! across modules (design §11.1/§15)":
       "(var a (unless! (> x 5) \"ok\"))\n")
     let app = newApplication(dir)
     let m = app.loadFileModule(dir / "fuse.gene")
+    m.moduleRootNamespace.nsScope.materializeMirroredVars()
     check m.moduleRootNamespace.nsScope.vars["a"].print() == "\"ok\""
 
 suite "spec — impl visibility across modules (design §10)":
@@ -3363,7 +3367,9 @@ suite "spec — impl visibility across modules (design §10)":
       "(impl Greet for Cat (message greet [self] : Str $\"meow ${self/name}\"))\n")
 
   proc implModuleVar(m: Value, name: string): string =
-    m.moduleRootNamespace.nsScope.vars[name].print()
+    let nsScope = m.moduleRootNamespace.nsScope
+    nsScope.materializeMirroredVars()
+    nsScope.vars[name].print()
 
   test "importing a module makes its impls visible":
     let dir = implModuleDir()
@@ -4356,6 +4362,7 @@ suite "spec — naming convention":
       let (prefix, scope) = stack.pop()
       if scope == nil:
         continue
+      scope.materializeMirroredVars()
       for name, v in scope.vars:
         let qual = if prefix.len > 0: prefix & "/" & name else: name
         if '-' in name:

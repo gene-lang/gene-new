@@ -323,6 +323,7 @@ type
     slotDefinedOverflow*: seq[bool]
     slotNames*: seq[string]
     slotMirror*: bool
+    varsDirty*: bool  # mirrored slot writes pending materialization into vars
     simpleCallScope*: bool
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]

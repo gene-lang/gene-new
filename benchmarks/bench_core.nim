@@ -296,6 +296,18 @@ proc main() =
     let v = run(callLoopChunk, callLoopScope)
     checksum = checksum + v.intVal
 
+  # Top-level (module/eval) sets: the chunk's own scope is slot-mirrored, so
+  # every set also maintains the vars view. 1000 iterations x 2 sets per run
+  # on a fresh scope, the shape of script/REPL top-level loops.
+  let topSetChunk = compileSource(
+    "(var i 0) (var acc 0) " &
+    "(while (< i 1000) " &
+    "  (do (set acc (+ acc i)) (set i (+ i 1)))) " &
+    "acc")
+  bench("vm.top_level_set_loop.compiled_chunk", 2_000, i):
+    let v = run(topSetChunk, newGlobalScope())
+    checksum = checksum + v.intVal
+
   # Untyped self-recursion (the fused recur path): fib(18) = 2584,
   # ~8360 calls per run. The typical call-heavy workload shape.
   let fibScope = newGlobalScope()

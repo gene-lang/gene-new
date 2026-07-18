@@ -698,6 +698,20 @@ proc markSlotDefined(scope: Scope, index: int) {.inline.} =
   else:
     scope.slotDefinedOverflow[index - 64] = true
 
+proc materializeMirroredVars*(scope: Scope) =
+  ## Mirrored scopes (module/eval top level, ns bodies) defer the vars-hash
+  ## copy of slot writes: storeSlot only flips varsDirty, and every reader
+  ## of `.vars` on a possibly-mirrored scope must call this first. Name
+  ## lookups (lookup/assign/define and their variants) are exempt — they
+  ## consult slots before vars, so a stale or missing mirror entry is
+  ## always shadowed. Iterating or name-keyed readers are not.
+  if not scope.varsDirty:
+    return
+  scope.varsDirty = false
+  for i, name in scope.slotNames:
+    if name.len > 0 and scope.slotDefined(i):
+      scope.vars[name] = scope.slots[i]
+
 proc hasTypeBinding(binding: TypeBinding): bool {.inline.} =
   binding.expr.kind != vkNil
 
@@ -755,7 +769,9 @@ proc storeSlot(scope: Scope, index: int, name: string, v: Value,
   let stored = functionForScopeStorage(value, scope)
   scope.slots[index] = stored
   if scope.slotMirror:
-    scope.vars[name] = stored
+    # Deferred mirror: top-level loops set slots far more often than anything
+    # reads .vars; materializeMirroredVars settles the hash on demand.
+    scope.varsDirty = true
   scope.markSlotDefined(index)
 
 proc scopeAtDepth(scope: Scope, depth: int, name: string): Scope =
@@ -817,15 +833,16 @@ proc defineFreshCallSlot(scope: Scope, index: int, v: Value) {.inline.} =
   scope.markSlotDefined(index)
 
 proc assignSlot(scope: Scope, index: int, name: string, v: Value) =
-  # Fast path for the common set: defined untyped slot in a plain
-  # (non-mirrored) scope, storing an unmanaged value — skips the
-  # duplicate/undefined checks, type adaptation, and
+  # Fast path for the common set: defined untyped slot storing an unmanaged
+  # value — skips the duplicate/undefined checks, type adaptation, and
   # functionForScopeStorage that storeSlot must consider. Kept out of the
-  # dispatch loop so the opSetLocal handler stays compact.
+  # dispatch loop so the opSetLocal handler stays compact. Mirrored scopes
+  # qualify since the mirror write is now a deferred dirty-flag flip.
   if index >= 0 and index < scope.slots.len and scope.slotDefined(index) and
-      not scope.slotMirror and scope.slotTypes.len == 0 and
-      not v.isHeapBacked:
+      scope.slotTypes.len == 0 and not v.isHeapBacked:
     scope.slots[index] = v
+    if scope.slotMirror:
+      scope.varsDirty = true
     return
   scope.storeSlot(index, name, v, requireExisting = true)
 
@@ -2359,6 +2376,7 @@ proc scopeCarriesConstruction(scope: Scope, seenValues: var HashSet[uint64],
   if key in seenScopes:
     return false
   seenScopes.incl key
+  scope.materializeMirroredVars()
   for _, item in scope.vars:
     if carriesConstruction(item, seenValues, seenScopes):
       return true
@@ -3068,6 +3086,7 @@ proc keySegment(name: string, segment: Value): string =
       name & " expects a symbol/string path segment, got " & $segment.kind)
 
 proc sortedBindingNames(scope: Scope): seq[string] =
+  scope.materializeMirroredVars()
   for key in scope.vars.keys:
     result.add key
   result.sort()
@@ -3129,6 +3148,7 @@ proc exportedBinding(ns: Value, name: string): Value =
     return VOID
   if ns.nsIsModuleRoot and name == "this_mod":
     return VOID
+  ns.nsScope.materializeMirroredVars()
   ns.nsScope.vars.getOrDefault(name, VOID)
 
 proc namespaceDeclarationNodes(ns: Value): seq[Value] =
@@ -3172,6 +3192,7 @@ proc biNamespaceLookup(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Namespace/lookup expects 2 arguments, got " & $args.len)
   requireNamespace("Namespace/lookup", args[0])
+  args[0].nsScope.materializeMirroredVars()
   args[0].nsScope.vars.getOrDefault(keySegment("Namespace/lookup", args[1]), VOID)
 
 proc biNamespaceDeclarations(args: openArray[Value]): Value {.nimcall.} =
@@ -5873,6 +5894,7 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string],
   elif scope.slotNames.len != 0:
     scope.slotNames.setLen(0)
   scope.slotMirror = false
+  scope.varsDirty = false
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.application =
@@ -5881,6 +5903,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.parent = parent
   scope.simpleCallScope = false
   scope.vars.clear()
+  scope.varsDirty = false
   scope.varTypes.clear()
   scope.impls.setLen(0)
   scope.implOverlayRoot = false
@@ -6212,6 +6235,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
       scope.slotDefinedOverflow[i] = false
   if scope.vars.len != 0:
     scope.vars.clear()
+  scope.varsDirty = false
   if scope.varTypes.len != 0:
     scope.varTypes.clear()
   if scope.impls.len != 0:
@@ -7116,10 +7140,13 @@ proc copyChunkCapturesToSnapshots(source: Scope, chunk: Chunk,
     snapshot.slots[captured.slot] =
       cloneForCapturedSnapshot(loaded.value, scopeMap)
     if snapshot.slotMirror:
-      snapshot.vars[captured.name] = snapshot.slots[captured.slot]
+      snapshot.varsDirty = true
 
   let rootSnapshot = scopeMap.getOrDefault(cast[pointer](source), nil)
   if rootSnapshot != nil:
+    # Settle pending mirror copies first so a name captured above as a slot
+    # is not re-captured (and re-cloned) by name below.
+    rootSnapshot.materializeMirroredVars()
     for name in captures.names:
       if rootSnapshot.vars.hasKey(name):
         continue
@@ -7486,6 +7513,7 @@ proc publishSpawnScope(scope: Scope, seenScopes: var HashSet[pointer],
     for i in 0 ..< current.slots.len:
       if current.slotDefined(i):
         publishSpawnValue(current.slots[i], seenScopes, seenValues, seenChunks)
+    current.materializeMirroredVars()
     for _, value in current.vars:
       publishSpawnValue(value, seenScopes, seenValues, seenChunks)
     for binding in current.slotTypes:
@@ -7827,11 +7855,13 @@ proc materializeCallerEvalParent(callerEnv: Value): Scope =
   result.borrowedCallerEnv = true
   for i in countdown(chain.high, 0):
     let item = chain[i]
+    # vars before slots: on mirrored scopes a not-yet-materialized vars
+    # entry may be stale, and the slot overlay must win.
+    for name, value in item.vars:
+      result.defineOverlay(name, value)
     for index, name in item.slotNames:
       if name.len > 0 and item.slotDefined(index):
         result.defineOverlay(name, item.slots[index])
-    for name, value in item.vars:
-      result.defineOverlay(name, value)
     for impl in item.impls:
       result.impls.add impl
 

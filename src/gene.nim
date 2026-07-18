@@ -374,6 +374,7 @@ proc cmdCompileC(path: string) =
     quit(1)
 
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
+  scope.materializeMirroredVars()
   for name in scope.vars.keys:
     if includeThisModule or name != "this_mod":
       result.add name

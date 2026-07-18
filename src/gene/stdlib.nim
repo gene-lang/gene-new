@@ -5551,6 +5551,7 @@ proc serdeIndexScope(app: Application, scope: Scope, module: string,
   if key in visited:
     return
   visited.incl key
+  scope.materializeMirroredVars()
   for name, val in scope.vars:
     serdeIndexBinding(app, name, val, module, prefix, visited)
   for i in 0 ..< scope.slots.len:
@@ -6131,12 +6132,14 @@ proc serdeScopeLookupOwn(scope: Scope, name: string):
   ## resolution cannot leak into builtins and vice versa.
   if scope == nil:
     return (false, NIL)
-  if scope.vars.hasKey(name):
-    return (true, scope.vars.getOrDefault(name))
+  # Slots first: on mirrored scopes the vars entry for a slot name may be
+  # stale until the next materializeMirroredVars.
   for i in 0 ..< scope.slots.len:
     if i < scope.slotNames.len and scope.slotDefined(i) and
         scope.slotNames[i] == name:
       return (true, scope.slots[i])
+  if scope.vars.hasKey(name):
+    return (true, scope.vars.getOrDefault(name))
   (false, NIL)
 
 proc serdeResolveModuleScope(r: var SerdeReader, module: string): Scope =
