@@ -805,7 +805,10 @@ proc loadSlotAt(scope: Scope, depth, index: int, name: string): Value =
   scope.scopeAtDepth(depth, name).loadSlot(index, name)
 
 proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
-  if scope.vars.hasKey(name):
+  # vars is empty in plain (non-mirrored) slot scopes — the common case for
+  # every (var ...) in a function body — and hasKey hashes the name before
+  # noticing that. Slot-level duplicates are storeSlot's check.
+  if scope.vars.len > 0 and scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
   scope.storeSlot(index, name, v, requireExisting = false)
 

@@ -202,6 +202,15 @@ proc main() =
     let v = run(outerNoArgChunk, outerNoArgScope)
     checksum = checksum + v.intVal
 
+  let varHeavyScope = newGlobalScope()
+  varHeavyScope.define("var3", run(compileSource(
+    "(fn [x] (var a (+ x 1)) (var b (+ a 1)) (var c (+ b 1)) c)"),
+    varHeavyScope))
+  let varHeavyChunk = compileSource("(var3 5)")
+  bench("vm.var_heavy_fn.compiled_chunk", 500_000, i):
+    let v = run(varHeavyChunk, varHeavyScope)
+    checksum = checksum + v.intVal
+
   let oneArgScope = newGlobalScope()
   oneArgScope.define("inc1", run(compileSource("(fn [x] (+ x 1))"), oneArgScope))
   let oneArgChunk = compileSource("(inc1 9)")
