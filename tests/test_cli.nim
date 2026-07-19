@@ -369,6 +369,33 @@ suite "cli — gene run":
     check "/close [N]" in ran.output
     check "/ext" notin ran.output
 
+  test "ai agent max toggles the focused pane and focus switch restores split":
+    buildGeneCli()
+    let command =
+      "printf '/max\\n/pane new output notes\\n/max\\n/pane list\\n" &
+      "/pane new output extra\\n/pane list\\n/max\\n/1\\n/pane list\\n" &
+      "/max 2\\n/max\\n/max 0\\n/max abc\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_STATE " &
+      "-u GENE_AGENT_HOME CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    # Bare /max needs a focused pane; pane 0 never maximizes.
+    check "no pane is focused; use /max <N> or /N max" in ran.output
+    check "maximized pane 1" in ran.output
+    # A maximized pane reports maximized visibility in /pane list.
+    check "1 w1 output maximized lifecycle=running" in ran.output
+    # Opening pane 2 claims focus and restores the split; focusing pane 1
+    # away from maximized pane 2 restores it again, so pane 2 reads visible
+    # in both subsequent listings.
+    check ran.output.count("1 w1 output visible lifecycle=running") == 2
+    check ran.output.count("2 w2 output visible lifecycle=running") == 2
+    check ran.output.count("maximized pane 2") == 2
+    check "restored split layout" in ran.output
+    check "pane 0 cannot be maximized" in ran.output
+    check "usage: /max [N]" in ran.output
+
   test "ai agent output follow rejects cycles and process restart mints identity":
     buildGeneCli()
     let fixture = "examples/ai_agent/output_follow_test.gene"

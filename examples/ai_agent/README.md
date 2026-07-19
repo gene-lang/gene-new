@@ -83,7 +83,8 @@ main agent),
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
 `/pane output [title]`, bare `/N` (focus), `/N <input>`, `/close [N]`,
 `/N cancel|stop|max`
-(address or control pane N), `/export <file>` / `/N export <file>` (write the
+(address or control pane N), `/max [N]` (toggle maximize for the focused
+pane, or pane N; focusing another pane restores the split), `/export <file>` / `/N export <file>` (write the
 focused pane's — or pane N's — retained content to a new workspace file; with
 no pane focused, `/export` writes the main transcript), `/status`, `/quit`,
 `/exit`. The primary agent can

@@ -1115,7 +1115,10 @@
             ^close_policy close_policy))
     ((surface/panes ~ Cell/get) ~ List/push! pane)
     # A newly opened pane is the natural target for pane-local navigation.
+    # Claiming focus also restores a maximized layout so the new pane is
+    # not hidden behind another pane's maximized view.
     (surface/focused_pane ~ Cell/set id)
+    (surface/maximized_pane ~ Cell/set nil)
     (surface_emit! surface "pane_opened"
       {^pane_id id ^worker_id worker/id ^kind worker/kind
        ^owner_id owner_id ^title pane_title})
@@ -5593,6 +5596,13 @@ State that broader behavior is unverified when no matching successful check ran.
             (!= (surface/maximized_pane ~ Cell/get) nil)
             (== (application_find_pane app
                   (surface/maximized_pane ~ Cell/get)) nil))
+      (surface/maximized_pane ~ Cell/set nil))
+    # The maximized pane must be the focused pane; a stale snapshot that
+    # violates that would hide the focused pane, so restore the split.
+    (if (&& (!= surface nil)
+            (!= (surface/maximized_pane ~ Cell/get) nil)
+            (!= (surface/maximized_pane ~ Cell/get)
+                (surface/focused_pane ~ Cell/get)))
       (surface/maximized_pane ~ Cell/set nil))
     (application_prune_stopped_workers! app)
     (if_not (== saved/surface_only true)

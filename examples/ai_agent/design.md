@@ -1077,7 +1077,14 @@ full-width when focus is elsewhere — input is never routed to a worker whose
 pane is invisible. Pane ids remain stable and never reused within a surface
 attachment's lifetime. `/N max` maximizes one pane over the whole worker area
 while the input and status rows stay; the same command (or Escape, below)
-restores the split.
+restores the split. Bare `/max` toggles maximize for the focused pane, and
+`/max N` is the routed equivalent of `/N max`. Maximizing a pane focuses it,
+and the maximized pane is always the focused pane: any focus change to a
+different pane — bare `/N`, `/0`, `/focus`, cycling, or a newly opened pane
+claiming focus — restores the split first, so the focused pane is never
+hidden behind another pane's maximized view. Snapshot restore enforces the
+same invariant on stale records. `/pane list` reports a maximized pane's
+visibility as `maximized`.
 
 **Focus routes input, with a deterministic grammar.** Focus is upgraded from
 pane-local navigation to input routing. On main, agent, structured shell,
@@ -1212,6 +1219,7 @@ The canonical command grammar included by comprehensive help begins with:
 /pane show|hide|close|max <N>
 /pane <N> focus|show|hide|close|max     # accepted id-first equivalent
 /close [N]                              # focused pane by default; never pane 0
+/max [N]                                # toggle maximize: focused pane, or N
 
 /agent list
 /agent new [prompt]
@@ -1322,7 +1330,9 @@ aliases below remain part of the interface:
   `/close N` closes pane N. Pane 0 cannot be closed. `/N close` remains an
   accepted compatibility spelling. `/N cancel` cancels its active task/process,
   `/N stop` explicitly stops the attached worker, `/N focus` routes input to
-  it, and `/N max` toggles maximize.
+  it, and `/N max` toggles maximize. Bare `/max` toggles maximize for the
+  focused pane and `/max N` is equivalent to `/N max`; maximize follows
+  focus, so focusing another pane restores the split.
 
 The close rule is uniform, with no per-kind exceptions: `close` detaches the
 view and never stops any worker — a busy shell or REPL keeps running headless

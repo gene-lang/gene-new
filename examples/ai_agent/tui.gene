@@ -2115,12 +2115,8 @@
       (render_agent_text transcript streaming $"focused pane ${id}"))
     (when "max"
       (var app (active_application ~ Cell/get))
-      (var surface app/local_surface)
-      (surface/maximized_pane ~ Cell/set
-        (if_not (== (surface/maximized_pane ~ Cell/get) id) id))
       (render_agent_text transcript streaming
-        (if (== (surface/maximized_pane ~ Cell/get) id)
-          $"maximized pane ${id}" "restored split layout")))
+        (application_toggle_max_pane! app id)))
     (else
       # /N export <file> is a pane command like focus/cancel/max; /N -- export
       # keeps the literal-input escape hatch for shells whose command IS
@@ -2282,7 +2278,9 @@
         (var outcome (worker/last_outcome ~ Cell/get))
         (var outcome_text (if (== outcome nil) "none" outcome))
         (var visibility
-          (if (pane/hidden ~ Cell/get) "hidden" "visible"))
+          (if (pane/hidden ~ Cell/get) "hidden"
+            (if (== (surface/maximized_pane ~ Cell/get) pane/id)
+              "maximized" "visible")))
         (var unread (worker_result_unread? worker))
         (lines ~ List/push!
           $"${pane/id} ${pane/worker_id} ${pane/kind} ${visibility} lifecycle=${(worker/lifecycle ~ Cell/get)} ${operation_text} last=${outcome_text} unread=${unread} ${pane/title}"))
@@ -2305,7 +2303,30 @@
             (else
               (pane/hidden ~ Cell/set false)
               (surface/focused_pane ~ Cell/set id)
+              # The maximized pane is always the focused pane; switching focus
+              # anywhere else restores the split so the focused pane is never
+              # hidden behind another pane's maximized view.
+              (if (!= (surface/maximized_pane ~ Cell/get) id)
+                (surface/maximized_pane ~ Cell/set nil))
               true)))))))
+
+(fn application_toggle_max_pane! [app, id : Int] : Str
+  (var surface app/local_surface)
+  (if (== id 0)
+    (then "pane 0 cannot be maximized")
+    (else
+      (var pane (application_find_pane app id))
+      (if (== pane nil)
+        (then $"pane ${id} is not open")
+        (else
+          # Maximize claims focus so the maximized pane stays the focused
+          # pane; any later focus change restores the split.
+          (pane/hidden ~ Cell/set false)
+          (surface/focused_pane ~ Cell/set id)
+          (surface/maximized_pane ~ Cell/set
+            (if_not (== (surface/maximized_pane ~ Cell/get) id) id))
+          (if (== (surface/maximized_pane ~ Cell/get) id)
+            $"maximized pane ${id}" "restored split layout"))))))
 
 (fn application_hide_pane! [app, id : Int] : Bool
   (var pane (application_find_pane app id))
@@ -2451,20 +2472,8 @@
                       (if (application_close_pane app id)
                         $"closed pane ${id}" $"pane ${id} is not open"))))
                 (when "max"
-                  (var pane (application_find_pane app id))
-                  (if (== pane nil)
-                    (then
-                      (render_agent_text transcript streaming
-                        $"pane ${id} is not open"))
-                    (else
-                      (pane/hidden ~ Cell/set false)
-                      (app/local_surface/focused_pane ~ Cell/set id)
-                      (app/local_surface/maximized_pane ~ Cell/set
-                        (if_not (== (app/local_surface/maximized_pane ~ Cell/get)
-                                   id) id))
-                      (render_agent_text transcript streaming
-                        (if (== (app/local_surface/maximized_pane ~ Cell/get) id)
-                          $"maximized pane ${id}" "restored split layout")))))
+                  (render_agent_text transcript streaming
+                    (application_toggle_max_pane! app id)))
                 (else
                   (render_agent_text transcript streaming
                     "usage: /pane list | /pane new ... | /pane open W | /pane focus|show|hide|close|max N")))))))))))
@@ -3062,6 +3071,8 @@
    ^summary "close the focused pane, or pane N; pane 0 is protected"}
   {^name "/pane" ^section "pane" ^usage "/pane list | /pane new <agent|shell|terminal|repl|tail|output|view|stats> [args] | /pane open <W> [title] | /pane focus <0|N> | /pane show|hide|close|max <N> | /pane <N> focus|show|hide|close|max"
    ^summary "create and manage surface-local panes"}
+  {^name "/max" ^section "pane" ^usage "/max [N]"
+   ^summary "toggle maximize for the focused pane, or pane N"}
   {^name "/agent" ^section "agent" ^usage "/agent list | /agent new [prompt] | /agent <A> send <prompt> | /agent <A> open|result|incorporate|cancel|stop"
    ^summary "create and supervise sub-agents"}
   {^name "/agents" ^section "agent" ^usage "/agents"
@@ -3232,7 +3243,7 @@
           (lines ~ List/push! "keys: Up/Down history | Tab complete | Ctrl-R search | Ctrl-E edit | PgUp/PgDn or wheel scroll | Ctrl-PgUp/PgDn cycle panes | Esc cancel/back | Ctrl-C clear | Ctrl-D exit")
           (lines ~ List/push! "literal leading slash: //text for focused input | /N -- /absolute/path for pane N")))
       (lines ~ List/push! "")
-      (lines ~ List/push! "pane shortcuts: /N focus | /close [N] | /N cancel|stop|max | /N export <file> | /N <input> | /0 main")
+      (lines ~ List/push! "pane shortcuts: /N focus | /close [N] | /max [N] | /N cancel|stop|max | /N export <file> | /N <input> | /0 main")
       (var line_separator "\n")
       (var help_text (join lines line_separator))
       $"${help_text}\n")))
@@ -3419,15 +3430,31 @@
         $"/pane focus ${focus_id_text}"
         items transcript memory streaming)
       true)
+    (elif (|| (== line "/max") (starts_with? line "/max "))
+      (var max_rest (trim (after_prefix line "/max")))
+      (if (== max_rest "")
+        (then
+          (var focused_id (app/local_surface/focused_pane ~ Cell/get))
+          (render_agent_text transcript streaming
+            (if (== focused_id nil)
+              "no pane is focused; use /max <N> or /N max"
+              (application_toggle_max_pane! app focused_id))))
+        (else
+          (var max_id (pane_command_id max_rest))
+          (render_agent_text transcript streaming
+            (if (== max_id nil)
+              "usage: /max [N]"
+              (application_toggle_max_pane! app max_id)))))
+      true)
     (elif (|| (== line "/pane") (starts_with? line "/pane "))
       (handle_pane_command line items transcript memory streaming)
       true)
     (elif (== line "/0")
-      (app/local_surface/focused_pane ~ Cell/set nil)
+      (application_focus_pane! app 0)
       (render_agent_text transcript streaming "focused main agent")
       true)
     (elif (starts_with? line "/0 ")
-      (app/local_surface/focused_pane ~ Cell/set nil)
+      (application_focus_pane! app 0)
       (var main_input (after_prefix line "/0 "))
       (if (blank_line? main_input)
         (render_agent_text transcript streaming "focused main agent")
