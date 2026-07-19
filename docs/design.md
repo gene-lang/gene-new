@@ -1684,7 +1684,13 @@ invariant-equal declared types — a nil-admitting spelling mirrors the
 declaration-side optionality rule — and a function's required named
 parameters must be listed. The error row is unchecked by default; supplying
 `^errors [E ...]` instead requires the checked error row to match exactly.
-Parameter, result, and error types are invariant in the MVP.
+A generic function matches when one consistent instantiation of its type
+parameters makes every compared signature component equal — `(identity T)`
+with `[x : T] : T` satisfies `(Fn [Int] Int)` but not `(Fn [Int] Str)` —
+and type parameters unify inside compound components such as `(List T)`.
+`T?` and `(? T)` are the same type in signature comparisons regardless of
+which spelling each side chose. Parameter, result, and error types are
+invariant in the MVP.
 
 Generic declarations currently comprise `(enum Name [T ...] ...)` and generic
 functions whose name is `(name T ...)`. Enum applications such as `(Option

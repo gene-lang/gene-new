@@ -12908,10 +12908,60 @@ proc typeExprLabel(expr: Value): string =
 proc isAnyType(expr: Value): bool =
   expr.kind == vkNil or (expr.kind == vkSymbol and expr.symVal == "Any")
 
+proc normalizeOptionalSugar(expr: Value): Value =
+  ## `T?` is documented sugar for `(? T)` (§7.4.1); comparisons must not
+  ## depend on which spelling a declaration or annotation chose.
+  case expr.kind
+  of vkSymbol:
+    if expr.symVal.len > 1 and expr.symVal.endsWith("?"):
+      newNode(newSym("?"), body = @[newSym(expr.symVal[0 .. ^2])])
+    else:
+      expr
+  of vkNode:
+    var changed = false
+    let head = normalizeOptionalSugar(expr.head)
+    if head.bits != expr.head.bits: changed = true
+    var props = initPropTable()
+    for key, value in expr.props:
+      let normalized = normalizeOptionalSugar(value)
+      props[key] = normalized
+      if normalized.bits != value.bits: changed = true
+    var body: seq[Value]
+    for item in expr.body:
+      let normalized = normalizeOptionalSugar(item)
+      body.add normalized
+      if normalized.bits != item.bits: changed = true
+    if changed:
+      newNode(head, props = props, body = body,
+              immutable = expr.nodeImmutable)
+    else:
+      expr
+  of vkList:
+    var changed = false
+    var items: seq[Value]
+    for item in expr.listItems:
+      let normalized = normalizeOptionalSugar(item)
+      items.add normalized
+      if normalized.bits != item.bits: changed = true
+    if changed: newList(items, expr.listImmutable) else: expr
+  of vkMap:
+    var changed = false
+    var entries = initPropTable()
+    for key, value in expr.mapEntries:
+      let normalized = normalizeOptionalSugar(value)
+      entries[key] = normalized
+      if normalized.bits != value.bits: changed = true
+    if changed: newMap(entries, expr.mapImmutable) else: expr
+  else:
+    expr
+
 proc typeExprEqual(a, b: Value): bool =
   if a.isAnyType and b.isAnyType:
     return true
-  equal(a, b)
+  if equal(a, b):
+    return true
+  # Only mismatches pay for sugar normalization; equal spellings return above.
+  equal(normalizeOptionalSugar(a), normalizeOptionalSugar(b))
 
 proc typeNode(name: string, body: sink seq[Value] = @[]): Value =
   newNode(newSym(name), body = body)
@@ -13602,6 +13652,47 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
   else:
     expr
 
+proc unifySigTypeExpr(expected, actual: Value, typeParams: seq[string],
+                      bindings: var Table[string, Value],
+                      expectedScope, fnScope: Scope): bool =
+  ## Compare a ground expected type against a declared signature component
+  ## that may mention the function's type parameters. Each type parameter
+  ## binds to the first ground type it meets and must stay consistent across
+  ## every signature component; the check precedes closeTypeExpr so a
+  ## same-named lexical type can never shadow a type parameter.
+  let expected = normalizeOptionalSugar(expected)
+  let actual = normalizeOptionalSugar(actual)
+  if actual.kind == vkSymbol and typeParams.len > 0 and
+      actual.symVal in typeParams:
+    let closedExpected = closeTypeExpr(expected, expectedScope)
+    if bindings.hasKey(actual.symVal):
+      return typeExprEqual(closedExpected, bindings[actual.symVal])
+    bindings[actual.symVal] = closedExpected
+    return true
+  if expected.kind == vkNode and actual.kind == vkNode:
+    # Structural descent so nested type parameters ((List T), (? T), ...)
+    # unify; leaves fall through to the closed nominal comparison below.
+    if expected.body.len != actual.body.len:
+      return false
+    if expected.props.len != actual.props.len:
+      return false
+    for key, expectedProp in expected.props:
+      if not actual.props.hasKey(key):
+        return false
+      if not unifySigTypeExpr(expectedProp, actual.props[key], typeParams,
+                              bindings, expectedScope, fnScope):
+        return false
+    if not unifySigTypeExpr(expected.head, actual.head, typeParams,
+                            bindings, expectedScope, fnScope):
+      return false
+    for i, expectedItem in expected.body:
+      if not unifySigTypeExpr(expectedItem, actual.body[i], typeParams,
+                              bindings, expectedScope, fnScope):
+        return false
+    return true
+  typeExprEqual(closeTypeExpr(expected, expectedScope),
+                closeTypeExpr(actual, fnScope))
+
 proc cPtrTargetMatches(expected, actual: Value, scope: Scope): bool =
   let closedExpected = closeTypeExpr(expected, scope)
   if closedExpected.isAnyType:
@@ -13823,21 +13914,23 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
             # Untyped declared params and the (always untyped) rest binder
             # both admit exactly Any under MVP invariance.
             newSym("Any")
+        # A generic function matches when one consistent instantiation of its
+        # type parameters makes every compared signature component equal.
+        var typeBindings = initTable[string, Value]()
+        template sigMatches(expectedExpr, actualExpr: Value): bool =
+          unifySigTypeExpr(expectedExpr, actualExpr, proto.typeParams,
+                           typeBindings, scope, value.fnScope)
         for i in 0 ..< arity:
-          if not typeExprEqual(closeTypeExpr(expectedParams[i], scope),
-                               closeTypeExpr(positionalType(i), value.fnScope)):
+          if not sigMatches(expectedParams[i], positionalType(i)):
             return false
         if hasExpectedRest:
           # Repeated-tail values land in declared params past the fixed
           # prefix and finally in the untyped rest binder; every landing
           # spot must carry the marker's element type.
-          let closedRest = closeTypeExpr(expectedRest, scope)
           for i in arity ..< proto.params.len:
-            if not typeExprEqual(closedRest,
-                                 closeTypeExpr(positionalType(i),
-                                               value.fnScope)):
+            if not sigMatches(expectedRest, positionalType(i)):
               return false
-          if not typeExprEqual(closedRest, newSym("Any")):
+          if not sigMatches(expectedRest, newSym("Any")):
             return false
         # ^named entries must exist with invariant-equal declared types;
         # unlisted named parameters must be optional so a caller through the
@@ -13851,9 +13944,7 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
                 let actualNamed =
                   if p.typeExpr.kind != vkNil: p.typeExpr
                   else: newSym("Any")
-                if not typeExprEqual(closeTypeExpr(expectedNamed, scope),
-                                     closeTypeExpr(actualNamed,
-                                                   value.fnScope)):
+                if not sigMatches(expectedNamed, actualNamed):
                   return false
                 break
             if not found:
@@ -13866,16 +13957,14 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         let actualReturn =
           if proto.hasReturnType: proto.returnType
           else: newSym("Any")
-        if not typeExprEqual(closeTypeExpr(expr.body[1], scope),
-                             closeTypeExpr(actualReturn, value.fnScope)):
+        if not sigMatches(expr.body[1], actualReturn):
           return false
         if expr.props.hasKey("errors"):
           let expectedErrors = expr.props["errors"].listItems
           if not value.fnChecksErrors or expectedErrors.len != value.fnErrorTypes.len:
             return false
           for i, expected in expectedErrors:
-            if not typeExprEqual(closeTypeExpr(expected, scope),
-                                 closeTypeExpr(value.fnErrorTypes[i], value.fnScope)):
+            if not sigMatches(expected, value.fnErrorTypes[i]):
               return false
         elif value.fnChecksErrors:
           return false

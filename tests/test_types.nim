@@ -7151,6 +7151,29 @@ suite "types — function boundaries":
     expect GeneError:
       discard runStr("(fn use [g : (Fn [Int] Any ^named [])] g) " &
                      "(use (fn [x : Int] x))")
+    # T? is sugar for (? T); mixed spellings compare equal on both sides.
+    ck "(fn f [x : (? Int)] : Int 1) " &
+       "(fn use [g : (Fn [Int?] Int)] (g 5)) (use f)", "1"
+    ck "(fn f [x : Int, ^w : (? Int)] : Int x) " &
+       "(fn use [g : (Fn [Int] Int ^named {^w Int?})] (g 7)) (use f)", "7"
+
+  test "generic functions match Fn types by consistent instantiation":
+    ck "(fn (identity T) [x : T] : T x) " &
+       "(fn use [g : (Fn [Int] Int)] (g 42)) (use identity)", "42"
+    ck "(fn (head_of T) [xs : (List T)] : T xs/0) " &
+       "(fn use [g : (Fn [(List Int)] Int)] (g [7 8])) (use head_of)", "7"
+    ck "(fn (maybe T) [x : T, ^fallback : T?] : T x) " &
+       "(fn use [g : (Fn [Int] Int ^named {^fallback Int?})] (g 3)) " &
+       "(use maybe)", "3"
+    expect GeneError:
+      discard runStr("(fn (identity T) [x : T] : T x) " &
+                     "(fn use [g : (Fn [Int] Str)] g) (use identity)")
+    expect GeneError:
+      discard runStr("(fn (pick T) [x : T, y : T] : T x) " &
+                     "(fn use [g : (Fn [Int Str] Int)] g) (use pick)")
+    expect GeneError:
+      discard runStr("(fn (head_of T) [xs : (List T)] : T xs/0) " &
+                     "(fn use [g : (Fn [(List Int)] Str)] g) (use head_of)")
 
   test "unsupported nominal generic aliases and open prop schemas fail clearly":
     expect GeneError:

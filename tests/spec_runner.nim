@@ -1754,6 +1754,11 @@ suite "spec — Fn type call-shape admission per design §7.4.1":
     check_eval("(try (fn f [x : Int, ^y : Int] x) " &
                "(fn use [g : (Fn [Int] Any)] g) (use f) " &
                "catch (e : TypeError) \"rejected\")", "\"rejected\"")
+  test "generic fns instantiate consistently and T? equals (? T)":
+    check_eval("(fn (identity T) [x : T] : T x) " &
+               "(fn use [g : (Fn [Int] Int)] (g 42)) (use identity)", "42")
+    check_eval("(fn f [x : (? Int)] : Int 1) " &
+               "(fn use [g : (Fn [Int?] Int)] (g 5)) (use f)", "1")
 
 suite "spec — Int overflow contract per design §7.4":
   test "small Int arithmetic stays in the int64 fixnum fast path":
