@@ -78,9 +78,12 @@ for interactive or persistent/background shell work), `/remember <note>` / `/mem
 `/effort [level]` (show all reasoning-effort levels and the current choice, or
 set it for subsequent model requests),
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
-`/pane output [title]`, bare `/N` (focus), `/N <input>`, `/close [N]`, and
+`/pane output [title]`, bare `/N` (focus), `/N <input>`, `/close [N]`,
 `/N cancel|stop|max`
-(address or control pane N), `/status`, `/quit`, `/exit`. The primary agent can
+(address or control pane N), `/export <file>` / `/N export <file>` (write the
+focused pane's — or pane N's — retained content to a new workspace file; with
+no pane focused, `/export` writes the main transcript), `/status`, `/quit`,
+`/exit`. The primary agent can
 also use the independent `spawn_agent`, `send_agent`, `agent_result`,
 `cancel_agent`, `stop_agent`, `open_pane`, `append_pane`, and `close_pane`
 tools; `open_extension` remains a convenience composite. Each agent keeps its

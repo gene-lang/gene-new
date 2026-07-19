@@ -2280,6 +2280,32 @@ catch {^message message} (set duplicate message))
     check "\"main\"" in ran.output
     check "closed pane 1" in ran.output
 
+  test "ai agent pane export writes pane and transcript content":
+    buildGeneCli()
+    let replOut = "tmp/agent-export-repl.txt"
+    let mainOut = "tmp/agent-export-main.txt"
+    defer:
+      if fileExists(replOut): removeFile(replOut)
+      if fileExists(mainOut): removeFile(mainOut)
+    if fileExists(replOut): removeFile(replOut)
+    if fileExists(mainOut): removeFile(mainOut)
+    let command = "printf '/repl\\n/1 (+ 40 2)\\n/0\\n/1 export " & replOut &
+                  "\\n/export " & mainOut & "\\n/1 export " & replOut &
+                  "\\n/1 export /etc/evil.txt\\n/quit\\n' | " &
+                  "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
+                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    check ran.exitCode == 0
+    check "exported pane 1 repl" in ran.output
+    check "exported main transcript" in ran.output
+    # Second export to the same path refuses to overwrite; absolute paths
+    # stay workspace-confined like every other surface file path.
+    check "already exists" in ran.output
+    check "unsafe path rejected (absolute)" in ran.output
+    check fileExists(replOut)
+    check "42" in readFile(replOut)
+    check "REPL pane 1" in readFile(mainOut)
+
   test "ai agent persists config session and memory":
     buildGeneCli()
     let stateDir = cliDir / "ai_agent_state"

@@ -2033,6 +2033,48 @@
       (parse_int (after_prefix selector "/"))
     catch _ nil)))
 
+(fn pane_export_text [pane] : Str
+  # Text projection of a pane's retained content. A live terminal captures
+  # the vterm screen+scrollback (redacted — the export lands in shared
+  # workspace files); every other kind exports the worker's bounded,
+  # already-redacted output cell.
+  (if (== pane/kind "terminal")
+    (then
+      (var controller pane/worker/controller)
+      (if controller/session
+        (then
+          (var captured (terminal_capture_text controller/session))
+          (redact captured/text))
+        (else (|| (controller/restored_text ~ Cell/get) ""))))
+    (else (pane/output ~ Cell/get))))
+
+(fn pane_export_report [pane, raw_path : Str, transcript] : Str
+  # pane nil exports the main transcript. Paths are workspace-confined like
+  # every other surface file path, and an existing file is refused so a typo
+  # cannot clobber workspace sources.
+  (var path (trim raw_path))
+  (if (== path "")
+    "usage: /export <workspace-file> | /N export <workspace-file>"
+    (try
+      (safe_path path)
+      (if (exists? ReadDir path)
+        $"export refused: ${path} already exists"
+        (do
+          (var text
+            (if (== pane nil)
+              (transcript ~ Cell/get)
+              (pane_export_text pane)))
+          (write_text WriteDir path text)
+          (emit_event! "pane_exported"
+            {^pane_id (if (== pane nil) 0 pane/id)
+             ^kind (if (== pane nil) "main" pane/kind)
+             ^path path ^bytes (byte_size text)})
+          (if (== pane nil)
+            $"exported main transcript (${(byte_size text)} bytes) to ${path}"
+            $"exported pane ${pane/id} ${pane/kind} (${(byte_size text)} bytes) to ${path}")))
+    catch {^message message}
+      $"export failed: ${message}")))
+
 (fn handle_extension_command [line : Str, transcript, memory, streaming]
   (var parts (split line " "))
   (var selector parts/0)
@@ -2080,6 +2122,14 @@
         (if (== (surface/maximized_pane ~ Cell/get) id)
           $"maximized pane ${id}" "restored split layout")))
     (else
+      # /N export <file> is a pane command like focus/cancel/max; /N -- export
+      # keeps the literal-input escape hatch for shells whose command IS
+      # `export`.
+      (if (&& (! (starts_with? command "-- "))
+              (|| (== command "export") (starts_with? command "export ")))
+        (return (render_agent_text transcript streaming
+          (pane_export_report pane (after_prefix command "export")
+            transcript))))
       (var routed
         (if (starts_with? command "-- ")
           (after_prefix command "-- ") command))
@@ -3028,6 +3078,8 @@
    ^summary "open the live application-stats projection"}
   {^name "/view" ^section "pane" ^usage "/view <file>"
    ^summary "suspend the TUI and run gene view; quitting returns here"}
+  {^name "/export" ^section "pane" ^usage "/export <file> | /N export <file>"
+   ^summary "write a pane's retained content to a new workspace file (main transcript when no pane is focused)"}
   {^name "/status" ^section "session" ^usage "/status"
    ^summary "show application and context status"}
   {^name "/effort" ^section "session" ^usage "/effort [default|none|minimal|low|medium|high|xhigh|max]"
@@ -3176,7 +3228,7 @@
           (lines ~ List/push! "keys: Up/Down history | Tab complete | Ctrl-R search | Ctrl-E edit | PgUp/PgDn or wheel scroll | Ctrl-PgUp/PgDn cycle panes | Esc cancel/back | Ctrl-C clear | Ctrl-D exit")
           (lines ~ List/push! "literal leading slash: //text for focused input | /N -- /absolute/path for pane N")))
       (lines ~ List/push! "")
-      (lines ~ List/push! "pane shortcuts: /N focus | /close [N] | /N cancel|stop|max | /N <input> | /0 main")
+      (lines ~ List/push! "pane shortcuts: /N focus | /close [N] | /N cancel|stop|max | /N export <file> | /N <input> | /0 main")
       (var line_separator "\n")
       (var help_text (join lines line_separator))
       $"${help_text}\n")))
@@ -3331,6 +3383,17 @@
       true)
     (elif (== line "/workers")
       (render_agent_text transcript streaming (workers_report))
+      true)
+    (elif (|| (== line "/export") (starts_with? line "/export "))
+      (var export_path
+        (if (== line "/export") "" (after_prefix line "/export ")))
+      (var export_surface app/local_surface)
+      (var export_pane_id
+        (if export_surface (export_surface/focused_pane ~ Cell/get)))
+      (var export_pane
+        (if export_pane_id (application_find_pane app export_pane_id)))
+      (render_agent_text transcript streaming
+        (pane_export_report export_pane export_path transcript))
       true)
     (elif (== line "/stats")
       (var pane (open_stats_pane))
