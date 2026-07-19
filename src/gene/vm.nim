@@ -13782,30 +13782,87 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           raise newException(GeneError,
             "(Fn [A ...] R ^errors [E ...]) expects parameters and a return type")
         for key, _ in expr.props:
-          if key != "errors":
+          if key != "errors" and key != "named":
             raise newException(GeneError,
               "function type got unexpected named argument: " & key)
         if expr.props.hasKey("errors") and expr.props["errors"].kind != vkList:
           raise newException(GeneError, "function type ^errors must be a list")
+        if expr.props.hasKey("named") and expr.props["named"].kind != vkMap:
+          raise newException(GeneError, "function type ^named must be a map")
         if value.kind != vkFunction or value.isSyntaxFn:
           return false
         let code = value.fnCode
         if code == nil or not (code of FunctionProto):
           return false
         let proto = FunctionProto(code)
-        if proto.namedParams.len != 0 or proto.restParam.len != 0 or
-            proto.params.len != expr.body[0].listItems.len or
-            proto.requiredPositional != proto.params.len:
+        # Usable-as matching: the type describes one call shape — `arity`
+        # positionals (unbounded when it ends in a body-schema-style `T...`
+        # marker) plus the ^named entries — and matches any ordinary fn that
+        # admits that shape with invariant-equal parameter/return types.
+        let expectedParams = expr.body[0].listItems
+        var hasExpectedRest = false
+        var expectedRest = NIL
+        if expectedParams.len > 0:
+          let last = expectedParams[^1]
+          if last.kind == vkSymbol and last.symVal.len > 3 and
+              last.symVal.endsWith("..."):
+            hasExpectedRest = true
+            expectedRest = newSym(last.symVal[0 .. ^4])
+        let arity =
+          if hasExpectedRest: expectedParams.len - 1 else: expectedParams.len
+        if proto.requiredPositional > arity:
           return false
-        for i, expected in expr.body[0].listItems:
-          let actual =
-            if i < proto.paramTypes.len and proto.paramTypes[i].kind != vkNil:
-              proto.paramTypes[i]
-            else:
-              newSym("Any")
-          if not typeExprEqual(closeTypeExpr(expected, scope),
-                               closeTypeExpr(actual, value.fnScope)):
+        if arity > proto.params.len and proto.restParam.len == 0:
+          return false
+        if hasExpectedRest and proto.restParam.len == 0:
+          return false
+        template positionalType(i: int): Value =
+          if i < proto.paramTypes.len and proto.paramTypes[i].kind != vkNil:
+            proto.paramTypes[i]
+          else:
+            # Untyped declared params and the (always untyped) rest binder
+            # both admit exactly Any under MVP invariance.
+            newSym("Any")
+        for i in 0 ..< arity:
+          if not typeExprEqual(closeTypeExpr(expectedParams[i], scope),
+                               closeTypeExpr(positionalType(i), value.fnScope)):
             return false
+        if hasExpectedRest:
+          # Repeated-tail values land in declared params past the fixed
+          # prefix and finally in the untyped rest binder; every landing
+          # spot must carry the marker's element type.
+          let closedRest = closeTypeExpr(expectedRest, scope)
+          for i in arity ..< proto.params.len:
+            if not typeExprEqual(closedRest,
+                                 closeTypeExpr(positionalType(i),
+                                               value.fnScope)):
+              return false
+          if not typeExprEqual(closedRest, newSym("Any")):
+            return false
+        # ^named entries must exist with invariant-equal declared types;
+        # unlisted named parameters must be optional so a caller through the
+        # typed view can always omit them.
+        if expr.props.hasKey("named"):
+          for key, expectedNamed in expr.props["named"].mapEntries:
+            var found = false
+            for p in proto.namedParams:
+              if p.arg == key:
+                found = true
+                let actualNamed =
+                  if p.typeExpr.kind != vkNil: p.typeExpr
+                  else: newSym("Any")
+                if not typeExprEqual(closeTypeExpr(expectedNamed, scope),
+                                     closeTypeExpr(actualNamed,
+                                                   value.fnScope)):
+                  return false
+                break
+            if not found:
+              return false
+        for p in proto.namedParams:
+          if not p.defaultValue.optional:
+            if not (expr.props.hasKey("named") and
+                    expr.props["named"].mapEntries.hasKey(p.arg)):
+              return false
         let actualReturn =
           if proto.hasReturnType: proto.returnType
           else: newSym("Any")

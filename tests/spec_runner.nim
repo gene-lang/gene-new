@@ -1740,6 +1740,21 @@ suite "spec — pattern destructuring from design":
                "catch (e : TypeError) e/where)",
                "\"parameter 'x'\"")
 
+suite "spec — Fn type call-shape admission per design §7.4.1":
+  test "an Fn type admits every usable call shape of an ordinary fn":
+    check_eval("(fn f [x : Int, y : Int = 1] : Int (+ x y)) " &
+               "(fn use [g : (Fn [Int] Int)] (g 41)) (use f)", "42")
+    check_eval("(fn f [x : Int, ^y : Int] : Int (+ x y)) " &
+               "(fn use [g : (Fn [Int] Int ^named {^y Int})] (g 40 ^y 2)) " &
+               "(use f)", "42")
+    check_eval("(fn f [x : Int, xs...] : Int x) " &
+               "(fn use [g : (Fn [Int Any...] Int)] (g 7 1 2 3)) (use f)",
+               "7")
+  test "unlisted required named parameters stay outside the typed view":
+    check_eval("(try (fn f [x : Int, ^y : Int] x) " &
+               "(fn use [g : (Fn [Int] Any)] g) (use f) " &
+               "catch (e : TypeError) \"rejected\")", "\"rejected\"")
+
 suite "spec — Int overflow contract per design §7.4":
   test "small Int arithmetic stays in the int64 fixnum fast path":
     check_eval("(+ 1 2)", "3")

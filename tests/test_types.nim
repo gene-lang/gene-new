@@ -7102,6 +7102,56 @@ suite "types — function boundaries":
     expect GeneError:
       discard runStr("(fn use [f : (Fn Int Str)] f) (use (fn [x] x))")
 
+  test "function annotations admit any usable call shape":
+    # Defaults: one function matches the Fn type of every arity it accepts.
+    ck "(fn f [x : Int, y : Int = 1] : Int (+ x y)) " &
+       "(fn use [g : (Fn [Int] Int)] (g 41)) (use f)", "42"
+    ck "(fn f [x : Int, y : Int = 1] : Int (+ x y)) " &
+       "(fn use [g : (Fn [Int Int] Int)] (g 40 2)) (use f)", "42"
+    expect GeneError:
+      discard runStr("(fn f [x : Int, y : Int = 1] : Int (+ x y)) " &
+                     "(fn use [g : (Fn [] Int)] g) (use f)")
+    # Rest: fixed-arity views work, and the trailing marker mirrors the
+    # body-schema repeated-field spelling. Rest declarations are untyped, so
+    # tail landing spots admit exactly Any.
+    ck "(fn f [x : Int, xs...] : Int x) " &
+       "(fn use [g : (Fn [Int] Int)] (g 7)) (use f)", "7"
+    ck "(fn f [x : Int, xs...] : Int x) " &
+       "(fn use [g : (Fn [Int Any...] Int)] (g 7 1 2 3)) (use f)", "7"
+    expect GeneError:
+      discard runStr("(fn f [x : Int, xs...] : Int x) " &
+                     "(fn use [g : (Fn [Int Str...] Int)] g) (use f)")
+    expect GeneError:
+      discard runStr("(fn f [x : Int] x) " &
+                     "(fn use [g : (Fn [Int Any...] Any)] g) (use f)")
+    # Named parameters: optional ones are subsumed away or listed; required
+    # ones must be listed with invariant-equal declared types.
+    ck "(fn f [x : Int, ^w : Int = 1] : Int (+ x w)) " &
+       "(fn use [g : (Fn [Int] Int)] (g 41)) (use f)", "42"
+    ck "(fn f [x : Int, ^w : Int = 1] : Int (+ x w)) " &
+       "(fn use [g : (Fn [Int] Int ^named {^w Int})] (g 40 ^w 2)) (use f)",
+       "42"
+    ck "(fn f [x : Int, ^y : Int] : Int (+ x y)) " &
+       "(fn use [g : (Fn [Int] Int ^named {^y Int})] (g 40 ^y 2)) (use f)",
+       "42"
+    ck "(fn f [x : Int, ^w : Int?] : Int x) " &
+       "(fn use [g : (Fn [Int] Int ^named {^w Int?})] (g 7)) (use f)", "7"
+    expect GeneError:
+      discard runStr("(fn f [x : Int, ^y : Int] x) " &
+                     "(fn use [g : (Fn [Int] Any)] g) (use f)")
+    expect GeneError:
+      discard runStr("(fn f [x : Int, ^y : Int] x) " &
+                     "(fn use [g : (Fn [Int] Any ^named {^y Str})] g) (use f)")
+    expect GeneError:
+      discard runStr("(fn f [x : Int] x) " &
+                     "(fn use [g : (Fn [Int] Any ^named {^z Int})] g) (use f)")
+    expect GeneError:
+      discard runStr("(fn f [x : Int, ^w : Int?] x) " &
+                     "(fn use [g : (Fn [Int] Any ^named {^w Int})] g) (use f)")
+    expect GeneError:
+      discard runStr("(fn use [g : (Fn [Int] Any ^named [])] g) " &
+                     "(use (fn [x : Int] x))")
+
   test "unsupported nominal generic aliases and open prop schemas fail clearly":
     expect GeneError:
       discard compileSource("(type (Box t) ^props {^value t})")

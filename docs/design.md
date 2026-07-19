@@ -1662,17 +1662,29 @@ type-expr       = type-name | type-name "?"
                 | "(" ("Map" | "PropMap" | "HashMap")
                       type-expr type-expr ")"
                 | "(" "Tuple" type-expr* ")"
-                | "(" "Fn" "[" type-expr* "]" type-expr
-                      [ "^errors" "[" type-expr* "]" ] ")"
+                | "(" "Fn" "[" type-expr* [ type-name "..." ] "]" type-expr
+                      [ "^errors" "[" type-expr* "]" ]
+                      [ "^named" "{" ( "^" name type-expr )* "}" ] ")"
                 | "(" generic-enum-name type-expr* ")"
 ```
 
 `(Tuple A B ...)` is a fixed-length positional product represented by a Gene
-list. `(Fn [A B ...] R)` describes an ordinary `fn`, never `fn!`: it has fixed
-required positional parameters, no named/default/rest parameters, and an
-unchecked error row. Supplying `^errors [E ...]` instead requires the checked
-error row to match exactly. Parameter, result, and error types are invariant in
-the MVP.
+list. `(Fn [A B ...] R)` describes an ordinary `fn`, never `fn!`, by one call
+shape: it matches any function that admits a call with exactly the listed
+positional arguments — the function's required positional count may not exceed
+the listed arity, extra declared positionals must be optional or absorbed by a
+rest parameter, and every named parameter must be optional unless listed in
+`^named`. This is usable-as admission, not subtyping: one function may match
+several `Fn` types at different arities. A trailing `T...` uses the
+body-schema repeated-field spelling and requires a rest parameter; because
+rest parameter declarations are untyped, every repeated-tail landing spot
+compares as `Any`, so only `Any...` matches until rest declarations can carry
+types. `^named {^y T ...}` entries must exist on the function with
+invariant-equal declared types — a nil-admitting spelling mirrors the
+declaration-side optionality rule — and a function's required named
+parameters must be listed. The error row is unchecked by default; supplying
+`^errors [E ...]` instead requires the checked error row to match exactly.
+Parameter, result, and error types are invariant in the MVP.
 
 Generic declarations currently comprise `(enum Name [T ...] ...)` and generic
 functions whose name is `(name T ...)`. Enum applications such as `(Option
@@ -4111,6 +4123,8 @@ Deferred until after the first implementation slice:
 - native AOT backend beyond the native-call foundation;
 - actor supervision migration and live code replacement;
 - generic constraints, variance, higher-kinded types, and specialization policy;
+- typed rest parameter declarations, `NativeFn` signature types, and `Fn`-type
+  parameter/result variance beyond usable-as arity admission;
 - static effect rows;
 - distributed actors and GPU kernel/device-execution policy.
 
