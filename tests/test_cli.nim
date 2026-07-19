@@ -1890,13 +1890,13 @@ catch {^message message} (set duplicate message))
 (var agent_pane
   (application_attach_worker_pane app agent agent/id "detach"))
 (println $"agent_field=${(== agent/pane_ids void)} local_ids=${(application_pane_ids_for_worker app agent/id)}")
-(agent/output ~ Cell/set "assistant|steered")
+(agent/output ~ Cell/set "agent> steered")
 (agent_pane/pending_visible ~ Cell/set true)
 (var presented (application_pane_views app))
 (app/main_agent/transcript ~ Cell/set "agent> steered")
 (app/local_surface/main_pending_visible ~ Cell/set true)
 (var pane_overlay
-  (contains? presented/1/output "assistant|steered\nassistant|..."))
+  (contains? presented/1/output "agent> steered\nagent> ..."))
 (var main_overlay
   (contains? (main_presented_output app app/main_agent/transcript)
              "agent> steered\nagent> ..."))
@@ -1914,8 +1914,8 @@ catch {^message message} (set duplicate message))
     check ran.exitCode == 0
     check "same=true local_field=false" in ran.output
     check "agent_field=true local_ids=[2]" in ran.output
-    check "pane_overlay=true canonical=assistant|steered main_overlay=true main_canonical=agent> steered" in ran.output
-    check "pane_final=assistant|steered main_final=agent> steered" in ran.output
+    check "pane_overlay=true canonical=agent> steered main_overlay=true main_canonical=agent> steered" in ran.output
+    check "pane_final=agent> steered main_final=agent> steered" in ran.output
     check "detached_ids=[] max=nil" in ran.output
 
   test "ai agent live worker and agent bounds are configurable":
@@ -2211,7 +2211,7 @@ catch {^message message} (set duplicate message))
             raise
           sleep(50)
     let command = "(printf '/agent new\\n/0   \\n/1\\n/1 inspect this\\n'; sleep 1; " &
-                  "printf '/close\\n/close 0\\n/quit\\n') | " &
+                  "printf '/worker a1 tail\\n/close\\n/close 0\\n/quit\\n') | " &
                   "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
                   "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8958/v1 " &
@@ -2224,6 +2224,11 @@ catch {^message message} (set duplicate message))
     check "focused main agent" in ran.output
     check "focused pane 1" in ran.output
     check "extension 1 completed" in ran.output
+    # The agent pane transcript follows pane 0's turn pattern: ──────
+    # separator, verbatim input, then agent>-prefixed response text.
+    check "──────\ninspect this" in ran.output
+    check "agent> extension-ok" in ran.output
+    check "user|" notin ran.output
     check "closed pane 1" in ran.output
     check "pane 0 cannot be closed" in ran.output
     check server.waitForExit(3000) == 0

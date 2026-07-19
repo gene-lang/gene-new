@@ -163,9 +163,12 @@
 (var interactive_transcript (cell nil))
 (var interactive_memory (cell []))
 (fn pane_pending_marker [pane] : Str
+  # Agent panes share pane 0's `agent> ` turn prefix; other worker kinds keep
+  # the neutral assistant marker.
+  (var prefix (if (== pane/kind "agent") "agent> " "assistant|"))
   (if (pane/pending_visible ~ Cell/get)
-    "assistant|...\n"
-    (if (!= (pane/current_task ~ Cell/get) nil) "assistant|   \n" "")))
+    $"${prefix}...\n"
+    (if (!= (pane/current_task ~ Cell/get) nil) $"${prefix}   \n" "")))
 
 (fn main_pending_marker [app] : Str
   (if (|| (== app nil) (== app/local_surface nil))
@@ -1877,152 +1880,6 @@
       (render_agent_text transcript streaming
         (if (application_close_pane app id)
           $"closed pane ${id}" $"pane ${id} is not open")))))
-
-(fn append_extension_transcript [pane, text : Str]
-  (append_worker_transcript!
-    (active_application ~ Cell/get) pane/worker text))
-
-(fn refresh_extension_pending [pane, pending, dots_visible]
-  (if_yes (pending ~ Cell/get)
-    (pane/pending_visible ~ Cell/set (dots_visible ~ Cell/get))
-    (refresh_active_input)))
-
-(fn start_extension_pending [pane]
-  (var pending (cell true))
-  (var dots_visible (cell true))
-  (refresh_extension_pending pane pending dots_visible)
-  {^pending pending ^dots_visible dots_visible
-   ^task (spawn ^lane root
-     (while (pending ~ Cell/get)
-       (sleep 400)
-       (if_yes (pending ~ Cell/get)
-         (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
-         (refresh_extension_pending pane pending dots_visible))))})
-
-(fn advance_extension_pending [pane, pending]
-  (if_yes (pending ~ Cell/get)
-    (pane/pending_visible ~ Cell/set false)
-    (refresh_active_input)))
-
-(fn stop_extension_pending [pane, pending]
-  (if_yes (pending ~ Cell/get)
-    (pending ~ Cell/set false)
-    (pane/pending_visible ~ Cell/set false)
-    (refresh_active_input)))
-
-(fn render_extension_delta [pane, text : Str]
-  (if_not (== text "")
-    (if_not (pane/controller/streaming ~ Cell/get)
-      (append_extension_transcript pane "assistant|")
-      (pane/controller/streaming ~ Cell/set true))
-    (append_extension_transcript pane text)))
-
-(fn finish_extension_stream [pane]
-  (if_yes (pane/controller/streaming ~ Cell/get)
-    (append_extension_transcript pane "\n")
-    (pane/controller/streaming ~ Cell/set false)))
-
-(fn render_extension_text [pane, text : Str]
-  (finish_extension_stream pane)
-  (if_not (== text "")
-    (append_extension_transcript pane $"assistant|${text}\n")))
-
-(fn output_with_extension_pending [pane, placeholder, render]
-  (advance_extension_pending pane placeholder/pending)
-  (render)
-  (if (placeholder/pending ~ Cell/get)
-    (refresh_extension_pending pane placeholder/pending placeholder/dots_visible)))
-
-(fn extension_emit [pane, type : Str, props]
-  (var app (active_application ~ Cell/get))
-  (var agent pane/controller)
-  (var tagged {^pane_id pane/id ^worker_id agent/id ^agent_id agent/id
-               ^parent_agent_id agent/parent_id})
-  (for [key value] in props
-    (tagged ~ Map/put! key value))
-  (if (== app nil)
-    (emit_event! type tagged)
-    (application_emit app type tagged)))
-
-(fn run_extension_prompt [pane, prompt : Str, tracked : Bool]
-  (var app (active_application ~ Cell/get))
-  (var agent pane/controller)
-  (if (== (agent/lifecycle ~ Cell/get) "stopped")
-    $"agent ${agent/id} is stopped"
-    (if (|| (agent/input_reserved ~ Cell/get)
-            (!= (agent/current_task ~ Cell/get) nil))
-      (then $"agent ${agent/id} is already working")
-      (else
-        (worker_history_push! agent prompt "local_tui"
-          (if app/local_surface
-            (app/local_surface/instance_id ~ Cell/get)))
-        (append_extension_transcript pane $"user|› ${prompt}\n")
-        (application_emit app "agent_status"
-          {^worker_id agent/id ^agent_id agent/id
-           ^parent_agent_id agent/parent_id
-           ^pane_id pane/id ^status "working"})
-        (var task
-          (spawn ^lane root
-            (do
-              (var placeholder (start_extension_pending pane))
-              (var result (cell (agent/items ~ Cell/get)))
-              (var final_text (cell ""))
-              (var outcome (cell "cancelled"))
-              (var error_kind (cell "cancelled"))
-              (var error_text (cell "agent operation cancelled"))
-              (var render
-                (fn [text]
-                  (output_with_extension_pending pane placeholder
-                    (fn [] (render_extension_text pane text)))))
-              (var render_stream
-                (fn [text]
-                  (output_with_extension_pending pane placeholder
-                    (fn [] (render_extension_delta pane text)))))
-              (var emit
-                (fn [type props]
-                  (if (&& (== type "agent_text") (present? props/text))
-                    (final_text ~ Cell/set props/text))
-                  (extension_emit pane type props)))
-              (try
-                (result ~ Cell/set
-                (run_turn_in (interactive_transport)
-                  (append (agent/items ~ Cell/get) (user_item prompt))
-                  render render_stream max_tool_rounds emit
-                  {^app app ^agent agent ^pane pane}))
-                (outcome ~ Cell/set "completed")
-              catch {^message message}
-                (outcome ~ Cell/set "failed")
-                (error_kind ~ Cell/set "AgentError")
-                (error_text ~ Cell/set message)
-                (render_extension_text pane $"[agent failed: ${message}]")
-              catch _
-                (outcome ~ Cell/set "failed")
-                (error_kind ~ Cell/set "AgentError")
-                (error_text ~ Cell/set "agent operation failed")
-                (render_extension_text pane "[agent failed]")
-              ensure
-                (stop_extension_pending pane placeholder/pending)
-                (finish_extension_stream pane)
-                (placeholder/task ~ Task/cancel)
-                (agent/items ~ Cell/set (result ~ Cell/get))
-                (application_finish_agent_operation!
-                  app agent (outcome ~ Cell/get) (final_text ~ Cell/get)
-                  (error_kind ~ Cell/get) (error_text ~ Cell/get) pane/id)))))
-        (application_begin_worker_operation! app agent task "agent_turn")
-        (task ~ Task/detach)
-        (if tracked
-          (then $"agent ${agent/id} started in pane ${pane/id}")
-          (else
-            # `open_extension` predates first-class spawn/send/wait tools and
-            # promises one delegated result to the calling model. Preserve that
-            # compatibility contract while the child runs in its own Task; the
-            # scheduler remains free to serve input and other agents.
-            (await task)
-            (var completed_text
-              (agent_result_text (agent/result ~ Cell/get)))
-            (if (== (agent/last_outcome ~ Cell/get) "completed")
-              $"extension ${pane/id} completed: ${completed_text}"
-              $"extension ${pane/id} ${(agent_result_report agent)}")))))))
 
 # Model-facing supervision primitives use the same AgentApplication services as
 # slash commands, but do not require a visible pane. This is intentionally

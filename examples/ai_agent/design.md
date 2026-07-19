@@ -1647,7 +1647,9 @@ Decisions the table encodes:
 - **The primary input verb is the default operation.** `/N text` on a shell
   pane is sugar for `run`, on an agent pane for `send`, on a log-tail pane for
   `filter`. The table makes the verb explicit so a non-surface caller can use
-  it; it does not change surface input routing (§7.1). A terminal deliberately
+  it; it does not change surface input routing (§7.1). An agent pane's
+  transcript follows the same turn pattern as pane 0: a `──────` separator,
+  the user input verbatim, then `agent> `-prefixed response text. A terminal deliberately
   has no line-primary verb: its controlling local surface coalesces key events
   into bounded `write` calls, while every other caller is denied.
 

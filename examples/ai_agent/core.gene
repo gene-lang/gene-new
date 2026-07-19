@@ -6411,7 +6411,10 @@ State that broader behavior is unverified when no matching successful check ran.
         (agent/input_reserved ~ Cell/set true)
         (agent/status ~ Cell/set "admitting")
         (worker_history_push! agent prompt adapter surface_id)
-        (bounded_worker_append! agent $"user|› ${prompt}\n")
+        # The agent pane transcript follows the same turn pattern as pane 0:
+        # a ────── separator, the user input verbatim, then agent>-prefixed
+        # response text.
+        (bounded_worker_append! agent $"──────\n${prompt}\n")
         (application_emit app "agent_status"
           {^worker_id agent/id ^agent_id agent/id
            ^parent_agent_id agent/parent_id
@@ -6438,10 +6441,18 @@ State that broader behavior is unverified when no matching successful check ran.
                     (run_turn_in (interactive_transport)
                       (append (agent/items ~ Cell/get) (user_item prompt))
                       (fn [text]
+                        # A streamed round arrives here as "" — close the
+                        # streamed line instead of appending an empty echo.
+                        (if_yes (agent/streaming ~ Cell/get)
+                          (bounded_worker_append! agent "\n")
+                          (agent/streaming ~ Cell/set false))
                         (if_not (== text "")
-                          (bounded_worker_append! agent $"agent|${text}\n")))
+                          (bounded_worker_append! agent $"agent> ${text}\n")))
                       (fn [delta]
                         (if_not (== delta "")
+                          (if_not (agent/streaming ~ Cell/get)
+                            (bounded_worker_append! agent "agent> ")
+                            (agent/streaming ~ Cell/set true))
                           (bounded_worker_append! agent delta)))
                       max_tool_rounds emit {^app app ^agent agent}))
                   (outcome ~ Cell/set "completed")
@@ -6454,6 +6465,11 @@ State that broader behavior is unverified when no matching successful check ran.
                   (error_kind ~ Cell/set "AgentError")
                   (error_text ~ Cell/set "agent operation failed")
                 ensure
+                  # A failed or cancelled turn can abandon a streamed line
+                  # mid-delta; terminate it so later appends start clean.
+                  (if_yes (agent/streaming ~ Cell/get)
+                    (bounded_worker_append! agent "\n")
+                    (agent/streaming ~ Cell/set false))
                   (agent/items ~ Cell/set (result ~ Cell/get))
                 (application_finish_agent_operation!
                   app agent (outcome ~ Cell/get) (final_text ~ Cell/get)
