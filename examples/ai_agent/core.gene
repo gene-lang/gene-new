@@ -627,7 +627,7 @@
 
 (type Agent ^is Worker
   ^props {^parent_id Any ^assignment Str ^items Any ^transcript Any
-          ^streaming Any ^result Any ^attachments Any
+          ^streaming Any ^result Any ^attachments Any ^model Any
           ^transcript_seq Any ^transcript_dropped_bytes Any
           ^transcript_dropped_before Any ^transcript_retained Any})
 
@@ -676,6 +676,7 @@
 (type EmptyArgs ^props {})
 (type TailArgs ^props {^n Int?})
 (type AgentSendArgs ^props {^prompt Str})
+(type AgentModelArgs ^props {^model Str})
 (type ShellRunArgs ^props {^command Str ^timeout_ms Int?})
 (type ShellChdirArgs ^props {^path Str})
 (type EnvironmentSetArgs ^props {^name Str ^value Str})
@@ -789,7 +790,7 @@
          ^last_finish_event (cell nil) ^pending_invocation (cell nil)
          ^parent_id parent_id ^assignment assignment ^items items
          ^transcript transcript ^streaming (cell false) ^result (cell nil)
-         ^attachments (cell [])
+         ^attachments (cell []) ^model (cell model)
          ^transcript_seq (cell 1) ^transcript_dropped_bytes (cell 0)
          ^transcript_dropped_before (cell nil)
          ^transcript_retained (cell (transcript ~ Cell/get))))
@@ -1376,6 +1377,9 @@
     (var agent
       (make_agent id app/main_agent/id label safe_assignment items transcript
                   (cell nil)))
+    # A child inherits the main agent's current selection at spawn time. It
+    # then owns an independent model cell, so later changes are per-agent.
+    (agent/model ~ Cell/set (app/main_agent/model ~ Cell/get))
     (agent/attachments ~ Cell/set attachments)
     ((app/agents ~ Cell/get) ~ List/push! agent)
     ((app/workers ~ Cell/get) ~ List/push! agent)
@@ -4035,16 +4039,23 @@ State that broader behavior is unverified when no matching successful check ran.
 (var live_transport
   (if (== api_flavor "chat") chat_live_transport responses_live_transport))
 
-(fn call_model [transport, input_items, render_stream]
+(fn context_model [context] : Str
+  (if (&& (present? context) (present? context/agent)
+          (present? context/agent/model))
+    (context/agent/model ~ Cell/get)
+    model))
+
+(fn call_model [transport, input_items, render_stream, context = nil]
   (var started (monotonic_ms))
+  (var selected_model (context_model context))
   (var request
     (if (== api_flavor "chat")
-      {^model model
+      {^model selected_model
        ^messages (items_to_chat_messages input_items)
        ^tools (chat_tool_schemas_now)
        ^tool_choice "auto"
        ^stream true}
-      {^model model
+      {^model selected_model
        ^store false
        ^stream true
        ^input input_items
@@ -4060,7 +4071,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (request ~ Map/put! "reasoning" {^effort effort})))
   (var body (stringify request))
   (debug! model_log "model request started"
-    ^payload {^api_flavor api_flavor ^model_name model
+    ^payload {^api_flavor api_flavor ^model_name selected_model
               ^reasoning_effort effort
               ^input_items (input_items ~ size)
               ^tool_count ((tool_names ~ Cell/get) ~ size)
@@ -4068,12 +4079,12 @@ State that broader behavior is unverified when no matching successful check ran.
   (var resp (transport body render_stream))
   (if (!= resp/agent_error void)
     (warn! model_log "model request failed"
-      ^payload {^api_flavor api_flavor ^model_name model
+      ^payload {^api_flavor api_flavor ^model_name selected_model
                 ^duration_ms (- (monotonic_ms) started)
                 ^request_bytes (byte_size body)
                 ^error_kind "transport_or_api"})
     (debug! model_log "model request completed"
-      ^payload {^api_flavor api_flavor ^model_name model
+      ^payload {^api_flavor api_flavor ^model_name selected_model
                 ^duration_ms (- (monotonic_ms) started)
                 ^request_bytes (byte_size body)
                 ^response_items ((response_output_items resp) ~ size)
@@ -4118,7 +4129,8 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^payload {^bytes (byte_size safe)
                             ^budget_remaining budget})
                 (emit "text_delta" {^text safe})
-                (render_stream safe))))
+                (render_stream safe))
+              context))
   (if (!= resp/agent_error void)
     (then
       (emit "error" {^text resp/agent_error})
@@ -4733,7 +4745,8 @@ State that broader behavior is unverified when no matching successful check ran.
   true)
 
 (fn config_snapshot []
-  {^model model
+  (var app (active_application ~ Cell/get))
+  {^model (if app (app/main_agent/model ~ Cell/get) model)
    ^base base
    ^api_flavor api_flavor
    ^reasoning_effort (reasoning_effort ~ Cell/get)
@@ -4820,6 +4833,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var main app/main_agent)
   (var main_worker
     {^transcript (main/transcript ~ Cell/get)
+     ^model (main/model ~ Cell/get)
      ^status (main/status ~ Cell/get)
      ^current_operation (main/current_operation ~ Cell/get)
      ^input_reserved (main/input_reserved ~ Cell/get)
@@ -4841,7 +4855,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (agents ~ List/push!
         {^id agent/id ^name agent/name
          ^parent_id agent/parent_id ^title agent/title
-         ^assignment agent/assignment ^items (agent/items ~ Cell/get)
+         ^assignment agent/assignment ^model (agent/model ~ Cell/get)
+         ^items (agent/items ~ Cell/get)
          ^transcript (agent/transcript ~ Cell/get)
          ^status (agent/status ~ Cell/get) ^result (agent/result ~ Cell/get)
          ^current_operation (agent/current_operation ~ Cell/get)
@@ -5038,6 +5053,16 @@ State that broader behavior is unverified when no matching successful check ran.
     (if_yes (present? saved/main_worker)
       (var data saved/main_worker)
       (app/main_agent/transcript ~ Cell/set data/transcript)
+      (if_yes (present? data/model)
+        (match data/model
+          (when (saved_model : Str)
+            (if (== (trim saved_model) "")
+              (emit_restore_rejected!
+                app "model" "main" "model must not be blank")
+              (app/main_agent/model ~ Cell/set (trim saved_model))))
+          (else
+            (emit_restore_rejected!
+              app "model" "main" "model must be a Str"))))
       (app/main_agent/status ~ Cell/set
         (if (== data/status "working") "idle" data/status))
       (app/main_agent/last_outcome ~ Cell/set
@@ -5109,6 +5134,12 @@ State that broader behavior is unverified when no matching successful check ran.
       (if_not (match data/assignment
                 (when (_assignment : Str) true) (else false))
         (fail (OsError ^message "agent assignment must be a Str")))
+      (if (&& (present? data/model)
+              (! (match data/model
+                   (when (_model : Str) true) (else false))))
+        (fail (OsError ^message "agent model must be a Str")))
+      (if (&& (present? data/model) (== (trim data/model) ""))
+        (fail (OsError ^message "agent model must not be blank")))
       (if_not (match data/items (when (_items : List) true) (else false))
         (fail (OsError ^message "agent items must be a List")))
       (if_not (match data/transcript
@@ -5146,6 +5177,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (var agent
         (make_agent data/id data/parent_id data/title data/assignment
           (cell data/items) (cell data/transcript) (cell nil)))
+        (if (present? data/model)
+          (agent/model ~ Cell/set (trim data/model))
+          (agent/model ~ Cell/set (app/main_agent/model ~ Cell/get)))
         (if_yes (present? data/name)
           (var named (application_assign_worker_name! app agent data/name))
           (if_not named/ok
@@ -5849,6 +5883,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (else false)))
   {^worker_id worker/id ^name worker/name
    ^kind worker/kind ^title worker/title
+   ^model (if (== worker/kind "agent")
+            (worker/model ~ Cell/get) void)
    ^lifecycle (worker/lifecycle ~ Cell/get)
    ^status (worker/status ~ Cell/get)
    ^input_reserved (worker/input_reserved ~ Cell/get)
@@ -6644,6 +6680,17 @@ State that broader behavior is unverified when no matching successful check ran.
               (agent_result_report worker))))
         (else
           (operation_ack worker true "accepted"))))
+    (when "set_model"
+      (var selected (trim args/model))
+      (if (|| (== selected "") (contains? selected " "))
+        (fail (OsError ^message "model must be one non-blank value")))
+      (var previous (worker/model ~ Cell/get))
+      (worker/model ~ Cell/set selected)
+      (application_emit app "config_changed"
+        {^setting "model" ^worker_id worker/id ^agent_id worker/id
+         ^previous previous ^value selected})
+      (operation_ack worker true
+        $"model for agent ${worker/id} set to ${selected}"))
     (when "result" (agent_result_value worker))
     (when "mark_result_read"
       (operation_ack worker (application_mark_agent_result_read! app worker)
@@ -7150,6 +7197,10 @@ State that broader behavior is unverified when no matching successful check ran.
   "send <prompt>" AgentSendArgs OperationAck ["session_write" "model_call"]
   ["local_user" "remote_user" "supervisor"] "worker_exclusive" "full"
   true false true true (cli_rest_parser "prompt"))
+(declare_worker_operation! "agent" "set_model" "Set subsequent model calls."
+  "set_model <model>" AgentModelArgs OperationAck ["session_write"]
+  ["local_user" "remote_user" "supervisor"] "worker_exclusive" "full"
+  false false false false (cli_word_parser "model"))
 (declare_worker_operation! "agent" "result" "Read the latest result without marking it."
   "result" EmptyArgs AgentResultValue ["observe"]
   ["local_user" "remote_user" "supervisor"] "none" "none"

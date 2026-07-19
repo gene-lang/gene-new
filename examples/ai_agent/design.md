@@ -129,6 +129,9 @@ env-configured:
 
 `OPENAI_API=responses|chat` picks the shape explicitly; it defaults to
 `responses` for the Codex backend and `chat` for any custom `OPENAI_BASE_URL`.
+`OPENAI_MODEL` initializes the main agent's model. New sub-agents inherit the
+main selection at creation and then own an independent selection; `/model`
+changes subsequent calls without rewriting prior conversation items.
 `OPENAI_REASONING_EFFORT` sets the initial reasoning effort. The interactive
 `/effort [level]` command reports or changes it without restarting.
 Internally the agent always works on Responses-style items; the chat layer
@@ -311,7 +314,8 @@ Behavior:
   line-oriented worker; C8 terminal-direct mode is byte-transparent and uses
   `Ctrl-]` to enter application command mode (§7.4). Session commands include
   `/quit`, `/exit`, `/remember`, `/memory`,
-  `/forget-memory`, `/status`, `/effort [level]`, `/progress`, `/trace`,
+  `/forget-memory`, `/status`, `/model [0|N] [model]`, `/effort [level]`,
+  `/progress`, `/trace`,
   `/diff`, and `/undo`, and
   Ctrl-C interrupting the currently shipped structured `/sh` command or
   `/repl` eval, and Escape/Ctrl-C cancelling an in-flight model response
@@ -1238,6 +1242,7 @@ The canonical command grammar included by comprehensive help begins with:
 /artifacts | /artifact <id>
 
 /status          /progress        /trace [filters] [--detail]
+/model [model] | /model <0|N> [model]
 /effort [default|none|minimal|low|medium|high|xhigh|max]
 /diff            /undo [change-id]
 /remember ...    /memory          /forget-memory ...
@@ -1253,6 +1258,19 @@ wire shape emits `^reasoning {^effort level}` while Chat Completions emits
 `^reasoning_effort level`; `default` emits neither. Acceptance of an explicit
 level remains model-specific, so an unsupported level surfaces through the
 ordinary typed API-error path rather than being silently remapped.
+
+Model selection is per agent. Bare `/model` reports the main model and
+`/model <model>` changes it. A numeric first argument is a pane selector:
+`/model 0 [model]` addresses main, while `/model N [model]` addresses the agent
+attached to pane N. A non-agent or missing pane is a local command error. New
+sub-agents inherit main's current model only when created; later changes do not
+propagate in either direction. The `agent/set_model` worker operation is the
+authoritative mutation boundary, rejects a busy agent, emits an audited
+`config_changed` event, and checkpoints the selection. Agent snapshots and
+restore records persist each selection, and every model round reads the
+selection from its owning agent context. Remote clients can use
+`/worker <A> set_model <model>` without depending on another surface's pane
+numbers.
 
 Everywhere `<W>` or `<A>` appears, a unique session-local worker `^name`
 (`build-shell`, `reader-review`) is accepted interchangeably with the id
@@ -3349,7 +3367,8 @@ additional sessions. Each application session is a **session actor**
 - a monotonically versioned **authoritative event log** (12.3), from which
   shared transcript/worker observations are projected; panes, focus, drafts,
   zoom, and scroll come only from each surface attachment;
-- model config (base/model/flavor per session, defaulted from env as today);
+- model transport config (base/flavor per session) plus a persisted model
+  selection per agent, with the main selection defaulted from the environment;
 - the typed tool registry, a handle to the process-level per-workspace
   mutation coordinator (§9.3, invariant §0.1), the §8.5 catastrophe guard, and
   at most one pending destructive-operation confirmation (12.8).

@@ -2225,7 +2225,7 @@
         (var address
           (if (present? agent/name) $"${agent/name} (${agent/id})" agent/id))
         (lines ~ List/push!
-          $"${address} lifecycle=${(agent/lifecycle ~ Cell/get)} availability=${(agent/status ~ Cell/get)} last=${last_text} unread=${unread} panes=${(application_pane_ids_for_worker app agent/id)} ${agent/title}"))
+          $"${address} model=${(agent/model ~ Cell/get)} lifecycle=${(agent/lifecycle ~ Cell/get)} availability=${(agent/status ~ Cell/get)} last=${last_text} unread=${unread} panes=${(application_pane_ids_for_worker app agent/id)} ${agent/title}"))
       (join lines "\n"))))
 
 (fn workers_report []
@@ -2677,11 +2677,13 @@
   (var guard_label (if (guard_enabled?) "on" "off"))
   (var app (active_application ~ Cell/get))
   (var agent_count (if (== app nil) 1 ((app/agents ~ Cell/get) ~ size)))
+  (var main_model
+    (if (== app nil) model (app/main_agent/model ~ Cell/get)))
   (var pane_count
     (if (|| (== app nil) (== app/local_surface nil))
       0
       ((app/local_surface/panes ~ Cell/get) ~ size)))
-  $"state: ${state_label}\nmodel: ${model}\napi: ${api_flavor}\neffort: ${(reasoning_effort ~ Cell/get)}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
+  $"state: ${state_label}\nmodel: ${main_model}\napi: ${api_flavor}\neffort: ${(reasoning_effort ~ Cell/get)}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
 
 (fn run_shell_session []
   (suspend_user_input)
@@ -3084,6 +3086,8 @@
    ^summary "show application and context status"}
   {^name "/effort" ^section "session" ^usage "/effort [default|none|minimal|low|medium|high|xhigh|max]"
    ^summary "show or set model reasoning effort"}
+  {^name "/model" ^section "agent" ^usage "/model [model] | /model <0|N> [model]"
+   ^summary "show or set the main model, or the agent model attached to pane N"}
   {^name "/progress" ^section "session" ^usage "/progress"
    ^summary "show the main project-progress record"}
   {^name "/pin" ^section "session" ^usage "/pin result [A] | /pin worker <W> tail"
@@ -3343,6 +3347,51 @@
           (render_agent_text transcript streaming
             $"reasoning effort set to ${level}"))))))
 
+(fn handle_model_command [line : Str, app, transcript, streaming]
+  (var rest (trim (after_prefix line "/model")))
+  (var pane_id 0)
+  (var requested rest)
+  (var agent app/main_agent)
+  (if_not (== rest "")
+    (var parts (split rest " "))
+    (var first parts/0)
+    (var selector (try (parse_int first) catch _ nil))
+    (if_not (== selector nil)
+      (set pane_id selector)
+      (set requested (trim (after_prefix rest first)))
+      (if (< pane_id 0)
+        (return
+          (render_agent_text transcript streaming
+            "model pane id must be 0 or greater")))
+      (if_yes (> pane_id 0)
+        (var pane (application_find_pane app pane_id))
+        (if (== pane nil)
+          (return
+            (render_agent_text transcript streaming
+              $"pane ${pane_id} is not open")))
+        (if (!= pane/worker/kind "agent")
+          (return
+            (render_agent_text transcript streaming
+              $"pane ${pane_id} is ${pane/worker/kind}, not an agent")))
+        (set agent pane/worker))))
+  (var label
+    (if (== pane_id 0) "main agent"
+      $"pane ${pane_id} agent ${agent/id}"))
+  (if (== requested "")
+    (then
+      (render_agent_text transcript streaming
+        $"${label} model: ${(agent/model ~ Cell/get)}"))
+    (else
+      (var response
+        (application_call_worker app agent/id "set_model" {^model requested}
+          {^origin "user" ^adapter "local_tui"
+           ^caller_worker_id app/main_agent/id
+           ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
+      (render_agent_text transcript streaming
+        (if response/ok
+          $"${label} model set to ${(agent/model ~ Cell/get)}"
+          (worker_operation_cli_text agent "set_model" response))))))
+
 (fn handle_surface_global_command [line : Str, app, items, transcript, memory,
                                    streaming] : Bool
   (if (starts_with? line "/pin ")
@@ -3357,6 +3406,9 @@
       true)
     (elif (|| (== line "/effort") (starts_with? line "/effort "))
       (handle_effort_command line app transcript streaming)
+      true)
+    (elif (|| (== line "/model") (starts_with? line "/model "))
+      (handle_model_command line app transcript streaming)
       true)
     (elif (help_command? line)
       (show_surface_help! app transcript line)
@@ -3478,7 +3530,6 @@
   (init_agent_state)
   (start_workspace_heartbeat!)
   (restore_reasoning_effort!)
-  (println $"Started Gene AI agent - model ${model}.")
   (var memory (cell (load_memory)))
   (var saved (load_session))
   (if saved
@@ -3501,6 +3552,8 @@
   (active_application ~ Cell/set app)
   (restore_dynamic_registrations! app)
   (restore_application! app)
+  (println
+    $"Started Gene AI agent - model ${(app/main_agent/model ~ Cell/get)}.")
   (interactive_transcript ~ Cell/set transcript)
   (interactive_memory ~ Cell/set (memory ~ Cell/get))
   # Subscribed event types echo into the transcript as they are emitted.
@@ -3782,6 +3835,33 @@
     (println
       $"${worker/worker_id} ${worker/kind} ${worker/lifecycle} ${worker/title}")))
 
+(fn remote_model_command [client, line : Str]
+  (var rest (trim (after_prefix line "/model")))
+  (var requested rest)
+  (if_not (== rest "")
+    (var parts (split rest " "))
+    (var first parts/0)
+    (var selector (try (parse_int first) catch _ nil))
+    (if_not (== selector nil)
+      (if (!= selector 0)
+        (return
+          (println
+            "the remote line client has no pane ids; use /worker <A> set_model <model>")))
+      (set requested (trim (after_prefix rest first)))))
+  (var main_worker nil)
+  (var listing (client/workers))
+  (for worker in listing/workers
+    (if (== worker/worker_id "main") (set main_worker worker)))
+  (if (== main_worker nil)
+    (return (println "remote main agent not found")))
+  (if (== requested "")
+    (then
+      (println $"main agent model: ${main_worker/model}"))
+    (else
+      (var response
+        (client/call_worker "main" "set_model" {^model requested}))
+      (println response/result/text))))
+
 (fn remote_worker_command [client, line : Str]
   (var rest (trim (after_prefix line "/worker")))
   (var parts (split rest " "))
@@ -3850,6 +3930,7 @@
             (println
               (join
                 ["/workers                  list session workers"
+                 "/model [0] [model]         show or set the main-agent model"
                  "/worker <id> <op> [args]  invoke a declared operation"
                  "/pin result <agent_id>    pin an agent result"
                  "/pin worker <id> tail     pin a worker tail capture"
@@ -3870,12 +3951,14 @@
             (println
               $"session ${snapshot/session_id} cursor ${snapshot/cursor} workers ${(snapshot/workers ~ size)}"))
           (else
+            (if (|| (== line "/model") (starts_with? line "/model "))
+              (remote_model_command client line)
             (if (starts_with? line "/worker ")
               (remote_worker_command client line)
               (if (starts_with? line "/pin")
                 (remote_pin_command client line)
                 (if_not (== line "")
-                  (run_remote_turn client line true))))))
+                  (run_remote_turn client line true)))))))
       catch (ClientTransportError ^kind kind ^message message)
         (println $"remote ${kind}: ${message}")))
   catch (ClientTransportError ^kind kind ^message message)

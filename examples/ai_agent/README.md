@@ -77,6 +77,9 @@ for interactive or persistent/background shell work), `/remember <note>` / `/mem
 `/forget-memory` (durable notes in the system prompt),
 `/effort [level]` (show all reasoning-effort levels and the current choice, or
 set it for subsequent model requests),
+`/model [model]` (show or change the main agent's model),
+`/model N [model]` (show or change the agent attached to pane N; pane 0 is the
+main agent),
 `/agent new [prompt]` (open a secondary agent pane), `/agents`,
 `/pane output [title]`, bare `/N` (focus), `/N <input>`, `/close [N]`,
 `/N cancel|stop|max`
@@ -100,7 +103,7 @@ Key environment variables (all optional beyond the auth token):
 | Variable | Meaning |
 |---|---|
 | `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` / `CODEX_ACCESS_TOKEN` | bearer token, checked in that order; unset → offline demo |
-| `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API` | endpoint, model, wire shape (`responses`\|`chat`) |
+| `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API` | endpoint, initial main-agent model, wire shape (`responses`\|`chat`); new sub-agents inherit the main model and can then be changed independently with `/model` |
 | `OPENAI_REASONING_EFFORT` | initial reasoning effort: `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; `default` omits the request field and individual models may support only a subset |
 | `OPENAI_REQUEST_TIMEOUT_MS` | model request timeout for both wire shapes; defaults to 300000 ms so high-effort and post-tool rounds can finish |
 | `GENE_AGENT_STATE=fs:<path>` | persist config, application/session state, memory, and events as filesystem records under `path`; a bare path remains accepted for compatibility |

@@ -2313,7 +2313,7 @@ catch {^message message} (set duplicate message))
       removeDir(stateDir)
 
     let first = execCmdOnce(
-      "printf '/remember project uses Gene\\n/effort xhigh\\n/status\\n/quit\\n' | " &
+      "printf '/remember project uses Gene\\n/model persisted-main\\n/effort xhigh\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u OPENAI_REASONING_EFFORT " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
@@ -2322,9 +2322,11 @@ catch {^message message} (set duplicate message))
     check "remembered: project uses Gene" in first.output
     check "state: " & stateDir in first.output
     check "memory: 1" in first.output
+    check "main agent model set to persisted-main" in first.output
     check "reasoning effort set to xhigh" in first.output
     check "effort: xhigh" in first.output
     let configText = readFile(agentStateRecordPath(stateDir, "config"))
+    check "^model \"persisted-main\"" in configText
     check "^reasoning_effort \"xhigh\"" in configText
     check "dummy" notin configText
     check "OPENAI_AUTH_TOKEN" notin configText
@@ -2339,7 +2341,7 @@ catch {^message message} (set duplicate message))
     check second.exitCode == 0
     check "memory:\nproject uses Gene" in second.output
     check "state: " & stateDir in second.output
-    check "model: gpt-5.6-terra" in second.output
+    check "model: persisted-main" in second.output
     check "api: responses" in second.output
     check "current effort: xhigh" in second.output
     check "effort: xhigh" in second.output
@@ -2402,6 +2404,76 @@ catch {^message message} (set duplicate message))
     check defaultEffort.exitCode == 0
     check "\"reasoning\":" notin defaultEffort.output
     check "reasoning_effort" notin defaultEffort.output
+
+  test "ai agent switches models independently for main and pane agents":
+    buildGeneCli()
+    let command =
+      "printf '/model\\n/model main-one\\n/model 0\\n/agent new\\n" &
+      "/model 1\\n/model 1 child-two\\n/model 1\\n/agents\\n/status\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_STATE " &
+      "-u GENE_AGENT_HOME CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "main agent model: gpt-5.6-terra" in ran.output
+    check "main agent model set to main-one" in ran.output
+    check "pane 1 agent a1 model: main-one" in ran.output
+    check "pane 1 agent a1 model set to child-two" in ran.output
+    check "a1 model=child-two" in ran.output
+    check "model: main-one" in ran.output
+
+  test "ai agent persists and sends each agent model":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/per_agent_model_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import json [parse stringify])
+(import [application_call_worker application_find_agent application_snapshot
+         call_model make_application_with_task application_spawn_agent
+         restore_application_snapshot!]
+  from "./core.gene")
+(fn sink [_type, _props] nil)
+(var first
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(var main_changed
+  (application_call_worker first "main" "set_model" {^model "main-one"}
+    {^origin "user" ^caller_worker_id "main"}))
+(var child
+  (application_spawn_agent first "child" "review" (cell []) (cell "")))
+(var inherited (child/model ~ Cell/get))
+(var child_changed
+  (application_call_worker first child/id "set_model" {^model "child-two"}
+    {^origin "user" ^caller_worker_id "main"}))
+(child/current_task ~ Cell/set "busy")
+(var busy_change
+  (application_call_worker first child/id "set_model" {^model "too-late"}
+    {^origin "user" ^caller_worker_id "main"}))
+(child/current_task ~ Cell/set nil)
+(var saved (application_snapshot first))
+(var restored
+  (make_application_with_task (cell []) (cell "") (cell []) sink (cell nil)))
+(restore_application_snapshot! restored saved)
+(var restored_child (application_find_agent restored child/id))
+(var requested [])
+(fn transport [body, _render_stream]
+  (var request (parse body))
+  (requested ~ List/push! request/model)
+  {^output []})
+(call_model transport [] (fn [_text] nil)
+  {^app restored ^agent restored/main_agent})
+(call_model transport [] (fn [_text] nil)
+  {^app restored ^agent restored_child})
+(println
+  $"changed=${main_changed/ok}/${child_changed/ok} busy=${busy_change/error/kind} inherited=${inherited} restored=${(restored/main_agent/model ~ Cell/get)}/${(restored_child/model ~ Cell/get)} requested=${(stringify requested)}")
+""")
+    let ran = runGene(["run", fixture])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "changed=true/true busy=worker_busy inherited=main-one" in ran.output
+    check "restored=main-one/child-two" in ran.output
+    check "requested=[\"main-one\",\"child-two\"]" in ran.output
 
   test "ai agent checkpoints application state before graceful exit":
     buildGeneCli()
@@ -2875,7 +2947,7 @@ catch {^message message} (set duplicate message))
     check "\"outcome\":\"failed\"" in ran.output
     check "\"error_kind\":\"AgentError\"" in ran.output
     check "\"source_v\":" in ran.output
-    check "a1 lifecycle=running availability=idle last=failed unread=true" in ran.output
+    check "a1 model=fake-responses lifecycle=running availability=idle last=failed unread=true" in ran.output
     check "agent a1 failed task=" in ran.output
 
   test "ai agent research results survive multi-tool success failure and restore":
@@ -2977,8 +3049,8 @@ catch {^message message} (set duplicate message))
     check "\"outcome\":\"completed\"" in first.output
     check "\"outcome\":\"failed\"" in first.output
     check "\"source_v\":" in first.output
-    check "a1 lifecycle=running availability=idle last=completed unread=true" in first.output
-    check "a2 lifecycle=running availability=idle last=failed unread=true" in first.output
+    check "a1 model=fake-research lifecycle=running availability=idle last=completed unread=true" in first.output
+    check "a2 model=fake-research lifecycle=running availability=idle last=failed unread=true" in first.output
     check "agent a1 completed task=" in first.output
     check "agent a2 failed task=" in first.output
     let persistedEvents = readFile(agentStateRecordPath(stateDir, "events"))
