@@ -3870,6 +3870,55 @@ catch {^message message}
     check "^bytes " in status.output
     check "^context_max_bytes 1234" in status.output
 
+  test "ai agent keeps compaction markers off both model wire shapes":
+    buildGeneCli()
+    let fixture = "examples/ai_agent/wire_marker_test.gene"
+    defer:
+      if fileExists(fixture): removeFile(fixture)
+    writeFile(fixture, """
+(import str [contains?])
+(import [call_model compact_context] from "./core.gene")
+(fn sink [_type, _props] nil)
+(var items
+  [{^role "system" ^content "sys"}
+   {^role "user" ^content "old-intent"}
+   {^type "message" ^role "assistant"
+    ^content [{^type "output_text" ^text "old-answer"}]}
+   {^role "user" ^content "recent-intent"}
+   {^type "message" ^role "assistant"
+    ^content [{^type "output_text" ^text "recent-answer"}]}])
+(var compacted (compact_context items sink))
+(var markers 0)
+(for item in compacted
+  (if (|| (== item/context_summary true) (== item/context_limit_warning true))
+    (set markers (+ markers 1))))
+(var bodies [])
+(fn transport [body, _render_stream]
+  (bodies ~ List/push! body)
+  {^output []})
+(call_model transport compacted (fn [_text] nil))
+(var body bodies/0)
+(var summary_sent (contains? body "Context compacted"))
+(var warning_sent (contains? body "configured floor"))
+(var leak (|| (contains? body "context_summary")
+              (contains? body "context_limit_warning")))
+(println $"markers=${markers} summary_sent=${summary_sent} warning_sent=${warning_sent} leak=${leak}")
+""")
+    let compactEnv =
+      "GENE_AGENT_CONTEXT_MAX_BYTES=1 GENE_AGENT_CONTEXT_MAX_ITEMS=3 " &
+      "GENE_AGENT_CONTEXT_KEEP_TURNS=1 "
+    for flavorEnv in ["env -u OPENAI_BASE_URL -u OPENAI_API ",
+                      "env -u OPENAI_BASE_URL OPENAI_API=chat "]:
+      # OpenAI's strict backends reject unknown item fields such as
+      # input[N].context_summary, so the markers must stay agent-local
+      # while the summary text itself still reaches the model.
+      let ran = execCmdOnce(flavorEnv & compactEnv & shellQuote(geneExe) &
+                            " run " & shellQuote(fixture))
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check "markers=2 summary_sent=true warning_sent=true leak=false" in
+        ran.output
+
   test "ai agent improvement tools return structural, bounded guidance":
     buildGeneCli()
     let fixture = "examples/ai_agent/improvements_test.gene"

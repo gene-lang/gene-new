@@ -2718,7 +2718,10 @@ Choose exact ordering from dogfood pain:
   compaction preserving system/workspace instructions, remembered decisions,
   recent turns, and tool-call/output integrity. If the retained floor is still
   oversized, oldest tool output text is replaced without separating its call
-  pair; irreducible user/system content is surfaced explicitly;
+  pair; irreducible user/system content is surfaced explicitly. The summary
+  and limit-warning items compaction inserts carry agent-local marker props;
+  both wire shapes strip those markers before sending, since strict backends
+  reject unknown item fields;
 - **Done:** dogfood feedback improvements: structured reader opener contexts,
   immediate `.gene` write/edit parse warnings, bounded edit mismatch excerpts,
   configurable shell timeouts, `List/push!`, and configurable tool-round

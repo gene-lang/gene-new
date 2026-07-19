@@ -4048,20 +4048,42 @@ State that broader behavior is unverified when no matching successful check ran.
     (context/agent/model ~ Cell/get)
     model))
 
+# Compaction annotates the items it inserts with agent-local marker props so
+# later passes can recognize them. Strict backends reject unknown item fields
+# ("Unknown parameter: 'input[N].context_summary'"), so both wire shapes send
+# copies with the local markers stripped; unmarked items pass through as-is.
+(fn wire_item [item]
+  (if_not (|| (== item/context_summary true)
+              (== item/context_limit_warning true))
+    (return item))
+  (var out {})
+  (for [key value] in item
+    (var name $"${key}")
+    (if_not (|| (== name "context_summary")
+                (== name "context_limit_warning"))
+      (out ~ Map/put! key value)))
+  out)
+
+(fn wire_items [items]
+  (var out [])
+  (for item in items (out ~ List/push! (wire_item item)))
+  out)
+
 (fn call_model [transport, input_items, render_stream, context = nil]
   (var started (monotonic_ms))
   (var selected_model (context_model context))
+  (var wire_input (wire_items input_items))
   (var request
     (if (== api_flavor "chat")
       {^model selected_model
-       ^messages (items_to_chat_messages input_items)
+       ^messages (items_to_chat_messages wire_input)
        ^tools (chat_tool_schemas_now)
        ^tool_choice "auto"
        ^stream true}
       {^model selected_model
        ^store false
        ^stream true
-       ^input input_items
+       ^input wire_input
        ^tools (tool_schemas_now)
        ^tool_choice "auto"
        ^parallel_tool_calls true}))

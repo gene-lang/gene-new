@@ -3556,10 +3556,10 @@
                                   transcript memory streaming)
         (handle_main_input app routed_line items transcript memory streaming)))))
 
-# A string literal cannot appear inside `${...}` interpolation (the reader's
-# lexical scan ends the outer string at the nested quote), and a `var` for the
-# separator inside the interactive while body is a duplicate binding on the
-# second /memory. One helper avoids both.
+# A bare quote ends the reader's `${...}` scan, so an inline separator inside
+# interpolation needs `\"` escapes, and a `var` for it inside the interactive
+# while body is a duplicate binding on the second /memory. A helper reads
+# better than either.
 (fn memory_report [memory] : Str
   (join (memory ~ Cell/get) "\n"))
 
