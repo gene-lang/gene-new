@@ -1,6 +1,7 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene AI coding agent — MVP (examples/ai_agent/design.md milestones 1-4).
+# Gene AI coding agent (design, roadmap, and architecture:
+# examples/ai_agent/design.md).
 #
 #   * Talks to Codex's ChatGPT-account Responses backend by default, or to any
 #     OpenAI-compatible Chat Completions endpoint (MiniMax, DeepSeek, vLLM,
@@ -9,9 +10,11 @@
 #   * Transport is native libcurl through net/http_client (curl(1) is a
 #     discovery fallback), so model calls never block the scheduler.
 #   * Tools: read_file / write_file / edit_file / list_dir / run_shell / grep,
-#     each declared ONCE as a typed Tool value — the model-facing JSON schema,
-#     argument validation, risk class, and handler all derive from that single
-#     declaration (examples/ai_agent/design.md §6, slice A).
+#     plus the typed supervision/pane tools (spawn_agent, send_agent,
+#     agent_result, call_worker, open_pane, ...) — each declared ONCE as a
+#     typed Tool value: the model-facing JSON schema, argument validation,
+#     risk class, and handler all derive from that single declaration
+#     (examples/ai_agent/design.md §6, §10.4).
 #   * §8.5 catastrophe guard: host-destroying commands (rm -rf of protected
 #     roots, mkfs, fork bombs, shutdown, DROP DATABASE) are denied; destructive
 #     git/db/infra commands take one explicit confirmation; file paths are
@@ -1488,8 +1491,8 @@
     (then
       (if (!= (active_editor ~ Cell/get) nil)
       # A background worker must not steal the terminal or replace a composed
-      # draft. Until the optional multi-surface confirmation inbox lands,
-      # default-deny this rare collision without blocking the scheduler.
+      # draft. Until the optional §12.8 multi-surface confirmation channel
+      # lands, default-deny this rare collision without blocking the scheduler.
         (then false)
         (else
           (append_transcript transcript $"${prompt}\n")
@@ -2741,7 +2744,7 @@
 # Stable live session object (§9.1). Projections are props holding the live
 # cells and registry; mutations go through messages so the session can keep
 # invariants (system-prompt memory refresh, persistence) and append an audit
-# event. `evidence` arrives with the later slice-B evidence work.
+# event. `evidence` projects the slice-B structured command-evidence records.
 (type Session
   ^props {^items Any ^transcript Any ^memory Any ^tools Any ^events Any
           ^changes Any ^evidence Any ^instructions Any ^config Any ^workspace Any
@@ -2869,8 +2872,8 @@
       (application_send_worker_input
         self/application pane/worker text "local_tui")))
 
-  # Cancel the active model/tool turn. The embedded CLI currently exposes
-  # this through the programmable session; gateway.gene also maps it to HTTP.
+  # Cancel the active model/tool turn. The embedded CLI exposes this through
+  # the programmable session; the gateway adapter also maps it to HTTP.
   (message cancel [self]
     (var task (self/current_task ~ Cell/get))
     (if (== task nil)
@@ -3117,7 +3120,7 @@
    ^summary "add durable user memory"}
   {^name "/memory" ^section "session" ^usage "/memory"
    ^summary "show durable user memory"}
-  {^name "/forget-memory" ^section "session" ^usage "/forget-memory"
+  {^name "/forget" ^section "session" ^usage "/forget"
    ^summary "clear durable user memory"}
   {^name "/edit" ^section "input" ^usage "/edit [initial text]"
    ^summary "compose the focused draft in VISUAL or EDITOR"}
@@ -3553,6 +3556,13 @@
                                   transcript memory streaming)
         (handle_main_input app routed_line items transcript memory streaming)))))
 
+# A string literal cannot appear inside `${...}` interpolation (the reader's
+# lexical scan ends the outer string at the nested quote), and a `var` for the
+# separator inside the interactive while body is a duplicate binding on the
+# second /memory. One helper avoids both.
+(fn memory_report [memory] : Str
+  (join (memory ~ Cell/get) "\n"))
+
 (fn run_repl []
   (init_agent_state)
   (start_workspace_heartbeat!)
@@ -3574,6 +3584,9 @@
   (var running (cell true))
   (var line nil)
   (var input_history nil)
+  # Hoisted like `line`: a `var` inside the while body is a duplicate binding
+  # on its second execution, so command branches `set` these instead.
+  (var memory_note nil)
   (var streaming (cell false))
   (var app (make_application items transcript memory emit_event!))
   (active_application ~ Cell/set app)
@@ -3647,12 +3660,11 @@
                 (elif (== line "/repl")
                   (handle_repl_pane items transcript memory streaming))
                 (elif (== line "/memory")
-                  (var sep "\n")
                   (render_agent_text transcript streaming
                     (if (empty? (memory ~ Cell/get))
                       "memory is empty"
-                      $"memory:\n${(join (memory ~ Cell/get) sep)}")))
-                (elif (== line "/forget-memory")
+                      $"memory:\n${(memory_report memory)}")))
+                (elif (== line "/forget")
                   (memory ~ Cell/set [])
                   (items ~ Cell/set
                     (refresh_system_memory (items ~ Cell/get)
@@ -3663,22 +3675,24 @@
                                     (memory ~ Cell/get))
                   (render_agent_text transcript streaming "memory cleared"))
                 (elif (starts_with? line "/remember ")
-                  (var note (trim (after_prefix line "/remember ")))
-                  (if (== note "")
+                  (set memory_note (trim (after_prefix line "/remember ")))
+                  (if (== memory_note "")
                     (then
                       (render_agent_text transcript streaming
                         "usage: /remember <note>"))
                     (else
-                      (memory ~ Cell/set (append (memory ~ Cell/get) note))
+                      (memory ~ Cell/set
+                        (append (memory ~ Cell/get) memory_note))
                       (items ~ Cell/set
                         (refresh_system_memory (items ~ Cell/get)
                                               (memory ~ Cell/get)))
-                      (emit_event! "memory" {^action "remember" ^text note})
+                      (emit_event! "memory"
+                        {^action "remember" ^text memory_note})
                       (save_agent_state (items ~ Cell/get)
                                         (transcript ~ Cell/get)
                                         (memory ~ Cell/get))
                       (render_agent_text transcript streaming
-                        $"remembered: ${note}"))))
+                        $"remembered: ${memory_note}"))))
                 (elif (== line "/status")
                   (render_agent_text transcript streaming
                     (agent_status_report items memory)))

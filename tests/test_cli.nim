@@ -396,6 +396,27 @@ suite "cli — gene run":
     check "pane 0 cannot be maximized" in ran.output
     check "usage: /max [N]" in ran.output
 
+  test "ai agent memory commands repeat within one session":
+    buildGeneCli()
+    let command =
+      "printf '/remember one\\n/remember two\\n/memory\\n/forget\\n" &
+      "/memory\\n/quit\\n' | " &
+      "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_STATE " &
+      "-u GENE_AGENT_HOME CODEX_ACCESS_TOKEN=dummy " &
+      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+    let ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    # Both branch-local bindings used to be `var`s in the interactive while
+    # body, so the second /remember or /memory crashed with a duplicate
+    # binding error.
+    check "remembered: one" in ran.output
+    check "remembered: two" in ran.output
+    check "memory:\none\ntwo" in ran.output
+    check "memory cleared" in ran.output
+    check "memory is empty" in ran.output
+    check "duplicate binding" notin ran.output
+
   test "ai agent output follow rejects cycles and process restart mints identity":
     buildGeneCli()
     let fixture = "examples/ai_agent/output_follow_test.gene"

@@ -7,7 +7,7 @@ flagship example. Full design, roadmap, and architecture: [design.md](design.md)
 |---|---|
 | `tui.gene` | Main application: terminal agent, native agents/panes, streaming model loop, typed tools, event log, `/repl`, and optional gateway flags. |
 | `gateway_adapter.gene` | UI-neutral HTTP/web/Telegram gateway adapter composed by the main application. |
-| `gateway.gene` | Thin headless compatibility launcher over `tui.gene` + `gateway_adapter.gene`. |
+| `gateway.gene` | Thin headless compatibility launcher over `core.gene` + `gateway_adapter.gene`; loads no TUI module. |
 | `logging.gene` | Trace-level JSONL diagnostic profile for the agent; writes `logs/agent.jsonl` beside the config. |
 | `design.md` | The design document (formerly `docs/ai-agent.md`) — what exists, what's next, and why. |
 | `package.gene` | Package manifest. |
@@ -74,7 +74,7 @@ add tools, inspect state, `(session ~ resume)` to continue the turn),
 `/diff` and `/undo [id]` (only attributable file operations), `/sh` (open or
 focus a cancellable foreground shell pane), `/tty` (local user-driven escape
 for interactive or persistent/background shell work), `/remember <note>` / `/memory` /
-`/forget-memory` (durable notes in the system prompt),
+`/forget` (durable notes in the system prompt),
 `/effort [level]` (show all reasoning-effort levels and the current choice, or
 set it for subsequent model requests),
 `/model [model]` (show or change the main agent's model),

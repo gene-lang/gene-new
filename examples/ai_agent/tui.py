@@ -2030,7 +2030,7 @@ class Cli:
                 self.session.save()
         elif line == "/memory":
             self.render("memory is empty" if not self.session.memory else "memory:\n" + "\n".join(self.session.memory))
-        elif line == "/forget-memory":
+        elif line == "/forget":
             self.session.memory.clear()
             self.session.refresh_system_memory()
             self.session.emit("memory", action="clear", text="memory cleared")

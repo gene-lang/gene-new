@@ -314,7 +314,7 @@ Behavior:
   line-oriented worker; C8 terminal-direct mode is byte-transparent and uses
   `Ctrl-]` to enter application command mode (§7.4). Session commands include
   `/quit`, `/exit`, `/remember`, `/memory`,
-  `/forget-memory`, `/status`, `/model [0|N] [model]`, `/effort [level]`,
+  `/forget`, `/status`, `/model [0|N] [model]`, `/effort [level]`,
   `/progress`, `/trace`,
   `/diff`, and `/undo`, and
   Ctrl-C interrupting the currently shipped structured `/sh` command or
@@ -1253,7 +1253,7 @@ The canonical command grammar included by comprehensive help begins with:
 /model [model] | /model <0|N> [model]
 /effort [default|none|minimal|low|medium|high|xhigh|max]
 /diff            /undo [change-id]
-/remember ...    /memory          /forget-memory ...
+/remember ...    /memory          /forget ...
 /edit            /sh [-- argv...]  /tty             /quit | /exit
 /view <file>                         # terminal handoff to gene view
 ```
