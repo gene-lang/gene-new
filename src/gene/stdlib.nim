@@ -8159,7 +8159,7 @@ proc registerStdlibNamespaces(root: Scope) =
   dbSqliteScope.define("SqliteDb", sqliteDbType)
   dbSqliteScope.define("Db", dbProtocol)
   dbSqliteScope.define("DbError", dbError)
-  dbSqliteScope.impls.add ProtocolImpl(
+  root.impls.add ProtocolImpl(
     protocol: dbProtocol, receiver: sqliteDbType,
     messages: @[
       ImplMessage(message: dbMessages["exec"],
@@ -8190,7 +8190,7 @@ proc registerStdlibNamespaces(root: Scope) =
   dbPostgresScope.define("PostgresDb", postgresDbType)
   dbPostgresScope.define("Db", dbProtocol)
   dbPostgresScope.define("DbError", dbError)
-  dbPostgresScope.impls.add ProtocolImpl(
+  root.impls.add ProtocolImpl(
     protocol: dbProtocol, receiver: postgresDbType,
     messages: @[
       ImplMessage(message: dbMessages["exec"],
@@ -8247,7 +8247,7 @@ proc registerStdlibNamespaces(root: Scope) =
   storeSqliteScope.define("Store", storeProtocol)
   storeSqliteScope.define("StoreError", storeError)
   storeSqliteScope.define("SqliteStore", sqliteStoreType)
-  storeSqliteScope.impls.add ProtocolImpl(
+  root.impls.add ProtocolImpl(
     protocol: storeProtocol, receiver: sqliteStoreType,
     messages: @[
       ImplMessage(message: storeMessages["put"],
@@ -8281,7 +8281,7 @@ proc registerStdlibNamespaces(root: Scope) =
   storeFsScope.define("Store", storeProtocol)
   storeFsScope.define("StoreError", storeError)
   storeFsScope.define("FsStore", fsStoreType)
-  storeFsScope.impls.add ProtocolImpl(
+  root.impls.add ProtocolImpl(
     protocol: storeProtocol, receiver: fsStoreType,
     messages: @[
       ImplMessage(message: storeMessages["put"],

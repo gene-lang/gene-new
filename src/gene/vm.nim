@@ -321,6 +321,8 @@ type
     moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
     moduleCompileLoading: HashSet[string]
     implEpoch: uint64
+    implScopeIndex: Table[tuple[receiver, message: uint64], seq[Scope]]
+    baseScopes: seq[Scope] # enumerable module/program bases for reload checks
     currentModuleDir: string
     packageRoot: string
     # serde stage 3+ reverse origin index: definition value bits ->
@@ -348,6 +350,7 @@ proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
+proc snapshotProtocolBindings(scope: Scope): seq[Value]
 proc commonRuntimeTypeExpr(values: openArray[Value]): Value
 proc matchesBufferType(args: openArray[Value], value: Value,
                        scope: Scope): bool
@@ -674,8 +677,41 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotMirror = mirror
 
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
+  if not scope.entryProtocolsFrozen:
+    if scope.moduleRoot or scope.implOverlayRoot:
+      scope.entryProtocols = snapshotProtocolBindings(scope.parent)
+    elif scope.parent != nil:
+      scope.entryProtocols = scope.parent.entryProtocols
+    scope.entryProtocolsFrozen = true
   if scope.slots.len == 0 and chunk.localNames.len > 0:
     scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
+
+proc protocolBindingSig(scope: Scope): int =
+  ## Cheap O(chain-depth) signature of how many bindings could contribute
+  ## protocol identities. Only the count changes when a binding is added, so
+  ## an unchanged count lets refreshCompiledUnitEntry reuse the prior snapshot
+  ## instead of re-walking every binding (the reused-scope hot path). This is
+  ## sound only because module/REPL root scopes are append-only within a
+  ## session: a binding is never deleted or rebound, so equal counts imply an
+  ## unchanged binding set. A future unbind would have to invalidate the sig.
+  var current = scope
+  while current != nil:
+    result += current.slotNames.len + current.vars.len
+    current = current.parent
+
+proc refreshCompiledUnitEntry(scope: Scope) =
+  ## File/program roots normally execute once; eval/REPL roots execute many
+  ## independently compiled units. Snapshot all bindings already committed in
+  ## this scope before each such unit, without changing older function values.
+  ## Repeated runs of one compiled chunk on the same scope (no new bindings)
+  ## reuse the frozen snapshot rather than re-walking the whole scope chain.
+  if scope.moduleRoot or scope.implOverlayRoot:
+    let sig = scope.protocolBindingSig()
+    if scope.entryProtocolsFrozen and scope.entrySnapshotSig == sig:
+      return
+    scope.entryProtocols = snapshotProtocolBindings(scope)
+    scope.entryProtocolsFrozen = true
+    scope.entrySnapshotSig = sig
 
 proc checkSlot(scope: Scope, index: int, name: string) =
   if index < 0 or index >= scope.slots.len:
@@ -5299,6 +5335,8 @@ proc newApplication*(entryDir = ""): Application =
                        moduleCompileArtifacts:
                          initTable[string, ModuleCompileArtifact](),
                        moduleCompileLoading: initHashSet[string](),
+                       implScopeIndex:
+                         initTable[tuple[receiver, message: uint64], seq[Scope]](),
                        scheduler: newSchedulerState(),
                        currentModuleDir: root,
                        packageRoot: root)
@@ -5350,11 +5388,29 @@ proc builtinsScope*(app: Application): Scope =
 proc builtinsScope*(): Scope =
   currentApplication().builtinsScope()
 
+proc trackBaseScope(app: Application, scope: Scope) =
+  ## Make `scope` enumerable for module reload. Reload walks `baseScopes` only to
+  ## re-validate scoped/imported impls and rebuild the scope index, so the list
+  ## must hold exactly the file-module base scopes (bindThisModule) and any other
+  ## scope that actually carries a scoped/imported impl (addIndexedScope). A
+  ## transient one-shot program scope registers neither and must stay collectable
+  ## — retaining every `newGlobalScope` here leaked all scope-owned values for the
+  ## app's lifetime. Dedup keeps a scope that is both a module base and an impl
+  ## carrier from being listed twice; the list is small, so a linear scan is fine.
+  for existing in app.baseScopes:
+    if existing == scope:
+      return
+  app.baseScopes.add scope
+
 proc newGlobalScope*(app: Application): Scope =
   ## A fresh program/module root scope. Its parent is the application's shared
   ## built-ins root, so declarations stay isolated while lookup falls through to
-  ## built-ins with stable marker protocol/type identity.
-  newScope(app.builtinsScope(), application = app)
+  ## built-ins with stable marker protocol/type identity. Enumerability for
+  ## reload is granted lazily (see `trackBaseScope`), never here — a plain
+  ## `run`/eval scope must be reclaimable once dropped.
+  result = newScope(app.builtinsScope(), application = app)
+  result.moduleRoot = true
+  result.moduleStatic = true
 
 proc newGlobalScope*(): Scope =
   newGlobalScope(currentApplication())
@@ -5381,6 +5437,12 @@ proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
   ## namespace owns declarations; the Module value carries identity, path, and
   ## metadata and is exposed through the compiler-provided `this_mod` binding.
   let root = newNamespace(name, scope, path, moduleRoot = true)
+  scope.moduleRoot = true
+  scope.moduleStatic = true
+  # A named module base is enumerable for reload (file modules, the reload
+  # replacement, native modules). Already retained by moduleCache, so this adds
+  # no lifetime beyond the module itself.
+  scope.application().trackBaseScope(scope)
   result = newModule(name, root, path)
   scope.define("this_mod", result)
 
@@ -5923,7 +5985,15 @@ proc resetCallScopeSlots(scope: Scope, names: seq[string],
     scope.slotNames = names
   elif scope.slotNames.len != 0:
     scope.slotNames.setLen(0)
-  scope.slotMirror = false
+    scope.slotMirror = false
+
+proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
+  ## Candidate entry identities belong to the compiled function value, not to
+  ## its mutable module/REPL scope. Candidate-bearing functions are compiled
+  ## with needsCallScope, so this never has to mutate the lexical parent.
+  if scope != nil and callee.kind == vkFunction and scope != callee.fnScope:
+    scope.entryProtocols = callee.fnProtocolEntries
+    scope.entryProtocolsFrozen = true
   scope.varsDirty = false
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
@@ -5938,6 +6008,11 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.impls.setLen(0)
   scope.implOverlayRoot = false
   scope.implStageRoot = false
+  scope.forceOverlayImpls = false
+  scope.moduleRoot = false
+  scope.moduleStatic = false
+  scope.entryProtocols.setLen(0)
+  scope.entryProtocolsFrozen = false
   scope.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   scope.requiredImplTypes.setLen(0)
   scope.evalBudget =
@@ -6051,8 +6126,9 @@ proc frameNeedsImplValidation(proto: FunctionProto): bool {.inline.} =
   ## required impl checks to a scope. Keep non-pooled scopes conservative.
   proto.needsCallScope and not proto.poolCallScope
 
-proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
+proc bindUnaryIntCallScope(callee: Value, proto: FunctionProto,
                            arg: Value): Scope {.inline.} =
+  let parent = callee.fnScope
   let paramMaySet = proto.positionalParamsMaySet
   result =
     if proto.poolCallScope:
@@ -6071,10 +6147,12 @@ proc bindUnaryIntCallScope(parent: Scope, proto: FunctionProto,
     result.declareSlotType(slot, proto.paramTypes[0])
   else:
     result.bindSingleSimpleCallSlot(slot, arg)
+  result.seedFunctionProtocolEntry(callee)
 
-proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
+proc bindPositionalIntCallScope(callee: Value, proto: FunctionProto,
                                 args: openArray[Value],
                                 argsKnownBareInt = false): Scope {.inline.} =
+  let parent = callee.fnScope
   let anyParamMaySet = proto.positionalParamsMaySet
   result =
     if proto.poolCallScope:
@@ -6102,6 +6180,7 @@ proc bindPositionalIntCallScope(parent: Scope, proto: FunctionProto,
         if value.kind != vkInt:
           raiseTypeError("parameter '" & proto.params[i] & "'", "Int", value, result)
     result.bindSimpleCallSlots(proto, args)
+  result.seedFunctionProtocolEntry(callee)
 
 proc findNamedArg(names: openArray[string], name: string): int {.inline.} =
   for i, key in names:
@@ -6109,12 +6188,13 @@ proc findNamedArg(names: openArray[string], name: string): int {.inline.} =
       return i
   -1
 
-proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
+proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
                                 calleeName: string,
                                 positional: openArray[Value],
                                 namedNames: openArray[string],
                                 namedValues: openArray[Value],
                                 namedStart: int): Scope =
+  let parent = callee.fnScope
   if positional.len != proto.params.len:
     raise newException(GeneError,
       "function '" & calleeName & "' expects " & $proto.requiredPositional & ".." &
@@ -6140,6 +6220,7 @@ proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
       let fresh = newScope(parent)
       fresh.prepareSlots(proto.localNames)
       fresh
+  result.seedFunctionProtocolEntry(callee)
 
   for i in 0 ..< positional.len:
     var value = positional[i]
@@ -6167,10 +6248,11 @@ proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
     if declaredType.kind != vkNil:
       result.declareType(p.local, declaredType)
 
-proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
+proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
                                 calleeName: string,
                                 positional: openArray[Value],
                                 named: NamedArgs): Scope =
+  let parent = callee.fnScope
   if positional.len != proto.params.len:
     raise newException(GeneError,
       "function '" & calleeName & "' expects " & $proto.requiredPositional & ".." &
@@ -6196,6 +6278,7 @@ proc bindRequiredNamedCallScope(parent: Scope, proto: FunctionProto,
       let fresh = newScope(parent)
       fresh.prepareSlots(proto.localNames)
       fresh
+  result.seedFunctionProtocolEntry(callee)
 
   for i in 0 ..< positional.len:
     var value = positional[i]
@@ -6251,6 +6334,10 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.application = nil
     scope.evalBudget = nil
     scope.borrowedCallerEnv = false
+    scope.moduleRoot = false
+    scope.moduleStatic = false
+    scope.entryProtocols.setLen(0)
+    scope.entryProtocolsFrozen = false
     if pools.callScopesLen < MaxCallScopePool:
       pools.callScopes[pools.callScopesLen] = scope
       inc pools.callScopesLen
@@ -6272,6 +6359,12 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.impls.setLen(0)
   scope.implOverlayRoot = false
   scope.implStageRoot = false
+  scope.forceOverlayImpls = false
+  scope.moduleRoot = false
+  scope.moduleStatic = false
+  if scope.entryProtocols.len != 0:
+    scope.entryProtocols.setLen(0)
+  scope.entryProtocolsFrozen = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
   if scope.ownsTasks:
@@ -6417,17 +6510,62 @@ proc validateCallableSignature(expected, actual: Value, label: string) =
   raise newException(GeneError,
     label & " has incompatible " & mismatch & locations)
 
-proc implRegistrationRoot(scope: Scope): Scope =
-  ## Eval overlays and module staging scopes are lexical roots for impl
-  ## registration. Ordinary program scopes register application-wide.
-  var s = scope
-  while s != nil:
-    if s.implOverlayRoot or s.implStageRoot:
-      return s
-    s = s.parent
-  result = scope
-  while result.parent != nil:
-    result = result.parent
+proc moduleRootScope(scope: Scope): Scope =
+  var current = scope
+  while current != nil:
+    if current.moduleRoot:
+      return current
+    current = current.parent
+
+proc stagingRoot(scope: Scope): Scope =
+  var current = scope
+  while current != nil:
+    if current.implStageRoot:
+      return current
+    current = current.parent
+
+proc hasOverlayRoot(scope: Scope): bool =
+  var current = scope
+  while current != nil:
+    if current.implOverlayRoot:
+      return true
+    current = current.parent
+  false
+
+proc staticHomeRoot(scope: Scope): Scope =
+  if scope == nil or not scope.moduleStatic:
+    return nil
+  scope.moduleRootScope()
+
+proc fileModulePath(scope: Scope): string =
+  let root = scope.moduleRootScope()
+  if root == nil:
+    return ""
+  var module: Value
+  if root.lookupOptional("this_mod", module) and module.kind == vkModule:
+    return module.modulePath
+  ""
+
+proc classifyStandaloneImpl(scope: Scope, protocol, receiver: Value,
+                            proto: ImplProto): ImplVisibility =
+  if proto == nil or not proto.staticTopLevel or not proto.staticOperands or
+      scope.hasOverlayRoot or scope.forceOverlayImpls:
+    return ivOverlay
+  let definingRoot = scope.moduleRootScope()
+  let protocolRoot = protocol.protocolScope.staticHomeRoot()
+  let receiverRoot = receiver.typeScope.staticHomeRoot()
+  if definingRoot != nil and
+      (definingRoot == protocolRoot or definingRoot == receiverRoot):
+    ivCanonical
+  else:
+    ivScoped
+
+proc classifyInlineImpl(scope: Scope, staticTopLevel: bool): ImplVisibility =
+  if staticTopLevel and not scope.hasOverlayRoot and
+      scope.moduleRootScope() != nil:
+    ivCanonical
+  else:
+    ivOverlay
 
 proc duplicateImplIn(scope: Scope, protocol, receiver: Value): bool =
   for impl in scope.impls:
@@ -6435,8 +6573,78 @@ proc duplicateImplIn(scope: Scope, protocol, receiver: Value): bool =
       return true
   false
 
+proc overlappingMessage(a, b: ProtocolImpl): Value =
+  if not same(a.receiver, b.receiver):
+    return NIL
+  for left in a.messages:
+    for right in b.messages:
+      if left.message.bits == right.message.bits:
+        return left.message
+  NIL
+
+proc sameImplMessages(a, b: ProtocolImpl): bool
+
+proc validateImplConflict(existing, pending: ProtocolImpl,
+                          identicalIsDuplicate = false): bool =
+  ## Returns true only for an identical registration that an explicit scoped
+  ## import may reuse. All other pair/message-identity overlap is rejected.
+  if same(existing.protocol, pending.protocol) and
+      same(existing.receiver, pending.receiver):
+    if identicalIsDuplicate and existing.sameImplMessages(pending):
+      return true
+    raise newException(GeneError,
+      "duplicate visible impl " & pending.protocol.protocolName &
+      " for " & pending.receiver.typeName)
+  let message = existing.overlappingMessage(pending)
+  if message.kind != vkNil:
+    raise newException(GeneError,
+      "conflicting impls for message " & qualifiedMessageName(message) &
+      " on " & pending.receiver.typeName)
+  false
+
+proc validateImplAgainstChain(scope: Scope, pending: ProtocolImpl,
+                              identicalIsDuplicate = false): bool =
+  var current = scope
+  while current != nil:
+    for existing in current.impls:
+      if existing.validateImplConflict(pending, identicalIsDuplicate):
+        return true
+    current = current.parent
+  false
+
+proc addIndexedScope(app: Application, scope: Scope, impl: ProtocolImpl) =
+  # A scope that carries a scoped/imported impl must be enumerable for reload's
+  # index rebuild even when it is a plain program scope (e.g. a REPL/program that
+  # ran `import_impl`), not just a file-module base. Dedup is safe here and makes
+  # the rebuild pass — which re-calls this for scopes already listed — a no-op.
+  app.trackBaseScope(scope)
+  for entry in impl.messages:
+    let key = (receiver: impl.receiver.bits, message: entry.message.bits)
+    var scopes = app.implScopeIndex.getOrDefault(key)
+    var present = false
+    for existing in scopes:
+      if existing == scope:
+        present = true
+        break
+    if not present:
+      scopes.add scope
+      app.implScopeIndex[key] = scopes
+
+proc affectedIndexedScopes(app: Application, impl: ProtocolImpl): seq[Scope] =
+  for entry in impl.messages:
+    let key = (receiver: impl.receiver.bits, message: entry.message.bits)
+    for scope in app.implScopeIndex.getOrDefault(key):
+      var present = false
+      for existing in result:
+        if existing == scope:
+          present = true
+          break
+      if not present:
+        result.add scope
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
-                  entries: sink seq[ImplMessage]) =
+                  entries: sink seq[ImplMessage],
+                  visibility = ivOverlay, exported = false) =
   if protocol.kind != vkProtocol:
     raise newException(GeneError, "impl target must be a protocol")
   if receiver.kind != vkType:
@@ -6464,18 +6672,41 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
     if count > 1:
       raise newException(GeneError,
         "duplicate impl message: " & qualifiedMessageName(message))
-  var s = scope
-  while s != nil:
-    if s.duplicateImplIn(protocol, receiver):
-      raise newException(GeneError,
-        "duplicate visible impl " & protocol.protocolName &
-        " for " & receiver.typeName)
-    s = s.parent
-  let target = implRegistrationRoot(scope)
-  target.impls.add ProtocolImpl(protocol: protocol, receiver: receiver,
-                                messages: entries)
-  if not target.implOverlayRoot and not target.implStageRoot:
-    inc target.application().implEpoch
+  if exported and visibility != ivScoped:
+    let label = if visibility == ivCanonical: "canonical" else: "overlay"
+    raise newException(GeneError, label & " impls cannot be exported")
+  let pending = ProtocolImpl(protocol: protocol, receiver: receiver,
+                             messages: entries, visibility: visibility,
+                             exported: exported,
+                             originPath: scope.fileModulePath())
+  let stage = scope.stagingRoot()
+  case visibility
+  of ivCanonical:
+    if stage != nil:
+      discard stage.validateImplAgainstChain(pending)
+      stage.impls.add pending
+    else:
+      let app = scope.application()
+      let root = app.builtinsScope()
+      discard root.validateImplAgainstChain(pending)
+      for affected in app.affectedIndexedScopes(pending):
+        discard affected.validateImplAgainstChain(pending)
+      root.impls.add pending
+      inc app.implEpoch
+  of ivScoped:
+    let target = scope.moduleRootScope()
+    if target == nil:
+      raise newException(GeneError, "scoped impl requires a module scope")
+    discard target.validateImplAgainstChain(pending)
+    target.impls.add pending
+    if stage == nil:
+      let app = scope.application()
+      app.addIndexedScope(target, pending)
+      inc app.implEpoch
+  of ivOverlay:
+    discard scope.validateImplAgainstChain(pending)
+    scope.impls.add pending
+    inc scope.application().implEpoch
 
 proc sameImplMessages(a, b: ProtocolImpl): bool =
   if a.messages.len != b.messages.len:
@@ -6493,56 +6724,78 @@ proc sameImplMessages(a, b: ProtocolImpl): bool =
 proc activateStagedImpls(stage: Scope) =
   if stage == nil or not stage.implStageRoot or stage.impls.len == 0:
     return
-  var root = stage
-  while root.parent != nil:
-    root = root.parent
-  # Validate the whole batch before mutating the application registry. An
-  # impl already activated with the exact same message functions is a
-  # re-import of the same registration through another module path (e.g. two
-  # modules both importing db/sqlite, in either order) — skip it silently,
-  # matching makeImplsVisible. Only a same-protocol/receiver impl with
-  # DIFFERENT messages is a genuine conflict.
-  var activate = newSeq[bool](stage.impls.len)
-  for index, pending in stage.impls:
-    var duplicate = false
-    for existing in root.impls:
-      if same(existing.protocol, pending.protocol) and
-          same(existing.receiver, pending.receiver):
-        if existing.sameImplMessages(pending):
-          duplicate = true
-          break
-        raise newException(GeneError,
-          "duplicate visible impl " & pending.protocol.protocolName &
-          " for " & pending.receiver.typeName)
-    activate[index] = not duplicate
-  var activated = false
-  for index, pending in stage.impls:
-    if activate[index]:
+  let app = stage.application()
+  let root = app.builtinsScope()
+  # Validate the prospective module base scope and canonical registry before
+  # publishing either. Overlay entries remain outside the enumerable index.
+  for i, pending in stage.impls:
+    if pending.visibility == ivCanonical:
+      discard root.validateImplAgainstChain(pending)
+      for affected in app.affectedIndexedScopes(pending):
+        discard affected.validateImplAgainstChain(pending)
+    elif pending.visibility == ivScoped:
+      # A scoped impl joins its module base scope, so a pair (or inherited
+      # message identity) that conflicts with an already-published canonical
+      # impl must fail at assembly (proposal §4) — initial load is an
+      # assembly, exactly as reload's validateProspectiveBase enforces.
+      discard root.validateImplAgainstChain(pending)
+    for j in i + 1 ..< stage.impls.len:
+      discard stage.impls[j].validateImplConflict(pending)
+
+  var retained: seq[ProtocolImpl]
+  var changed = false
+  for pending in stage.impls:
+    case pending.visibility
+    of ivCanonical:
       root.impls.add pending
-      activated = true
-  stage.impls.setLen(0)
-  if activated:
-    inc root.application().implEpoch
+      changed = true
+    of ivScoped:
+      retained.add pending
+      app.addIndexedScope(stage, pending)
+      changed = true
+    of ivOverlay:
+      retained.add pending
+      changed = true
+  stage.impls = retained
+  if changed:
+    inc app.implEpoch
 
 proc makeImplsVisible(importingScope, sourceScope: Scope) =
-  for imported in sourceScope.impls:
-    var duplicate = false
-    var s = importingScope
-    while s != nil:
-      for existing in s.impls:
-        if same(existing.protocol, imported.protocol) and
-            same(existing.receiver, imported.receiver):
-          if existing.sameImplMessages(imported):
-            duplicate = true
-            break
-          raise newException(GeneError,
-            "duplicate visible impl " & imported.protocol.protocolName &
-            " for " & imported.receiver.typeName)
-      if duplicate:
-        break
-      s = s.parent
-    if not duplicate:
-      importingScope.impls.add imported
+  ## Ordinary value/namespace import never imports scoped policy. Canonical
+  ## impls are already present in the application registry; scoped impls use
+  ## `import_impl` and overlays are lexical only.
+  discard importingScope
+  discard sourceScope
+
+proc importScopedImpl(importingScope, sourceScope: Scope,
+                      protocol, receiver: Value) =
+  let target = importingScope.moduleRootScope()
+  if target == nil:
+    raise newException(GeneError, "import_impl requires a module scope")
+  var found = false
+  var selected: ProtocolImpl
+  for candidate in sourceScope.impls:
+    if candidate.visibility == ivScoped and candidate.exported and
+        same(candidate.protocol, protocol) and same(candidate.receiver, receiver):
+      if found:
+        raise newException(GeneError,
+          "module exports duplicate impl " & protocol.protocolName &
+          " for " & receiver.typeName)
+      found = true
+      selected = candidate
+  if not found:
+    raise newException(GeneError,
+      "module does not export impl " & protocol.protocolName &
+      " for " & receiver.typeName)
+  var imported = selected
+  imported.exported = false
+  imported.imported = true
+  if target.validateImplAgainstChain(imported, identicalIsDuplicate = true):
+    return
+  target.impls.add imported
+  let app = target.application()
+  app.addIndexedScope(target, imported)
+  inc app.implEpoch
 
 proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   # An impl of a protocol that ^inherits `protocol` also satisfies `protocol`
@@ -6577,17 +6830,7 @@ proc scopeChainContains(scope, target: Scope): bool =
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
   if protocol.kind == vkProtocol and protocol.protocolUniversal:
     return true
-  if scope != nil and scope.hasVisibleImpl(protocol, typ):
-    return true
-  var t = typ
-  while t.kind == vkType:
-    let definingScope = t.typeScope
-    if definingScope != nil and
-        (scope == nil or not scope.scopeChainContains(definingScope)) and
-        definingScope.hasVisibleImpl(protocol, typ):
-      return true
-    t = t.typeParent
-  false
+  scope != nil and scope.hasVisibleImpl(protocol, typ)
 
 proc builtinBinding(scope: Scope, name: string): Value =
   let root =
@@ -7211,6 +7454,11 @@ proc snapshotScopeChain(source: Scope,
 
   let parent = snapshotScopeChain(source.parent, scopeMap)
   result = newScope(parent, application = source.application)
+  result.moduleRoot = source.moduleRoot
+  result.moduleStatic = source.moduleStatic
+  result.entryProtocols = source.entryProtocols
+  result.entryProtocolsFrozen = source.entryProtocolsFrozen
+  result.forceOverlayImpls = source.forceOverlayImpls
   scopeMap[key] = result
   if source.slots.len > 0:
     result.slots = newSeq[Value](source.slots.len)
@@ -7230,7 +7478,11 @@ proc snapshotScopeChain(source: Scope,
                                fn: cloneForCapturedSnapshot(entry.fn, scopeMap))
     result.impls.add ProtocolImpl(protocol: impl.protocol,
                                   receiver: impl.receiver,
-                                  messages: messages)
+                                  messages: messages,
+                                  visibility: impl.visibility,
+                                  exported: impl.exported,
+                                  originPath: impl.originPath,
+                                  imported: impl.imported)
   result.requiredImplTypes = source.requiredImplTypes
   result.evalBudget = source.evalBudget
 
@@ -7583,12 +7835,15 @@ proc publishSpawnCapture(scope: Scope, chunk: Chunk) =
   publishSpawnScope(scope, seenScopes, seenValues, seenChunks)
   publishSpawnChunk(chunk, seenScopes, seenValues, seenChunks)
 
+proc validateRequiredImplType(scope: Scope, typ: Value) =
+  for protocol in typ.typeRequiredProtocols:
+    if not scope.typeImplementsProtocol(typ, protocol):
+      raise newException(GeneError,
+        "type " & typ.typeName & " requires impl " & protocol.protocolName)
+
 proc validateRequiredImpls(scope: Scope) =
   for typ in scope.requiredImplTypes:
-    for protocol in typ.typeRequiredProtocols:
-      if not scope.typeImplementsProtocol(typ, protocol):
-        raise newException(GeneError,
-          "type " & typ.typeName & " requires impl " & protocol.protocolName)
+    scope.validateRequiredImplType(typ)
 
 proc isErrorValue(scope: Scope, value: Value): bool =
   if value.kind != vkNode or value.head.kind != vkType:
@@ -7895,40 +8150,6 @@ proc materializeCallerEvalParent(callerEnv: Value): Scope =
     for impl in item.impls:
       result.impls.add impl
 
-proc collectProtocolMatches(scope: Scope, recvType, message: Value,
-                            matches: var seq[Value]) =
-  # Dispatch is keyed by message identity (docs/core.md §3.2/§4): an impl of
-  # any protocol whose closure includes `message` carries an entry for it, so
-  # matching entries directly also covers impls of ^inherit descendants.
-  for impl in scope.impls:
-    if recvType.isSubtypeOf(impl.receiver):
-      for entry in impl.messages:
-        if entry.message.bits == message.bits:
-          matches.add entry.fn
-
-proc collectProtocolMatchesChain(scope: Scope, recvType, message: Value,
-                                 matches: var seq[Value]) =
-  var s = scope
-  while s != nil:
-    collectProtocolMatches(s, recvType, message, matches)
-    s = s.parent
-
-proc hasSeenScope(seen: openArray[Scope], scope: Scope): bool =
-  for item in seen:
-    if item == scope:
-      return true
-  false
-
-proc collectProtocolMatchesExtra(scope, currentScope: Scope, recvType,
-                                 message: Value, seen: var seq[Scope],
-                                 matches: var seq[Value]) =
-  var s = scope
-  while s != nil:
-    if not currentScope.scopeChainContains(s) and not seen.hasSeenScope(s):
-      seen.add s
-      collectProtocolMatches(s, recvType, message, matches)
-    s = s.parent
-
 proc dedupeProtocolMatches(matches: var seq[Value]) =
   var unique: seq[Value]
   for candidate in matches:
@@ -7941,6 +8162,51 @@ proc dedupeProtocolMatches(matches: var seq[Value]) =
       unique.add candidate
   matches = unique
 
+proc receiverDistance(actual, target: Value): int =
+  var current = actual
+  var depth = 0
+  while current.kind == vkType:
+    if same(current, target):
+      return depth
+    current = current.typeParent
+    inc depth
+  -1
+
+proc collectProtocolMatches(scope: Scope, recvType, message: Value,
+                            bestDepth: var int, matches: var seq[Value]) =
+  # Nearest-receiver selection is independent for each exact message
+  # identity. Unrelated same-name identities are compared only afterward.
+  for impl in scope.impls:
+    let depth = recvType.receiverDistance(impl.receiver)
+    if depth < 0 or (bestDepth >= 0 and depth > bestDepth):
+      continue
+    for entry in impl.messages:
+      if entry.message.bits != message.bits:
+        continue
+      if bestDepth < 0 or depth < bestDepth:
+        bestDepth = depth
+        matches.setLen(0)
+      matches.add entry.fn
+
+proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
+  var matches: seq[Value]
+  var bestDepth = -1
+  var current = scope
+  while current != nil:
+    current.collectProtocolMatches(recvType, message, bestDepth, matches)
+    current = current.parent
+  matches.dedupeProtocolMatches()
+  if matches.len > 1:
+    let protocol = message.protocolMessageProtocol
+    raise newException(GeneError,
+      "ambiguous impl " & protocol.protocolName & " for " & recvType.typeName)
+  if matches.len == 1:
+    return matches[0]
+  let protocol = message.protocolMessageProtocol
+  if protocol.protocolUniversal:
+    return message.protocolMessageDefaultFn
+  NIL
+
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
   if scope == nil:
     raise newException(GeneError,
@@ -7952,68 +8218,146 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
     raise newException(GeneError,
       "protocol message '" & message.protocolMessageName &
       "' requires a typed receiver")
-  var matches: seq[Value]
-  collectProtocolMatchesChain(scope, recvType, message, matches)
-  var seenExtraScopes: seq[Scope]
-  var typ = recvType
-  while typ.kind == vkType:
-    let definingScope = typ.typeScope
-    if definingScope != nil and not scope.scopeChainContains(definingScope):
-      collectProtocolMatchesExtra(definingScope, scope, recvType, message,
-                                  seenExtraScopes, matches)
-    typ = typ.typeParent
-  matches.dedupeProtocolMatches()
-  if matches.len == 0:
-    if protocol.protocolUniversal:
-      let defaultFn = message.protocolMessageDefaultFn
-      if defaultFn.kind != vkNil:
-        return defaultFn
+  result = scope.tryResolveProtocolMessage(recvType, message)
+  if result.kind == vkNil:
     raise newException(GeneError,
       "missing impl " & protocol.protocolName & " for " & recvType.typeName)
-  if matches.len > 1:
-    raise newException(GeneError,
-      "ambiguous impl " & protocol.protocolName & " for " & recvType.typeName)
-  matches[0]
 
-proc collectReceiverMessageMatches(scope: Scope, recvType: Value, name: string,
-                                   matches: var seq[Value]) =
-  for impl in scope.impls:
-    if recvType.isSubtypeOf(impl.receiver):
-      for entry in impl.messages:
-        if entry.message.protocolMessageName == name:
-          matches.add entry.fn
+proc addProtocolCandidate(candidates: var seq[Value], value: Value) =
+  if value.kind != vkProtocol:
+    return
+  for existing in candidates:
+    if same(existing, value):
+      return
+  candidates.add value
 
-proc resolveReceiverMessage(scope: Scope, recvType: Value, name: string): Value =
-  ## Receiver-context protocol lookup for message sends (docs/core.md §9.1
-  ## tier 1): find any visible impl for the receiver's type providing a
-  ## message named `name`, regardless of which protocol owns it. Returns NIL
-  ## when no impl provides the name; multiple distinct providers is the usual
-  ## use-site ambiguity error.
-  var matches: seq[Value]
-  var s = scope
-  while s != nil:
-    collectReceiverMessageMatches(s, recvType, name, matches)
-    s = s.parent
-  var seenExtraScopes: seq[Scope]
-  var typ = recvType
-  while typ.kind == vkType:
-    let definingScope = typ.typeScope
-    if definingScope != nil and not scope.scopeChainContains(definingScope):
-      var ds = definingScope
-      while ds != nil:
-        if not scope.scopeChainContains(ds) and
-            not seenExtraScopes.hasSeenScope(ds):
-          seenExtraScopes.add ds
-          collectReceiverMessageMatches(ds, recvType, name, matches)
-        ds = ds.parent
-    typ = typ.typeParent
-  matches.dedupeProtocolMatches()
-  if matches.len == 0:
-    return NIL
-  if matches.len > 1:
+proc addInterfaceProtocolCandidates(candidates: var seq[Value], value: Value,
+                                    seen: var seq[uint64]) =
+  if value.kind == vkProtocol:
+    candidates.addProtocolCandidate(value)
+    return
+  if value.kind notin {vkModule, vkNamespace}:
+    return
+  for bits in seen:
+    if bits == value.bits:
+      return
+  seen.add value.bits
+  let namespace =
+    if value.kind == vkModule: value.moduleRootNamespace
+    else: value
+  let bindingScope = namespace.nsScope
+  bindingScope.materializeMirroredVars()
+  for index, name in bindingScope.slotNames:
+    if name.len > 0 and index < bindingScope.slots.len and
+        bindingScope.slotDefined(index):
+      candidates.addInterfaceProtocolCandidates(bindingScope.slots[index], seen)
+  for name, binding in bindingScope.vars:
+    if name != "this_mod":
+      candidates.addInterfaceProtocolCandidates(binding, seen)
+
+proc snapshotProtocolBindings(scope: Scope): seq[Value] =
+  ## Freeze protocol identities from ordinary lexical bindings, never from
+  ## the canonical impl registry. Callers retain the resulting Values.
+  var current = scope
+  var seenInterfaces: seq[uint64]
+  while current != nil:
+    for index, _ in current.slotNames:
+      if index < current.slots.len and current.slotDefined(index):
+        result.addInterfaceProtocolCandidates(current.slots[index],
+                                              seenInterfaces)
+    current.materializeMirroredVars()
+    for _, value in current.vars:
+      result.addInterfaceProtocolCandidates(value, seenInterfaces)
+    current = current.parent
+
+proc resolveProtocolCandidateRef(scope: Scope, reference: ProtocolCandidateRef,
+                                 value: var Value,
+                                 uninitialized: var bool): bool =
+  let parts = reference.name.split('/')
+  let bindingName = if parts.len > 0: parts[0] else: reference.name
+  if reference.slot >= 0:
+    var target = scope
+    for _ in 0 ..< reference.depth:
+      if target == nil:
+        uninitialized = true
+        return false
+      target = target.parent
+    if target == nil or reference.slot >= target.slots.len or
+        not target.slotDefined(reference.slot):
+      uninitialized = true
+      return false
+    value = target.slots[reference.slot]
+  else:
+    var current = scope
+    var found = false
+    while current != nil:
+      let slot = current.slotIndex(bindingName)
+      if slot >= 0:
+        if current.slotDefined(slot):
+          value = current.slots[slot]
+          found = true
+          break
+        uninitialized = true
+        return false
+      current.vars.withValue(bindingName, binding):
+        value = binding[]
+        found = true
+        break
+      current = current.parent
+    if not found:
+      uninitialized = true
+      return false
+  for i in 1 ..< parts.len:
+    if value.kind == vkModule:
+      value = value.moduleRootNamespace
+    if value.kind != vkNamespace:
+      uninitialized = true
+      return false
+    value = value.exportedBinding(parts[i])
+    if value.kind == vkVoid:
+      uninitialized = true
+      return false
+  true
+
+proc compiledProtocolCandidates(scope: Scope, chunk: Chunk, setIndex: int,
+                                uninitialized: var seq[string]): seq[Value] =
+  for protocol in scope.entryProtocols:
+    result.addProtocolCandidate(protocol)
+  if setIndex < 0 or setIndex >= chunk.messageCandidateSets.len:
+    return
+  for reference in chunk.messageCandidateSets[setIndex].refs:
+    var value: Value
+    var missing = false
+    if scope.resolveProtocolCandidateRef(reference, value, missing):
+      var seenInterfaces: seq[uint64]
+      result.addInterfaceProtocolCandidates(value, seenInterfaces)
+    elif missing and reference.name notin uninitialized:
+      uninitialized.add reference.name
+
+proc resolveReceiverMessage(scope: Scope, recvType: Value, name: string,
+                            candidates: openArray[Value],
+                            knownCandidate: var bool): Value =
+  var matchedMessages: seq[Value]
+  for protocol in candidates:
+    if protocol.kind != vkProtocol:
+      continue
+    for message in protocol.protocolClosureByName(name):
+      knownCandidate = true
+      var seen = false
+      for existing in matchedMessages:
+        if same(existing, message):
+          seen = true
+          break
+      if seen:
+        continue
+      let fn = scope.tryResolveProtocolMessage(recvType, message)
+      if fn.kind != vkNil:
+        matchedMessages.add message
+        result = fn
+  if matchedMessages.len > 1:
     raise newException(GeneError,
       "ambiguous message '" & name & "' for " & recvType.typeName)
-  matches[0]
+
 
 proc appendSplicedBody(target: var seq[Value], value: Value) =
   case value.kind
@@ -9055,6 +9399,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
     let callScope = acquireSimpleCallScope(gVmPools, scope.parent, proto.localNames,
       keepSlotNames = false, resetSlots = false)
+    callScope.entryProtocols = scope.entryProtocols
+    callScope.entryProtocolsFrozen = true
     let slot = proto.positionalSlots[0]
     callScope.slots[slot] = arg
     callScope.slotDefinedBits = 1'u64 shl slot
@@ -9487,11 +9833,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                    inlineErrorTypes[i][j])
               entries.add ImplMessage(message: resolved,
                                       fn: functionForScopeStorage(fn, scope))
-            scope.registerImpl(inlineProtocols[i], typ, entries)
+            scope.registerImpl(inlineProtocols[i], typ, entries,
+              scope.classifyInlineImpl(proto.staticTopLevel))
+          let savedForceOverlay = scope.forceOverlayImpls
+          if not proto.staticTopLevel:
+            scope.forceOverlayImpls = true
+          try:
+            for i, protocol in derivedProtocols:
+              applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
+          finally:
+            scope.forceOverlayImpls = savedForceOverlay
           if proto.requiredImplCount > 0:
-            scope.requiredImplTypes.add typ
-          for i, protocol in derivedProtocols:
-            applyProtocolDerive(scope, protocol, typ, proto.deriveRequests[i])
+            if proto.staticTopLevel:
+              scope.requiredImplTypes.add typ
+            else:
+              scope.validateRequiredImplType(typ)
           spush typ
         of opMakeEnum:
           let proto = chunk.enumProtos[inst[].intArg]
@@ -9555,7 +9911,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                    inlineErrorTypes[i][j])
               entries.add ImplMessage(message: resolved,
                                       fn: functionForScopeStorage(fn, scope))
-            scope.registerImpl(inlineProtocols[i], enumType, entries)
+            scope.registerImpl(inlineProtocols[i], enumType, entries,
+              scope.classifyInlineImpl(proto.staticTopLevel))
           spush enumType
         of opMakeProtocol:
           let proto = chunk.protocolProtos[inst[].intArg]
@@ -9591,7 +9948,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             hasDefaults.add message.hasDefault
           let protocol = newProtocol(proto.name, messageNames, deriveFn,
                                      parents, signatures, hasDefaults,
-                                     proto.universal)
+                                     proto.universal, scope)
           # Message names are not bound in the enclosing scope (docs/core.md
           # §1, OQ-I): messages are reached via Protocol/name and sends.
           spush protocol
@@ -9616,12 +9973,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                  messageErrorTypes[i])
             entries.add ImplMessage(message: resolved,
                                     fn: functionForScopeStorage(fn, scope))
-          scope.registerImpl(protocol, receiver, entries)
+          let visibility = scope.classifyStandaloneImpl(protocol, receiver,
+                                                        proto)
+          scope.registerImpl(protocol, receiver, entries, visibility,
+                             proto.exported)
           spush NIL
         of opMakeNamespace:
           # Run the ns body in a fresh child scope; its bindings become the
           # namespace's exports. Bind the namespace in the enclosing scope.
           let nsScope = newScope(scope)
+          nsScope.moduleStatic = inst[].flag
           # Hoisted: pushFrame moves the chunk register into the frame.
           let nsBody = chunk.subchunks[inst[].intArg]
           pushFrame()
@@ -9677,6 +10038,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           spush NIL
+        of opImportImpl:
+          let spec = chunk.importImpls[inst[].intArg]
+          let receiver = spop()
+          let protocol = spop()
+          if protocol.kind != vkProtocol:
+            raise newException(GeneError,
+              "import_impl target must be a protocol")
+          if receiver.kind != vkType:
+            raise newException(GeneError,
+              "import_impl receiver must be a type")
+          let app = scope.application()
+          let source = loadModuleValue(app,
+            app.resolveModulePath(spec.modulePath))
+          scope.importScopedImpl(source.moduleRootNamespace.nsScope,
+                                 protocol, receiver)
+          spush NIL
         of opCallLocal0:
           let slot = inst[].intArg
           var callee =
@@ -9727,6 +10104,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       fresh
                   else:
                     callee.fnScope
+                callScope.seedFunctionProtocolEntry(callee)
                 pushCallFrame()
                 chunk = proto.chunk
                 scope = callScope
@@ -9892,6 +10270,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     created
                   else:
                     callee.fnScope
+                callScope.seedFunctionProtocolEntry(callee)
                 strunc(argsStart)
                 if argsStart == 0 and canReplaceCurrentTailCall(callee.fnScope):
                   enterTailCallFrame(proto, callScope, proto.poolCallScope,
@@ -9915,7 +10294,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               elif argCount == 1 and proto.canFastBindUnaryInt and
                   proto.returnKnownBareInt and
                   (inst[].flag or stack[argsStart].kind == vkInt):
-                let callScope = bindUnaryIntCallScope(callee.fnScope, proto,
+                let callScope = bindUnaryIntCallScope(callee, proto,
                                                       stack[argsStart])
                 strunc(argsStart)
                 pushCallFrame()
@@ -9936,7 +10315,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               elif argCount > 1 and proto.canFastBindPositionalInt and
                   proto.returnKnownBareInt and argCount == proto.params.len and
                   inst[].flag:
-                let callScope = bindPositionalIntCallScope(callee.fnScope, proto,
+                let callScope = bindPositionalIntCallScope(callee, proto,
                   stack.toOpenArray(argsStart, (sp - 1)),
                   argsKnownBareInt = true)
                 strunc(argsStart)
@@ -9963,13 +10342,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var usedUnaryIntFast = false
                 if argCount == 1 and proto.canFastBindUnaryInt and
                     (inst[].flag or stack[argsStart].kind == vkInt):
-                  boundScope = bindUnaryIntCallScope(callee.fnScope, proto,
+                  boundScope = bindUnaryIntCallScope(callee, proto,
                                                      stack[argsStart])
                   boundReturnType = proto.returnType
                   usedUnaryIntFast = true
                 elif proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
-                  boundScope = bindPositionalIntCallScope(callee.fnScope, proto,
+                  boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)),
                     argsKnownBareInt = inst[].flag)
                   boundReturnType = proto.returnType
@@ -10124,11 +10503,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
           var callee = NIL
+          var knownProtocolCandidate = false
+          var uninitializedProtocolCandidates: seq[string]
           let recvType = receiver.receiverType
           if recvType.kind == vkType:
             callee = typeDirectMessage(recvType, inst[].name)
             if callee.kind == vkNil:
-              callee = resolveReceiverMessage(scope, recvType, inst[].name)
+              let candidates = scope.compiledProtocolCandidates(
+                chunk, inst[].depth - 1, uninitializedProtocolCandidates)
+              callee = resolveReceiverMessage(scope, recvType, inst[].name,
+                                              candidates,
+                                              knownProtocolCandidate)
+          if callee.kind == vkNil and uninitializedProtocolCandidates.len > 0:
+            raise newException(GeneError,
+              "uninitialized protocol candidate for message '" & inst[].name &
+              "': " & uninitializedProtocolCandidates.join(", "))
+          if callee.kind == vkNil and knownProtocolCandidate:
+            raise newException(GeneError,
+              "missing implementation for message '" & inst[].name &
+              "' on " & recvType.typeName)
           if callee.kind == vkNil:
             callee = builtinReceiverMessage(scope, receiver, inst[].name)
           if callee.kind == vkNil:
@@ -10261,6 +10654,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     created
                 else:
                   callee.fnScope
+                callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)        # consume callee + args
                 if calleeIndex == 0 and canReplaceCurrentTailCall(callee.fnScope):
                   enterTailCallFrame(proto, callScope, proto.poolCallScope,
@@ -10290,13 +10684,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount > 0 and proto.canFastBindRequiredNamed:
-                  boundScope = bindRequiredNamedCallScope(callee.fnScope, proto,
+                  boundScope = bindRequiredNamedCallScope(callee, proto,
                     callee.fnName, stack.toOpenArray(argsStart, (sp - 1)),
                     inst[].names, stack, calleeIndex + 1)
                   boundReturnType = proto.returnType
                 elif namedCount == 0 and proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
-                  boundScope = bindPositionalIntCallScope(callee.fnScope, proto,
+                  boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)))
                   boundReturnType = proto.returnType
                 else:
@@ -10424,6 +10818,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     created
                   else:
                     callee.fnScope
+                callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)
                 pushFrame()
                 chunk = fnProto.chunk
@@ -10447,7 +10842,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var boundReturnType: Value
                 if namedCount == 0 and fnProto.canFastBindPositionalInt and
                     args.len == fnProto.params.len:
-                  boundScope = bindPositionalIntCallScope(callee.fnScope, fnProto,
+                  boundScope = bindPositionalIntCallScope(callee, fnProto,
                                                           args)
                   boundReturnType = fnProto.returnType
                 else:
@@ -11613,6 +12008,7 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
     let workerLease = beginSchedulerWorkerLease()
     defer:
       endSchedulerWorkerLease(workerLease)
+    scope.refreshCompiledUnitEntry()
     scope.prepareChunkScope(chunk)
     var stack: seq[Value]
     var ip = 0
@@ -11752,6 +12148,7 @@ proc runPooled(chunk: Chunk, scope: Scope,
     let workerLease = beginSchedulerWorkerLease()
     defer:
       endSchedulerWorkerLease(workerLease)
+    scope.refreshCompiledUnitEntry()
     scope.prepareChunkScope(chunk)
     var stack = acquireRunStack()
     var ip = 0
@@ -13594,7 +13991,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       expr.symVal == "ReplyTo"
     if (not builtin.known or canBeLocalBuiltin) and scope != nil:
       var resolved: Value
-      if scope.lookupOptional(expr.symVal, resolved) and resolved.kind == vkType:
+      if scope.lookupOptional(expr.symVal, resolved) and
+          resolved.kind in {vkType, vkProtocol}:
         return resolved
     expr
   of vkNode:
@@ -13606,6 +14004,22 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         return newSym("Ffi/" & expr.body[1].symVal)
       if expr.body[0].isSymbol("Device"):
         return newSym("Device/" & expr.body[1].symVal)
+    if expr.head.isSymbol("path") and expr.body.len > 0 and scope != nil and
+        expr.body[0].kind == vkSymbol:
+      var resolved: Value
+      if scope.lookupOptional(expr.body[0].symVal, resolved):
+        for i in 1 ..< expr.body.len:
+          if expr.body[i].kind != vkSymbol:
+            resolved = VOID
+            break
+          if resolved.kind == vkModule:
+            resolved = resolved.moduleRootNamespace
+          if resolved.kind != vkNamespace:
+            resolved = VOID
+            break
+          resolved = resolved.exportedBinding(expr.body[i].symVal)
+        if resolved.kind in {vkType, vkProtocol}:
+          return resolved
     let closedHead = closeTypeExpr(expr.head, scope)
     var changed = closedHead.bits != expr.head.bits
     var props = initPropTable()
@@ -13798,9 +14212,13 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     let builtin = matchesBuiltinType(name, value)
     if builtin.known:
       return builtin.ok
-    if scope != nil and scope.lookupOptional(name, resolved) and
-        resolved.kind == vkType:
-      return value.isInstanceOfType(resolved)
+    if scope != nil and scope.lookupOptional(name, resolved):
+      if resolved.kind == vkType:
+        return value.isInstanceOfType(resolved)
+      if resolved.kind == vkProtocol:
+        let typ = value.receiverType
+        return typ.kind == vkType and
+          scope.typeImplementsProtocol(typ, resolved)
     raise newException(GeneError, "unknown type annotation: " & name)
   of vkNode:
     let closedExpr = closeTypeExpr(expr, scope)
@@ -14112,6 +14530,10 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
   of vkType:
     value.isInstanceOfType(expr)
+  of vkProtocol:
+    let typ = value.receiverType
+    typ.kind == vkType and scope != nil and
+      scope.typeImplementsProtocol(typ, expr)
   else:
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
 
@@ -19069,6 +19491,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       let fresh = newScope(callee.fnScope)
       fresh.prepareSlots(proto.localNames)
       fresh
+  callScope.seedFunctionProtocolEntry(callee)
   if proto.isSyntaxFn and args.len > 0 and args[0].kind == vkCallerEnv:
     # Any child/eval scope and closure created during this syntax call inherits
     # the marker. Escape checks can therefore reject authority captured
@@ -19218,6 +19641,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         created
       else:
         callee.fnScope
+    callScope.seedFunctionProtocolEntry(callee)
     try:
       return runPooled(proto.chunk, callScope,
                        validateImplRequirements = proto.frameNeedsImplValidation)
@@ -19227,12 +19651,12 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
   var callScope: Scope
   var returnType: Value
   if named.len > 0 and proto.canFastBindRequiredNamed:
-    callScope = bindRequiredNamedCallScope(callee.fnScope, proto, callee.fnName,
+    callScope = bindRequiredNamedCallScope(callee, proto, callee.fnName,
                                            args, named)
     returnType = proto.returnType
   elif named.len == 0 and proto.canFastBindPositionalInt and
       args.len == proto.params.len:
-    callScope = bindPositionalIntCallScope(callee.fnScope, proto, args)
+    callScope = bindPositionalIntCallScope(callee, proto, args)
     returnType = proto.returnType
   else:
     let bound = bindCallScope(callee, proto, args, named)
@@ -19719,6 +20143,175 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     app.currentModuleDir = savedDir
     app.moduleLoading.excl absPath
   app.moduleCache[absPath] = result
+
+proc validateImplCollection(impls: openArray[ProtocolImpl]) =
+  for i in 0 ..< impls.len:
+    for j in i + 1 ..< impls.len:
+      discard impls[i].validateImplConflict(impls[j])
+
+proc collectionHasImpl(impls: openArray[ProtocolImpl], typ,
+                       protocol: Value): bool =
+  for impl in impls:
+    if protocolIsOrInherits(impl.protocol, protocol) and
+        typ.isSubtypeOf(impl.receiver):
+      return true
+  false
+
+proc validateProspectiveBase(scope: Scope,
+                             localImpls, canonical: openArray[ProtocolImpl]) =
+  var enumerable: seq[ProtocolImpl]
+  for impl in localImpls:
+    if impl.visibility != ivOverlay:
+      enumerable.add impl
+  enumerable.validateImplCollection()
+  for local in enumerable:
+    for global in canonical:
+      discard local.validateImplConflict(global)
+  for typ in scope.requiredImplTypes:
+    for protocol in typ.typeRequiredProtocols:
+      if not (enumerable.collectionHasImpl(typ, protocol) or
+              canonical.collectionHasImpl(typ, protocol)):
+        raise newException(GeneError,
+          "type " & typ.typeName & " requires impl " & protocol.protocolName)
+
+proc reloadedImporterImpl(old: ProtocolImpl,
+                          newScoped: openArray[ProtocolImpl],
+                          originPath: string): ProtocolImpl =
+  for candidate in newScoped:
+    if candidate.visibility == ivScoped and candidate.exported and
+        same(candidate.protocol, old.protocol) and
+        same(candidate.receiver, old.receiver):
+      result = candidate
+      result.exported = false
+      result.imported = true
+      return
+  raise newException(GeneError,
+    "reload removed exported impl " & old.protocol.protocolName &
+    " for " & old.receiver.typeName & " from " & originPath)
+
+proc rebuildImplScopeIndex(app: Application) =
+  app.implScopeIndex.clear()
+  for scope in app.baseScopes:
+    for impl in scope.impls:
+      if impl.visibility == ivScoped:
+        app.addIndexedScope(scope, impl)
+
+proc implActivationEpoch*(app: Application): uint64 {.inline.} =
+  app.implEpoch
+
+proc reloadFileModule*(app: Application, path: string): Value =
+  ## Compile and execute a replacement off to the side, then replace canonical
+  ## registrations and explicit import_impl copies in one commit. Runtime
+  ## overlays are deliberately absent from the prospective checks.
+  var p = path
+  if splitFile(p).ext.len == 0:
+    p &= ".gene"
+  let absPath = normalizedPath(absolutePath(p))
+  if not app.isWithinPackageRoot(absPath):
+    raise newException(GeneError, "module path escapes package root: " & path)
+  if not app.moduleCache.hasKey(absPath):
+    return loadModuleValue(app, absPath)
+  if absPath in app.moduleLoading:
+    raise newException(GeneError,
+      "cannot reload a module during initialization: " & absPath)
+  if not fileExists(absPath):
+    raise newException(GeneError, "module not found: " & absPath)
+
+  let oldRootImpls = app.builtinsScope().impls
+  let oldModuleCache = app.moduleCache
+  let oldHeaders = app.moduleCompileHeaders
+  let oldArtifacts = app.moduleCompileArtifacts
+  let oldBaseScopes = app.baseScopes
+  let oldIndex = app.implScopeIndex
+  let oldEpoch = app.implEpoch
+  let oldSerdeOrigins = app.serdeOrigins
+  let oldSerdeValueOrigins = app.serdeValueOrigins
+  let oldSerdeOriginModules = app.serdeOriginModules
+  let oldSerdeBuiltinsDone = app.serdeOriginBuiltinsDone
+  let oldModule = app.moduleCache[absPath]
+  let oldScope = oldModule.moduleRootNamespace.nsScope
+
+  app.moduleCompileHeaders.del(absPath)
+  app.moduleCompileArtifacts.del(absPath)
+  app.moduleLoading.incl absPath
+  let replacementScope = newGlobalScope(app)
+  replacementScope.implStageRoot = true
+  let replacement = bindThisModule(replacementScope,
+    splitFile(absPath).name, absPath)
+  let savedDir = app.currentModuleDir
+  app.currentModuleDir = parentDir(absPath)
+  try:
+    let artifact = compileModuleArtifact(app, absPath)
+    discard run(artifact.chunk, replacementScope)
+
+    var canonical: seq[ProtocolImpl]
+    for impl in app.builtinsScope().impls:
+      if impl.originPath != absPath:
+        canonical.add impl
+    var newScoped: seq[ProtocolImpl]
+    var retained: seq[ProtocolImpl]
+    for impl in replacementScope.impls:
+      case impl.visibility
+      of ivCanonical:
+        canonical.add impl
+      of ivScoped:
+        newScoped.add impl
+        retained.add impl
+      of ivOverlay:
+        retained.add impl
+    canonical.validateImplCollection()
+    replacementScope.validateProspectiveBase(retained, canonical)
+
+    var updatedScopes: seq[tuple[scope: Scope, impls: seq[ProtocolImpl]]]
+    for scope in oldBaseScopes:
+      if scope == oldScope:
+        continue
+      var changed = false
+      var prospective: seq[ProtocolImpl]
+      for impl in scope.impls:
+        if impl.imported and impl.originPath == absPath:
+          prospective.add impl.reloadedImporterImpl(newScoped, absPath)
+          changed = true
+        else:
+          prospective.add impl
+      scope.validateProspectiveBase(prospective, canonical)
+      if changed:
+        updatedScopes.add (scope: scope, impls: prospective)
+
+    # Commit. No enumerable live scope is mutated before this point.
+    app.builtinsScope().impls = canonical
+    replacementScope.impls = retained
+    for update in updatedScopes:
+      update.scope.impls = update.impls
+    app.moduleCache[absPath] = replacement
+    var bases: seq[Scope]
+    for scope in app.baseScopes:
+      if scope != oldScope:
+        bases.add scope
+    app.baseScopes = bases
+    app.rebuildImplScopeIndex()
+    app.implEpoch = oldEpoch + 1
+    app.serdeOrigins.clear()
+    app.serdeValueOrigins.clear()
+    app.serdeOriginModules.clear()
+    app.serdeOriginBuiltinsDone = false
+    result = replacement
+  except CatchableError:
+    app.builtinsScope().impls = oldRootImpls
+    app.moduleCache = oldModuleCache
+    app.moduleCompileHeaders = oldHeaders
+    app.moduleCompileArtifacts = oldArtifacts
+    app.baseScopes = oldBaseScopes
+    app.implScopeIndex = oldIndex
+    app.implEpoch = oldEpoch
+    app.serdeOrigins = oldSerdeOrigins
+    app.serdeValueOrigins = oldSerdeValueOrigins
+    app.serdeOriginModules = oldSerdeOriginModules
+    app.serdeOriginBuiltinsDone = oldSerdeBuiltinsDone
+    raise
+  finally:
+    app.currentModuleDir = savedDir
+    app.moduleLoading.excl absPath
 
 proc loadFileModule*(app: Application, path: string): Value =
   ## Load a host file path as an application module. This is used by program

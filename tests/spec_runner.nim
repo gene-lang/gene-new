@@ -175,6 +175,9 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["impl"],
       "(protocol EmptyProtocol) (type EmptyType ^props {}) " &
       "(impl EmptyProtocol for EmptyType)")
+    fixture(["import_impl"],
+      "(protocol ImportedProtocol) (type ImportedType ^props {}) " &
+      "(import_impl ImportedProtocol for ImportedType from \"./elsewhere\")")
     expect GeneError:
       discard compileSource("(derive)")
     covered.add "derive"
@@ -3391,15 +3394,18 @@ suite "spec — impl visibility across modules (design §10)":
     nsScope.materializeMirroredVars()
     nsScope.vars[name].print()
 
-  test "importing a module makes its impls visible":
+  test "a co-located canonical impl dispatches when its protocol is in scope":
+    # The impl is co-located with Greet and Cat in ilib, so it is canonical
+    # and globally active. An unqualified send still needs the protocol in the
+    # call site's candidate set (design §2), so `use` imports Greet as well.
     let dir = implModuleDir()
     writeFile(dir / "use.gene",
-      "(import [Cat] from \"./ilib\")\n" &
+      "(import [Cat Greet] from \"./ilib\")\n" &
       "(var r ((Cat ^name \"Tom\") ~ greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Tom\""
 
-  test "impls travel transitively through imports":
+  test "a canonical impl dispatches through a transitive value producer":
     let dir = implModuleDir()
     writeFile(dir / "mid.gene",
       "(mod mid)\n" &
@@ -3407,18 +3413,20 @@ suite "spec — impl visibility across modules (design §10)":
       "(fn make_cat [n : Str] : Cat (Cat ^name n))\n")
     writeFile(dir / "use.gene",
       "(import [make_cat] from \"./mid\")\n" &
+      "(import [Greet] from \"./ilib\")\n" &
       "(var r ((make_cat \"Felix\") ~ greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Felix\""
 
-  test "an impl is global once its module is loaded (no import path needed)":
+  test "a canonical impl is global without an import path to its own module":
     let dir = implModuleDir()
-    # `other` uses the Greet/Cat impl but never imports ilib.
+    # `other` imports only the protocol (for the candidate set), never the
+    # Greet/Cat impl. The canonical impl is global once ilib is loaded, so the
+    # unqualified send in `other` dispatches it.
     writeFile(dir / "other.gene",
       "(mod other)\n" &
+      "(import [Greet] from \"./ilib\")\n" &
       "(fn use_cat [c] (c ~ greet))\n")
-    # loading ilib (via this import) registers the impl globally, so `other`
-    # dispatches it despite having no import path to ilib.
     writeFile(dir / "use.gene",
       "(import [Cat] from \"./ilib\")\n" &
       "(import [use_cat] from \"./other\")\n" &

@@ -1,5 +1,5 @@
 import gene/[compiler, printer, types, vm]
-import std/[tables, unittest]
+import std/[strutils, tables, unittest]
 
 template ck(src, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
@@ -61,6 +61,38 @@ suite "protocols — declarations and dispatch":
        "(invoke (AddN ^n 3))",
        "5"
 
+  test "protocol annotations use the annotation declaration scope":
+    ck "(protocol Named (message name [self] : Str)) " &
+       "(type User ^props {^name Str}) " &
+       "(impl Named for User (message name [self] : Str self/name)) " &
+       "(fn accept [x : Named] true) " &
+       "(type Box ^props {^item Named}) " &
+       "(var box (Box ^item (User ^name \"Ada\"))) " &
+       "[(accept (User ^name \"Ada\")) " &
+       " box/item/name " &
+       " ((fn [xs : (List Named)] (xs ~ size)) " &
+       "   [(User ^name \"Ada\")])]",
+       "[true \"Ada\" 1]"
+    expect GeneError:
+      discard runStr("(protocol Named (message name [self])) " &
+        "(type User ^props {}) (fn accept [x : Named] x) (accept (User))")
+
+  test "incremental units seed prior protocols and freeze older functions":
+    let scope = newGlobalScope()
+    discard run(compileEvalSource(
+      "(type Item ^props {}) (fn old_send [x] (x ~ later_name))",
+      useLocalSlots = false), scope)
+    discard run(compileEvalSource(
+      "(protocol Later (message later_name [self] : Str)) " &
+      "(impl Later for Item (message later_name [self] : Str \"ok\"))",
+      useLocalSlots = false), scope)
+    expect GeneError:
+      discard run(compileEvalSource("(old_send (Item))",
+                                    useLocalSlots = false), scope)
+    check run(compileEvalSource(
+      "(fn new_send [x] (x ~ later_name)) (new_send (Item))",
+      useLocalSlots = false), scope).print() == "\"ok\""
+
   test "ToStr customizes display conversion":
     ck "(type User ^props {^name Str}) " &
        "(impl ToStr for User (message to_str [self] : Str self/name)) " &
@@ -88,14 +120,60 @@ suite "protocols — declarations and dispatch":
        "((Dog ^name \"Rex\" ^breed \"Lab\") ~ to_name)",
        "\"Rex\""
 
-  test "overlapping parent and child impls are ambiguous at use":
+  test "nearest receiver wins within one message identity":
+    ck "(protocol ToName (message to_name [self] : Str)) " &
+       "(type Animal ^props {^name Str}) " &
+       "(type Dog ^is Animal ^props {^breed Str}) " &
+       "(impl ToName for Animal (message to_name [self] : Str self/name)) " &
+       "(impl ToName for Dog (message to_name [self] : Str self/breed)) " &
+       "((Dog ^name \"Rex\" ^breed \"Lab\") ~ ToName/to_name)",
+       "\"Lab\""
+
+  test "receiver depth never chooses between unrelated message identities":
+    let source =
+      "(protocol A (message render [self] : Str)) " &
+      "(protocol B (message render [self] : Str)) " &
+      "(type Parent ^props {}) (type Child ^is Parent ^props {}) " &
+      "(impl B for Parent (message render [self] : Str \"parent-b\")) " &
+      "(impl A for Child (message render [self] : Str \"child-a\")) " &
+      "(var child (Child)) "
+    ck source & "[(child ~ A/render) (child ~ B/render)]",
+       "[\"child-a\" \"parent-b\"]"
     expect GeneError:
-      discard runStr("(protocol ToName (message to_name [self] : Str)) " &
-                     "(type Animal ^props {^name Str}) " &
-                     "(type Dog ^is Animal ^props {^breed Str}) " &
-                     "(impl ToName for Animal (message to_name [self] : Str self/name)) " &
-                     "(impl ToName for Dog (message to_name [self] : Str self/breed)) " &
-                     "((Dog ^name \"Rex\" ^breed \"Lab\") ~ ToName/to_name)")
+      discard runStr(source & "(child ~ render)")
+
+  test "nested sends retain whole-unit forward protocol references":
+    ck "(fn sender [x] (x ~ render)) " &
+       "(protocol Render (message render [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl Render for T (message render [self] : Str \"late\")) " &
+       "(sender (T))",
+       "\"late\""
+    ck "(fn factory [] (fn [x] (x ~ render))) " &
+       "(var saved (factory)) " &
+       "(protocol Render (message render [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl Render for T (message render [self] : Str \"factory\")) " &
+       "(saved (T))",
+       "\"factory\""
+
+  test "calling a forward send before protocol initialization names the slot":
+    try:
+      discard runStr("(fn sender [x] (x ~ render)) " &
+                     "(type T ^props {}) (sender (T)) " &
+                     "(protocol Render (message render [self] : Str))")
+      fail()
+    except GeneError as error:
+      check "uninitialized protocol candidate" in error.msg
+      check "Render" in error.msg
+
+  test "top-level computed impl operands produce an overlay diagnostic":
+    let chunk = compileSource(
+      "(protocol P (message value [self])) (type T ^props {}) " &
+      "(fn get_p [] P) (impl (get_p) for T (message value [self] 1))")
+    check chunk.diagnostics.len == 1
+    check "non-static protocol operand" in chunk.diagnostics[0].message
+    check "not visible to other modules" in chunk.diagnostics[0].message
 
   test "type ^impl requirements are checked after forward impls":
     ck "(protocol ToName (message to_name [self] : Str)) " &
@@ -116,6 +194,26 @@ suite "protocols — declarations and dispatch":
                      "(type User ^props {^name Str} ^impl [ToName])")
     expect GeneError:
       discard runStr("(type Token ^props {^id Int} ^impl [Send])")
+
+  test "type ^impl barriers distinguish eval units and local forms":
+    let evalScope = newGlobalScope()
+    check run(compileEvalSource(
+      "(protocol P (message value [self])) " &
+      "(type T ^props {} ^impl [P]) " &
+      "(impl P for T (message value [self] 1)) T",
+      useLocalSlots = false), evalScope).kind == vkType
+    expect GeneError:
+      discard runStr("(protocol P (message value [self])) " &
+        "(fn make [] " &
+        "  (type T ^props {} ^impl [P]) " &
+        "  (impl P for T (message value [self] 1)) T) " &
+        "(make)")
+    ck "(protocol P (message value [self])) " &
+       "(fn make [] " &
+       "  (type T ^props {} ^impl [P] " &
+       "    (impl P (message value [self] 1))) T) " &
+       "(make) true",
+       "true"
 
   test "type ^impl entries must resolve to protocols":
     expect GeneError:
@@ -408,7 +506,7 @@ suite "protocols — ^inherit and qualified message identity":
        "((T) ~ do_a)",
        "\"a\""
 
-  test "overlapping impls of a protocol and its child are ambiguous at use":
+  test "overlapping impls of a protocol and its child fail at registration":
     expect GeneError:
       discard runStr("(protocol A (message do_a [self] : Str)) " &
                      "(protocol B ^inherit [A] (message do_b [self] : Str)) " &
@@ -418,6 +516,15 @@ suite "protocols — ^inherit and qualified message identity":
                      "  (message do_a [self] : Str \"a-via-b\") " &
                      "  (message do_b [self] : Str \"b\")) " &
                      "((T) ~ A/do_a)")
+
+  test "marker ancestors do not create message-identity conflicts":
+    ck "(protocol Marker) " &
+       "(protocol Named ^inherit [Marker] (message name [self] : Str)) " &
+       "(type T ^props {}) " &
+       "(impl Marker for T) " &
+       "(impl Named for T (message name [self] : Str \"ok\")) " &
+       "((T) ~ name)",
+       "\"ok\""
 
 suite "types — type-direct messages and sends":
   test "type-direct messages are sendable and qualified members":

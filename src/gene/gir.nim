@@ -41,6 +41,7 @@ type
     opMakeProtocol
     opMakeImpl
     opImport
+    opImportImpl
     opCall0
     opCall1
     opCallName0
@@ -219,6 +220,25 @@ type
     alias*: string                    # `^as alias`, or ""
     selections*: seq[ImportSelection]
 
+  ImportImplSpec* = object
+    modulePath*: string
+
+  ProtocolCandidateRef* = object
+    ## Exact lexical binding location for a protocol reference known to the
+    ## compiler. `depth == 0` addresses the current unit's scope; positive
+    ## depths address captured outer scopes. Entry protocols are frozen on the
+    ## runtime Scope separately and are always considered first.
+    depth*: int
+    slot*: int
+    name*: string
+
+  MessageCandidateSet* = object
+    refs*: seq[ProtocolCandidateRef]
+
+  CompileDiagnostic* = object
+    message*: string
+    loc*: SourceLoc
+
   FfiParam* = object
     name*: string
     typeExpr*: Value
@@ -320,6 +340,7 @@ type
 
   TypeProto* = ref object
     name*: string
+    staticTopLevel*: bool
     fields*: seq[TypeField]      # own (non-inherited) field schema
     bodyFields*: seq[TypeBodyField] # own (non-inherited) body schema
     requiredImplCount*: int
@@ -337,6 +358,7 @@ type
 
   EnumProto* = ref object
     name*: string
+    staticTopLevel*: bool
     typeParams*: seq[string]
     backingType*: Value
     variants*: seq[EnumVariantProto]
@@ -363,6 +385,9 @@ type
 
   ImplProto* = ref object
     messages*: seq[ImplMessageProto]
+    staticTopLevel*: bool
+    staticOperands*: bool
+    exported*: bool
 
   ## An (impl P (message ...) ...) block inside a type body; the receiver is
   ## the enclosing type (docs/core.md §8). The protocol expression is compiled
@@ -395,6 +420,9 @@ type
     mirrorSlots*: bool
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
+    importImpls*: seq[ImportImplSpec]
+    messageCandidateSets*: seq[MessageCandidateSet]
+    diagnostics*: seq[CompileDiagnostic]
     forLoops*: seq[ForProto]
     matches*: seq[MatchProto]
     tries*: seq[TryProto]
@@ -416,7 +444,8 @@ type
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
         instructionLocs: @[], topLevelForms: @[], functions: @[], subchunks: @[],
-        imports: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
+        imports: @[], importImpls: @[], messageCandidateSets: @[],
+        diagnostics: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
         typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],
         ffiLibraries: @[], ffiFns: @[], ffiStructs: @[], ffiUnions: @[],
@@ -467,6 +496,15 @@ proc addSubchunk*(chunk: Chunk, body: Chunk): int =
 proc addImport*(chunk: Chunk, spec: ImportSpec): int =
   result = chunk.imports.len
   chunk.imports.add spec
+
+proc addImportImpl*(chunk: Chunk, spec: ImportImplSpec): int =
+  result = chunk.importImpls.len
+  chunk.importImpls.add spec
+
+proc addMessageCandidateSet*(chunk: Chunk,
+                             candidates: MessageCandidateSet): int =
+  result = chunk.messageCandidateSets.len
+  chunk.messageCandidateSets.add candidates
 
 proc addFfiLibrary*(chunk: Chunk, library: FfiLibraryProto): int =
   result = chunk.ffiLibraries.len
@@ -618,6 +656,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " impl=" & $inst.intArg
   of opImport:
     result.add " import=" & $inst.intArg
+  of opImportImpl:
+    result.add " import_impl=" & $inst.intArg
   of opCall0:
     result.add " argc=0"
   of opCall1:
@@ -676,7 +716,7 @@ proc formatInstruction(inst: Instruction): string =
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
   of opResolveMessage:
-    result.add " name=" & inst.name & " named=" & $inst.intArg
+    result.add " name=" & inst.name & " candidates=" & $inst.depth
   of opPlaceSendReceiver:
     result.add " named=" & $inst.intArg
   of opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,

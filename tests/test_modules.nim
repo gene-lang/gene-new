@@ -136,7 +136,7 @@ suite "modules — file imports":
     writeModule("mid.gene", "(import [one] from \"./base\") (fn two [] (+ (one) (one)))")
     check runProgram("(import [two] from \"./mid\") (two)").print() == "2"
 
-  test "imported modules make extension impls visible":
+  test "ordinary imports do not import scoped extension impls":
     writeModule("json.gene",
       "(protocol ToJson (message to_json [self] : Str))")
     writeModule("model.gene",
@@ -144,13 +144,19 @@ suite "modules — file imports":
     writeModule("json_ext.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson for User (message to_json [self] : Str self/name))")
+      "(impl ToJson for User (message to_json [self] : Str self/name)) " &
+      "(fn local_json [user] (user ~ to_json))")
     check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(import from \"./json_ext\" ^as ext) " &
-      "((User ^name \"Ada\") ~ to_json)").print() == "\"Ada\""
+      "(import [local_json] from \"./json_ext\") " &
+      "(local_json (User ^name \"Ada\"))").print() == "\"Ada\""
+    expect GeneError:
+      discard runProgram("(import [ToJson] from \"./json\") " &
+        "(import [User] from \"./model\") " &
+        "(import from \"./json_ext\" ^as ext) " &
+        "((User ^name \"Ada\") ~ to_json)")
 
-  test "reimporting the same extension impl is idempotent":
+  test "import_impl imports one exported scoped pair idempotently":
     writeModule("json.gene",
       "(protocol ToJson (message to_json [self] : Str))")
     writeModule("model.gene",
@@ -158,14 +164,66 @@ suite "modules — file imports":
     writeModule("json_ext.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson for User (message to_json [self] : Str self/name))")
+      "(impl ToJson for User ^export true " &
+      "  (message to_json [self] : Str self/name))")
     check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(import from \"./json_ext\" ^as ext1) " &
-      "(import from \"./json_ext\" ^as ext2) " &
+      "(import_impl ToJson for User from \"./json_ext\") " &
+      "(import_impl ToJson for User from \"./json_ext\") " &
       "((User ^name \"Ada\") ~ to_json)").print() == "\"Ada\""
 
-  test "conflicting imported extension impls are rejected":
+  test "only exported scoped impls are importable":
+    writeModule("export_base.gene",
+      "(protocol P (message value [self])) (type T ^props {})")
+    writeModule("canonical_export.gene",
+      "(protocol P (message value [self])) (type T ^props {}) " &
+      "(impl P for T ^export true (message value [self] 1))")
+    expect GeneError:
+      discard runProgram("(import from \"./canonical_export\" ^as bad)")
+
+    writeModule("private_ext.gene",
+      "(import [P T] from \"./export_base\") " &
+      "(impl P for T (message value [self] 1))")
+    expect GeneError:
+      discard runProgram("(import [P T] from \"./export_base\") " &
+        "(import_impl P for T from \"./private_ext\")")
+
+    writeModule("overlay_export.gene",
+      "(import [P T] from \"./export_base\") " &
+      "(fn install [] " &
+      "  (impl P for T ^export true (message value [self] 1))) " &
+      "(install)")
+    expect GeneError:
+      discard runProgram("(import from \"./overlay_export\" ^as bad)")
+
+  test "protocol-typed boundaries use their declaration module":
+    writeModule("typed_base.gene",
+      "(protocol Named (message name [self] : Str)) " &
+      "(type User ^props {^name Str})")
+    writeModule("typed_ext.gene",
+      "(import [Named User] from \"./typed_base\") " &
+      "(impl Named for User ^export true " &
+      "  (message name [self] : Str self/name))")
+    writeModule("typed_lib.gene",
+      "(import [Named] from \"./typed_base\") " &
+      "(fn accept [x : Named] true) " &
+      "(fn count [xs : (List Named)] (xs ~ size)) " &
+      "(type Box ^props {^item Named})")
+    check runProgram(
+      "(import [Named User] from \"./typed_base\") " &
+      "(import [accept count Box] from \"./typed_lib\") " &
+      "(import_impl Named for User from \"./typed_ext\") " &
+      "(fn local_accept [x : Named] true) " &
+      "(type LocalBox ^props {^item Named}) " &
+      "(var u (User ^name \"Ada\")) " &
+      "(var local_box (LocalBox ^item u)) " &
+      "[(local_accept u) local_box/item/name " &
+      " (try (accept u) catch _ false) " &
+      " (try (count [u]) catch _ false) " &
+      " (try (Box ^item u) catch _ false)]").print() ==
+      "[true \"Ada\" false false false]"
+
+  test "conflicting explicitly imported scoped impls are rejected":
     writeModule("json.gene",
       "(protocol ToJson (message to_json [self] : Str))")
     writeModule("model.gene",
@@ -173,39 +231,89 @@ suite "modules — file imports":
     writeModule("json_ext_a.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson for User (message to_json [self] : Str self/name))")
+      "(impl ToJson for User ^export true " &
+      "  (message to_json [self] : Str self/name))")
     writeModule("json_ext_b.gene",
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
-      "(impl ToJson for User (message to_json [self] : Str \"other\"))")
+      "(impl ToJson for User ^export true " &
+      "  (message to_json [self] : Str \"other\"))")
     expect GeneError:
       discard runProgram("(import [ToJson] from \"./json\") " &
         "(import [User] from \"./model\") " &
-        "(import from \"./json_ext_a\" ^as a) " &
-        "(import from \"./json_ext_b\" ^as b)")
+        "(import_impl ToJson for User from \"./json_ext_a\") " &
+        "(import_impl ToJson for User from \"./json_ext_b\")")
+
+  test "reload updates exact scoped imports atomically":
+    writeModule("reload_base.gene",
+      "(protocol Render (message render [self] : Str)) " &
+      "(type Item ^props {})")
+    writeModule("reload_ext.gene",
+      "(import [Render Item] from \"./reload_base\") " &
+      "(impl Render for Item ^export true " &
+      "  (message render [self] : Str \"one\"))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource(
+      "(import [Render Item] from \"./reload_base\") " &
+      "(import_impl Render for Item from \"./reload_ext\")"), scope)
+    check run(compileSource("((Item) ~ render)"), scope).print() == "\"one\""
+    let before = app.implActivationEpoch
+    writeModule("reload_ext.gene",
+      "(import [Render Item] from \"./reload_base\") " &
+      "(impl Render for Item ^export true " &
+      "  (message render [self] : Str \"two\"))")
+    discard app.reloadFileModule(modDir / "reload_ext.gene")
+    check app.implActivationEpoch == before + 1
+    check run(compileSource("((Item) ~ render)"), scope).print() == "\"two\""
+
+    let stableEpoch = app.implActivationEpoch
+    writeModule("reload_ext.gene",
+      "(import [Render Item] from \"./reload_base\") (var removed true)")
+    expect GeneError:
+      discard app.reloadFileModule(modDir / "reload_ext.gene")
+    check app.implActivationEpoch == stableEpoch
+    check run(compileSource("((Item) ~ render)"), scope).print() == "\"two\""
 
   test "failed module activation does not publish earlier staged impls":
     writeModule("base.gene",
       "(protocol P (message value [self] : Str)) " &
-      "(type A ^props {}) (type B ^props {})")
-    writeModule("ext_a.gene",
-      "(import [P A B] from \"./base\") " &
+      "(type A ^props {}) (type B ^props {}) " &
       "(impl P for B (message value [self] : Str \"existing\"))")
-    writeModule("ext_b.gene",
+    writeModule("ext_bad.gene",
       "(import [P A B] from \"./base\") " &
       "(impl P for A (message value [self] : Str \"staged\")) " &
       "(impl P for B (message value [self] : Str \"conflict\"))")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
     discard run(compileSource(
-      "(import [P A B] from \"./base\") " &
-      "(import from \"./ext_a\" ^as a)"), scope)
+      "(import [P A B] from \"./base\")"), scope)
     expect GeneError:
-      discard run(compileSource("(import from \"./ext_b\" ^as b)"), scope)
+      discard run(compileSource("(import from \"./ext_bad\" ^as bad)"), scope)
     expect GeneError:
       discard run(compileSource("((A) ~ P/value)"), scope)
     check run(compileSource("((B) ~ P/value)"), scope).print() ==
       "\"existing\""
+
+  test "later canonical applicability can make a fixed name ambiguous":
+    writeModule("late_base.gene",
+      "(protocol A (message render [self] : Str)) " &
+      "(protocol B (message render [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(impl A for T (message render [self] : Str \"a\"))")
+    writeModule("late_q.gene",
+      "(import [B T] from \"./late_base\") " &
+      "(protocol Q ^inherit [B]) " &
+      "(impl Q for T (message render [self] : Str \"b\"))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource(
+      "(import [A B T] from \"./late_base\") " &
+      "(fn send_render [x] (x ~ render))"), scope)
+    check run(compileSource("(send_render (T))"), scope).print() == "\"a\""
+    discard run(compileSource("(import from \"./late_q\" ^as q)"), scope)
+    expect GeneError:
+      discard run(compileSource("(send_render (T))"), scope)
 
   test "package-root-relative paths (/x and bare x)":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
@@ -236,6 +344,52 @@ suite "modules — file imports":
 
   test "missing module raises":
     expect GeneError: discard runProgram("(import [x] from \"./does-not-exist\")")
+
+  test "conditional imports contribute only on must paths":
+    writeModule("conditional_protocol.gene",
+      "(protocol Render (message render [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(impl Render for T (message render [self] : Str \"ok\"))")
+    check runProgram("(import [T] from \"./conditional_protocol\") " &
+      "(if_yes true " &
+      "  (import [Render] from \"./conditional_protocol\") " &
+      "  ((T) ~ render))").print() == "\"ok\""
+    expect GeneError:
+      discard runProgram("(import [T] from \"./conditional_protocol\") " &
+        "(if true (import [Render] from \"./conditional_protocol\")) " &
+        "((T) ~ render)")
+    check runProgram("(import [T] from \"./conditional_protocol\") " &
+      "(if true (import [Render] from \"./conditional_protocol\")) " &
+      "((T) ~ Render/render)").print() == "\"ok\""
+    check runProgram("(import [T] from \"./conditional_protocol\") " &
+      "(if false " &
+      "  (import [Render] from \"./conditional_protocol\") " &
+      "  (import [Render] from \"./conditional_protocol\")) " &
+      "((T) ~ render)").print() == "\"ok\""
+
+  test "module aliases and re-exports contribute protocol interfaces":
+    writeModule("interface_base.gene",
+      "(protocol Render (message render [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(impl Render for T (message render [self] : Str \"interface\"))")
+    writeModule("interface_mid.gene",
+      "(import [Render T] from \"./interface_base\")")
+    check runProgram("(import from \"./interface_base\" ^as base) " &
+      "((base/T) ~ render)").print() == "\"interface\""
+    check runProgram("(import [Render T] from \"./interface_mid\") " &
+      "((T) ~ render)").print() == "\"interface\""
+
+  test "caught import failures do not establish protocol candidates":
+    writeModule("candidate_type.gene", "(type T ^props {})")
+    var message = ""
+    try:
+      discard runProgram("(import [T] from \"./candidate_type\") " &
+        "(try (import [Render] from \"./missing_protocol\") catch _ nil) " &
+        "((T) ~ render)")
+    except GeneError as error:
+      message = error.msg
+    check message.contains("undefined symbol: render")
+    check not message.contains("uninitialized protocol candidate")
 
   test "runtime import cycles have a runtime-phase diagnostic":
     writeModule("a.gene", "(import from \"./b\" ^as b) (var x 1)")
@@ -296,13 +450,12 @@ suite "modules — namespace-path imports and mod":
     check run(compileSource("(ns m (var a 5)) (import m ^as mm) mm/a"),
       newGlobalScope()).print() == "5"
 
-  test "namespace imports make extension impls visible":
+  test "co-located namespace impls are canonical":
     initModuleContext(getTempDir())
     check run(compileSource(
       "(protocol Show (message show [self] : Str)) " &
       "(type T ^props {}) " &
       "(ns ext (impl Show for T (message show [self] : Str \"ok\"))) " &
-      "(import ext ^as imported) " &
       "((T) ~ show)"),
       newGlobalScope()).print() == "\"ok\""
 
@@ -367,12 +520,12 @@ suite "modules — impl activation across module paths":
     writeModule("uses_shared.gene",
       "(import [T] from \"./shared\") (fn marker [] 1)")
     # shared-first, then the local module that also imports it
-    check runProgram("(import [T] from \"./shared\") " &
+    check runProgram("(import [Show T] from \"./shared\") " &
       "(import [marker] from \"./uses_shared\") " &
       "[((T) ~ show) (marker)]").print() == "[\"shared\" 1]"
     # local-module-first (the previously working order must stay working)
     check runProgram("(import [marker] from \"./uses_shared\") " &
-      "(import [T] from \"./shared\") " &
+      "(import [Show T] from \"./shared\") " &
       "[((T) ~ show) (marker)]").print() == "[\"shared\" 1]"
 
   test "conflicting impls for one protocol and receiver still raise":
@@ -381,10 +534,13 @@ suite "modules — impl activation across module paths":
       "(type U ^props {})")
     writeModule("impl_one.gene",
       "(import [Show2 U] from \"./conflict_shared\") " &
-      "(impl Show2 for U (message show2 [self] : Str \"one\"))")
+      "(impl Show2 for U ^export true " &
+      "  (message show2 [self] : Str \"one\"))")
     writeModule("impl_two.gene",
       "(import [Show2 U] from \"./conflict_shared\") " &
-      "(impl Show2 for U (message show2 [self] : Str \"two\"))")
+      "(impl Show2 for U ^export true " &
+      "  (message show2 [self] : Str \"two\"))")
     expect GeneError:
-      discard runProgram("(import from \"./impl_one\" ^as a) " &
-        "(import from \"./impl_two\" ^as b) nil")
+      discard runProgram("(import [Show2 U] from \"./conflict_shared\") " &
+        "(import_impl Show2 for U from \"./impl_one\") " &
+        "(import_impl Show2 for U from \"./impl_two\") nil")

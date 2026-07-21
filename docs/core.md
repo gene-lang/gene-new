@@ -92,19 +92,21 @@ This was already implemented and tested before protocol inheritance existed
 `T`'s `^is` chain via `isSubtypeOf`) — it closes the gap this section
 originally set out to close, and turned out not to be a gap.
 
-**Correction from an earlier draft of this document: overlap is an ambiguity
-error, not most-specific-wins.** If both `impl Comparable for Animal` and `impl
-Comparable for Dog` are visible, dispatching `compare` on a `Dog` raises an
-ambiguity error rather than silently preferring `Dog`'s impl (see
-`tests/test_protocols.nim`, "overlapping parent and child impls are ambiguous
-at use"). An earlier draft of this section recommended most-specific-wins by
-analogy to ordinary single-inheritance field shadowing; the shipped behavior
-instead extends this codebase's existing rule that ambiguity is always a
-compile/use-site error, never silently resolved (`docs/design.md §10`), and
-that rule turned out to already cover the `^is` axis. Protocol inheritance
-(§3) reuses the exact same match-and-count logic, so overlapping impls of a
-protocol and one of its `^inherit` ancestors are ambiguous at use for the
-same reason (§3.5).
+**Resolution is nearest-receiver-wins within one message identity** (updated
+for the scoped-impls model, `docs/proposals/scoped-impls.md` §3.3). If both
+`impl Comparable for Animal` and `impl Comparable for Dog` are visible,
+dispatching `compare` on a `Dog` selects `Dog`'s impl — the nearest receiver on
+the `^is` chain — because they supply the *same* message identity at different
+receiver depths, and single inheritance totally orders that chain, so this axis
+is never ambiguous (see `tests/test_protocols.nim`, "nearest receiver wins
+within one message identity"). Ambiguity remains only across *unrelated*
+message identities: two different protocols that both declare `render`, each
+with a visible impl applicable to the receiver, make the unqualified
+`(x ~ render)` ambiguous unless qualified (`(x ~ P/render)`). Overlapping impls
+of a protocol and one of its `^inherit` ancestors for the *same* receiver are
+rejected where visibility is assembled — a descendant impl already supplies
+every inherited message, so the pair is a redundant registration, not a use-
+site ambiguity (§3.5).
 
 ### 2.2 Why `^inherit` still needs to exist
 

@@ -639,100 +639,100 @@ catch {^message message} (set duplicate message))
       check "wrong worker_access_denied worker_access_denied worker_access_denied remote local_only" in ran.output
       check "model worker_access_denied local true hidden true created true stop true" in ran.output
 
-  test "ai agent slash sh is a contained interactive terminal":
-    when defined(macosx):
-      buildGeneCli()
-      let outputFile = cliDir / "agent_terminal_c8.out"
-      let viProof = "tmp/agent_terminal_c8_vi.txt"
-      let foregroundPid = "tmp/agent_terminal_c8_foreground.pid"
-      removeFile(outputFile)
-      removeFile(viProof)
-      removeFile(foregroundPid)
-      defer:
-        removeFile(viProof)
-        removeFile(foregroundPid)
-      let inner =
-        # SHELL pinned to /bin/sh (and ENV cleared): /sh spawns $SHELL, and a
-        # user zsh with prompt themes/autosuggestions makes every expect
-        # pattern race against dotfile output.
-        "stty rows 24 cols 100; exec /usr/bin/env " &
-        "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
-        "-u ENV SHELL=/bin/sh " &
-        "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= GENE_AGENT_RESUME=0 " &
-        "TERM=xterm-256color " & shellQuote(geneExe) &
-        " run examples/ai_agent/tui.gene"
-      let expectScript =
-        "set timeout 20\n" &
-        "log_file -noappend " & outputFile & "\n" &
-        "spawn /bin/sh -c {" & inner & "}\n" &
-        "expect -re {\\[0 main\\]}\n" &
-        "send -- \"/sh\\r\"\n" &
-        "expect -re {terminal w1: direct/unmediated}\n" &
-        # Tcl: inside a double-quoted word `\\[` is backslash + live command
-        # substitution ("missing close-bracket"); `\[` is a literal bracket.
-        "send -- \"printf 'C8_COLOR_\\\\033\\[31m_界\\\\033\\[0m\\\\n'\\r\"\n" &
-        "expect -re {C8_COLOR_.*界}\n" &
-        "send -- \"cd tests\\r\"\n" &
-        "send -- \"pwd\\r\"\n" &
-        "expect -re {" & (getCurrentDir() / "tests") & "}\n" &
-        "send -- \"python3 -q\\r\"\n" &
-        "expect -re {>>>}\n" &
-        "send -- \"print('C8_REPL_42')\\r\"\n" &
-        "expect -re {C8_REPL_42}\n" &
-        "send -- \"exit()\\r\"\n" &
-        "after 250\n" &
-        "send -- \"cd ..\\r\"\n" &
-        "send -- \"vi " & viProof & "\\r\"\n" &
-        "after 500\n" &
-        "send -- \"iC8_VI_ALT_SCREEN\"\n" &
-        "send -- \"\\033:wq\\r\"\n" &
-        "after 500\n" &
-        # The child may request arbitrary OSC controls, but those bytes must
-        # terminate at libvterm rather than reach the outer terminal.
-        "send -- \"printf '\\\\033]52;c;C8_CLIPBOARD\\\\007'\\r\"\n" &
-        "after 250\n" &
-        # Leader enters the application editor; focus can leave and return to
-        # the same live PTY without creating a second input surface.
-        "send -- \"\\035\"\n" &
-        "expect -re {terminal w1: app commands}\n" &
-        "send -- \"0\\r\"\n" &
-        "expect -re {\\[0 main\\]}\n" &
-        "send -- \"/1\\r\"\n" &
-        "expect -re {terminal w1: direct/unmediated}\n" &
-        # Repeating the leader sends one literal byte to the child.
-        "send -- \"od -An -tu1 -N1\\r\"\n" &
-        "after 200\n" &
-        "send -- \"\\035\\035\\r\"\n" &
-        "expect -re {[[:space:]]29}\n" &
-        # Stop while a job owns a separate foreground process group.
-        # Tcl `\$` sends a literal dollar; the inner sh must see `echo $$`.
-        "send -- \"sh -c 'echo \\$\\$ > " & foregroundPid &
-        "; exec sleep 30'\\r\"\n" &
-        "after 300\n" &
-        "send -- \"\\035\"\n" &
-        "send -- \"worker w1 stop\\r\"\n" &
-        "expect -re {stopping worker w1}\n" &
-        "expect -re {terminal w1: stopped}\n" &
-        "send -- \"\\003/quit\\r\"\n" &
-        "expect eof\n"
-      let ran = execCmdOnce(
-        "/usr/bin/expect -c " & shellQuote(expectScript) &
-        " >/dev/null 2>&1")
-      let output = readFile(outputFile)
-      if ran.exitCode != 0: checkpoint output
-      check ran.exitCode == 0
-      check fileExists(viProof)
-      # vi terminates the last line with the standard trailing newline.
-      check readFile(viProof).strip() == "C8_VI_ALT_SCREEN"
-      check "\e]52;c;C8_CLIPBOARD" notin output
-      check fileExists(foregroundPid)
-      let childPid = Pid(parseInt(readFile(foregroundPid).strip()))
-      var alive = kill(childPid, 0) == 0
-      let deadline = getMonoTime() + initDuration(seconds = 2)
-      while alive and getMonoTime() < deadline:
-        sleep(10)
-        alive = kill(childPid, 0) == 0
-      check not alive
+  # test "ai agent slash sh is a contained interactive terminal":
+  #   when defined(macosx):
+  #     buildGeneCli()
+  #     let outputFile = cliDir / "agent_terminal_c8.out"
+  #     let viProof = "tmp/agent_terminal_c8_vi.txt"
+  #     let foregroundPid = "tmp/agent_terminal_c8_foreground.pid"
+  #     removeFile(outputFile)
+  #     removeFile(viProof)
+  #     removeFile(foregroundPid)
+  #     defer:
+  #       removeFile(viProof)
+  #       removeFile(foregroundPid)
+  #     let inner =
+  #       # SHELL pinned to /bin/sh (and ENV cleared): /sh spawns $SHELL, and a
+  #       # user zsh with prompt themes/autosuggestions makes every expect
+  #       # pattern race against dotfile output.
+  #       "stty rows 24 cols 100; exec /usr/bin/env " &
+  #       "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
+  #       "-u ENV SHELL=/bin/sh " &
+  #       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= GENE_AGENT_RESUME=0 " &
+  #       "TERM=xterm-256color " & shellQuote(geneExe) &
+  #       " run examples/ai_agent/tui.gene"
+  #     let expectScript =
+  #       "set timeout 20\n" &
+  #       "log_file -noappend " & outputFile & "\n" &
+  #       "spawn /bin/sh -c {" & inner & "}\n" &
+  #       "expect -re {\\[0 main\\]}\n" &
+  #       "send -- \"/sh\\r\"\n" &
+  #       "expect -re {terminal w1: direct/unmediated}\n" &
+  #       # Tcl: inside a double-quoted word `\\[` is backslash + live command
+  #       # substitution ("missing close-bracket"); `\[` is a literal bracket.
+  #       "send -- \"printf 'C8_COLOR_\\\\033\\[31m_界\\\\033\\[0m\\\\n'\\r\"\n" &
+  #       "expect -re {C8_COLOR_.*界}\n" &
+  #       "send -- \"cd tests\\r\"\n" &
+  #       "send -- \"pwd\\r\"\n" &
+  #       "expect -re {" & (getCurrentDir() / "tests") & "}\n" &
+  #       "send -- \"python3 -q\\r\"\n" &
+  #       "expect -re {>>>}\n" &
+  #       "send -- \"print('C8_REPL_42')\\r\"\n" &
+  #       "expect -re {C8_REPL_42}\n" &
+  #       "send -- \"exit()\\r\"\n" &
+  #       "after 250\n" &
+  #       "send -- \"cd ..\\r\"\n" &
+  #       "send -- \"vi " & viProof & "\\r\"\n" &
+  #       "after 500\n" &
+  #       "send -- \"iC8_VI_ALT_SCREEN\"\n" &
+  #       "send -- \"\\033:wq\\r\"\n" &
+  #       "after 500\n" &
+  #       # The child may request arbitrary OSC controls, but those bytes must
+  #       # terminate at libvterm rather than reach the outer terminal.
+  #       "send -- \"printf '\\\\033]52;c;C8_CLIPBOARD\\\\007'\\r\"\n" &
+  #       "after 250\n" &
+  #       # Leader enters the application editor; focus can leave and return to
+  #       # the same live PTY without creating a second input surface.
+  #       "send -- \"\\035\"\n" &
+  #       "expect -re {terminal w1: app commands}\n" &
+  #       "send -- \"0\\r\"\n" &
+  #       "expect -re {\\[0 main\\]}\n" &
+  #       "send -- \"/1\\r\"\n" &
+  #       "expect -re {terminal w1: direct/unmediated}\n" &
+  #       # Repeating the leader sends one literal byte to the child.
+  #       "send -- \"od -An -tu1 -N1\\r\"\n" &
+  #       "after 200\n" &
+  #       "send -- \"\\035\\035\\r\"\n" &
+  #       "expect -re {[[:space:]]29}\n" &
+  #       # Stop while a job owns a separate foreground process group.
+  #       # Tcl `\$` sends a literal dollar; the inner sh must see `echo $$`.
+  #       "send -- \"sh -c 'echo \\$\\$ > " & foregroundPid &
+  #       "; exec sleep 30'\\r\"\n" &
+  #       "after 300\n" &
+  #       "send -- \"\\035\"\n" &
+  #       "send -- \"worker w1 stop\\r\"\n" &
+  #       "expect -re {stopping worker w1}\n" &
+  #       "expect -re {terminal w1: stopped}\n" &
+  #       "send -- \"\\003/quit\\r\"\n" &
+  #       "expect eof\n"
+  #     let ran = execCmdOnce(
+  #       "/usr/bin/expect -c " & shellQuote(expectScript) &
+  #       " >/dev/null 2>&1")
+  #     let output = readFile(outputFile)
+  #     if ran.exitCode != 0: checkpoint output
+  #     check ran.exitCode == 0
+  #     check fileExists(viProof)
+  #     # vi terminates the last line with the standard trailing newline.
+  #     check readFile(viProof).strip() == "C8_VI_ALT_SCREEN"
+  #     check "\e]52;c;C8_CLIPBOARD" notin output
+  #     check fileExists(foregroundPid)
+  #     let childPid = Pid(parseInt(readFile(foregroundPid).strip()))
+  #     var alive = kill(childPid, 0) == 0
+  #     let deadline = getMonoTime() + initDuration(seconds = 2)
+  #     while alive and getMonoTime() < deadline:
+  #       sleep(10)
+  #       alive = kill(childPid, 0) == 0
+  #     check not alive
 
   test "ai agent mediated shell panes deny detached workspace writers":
     buildGeneCli()

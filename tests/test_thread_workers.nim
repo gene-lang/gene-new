@@ -645,8 +645,11 @@ suite "threaded scheduler workers":
   test "worker-candidate task errors wake root awaiters":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         "  (type Boom ^props {^message Str} ^impl [Error]) " &
-         "  (impl Error for Boom) " &
+         # `(scope ...)` is an overlay (non-static) form, so Boom's ^impl [Error]
+         # requirement is checked before the type yields a value; a later
+         # standalone `(impl Error for Boom)` cannot retroactively satisfy it
+         # (scoped-impls proposal §5). Satisfy it inline instead.
+         "  (type Boom ^props {^message Str} ^impl [Error] (impl Error)) " &
          "  (var t (spawn (fail (Boom ^message \"worker\")))) " &
          "  (var i 0) " &
          "  (while (< i 200000) (set i (+ i 1))) " &
