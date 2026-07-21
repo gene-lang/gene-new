@@ -4,6 +4,7 @@
 ##   gene eval "<src>"   evaluate a source string, print the result
 ##   gene repl           read/eval/print source lines from stdin
 ##   gene run  <file>    load and execute a .gene file, then call main if present
+##   gene runurl <url>   (experimental) run a remote entry module (design §15.9)
 ##   gene parse <file>   read and print canonical forms (no execution)
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
@@ -25,6 +26,8 @@ proc usage() =
   echo "  gene run [--log-config path] [--debug] <file.gene>"
   echo "           [--grant name=expr] [--] [args...]"
   echo "                              execute a file and explicitly grant main capabilities"
+  echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
+  echo "                              relative imports resolve against the module's URL"
   echo "  gene parse <file.gene>  print canonical parsed forms"
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
@@ -159,7 +162,7 @@ type RunCli = object
   logConfig: string
   debugging: bool
 
-proc parseRunCli(): RunCli =
+proc parseRunCli(label = "run", pathNoun = "a file path"): RunCli =
   var i = 2
   while i <= paramCount() and result.path.len == 0:
     let arg = paramStr(i)
@@ -178,7 +181,7 @@ proc parseRunCli(): RunCli =
         result.path = arg
     inc i
   if result.path.len == 0:
-    raise newException(ValueError, "'run' needs a file path")
+    raise newException(ValueError, "'" & label & "' needs " & pathNoun)
   result.args = commandArgs(i)
 
 proc configureRunLogging(options: RunCli) =
@@ -282,6 +285,25 @@ proc exitFromMain(scope: Scope, value: Value) =
   else:
     raiseMainReturnTypeError(scope, value)
 
+proc invokeEntryMain(scope: Scope, args: openArray[string]) =
+  var mainBinding: Value
+  if scope.lookupOptional("main", mainBinding):
+    let invocation = splitMainInvocation(args)
+    var grantNames: seq[string]
+    var grantValues: seq[Value]
+    for grant in invocation.grants:
+      grantNames.add grant.name
+      grantValues.add run(compileEvalSource(grant.expr,
+                                            sourceName = "<main-grant:" &
+                                              grant.name & ">"), scope)
+    let positional =
+      if mainBinding.kind == vkFunction and mainBinding.fnParams.len == 0:
+        newSeq[Value]()
+      else:
+        @[argsValue(invocation.args)]
+    let result = mainBinding.call(positional, grantNames, grantValues, scope)
+    exitFromMain(scope, result)
+
 proc cmdRun(path: string, args: openArray[string] = []) =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
@@ -294,23 +316,34 @@ proc cmdRun(path: string, args: openArray[string] = []) =
     let entryModule = app.loadFileModule(absPath)
     let scope = entryModule.moduleRootNamespace.nsScope
     replScope = scope
-    var mainBinding: Value
-    if scope.lookupOptional("main", mainBinding):
-      let invocation = splitMainInvocation(args)
-      var grantNames: seq[string]
-      var grantValues: seq[Value]
-      for grant in invocation.grants:
-        grantNames.add grant.name
-        grantValues.add run(compileEvalSource(grant.expr,
-                                              sourceName = "<main-grant:" &
-                                                grant.name & ">"), scope)
-      let positional =
-        if mainBinding.kind == vkFunction and mainBinding.fnParams.len == 0:
-          newSeq[Value]()
-        else:
-          @[argsValue(invocation.args)]
-      let result = mainBinding.call(positional, grantNames, grantValues, scope)
-      exitFromMain(scope, result)
+    invokeEntryMain(scope, args)
+  except ReadError as e:
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    maybeReplOnError(replScope, app)
+    quit(1)
+  except GenePanic as e:
+    stderr.writeLine "Panic: " & e.msg
+    quit(1)
+  except GeneError as e:
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+    maybeReplOnError(replScope, app)
+    quit(1)
+
+proc cmdRunUrl(url: string, args: openArray[string] = []) =
+  ## Experimental URL entry (design §15.9): run a remote module graph. URL
+  ## sources are enabled only for this entry; `gene run` never fetches.
+  if not (url.startsWith("https://") or url.startsWith("http://")):
+    stderr.writeLine "Error: 'runurl' needs an https:// (or localhost http://) URL"
+    quit(1)
+  var app: Application = nil
+  var replScope: Scope = nil
+  try:
+    app = newApplication(getCurrentDir())
+    app.allowUrlModules = true
+    let entryModule = app.loadUrlModule(url)
+    let scope = entryModule.moduleRootNamespace.nsScope
+    replScope = scope
+    invokeEntryMain(scope, args)
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(replScope, app)
@@ -510,6 +543,15 @@ proc main() =
       stderr.writeLine "Error: " & e.msg
       quit(1)
     cmdRun(options.path, options.args)
+  of "runurl":
+    var options: RunCli
+    try:
+      options = parseRunCli(label = "runurl", pathNoun = "an https:// URL")
+      configureRunLogging(options)
+    except CatchableError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
+    cmdRunUrl(options.path, options.args)
   of "parse":
     if paramCount() < 2:
       stderr.writeLine "Error: 'parse' needs a file path"

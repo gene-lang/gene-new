@@ -1699,6 +1699,70 @@ proc loadCurlApi(scope: Scope) =
     api.lib = lib
     gCurlApi = api
 
+proc moduleFetchWrite(data: pointer, size, count: csize_t,
+                      userData: pointer): csize_t {.cdecl.} =
+  ## Write callback for the blocking module fetch below. Runs on the calling
+  ## thread inside curl_easy_perform; appends into a caller-owned Nim string.
+  let buf = cast[ptr string](userData)
+  if size != 0 and count > high(csize_t) div size:
+    return 0
+  let total = size * count
+  if total > csize_t(HttpHardMaxBytes) or
+      buf[].len + int(total) > HttpHardMaxBytes:
+    return 0                       # abort transfer -> CURLE_WRITE_ERROR
+  if total > 0:
+    let old = buf[].len
+    buf[].setLen(old + int(total))
+    copyMem(addr buf[][old], data, int(total))
+  total
+
+proc geneFetchModuleUrl*(url: string): tuple[finalUrl, body: string] =
+  ## Blocking GET for the experimental URL module loader (design §15.9).
+  ## Follows redirects and reports the effective URL so a redirected module's
+  ## relative imports resolve against its final location. libcurl owns TLS,
+  ## matching net/http_client; under wasm loadCurlApi raises "unavailable".
+  loadCurlApi(nil)
+  let handle = gCurlApi.easyInit()
+  if handle == nil:
+    raise newException(GeneError, "curl_easy_init failed")
+  var body = ""
+  try:
+    discard cCurlSetoptStr(gCurlApi.setoptAddr, handle, CurlOptUrl,
+                           url.cstring)
+    discard cCurlSetoptPtr(gCurlApi.setoptAddr, handle, CurlOptWriteFunction,
+                           cast[pointer](moduleFetchWrite))
+    discard cCurlSetoptPtr(gCurlApi.setoptAddr, handle, CurlOptWriteData,
+                           addr body)
+    discard cCurlSetoptLong(gCurlApi.setoptAddr, handle,
+                            CurlOptFollowLocation, 1)
+    discard cCurlSetoptLong(gCurlApi.setoptAddr, handle, CurlOptNoSignal, 1)
+    discard cCurlSetoptLong(gCurlApi.setoptAddr, handle, CurlOptNoProgress, 1)
+    discard cCurlSetoptLong(gCurlApi.setoptAddr, handle, CurlOptTimeoutMs,
+                            clong(HttpDefaultTimeoutMs))
+    discard cCurlSetoptStr(gCurlApi.setoptAddr, handle, CurlOptAcceptEncoding,
+                           "".cstring)
+    let code = gCurlApi.easyPerform(handle)
+    if code != CurlOk:
+      let detail =
+        if code == CurlWriteError:
+          "response exceeds the module size limit"
+        else:
+          $gCurlApi.easyStrerror(code)
+      raise newException(GeneError, "fetching " & url & " failed: " & detail)
+    var status: clong = 0
+    discard cCurlGetinfoPtr(gCurlApi.getinfoAddr, handle,
+                            CurlInfoResponseCode, addr status)
+    if status != 200:
+      raise newException(GeneError,
+        "fetching " & url & " failed: HTTP " & $status)
+    var effective: cstring = nil
+    discard cCurlGetinfoPtr(gCurlApi.getinfoAddr, handle,
+                            CurlInfoEffectiveUrl, addr effective)
+    result = (finalUrl: (if effective != nil: $effective else: url),
+              body: body)
+  finally:
+    gCurlApi.easyCleanup(handle)
+
 when compileOption("threads"):
   type
     SharedHttpBuffer = object
@@ -5369,7 +5433,7 @@ defineLoggerLevelProc(biLoggerTrace, "Logger/trace", llTrace)
 
 # --- serde: Gene-text serialization, data core -------------------------------
 #
-# Stage 1 of docs/proposals/serialization.md: write_data / read_data / data?
+# Stage 1 of docs/serialization.md: write_data / read_data / data?
 # over the data bucket, riding the canonical printer/reader. Serialized text is
 # a (serde_v1 <payload>) envelope of ordinary Gene source. Control tags are
 # underscore-named plain symbols (serde_v1, serde_float, serde_sym, serde_map,
@@ -7950,7 +8014,7 @@ proc registerStdlibNamespaces(root: Scope) =
   let httpClientError = defineErrorType("HttpClientError")
   let jsonError = defineErrorType("JsonError")
   let serdeError = defineErrorType("SerdeError")
-  # Structured diagnostic logging (docs/proposals/logging.md). Logger methods
+  # Structured diagnostic logging (docs/logging.md). Logger methods
   # are receiver-dispatched through builtinReceiverMessage; lazy `*!` forms
   # are compiler-known macros selected from this same namespace.
   let logLevel = newEnum("LogLevel", @[],
@@ -8219,7 +8283,7 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("db", newNamespace("db", dbScope))
 
   # store: durable key -> serde text over interchangeable backends
-  # (docs/proposals/persistence.md). Backend namespaces mirror db/sqlite.
+  # (docs/persistence.md). Backend namespaces mirror db/sqlite.
   let storeError = newType("StoreError", NIL,
                            @[TypeField(name: "kind", optional: false,
                                        typeExpr: newSym("Sym"), scope: root),
@@ -8495,7 +8559,7 @@ proc registerStdlibNamespaces(root: Scope) =
   jsonScope.define("JsonError", jsonError)
   root.define("json", newNamespace("json", jsonScope))
 
-  # serde: Gene-text serialization data core (docs/proposals/serialization.md
+  # serde: Gene-text serialization data core (docs/serialization.md
   # stage 1).
   let serdeScope = newScope(root)
   serdeScope.define("write_data",

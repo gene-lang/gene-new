@@ -325,6 +325,12 @@ type
     baseScopes: seq[Scope] # enumerable module/program bases for reload checks
     currentModuleDir: string
     packageRoot: string
+    # Experimental URL module sources (design §15.9). Enabled only by the
+    # `gene runurl` entry; when off, URL module paths are rejected at
+    # resolution time. Fetched sources are cached per run so compile-time
+    # macro discovery and runtime initialization fetch each URL at most once.
+    allowUrlModules*: bool
+    urlSources: Table[string, tuple[finalUrl, body: string]]
     # serde stage 3+ reverse origin index: definition value bits ->
     # (module rel-path, internal path). Built lazily on first serde/write that
     # needs a ref, so module load pays nothing when serde is unused. Read never
@@ -4850,7 +4856,7 @@ proc buildBuiltins(app: Application): Scope =
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
   # Marker protocol (empty): a module-level instance whose type implements it
-  # serializes by identity reference (serde, docs/proposals/serialization.md §7).
+  # serializes by identity reference (serde, docs/serialization.md §7).
   let serdeRefProtocol = newProtocol("SerdeRef", [])
   result.define("SerdeRef", serdeRefProtocol)
   let callType = newType("Call", NIL,
@@ -5466,8 +5472,99 @@ proc isWithinPackageRoot(app: Application, path: string): bool =
     else: root & $DirSep
   path.startsWith(prefix)
 
+# --- URL module sources (design §15.9, experimental) ------------------------
+#
+# A module identity may be an https URL when the application was started via
+# `gene runurl`. The canonical URL is the identity; every module-path import
+# inside a URL module resolves RFC-3986-style against the importing module's
+# URL, so a remote module can never name a local file. Relative references
+# resolve against the *final* URL after redirects (see moduleSourceDir).
+
+proc isUrlModulePath*(path: string): bool =
+  path.startsWith("https://") or path.startsWith("http://")
+
+proc urlOriginAndPath(url: string): tuple[origin, path: string] =
+  ## Split "scheme://authority/path" into origin ("scheme://authority") and
+  ## the absolute path (defaulting to "/").
+  let authorityStart = url.find("://") + 3
+  let slash = url.find('/', authorityStart)
+  if slash < 0:
+    (url, "/")
+  else:
+    (url[0 ..< slash], url[slash .. ^1])
+
+proc urlHost(url: string): string =
+  var authority = urlOriginAndPath(url).origin
+  authority = authority[authority.find("://") + 3 .. ^1]
+  if authority.len > 0 and authority[0] == '[':
+    let close = authority.find(']')
+    return if close >= 0: authority[0 .. close] else: authority
+  let colon = authority.rfind(':')
+  if colon >= 0: authority[0 ..< colon] else: authority
+
+proc urlHostIsLocal(url: string): bool =
+  urlHost(url) in ["localhost", "127.0.0.1", "[::1]"]
+
+proc collapseUrlDotSegments(path: string): string =
+  ## RFC 3986 §5.2.4 remove-dot-segments over an absolute URL path. `..`
+  ## above the root clamps to the root, per the RFC.
+  var segments: seq[string]
+  for segment in path.split('/'):
+    case segment
+    of "", ".":
+      discard
+    of "..":
+      if segments.len > 0:
+        segments.setLen(segments.len - 1)
+    else:
+      segments.add segment
+  "/" & segments.join("/")
+
+proc resolveUrlRef(baseDirUrl, rawRef: string): string =
+  ## Merge a module reference against a URL directory base per RFC 3986 §5.3:
+  ## "/x" restarts at the origin; "./x", "../x", and bare "x" merge with the
+  ## base directory path.
+  let (origin, basePath) = urlOriginAndPath(baseDirUrl)
+  if rawRef.startsWith("/"):
+    return origin & collapseUrlDotSegments(rawRef)
+  let dir = if basePath.endsWith("/"): basePath else: basePath & "/"
+  origin & collapseUrlDotSegments(dir & rawRef)
+
+proc urlModuleDir(url: string): string =
+  ## Directory base of a module URL: origin plus the path up to the last '/'.
+  let (origin, path) = urlOriginAndPath(url)
+  let slash = path.rfind('/')
+  origin & (if slash <= 0: "/" else: path[0 ..< slash])
+
+proc validateModuleUrl(app: Application, url, rawPath: string): string =
+  if not app.allowUrlModules:
+    raise newException(GeneError,
+      "URL module imports require a 'gene runurl' entry: " & rawPath)
+  if url.contains('#') or url.contains('?'):
+    raise newException(GeneError,
+      "module URL must not carry a query or fragment: " & rawPath)
+  if url.startsWith("http://") and not urlHostIsLocal(url):
+    raise newException(GeneError,
+      "module URLs require https (plain http is allowed for localhost only): " &
+      rawPath)
+  let (origin, path) = urlOriginAndPath(url)
+  var normalized = origin & collapseUrlDotSegments(path)
+  # MVP extension defaulting, applied to the URL's file segment.
+  let slash = normalized.rfind('/')
+  let last = normalized[slash + 1 .. ^1]
+  if last.len > 0 and not last.contains('.'):
+    normalized &= ".gene"
+  normalized
+
 proc resolveModulePath*(app: Application, rawPath: string): string =
   ## Normalize a `from "path"` string to a stable absolute module identity.
+  if rawPath.isUrlModulePath:
+    return app.validateModuleUrl(rawPath, rawPath)
+  if app.currentModuleDir.isUrlModulePath:
+    # Inside a remote module, every module-path import resolves against the
+    # importing module's URL — a remote module can never name a local file.
+    return app.validateModuleUrl(
+      resolveUrlRef(app.currentModuleDir, rawPath), rawPath)
   var p = rawPath
   if splitFile(p).ext.len == 0:
     p = p & ".gene"          # MVP extension policy
@@ -5479,6 +5576,43 @@ proc resolveModulePath*(app: Application, rawPath: string): string =
   result = normalizedPath(absolutePath(p, base))
   if not app.isWithinPackageRoot(result):
     raise newException(GeneError, "module path escapes package root: " & rawPath)
+
+proc fetchUrlModuleSource(app: Application, url: string):
+    tuple[finalUrl, body: string] =
+  ## Fetch (or return the cached) source for a URL module identity. Both the
+  ## compile-time macro-discovery phase and runtime initialization read
+  ## through this cache, so each URL is fetched at most once per run.
+  if app.urlSources.hasKey(url):
+    return app.urlSources[url]
+  if not app.allowUrlModules:
+    raise newException(GeneError,
+      "URL module imports require a 'gene runurl' entry: " & url)
+  if app.currentModuleDir.isUrlModulePath and
+      urlOriginAndPath(url).origin !=
+        urlOriginAndPath(app.currentModuleDir).origin:
+    # Cross-origin fetches print their provenance (design §15.9).
+    stderr.writeLine "gene: fetching " & url
+  var fetched = geneFetchModuleUrl(url)
+  if fetched.finalUrl.len == 0:
+    fetched.finalUrl = url
+  if fetched.finalUrl != url and
+      (not fetched.finalUrl.isUrlModulePath or
+       (fetched.finalUrl.startsWith("http://") and
+        not urlHostIsLocal(fetched.finalUrl))):
+    raise newException(GeneError,
+      "module URL redirected to a disallowed target: " & fetched.finalUrl)
+  app.urlSources[url] = fetched
+  fetched
+
+proc moduleSourceDir(app: Application, absPath: string): string =
+  ## The base directory used to resolve a module's own relative imports: the
+  ## filesystem parent for file modules, or — for URL modules — the directory
+  ## of the final URL after redirects, so a redirected module's relative
+  ## imports follow its real location.
+  if absPath.isUrlModulePath:
+    urlModuleDir(app.fetchUrlModuleSource(absPath).finalUrl)
+  else:
+    parentDir(absPath)
 
 proc loadModuleValue(app: Application, absPath: string): Value
 
@@ -20033,9 +20167,14 @@ proc moduleCompileHeader(app: Application,
                          absPath: string): ModuleCompileHeader =
   if app.moduleCompileHeaders.hasKey(absPath):
     return app.moduleCompileHeaders[absPath]
-  if not fileExists(absPath):
-    raise newException(GeneError, "module not found: " & absPath)
-  let unit = readAllWithLocs(readFile(absPath), absPath)
+  let source =
+    if absPath.isUrlModulePath:
+      app.fetchUrlModuleSource(absPath).body
+    else:
+      if not fileExists(absPath):
+        raise newException(GeneError, "module not found: " & absPath)
+      readFile(absPath)
+  let unit = readAllWithLocs(source, absPath)
   var macroNames = initHashSet[string]()
   var syntaxNames = initHashSet[string]()
   collectCompileHeaderForms(unit.forms, macroNames, syntaxNames)
@@ -20089,7 +20228,7 @@ proc compileModuleArtifact(app: Application,
   let header = app.moduleCompileHeader(absPath)
   app.moduleCompileLoading.incl absPath
   let savedDir = app.currentModuleDir
-  app.currentModuleDir = parentDir(absPath)
+  app.currentModuleDir = app.moduleSourceDir(absPath)
   try:
     var importedMacros = initTable[string, Table[string, MacroDef]]()
     var importedSyntaxFns = initTable[string, seq[string]]()
@@ -20127,14 +20266,14 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   if absPath in app.moduleLoading:
     raise newException(GeneError,
       "runtime module initialization cycle at " & absPath)
-  if not fileExists(absPath):
+  if not absPath.isUrlModulePath and not fileExists(absPath):
     raise newException(GeneError, "module not found: " & absPath)
   app.moduleLoading.incl absPath
   let modScope = newGlobalScope(app)
   modScope.implStageRoot = true
   result = bindThisModule(modScope, splitFile(absPath).name, absPath)
   let savedDir = app.currentModuleDir
-  app.currentModuleDir = parentDir(absPath)
+  app.currentModuleDir = app.moduleSourceDir(absPath)
   try:
     let artifact = compileModuleArtifact(app, absPath)
     discard run(artifact.chunk, modScope)
@@ -20203,6 +20342,10 @@ proc reloadFileModule*(app: Application, path: string): Value =
   ## Compile and execute a replacement off to the side, then replace canonical
   ## registrations and explicit import_impl copies in one commit. Runtime
   ## overlays are deliberately absent from the prospective checks.
+  if path.isUrlModulePath:
+    # URL content is mutable and unpinned; reload stays file-only until the
+    # disk cache + lockfile stage of design §15.9.
+    raise newException(GeneError, "reload does not support URL modules: " & path)
   var p = path
   if splitFile(p).ext.len == 0:
     p &= ".gene"
@@ -20312,6 +20455,12 @@ proc reloadFileModule*(app: Application, path: string): Value =
   finally:
     app.currentModuleDir = savedDir
     app.moduleLoading.excl absPath
+
+proc loadUrlModule*(app: Application, url: string): Value =
+  ## Experimental `gene runurl` entry (design §15.9): load a remote module
+  ## graph rooted at `url`. The caller must have enabled `allowUrlModules`;
+  ## resolveModulePath validates the scheme and normalizes the identity.
+  loadModuleValue(app, app.resolveModulePath(url))
 
 proc loadFileModule*(app: Application, path: string): Value =
   ## Load a host file path as an application module. This is used by program

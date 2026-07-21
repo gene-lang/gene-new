@@ -166,6 +166,74 @@ suite "cli — gene run":
     check "parameter 'args' expected (List Str), got vkNode" in ran.output
     check ("at " & normalizedPath(absolutePath(typedMain)) & ":1:1") in ran.output
 
+  test "runurl runs a remote module graph with URL-relative imports":
+    # design §15.9 (experimental): the entry URL redirects, so the relative
+    # import must resolve against the final URL after redirects.
+    buildGeneCli()
+    let serverScript = cliDir / "urlmod_server.py"
+    writeFile(serverScript, """
+import http.server
+import socketserver
+
+ROUTES = {
+    "/real/entry.gene":
+        b'(import [util_fn] from "./util") (println (+ (util_fn) 1))',
+    "/real/util.gene": b'(fn util_fn [] 41)',
+}
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/entry.gene":
+            self.send_response(302)
+            self.send_header("Location", "/real/entry.gene")
+            self.end_headers()
+            return
+        body = ROUTES.get(self.path)
+        if body is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
+    print(f"PORT {srv.server_address[1]}", flush=True)
+    srv.serve_forever()
+""")
+    let server = startProcess("python3", args = [serverScript],
+                              options = {poUsePath, poStdErrToStdOut})
+    try:
+      let portLine = server.outputStream.readLine()
+      check portLine.startsWith("PORT ")
+      let port = portLine.split(' ')[1]
+      let ran = runGene(["runurl",
+                         "http://127.0.0.1:" & port & "/entry.gene"])
+      checkpoint ran.output
+      check ran.exitCode == 0
+      check "42" in ran.output
+    finally:
+      server.terminate()
+      server.close()
+
+  test "runurl rejects non-localhost http before any fetch":
+    let ran = runGene(["runurl", "http://example.invalid/x.gene"])
+    check ran.exitCode == 1
+    check "module URLs require https" in ran.output
+
+  test "gene run cannot import URL modules":
+    let fixture = writeCliProgram("url_import.gene",
+      "(import [x] from \"https://127.0.0.1:1/x.gene\")")
+    let ran = runGene(["run", fixture])
+    check ran.exitCode == 1
+    check "URL module imports require a 'gene runurl' entry" in ran.output
+
   test "ai agent example runs offline demo without an auth token":
     buildGeneCli()
     let ran = execCmdOnce("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
@@ -7448,7 +7516,7 @@ suite "cli — gene parse/fmt/compile":
     check "2 | (+ x missing)" in ran.output
 
   test "serde references, instances, hooks, and value-refs round-trip across modules":
-    ## Stages 3-4 (docs/proposals/serialization.md §5-§7): type/enum/variant/
+    ## Stages 3-4 (docs/serialization.md §5-§7): type/enum/variant/
     ## protocol/fn refs to an imported module round-trip by identity; typed
     ## instances round-trip via direct construction (ctor never runs on
     ## read-back); serde/read resolves against loaded modules WITHOUT executing
