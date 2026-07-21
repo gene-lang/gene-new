@@ -425,7 +425,7 @@ why cells are not in the bucket and reserved heads are escaped.
 5. **Application persistence & resume.** The durable-store and crash-resume
    layer above this format — `serde/write`/`read` are its encode/decode, the
    §7 `serde_state`/`serde_restore` hooks are its per-type resume primitive.
-   Designed in docs/proposals/persistence.md.
+   Designed in docs/persistence.md.
 
 ## 11. Non-goals (first version)
 

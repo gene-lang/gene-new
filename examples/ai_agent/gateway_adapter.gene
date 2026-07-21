@@ -37,7 +37,7 @@
 (var gw_token (get_env Env "GENE_GATEWAY_TOKEN" ""))
 # Optional persistence (examples/ai_agent/design.md §12 milestone 11): set GENE_GATEWAY_DB
 # to a sqlite path and sessions survive restarts — transcripts and event logs
-# are pure data, stored as serde text (docs/proposals/serialization.md §4).
+# are pure data, stored as serde text (docs/serialization.md §4).
 (var gw_db_path (get_env Env "GENE_GATEWAY_DB" ""))
 (var gw_state_dir (get_env Env "GENE_GATEWAY_STATE" ""))
 (var gw_resume (get_env Env "GENE_GATEWAY_RESUME" "1"))

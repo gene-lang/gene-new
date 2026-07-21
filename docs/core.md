@@ -93,7 +93,7 @@ This was already implemented and tested before protocol inheritance existed
 originally set out to close, and turned out not to be a gap.
 
 **Resolution is nearest-receiver-wins within one message identity** (updated
-for the scoped-impls model, `docs/proposals/scoped-impls.md` §3.3). If both
+for the scoped-impls model, `docs/scoped-impls.md` §3.3). If both
 `impl Comparable for Animal` and `impl Comparable for Dog` are visible,
 dispatching `compare` on a `Dog` selects `Dog`'s impl — the nearest receiver on
 the `^is` chain — because they supply the *same* message identity at different

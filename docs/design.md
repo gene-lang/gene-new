@@ -15,6 +15,10 @@
   [`docs/spec/protocols.md`](spec/protocols.md) states its normative subset.
 - [`docs/implementation-status.md`](implementation-status.md) records what is
   shipped now and what remains.
+- Implemented subsystem designs live beside this file — `docs/logging.md`,
+  `docs/serialization.md`, `docs/persistence.md`, `docs/editor.md`,
+  `docs/macro-design.md`, `docs/scoped-impls.md` — each with its own status
+  header.
 - Files under `docs/proposals/` are future proposals unless their status says
   otherwise.
 
@@ -2245,11 +2249,55 @@ Protocol-local derive:
 
 Generated declarations are placed in a compiler-owned overlay. Source modules are not mutated. Generated nodes receive provenance meta such as `@derived_by`, `@derived_for`, and `@derived_from`.
 
-Any module may declare an implementation for any protocol and receiver type; an impl may live anywhere, not only in the type's or protocol's module. **Module implementations are global after successful module activation:** while a module runs, its impls are staged in its module scope. At successful completion the complete batch is conflict-checked and published atomically to the shared application root. A failed or conflicting module publishes none of its staged impls. Once published, they are visible everywhere, including in modules that never imported the impl's defining module. Impls are not value bindings — they cannot be renamed or selectively imported; loading the defining module is what activates them. Coherence is global: at most one impl may exist for a given `(protocol, receiver)` pair; a pair with no active impl is a missing-implementation error at the use site. Generated module implementations follow the same rule, and MVP rejects overlapping generic implementations that could both apply to the same concrete receiver type.
+Any module may declare an implementation for any protocol and receiver type,
+but **where the impl is written decides who can see it**
+(`docs/scoped-impls.md` is the full design). There are three impl classes:
 
-`eval` and Env-backed REPL units are the deliberate exception: their impls stay in the eval overlay and are never promoted to the application registry implicitly. A function or type retaining that overlay can dispatch through its impls, while unrelated scopes cannot. There is no public global-promotion operation in the MVP. Each successful application-level activation advances an impl-registry epoch; native/direct protocol-call optimization must guard that epoch (and deopt/re-resolve on mismatch) before it may cache an impl address across activation.
+- **Canonical** — a static top-level impl in the protocol's or the receiver
+  type's home module, including inline impls and successful top-level
+  `^derive` results (they live with the receiver). While a module runs, its
+  impls are staged in its module scope; at successful completion the batch is
+  conflict-checked and published atomically to the shared application
+  registry, becoming visible in every loaded module. A failed or conflicting
+  module publishes none of its staged impls.
+- **Scoped** — a static top-level impl outside both homes. It is visible only
+  in its defining module. `^export true` makes it importable, and
+  `(import_impl P for T from "path")` copies exactly that pair into the
+  importing module's base scope; there is no aliasing, renaming, or
+  re-export. Canonical impls cannot be exported.
+- **Overlay** — an impl with computed operands, under control flow, inside a
+  callable, or in an eval/REPL unit. It is visible only in its capturing
+  lexical scope and is never exportable or canonical. A top-level impl with a
+  computed protocol or receiver operand draws a compiler diagnostic naming
+  the non-static operand, because the form silently loses cross-module
+  visibility.
 
-MVP imposes no orphan restriction — an impl need not accompany its type or protocol, in the spirit of keeping the MVP simple. A future version may add one (for example, requiring a cross-module impl to live in the type's or the protocol's defining module) so that implementations cannot be silently activated by loading an unrelated module.
+Impls are not value bindings — they cannot be renamed or selectively imported
+through `[name]` lists. Coherence is checked where impls become visible: at
+most one impl may be active for a `(protocol, receiver)` pair within one
+visibility scope; identical re-registration through another module path is
+idempotent; and an impl of a child protocol conflicts with an impl of its
+ancestor at the same receiver because it supplies the inherited message
+identities. A pair with no visible impl is a missing-implementation error at
+the use site. Generated implementations follow the same rules, and MVP
+rejects overlapping generic implementations that could both apply to the same
+concrete receiver type.
+
+An unqualified send resolves against a fixed compile-time candidate set — the
+protocol references (imports and lexical protocol declarations) established
+on every control-flow path reaching the send — filtered at runtime to impls
+applicable in the send's own module: a library send cannot see a scoped impl
+imported only by its caller. Within one message identity, the nearest
+applicable receiver on the `^is` chain wins; unrelated same-name identities
+that both survive make the simple name ambiguous, and qualification (`P/m`)
+always selects one identity.
+
+`eval` and Env-backed REPL impls stay in their eval overlay and are never
+promoted to the application registry implicitly; there is no public
+global-promotion operation in the MVP. Each successful application-level
+activation advances an impl-registry epoch; native/direct protocol-call
+optimization must guard that epoch (and deopt/re-resolve on mismatch) before
+it may cache an impl address across activation.
 
 MVP restrictions:
 
@@ -2264,37 +2312,44 @@ an extension of this section in `docs/core.md`.
 
 ### 10.1 Implementation visibility and imports
 
-The exact rule for when an impl is visible for protocol-coherence lookup:
+The exact rule for when an impl is visible for dispatch and coherence lookup
+(`docs/scoped-impls.md` §4 is the full design):
 
 ```text
-An impl batch activates atomically when its defining module finishes loading.
-An active impl is visible in every module, regardless of whether
-that module imports the defining module (global coherence).
-Any import form that loads the defining module — bulk, selected,
-or `^as` — activates its impls; impls are not name-selected and
-cannot be aliased or renamed.
-At most one impl per `(protocol, receiver)` pair may be active; a
-second makes the conflicting module activation fail without
-publishing any of that module's impls. Re-activating the identical
-registration (same message functions) through another module path —
-two modules importing the same impl-carrying module, in any order —
-is idempotent, never a conflict.
-A pair with no active impl is a missing-implementation
-error at the use site.
-Impls are not value bindings: they cannot be renamed, selectively
-imported, or re-exported. An import that binds no values still
-loads the module and so still activates its impls.
+canonical   home-module impl: activates atomically when its defining
+            module finishes loading, then visible in every module.
+scoped      static top-level impl outside both homes: visible in its
+            defining module; `^export true` plus an explicit
+            `(import_impl P for T from "path")` copies exactly that
+            pair into the importer's base scope.
+overlay     computed/conditional/local/eval impls: visible only in the
+            capturing lexical scope.
+A module's base scope = all canonical impls from loaded modules,
+plus its own scoped impls, plus explicitly imported scoped impls;
+active lexical overlays join that pool. Layers decide membership,
+never precedence.
+At most one impl per `(protocol, receiver)` pair may be visible in
+any one scope; a conflicting registration fails at assembly or
+activation without publishing its batch. Identical re-registration
+through another module path is idempotent, never a conflict.
+A pair with no visible impl is a missing-implementation error at
+the use site.
+Impls are not value bindings: no renaming, no selective import
+through `[name]` lists, no re-export. Ordinary imports never import
+scoped impls; only `import_impl` does. Loading a module is what
+activates its canonical impls.
 ```
 
-This fixes the answers to the import-visibility questions: a selected
-import and an `^as` import both load the defining module and so activate
-impls globally; impl visibility cannot be imported on its own — it rides
-on module load; and impls cannot be re-exported because they are not
-bindings. Coherence is therefore global, not per-import: the same
-`(protocol, receiver)` pair resolves the same way in every module.
-Eval overlays are lexical and are not part of this module-global relation.
-Future versions may tighten this with `^private`, explicit export lists,
-an orphan rule, or finer-grained impl-import controls.
+Dispatch uses the module containing the send, not the caller's module —
+behavior that must cross a module boundary belongs in a canonical impl;
+otherwise pass the produced value or an explicit callback. Conformance
+checks (`x : P` typed boundaries, protocol-typed props, `(List P)`
+elements) use the declaration scope's visibility, so protocol-typed data
+crossing modules normally needs canonical conformance. Reload rebuilds the
+canonical registry and importer state transactionally
+(`docs/scoped-impls.md` §6). This model subsumes the earlier ideas of an
+orphan rule and impl-import controls; future versions may still add
+`^private`, explicit export lists, and package-private visibility.
 
 ---
 
@@ -3416,7 +3471,7 @@ MVP export model:
 all named namespace bindings are exported/importable by default
 ```
 
-This includes values, types, protocols, macros, and nested namespaces. Protocol implementation declarations are not ordinary named bindings and are not selected or aliased through `[name]` import lists. Implementation visibility is global and follows §10.1: any import form that loads the defining module — bulk, selected, or `^as` — activates its impls everywhere, and visibility is tracked by the compiler rather than by local value bindings. Future versions may add `^private`, explicit export lists, package-private visibility, re-export controls, and finer-grained implementation-import controls.
+This includes values, types, protocols, macros, and nested namespaces. Protocol implementation declarations are not ordinary named bindings and are not selected or aliased through `[name]` import lists. Implementation visibility follows §10.1 and `docs/scoped-impls.md`: loading a module activates its canonical impls application-wide; scoped impls stay in their defining module unless exported with `^export true` and imported pair-by-pair with `(import_impl P for T from "path")`; overlay impls never cross an import. Future versions may add `^private`, explicit export lists, package-private visibility, and re-export controls.
 
 Path interpretation for `from "path"`:
 
@@ -3541,6 +3596,40 @@ Eval overlay = ephemeral/generated module-like code unit
 
 Both use the same reader, compiler, namespace, import, and declaration mechanisms.
 
+### 15.9 URL module sources (experimental)
+
+Gene can run a remote entry module directly — the experimental
+`gene runurl <https-url>` command (which folds into `gene run <url>` once the
+semantics stabilize) — so one-file scripts and demos can be shared and run
+without installation. The wasm playground already treats fetch as its natural
+loader; this brings the same shape to the CLI. The transport is the same
+libcurl binding as `net/http_client`. Design decisions:
+
+- The canonical URL is the module identity. Module and compile-artifact
+  caches are keyed by identity strings, so URLs flow through them unchanged.
+- A relative import inside a URL module resolves RFC-3986-style against the
+  importer's URL — after redirects, against the final URL — with the same
+  `.gene` extension defaulting as file modules.
+- Boundary rules mirror the package-root rule for files: a remote module can
+  never import a local file (every module-path import inside a URL module
+  resolves against the module's URL); URL imports are enabled only by the
+  `runurl` entry — under `gene run` they are rejected at resolution (a future
+  opt-in flag on `run` may relax this); same-origin remote imports are free;
+  each cross-origin fetch prints its provenance. `https` only, with plain
+  `http` allowed for localhost.
+- Remote modules receive no ambient filesystem or environment authority;
+  capabilities remain explicit values granted by the entry invocation, and
+  eval's ambient-import restriction is unchanged.
+- Compile-time macro discovery fetches dependency sources through the same
+  cache, so each URL is fetched at most once per run even when compilation
+  needs it before execution.
+- The implemented slice caches in memory per run. Before the feature leaves
+  experimental status it needs a disk cache plus a lockfile pinning a sha256
+  per URL, because URL content is mutable and runs must be reproducible.
+  `reload` rejects URL modules until then. Module URLs carry no query or
+  fragment.
+- This is a script-running feature, not the package story: packages and
+  registries (`docs/proposals/distribution.md`) remain the dependency answer.
 
 ## 16. Foreign function interface
 
@@ -4047,7 +4136,7 @@ gene doc
 gene view
 ```
 
-`gene run path.gene args...` creates an `Application`, loads the entry package/module, executes the entry module top to bottom, and calls `main` with command-line arguments if present.
+`gene run path.gene args...` creates an `Application`, loads the entry package/module, executes the entry module top to bottom, and calls `main` with command-line arguments if present. The experimental `gene runurl <https-url>` runs a remote entry module under the URL-module rules of §15.9 and folds into `gene run` once stable.
 
 `gene eval` creates or reuses an application/runtime context, parses the supplied source as an eval module-like unit, evaluates it in an explicit or CLI-created `Env`, and prints the final result when appropriate.
 

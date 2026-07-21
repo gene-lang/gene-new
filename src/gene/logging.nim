@@ -1,5 +1,5 @@
 ## Structured diagnostic logging shared by the runtime and Gene's `log`
-## namespace (docs/proposals/logging.md).
+## namespace (docs/logging.md).
 ##
 ## The disabled RuntimeLogger path is intentionally just a cached threshold
 ## comparison. Configuration is installed before entry-module execution; route

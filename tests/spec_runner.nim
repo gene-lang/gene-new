@@ -393,7 +393,7 @@ suite "spec — macros from design":
                "[0 99]")
 
   test "template macros avoid introduced pattern-binder capture":
-    # docs/proposals/macro-design.md §12.5: binders introduced by a template's
+    # docs/macro-design.md §12.5: binders introduced by a template's
     # match pattern are hygienically fresh, like var/fn binders.
     check_eval("(macro first-of! [x] " &
                "  `(match %x (when [tmp] tmp))) " &
@@ -4070,7 +4070,7 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
       discard run(compileSource("({^a 1} ~ contains? \"a\")"),
                   newGlobalScope())
 
-suite "spec — serde data core (docs/proposals/serialization.md stage 1)":
+suite "spec — serde data core (docs/serialization.md stage 1)":
   test "scalars and containers round-trip under structural equality":
     check_eval("(import serde [write_data read_data]) " &
                "(var v {^a 1 ^b [1 2.5 \"x\" true nil void] " &

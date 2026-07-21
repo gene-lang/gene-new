@@ -1,12 +1,15 @@
 # Implementation status
 
-**Status date:** 2026-07-10
+**Status date:** 2026-07-21
 
 The current VM implements the reader/value/printer pipeline, callable-first
 bytecode execution, runtime fexprs and template macros, selectors and streams,
-gradual nominal types, protocols/derivation, structured tasks/channels/actors,
-module/eval overlays, explicit capability values, native roots/calls, typed FFI
-boundaries, serialization, and the AI-agent support libraries exercised by
+gradual nominal types, protocols/derivation with scoped impl visibility
+(canonical/scoped/overlay, `import_impl`, transactional reload —
+`docs/scoped-impls.md`), structured tasks/channels/actors, module/eval
+overlays, explicit capability values, native roots/calls, typed FFI
+boundaries, serialization, the experimental `gene runurl` URL-module entry
+(design §15.9), and the AI-agent support libraries exercised by
 `examples/ai_agent`.
 
 The normative implemented surface lives in `docs/spec/` and is checked by

@@ -1040,7 +1040,7 @@ agent, shell, REPL, and manually appended output remains canonical
 `worker_output` journal data.
 `log_tail` follows the event log only; tailing arbitrary files needs polling plus
 rotation/truncation semantics and stays deferred for the same reasons `gene
-view --follow` is deferred in `docs/proposals/editor.md`. `file_view` starts as
+view --follow` is deferred in `docs/editor.md`. `file_view` starts as
 wrapped read-only text over the existing transcript machinery; a structural
 Gene view should later reuse the reader-backed viewer model from that proposal
 rather than growing a second implementation here.
@@ -1142,7 +1142,7 @@ surface-local recall lists/navigation cursors per route, plus
 **external composition** — `/edit` suspends curses, opens `$VISUAL`/`$EDITOR`
 on the current draft, and returns the saved buffer as the focused worker's
 draft without submitting it. This reuses the `/tty`/`/view` suspend/resume discipline
-and the editor-resolution rules in `docs/proposals/editor.md` §7.1; the draft
+and the editor-resolution rules in `docs/editor.md` §7.1; the draft
 is ordinary user input and passes the same redaction-at-append when submitted.
 `/edit` is strictly a surface operation: suspending the TUI's curses session
 sets an explicit local-surface suspension state, and event callbacks must not
@@ -2803,7 +2803,7 @@ order within the slice comes from dogfood pain:
    case, and the "never type into an invisible or wrong worker" guarantees.
 5. **Done.** Add `/edit` external composition over the shared curses suspend/resume
    handoff and the editor-resolution rules shared with
-   `docs/proposals/editor.md`; suspension is surface-local and pauses nothing
+   `docs/editor.md`; suspension is surface-local and pauses nothing
    in the application.
 6. **Done.** Add the `stats` and `log_tail` projection workers over existing state; the
    `/tail` filter shares the `/trace` parser rather than growing a second
@@ -2811,7 +2811,7 @@ order within the slice comes from dogfood pain:
 7. **Done.** Add the `file_view` MVP as wrapped read-only text, with workspace
    `safe_path` confinement for every shared view, regardless of initiating
    adapter; adopt the structural viewer model
-   from `docs/proposals/editor.md` only when that work lands.
+   from `docs/editor.md` only when that work lands.
 8. **Done.** Implement the §7.1 bounded-ring overflow contract (drop-oldest with loss
    metadata) across output buffers, projections, surface caches, and the
    event journal; bound retained stopped-worker snapshots; add the §12.2

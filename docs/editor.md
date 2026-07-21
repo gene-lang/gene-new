@@ -535,7 +535,7 @@ concurrent editor, formatter, build step, or log append.
 
 The native CLI can implement atomic replacement internally before a public
 `Fs/write_text_atomic` exists. It should later reuse the shared filesystem
-primitive proposed in `docs/proposals/persistence.md` rather than keeping two
+primitive proposed in `docs/persistence.md` rather than keeping two
 durability implementations.
 
 Rename-over intentionally replaces the destination inode. It therefore breaks

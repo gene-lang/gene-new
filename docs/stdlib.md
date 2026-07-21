@@ -41,12 +41,12 @@ Implementation status:
 - `serde` (Gene-text serialization) — stages 1–6 implemented:
   `serde/write_data`/`read_data`/`data?`, full `serde/write`/`read`,
   typed refs/instances, policy-gated restore hooks, `SerdeRef`,
-  `SerdeError`, and `SerdePolicy`, per docs/proposals/serialization.md.
+  `SerdeError`, and `SerdePolicy`, per docs/serialization.md.
 - `store` (durable serde-backed persistence) — implemented with the shared
   `Store` protocol, `StoreError`, `store/sqlite`, `store/fs`, atomic
   hash-validated checkpoint generations (`checkpoint`/`load_checkpoint`),
   owner-only storage, and `Fs/make_dir`/`Fs/remove`, per
-  docs/proposals/persistence.md. The `crypto/sha256` helper used by manifests
+  docs/persistence.md. The `crypto/sha256` helper used by manifests
   and content-addressed artifacts, `crypto/random_hex` for opaque credentials
   and tickets, `crypto/secure_equal?` for credential comparison without an
   early-exit API, and `os/process_id` used by ownership advisories are also public,
@@ -137,7 +137,7 @@ before the entry module. It supports hierarchical segment-aware routes,
 console/file sinks, Gene/text/JSON Lines formats, color policy, and flush policy;
 file paths are relative to the config file. Config is immutable during entry
 execution. Under wasm, console logging uses captured host output and file sinks
-are unavailable. See [the logging proposal](proposals/logging.md) for the full
+are unavailable. See [the logging proposal](logging.md) for the full
 schema and performance contract.
 
 When application-selected file output is required, `new_file_logger` takes an

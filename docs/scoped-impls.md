@@ -1,14 +1,20 @@
 # Scoped and Co-located Protocol Implementations
 
-**Status:** Proposal — not implemented.
+**Status:** implemented 2026-07-21 — compiler Must/Whole/Entry candidate
+analysis, canonical/scoped/overlay classification and activation,
+`import_impl`, per-identity nearest-receiver resolution, declaration-scope
+conformance, and transactional reload live in `src/gene/compiler.nim` and
+`src/gene/vm.nim`; behavior is pinned by `tests/test_protocols.nim`,
+`tests/test_modules.nim`, and the impl-visibility suites in
+`tests/spec_runner.nim`.
 
 **Decision:** an impl is globally visible when it is defined with its protocol
 or receiver type. Every other impl is module-local unless explicitly exported
 and explicitly imported.
 
-This proposal replaces the activation/visibility rules in `docs/design.md`
-§10/§10.1 and refines protocol conformance and message resolution in
-`docs/core.md` §3.5/§9.
+This design replaced the activation/visibility rules previously stated in
+`docs/design.md` §10/§10.1 and refines protocol conformance and message
+resolution in `docs/core.md` §3.5/§9.
 
 ## 1. Model
 

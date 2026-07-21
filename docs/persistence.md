@@ -21,7 +21,7 @@ pretending that arbitrary in-flight host operations can be replayed exactly
 once. WAL/replay remains a separable problem in §7.
 
 This design sits *above* serialization: `serde`
-(docs/proposals/serialization.md, stages 1–6 shipped) is the format;
+(docs/serialization.md, stages 1–6 shipped) is the format;
 persistence adds a durable key→value store and a reload protocol over it.
 
 ## 1. The one lesson from the prior implementation
