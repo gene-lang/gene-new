@@ -38,8 +38,8 @@
 (import crypto [sha256])
 (import str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
-(import std/stream [to_stream map filter take into each])
-(import std/parse [parse_int read_all format ParseError])
+(import gene/stream [to_stream map filter take into each])
+(import gene/parse [parse_int read_all format ParseError])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])
@@ -3131,7 +3131,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
 - Comments start with `#`. Modules may start with `(mod name @doc "...")`.
 - Imports use namespace/module forms:
   `(import str [join split trim lower])`
-  `(import std/stream [to_stream map filter each into])`
+  `(import gene/stream [to_stream map filter each into])`
   `(import [foo : local] from "./module")`
 - Bind with `(var name value)` or `(var name : Type value)`. Reassign existing
   bindings with `(set name value)`. Avoid redeclaring the same local name in a

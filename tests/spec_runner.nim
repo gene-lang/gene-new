@@ -18,10 +18,10 @@ proc geneString(s: string): string =
 
 suite "spec — reader surface from design":
   test "programs contain multiple top-level forms":
-    let forms = readAll("(mod app) (import std/stream [map]) (fn main [] nil)")
+    let forms = readAll("(mod app) (import gene/stream [map]) (fn main [] nil)")
     check forms.len == 3
     check forms[0].print() == "(mod app)"
-    check forms[1].print() == "(import (path std stream) [map])"
+    check forms[1].print() == "(import (path gene stream) [map])"
     check forms[2].print() == "(fn main [] nil)"
 
   test "selector literals and context-neutral paths stay distinct":
@@ -153,7 +153,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["ns"], "(ns sample (var x 1))")
     fixture(["env"], "(env ^bindings {^x 1})")
     fixture(["eval"], "(eval (quote 1) ^in (env))")
-    fixture(["import"], "(import std/stream [map])")
+    fixture(["import"], "(import gene/stream [map])")
     fixture(["mod"], "(mod sample)")
     fixture(["match"], "(match 1 (when x x))")
     fixture(["while", "break"], "(while true (break))")
@@ -3178,7 +3178,7 @@ suite "spec — parser helpers from design":
                "[(a) (b 2) false]")
 
   test "reader failures preserve structured location and open-form context":
-    check_eval("(import std/parse [read_all ParseError]) " &
+    check_eval("(import gene/parse [read_all ParseError]) " &
                "(try (read_all \"(a [b)\") false " &
                " catch (ParseError ^line line ^col col ^contexts frames) " &
                "   [line col frames/0/opener frames/0/expected_closer " &
@@ -3435,25 +3435,25 @@ suite "spec — impl visibility across modules (design §10)":
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Zoe\""
 
 suite "spec — stdlib namespaces from stdlib plan":
-  test "std/stream, std/node, and std/parse resolve as namespace imports":
-    check_eval("(import std/stream [to_stream map into]) " &
+  test "gene/stream, gene/node, and gene/parse resolve as namespace imports":
+    check_eval("(import gene/stream [to_stream map into]) " &
                "((to_stream [1 2 3]) ~ map (fn [x] (* x x)) ; ~ into [])",
                "[1 4 9]")
-    check_eval("(import std/stream [to_stream each]) " &
+    check_eval("(import gene/stream [to_stream each]) " &
                "(var sum (cell 0)) " &
                "(each (to_stream [1 2 3]) (fn [x] " &
                "  (Cell/update sum (fn [s] (+ s x))))) " &
                "(Cell/get sum)",
                "6")
-    check_eval("(import std/node [head]) (head (quote (a 1)))", "a")
-    check_eval("(import std/parse [parse_int]) (parse_int \" 42 \")", "42")
-    check_eval("(import std/parse [parse_int ParseError]) " &
+    check_eval("(import gene/node [head]) (head (quote (a 1)))", "a")
+    check_eval("(import gene/parse [parse_int]) (parse_int \" 42 \")", "42")
+    check_eval("(import gene/parse [parse_int ParseError]) " &
                "(try (parse_int \"4x\") catch (ParseError ^message _) -1)",
                "-1")
     # format ends with a newline: it is the gene-fmt source-unit contract.
-    check_eval("(import std/parse [format]) (format \"( + 1   2 )\")",
+    check_eval("(import gene/parse [format]) (format \"( + 1   2 )\")",
                "\"(+ 1 2)\\n\"")
-    check_eval("(import std/parse [format ParseError]) " &
+    check_eval("(import gene/parse [format ParseError]) " &
                "(try (format \"(((\") catch (ParseError ^message _) -1)",
                "-1")
 
@@ -3501,7 +3501,7 @@ suite "spec — stdlib namespaces from stdlib plan":
 
 suite "spec — net/http surface from stdlib plan":
   test "response helpers build typed Response nodes":
-    check_eval("(import net/http [text]) (import std/node [body]) " &
+    check_eval("(import net/http [text]) (import gene/node [body]) " &
                "(var r (text \"hi\")) " &
                "[r/status r/headers/content-type (body r)]",
                "[200 \"text/plain; charset=utf-8\" [\"hi\"]]")
@@ -3811,7 +3811,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec_stream invokes stdout callbacks while retaining captured output":
     check_eval("(import os [exec_stream Exec]) " &
-               "(import std/stream [to_stream into]) " &
+               "(import gene/stream [to_stream into]) " &
                "(var seen (cell [])) " &
                "(var r (exec_stream Exec ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
                "                    ^stdout_line (fn [line] " &
@@ -3870,7 +3870,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec_stream_async feeds stdout lines through a channel then closes it":
     check_eval("(import os [exec_stream_async Exec]) " &
-               "(import std/stream [to_stream into]) " &
+               "(import gene/stream [to_stream into]) " &
                "(var ch (channel ^capacity 8)) " &
                "(var t (exec_stream_async Exec ^cmd \"printf\" " &
                "         ^args [\"a\\nb\\n\"] ^stdout_chan ch)) " &

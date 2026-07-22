@@ -20,9 +20,9 @@
 (import io [write_line])
 (import html [escape])
 (import str [join])
-(import std/stream [to_stream to_pairs_stream map filter take each into])
-(import std/node [head props body meta declarations])
-(import std/parse [parse_int ParseError])
+(import gene/stream [to_stream to_pairs_stream map filter take each into])
+(import gene/node [head props body meta declarations])
+(import gene/parse [parse_int ParseError])
 
 # -----------------------------------------------------------------------------
 # Protocols and derivation

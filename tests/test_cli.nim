@@ -2929,7 +2929,7 @@ catch {^message message} (set duplicate message))
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join])
-(import std/stream [to_stream map each into])
+(import gene/stream [to_stream map each into])
 
 (var hits (cell 0))
 
@@ -3081,7 +3081,7 @@ catch {^message message} (set duplicate message))
 (import net/http [Server serve Response])
 (import json [stringify])
 (import str [join])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 
 (var hits (cell 0))
 
@@ -3207,7 +3207,7 @@ catch {^message message} (set duplicate message))
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join contains?])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 
 (var hits (cell 0))
 
@@ -3292,7 +3292,7 @@ catch {^message message} (set duplicate message))
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join contains?])
-(import std/stream [to_stream map filter into])
+(import gene/stream [to_stream map filter into])
 
 (fn sse-body [chunks]
   (var lines
@@ -3431,7 +3431,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 
 (var hits (cell 0))
 
@@ -3513,7 +3513,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join contains?])
-(import std/stream [to_stream map each into])
+(import gene/stream [to_stream map each into])
 
 (var hits (cell 0))
 
@@ -3598,7 +3598,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join contains?])
-(import std/stream [to_stream each into map])
+(import gene/stream [to_stream each into map])
 
 (var hits (cell 0))
 
@@ -3705,7 +3705,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [stringify])
 (import str [join])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 (var hits (cell 0))
 (fn sse_body [chunks]
   (var lines ((to_stream chunks)
@@ -3785,7 +3785,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [stringify])
 (import str [join])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 (var hits (cell 0))
 (fn sse_body [chunks]
   (var lines ((to_stream chunks)
@@ -4217,7 +4217,7 @@ catch {^message message}
 (import Fs [write_text WriteDir])
 (import json [stringify])
 (import str [join])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 (var hits (cell 0))
 (fn sse_body [chunks]
   (var lines ((to_stream chunks)
@@ -4316,7 +4316,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [join])
-(import std/stream [to_stream map filter into])
+(import gene/stream [to_stream map filter into])
 
 (var hits (cell 0))
 
@@ -5349,7 +5349,7 @@ catch {^message message}
 (import net/http [Server serve Response])
 (import json [stringify])
 (import str [join])
-(import std/stream [to_stream map into])
+(import gene/stream [to_stream map into])
 
 (fn sse-body [chunks]
   (var lines
@@ -7031,7 +7031,7 @@ console.log(JSON.stringify({
 (import net/http [Server serve Response])
 (import json [parse stringify])
 (import str [contains?])
-(import std/stream [to_stream into])
+(import gene/stream [to_stream into])
 
 (var served-updates (cell false))
 (var served-commands (cell false))

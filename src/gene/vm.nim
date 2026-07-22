@@ -5385,10 +5385,17 @@ proc buildBuiltins(app: Application): Scope =
   # Stage 1 of the stdlib-root migration: every existing builtin remains bare
   # for compatibility and is also reachable through the unshadowable `gene`
   # root. Nested namespace values are shared, preserving builtin identities.
+  # Defined after all bare builtins (incl. the former std/* → gene/stream,
+  # gene/node, gene/parse) so the whole surface is mirrored, and before
+  # `genex` so `gene` never contains a reserved sibling root.
   let geneScope = newScope(result)
   for name, value in result.vars:
     geneScope.define(name, value)
   result.define("gene", newNamespace("gene", geneScope))
+  # `genex` is an active, initially empty root for experimental/incubating
+  # APIs; `geney`/`genez` stay reserved but undefined. All four are rejected in
+  # binding position by the compiler (reservedStdlibRoots).
+  result.define("genex", newNamespace("genex", newScope(result)))
 
 var gApplication: Application
 

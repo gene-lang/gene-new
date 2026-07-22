@@ -70,7 +70,7 @@ Mapping each hostile dependency to its wasm reality:
 
 The conclusion: a wasm build is a **reduced-capability profile** at runtime — the
 parser, compiler, GIR, VM core, and pure stdlib (`str`, `json`, `html`, `url`,
-`std/stream`, `std/parse`) all work; the host-authority builtins (`os`, `net`,
+`gene/stream`, `gene/parse`) all work; the host-authority builtins (`os`, `net`,
 `db/*`, `ffi`, and the curses/curl work in `examples/ai_agent/design.md`) are present but
 non-functional. Whether to physically *remove* them (smaller binary, cleaner
 errors) or leave them stubbed is the optional gating decision in §A.2 — either

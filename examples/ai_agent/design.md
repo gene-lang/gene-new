@@ -378,8 +378,8 @@ What already exists and is directly reusable:
   `Net/tcp_write_text_async`, `Fs/*_async`, and `spawn`/`await` already suspend
   a Gene task on real I/O and resume it. A
   streaming HTTP client and non-blocking `getch` fit this model.
-- **`str`, `url`, `std/stream`** stdlib helpers for building request bodies and
-  slicing output. (`std/parse` is currently only `parse_int`, so it does not
+- **`str`, `url`, `gene/stream`** stdlib helpers for building request bodies and
+  slicing output. (`gene/parse` is currently only `parse_int`, so it does not
   help with JSON/SSE yet — the `json` scanner in §5 is what covers that.)
 
 ### Why the existing dynamic FFI is not enough

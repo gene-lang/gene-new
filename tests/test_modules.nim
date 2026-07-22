@@ -196,7 +196,7 @@ suite "modules — file imports":
     expect GeneError:
       discard runProgram("(import from \"./math\" ^as m)")
     expect GeneError:
-      discard runProgram("(import std/stream ^as stream)")
+      discard runProgram("(import gene/stream ^as stream)")
 
   test "module reflection exposes normalized file path":
     writeModule("math.gene", "(var pi 3)")

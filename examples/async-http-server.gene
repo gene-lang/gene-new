@@ -51,7 +51,7 @@
 # shadows the `json` namespace name.
 (import json [stringify])
 (import str [join])
-(import std/parse [parse_int ParseError])
+(import gene/parse [parse_int ParseError])
 (import net/http [Server serve listen stop status route text json])
 
 # --- shared state ------------------------------------------------------------

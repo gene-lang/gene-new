@@ -307,8 +307,8 @@ A delimited `/` is an ordinary symbol and remains available as a normal callable
 Slash is also the reader spelling for qualified names in static contexts such as built-in namespace names, type names, protocol messages, and namespace members. File/string module paths are written in `from "path"` import clauses and are normalized by the module loader:
 
 ```gene
-(import std/stream [map, filter])       # built-in / already-loaded namespace path
-(import [map : stream_map] from "std/stream") # module path string
+(import gene/stream [map, filter])       # built-in / already-loaded namespace path
+(import [map : stream_map] from "gene/stream") # module path string
 C/Int32
 Stream/next
 Color/red
@@ -319,7 +319,7 @@ Context determines interpretation:
 
 - expression value position: `user/name` desugars to selector application, `((select name) user)`;
 - leading slash expression: `/user/name` is a selector literal;
-- import namespace position: `std/stream` is a built-in or already-loaded namespace path;
+- import namespace position: `gene/stream` is a built-in or already-loaded namespace path;
 - type/member declaration contexts: `C/Int32`, `Stream/next`, and `Color/red` are qualified-name resolution, not runtime selector evaluation;
 - module path strings in `from "path"` are resolved and normalized by the module loader.
 
@@ -2480,7 +2480,7 @@ Because expansion happens while the importer compiles, a top-level
 This parses and compiles macro/derive declarations but does not create a
 runtime module scope or execute any dependency top-level form. Imported macros
 are usable but are not re-exported by the importing module. Ordinary
-namespace-path imports such as `(import std/stream [...])` do not carry
+namespace-path imports such as `(import gene/stream [...])` do not carry
 file-defined macros in MVP because there is no dependency artifact to read. A
 built-in namespace may register compiler-known template macros; a top-level
 namespace selection imports those with the same alias, collision, hygiene, and
@@ -3436,6 +3436,34 @@ Qualified names in static contexts such as `html/Node`, `Stream/next`, and `C/In
 
 ### 15.6 Imports, exports, and path normalization
 
+#### Reserved standard-library roots
+
+`gene`, `genex`, `geney`, and `genez` are reserved standard-library root
+namespaces. They are reserved in *binding* position the way core special forms
+are reserved in head position: user code may not declare, bind, alias,
+import-as, or shadow them anywhere. The standard library lives under `gene`, so
+every built-in is reachable qualified — `gene/map`, `gene/str/join`,
+`gene/net/http/serve` — and existing bare names remain available for now. There
+is no `std` namespace; the former `std/*` stream/node/parse namespaces are
+`gene/stream`, `gene/node`, `gene/parse` (and bare `stream`/`node`/`parse`).
+
+The four roots form a library lifecycle in which each transition is a root-swap
+with the internal path preserved (a mechanical rename that defers the semantic
+migration and frees the stable name for a replacement):
+
+```text
+genex/foo   (incubating, unstable)
+  → gene/foo   (stable)
+    → geney/foo  (retiring: frozen, bugfix-only, with a deletion deadline)
+      → deleted
+```
+
+A path lives under exactly one root at a time; a vacated name errors with a
+pointer to its new location. Only `gene` and `genex` are defined today (`genex`
+is an active but empty root); `geney`/`genez` stay reserved but undefined until
+first needed. Tooling may warn on `genex` (unstable) and `geney` (retiring)
+imports.
+
 `import` supports two source forms:
 
 1. importing from a built-in or already-loaded namespace path;
@@ -3444,9 +3472,9 @@ Qualified names in static contexts such as `html/Node`, `Stream/next`, and `C/In
 Built-in / namespace imports:
 
 ```gene
-(import std/stream [map, filter, into])
-(import std/stream [map : stream_map, filter])
-(import std/stream : stream)
+(import gene/stream [map, filter, into])
+(import gene/stream [map : stream_map, filter])
+(import gene/stream : stream)
 ```
 
 Module-path imports:
@@ -3464,7 +3492,7 @@ Module-path imports:
 
 Rules:
 
-- `std/stream` in source position is a static namespace path, not a string module path and not runtime selector evaluation;
+- `gene/stream` in source position is a static namespace path, not a string module path and not runtime selector evaluation;
 - `from "path"` is the only MVP form that names a file/string module path;
 - selected imports bind public names from the source namespace/module root;
 - `name : alias` is the single import-renaming syntax, including namespace and

@@ -382,7 +382,7 @@ suite "compiler — GIR emission":
     check sawBaz
 
     let aliasChunk = compileSource(
-      "(import std/stream : stream) (fn use [] stream)")
+      "(import gene/stream : stream) (fn use [] stream)")
     check aliasChunk.localNames == @["stream", "use"]
     check aliasChunk.functions[0].chunk.instructions[0].op == opLoadOuterLocal
     check aliasChunk.functions[0].chunk.instructions[0].name == "stream"

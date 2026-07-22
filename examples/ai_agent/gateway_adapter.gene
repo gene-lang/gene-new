@@ -26,8 +26,8 @@
 (import json [parse stringify JsonError])
 (import str [split trim join starts_with? contains? byte_size lower
              slice_bytes])
-(import std/stream [to_stream filter each into])
-(import std/parse [parse_int])
+(import gene/stream [to_stream filter each into])
+(import gene/parse [parse_int])
 (import net/http [Server serve listen stop Response
                   ws_accept ws_send ws_close])
 (import net/http_client [Http request HttpClientError])

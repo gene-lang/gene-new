@@ -13,7 +13,7 @@
 (mod style_guide @doc "canonical formatting for representative Gene source")
 
 (import str [join trim])
-(import std/stream [to_stream map filter into])
+(import gene/stream [to_stream map filter into])
 
 # Scalars, collections, nodes, metadata, and immutable data.
 

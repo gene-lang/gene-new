@@ -31,8 +31,8 @@
 (import url [parse_query UrlError])
 (import str [join])
 (import json [stringify])
-(import std/parse [parse_int ParseError])
-(import std/stream [to_stream map filter into])
+(import gene/parse [parse_int ParseError])
+(import gene/stream [to_stream map filter into])
 (import net/http [Request Response Server serve json redirect not_found])
 (import db/sqlite [open DbError])
 

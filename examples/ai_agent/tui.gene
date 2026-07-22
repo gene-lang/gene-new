@@ -139,8 +139,8 @@
 (import crypto [sha256])
 (import str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
-(import std/stream [to_stream map filter take into each])
-(import std/parse [parse_int read_all ParseError])
+(import gene/stream [to_stream map filter take into each])
+(import gene/parse [parse_int read_all ParseError])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])

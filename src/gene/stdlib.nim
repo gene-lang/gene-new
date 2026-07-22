@@ -7983,9 +7983,10 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   newNode(builtInTypeHead(scope, "FsStore"), props = props)
 
 proc registerStdlibNamespaces(root: Scope) =
-  ## Define the importable stdlib namespaces (std/*, str, html, url, net/http,
+  ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
   ## db, db/sqlite, db/postgres) and their error types on the built-ins root
-  ## scope.
+  ## scope. Every namespace is also reachable under the `gene` root registered
+  ## at the end of this proc.
   let errorProtocol = root.vars["Error"]
   let urlError = newType("UrlError", NIL,
                          @[TypeField(name: "message", optional: false,
@@ -8078,11 +8079,12 @@ proc registerStdlibNamespaces(root: Scope) =
   stdParseScope.define("format", newNativeCallFn("format", biParseFormat,
                                                  acceptsNamed = false))
   stdParseScope.define("ParseError", root.vars["ParseError"])
-  let stdScope = newScope(root)
-  stdScope.define("stream", newNamespace("std/stream", stdStreamScope))
-  stdScope.define("node", newNamespace("std/node", stdNodeScope))
-  stdScope.define("parse", newNamespace("std/parse", stdParseScope))
-  root.define("std", newNamespace("std", stdScope))
+  # The former `std/*` namespaces are registered bare at the root — like `str`,
+  # `net`, etc. — so buildBuiltins' `gene` root reaches them as `gene/stream`,
+  # `gene/node`, `gene/parse`. The `std` root itself is dropped.
+  root.define("stream", newNamespace("stream", stdStreamScope))
+  root.define("node", newNamespace("node", stdNodeScope))
+  root.define("parse", newNamespace("parse", stdParseScope))
   let strScope = newScope(root)
   strScope.define("join", newNativeFn("str/join", biStrJoin))
   strScope.define("split", newNativeFn("str/split", biStrSplit))

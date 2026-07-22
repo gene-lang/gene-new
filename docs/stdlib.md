@@ -7,7 +7,7 @@ that makes the web app path real, testable, and stable.
 
 Implementation status:
 
-- Phase 1 (`std/stream`, `std/node`, `std/parse`, `str`) — implemented as
+- Phase 1 (`gene/stream`, `gene/node`, `gene/parse`, `str`) — implemented as
   built-in namespaces; spec-tested in `tests/spec_runner.nim`.
 - Phase 2 (`html` escape, `url` encode/decode/parse_query/format_query with
   typed `UrlError`) — implemented; spec-tested.
@@ -78,9 +78,9 @@ Implementation status:
 Initial modules should be available through namespace imports:
 
 ```gene
-(import std/stream [to_stream to_pairs_stream map filter take each into])
-(import std/node [head props body meta declarations])
-(import std/parse [parse_int read_all ParseError])
+(import gene/stream [to_stream to_pairs_stream map filter take each into])
+(import gene/node [head props body meta declarations])
+(import gene/parse [parse_int read_all ParseError])
 (import str [join split starts_with? ends_with? trim byte_size slice_bytes])
 (import html [escape render])
 (import net/http [Request Response Server serve redirect])
@@ -96,6 +96,10 @@ Initial modules should be available through namespace imports:
 `str/slice_bytes` returns at most the requested number of UTF-8 bytes without
 splitting a character. Its zero-based start offset must itself be a UTF-8
 boundary. This is the bounded primitive used by agent-facing ranged reads.
+
+Every one of these is also reachable under the reserved `gene` root
+(`gene/str`, `gene/net/http`, `gene/os`, …); `gene`/`genex`/`geney`/`genez` are
+reserved standard-library roots (design.md §15.6). There is no `std` namespace.
 
 For MVP, these may be built-in namespaces registered by the runtime. File-backed
 stdlib modules can replace or wrap those namespaces later, but source programs
@@ -297,7 +301,7 @@ idempotent. `repl/run` remains the blocking stdin/stdout session helper.
 
 ## Phase 1: Core Utility Modules
 
-### `std/stream`
+### `gene/stream`
 
 Current runtime already has most stream helpers as built-ins. The stdlib module
 should export them under a stable namespace:
@@ -316,11 +320,11 @@ should export them under a stable namespace:
 
 Acceptance:
 
-- `examples/web_demo.gene` imports `std/stream` successfully.
+- `examples/web_demo.gene` imports `gene/stream` successfully.
 - Stream helpers remain lazy where they are lazy today.
 - `each` consumes a stream for side effects and returns `nil`.
 
-### `std/node`
+### `gene/node`
 
 Expose node anatomy and module introspection:
 
@@ -335,7 +339,7 @@ Acceptance:
 - `this_mod/%declarations` returns declaration nodes as a stream.
 - Route discovery can filter function declarations by `@route` metadata.
 
-### `std/parse`
+### `gene/parse`
 
 Initial parsing helpers:
 
@@ -642,7 +646,7 @@ The stdlib is sufficient when this app can be implemented without local stubs:
 (import net/http [Request Response Server serve redirect])
 (import html [render])
 (import sqlite [open exec query execute transaction])
-(import std/parse [parse_int ParseError])
+(import gene/parse [parse_int ParseError])
 
 (fn init_db [db]
   (exec db "create table if not exists notes (id integer primary key, text text not null)"))
@@ -673,7 +677,7 @@ library behavior is fixed by this target.
 ## Implementation Order
 
 1. Register stdlib namespaces for existing built-ins:
-   `std/stream`, `std/node`, `std/parse`.
+   `gene/stream`, `gene/node`, `gene/parse`.
 2. Add `str/join`, `str/split`, and `html/escape`.
 3. Move app-local HTML rendering from `web_demo.gene` into `html`.
 4. Add `url` query parsing and wire it into `Request/params`.
