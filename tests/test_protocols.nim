@@ -286,16 +286,45 @@ suite "protocols — declarations and dispatch":
        "(var t (T)) [(t ~ A/a) (t ~ B/b)]",
        "[\"via-child\" \"child\"]"
 
-  test "protocol-local derive may only generate own impl declarations":
+  test "derive generates only impl declarations, targeting the deriving type":
+    # Non-impl declarations remain rejected.
     expect GeneError:
       discard runStr("(protocol HasLabel " &
                      "  (derive [t : Type, req] `(var generated 1))) " &
                      "(type User ^props {^name Str} ^derive [HasLabel])")
+    # A generated impl whose receiver is not the deriving type is rejected,
+    # naming the deriving protocol.
     expect GeneError:
-      discard runStr("(protocol Other) " &
-                     "(protocol HasLabel " &
-                     "  (derive [t : Type, req] `(impl Other for %t))) " &
-                     "(type User ^props {^name Str} ^derive [HasLabel])")
+      discard runStr("(protocol Render (message render [self] : Str)) " &
+                     "(type Other ^props {}) " &
+                     "(protocol Bad " &
+                     "  (derive [t : Type, req] " &
+                     "    `(impl Render for Other " &
+                     "       (message render [self] : Str \"x\")))) " &
+                     "(type W ^props {} ^derive [Bad])")
+
+  test "derive accepts the deriving type spelled as a qualified path":
+    # A generated impl may name the deriving type by a namespace-qualified
+    # path (pkg/MyType), not only bare or via %t.
+    ck "(protocol Tag " &
+       "  (message tag [self] : Str) " &
+       "  (derive [t : Type, req] " &
+       "    `(impl Tag for app/Widget (message tag [self] : Str \"tagged\")))) " &
+       "(ns app (type Widget ^props {} ^derive [Tag])) " &
+       "((app/Widget) ~ tag)",
+       "\"tagged\""
+
+  test "derive may generate an impl of another protocol (Delegate-style)":
+    ck "(protocol Render (message render [self] : Str)) " &
+       "(type Inner ^props {}) " &
+       "(impl Render for Inner (message render [self] : Str \"inner\")) " &
+       "(protocol Delegate " &
+       "  (derive [t : Type, req] " &
+       "    `(impl Render for %t " &
+       "       (message render [self] : Str (self/inner ~ render))))) " &
+       "(type Wrapper ^props {^inner Inner} ^derive [Delegate]) " &
+       "((Wrapper ^inner (Inner)) ~ render)",
+       "\"inner\""
 
   test "message implementation return annotations are checked":
     ck "(try (protocol ToName (message to_name [self] : Str)) " &

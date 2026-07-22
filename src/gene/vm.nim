@@ -9020,7 +9020,7 @@ proc generatedDeriveProtocol(scope: Scope, protocol, decl: Value): Value =
     raise newException(GeneError, "derive generated declarations must be nodes")
   if not decl.head.isSymbol("impl") or decl.body.len < 2:
     raise newException(GeneError,
-      "derive may only generate impl declarations for its own protocol")
+      "derive may only generate impl declarations")
   let protocolExpr = decl.body[0]
   case protocolExpr.kind
   of vkProtocol:
@@ -9029,8 +9029,9 @@ proc generatedDeriveProtocol(scope: Scope, protocol, decl: Value): Value =
     if not scope.lookupOptional(protocolExpr.symVal, result):
       # Derive templates are written in the protocol's defining scope, but
       # they run in the deriving type's scope, where a namespaced protocol
-      # may not be bound. Only the deriving protocol is legal here anyway
-      # (identity-checked by the caller), so its own name always resolves.
+      # may not be bound. The deriving protocol's own name always resolves;
+      # any other target protocol must be visible at the deriving site
+      # (substitute its value with %p in the template to avoid the lookup).
       if protocolExpr.symVal == protocol.protocolName:
         return protocol
       raise newException(GeneError,
@@ -9064,16 +9065,49 @@ proc generatedDeriveProtocol(scope: Scope, protocol, decl: Value): Value =
     raise newException(GeneError,
       "derive generated impl must name its protocol directly")
 
-proc runGeneratedDeriveDecl(scope: Scope, protocol, decl: Value) =
+proc runGeneratedDeriveDecl(scope: Scope, protocol, typ, decl: Value) =
+  ## Run one derive-generated `(impl Q for T ...)` declaration. A derive may
+  ## target any resolvable protocol (cross-protocol generation, e.g. a
+  ## Delegate helper generating forwarding impls), but the receiver must be
+  ## the deriving type: that co-location is what classifies the generated
+  ## pair like an inline impl of the type declaration (canonical at static
+  ## top level, overlay otherwise) and keeps derive from registering behavior
+  ## for unrelated types at a distance.
   let generatedProtocol = generatedDeriveProtocol(scope, protocol, decl)
-  if not same(generatedProtocol, protocol):
+  if decl.body.len < 3 or not decl.body[1].isSymbol("for"):
     raise newException(GeneError,
-      "derive may only generate impl declarations for its own protocol")
-  # Substitute the validated protocol value for its spelled name so the
-  # generated impl compiles/runs in the deriving type's scope even when the
-  # protocol is not bound there (e.g. declared inside a namespace).
-  var body = @[protocol]
-  for i in 1 ..< decl.body.len:
+      "derive for " & protocol.protocolName &
+      " generated a malformed impl; expected (impl P for " &
+      typ.typeName & " ...)")
+  let receiverExpr = decl.body[2]
+  # The generated impl's receiver must name the deriving type. Match the
+  # spliced `%t` value by identity; otherwise match by name — during a type's
+  # own derive it is not yet bound, so its name (bare, or as the last segment
+  # of a qualified path like `pkg/MyType`) is what a template can spell, and
+  # resolving it would fail on the mid-declaration type. The generated impl
+  # always substitutes `typ` as the receiver, so this is a sanity gate against
+  # an obviously-wrong target, not a strict binding check.
+  let receiverName =
+    if receiverExpr.kind == vkSymbol:
+      receiverExpr.symVal
+    elif receiverExpr.kind == vkNode and receiverExpr.head.isSymbol("path") and
+        receiverExpr.body.len > 0 and receiverExpr.body[^1].kind == vkSymbol:
+      receiverExpr.body[^1].symVal
+    else:
+      ""
+  let receiverOk =
+    (receiverExpr.kind == vkType and same(receiverExpr, typ)) or
+    (receiverName.len > 0 and receiverName == typ.typeName)
+  if not receiverOk:
+    raise newException(GeneError,
+      "derive for " & protocol.protocolName &
+      " must target the deriving type " & typ.typeName &
+      ", got: " & receiverExpr.print())
+  # Substitute the validated protocol and receiver values for their spelled
+  # names so the generated impl compiles/runs in the deriving type's scope
+  # even when neither is bound there (e.g. declared inside a namespace).
+  var body = @[generatedProtocol, decl.body[1], typ]
+  for i in 3 ..< decl.body.len:
     body.add decl.body[i]
   let rewritten = newNode(decl.head, decl.props, body, decl.meta)
   discard run(compileForm(rewritten), scope, validateImplRequirements = false)
@@ -9089,10 +9123,10 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   of vkNil, vkVoid:
     discard
   of vkNode:
-    runGeneratedDeriveDecl(scope, protocol, generated)
+    runGeneratedDeriveDecl(scope, protocol, typ, generated)
   of vkList:
     for decl in generated.listItems:
-      runGeneratedDeriveDecl(scope, protocol, decl)
+      runGeneratedDeriveDecl(scope, protocol, typ, decl)
   else:
     raise newException(GeneError, "derive must return a declaration node or list")
 

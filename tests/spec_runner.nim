@@ -1944,11 +1944,20 @@ suite "spec — protocol derive from design":
                "((MenuItem ^name \"Soup\") ~ label)",
                "\"Soup\"")
 
-  test "protocol-local derive is limited to its own impls":
+  test "derive may target another protocol but only the deriving type":
+    # Cross-protocol generation (the Delegate case) is allowed.
+    check_eval("(protocol Other) " &
+               "(protocol HasLabel " &
+               "  (derive [t : Type, req] `(impl Other for %t))) " &
+               "(type MenuItem ^props {^name Str} ^derive [HasLabel]) " &
+               "\"ok\"", "\"ok\"")
+    # A generated impl whose receiver is not the deriving type is rejected.
     expect GeneError:
       discard run(compileSource("(protocol Other) " &
+                                "(type Elsewhere ^props {}) " &
                                 "(protocol HasLabel " &
-                                "  (derive [t : Type, req] `(impl Other for %t))) " &
+                                "  (derive [t : Type, req] " &
+                                "    `(impl Other for Elsewhere))) " &
                                 "(type MenuItem ^props {^name Str} " &
                                 "  ^derive [HasLabel])"),
                   newGlobalScope())

@@ -2376,7 +2376,8 @@ it may cache an impl address across activation.
 
 MVP restrictions:
 
-- protocol-local `derive` may generate `impl` declarations for its own protocol;
+- protocol-local `derive` may generate `impl` declarations for any resolvable
+  protocol, but only targeting the deriving type;
 - deriving outside the type's defining module is not allowed;
 - a manual impl and generated impl for the same `(protocol, type)` pair is an error;
 - generated impls are type-checked normally.
@@ -2448,7 +2449,7 @@ This is preferred over broad inheritance for wrappers, adapters, caches, logging
 
 Delegation should remain explicit. Gene should not use dynamic “method missing” forwarding as a core feature because it hides which protocols a type implements and makes type checking, docs, native compilation, and coherence harder.
 
-A future derive helper may generate forwarding impls:
+A derive helper may generate forwarding impls:
 
 ```gene
 (type BufferedReader
@@ -2456,7 +2457,7 @@ A future derive helper may generate forwarding impls:
   ^derive [(Delegate ^protocol Reader ^to /source)])
 ```
 
-Such a helper would expand to a normal `impl Reader BufferedReader` whose messages forward to `self/source`. This keeps delegation homoiconic, selector-based, and compatible with the existing protocol/derive system. Delegation is not an MVP special form, and the `Delegate` helper is post-MVP: it generates an `impl` for a protocol other than its own, which requires lifting the §11.4 own-protocol derive restriction first.
+Such a helper expands to a normal `impl Reader BufferedReader` whose messages forward to `self/source`. This keeps delegation homoiconic, selector-based, and compatible with the existing protocol/derive system. Delegation is not an MVP special form, but cross-protocol derive (§11.4) now supports writing a `Delegate`-style helper as an ordinary library protocol: its `derive` returns an `impl` of the delegated protocol targeting the deriving type.
 
 ## 11. Fexprs, macro templates, and compile-time code
 
@@ -2597,7 +2598,15 @@ Protocol-local `derive` remains a controlled compile-time declaration generator.
 
 `derive` is not a general fexpr. It runs in the compiler's derivation phase and is allowed to add declarations to a compiler-owned overlay. Source modules are not mutated.
 
-MVP restriction: protocol-local `derive` may generate `impl` declarations for its own protocol. Broader declaration generation is future work.
+A `derive` may generate `impl` declarations for **any protocol resolvable at
+the deriving site** (its own, or another — the `Delegate` forwarding case),
+but the generated impl must **target the deriving type**. That co-location is
+the coherence anchor: the generated pair lives with its receiver's home, so it
+classifies exactly like an inline impl of the type declaration — canonical at
+static top level, overlay otherwise — and a derive can never register behavior
+for an unrelated type at a distance. Rejections and conflicts name the
+deriving protocol. Broader declaration generation (non-`impl` declarations) is
+future work.
 
 ### 11.5 `Env` and dynamic evaluation
 
