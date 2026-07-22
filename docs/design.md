@@ -973,6 +973,21 @@ error `err`, but it does not raise `EndOfStream`.
 
 `Never` contributes no errors. Error rows flatten and deduplicate.
 
+`Stream/try_next` is a non-raising pull alternative: it returns a tagged
+`TryNext` result that distinguishes exhausted, value, and producer error
+without throwing. The `TryNext` enum follows the `TryRecv` pattern:
+
+```gene
+(enum (TryNext T E) exhausted (value T) (error E))
+```
+
+```gene
+(match (s ~ Stream/try_next)
+  (when TryNext/exhausted # ...)
+  (when (TryNext/value v) # ...)
+  (when (TryNext/error e) # ...))
+```
+
 A function containing `yield` is a generator and returns a `Stream`.
 
 ```gene

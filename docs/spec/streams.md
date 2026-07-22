@@ -13,6 +13,9 @@ channel suites in `tests/spec_runner.nim` and `tests/test_vm.nim`.
   Close is idempotent and preserves the first cleanup error.
 - A naturally exhausted `take` detaches from its upstream so normal loop
   cleanup leaves that upstream resumable. Early close/break/error closes it.
+- `try_next` returns `TryNext/exhausted`, `#(TryNext/value item)`, or
+  `#(TryNext/error err)` — a tagged result that distinguishes end-of-stream,
+  pulled item, and producer error without raising.
 - Channels are bounded FIFO queues. Close rejects future sends and permits
   buffered draining before `ChannelClosed`.
 - `try_recv` returns `TryRecv/empty` or `#(TryRecv/value payload)`, preserving

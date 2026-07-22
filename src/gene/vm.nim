@@ -1714,6 +1714,29 @@ proc tryRecvEmpty(scope: Scope): Value =
 proc tryRecvValue(scope: Scope, item: Value): Value =
   newNode(scope.tryRecvVariant("value"), body = @[item], immutable = true)
 
+proc tryNextVariant(scope: Scope, name: string): Value =
+  if scope == nil:
+    raise newException(GeneError,
+      "Stream/try_next requires a runtime scope")
+  var root = scope
+  while root.parent != nil:
+    root = root.parent
+  if not root.vars.hasKey("TryNext") or not root.vars["TryNext"].isEnumType:
+    raise newException(GeneError, "TryNext result type is unavailable")
+  let variant = root.vars["TryNext"].enumVariantDescriptor(name)
+  if variant.kind != vkEnumVariant:
+    raise newException(GeneError, "TryNext result variant is unavailable: " & name)
+  variant
+
+proc tryNextExhausted(scope: Scope): Value =
+  scope.tryNextVariant("exhausted")
+
+proc tryNextValue(scope: Scope, item: Value): Value =
+  newNode(scope.tryNextVariant("value"), body = @[item], immutable = true)
+
+proc tryNextError(scope: Scope, err: Value): Value =
+  newNode(scope.tryNextVariant("error"), body = @[err], immutable = true)
+
 proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/try_recv", args)
   requireChannel("Channel/try_recv", args[0])
@@ -3075,6 +3098,34 @@ proc biStreamClose(args: openArray[Value]): Value {.nimcall.} =
   requireStream("Stream/close", args[0])
   args[0].closeStream()
   NIL
+
+proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Stream/try_next", args)
+  requireStream("Stream/try_next", args[0])
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    if not args[0].streamHasNext:
+      return tryNextExhausted(scope)
+  except GeneError as e:
+    # A producer error is terminal. Return it as a tagged error variant.
+    let errVal =
+      if e.hasErrVal: e.errVal
+      else:
+        var props = initPropTable()
+        props["message"] = newStr(e.msg)
+        newNode(newSym("Error"), props = props)
+    return tryNextError(scope, errVal)
+  try:
+    let item = checkedStreamNext(args[0], "Stream/try_next item")
+    tryNextValue(scope, item)
+  except GeneError as e:
+    let errVal =
+      if e.hasErrVal: e.errVal
+      else:
+        var props = initPropTable()
+        props["message"] = newStr(e.msg)
+        newNode(newSym("Error"), props = props)
+    tryNextError(scope, errVal)
 
 proc copyItems(items: openArray[Value]): seq[Value] =
   result = newSeq[Value](items.len)
@@ -5327,6 +5378,15 @@ proc buildBuiltins(app: Application): Scope =
       hasBacking: false, backing: NIL)],
     NIL, result)
   result.define("TryRecv", tryRecvType)
+  let tryNextType = newEnum("TryNext", @["T", "E"],
+    [(name: "exhausted", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL),
+     (name: "value", payloadTypes: @[newSym("T")],
+      hasBacking: false, backing: NIL),
+     (name: "error", payloadTypes: @[newSym("E")],
+      hasBacking: false, backing: NIL)],
+    NIL, result)
+  result.define("TryNext", tryNextType)
   result.define("channel", newNativeCallFn("channel", biChannel))
   let channelScope = newScope(result)
   channelScope.define("send", newNativeCallFn("Channel/send", biChannelSend,
@@ -5396,6 +5456,8 @@ proc buildBuiltins(app: Application): Scope =
   streamScope.define("has_next", newNativeFn("Stream/has_next", biStreamHasNext))
   streamScope.define("peek", newNativeFn("Stream/peek", biStreamPeek))
   streamScope.define("next", newNativeFn("Stream/next", biStreamNext))
+  streamScope.define("try_next", newNativeCallFn("Stream/try_next", biStreamTryNext,
+                                                 acceptsNamed = false))
   streamScope.define("close", newNativeFn("Stream/close", biStreamClose))
   result.define("Stream", newNamespace("Stream", streamScope))
   result.define("assoc_in", newNativeFn("assoc_in", biAssocIn))

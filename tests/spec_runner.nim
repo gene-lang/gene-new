@@ -2298,6 +2298,65 @@ suite "spec — streams from design":
                "    (s ~ Stream/close))",
                "nil")
 
+  test "Stream/try_next returns exhausted when empty":
+    check_eval("(var s (to_stream [])) " &
+               "(match (s ~ Stream/try_next) " &
+               "  (when TryNext/exhausted true) " &
+               "  (when (TryNext/value _) false) " &
+               "  (when (TryNext/error _) false))",
+               "true")
+
+  test "Stream/try_next returns value for each item then exhausted":
+    check_eval("(var s (to_stream [1 2])) " &
+               "[(match (s ~ Stream/try_next) " &
+               "    (when (TryNext/value v) v) " &
+               "    (when TryNext/exhausted 0)) " &
+               " (match (s ~ Stream/try_next) " &
+               "    (when (TryNext/value v) v) " &
+               "    (when TryNext/exhausted 0)) " &
+               " (match (s ~ Stream/try_next) " &
+               "    (when (TryNext/value v) v) " &
+               "    (when TryNext/exhausted 0))]",
+               "[1 2 0]")
+
+  test "Stream/try_next preserves nil as a distinct value":
+    check_eval("(var s (to_stream [nil 9])) " &
+               "[(match (s ~ Stream/try_next) " &
+               "    (when (TryNext/value v) v) " &
+               "    (when TryNext/exhausted `empty)) " &
+               " (match (s ~ Stream/try_next) " &
+               "    (when (TryNext/value v) v) " &
+               "    (when TryNext/exhausted `empty))]",
+               "[nil 9]")
+
+  test "Stream/try_next returns error for producer errors":
+    check_eval("(var s (map (to_stream [1]) (fn [x] (/ x 0)))) " &
+               "(match (s ~ Stream/try_next) " &
+               "  (when (TryNext/error e) true) " &
+               "  (when (TryNext/value _) false) " &
+               "  (when TryNext/exhausted false))",
+               "true")
+
+  test "Stream/try_next returns exhausted after a producer error":
+    check_eval("(var s (map (to_stream [1]) (fn [x] (/ x 0)))) " &
+               "[(match (s ~ Stream/try_next) " &
+               "    (when (TryNext/error _) true) " &
+               "    (when (TryNext/value _) false) " &
+               "    (when TryNext/exhausted false)) " &
+               " (match (s ~ Stream/try_next) " &
+               "    (when TryNext/exhausted true) " &
+               "    (when (TryNext/value _) false) " &
+               "    (when (TryNext/error _) false))]",
+               "[true true]")
+
+  test "TryNext can be used as an annotation type":
+    check_eval("(fn next_or [s : Stream] : (TryNext Int Error) " &
+               "  (s ~ Stream/try_next)) " &
+               "(match (next_or (to_stream [42])) " &
+               "  (when (TryNext/value v) v) " &
+               "  (when TryNext/exhausted 0))",
+               "42")
+
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
                "(var names users/%to_stream/name) " &
