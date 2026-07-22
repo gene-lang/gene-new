@@ -725,6 +725,10 @@ type
     deriveRequests: seq[Value]
     messages: Table[string, Value] # type-direct messages (docs/core.md §8)
     ctorFn: Value         # (ctor ...) function value, or NIL (design §7.1.1)
+    aliasExpr: Value      # transparent alias (`alias` form): the aliased type
+                          # expression, or NIL for an ordinary nominal type. An
+                          # alias is not constructible; it expands in annotation
+                          # position against the use-site scope.
 
   EnumData = ref object of GeneObjectData
     name: string
@@ -1415,6 +1419,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     for _, val in d.messages:
       emit(val)
     emit(d.ctorFn)
+    emit(d.aliasExpr)
   of okEnum:
     let d = EnumData(data)
     emit(d.backingType)
@@ -1573,6 +1578,7 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.derivedProtocols.setLen(0)
     d.deriveRequests.setLen(0)
     d.messages = initTable[string, Value]()
+    clearValueSlot(d.aliasExpr)
   of okEnum:
     let d = EnumData(data)
     d.typeParams.setLen(0)
@@ -5199,6 +5205,20 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
                      deriveRequests: deriveRequests,
                      messages: messages,
                      ctorFn: ctorFn))
+
+proc newTypeAlias*(name: string, expr: Value): Value =
+  ## A transparent type alias (design §7.4.1): a Type value carrying only the
+  ## aliased expression. It resolves in scope like a nominal name but expands to
+  ## `expr` wherever a type is checked; it is never constructible.
+  boxObject(TypeData(objKind: okType, name: name, parent: NIL,
+                     aliasExpr: expr))
+
+proc isTypeAlias*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
+    TypeData(objData(v)).aliasExpr.kind != vkNil
+
+proc typeAliasExpr*(v: Value): Value {.inline.} =
+  TypeData(objData(v)).aliasExpr
 
 proc newEnum*(name: string, typeParams: sink seq[string],
               variants: openArray[tuple[name: string, payloadTypes: seq[Value],

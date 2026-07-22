@@ -1738,10 +1738,32 @@ field reads as `void` (falsy), while an explicit `^a nil` stores a
 present nil (pattern-distinguishable). `Any` is gradual slack, not an
 optionality marker: an `Any` field stays required. Field names may not
 end in `?`. Body schemas admit one final repeated field as `[A B T...]`. Open/rest prop
-schemas and named type aliases are reserved for a later extension; the compiler
-rejects `^rest`, `^open`, `^alias`, and `(type (Name T) ...)` rather than
-silently assigning them semantics. Named unions therefore repeat their union
-expression in the MVP.
+schemas and generic record declarations are reserved for a later extension; the
+compiler rejects `^rest`, `^open`, and `(type (Name T) ...)` rather than
+silently assigning them semantics.
+
+A **transparent type alias** names a reusable type expression, so a union or
+compound need not be repeated at every annotation:
+
+```gene
+(alias Id     Str)
+(alias Widget (| Pane Worker Nil))
+
+(fn render [w : Widget] : Str ...)   # w : (| Pane Worker Nil)
+```
+
+`(alias Name TypeExpr)` binds `Name` in the current scope; wherever `Name`
+appears in type position it expands to `TypeExpr` against the *use-site* scope,
+including in `var`/parameter/return/prop annotations and pattern type guards.
+An alias is transparent (`(alias Id Str)` and `Str` check identically), never a
+nominal or distinct type, and is not constructible — `(Name ...)` is an error.
+Aliases are ordinary type-category exports (importable, wildcard-visible,
+`^private`-able). An alias `Name` that shadows a built-in type name (e.g.
+`Node`) is not honored in annotation position; choose a distinct name. An alias
+whose expansion is a protocol does not seed unqualified send candidates
+(§10) — a parameter typed by such an alias must reach protocol messages by
+qualification; alias a union of concrete types, not a bare protocol, when you
+need unqualified sends through it.
 
 Gene remains gradually typed. Unannotated code defaults to `Any`:
 

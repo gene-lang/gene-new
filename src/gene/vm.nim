@@ -10002,6 +10002,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           pushFrame()
           enterFrame(evalChunk, evalScope, true)
           continue
+        of opMakeAlias:
+          # (alias Name Expr): the type expr sits on the stack (compiled as a
+          # quoted constant). Wrap it as a transparent alias bound to `name`.
+          let expr = spop()
+          spush newTypeAlias(inst[].name, expr)
         of opMakeType:
           let proto = chunk.typeProtos[inst[].intArg]
           let parent = spop()
@@ -14259,6 +14264,19 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   else:
     (false, false)
 
+const maxTypeAliasDepth = 256
+var typeAliasDepth {.threadvar.}: int
+
+template expandAlias(call: untyped): untyped =
+  ## Guard transparent-alias expansion against a cyclic alias (`(alias A A)`
+  ## or A→B→A), which would otherwise recurse until the stack overflows.
+  inc typeAliasDepth
+  if typeAliasDepth > maxTypeAliasDepth:
+    typeAliasDepth = 0
+    raise newException(GeneError, "cyclic type alias")
+  try: call
+  finally: dec typeAliasDepth
+
 proc closeTypeExpr(expr: Value, scope: Scope): Value =
   ## Convert nominal type references that require lexical lookup into direct
   ## Type values before storing a boundary on an escaping runtime object. Builtin
@@ -14276,6 +14294,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       var resolved: Value
       if scope.lookupOptional(expr.symVal, resolved) and
           resolved.kind in {vkType, vkProtocol}:
+        if resolved.isTypeAlias:
+          return expandAlias(closeTypeExpr(resolved.typeAliasExpr, scope))
         return resolved
       let segments = expr.symVal.split('/')
       if segments.len > 1 and scope.lookupOptional(segments[0], resolved):
@@ -14287,6 +14307,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
             break
           resolved = resolved.exportedBinding(segments[i])
         if resolved.kind in {vkType, vkProtocol}:
+          if resolved.isTypeAlias:
+            return expandAlias(closeTypeExpr(resolved.typeAliasExpr, scope))
           return resolved
     expr
   of vkNode:
@@ -14507,6 +14529,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     if builtin.known:
       return builtin.ok
     if scope != nil and scope.lookupOptional(name, resolved):
+      if resolved.isTypeAlias:
+        return expandAlias(matchesTypeExpr(resolved.typeAliasExpr, value, scope))
       if resolved.kind == vkType:
         return value.isInstanceOfType(resolved)
       if resolved.kind == vkProtocol:
@@ -14523,6 +14547,8 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
             resolved = VOID
             break
           resolved = resolved.exportedBinding(segments[i])
+        if resolved.isTypeAlias:
+          return expandAlias(matchesTypeExpr(resolved.typeAliasExpr, value, scope))
         if resolved.kind == vkType:
           return value.isInstanceOfType(resolved)
         if resolved.kind == vkProtocol:
@@ -14839,7 +14865,10 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         discard
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
   of vkType:
-    value.isInstanceOfType(expr)
+    if expr.isTypeAlias:
+      expandAlias(matchesTypeExpr(expr.typeAliasExpr, value, scope))
+    else:
+      value.isInstanceOfType(expr)
   of vkProtocol:
     let typ = value.receiverType
     typ.kind == vkType and scope != nil and
@@ -20119,6 +20148,10 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   ## props and positional arguments to body fields, validate against the full
   ## schema, stamp the head with the type. Never runs a ctor — `(T ...)` is
   ## the canonical replay-safe data form.
+  if callee.isTypeAlias:
+    raise newException(GeneError,
+      "type alias '" & callee.typeName & "' is not constructible; it names " &
+      "the type " & callee.typeAliasExpr.print())
   let fields = callee.typeFields
   let bodyFields = callee.typeBodyFields
   if args.len != 0 and bodyFields.len == 0:

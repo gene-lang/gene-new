@@ -158,7 +158,7 @@ const CoreSpecialFormNames* = [
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
-  "supervisor", "spawn", "await", "fail", "panic", "type", "enum",
+  "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
   "protocol", "impl", "derive", "import_impl"
 ]
 
@@ -2990,7 +2990,7 @@ proc collectCompileInterfaceForm(form: Value,
         if entry.category == cbcSyntaxFn:
           entry.category = cbcValue
           target.entries[name] = entry
-  of "type", "enum":
+  of "type", "enum", "alias":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcType)
@@ -3097,7 +3097,7 @@ proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
-  of "var", "fn", "fn!", "macro", "type", "enum", "protocol", "ns":
+  of "var", "fn", "fn!", "macro", "type", "enum", "protocol", "ns", "alias":
     let name = form.declaredName
     if name.len > 0:
       names.incl name
@@ -3119,7 +3119,7 @@ proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
-  of "var", "fn", "fn!", "type", "enum", "protocol", "ns":
+  of "var", "fn", "fn!", "type", "enum", "protocol", "ns", "alias":
     let name = form.declaredName
     if name.len > 0:
       names.incl name
@@ -5446,6 +5446,23 @@ proc protocolMessageHasDefault(node: Value): bool =
     bodyStart += 2
   bodyStart < node.body.len
 
+proc compileAlias(c: var Compiler, node: Value) =
+  ## (alias Name TypeExpr): bind Name as a transparent type alias (design
+  ## §7.4.1). TypeExpr is stored unevaluated and expands wherever Name appears
+  ## in type position, against the use-site scope. An alias is not a nominal
+  ## type and is not constructible.
+  let body = node.body
+  if body.len != 2 or body[0].kind != vkSymbol:
+    raise newException(GeneError,
+      "alias requires a name and one type expression: (alias Name TypeExpr)")
+  for key in node.props.keys:
+    if key != "private":
+      raise newException(GeneError,
+        "alias got unexpected named argument: ^" & key)
+  c.emitConst(body[1])
+  discard c.emit(opMakeAlias, name = body[0].symVal)
+  c.emitDefineBinding(body[0].symVal)
+
 proc compileType(c: var Compiler, node: Value) =
   ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]
   ##  (message name [self] ...) ...) —
@@ -5833,10 +5850,10 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
   if node.props.hasKey("private"):
     if h.kind != vkSymbol or h.symVal notin
-        ["var", "fn", "fn!", "macro", "type", "enum", "protocol", "ns"]:
+        ["var", "fn", "fn!", "macro", "type", "alias", "enum", "protocol", "ns"]:
       raise newException(GeneError,
         "^private is only valid on a named declaration " &
-        "(var, fn, fn!, macro, type, enum, protocol, ns)")
+        "(var, fn, fn!, macro, type, alias, enum, protocol, ns)")
     if node.declarationIsPrivate:
       if node.bits notin c.staticTopLevelImpls:
         raise newException(GeneError,
@@ -5987,6 +6004,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "type":
       compileType(c, node)
+      return
+    of "alias":
+      compileAlias(c, node)
       return
     of "enum":
       compileEnum(c, node)

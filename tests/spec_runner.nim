@@ -171,6 +171,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["fail"], "(fail error-value)")
     fixture(["panic"], "(panic)")
     fixture(["type"], "(type FixtureType ^props {})")
+    fixture(["alias"], "(alias FixtureAlias (| Int Str))")
     fixture(["enum"], "(enum FixtureEnum one two)")
     fixture(["protocol"], "(protocol FixtureProtocol)")
     fixture(["impl"],
@@ -1533,6 +1534,30 @@ suite "spec — absence vocabulary from design §1.6":
   test "?? short-circuits at the first present operand":
     check_eval("(var n 0) (?? 1 (set n 9)) n", "0")
     check_eval("(?? nil void 3 (panic \"not reached\"))", "3")
+
+suite "spec — type aliases from design §7.4.1":
+  test "(alias ...) expands transparently in annotation position":
+    check_eval("(alias Id Str) (var x : Id \"ok\") x", "\"ok\"")
+    check_eval("(alias U (| Int Str)) " &
+               "(fn f [v : U] : Str (to_str v)) [(f 5) (f \"a\")]",
+               "[\"5\" \"a\"]")
+
+  test "a type alias rejects a non-conforming value and is not constructible":
+    expect GeneError:
+      discard run(compileSource("(alias U (| Int Str)) (var x : U true)"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(alias U (| Int Str)) (U)"), newGlobalScope())
+
+  test "an alias may be marked ^private":
+    check_eval("(alias Id ^private true Str) (var x : Id \"ok\") x", "\"ok\"")
+
+  test "a cyclic alias raises rather than crashing":
+    expect GeneError:
+      discard run(compileSource("(alias A A) (var v : A 1)"), newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(alias A B) (alias B A) (var v : A 1)"),
+                  newGlobalScope())
 
 suite "spec — checked errors from design":
   test "Never contributes no errors and rows deduplicate":

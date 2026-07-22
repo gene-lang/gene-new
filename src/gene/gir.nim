@@ -37,6 +37,7 @@ type
     opMakeEnv
     opEval
     opMakeType
+    opMakeAlias        # pop a type expr, push a transparent alias named `name`
     opMakeEnum
     opMakeProtocol
     opMakeImpl
@@ -674,6 +675,8 @@ proc formatInstruction(inst: Instruction): string =
       result.add " name=" & inst.name
   of opMakeType:
     result.add " type=" & $inst.intArg
+  of opMakeAlias:
+    result.add " name=" & inst.name
   of opMakeEnum:
     result.add " enum=" & $inst.intArg
   of opMakeProtocol:
