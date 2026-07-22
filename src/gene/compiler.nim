@@ -122,6 +122,7 @@ type
     positionalTypes: seq[Value]
     positionalDefaults: seq[ParamDefault]
     rest: string
+    restType: Value
     named: seq[NamedParam]
 
   ParamAdornment = object
@@ -1295,8 +1296,14 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
           raise newException(GeneError, "rest parameter requires a name")
         sawRest = true
         inc i
-        if i < items.len and items[i].symbolText in [":", "="]:
-          raise newException(GeneError, "rest parameter cannot have an annotation or default")
+        # A rest parameter may carry a type (`xs... : T`): every gathered
+        # argument is boundary-checked against T. It still cannot have a
+        # default — a rest binder is always the (possibly empty) tail.
+        let restAdornment = c.parseParamAdornment(items, i)
+        if restAdornment.defaultValue.optional:
+          raise newException(GeneError, "rest parameter cannot have a default")
+        result.restType = restAdornment.typeExpr
+        continue
       else:
         # Positional parameters stay positional: a nil-admitting type does
         # not make one optional (that would change call arity for signatures
@@ -1317,7 +1324,6 @@ proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
         result.positionalTypes.add adornment.typeExpr
         result.positionalDefaults.add adornment.defaultValue
         continue
-      discard c.parseParamAdornment(items, i)
 
 proc validateMacroParamPattern(pattern: Value) =
   discard patternBindingNames(pattern)
@@ -2463,7 +2469,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          paramTypes: specs.positionalTypes,
                          hasParamTypes: hasParamTypes,
                          paramDefaults: specs.positionalDefaults,
-                         restParam: specs.rest, namedParams: specs.named,
+                         restParam: specs.rest, restType: specs.restType,
+                         namedParams: specs.named,
                          hasNamedParamTypes: hasNamedParamTypes,
                          returnType: returnType,
                          hasReturnType: returnType.kind != vkNil,

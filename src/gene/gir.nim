@@ -182,6 +182,7 @@ type
     hasParamTypes*: bool
     paramDefaults*: seq[ParamDefault]
     restParam*: string
+    restType*: Value        # `xs... : T` element type; NIL for an untyped rest
     namedParams*: seq[NamedParam]
     hasNamedParamTypes*: bool
     returnType*: Value
@@ -825,6 +826,8 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         header.add " param-types=" & formatNames(types)
       if fn.restParam.len > 0:
         header.add " rest=" & fn.restParam
+        if fn.restType.kind != vkNil:
+          header.add ":" & fn.restType.print()
       if fn.namedParams.len > 0:
         var names: seq[string]
         for p in fn.namedParams:

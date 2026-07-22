@@ -781,6 +781,7 @@ name : T = default        # positional parameter
 ^arg : T = default        # named arg; local name is arg
 ^arg local : T = default  # named arg with custom local name
 x...                      # gather rest positional args
+x... : T                  # typed rest: each gathered arg is checked against T
 ```
 
 `= default` makes the parameter optional. A named parameter whose type
@@ -796,6 +797,10 @@ Positional parameters stay positional: a nilable type does not change call
 arity, so an optional positional parameter uses a default (`x : Int? = nil`).
 Declaration names may not end in `?` — `^width? : Int` is a compile error
 pointing at the `^width : Int?` spelling.
+
+A rest parameter may carry a type: `xs... : T` gathers the trailing arguments
+into a list and checks each one against `T` at the call boundary (an untyped
+`xs...` admits any value). A rest parameter still takes no default.
 
 Comma is a separator in parameter, binding, and pattern vectors. It is not a general expression separator. Commas are optional where whitespace already separates vector elements, but the formatter should choose one consistent style.
 
@@ -1710,10 +1715,10 @@ the listed arity, extra declared positionals must be optional or absorbed by a
 rest parameter, and every named parameter must be optional unless listed in
 `^named`. This is usable-as admission, not subtyping: one function may match
 several `Fn` types at different arities. A trailing `T...` uses the
-body-schema repeated-field spelling and requires a rest parameter; because
-rest parameter declarations are untyped, every repeated-tail landing spot
-compares as `Any`, so only `Any...` matches until rest declarations can carry
-types. `^named {^y T ...}` entries must exist on the function with
+body-schema repeated-field spelling and requires a rest parameter; the repeated
+tail compares against the rest binder's element type — `Any` for an untyped
+`xs...`, or `T` for a typed `xs... : T` — so `(Fn [Int...] R)` matches a
+function declaring `xs... : Int` and rejects one declaring `xs... : Str`. `^named {^y T ...}` entries must exist on the function with
 invariant-equal declared types — a nil-admitting spelling mirrors the
 declaration-side optionality rule — and a function's required named
 parameters must be listed. The error row is unchecked by default; supplying

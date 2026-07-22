@@ -14679,12 +14679,16 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
             return false
         if hasExpectedRest:
           # Repeated-tail values land in declared params past the fixed
-          # prefix and finally in the untyped rest binder; every landing
-          # spot must carry the marker's element type.
+          # prefix and finally in the rest binder; every landing spot must
+          # carry the marker's element type. An untyped rest binder admits
+          # exactly `Any`; a typed `xs... : T` binder admits `T`.
           for i in arity ..< proto.params.len:
             if not sigMatches(expectedRest, positionalType(i)):
               return false
-          if not sigMatches(expectedRest, newSym("Any")):
+          let restElem =
+            if proto.restType.kind != vkNil: proto.restType
+            else: newSym("Any")
+          if not sigMatches(expectedRest, restElem):
             return false
         # ^named entries must exist with invariant-equal declared types;
         # unlisted named parameters must be optional so a caller through the
@@ -19922,6 +19926,9 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
     for i in 0 ..< rest.len:
       rest[i] = args[positional.len + i]
       rejectCallerEnvEscape("rest parameter '" & proto.restParam & "'", rest[i])
+      if proto.restType.kind != vkNil:
+        rest[i] = adaptBoundary("rest parameter '" & proto.restParam & "'",
+                                proto.restType, rest[i], callScope)
     if proto.restSlot >= 0:
       callScope.defineFreshCallSlot(proto.restSlot, newList(rest))
     else:

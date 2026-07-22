@@ -1801,10 +1801,22 @@ suite "spec — Fn type call-shape admission per design §7.4.1":
     check_eval("(fn f [x : Int, xs...] : Int x) " &
                "(fn use [g : (Fn [Int Any...] Int)] (g 7 1 2 3)) (use f)",
                "7")
+    # A typed rest binder `xs... : T` admits `(Fn [T...] R)`.
+    check_eval("(fn f [xs... : Int] : Int (size xs)) " &
+               "(fn use [g : (Fn [Int...] Int)] (g 1 2)) (use f)", "2")
+    check_eval("(try (fn f [xs... : Str] : Int 0) " &
+               "(fn use [g : (Fn [Int...] Int)] g) (use f) " &
+               "catch (e : TypeError) \"rejected\")", "\"rejected\"")
   test "unlisted required named parameters stay outside the typed view":
     check_eval("(try (fn f [x : Int, ^y : Int] x) " &
                "(fn use [g : (Fn [Int] Any)] g) (use f) " &
                "catch (e : TypeError) \"rejected\")", "\"rejected\"")
+  test "a typed rest parameter checks each gathered argument":
+    check_eval("(fn f [xs... : Int] : Int (size xs)) [(f) (f 1 2 3)]", "[0 3]")
+    check_eval("(fn f [a : Str, xs... : Int] xs) (f \"p\" 1 2)", "[1 2]")
+    check_eval("(try (fn f [xs... : Int] xs) (f 1 \"bad\") " &
+               "catch (e : TypeError) \"rejected\")", "\"rejected\"")
+
   test "generic fns instantiate consistently and T? equals (? T)":
     check_eval("(fn (identity T) [x : T] : T x) " &
                "(fn use [g : (Fn [Int] Int)] (g 42)) (use identity)", "42")
