@@ -60,10 +60,10 @@ The async server should **evolve the canonical `net/http` namespace**, not fork 
 Existing or early `net/http` APIs such as:
 
 ```gene
-(import net/http ^as Http)
+(import net/http : http)
 
-(Http/serve server handler)
-(Http/text "hello")
+(http/serve server handler)
+(http/text "hello")
 ```
 
 should remain the compatibility path where practical. The native async implementation should become a backend for `net/http`, while preserving a migration path for older simple/blocking helpers.
@@ -71,29 +71,29 @@ should remain the compatibility path where practical. The native async implement
 Recommended direction:
 
 ```gene
-(import net/http ^as Http)
+(import net/http : http)
 ```
 
 Long-term public API:
 
 ```gene
-(server ~ Http/serve ^handler handle_request)
-(server ~ Http/start ^handler handle_request)
-(server ~ Http/stop)
-(server ~ Http/status)
+(server ~ http/serve ^handler handle_request)
+(server ~ http/start ^handler handle_request)
+(server ~ http/stop)
+(server ~ http/status)
 ```
 
-`Http/Server`, `Http/Request`, `Http/Response`, `Http/Headers`, WebSocket types, and helper constructors should live in `net/http`. If an experimental namespace is needed during transition, use something explicit such as `net/http/async`, then converge back to `net/http`.
+`http/Server`, `http/Request`, `http/Response`, `http/Headers`, WebSocket types, and helper constructors should live in `net/http`. If an experimental namespace is needed during transition, use something explicit such as `net/http/async`, then converge back to `net/http`.
 
 ### Compatibility note
 
 If the current stdlib has a simple `Response` shape such as string body helpers, keep those as ergonomic constructors and normalize internally to the lower-level response representation:
 
 ```gene
-(Http/text 200 "hello")   # builds Response with Bytes body and text/plain header
-(Http/json 200 value)
-(Http/html 200 node)
-(Http/bytes 200 bytes)
+(http/text 200 "hello")   # builds Response with Bytes body and text/plain header
+(http/json 200 value)
+(http/html 200 node)
+(http/bytes 200 bytes)
 ```
 
 The existing locked `net/http` surface (see `tests/spec_runner.nim`, "net/http
@@ -103,10 +103,10 @@ status-first forms above are **arity overloads of the same names in the same
 namespace**, not replacements:
 
 ```text
-(Http/text "hello")        # 1-arg: implicit 200 — unchanged, spec-locked
-(Http/text 200 "hello")    # 2-arg: explicit status-first
-(Http/redirect "/x")       # 1-arg: implicit 302 — unchanged, spec-locked
-(Http/redirect 302 "/x")   # 2-arg: explicit status-first
+(http/text "hello")        # 1-arg: implicit 200 — unchanged, spec-locked
+(http/text 200 "hello")    # 2-arg: explicit status-first
+(http/redirect "/x")       # 1-arg: implicit 302 — unchanged, spec-locked
+(http/redirect 302 "/x")   # 2-arg: explicit status-first
 ```
 
 The 1-arg behaviors must not change; `nimble spec` enforces them.
@@ -120,8 +120,8 @@ Starting a listener is authority. Gene should not expose ambient network bind au
 Preferred forms:
 
 ```gene
-(fn main [args : (List Str), ^server : Http/Server] : Int
-  (server ~ Http/serve
+(fn main [args : (List Str), ^server : http/Server] : Int
+  (server ~ http/serve
     ^handler handle_request)
   0)
 ```
@@ -131,11 +131,11 @@ or, when the application creates the listener:
 ```gene
 (fn main [args : (List Str), ^net : Net/Listen] : Int
   (var server
-    (Http/listen net
+    (http/listen net
       ^host "0.0.0.0"
       ^port 8080))
 
-  (server ~ Http/serve
+  (server ~ http/serve
     ^handler handle_request)
 
   0)
@@ -145,11 +145,11 @@ Rules:
 
 ```text
 Net/Listen      authority to bind/listen on network addresses
-Http/Server     authority to accept requests on one listener
-Http/Running    authority/handle for a running background server
+http/Server     authority to accept requests on one listener
+http/Running    authority/handle for a running background server
 ```
 
-`Http/serve ^host ... ^port ...` without an explicit capability should be a convenience only in trusted scripts or tests, not the core runtime model.
+`http/serve ^host ... ^port ...` without an explicit capability should be a convenience only in trusted scripts or tests, not the core runtime model.
 
 ---
 
@@ -201,7 +201,7 @@ The native runtime owns raw sockets and buffers. Gene code receives immutable, t
 Each accepted request runs in its own Gene task.
 
 ```gene
-(server ~ Http/serve
+(server ~ http/serve
   ^dispatch task_per_request
   ^max_in_flight 5000
   ^request_timeout_ms 30000
@@ -211,13 +211,13 @@ Each accepted request runs in its own Gene task.
 Handler shape:
 
 ```gene
-(fn handle_request [req : Http/Request] : Http/Response
+(fn handle_request [req : http/Request] : http/Response
   (match [req/method req/path]
     (when ["GET" "/"]
-      (Http/text 200 "hello"))
+      (http/text 200 "hello"))
 
     (else
-      (Http/text 404 "not found"))))
+      (http/text 404 "not found"))))
 ```
 
 Properties:
@@ -236,7 +236,7 @@ This is the recommended default for web applications.
 A fixed actor pool is useful when handlers must own private state, serialize access, or run CPU-heavy work with bounded parallelism.
 
 ```gene
-(server ~ Http/serve
+(server ~ http/serve
   ^dispatch (actor_pool
     ^workers 8
     ^mailbox 1024
@@ -264,24 +264,24 @@ Actor-pool request message:
   ^impl [Send])
 ```
 
-Qualified as `Http/RequestMsg` when imported through `net/http`.
+Qualified as `http/RequestMsg` when imported through `net/http`.
 
 Handler shape:
 
 ```gene
 (fn request_worker
-  [ctx : (ActorContext Http/RequestMsg),
+  [ctx : (ActorContext http/RequestMsg),
    state : AppState,
-   msg : Http/RequestMsg]
+   msg : http/RequestMsg]
   : (ActorStep AppState)
 
   (match msg
-    (when (Http/RequestMsg ^req req ^reply reply)
+    (when (http/RequestMsg ^req req ^reply reply)
       (try
         (reply ~ ReplyTo/send (route req state))
       catch e
         (reply ~ ReplyTo/send
-          (Http/text 500 "internal server error")))
+          (http/text 500 "internal server error")))
       (actor/continue state))))
 ```
 
@@ -296,7 +296,7 @@ Actor-pool handlers should avoid long awaits. If a handler needs asynchronous wo
 Later, routes may choose dispatch explicitly:
 
 ```gene
-(server ~ Http/serve_routes
+(server ~ http/serve_routes
   ^routes [
     (route ^method "GET"  ^path "/"       ^handler home)
     (route ^method "POST" ^path "/state"  ^dispatch stateful_pool ^handler update_state)
@@ -310,7 +310,7 @@ This lets most routes use task_per_request while a few routes use actors for ser
 
 ## 6. Core HTTP types
 
-Inside the `net/http` module, declare unqualified names such as `Request`, `Response`, and `Headers`; user code sees them as `Http/Request`, `Http/Response`, etc. when importing with `^as Http`.
+Inside the `net/http` module, declare unqualified names such as `Request`, `Response`, and `Headers`; user code sees them as `http/Request`, `http/Response`, etc. when importing with `: http`.
 
 ### 6.1 Request
 
@@ -347,12 +347,12 @@ Request values should be immutable or otherwise sendable before crossing task/ac
 Helper constructors:
 
 ```gene
-(Http/response ^status 200 ^headers headers ^body bytes)
-(Http/text 200 "hello")
-(Http/json 200 value)
-(Http/html 200 node)
-(Http/bytes 200 bytes)
-(Http/redirect 302 "/login")
+(http/response ^status 200 ^headers headers ^body bytes)
+(http/text 200 "hello")
+(http/json 200 value)
+(http/html 200 node)
+(http/bytes 200 bytes)
+(http/redirect 302 "/login")
 ```
 
 ### 6.3 Headers
@@ -389,9 +389,9 @@ Semantics:
 Helpers:
 
 ```gene
-(headers ~ Http/header "content-type")   # first value or void
-(headers ~ Http/headers "set-cookie")    # list/stream of all values
-(headers ~ Http/with_header "cache-control" "no-store")
+(headers ~ http/header "content-type")   # first value or void
+(headers ~ http/headers "set-cookie")    # list/stream of all values
+(headers ~ http/with_header "cache-control" "no-store")
 ```
 
 ---
@@ -401,14 +401,14 @@ Helpers:
 ### 7.1 Direct handler
 
 ```gene
-(fn handle [req : Http/Request] : Http/Response
+(fn handle [req : http/Request] : http/Response
   ...)
 ```
 
 May raise typed recoverable errors. The server converts unhandled errors according to policy.
 
 ```gene
-(fn handle [req : Http/Request] : Http/Response
+(fn handle [req : http/Request] : http/Response
   ^errors [AppError]
   ...)
 ```
@@ -425,26 +425,26 @@ For shared state, pass an immutable state bundle containing actor references or 
   }
   ^impl [Send])
 
-(fn handle [req : Http/Request, app : App] : Http/Response
+(fn handle [req : http/Request, app : App] : http/Response
   (var user
     (await
       (app/users ~ actor/ask
         (fn [reply]
           (GetUser ^id req/params/id ^reply reply)))))
 
-  (Http/json 200 user))
+  (http/json 200 user))
 ```
 
 The request task can await. Shared mutable state stays behind actors or explicit thread-safe handles.
 
-`^handler` expects `Http/Request -> Http/Response`, so a stateful handler is
+`^handler` expects `http/Request -> http/Response`, so a stateful handler is
 wired by closure capture — safe here because `App` is `Send` and closures are
 sendable when all captured values are (design §13.3):
 
 ```gene
 (var app (App ^users users ^db db_pool))
 
-(server ~ Http/serve
+(server ~ http/serve
   ^handler (fn [req] (handle req app)))
 ```
 
@@ -478,9 +478,9 @@ The canonical route_entry shape should be the node form.
 Gene can discover routes through module declarations and meta:
 
 ```gene
-(fn home [req : Http/Request]
+(fn home [req : http/Request]
   @route (route ^method "GET" ^path "/")
-  (Http/html 200 `(html (body "home"))))
+  (http/html 200 `(html (body "home"))))
 ```
 
 Router construction:
@@ -527,12 +527,12 @@ Every queue must be bounded.
 Recommended limits:
 
 ```gene
-(server ~ Http/serve
+(server ~ http/serve
   ^max_connections 10000
   ^max_in_flight 5000
   ^max_body_bytes 10485760
   ^request_timeout_ms 30000
-  ^overload_response (Http/text 503 "busy")
+  ^overload_response (http/text 503 "busy")
   ^handler handle)
 ```
 
@@ -556,7 +556,7 @@ For MVP actor_pool overload, prefer immediate `actor/try_send` failure -> 503. T
 The native server must be able to create a one-shot reply capability:
 
 ```text
-native request state -> ReplyTo Http/Response
+native request state -> ReplyTo http/Response
 ```
 
 This is the same semantic capability as `actor/ask`, but constructed by the server runtime.
@@ -612,7 +612,7 @@ request timeout                         -> 504 + cancellation
 A default error mapper can be supplied:
 
 ```gene
-(server ~ Http/serve
+(server ~ http/serve
   ^handler handle
   ^on_error error_to_response)
 ```
@@ -620,12 +620,12 @@ A default error mapper can be supplied:
 Example:
 
 ```gene
-(fn error_to_response [err : Error] : Http/Response
+(fn error_to_response [err : Error] : http/Response
   (match err
     (when (NotFound ^path p)
-      (Http/text 404 $"not found: ${p}"))
+      (http/text 404 $"not found: ${p}"))
     (else
-      (Http/text 500 "internal server error"))))
+      (http/text 500 "internal server error"))))
 ```
 
 ---
@@ -640,7 +640,7 @@ actor spawns; it is not a value. Server configuration therefore passes a
 creates internally:
 
 ```gene
-(server ~ Http/serve
+(server ~ http/serve
   ^supervision (supervisor_policy
     ^strategy restart
     ^max_restarts 10
@@ -651,7 +651,7 @@ creates internally:
 ```
 
 Recommended failure event (declared unqualified inside `net/http`, seen as
-`Http/Failure` by importers, per §6):
+`http/Failure` by importers, per §6):
 
 ```gene
 (type Failure
@@ -668,7 +668,7 @@ Recommended failure event (declared unqualified inside `net/http`, seen as
 Status snapshot:
 
 ```gene
-(var status (server ~ Http/status))
+(var status (server ~ http/status))
 
 status/active_requests
 status/queued_requests
@@ -693,10 +693,10 @@ Large bodies should use streams. `Request` declares `^body Bytes` for MVP
 later phase:
 
 ```gene
-^body (| Bytes (Stream Bytes Http/BodyError))   # Phase 5 widening
+^body (| Bytes (Stream Bytes http/BodyError))   # Phase 5 widening
 ```
 
-Handlers that need not care can call a `(Http/body-bytes req)` helper that
+Handlers that need not care can call a `(http/body-bytes req)` helper that
 materializes either representation (subject to `^max_body_bytes`).
 
 Rules:
@@ -706,7 +706,7 @@ Rules:
 - unread bodies are drained or closed according to keep-alive policy;
 - server enforces max body bytes;
 - closing/cancelling a request closes the body stream;
-- upload parsing errors are typed Http/BodyError values.
+- upload parsing errors are typed http/BodyError values.
 ```
 
 For MVP, materialized `Bytes` with strict size limits is acceptable. Body streams are required for production-grade uploads, SSE, and proxying.
@@ -719,7 +719,7 @@ WebSocket connections are long-lived and stateful. Model them with opaque connec
 
 WebSocket types live in a `ws` namespace nested inside `net/http`
 (`net/http/ws`); declarations below are unqualified inside that module and are
-seen as `Ws/ConnRef` etc. after `(import net/http/ws ^as Ws)`:
+seen as `ws/ConnRef` etc. after `(import net/http/ws : ws)`:
 
 ```gene
 (type ConnRef
@@ -732,7 +732,7 @@ Messages:
 
 ```gene
 (type Open
-  ^props {^conn ConnRef ^req Http/Request}
+  ^props {^conn ConnRef ^req http/Request}
   ^impl [Send])
 
 (type Frame
@@ -747,9 +747,9 @@ Messages:
 Commands:
 
 ```gene
-(conn ~ Ws/send_text "hello")
-(conn ~ Ws/send_bytes bytes)
-(conn ~ Ws/close ^code 1000 ^reason "bye")
+(conn ~ ws/send_text "hello")
+(conn ~ ws/send_bytes bytes)
+(conn ~ ws/close ^code 1000 ^reason "bye")
 ```
 
 Architecture:
@@ -771,7 +771,7 @@ For per-connection state, spawn one session actor per WebSocket. For very high f
 ### 15.1 Blocking serve
 
 ```gene
-(server ~ Http/serve ^handler handle)
+(server ~ http/serve ^handler handle)
 ```
 
 Runs until stopped, cancelled, or failed. Owned by the current scope.
@@ -780,12 +780,12 @@ Runs until stopped, cancelled, or failed. Owned by the current scope.
 
 ```gene
 (var running
-  (server ~ Http/start ^handler handle))
+  (server ~ http/start ^handler handle))
 
-(running ~ Http/stop)
+(running ~ http/stop)
 ```
 
-`Http/start` returns an `Http/Running` handle. Because it creates tasks/actors that outlive the caller’s immediate expression, it must have an explicit owner:
+`http/start` returns an `http/Running` handle. Because it creates tasks/actors that outlive the caller’s immediate expression, it must have an explicit owner:
 
 ```text
 - application root scope; or
@@ -793,7 +793,7 @@ Runs until stopped, cancelled, or failed. Owned by the current scope.
 - returned Running handle requiring explicit stop.
 ```
 
-`Http/start` must not silently detach unowned tasks.
+`http/start` must not silently detach unowned tasks.
 
 ---
 
@@ -817,7 +817,7 @@ If using an actor pool with per-worker state, avoid opening a separate DB pool i
 ```gene
 (var db_pool (Db/open_pool config))
 
-(server ~ Http/serve
+(server ~ http/serve
   ^dispatch (actor_pool
     ^workers 8
     ^init (fn [] (WorkerState ^db db_pool))
@@ -846,7 +846,7 @@ Defaults:
 Logging hook:
 
 ```gene
-(server ~ Http/serve
+(server ~ http/serve
   ^access_log access_log
   ^error_log error_log
   ^redact_headers #["authorization" "cookie" "set-cookie"]
@@ -973,25 +973,25 @@ The app image remains the canonical deployable program representation. The stand
 
 ### Phase 1: task_per_request HTTP
 
-- `Http/Server` capability/listener.
+- `http/Server` capability/listener.
 - Native accept/read/write loop.
-- Materialized `Http/Request` with `Bytes` body and limits.
-- `Http/Response` and helper constructors.
-- `Http/serve` with `^dispatch task_per_request`.
+- Materialized `http/Request` with `Bytes` body and limits.
+- `http/Response` and helper constructors.
+- `http/serve` with `^dispatch task_per_request`.
 - Bounded admission and overload responses.
 - Basic status metrics.
 
 Capability delivery: capability injection into `main` is not yet designed
 (`docs/stdlib.md`: "Do not overload normal `gene run` until capability
 invocation is designed"). Phase 1 therefore ships with the §3 trusted-script
-convenience form (`Http/listen ^host ... ^port ...` constructing its own
-capability), and switches `main` to injected `Net/Listen`/`Http/Server` values
+convenience form (`http/listen ^host ... ^port ...` constructing its own
+capability), and switches `main` to injected `Net/Listen`/`http/Server` values
 once the launcher mechanism exists. The API shape does not change — only who
 constructs the capability.
 
 ### Phase 2: actor_pool dispatch
 
-- `Http/RequestMsg` and native-created `ReplyTo`.
+- `http/RequestMsg` and native-created `ReplyTo`.
 - Explicit actor_pool dispatch mode.
 - Bounded actor mailboxes.
 - Failure events and dead-letter support.
@@ -1008,7 +1008,7 @@ constructs the capability.
 ### Phase 4: WebSocket
 
 - Upgrade support.
-- Opaque `Ws/ConnRef`.
+- Opaque `ws/ConnRef`.
 - Session actor helpers.
 - Frame parsing/writing.
 - Connection close/cancellation semantics.
@@ -1029,20 +1029,20 @@ constructs the capability.
 For most applications:
 
 ```gene
-(import net/http ^as Http)
+(import net/http : http)
 
-(fn handle [req : Http/Request] : Http/Response
+(fn handle [req : http/Request] : http/Response
   (match [req/method req/path]
     (when ["GET" "/"]
-      (Http/text 200 "hello"))
+      (http/text 200 "hello"))
     (else
-      (Http/text 404 "not found"))))
+      (http/text 404 "not found"))))
 
 (fn main [args : (List Str), ^net : Net/Listen] : Int
   (var server
-    (Http/listen net ^host "0.0.0.0" ^port 8080))
+    (http/listen net ^host "0.0.0.0" ^port 8080))
 
-  (server ~ Http/serve
+  (server ~ http/serve
     ^dispatch task_per_request
     ^max_in_flight 5000
     ^request_timeout_ms 30000

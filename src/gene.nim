@@ -460,7 +460,9 @@ proc docImportText(app: Application, spec: ImportSpec): string =
   else:
     result = "- " & spec.nsSegments.join("/")
   if spec.alias.len > 0:
-    result.add " ^as " & spec.alias
+    result.add " : " & spec.alias
+  elif spec.wildcard:
+    result.add " *"
   if spec.selections.len > 0:
     var selections: seq[string]
     for sel in spec.selections:

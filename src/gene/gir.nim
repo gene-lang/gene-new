@@ -213,11 +213,35 @@ type
     name*: string         # exported name in the source
     local*: string        # local name to bind (== name unless aliased)
 
+  CompileBindingCategory* = enum
+    cbcValue
+    cbcMacro
+    cbcSyntaxFn
+    cbcType
+    cbcProtocol
+    cbcNamespace
+
+  CompileNamespaceInterface* = ref object
+    ## Static, guaranteed exports for one module/namespace scope. Interfaces
+    ## are compiler input: runtime-only/conditional declarations never enter
+    ## this tree.
+    entries*: Table[string, CompileInterfaceEntry]
+
+  CompileInterfaceEntry* = object
+    category*: CompileBindingCategory
+    namespace*: CompileNamespaceInterface
+    protocolMessages*: seq[string]
+
   ImportSpec* = object
     fromModule*: bool                 # true: `from "path"`; false: namespace path
     modulePath*: string               # the `from "path"` string
     nsSegments*: seq[string]          # namespace-path segments (e.g. std/stream)
-    alias*: string                    # `^as alias`, or ""
+    alias*: string                    # `* : alias` / `source : alias`, or ""
+    wildcard*: bool                   # bare/aliased `*` or `n/*`
+    wildcardSegments*: seq[string]    # namespace subtree inside a file module
+    wildcardNames*: seq[string]       # guaranteed runtime exports in that subtree
+    sourceLabel*: string              # stable diagnostic label for fallback entries
+    reexport*: bool                   # selected/alias binding is intentionally public
     selections*: seq[ImportSelection]
 
   ImportImplSpec* = object
@@ -418,6 +442,7 @@ type
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
+    exportExcludedNames*: seq[string] # ^private declarations and non-reexported imports
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
     importImpls*: seq[ImportImplSpec]

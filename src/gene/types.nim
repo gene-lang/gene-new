@@ -315,6 +315,14 @@ type
     remaining*: int64
     parent*: EvalBudget
 
+  WildcardFallback* = object
+    ## Runtime value installed by a bare wildcard import. It deliberately
+    ## lives outside `vars`, so reflection and export lookup never re-export it.
+    value*: Value
+    source*: string
+    conflicts*: seq[string]
+    parentCollision*: bool
+
   ## Lexical environment for the VM (a Nim ORC ref, so pure scope/namespace
   ## cycles are collectable). A first-class `Env` (design Section 11.1) is a
   ## later, richer concept.
@@ -326,6 +334,8 @@ type
     application*: RuntimeContext
     parent*: Scope
     vars*: Table[string, Value]
+    wildcardFallbacks*: Table[string, WildcardFallback]
+    exportExcludedNames*: HashSet[string]
     slots*: seq[Value]
     slotTypes*: seq[TypeBinding]
     slotDefinedBits*: uint64

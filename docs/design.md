@@ -3382,9 +3382,14 @@ may admit declaration-only cycles.
 
 ### 15.5 Namespace
 
-Every module has one root namespace. A namespace contains bindings for values, types, protocols, implementations, macros, and nested namespaces.
-
-MVP visibility is simple: all bindings declared in a namespace are exported/importable unless a future visibility marker says otherwise. Private exports, package-public visibility, and selective export lists are deferred.
+Every module has one root namespace. A namespace contains bindings for values,
+types, protocols, implementations, macros, and nested namespaces. Named
+declarations are public by default. An unconditional module/namespace
+declaration may use `^private true`; the binding remains usable and reflectable
+inside its namespace but is absent from the module's compile interface and
+cannot be selected, wildcard-imported, or re-exported. Dynamic declarations
+cannot be marked private because they are not part of a guaranteed export
+interface.
 
 Nested namespaces are declared with `ns`:
 
@@ -3441,15 +3446,18 @@ Built-in / namespace imports:
 ```gene
 (import std/stream [map, filter, into])
 (import std/stream [map : stream_map, filter])
-(import std/stream ^as stream)
+(import std/stream : stream)
 ```
 
 Module-path imports:
 
 ```gene
-(import from "./math" ^as math)          # bind loaded module value as math
-(import add from "./math")              # import one exported binding
-(import [add, sub] from "./math")       # import selected exported bindings
+(import * : math from "./math")         # qualified module alias: math/...
+(import * from "./math")                # bare-name fallback
+(import ops/* : ops from "./math")      # alias one exported namespace
+(import ops/* from "./math")            # namespace bare-name fallback
+(import add from "./math")              # one selected binding
+(import [add, sub] from "./math")       # selected bindings
 (import [add : plus, sub : minus] from "./math")
 (import Config from "/app/config")
 ```
@@ -3458,20 +3466,68 @@ Rules:
 
 - `std/stream` in source position is a static namespace path, not a string module path and not runtime selector evaluation;
 - `from "path"` is the only MVP form that names a file/string module path;
-- `(import from "path" ^as alias)` loads the module at `path` and binds its module value to `alias`;
-- selected imports bind exported names from the source namespace/module root into the current namespace;
-- `name : alias` binds the imported exported name to a different local name;
+- selected imports bind public names from the source namespace/module root;
+- `name : alias` is the single import-renaming syntax, including namespace and
+  module aliases; `^as` is invalid;
 - commas inside the import list are optional separators;
-- `^as alias` with a namespace source binds that namespace value; `^as alias` with `from "path"` binds the loaded module value;
-- wildcard imports are deferred.
+- `* : alias` and `n/* : alias` create one ordinary qualified binding;
+- bare `*` and `n/*` create fallback candidates, not bindings, and therefore
+  do not appear in reflection or re-export implicitly;
+- wildcard, alias, and re-export imports from module paths must be
+  unconditional static module/namespace forms; ordinary selected imports
+  retain runtime placement;
+- wildcard/alias module imports are rejected by `eval`; provide dependencies
+  through the associated `Env` instead.
 
-MVP export model:
+Each module compile artifact exposes a typed namespace-tree interface for its
+guaranteed public declarations. Entries distinguish values, macros, `fn!`,
+types, protocols, and namespaces; protocol entries also record message
+identities. Only unconditional module declarations and unconditional nested
+`ns` declarations enter this tree. Wildcard and alias resolution uses the tree,
+so it never has to execute a dependency during compilation. Conditional names
+remain available through selected imports or qualified runtime lookup.
 
-```text
-all named namespace bindings are exported/importable by default
+Bare wildcard resolution is lazy. Own declarations and selected imports win.
+Otherwise every matching wildcard source and the implicit builtin/prelude
+source form one collision domain: one candidate resolves, multiple candidates
+raise an ambiguity only when the name is used, and unused collisions are inert.
+Qualification or a selected import disambiguates. A name declared anywhere in
+the current static unit never falls back to a wildcard, preserving
+use-before-definition errors.
+
+Wildcard and aliased modules do not seed unqualified protocol sends merely by
+being imported. An explicit protocol reference in a parameter, return, or other
+interface annotation seeds exactly that identity in the nested unit's
+Must/Whole/Entry candidate analysis (§10 and `docs/scoped-impls.md`). Qualified
+protocol references behave the same way. Scoped impls still cross modules only
+through `import_impl`.
+
+Public declarations are exported by default. Imports are local by default and
+must opt into re-export:
+
+```gene
+(import [add, Config] from "./math" ^export true)
+(import * : math from "./math" ^export true)
 ```
 
-This includes values, types, protocols, macros, and nested namespaces. Protocol implementation declarations are not ordinary named bindings and are not selected or aliased through `[name]` import lists. Implementation visibility follows §10.1 and `docs/scoped-impls.md`: loading a module activates its canonical impls application-wide; scoped impls stay in their defining module unless exported with `^export true` and imported pair-by-pair with `(import_impl P for T from "path")`; overlay impls never cross an import. Future versions may add `^private`, explicit export lists, package-private visibility, and re-export controls.
+Selected imports and qualified aliases may use `^export true`. Bare wildcards
+cannot re-export. Protocol implementation declarations are not named exports;
+their visibility and explicit pair import follow §10.1 and
+`docs/scoped-impls.md`.
+
+The compile interface is part of reload compatibility. MVP reload rejects any
+change to its names, nesting, binding categories, or protocol message
+identities; already-compiled wildcard/alias importers are not transactionally
+recompiled.
+
+The standard library has reserved binding roots `gene`, `genex`, `geney`, and
+`genez`. User code cannot declare, bind, alias, import-as, assign, or shadow any
+of these names. `gene` is defined and provides a stable qualified path to every
+builtin, including nested namespaces such as `gene/str/join`; the other three
+roots are reserved but initially undefined. Migration is staged: existing bare
+builtins remain available for compatibility, then a small versioned prelude
+will become the only implicit bare builtin source before non-prelude bare names
+are removed in a major version.
 
 Path interpretation for `from "path"`:
 
@@ -3502,14 +3558,13 @@ The loader must use normalized identities so `"./a/../b"` and `"b"` do not creat
 Compilation and runtime initialization are separate phases with separate
 caches and cycle diagnostics:
 
-1. A compile artifact contains expanded GIR plus exported macro metadata and
-   syntax-callable declaration metadata. Building it performs no runtime
-   evaluation and grants no host/runtime capabilities. Cross-compilation uses
-   this phase, so obtaining a macro can never inherit the build host's runtime
-   authority.
-2. Only imports that select a macro form compile-time dependency edges.
-   Cycles on those edges fail as `compile-time macro dependency cycle`.
-   Value-only cycles remain runtime concerns.
+1. A compile artifact contains expanded GIR, its typed namespace-tree
+   interface, and exported macro/`fn!` metadata. Building it performs no runtime
+   evaluation and grants no host/runtime capabilities.
+2. Wildcard and alias imports read dependency interfaces. Macro expansion and
+   explicit re-export may require the dependency's full compile artifact;
+   cycles on those artifact edges fail as `compile-time macro dependency
+   cycle`. Value-only initialization cycles remain runtime concerns.
 3. Executing an import initializes the dependency's runtime phase, in the
    application's granted runtime environment, at most once per normalized
    module identity. Runtime top-level forms are never run merely to compile an

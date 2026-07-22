@@ -108,11 +108,14 @@ Entry state is explicit:
 - each eval/REPL unit snapshots protocol bindings in its associated `Env` and
   parent chain when compiled.
 
-Completed imports contribute their visible protocol/message interfaces and
-re-exports transitively. A seeded protocol's home must already be loaded.
-Merely existing in the global canonical registry does not seed a candidate.
-A later environment mutation can affect qualified lookup and later eval units,
-but never changes an already-compiled unqualified send.
+Completed selected imports contribute their visible protocol/message
+interfaces and re-exports transitively. Wildcard and module-alias imports do
+not contribute protocols in bulk: an annotation or other interface-bearing
+form that explicitly resolves a protocol through one adds exactly that
+identity to the nested unit's Entry set. A seeded protocol's home must already
+be loaded. Merely existing in the global canonical registry does not seed a
+candidate. A later environment mutation can affect qualified lookup and later
+eval units, but never changes an already-compiled unqualified send.
 
 Conditional imports intentionally split qualified and unqualified behavior.
 After a one-arm import, the persistent module binding may make `(x ~ P/m)`

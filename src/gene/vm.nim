@@ -296,13 +296,13 @@ type
 
   ModuleCompileHeader = ref object
     unit: SourceUnit
-    macroNames: HashSet[string]
-    syntaxFnNames: seq[string]
+    compileInterface: CompileNamespaceInterface
 
   ModuleCompileArtifact = ref object
     chunk: Chunk
     macroExports: Table[string, MacroDef]
     syntaxFnExports: seq[string]
+    compileInterface: CompileNamespaceInterface
 
   Application* = ref object of RuntimeContext
     builtins: Scope
@@ -691,6 +691,8 @@ proc prepareChunkScope(scope: Scope, chunk: Chunk) =
     scope.entryProtocolsFrozen = true
   if scope.slots.len == 0 and chunk.localNames.len > 0:
     scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
+  for name in chunk.exportExcludedNames:
+    scope.exportExcludedNames.incl name
 
 proc protocolBindingSig(scope: Scope): int =
   ## Cheap O(chain-depth) signature of how many bindings could contribute
@@ -895,22 +897,81 @@ proc assignSlotAt(scope: Scope, depth, index: int, name: string, v: Value) =
 proc lookup*(scope: Scope, name: string): Value =
   var s = scope
   while s != nil:
-    if s.loadNamedSlot(name, result): return
+    let slot = s.slotIndex(name)
+    if slot >= 0:
+      if s.slotDefined(slot):
+        return s.slots[slot]
+      raiseUndefinedSymbol(name)
     s.vars.withValue(name, value):
       return value[]
+    s.wildcardFallbacks.withValue(name, fallback):
+      if fallback[].parentCollision or fallback[].conflicts.len > 0:
+        var sources = @[fallback[].source]
+        for source in fallback[].conflicts:
+          sources.add source
+        if fallback[].parentCollision:
+          sources.add "gene/prelude"
+        raise newException(GeneError,
+          "ambiguous imported name '" & name & "' from " & sources.join(", "))
+      return fallback[].value
     s = s.parent
   raiseUndefinedSymbol(name)
 
 proc lookupOptional*(scope: Scope, name: string, value: var Value): bool =
   var s = scope
   while s != nil:
-    if s.loadNamedSlot(name, value):
-      return true
+    let slot = s.slotIndex(name)
+    if slot >= 0:
+      if s.slotDefined(slot):
+        value = s.slots[slot]
+        return true
+      return false
     s.vars.withValue(name, found):
       value = found[]
       return true
+    s.wildcardFallbacks.withValue(name, fallback):
+      if fallback[].parentCollision or fallback[].conflicts.len > 0:
+        var sources = @[fallback[].source]
+        for source in fallback[].conflicts:
+          sources.add source
+        if fallback[].parentCollision:
+          sources.add "gene/prelude"
+        raise newException(GeneError,
+          "ambiguous imported name '" & name & "' from " & sources.join(", "))
+      value = fallback[].value
+      return true
     s = s.parent
   false
+
+proc nameResolvable(scope: Scope, name: string): bool =
+  ## Presence probe that mirrors `lookupOptional`'s reachability without
+  ## evaluating ambiguity — a parent whose own wildcard fallback is already
+  ## ambiguous still *has* the name, so it must read as a collision here
+  ## rather than raise (which would turn lazy import ambiguity into an eager
+  ## import-time error in the nested case).
+  var s = scope
+  while s != nil:
+    let slot = s.slotIndex(name)
+    if slot >= 0:
+      return s.slotDefined(slot)
+    if s.vars.hasKey(name):
+      return true
+    if s.wildcardFallbacks.hasKey(name):
+      return true
+    s = s.parent
+  false
+
+proc addWildcardFallback(scope: Scope, name: string, value: Value,
+                         source: string) =
+  scope.wildcardFallbacks.withValue(name, existing):
+    if source != existing[].source and source notin existing[].conflicts:
+      existing[].conflicts.add source
+    return
+  do:
+    let parentCollision = scope.parent != nil and
+      scope.parent.nameResolvable(name)
+    scope.wildcardFallbacks[name] = WildcardFallback(
+      value: value, source: source, parentCollision: parentCollision)
 
 proc define*(scope: Scope, name: string, v: Value) =
   if scope.storeNamedSlot(name, v, requireExisting = false):
@@ -937,6 +998,10 @@ proc assign*(scope: Scope, name: string, v: Value) =
       s.vars[name] = stored
       s.syncSlot(name, stored)
       return
+    if s.wildcardFallbacks.hasKey(name):
+      raise newException(GeneError,
+        "cannot assign wildcard import '" & name &
+        "'; import it explicitly before assignment")
     s = s.parent
   raise newException(GeneError, "set of undefined symbol: " & name)
 
@@ -3220,6 +3285,8 @@ proc exportedBinding(ns: Value, name: string): Value =
     return VOID
   if ns.nsIsModuleRoot and name == "this_mod":
     return VOID
+  if name in ns.nsScope.exportExcludedNames:
+    return VOID
   ns.nsScope.materializeMirroredVars()
   ns.nsScope.vars.getOrDefault(name, VOID)
 
@@ -5315,6 +5382,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
   registerStdlibNamespaces(result)
+  # Stage 1 of the stdlib-root migration: every existing builtin remains bare
+  # for compatibility and is also reachable through the unshadowable `gene`
+  # root. Nested namespace values are shared, preserving builtin identities.
+  let geneScope = newScope(result)
+  for name, value in result.vars:
+    geneScope.define(name, value)
+  result.define("gene", newNamespace("gene", geneScope))
 
 var gApplication: Application
 
@@ -6472,6 +6546,10 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.moduleStatic = false
     scope.entryProtocols.setLen(0)
     scope.entryProtocolsFrozen = false
+    if scope.wildcardFallbacks.len != 0:
+      scope.wildcardFallbacks.clear()
+    if scope.exportExcludedNames.len != 0:
+      scope.exportExcludedNames.clear()
     if pools.callScopesLen < MaxCallScopePool:
       pools.callScopes[pools.callScopesLen] = scope
       inc pools.callScopesLen
@@ -6486,6 +6564,10 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
       scope.slotDefinedOverflow[i] = false
   if scope.vars.len != 0:
     scope.vars.clear()
+  if scope.wildcardFallbacks.len != 0:
+    scope.wildcardFallbacks.clear()
+  if scope.exportExcludedNames.len != 0:
+    scope.exportExcludedNames.clear()
   scope.varsDirty = false
   if scope.varTypes.len != 0:
     scope.varTypes.clear()
@@ -7555,6 +7637,17 @@ proc copyChunkCapturesToSnapshots(source: Scope, chunk: Chunk,
     # is not re-captured (and re-cloned) by name below.
     rootSnapshot.materializeMirroredVars()
     for name in captures.names:
+      let slot = source.slotIndex(name)
+      if slot >= 0:
+        if not source.slotDefined(slot):
+          raiseUndefinedSymbol(name)
+        if not rootSnapshot.slotDefined(slot):
+          rootSnapshot.slots[slot] =
+            cloneForCapturedSnapshot(source.slots[slot], scopeMap)
+          rootSnapshot.markSlotDefined(slot)
+          if rootSnapshot.slotMirror:
+            rootSnapshot.varsDirty = true
+        continue
       if rootSnapshot.vars.hasKey(name):
         continue
       var value: Value
@@ -8422,23 +8515,11 @@ proc resolveProtocolCandidateRef(scope: Scope, reference: ProtocolCandidateRef,
       return false
     value = target.slots[reference.slot]
   else:
-    var current = scope
-    var found = false
-    while current != nil:
-      let slot = current.slotIndex(bindingName)
-      if slot >= 0:
-        if current.slotDefined(slot):
-          value = current.slots[slot]
-          found = true
-          break
-        uninitialized = true
-        return false
-      current.vars.withValue(bindingName, binding):
-        value = binding[]
-        found = true
-        break
-      current = current.parent
-    if not found:
+    # Interface references reached through wildcard fallback are deliberately
+    # not ordinary slots. Use normal lexical resolution here so an exact
+    # annotation reference can recover that one protocol without treating the
+    # wildcard's whole namespace as a candidate source.
+    if not scope.lookupOptional(bindingName, value):
       uninitialized = true
       return false
   for i in 1 ..< parts.len:
@@ -10144,8 +10225,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let app = scope.application()
             source = loadModuleValue(app, app.resolveModulePath(spec.modulePath))
           else:
-            # Namespace path: resolve segments against the current scope.
-            source = scope.lookup(spec.nsSegments[0])
+            # Resolve the import-source root as initialized-local → builtin →
+            # error. `lookupOptional` walks the scope chain (nearer in-file
+            # namespace before the builtins root) and returns false for a
+            # declared-but-uninitialized local slot, so a later local named
+            # `db`, `str`, etc. cannot make `import db/...` observe an
+            # uninitialized binding — the original hazard — while an
+            # initialized in-file `(ns str ...)` is no longer silently
+            # shadowed by a builtin of the same name.
+            var local: Value
+            if scope.lookupOptional(spec.nsSegments[0], local) and
+                local.kind in {vkNamespace, vkModule}:
+              source = local
+            else:
+              source = scope.application().builtinsScope().lookup(
+                spec.nsSegments[0])
             for i in 1 ..< spec.nsSegments.len:
               if source.kind == vkModule:
                 source = source.moduleRootNamespace
@@ -10164,8 +10258,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sourceNs.kind != vkNamespace:
             raise newException(GeneError, "import source is not a namespace")
           scope.makeImplsVisible(sourceNs.nsScope)
+          var wildcardNs = sourceNs
+          for segment in spec.wildcardSegments:
+            wildcardNs = wildcardNs.exportedBinding(segment)
+            if wildcardNs.kind != vkNamespace:
+              raise newException(GeneError,
+                "import namespace has no export: " &
+                spec.wildcardSegments.join("/"))
           if spec.alias.len > 0:
-            scope.define(spec.alias, source)
+            let aliasValue =
+              if spec.wildcard and spec.wildcardSegments.len > 0: wildcardNs
+              else: source
+            scope.define(spec.alias, aliasValue)
+          if spec.wildcard and spec.alias.len == 0:
+            for name in spec.wildcardNames:
+              let value = wildcardNs.exportedBinding(name)
+              if value.kind == vkVoid:
+                raise newException(GeneError,
+                  "module compile interface export is unavailable at runtime: " &
+                  spec.sourceLabel & "/" & name)
+              scope.addWildcardFallback(name, value, spec.sourceLabel)
           for sel in spec.selections:
             let v = sourceNs.exportedBinding(sel.name)
             if v.kind == vkVoid:
@@ -14128,6 +14240,17 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       if scope.lookupOptional(expr.symVal, resolved) and
           resolved.kind in {vkType, vkProtocol}:
         return resolved
+      let segments = expr.symVal.split('/')
+      if segments.len > 1 and scope.lookupOptional(segments[0], resolved):
+        for i in 1 ..< segments.len:
+          if resolved.kind == vkModule:
+            resolved = resolved.moduleRootNamespace
+          if resolved.kind != vkNamespace:
+            resolved = VOID
+            break
+          resolved = resolved.exportedBinding(segments[i])
+        if resolved.kind in {vkType, vkProtocol}:
+          return resolved
     expr
   of vkNode:
     if expr.head.isSymbol("path") and expr.body.len == 2 and
@@ -14353,6 +14476,22 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         let typ = value.receiverType
         return typ.kind == vkType and
           scope.typeImplementsProtocol(typ, resolved)
+    if scope != nil:
+      let segments = name.split('/')
+      if segments.len > 1 and scope.lookupOptional(segments[0], resolved):
+        for i in 1 ..< segments.len:
+          if resolved.kind == vkModule:
+            resolved = resolved.moduleRootNamespace
+          if resolved.kind != vkNamespace:
+            resolved = VOID
+            break
+          resolved = resolved.exportedBinding(segments[i])
+        if resolved.kind == vkType:
+          return value.isInstanceOfType(resolved)
+        if resolved.kind == vkProtocol:
+          let typ = value.receiverType
+          return typ.kind == vkType and
+            scope.typeImplementsProtocol(typ, resolved)
     raise newException(GeneError, "unknown type annotation: " & name)
   of vkNode:
     let closedExpr = closeTypeExpr(expr, scope)
@@ -20130,36 +20269,22 @@ proc importFromPath(form: Value): string =
       return ""
   ""
 
-proc collectCompileHeaderForms(forms: openArray[Value],
-                               macroNames: var HashSet[string],
-                               syntaxNames: var HashSet[string]) =
-  ## Lightweight declaration scan used only to decide which import edges are
-  ## compile-time macro dependencies. It never evaluates a form.
-  for form in forms:
+proc collectStaticImportForms(forms: openArray[Value], first = 0): seq[Value] =
+  if first > forms.high:
+    return
+  for i in first .. forms.high:
+    let form = forms[i]
     if form.kind != vkNode or form.head.kind != vkSymbol:
       continue
     case form.head.symVal
-    of "macro":
-      if form.body.len > 0 and form.body[0].kind == vkSymbol:
-        macroNames.incl form.body[0].symVal
-    of "fn!":
-      if form.body.len > 0 and form.body[0].kind == vkSymbol:
-        syntaxNames.incl form.body[0].symVal
-    of "var":
-      if form.body.len >= 2 and form.body[0].kind == vkSymbol:
-        let valueIndex =
-          if form.body.len >= 3 and form.body[1].isSymbol(":"): 3
-          else: 1
-        if valueIndex < form.body.len:
-          let value = form.body[valueIndex]
-          if (value.kind == vkSymbol and value.symVal in syntaxNames) or
-              (value.kind == vkNode and value.head.isSymbol("fn!")):
-            syntaxNames.incl form.body[0].symVal
-    of "set":
-      if form.body.len > 0 and form.body[0].kind == vkSymbol:
-        syntaxNames.excl form.body[0].symVal
-    of "mod", "do":
-      collectCompileHeaderForms(form.body, macroNames, syntaxNames)
+    of "import":
+      result.add form
+    of "mod", "ns":
+      for nested in collectStaticImportForms(form.body, 1):
+        result.add nested
+    of "do":
+      for nested in collectStaticImportForms(form.body, 0):
+        result.add nested
     else:
       discard
 
@@ -20175,51 +20300,16 @@ proc moduleCompileHeader(app: Application,
         raise newException(GeneError, "module not found: " & absPath)
       readFile(absPath)
   let unit = readAllWithLocs(source, absPath)
-  var macroNames = initHashSet[string]()
-  var syntaxNames = initHashSet[string]()
-  collectCompileHeaderForms(unit.forms, macroNames, syntaxNames)
-  var syntaxFnNames: seq[string]
-  for name in syntaxNames:
-    syntaxFnNames.add name
-  syntaxFnNames.sort()
-  result = ModuleCompileHeader(unit: unit, macroNames: macroNames,
-                               syntaxFnNames: syntaxFnNames)
+  result = ModuleCompileHeader(unit: unit,
+                               compileInterface: buildCompileInterface(unit.forms))
   app.moduleCompileHeaders[absPath] = result
-
-proc importSelectionSourceNames(form: Value): seq[string] =
-  if form.kind != vkNode or not form.head.isSymbol("import"):
-    return
-  var fromIndex = -1
-  for i, item in form.body:
-    if item.isSymbol("from"):
-      fromIndex = i
-      break
-  if fromIndex != 1:
-    return
-  let selection = form.body[0]
-  if selection.kind == vkSymbol:
-    return @[selection.symVal]
-  if selection.kind != vkList:
-    return
-  var i = 0
-  while i < selection.listItems.len:
-    let item = selection.listItems[i]
-    if item.kind != vkSymbol:
-      inc i
-      continue
-    if item.symVal in [",", ":"]:
-      inc i
-      continue
-    result.add item.symVal
-    inc i
-    if i < selection.listItems.len and selection.listItems[i].isSymbol(":"):
-      i += 2 # skip `:` plus the local alias
 
 proc compileModuleArtifact(app: Application,
                            absPath: string): ModuleCompileArtifact =
   ## Build/cache a module's compile artifact without creating a runtime scope or
-  ## executing top-level code. Only imports that select an exported macro form
-  ## compile-time dependency edges; value-only cycles remain runtime cycles.
+  ## executing top-level code. Wildcards and aliases consume lightweight
+  ## headers; macros and explicit re-exports may require a dependency artifact.
+  ## Value-only cycles remain runtime cycles.
   if app.moduleCompileArtifacts.hasKey(absPath):
     return app.moduleCompileArtifacts[absPath]
   if absPath in app.moduleCompileLoading:
@@ -20232,26 +20322,113 @@ proc compileModuleArtifact(app: Application,
   try:
     var importedMacros = initTable[string, Table[string, MacroDef]]()
     var importedSyntaxFns = initTable[string, seq[string]]()
-    for form in header.unit.forms:
+    var importedInterfaces =
+      initTable[string, CompileNamespaceInterface]()
+    var dependencies = initTable[string, ModuleCompileArtifact]()
+    var importSpecs: seq[ImportSpec]
+    var ownInterface = cloneCompileInterface(header.compileInterface)
+    for form in collectStaticImportForms(header.unit.forms):
       let raw = importFromPath(form)
       if raw.len == 0:
         continue
+      let importSpec = parseImportSpec(form)
+      importSpecs.add importSpec
       let depPath = app.resolveModulePath(raw)
       let depHeader = app.moduleCompileHeader(depPath)
-      importedSyntaxFns[raw] = depHeader.syntaxFnNames
+      var depInterface = depHeader.compileInterface
+      var dependency: ModuleCompileArtifact
+      var depHasReexports = false
+      for depImport in collectStaticImportForms(depHeader.unit.forms):
+        if importFromPath(depImport).len > 0 and
+            parseImportSpec(depImport).reexport:
+          depHasReexports = true
+          break
+      let needsDependency = importSpec.reexport or depHasReexports
+      if needsDependency:
+        dependency = compileModuleArtifact(app, depPath)
+        dependencies[raw] = dependency
+        depInterface = dependency.compileInterface
+      importedInterfaces[raw] = depInterface
+      importedSyntaxFns[raw] = compileInterfacePaths(
+        depInterface, cbcSyntaxFn)
       var needsMacroArtifact = false
-      for name in importSelectionSourceNames(form):
-        if name in depHeader.macroNames:
+      if importSpec.wildcard:
+        let subtree = compileInterfaceAt(depInterface,
+                                         importSpec.wildcardSegments)
+        needsMacroArtifact =
+          compileInterfacePaths(subtree, cbcMacro).len > 0
+      for selection in importSpec.selections:
+        let path = selection.name.split('/')
+        let resolved = compileInterfaceEntryAt(depInterface,
+                                               path)
+        if resolved.found and resolved.entry.category == cbcMacro:
           needsMacroArtifact = true
           break
       if needsMacroArtifact:
-        let dependency = compileModuleArtifact(app, depPath)
+        if dependency == nil:
+          dependency = compileModuleArtifact(app, depPath)
+          dependencies[raw] = dependency
+          importedInterfaces[raw] = dependency.compileInterface
         importedMacros[raw] = dependency.macroExports
+      if importSpec.reexport:
+        let publicInterface = importedInterfaces[raw]
+        if importSpec.alias.len > 0:
+          let subtree = compileInterfaceAt(publicInterface,
+                                           importSpec.wildcardSegments)
+          ownInterface.entries[importSpec.alias] = CompileInterfaceEntry(
+            category: cbcNamespace,
+            namespace: cloneCompileInterface(subtree))
+        for selection in importSpec.selections:
+          let resolved = compileInterfaceEntryAt(
+            publicInterface, selection.name.split('/'))
+          if not resolved.found:
+            raise newException(GeneError,
+              "cannot re-export missing compile interface name: " &
+              selection.name)
+          var entry = resolved.entry
+          if entry.category == cbcNamespace:
+            entry.namespace = cloneCompileInterface(entry.namespace)
+          ownInterface.entries[selection.local] = entry
     let compiled = compileFormsWithMacros(header.unit, importedMacros,
-                                          importedSyntaxFns)
+                                          importedSyntaxFns,
+                                          importedInterfaces)
+    var macroExports = compiled.macroExports
+    var syntaxFnExports = compiled.syntaxFnExports
+    for spec in importSpecs:
+      if not spec.reexport or not dependencies.hasKey(spec.modulePath):
+        continue
+      let dependency = dependencies[spec.modulePath]
+      for selection in spec.selections:
+        if dependency.macroExports.hasKey(selection.name):
+          macroExports[selection.local] =
+            dependency.macroExports[selection.name]
+        if selection.name in dependency.syntaxFnExports and
+            selection.local notin syntaxFnExports:
+          syntaxFnExports.add selection.local
+      if spec.alias.len > 0:
+        let prefix = spec.wildcardSegments.join("/")
+        for path, definition in dependency.macroExports:
+          if prefix.len == 0 or path == prefix or
+              path.startsWith(prefix & "/"):
+            let relative =
+              if prefix.len == 0: path
+              elif path.len > prefix.len: path[prefix.len + 1 .. ^1]
+              else: ""
+            if relative.len > 0:
+              macroExports[spec.alias & "/" & relative] = definition
+        for path in dependency.syntaxFnExports:
+          if prefix.len == 0 or path.startsWith(prefix & "/"):
+            let relative =
+              if prefix.len == 0: path
+              else: path[prefix.len + 1 .. ^1]
+            let exported = spec.alias & "/" & relative
+            if exported notin syntaxFnExports:
+              syntaxFnExports.add exported
+    syntaxFnExports.sort()
     result = ModuleCompileArtifact(chunk: compiled.chunk,
-                                   macroExports: compiled.macroExports,
-                                   syntaxFnExports: compiled.syntaxFnExports)
+                                   macroExports: macroExports,
+                                   syntaxFnExports: syntaxFnExports,
+                                   compileInterface: ownInterface)
     app.moduleCompileArtifacts[absPath] = result
   finally:
     app.currentModuleDir = savedDir
@@ -20373,6 +20550,9 @@ proc reloadFileModule*(app: Application, path: string): Value =
   let oldSerdeBuiltinsDone = app.serdeOriginBuiltinsDone
   let oldModule = app.moduleCache[absPath]
   let oldScope = oldModule.moduleRootNamespace.nsScope
+  let oldInterface =
+    if oldArtifacts.hasKey(absPath): oldArtifacts[absPath].compileInterface
+    else: nil
 
   app.moduleCompileHeaders.del(absPath)
   app.moduleCompileArtifacts.del(absPath)
@@ -20385,6 +20565,10 @@ proc reloadFileModule*(app: Application, path: string): Value =
   app.currentModuleDir = parentDir(absPath)
   try:
     let artifact = compileModuleArtifact(app, absPath)
+    if oldInterface != nil and
+        not compileInterfacesEqual(oldInterface, artifact.compileInterface):
+      raise newException(GeneError,
+        "reload changed the module compile interface: " & absPath)
     discard run(artifact.chunk, replacementScope)
 
     var canonical: seq[ProtocolImpl]

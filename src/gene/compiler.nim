@@ -1,6 +1,6 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
-import std/[sets, strutils, tables]
+import std/[algorithm, sets, strutils, tables]
 import ./[equality, gir, reader, types]
 
 type
@@ -28,6 +28,17 @@ type
   KnownFunctionSig = object
     arity: int
     returnType: Value
+
+  StaticWildcardCandidate = object
+    modulePath: string
+    exportPath: seq[string]
+    category: CompileBindingCategory
+    sourceLabel: string
+
+  StaticAliasInterface = object
+    modulePath: string
+    exportPrefix: seq[string]
+    namespace: CompileNamespaceInterface
 
   LoopCompileContext = object
     isInline: bool
@@ -90,6 +101,13 @@ type
     mutableBindingNames: HashSet[string]
     importedSyntaxFnSets: Table[string, seq[string]]
     importedSyntaxFnNames: HashSet[string]
+    importedInterfaces: Table[string, CompileNamespaceInterface]
+    wildcardCandidates: Table[string, seq[StaticWildcardCandidate]]
+    aliasInterfaces: Table[string, StaticAliasInterface]
+    declaredUnitNames: HashSet[string]
+    namespacePath: seq[string]
+    moduleMacroExports: ref Table[string, MacroDef]
+    moduleSyntaxFnExports: ref HashSet[string]
     # Exact impl-form nodes that are unconditional static module/namespace
     # declarations. Nested control-flow and callable bodies are absent.
     staticTopLevelImpls: HashSet[uint64]
@@ -184,7 +202,15 @@ proc enableLocalSlots(c: var Compiler) =
   c.localFunctionSigs = initTable[string, KnownFunctionSig]()
   c.localNames = @[]
 
+const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
+
+proc validateBindingName(name: string) =
+  if name in reservedStdlibRoots:
+    raise newException(GeneError,
+      "reserved standard-library root cannot be bound: " & name)
+
 proc reserveLocal(c: var Compiler, name: string): int =
+  validateBindingName(name)
   # One name, one meaning: a binding may not reuse a visible macro's name —
   # head-position dispatch would still pick the macro, so the binding could
   # never mean the same thing in both positions (design §11).
@@ -361,9 +387,20 @@ proc hasLexicalBinding(c: Compiler, name: string): bool =
     return true
   c.parentSlot(name).slot >= 0
 
+proc importedCandidates(c: Compiler,
+                        name: string): seq[StaticWildcardCandidate]
+proc importedPathEntry(c: Compiler, value: Value):
+    tuple[found: bool, candidate: StaticWildcardCandidate]
+proc importedNameError(name: string,
+                       candidates: openArray[StaticWildcardCandidate]): ref GeneError
+proc annotationProtocolRefs(c: var Compiler,
+                            value: Value): seq[ProtocolFlowRef]
+
 proc calleeKnownOrdinary(c: Compiler, callee: Value): bool =
   case callee.kind
   of vkSymbol:
+    if c.importedCandidates(callee.symVal).len > 0:
+      return false
     if c.ordinaryFnNames.hasKey(callee.symVal) and
         callee.symVal notin c.mutableBindingNames:
       return true
@@ -418,6 +455,16 @@ proc emitLoadBinding(c: var Compiler, name: string) =
     if outer.slot >= 0:
       discard c.emit(opLoadOuterLocal, outer.slot, depth = outer.depth, name = name)
     else:
+      let imported = c.importedCandidates(name)
+      if imported.len > 1:
+        raise importedNameError(name, imported)
+      if imported.len == 1:
+        if imported[0].category == cbcMacro:
+          raise newException(GeneError,
+            "macro '" & name &
+            "' cannot be used as a value; call it in head position")
+        discard c.emit(opLoadName, name = name)
+        return
       let fastKind = nativeFastLoadKind(name)
       if fastKind != nfkNone and c.allowAmbientImports:
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
@@ -447,6 +494,7 @@ proc intFastConstOp(kind: NativeFastKind): OpCode =
   else: opIntFastConst
 
 proc emitDefineBinding(c: var Compiler, name: string) =
+  validateBindingName(name)
   if c.useLocalSlots:
     discard c.emit(opDefineLocal, c.reserveLocal(name), name = name)
   else:
@@ -515,8 +563,11 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 proc unionFlow(a, b: openArray[ProtocolFlowRef]): seq[ProtocolFlowRef]
 proc prepareProtocolFlow(c: var Compiler, forms: openArray[Value],
                          entry: seq[ProtocolFlowRef])
+proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
 proc builtinNamespaceMacros(segments: openArray[string]):
     Table[string, MacroDef]
+proc declarationIsPrivate(node: Value): bool
+proc importMacroLocals(c: Compiler, node: Value): HashSet[string]
 
 proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(c.sourceName), sourceName: c.sourceName,
@@ -535,6 +586,13 @@ proc childCompiler(c: Compiler): Compiler =
            mutableBindingNames: c.mutableBindingNames,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
            importedSyntaxFnNames: c.importedSyntaxFnNames,
+           importedInterfaces: c.importedInterfaces,
+           wildcardCandidates: c.wildcardCandidates,
+           aliasInterfaces: c.aliasInterfaces,
+           declaredUnitNames: c.declaredUnitNames,
+           namespacePath: c.namespacePath,
+           moduleMacroExports: c.moduleMacroExports,
+           moduleSyntaxFnExports: c.moduleSyntaxFnExports,
            staticTopLevelImpls: c.staticTopLevelImpls,
            flowInterner: c.flowInterner,
            protocolFlowAt: c.protocolFlowAt,
@@ -686,6 +744,7 @@ proc addPatternBinding(names: var seq[string], seen: var Table[string, bool],
                        name: string) =
   if name.len == 0 or name == "_" or seen.hasKey(name):
     return
+  validateBindingName(name)
   seen[name] = true
   names.add name
 
@@ -784,6 +843,7 @@ proc symbolText(v: Value): string =
 
 proc compileDefaultExpr(c: Compiler, node: Value): Chunk =
   var child = c.childCompiler()
+  child.prepareStaticImports(@[node])
   child.prepareProtocolFlow(@[node],
     unionFlow(c.currentProtocolFlow, c.protocolWhole))
   compileExpr(child, node)
@@ -1106,6 +1166,7 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
   if forms.len > 0 and forms[0].kind == vkNode and c.protocolFlowAt != nil and
       c.protocolFlowAt[].hasKey(forms[0].bits):
     entry = c.protocolFlowAt[][forms[0].bits]
+  child.prepareStaticImports(forms)
   child.prepareProtocolFlow(forms, entry)
   compileBody(child, forms)            # empty -> nil
   discard child.emit(opReturn)
@@ -1964,6 +2025,7 @@ proc compileMacro(c: var Compiler, node: Value) =
     raise newException(GeneError, "macro requires a name and parameter vector")
   if body[0].kind != vkSymbol or body[0].symVal.len == 0:
     raise newException(GeneError, "macro name must be a symbol")
+  validateBindingName(body[0].symVal)
   if body[1].kind != vkList:
     raise newException(GeneError, "macro requires a parameter vector")
   let sig = c.macroParamDef(body[1])
@@ -1985,6 +2047,10 @@ proc compileMacro(c: var Compiler, node: Value) =
                                       rest: sig.rest,
                                       body: macroBody)
   c.hasMacros = true
+  if c.moduleMacroExports != nil and node.bits in c.staticTopLevelImpls and
+      not node.declarationIsPrivate:
+    let path = (c.namespacePath & @[body[0].symVal]).join("/")
+    c.moduleMacroExports[][path] = c.macros[body[0].symVal]
   c.emitConst NIL
 
 proc rejectReservedEffects(node: Value) =
@@ -2267,8 +2333,17 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   if start <= body.high:
     for i in start .. body.high:
       flowForms.add body[i]
-  fnCompiler.prepareProtocolFlow(
-    flowForms, unionFlow(c.currentProtocolFlow, c.protocolWhole))
+  fnCompiler.prepareStaticImports(flowForms)
+  var protocolEntry = unionFlow(c.currentProtocolFlow, c.protocolWhole)
+  for annotation in specs.positionalTypes:
+    protocolEntry = unionFlow(protocolEntry,
+                              fnCompiler.annotationProtocolRefs(annotation))
+  for param in specs.named:
+    protocolEntry = unionFlow(protocolEntry,
+                              fnCompiler.annotationProtocolRefs(param.typeExpr))
+  protocolEntry = unionFlow(protocolEntry,
+                            fnCompiler.annotationProtocolRefs(returnType))
+  fnCompiler.prepareProtocolFlow(flowForms, protocolEntry)
   compileBodyFrom(fnCompiler, body, start)
   if fnCompiler.sawYield and fnCompiler.sawNonVoidReturn:
     raise newException(GeneError,
@@ -2557,6 +2632,10 @@ proc compileVar(c: var Compiler, node: Value) =
          (body[valueIndex].kind == vkNode and
           body[valueIndex].head.isSymbol("fn!"))):
       c.syntaxFnNames[body[0].symVal] = true
+      if c.moduleSyntaxFnExports != nil and
+          node.bits in c.staticTopLevelImpls and not node.declarationIsPrivate:
+        c.moduleSyntaxFnExports[].incl(
+          (c.namespacePath & @[body[0].symVal]).join("/"))
     elif body.len > valueIndex and
         ((body[valueIndex].kind == vkSymbol and
           c.ordinaryFnNames.hasKey(body[valueIndex].symVal)) or
@@ -2575,8 +2654,12 @@ proc compileSet(c: var Compiler, node: Value) =
   let body = node.body
   if body.len < 2 or body[0].kind != vkSymbol:
     raise newException(GeneError, "set requires a name and a value")
+  validateBindingName(body[0].symVal)
   compileExpr(c, body[1])
   c.syntaxFnNames.del(body[0].symVal)
+  if c.moduleSyntaxFnExports != nil:
+    c.moduleSyntaxFnExports[].excl(
+      (c.namespacePath & @[body[0].symVal]).join("/"))
   c.ordinaryFnNames.del(body[0].symVal)
   c.emitSetBinding(body[0].symVal)
 
@@ -2660,18 +2743,33 @@ proc compileFnBang(c: var Compiler, node: Value) =
   if definesName:
     c.emitDefineBinding(name)
     c.syntaxFnNames[name] = true
+    if c.moduleSyntaxFnExports != nil and
+        node.bits in c.staticTopLevelImpls and not node.declarationIsPrivate:
+      c.moduleSyntaxFnExports[].incl(
+        (c.namespacePath & @[name]).join("/"))
 
 proc importSelections(sel: Value): seq[ImportSelection] =
   ## Parse a single name `add` or a `[add, sub : minus]` selection list. The
   ## reader keeps vectors as flat tokens, so `,` and `:` arrive as symbols.
-  if sel.kind == vkSymbol:
-    return @[ImportSelection(name: sel.symVal, local: sel.symVal)]
+  proc selectionName(value: Value): string =
+    if value.kind == vkSymbol:
+      return value.symVal
+    if value.kind == vkNode and value.head.isSymbol("path"):
+      var segments: seq[string]
+      for segment in value.body:
+        if segment.kind != vkSymbol:
+          return ""
+        segments.add segment.symVal
+      return segments.join("/")
+  let single = selectionName(sel)
+  if single.len > 0:
+    return @[ImportSelection(name: single, local: single)]
   if sel.kind != vkList:
     raise newException(GeneError, "import selection must be a name or [list]")
   let items = sel.listItems
   var i = 0
   while i < items.len:
-    let s = items[i].symbolText
+    let s = selectionName(items[i])
     if s == "," or s == "":
       inc i
       continue
@@ -2685,6 +2783,100 @@ proc importSelections(sel: Value): seq[ImportSelection] =
       inc i
     result.add ImportSelection(name: s, local: local)
 
+proc wildcardPath(value: Value,
+                  segments: var seq[string]): bool =
+  if value.kind == vkSymbol:
+    return value.symVal == "*"
+  if value.kind != vkNode or not value.head.isSymbol("path") or
+      value.body.len == 0 or not value.body[^1].isSymbol("*"):
+    return false
+  for i in 0 ..< value.body.high:
+    if value.body[i].kind != vkSymbol:
+      return false
+    segments.add value.body[i].symVal
+  true
+
+proc nsPathSegments(v: Value): seq[string]
+
+proc parseImportSpec*(node: Value): ImportSpec =
+  if node.kind != vkNode or not node.head.isSymbol("import"):
+    raise newException(GeneError, "expected import form")
+  for key, value in node.props:
+    if key != "export":
+      if key == "as":
+        raise newException(GeneError,
+          "import ^as was removed; use `source : alias`")
+      raise newException(GeneError, "import got unexpected option: ^" & key)
+    if value.kind != vkBool:
+      raise newException(GeneError, "import ^export must be Bool")
+    result.reexport = value.boolVal
+
+  let body = node.body
+  var fromIndex = -1
+  for i, item in body:
+    if item.isSymbol("from"):
+      fromIndex = i
+      break
+  if fromIndex >= 0:
+    result.fromModule = true
+    if fromIndex + 1 >= body.len or body[fromIndex + 1].kind != vkString or
+        fromIndex + 2 != body.len:
+      raise newException(GeneError,
+        "import: `from` requires one trailing path string")
+    result.modulePath = body[fromIndex + 1].strVal
+    if fromIndex == 0:
+      raise newException(GeneError,
+        "import from a module requires a selection or wildcard")
+    var segments: seq[string]
+    let isWildcard = wildcardPath(body[0], segments)
+    if fromIndex == 1:
+      if isWildcard:
+        result.wildcard = true
+        result.wildcardSegments = segments
+      else:
+        result.selections = importSelections(body[0])
+    elif fromIndex == 3 and body[1].isSymbol(":") and
+        body[2].kind == vkSymbol:
+      if isWildcard:
+        result.wildcard = true
+        result.wildcardSegments = segments
+        result.alias = body[2].symVal
+      else:
+        let selections = importSelections(body[0])
+        if selections.len != 1:
+          raise newException(GeneError,
+            "single-name import alias requires one source name")
+        result.selections = @[
+          ImportSelection(name: selections[0].name, local: body[2].symVal)]
+    else:
+      raise newException(GeneError, "import: malformed `from` clause")
+    result.sourceLabel = result.modulePath
+    if result.wildcardSegments.len > 0:
+      result.sourceLabel.add "/" & result.wildcardSegments.join("/")
+  else:
+    if body.len == 0:
+      raise newException(GeneError, "import requires a source")
+    result.nsSegments = nsPathSegments(body[0])
+    if "*" in result.nsSegments:
+      raise newException(GeneError,
+        "wildcard imports require `from \"path\"`; a namespace-path import " &
+        "has no `*` form")
+    if body.len == 2:
+      result.selections = importSelections(body[1])
+    elif body.len == 3 and body[1].isSymbol(":") and
+        body[2].kind == vkSymbol:
+      result.alias = body[2].symVal
+    else:
+      raise newException(GeneError,
+        "namespace import requires selections or `source : alias`")
+    result.sourceLabel = result.nsSegments.join("/")
+  if result.wildcard and result.alias.len == 0 and result.reexport:
+    raise newException(GeneError,
+      "bare wildcards do not re-export; use an alias or explicit selections")
+  if result.reexport and not result.fromModule:
+    raise newException(GeneError,
+      "re-export requires a module-path import")
+
 proc nsPathSegments(v: Value): seq[string] =
   if v.kind == vkSymbol:
     result.add v.symVal
@@ -2695,6 +2887,398 @@ proc nsPathSegments(v: Value): seq[string] =
       result.add seg.symVal
   else:
     raise newException(GeneError, "import source must be a namespace path or `from \"path\"`")
+
+proc newCompileNamespaceInterface*(): CompileNamespaceInterface =
+  CompileNamespaceInterface(entries: initTable[string, CompileInterfaceEntry]())
+
+proc declarationIsPrivate(node: Value): bool =
+  if not node.props.hasKey("private"):
+    return false
+  let value = node.props["private"]
+  if value.kind != vkBool:
+    raise newException(GeneError, "^private must be Bool")
+  value.boolVal
+
+proc declaredName(form: Value): string =
+  if form.body.len == 0:
+    return ""
+  let value = form.body[0]
+  if value.kind == vkSymbol:
+    return value.symVal
+  if form.head.isSymbol("fn") and value.kind == vkNode and
+      value.head.kind == vkSymbol:
+    return value.head.symVal
+
+proc protocolInterfaceMessages(form: Value): seq[string] =
+  for i in 1 ..< form.body.len:
+    let item = form.body[i]
+    if item.kind != vkNode or not item.head.isSymbol("message") or
+        item.body.len == 0:
+      continue
+    let name = item.body[0]
+    if name.kind == vkSymbol:
+      result.add name.symVal
+    elif name.kind == vkNode and name.head.isSymbol("path") and
+        name.body.len > 0 and name.body[^1].kind == vkSymbol:
+      result.add name.body[^1].symVal
+
+proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
+                                  target: CompileNamespaceInterface,
+                                  syntaxNames: var HashSet[string])
+
+proc collectCompileInterfaceForm(form: Value,
+                                 target: CompileNamespaceInterface,
+                                 syntaxNames: var HashSet[string]) =
+  if form.kind != vkNode or form.head.kind != vkSymbol:
+    return
+  let head = form.head.symVal
+  case head
+  of "mod":
+    collectCompileInterfaceForms(form.body, 1, target, syntaxNames)
+  of "do":
+    collectCompileInterfaceForms(form.body, 0, target, syntaxNames)
+  of "ns":
+    let name = form.declaredName
+    if name.len == 0:
+      return
+    var child = newCompileNamespaceInterface()
+    if target.entries.hasKey(name) and
+        target.entries[name].category == cbcNamespace and
+        target.entries[name].namespace != nil:
+      child = target.entries[name].namespace
+    var childSyntax = initHashSet[string]()
+    collectCompileInterfaceForms(form.body, 1, child, childSyntax)
+    if not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(
+        category: cbcNamespace, namespace: child)
+  of "macro":
+    let name = form.declaredName
+    if name.len > 0 and not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(category: cbcMacro)
+  of "fn!":
+    let name = form.declaredName
+    if name.len > 0:
+      syntaxNames.incl name
+      if not form.declarationIsPrivate:
+        target.entries[name] = CompileInterfaceEntry(category: cbcSyntaxFn)
+  of "fn":
+    let name = form.declaredName
+    if name.len > 0 and not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(category: cbcValue)
+  of "var":
+    let name = form.declaredName
+    if name.len == 0:
+      return
+    let valueIndex =
+      if form.body.len >= 3 and form.body[1].isSymbol(":"): 3
+      else: 1
+    var category = cbcValue
+    if valueIndex < form.body.len:
+      let value = form.body[valueIndex]
+      if (value.kind == vkSymbol and value.symVal in syntaxNames) or
+          (value.kind == vkNode and value.head.isSymbol("fn!")):
+        category = cbcSyntaxFn
+        syntaxNames.incl name
+    if not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(category: category)
+  of "set":
+    let name = form.declaredName
+    if name.len > 0:
+      syntaxNames.excl name
+      if target.entries.hasKey(name):
+        var entry = target.entries[name]
+        if entry.category == cbcSyntaxFn:
+          entry.category = cbcValue
+          target.entries[name] = entry
+  of "type", "enum":
+    let name = form.declaredName
+    if name.len > 0 and not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(category: cbcType)
+  of "protocol":
+    let name = form.declaredName
+    if name.len > 0 and not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(
+        category: cbcProtocol,
+        protocolMessages: form.protocolInterfaceMessages)
+  else:
+    discard
+
+proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
+                                  target: CompileNamespaceInterface,
+                                  syntaxNames: var HashSet[string]) =
+  if first > forms.high:
+    return
+  for i in first .. forms.high:
+    collectCompileInterfaceForm(forms[i], target, syntaxNames)
+
+proc buildCompileInterface*(forms: openArray[Value]): CompileNamespaceInterface =
+  result = newCompileNamespaceInterface()
+  var syntaxNames = initHashSet[string]()
+  collectCompileInterfaceForms(forms, 0, result, syntaxNames)
+
+proc compileInterfaceAt*(root: CompileNamespaceInterface,
+                         segments: openArray[string]): CompileNamespaceInterface =
+  result = root
+  for segment in segments:
+    if result == nil or not result.entries.hasKey(segment):
+      return nil
+    let entry = result.entries[segment]
+    if entry.category != cbcNamespace:
+      return nil
+    result = entry.namespace
+
+proc runtimeExportNames*(iface: CompileNamespaceInterface): seq[string] =
+  if iface == nil:
+    return
+  for name, entry in iface.entries:
+    if entry.category != cbcMacro:
+      result.add name
+  result.sort()
+
+proc compileInterfacePaths*(iface: CompileNamespaceInterface,
+                            category: CompileBindingCategory,
+                            prefix: seq[string] = @[]): seq[string] =
+  if iface == nil:
+    return
+  for name, entry in iface.entries:
+    let path = prefix & @[name]
+    if entry.category == category:
+      result.add path.join("/")
+    if entry.category == cbcNamespace:
+      for nested in compileInterfacePaths(entry.namespace, category, path):
+        result.add nested
+  result.sort()
+
+proc compileInterfacesEqual*(a, b: CompileNamespaceInterface): bool =
+  if a == nil or b == nil:
+    return a == b
+  if a.entries.len != b.entries.len:
+    return false
+  for name, left in a.entries:
+    if not b.entries.hasKey(name):
+      return false
+    let right = b.entries[name]
+    if left.category != right.category or
+        left.protocolMessages != right.protocolMessages:
+      return false
+    if left.category == cbcNamespace and
+        not compileInterfacesEqual(left.namespace, right.namespace):
+      return false
+  true
+
+proc cloneCompileInterface*(source: CompileNamespaceInterface):
+    CompileNamespaceInterface =
+  if source == nil:
+    return nil
+  result = newCompileNamespaceInterface()
+  for name, entry in source.entries:
+    var copied = entry
+    if entry.category == cbcNamespace:
+      copied.namespace = cloneCompileInterface(entry.namespace)
+    result.entries[name] = copied
+
+proc compileInterfaceEntryAt*(root: CompileNamespaceInterface,
+                              segments: openArray[string]):
+    tuple[found: bool, entry: CompileInterfaceEntry] =
+  if segments.len == 0:
+    return
+  var current = root
+  for i, segment in segments:
+    if current == nil or not current.entries.hasKey(segment):
+      return
+    let entry = current.entries[segment]
+    if i == segments.high:
+      return (true, entry)
+    if entry.category != cbcNamespace:
+      return
+    current = entry.namespace
+
+proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
+  if form.kind != vkNode or form.head.kind != vkSymbol:
+    return
+  case form.head.symVal
+  of "var", "fn", "fn!", "macro", "type", "enum", "protocol", "ns":
+    let name = form.declaredName
+    if name.len > 0:
+      names.incl name
+    # Callable/type/namespace bodies create their own declaration units.
+  of "import":
+    let spec = parseImportSpec(form)
+    if spec.alias.len > 0:
+      names.incl spec.alias
+    for selection in spec.selections:
+      names.incl selection.local
+  of "quote", "quasiquote":
+    discard
+  else:
+    for item in form.body:
+      collectDeclaredUnitNames(item, names)
+
+proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
+                                     names: var HashSet[string]) =
+  if form.kind != vkNode or form.head.kind != vkSymbol:
+    return
+  case form.head.symVal
+  of "var", "fn", "fn!", "type", "enum", "protocol", "ns":
+    let name = form.declaredName
+    if name.len > 0:
+      names.incl name
+  of "macro", "quote", "quasiquote":
+    discard
+  of "import":
+    let spec = parseImportSpec(form)
+    if spec.alias.len > 0:
+      names.incl spec.alias
+    let macroLocals = c.importMacroLocals(form)
+    for selection in spec.selections:
+      if selection.local notin macroLocals:
+        names.incl selection.local
+  else:
+    for item in form.body:
+      c.collectRuntimeDeclaredUnitNames(item, names)
+
+proc prepareStaticImportForm(c: var Compiler, form: Value) =
+  if form.kind != vkNode or form.head.kind != vkSymbol:
+    return
+  case form.head.symVal
+  of "mod":
+    c.prepareStaticImports(form.body, 1)
+  of "do":
+    c.prepareStaticImports(form.body, 0)
+  of "import":
+    let spec = parseImportSpec(form)
+    if not spec.fromModule or not spec.wildcard or
+        not c.importedInterfaces.hasKey(spec.modulePath):
+      return
+    let iface = compileInterfaceAt(c.importedInterfaces[spec.modulePath],
+                                   spec.wildcardSegments)
+    if iface == nil:
+      return
+    if spec.alias.len > 0:
+      c.aliasInterfaces[spec.alias] = StaticAliasInterface(
+        modulePath: spec.modulePath,
+        exportPrefix: spec.wildcardSegments,
+        namespace: iface)
+    else:
+      for name, entry in iface.entries:
+        let candidate = StaticWildcardCandidate(
+          modulePath: spec.modulePath,
+          exportPath: spec.wildcardSegments & @[name],
+          category: entry.category,
+          sourceLabel: spec.sourceLabel)
+        # Dedup by (modulePath, exportPath) so re-importing the same
+        # wildcard (or two overlapping wildcards that reach the same export)
+        # collapses to one candidate — otherwise an identical repeat import
+        # would spuriously read as ambiguous, while the runtime fallback
+        # (addWildcardFallback) already dedups by source. Same-module
+        # different-subtree collisions keep distinct exportPaths and stay
+        # ambiguous, which is correct.
+        let bucket = c.wildcardCandidates.mgetOrPut(name, @[])
+        var duplicate = false
+        for existing in bucket:
+          if existing.modulePath == candidate.modulePath and
+              existing.exportPath == candidate.exportPath:
+            duplicate = true
+            break
+        if not duplicate:
+          c.wildcardCandidates[name].add candidate
+  else:
+    discard
+
+proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) =
+  if first > forms.high:
+    return
+  var runtimeNames = initHashSet[string]()
+  for i in first .. forms.high:
+    collectDeclaredUnitNames(forms[i], c.declaredUnitNames)
+    c.collectRuntimeDeclaredUnitNames(forms[i], runtimeNames)
+  for i in first .. forms.high:
+    c.prepareStaticImportForm(forms[i])
+  if c.useLocalSlots:
+    for name in runtimeNames:
+      if c.wildcardCandidates.hasKey(name):
+        discard c.reserveLocal(name)
+
+proc importedCandidates(c: Compiler,
+                        name: string): seq[StaticWildcardCandidate] =
+  if name in c.declaredUnitNames or c.hasLexicalBinding(name):
+    return
+  result = c.wildcardCandidates.getOrDefault(name)
+
+proc importedNameError(name: string,
+                       candidates: openArray[StaticWildcardCandidate]): ref GeneError =
+  var sources: seq[string]
+  for candidate in candidates:
+    if candidate.sourceLabel notin sources:
+      sources.add candidate.sourceLabel
+  newException(GeneError,
+    "ambiguous imported name '" & name & "' from " & sources.join(", "))
+
+proc pathSymbolSegments(value: Value): seq[string] =
+  if value.kind == vkSymbol:
+    if '/' in value.symVal:
+      return value.symVal.split('/')
+    return
+  if value.kind != vkNode or not value.head.isSymbol("path"):
+    return
+  for segment in value.body:
+    if segment.kind != vkSymbol:
+      return @[]
+    result.add segment.symVal
+
+proc importedPathEntry(c: Compiler, value: Value):
+    tuple[found: bool, candidate: StaticWildcardCandidate] =
+  let segments = pathSymbolSegments(value)
+  if segments.len < 2 or not c.aliasInterfaces.hasKey(segments[0]):
+    return
+  let alias = c.aliasInterfaces[segments[0]]
+  let relative = segments[1 .. ^1]
+  let resolved = compileInterfaceEntryAt(alias.namespace, relative)
+  if not resolved.found:
+    return
+  (true, StaticWildcardCandidate(
+    modulePath: alias.modulePath,
+    exportPath: alias.exportPrefix & relative,
+    category: resolved.entry.category,
+    sourceLabel: segments[0]))
+
+proc importedHeadCandidates(c: Compiler,
+                            value: Value): seq[StaticWildcardCandidate] =
+  if value.kind == vkSymbol:
+    return c.importedCandidates(value.symVal)
+  let path = c.importedPathEntry(value)
+  if path.found:
+    result.add path.candidate
+
+proc importedMacroForHead(c: Compiler, value: Value):
+    tuple[found: bool, def: MacroDef] =
+  let candidates = c.importedHeadCandidates(value)
+  if candidates.len > 1:
+    let name =
+      if value.kind == vkSymbol: value.symVal
+      else: pathSymbolSegments(value).join("/")
+    raise importedNameError(name, candidates)
+  if candidates.len != 1 or candidates[0].category != cbcMacro:
+    return
+  let candidate = candidates[0]
+  if not c.importedMacroSets.hasKey(candidate.modulePath):
+    raise newException(GeneError,
+      "missing compile-time macro artifact for " & candidate.sourceLabel)
+  let path = candidate.exportPath.join("/")
+  let definitions = c.importedMacroSets[candidate.modulePath]
+  if not definitions.hasKey(path):
+    raise newException(GeneError,
+      "module compile interface marked a missing macro: " & path)
+  (true, definitions[path])
+
+proc importedSyntaxHead(c: Compiler, value: Value): bool =
+  let candidates = c.importedHeadCandidates(value)
+  if candidates.len > 1:
+    let name =
+      if value.kind == vkSymbol: value.symVal
+      else: pathSymbolSegments(value).join("/")
+    raise importedNameError(name, candidates)
+  candidates.len == 1 and candidates[0].category == cbcSyntaxFn
 
 proc flowNodeStoresState(value: Value): bool =
   ## Whether a node's flow state is later read: message sends consume it as a
@@ -2757,6 +3341,67 @@ proc unionFlow(a, b: openArray[ProtocolFlowRef]): seq[ProtocolFlowRef] =
   for item in b:
     result.addFlowRef(item)
 
+proc collectAnnotationProtocolRefs(c: var Compiler, value: Value,
+                                   refs: var seq[ProtocolFlowRef]) =
+  case value.kind
+  of vkSymbol:
+    let imported = c.importedPathEntry(value)
+    if imported.found:
+      if imported.candidate.category == cbcProtocol:
+        refs.addFlowRef ProtocolFlowRef(
+          key: c.internFlowKey(
+            "interface:" & imported.candidate.modulePath & ":" &
+            imported.candidate.exportPath.join("/")),
+          name: c.internFlowName(value.symVal))
+      return
+    let candidates = c.importedCandidates(value.symVal)
+    if candidates.len > 1:
+      raise importedNameError(value.symVal, candidates)
+    if candidates.len == 1 and candidates[0].category == cbcProtocol:
+      let candidate = candidates[0]
+      refs.addFlowRef ProtocolFlowRef(
+        key: c.internFlowKey("interface:" & candidate.modulePath & ":" &
+                             candidate.exportPath.join("/")),
+        name: c.internFlowName(value.symVal))
+  of vkNode:
+    let imported = c.importedPathEntry(value)
+    if imported.found:
+      if imported.candidate.category == cbcProtocol:
+        let spelling = value.pathSymbolSegments.join("/")
+        refs.addFlowRef ProtocolFlowRef(
+          key: c.internFlowKey(
+            "interface:" & imported.candidate.modulePath & ":" &
+            imported.candidate.exportPath.join("/")),
+          name: c.internFlowName(spelling))
+      return
+    collectAnnotationProtocolRefs(c, value.head, refs)
+    for _, item in value.props:
+      collectAnnotationProtocolRefs(c, item, refs)
+    for item in value.body:
+      collectAnnotationProtocolRefs(c, item, refs)
+    for _, item in value.meta:
+      collectAnnotationProtocolRefs(c, item, refs)
+  of vkList:
+    for item in value.listItems:
+      collectAnnotationProtocolRefs(c, item, refs)
+  of vkMap:
+    for _, item in value.mapEntries:
+      collectAnnotationProtocolRefs(c, item, refs)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      collectAnnotationProtocolRefs(c, entry.key, refs)
+      collectAnnotationProtocolRefs(c, entry.val, refs)
+  else:
+    discard
+
+proc annotationProtocolRefs(c: var Compiler,
+                            value: Value): seq[ProtocolFlowRef] =
+  ## Wildcard and aliased module imports seed nothing by themselves. An exact
+  ## protocol named by a callable interface contributes only that identity to
+  ## the callable's Entry set.
+  if value.kind != vkNil:
+    collectAnnotationProtocolRefs(c, value, result)
+
 proc intersectFlow(a, b: openArray[ProtocolFlowRef]): seq[ProtocolFlowRef] =
   for item in a:
     for other in b:
@@ -2778,30 +3423,14 @@ proc appendReturns(target: var seq[seq[ProtocolFlowRef]],
     target.add item
 
 proc flowImportRefs(c: var Compiler, node: Value): seq[ProtocolFlowRef] =
-  var fromIndex = -1
-  for i, item in node.body:
-    if item.isSymbol("from"):
-      fromIndex = i
-      break
-  var selections: seq[ImportSelection]
-  var sourceKey: string
-  if fromIndex >= 0:
-    if fromIndex notin [0, 1] or fromIndex + 1 >= node.body.len or
-        node.body[fromIndex + 1].kind != vkString:
-      return
-    if fromIndex == 1:
-      selections = importSelections(node.body[0])
-    sourceKey = "module:" & node.body[fromIndex + 1].strVal
-  else:
-    if node.body.len == 0:
-      return
-    if node.body.len >= 2:
-      selections = importSelections(node.body[1])
-    sourceKey = "namespace:" & nsPathSegments(node.body[0]).join("/")
-  if node.props.hasKey("as") and node.props["as"].kind == vkSymbol:
-    result.add ProtocolFlowRef(key: c.internFlowKey(sourceKey & ":*"),
-                               name: c.internFlowName(node.props["as"].symVal))
-  for selection in selections:
+  let spec = parseImportSpec(node)
+  let sourceKey =
+    if spec.fromModule: "module:" & spec.modulePath
+    else: "namespace:" & spec.nsSegments.join("/")
+  # Wildcards and module/namespace aliases never bulk-seed protocol
+  # candidates. An exact protocol resolved through an annotation is closed
+  # into that annotation-bearing unit separately.
+  for selection in spec.selections:
     result.add ProtocolFlowRef(
       key: c.internFlowKey(sourceKey & ":" & selection.name),
       name: c.internFlowName(selection.local))
@@ -2814,30 +3443,16 @@ proc importMacroLocals(c: Compiler, node: Value): HashSet[string] =
   ## compileImport strips macro selections from the runtime spec and hands
   ## them to importMacro, which rejects a name that already owns a slot.
   ## Mirrors compileImport's macro detection.
-  var fromIdx = -1
-  for i, e in node.body:
-    if e.isSymbol("from"):
-      fromIdx = i
-      break
-  var selections: seq[ImportSelection]
+  let spec = parseImportSpec(node)
   var exported: Table[string, MacroDef]
-  if fromIdx >= 0:
-    if fromIdx + 1 >= node.body.len or node.body[fromIdx + 1].kind != vkString:
-      return
-    if fromIdx == 1:
-      selections = importSelections(node.body[0])
-    let modulePath = node.body[fromIdx + 1].strVal
-    if c.importedMacroSets.hasKey(modulePath):
-      exported = c.importedMacroSets[modulePath]
+  if spec.fromModule:
+    if c.importedMacroSets.hasKey(spec.modulePath):
+      exported = c.importedMacroSets[spec.modulePath]
   else:
-    if node.body.len == 0:
-      return
-    if node.body.len >= 2:
-      selections = importSelections(node.body[1])
-    exported = builtinNamespaceMacros(nsPathSegments(node.body[0]))
+    exported = builtinNamespaceMacros(spec.nsSegments)
   if exported.len == 0:
     return
-  for sel in selections:
+  for sel in spec.selections:
     if exported.hasKey(sel.name):
       result.incl sel.local
 
@@ -3639,8 +4254,8 @@ proc builtinLogMacro(level: string): MacroDef =
     ],
     body: @[read("`(scope (do " &
       "(var generated_logger %logger) " &
-      "(if (generated_logger ~ enabled? log/LogLevel/" & level & ") " &
-      "  (generated_logger ~ emit log/LogLevel/" & level &
+      "(if (generated_logger ~ enabled? gene/log/LogLevel/" & level & ") " &
+      "  (generated_logger ~ emit gene/log/LogLevel/" & level &
       "    %message ^payload %payload) " &
       "  nil)))")]
   )
@@ -3648,11 +4263,14 @@ proc builtinLogMacro(level: string): MacroDef =
 proc builtinNamespaceMacros(segments: openArray[string]):
     Table[string, MacroDef] =
   result = initTable[string, MacroDef]()
-  if segments.len == 1 and segments[0] == "log":
+  if (segments.len == 1 and segments[0] == "log") or
+      (segments.len == 2 and segments[0] == "gene" and
+       segments[1] == "log"):
     for level in ["error", "warn", "info", "debug", "trace"]:
       result[level & "!"] = builtinLogMacro(level)
 
 proc importMacro(c: var Compiler, local: string, def: MacroDef) =
+  validateBindingName(local)
   if c.hasMacros and c.macros.hasKey(local):
     raise newException(GeneError, "duplicate macro: " & local)
   if c.localSlot(local) >= 0 or c.parentSlot(local).slot >= 0:
@@ -3667,35 +4285,30 @@ proc importMacro(c: var Compiler, local: string, def: MacroDef) =
 proc compileImport(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError, "eval cannot use import; add imports to Env")
-  var spec: ImportSpec
-  if node.props.hasKey("as"):
-    let a = node.props["as"]
-    if a.kind != vkSymbol:
-      raise newException(GeneError, "import ^as requires a name")
-    spec.alias = a.symVal
-  let body = node.body
-  var fromIdx = -1
-  for i, e in body:
-    if e.isSymbol("from"):
-      fromIdx = i
-      break
-  if fromIdx >= 0:
-    spec.fromModule = true
-    if fromIdx + 1 >= body.len or body[fromIdx + 1].kind != vkString:
-      raise newException(GeneError, "import: `from` requires a path string")
-    spec.modulePath = body[fromIdx + 1].strVal
-    if fromIdx == 1:
-      spec.selections = importSelections(body[0])
-    elif fromIdx > 1:
-      raise newException(GeneError, "import: malformed `from` clause")
-  else:
-    if body.len == 0:
-      raise newException(GeneError, "import requires a source")
-    spec.nsSegments = nsPathSegments(body[0])
-    if body.len >= 2:
-      spec.selections = importSelections(body[1])
-  if spec.alias.len == 0 and spec.selections.len == 0:
-    raise newException(GeneError, "import needs `^as` or a selection list")
+  var spec = parseImportSpec(node)
+  if spec.alias.len > 0:
+    validateBindingName(spec.alias)
+  for selection in spec.selections:
+    validateBindingName(selection.local)
+  if (spec.wildcard or spec.alias.len > 0 or spec.reexport) and
+      node.bits notin c.staticTopLevelImpls:
+    raise newException(GeneError,
+      "wildcard, alias, and re-export imports must be unconditional " &
+      "top-level forms")
+  if spec.fromModule and (spec.wildcard or spec.alias.len > 0):
+    if not c.importedInterfaces.hasKey(spec.modulePath):
+      if spec.alias.len == 0:
+        raise newException(GeneError,
+          "bare wildcard import requires module-loader compilation: " &
+          spec.modulePath)
+    else:
+      let iface = compileInterfaceAt(c.importedInterfaces[spec.modulePath],
+                                     spec.wildcardSegments)
+      if iface == nil:
+        raise newException(GeneError,
+          "module compile interface has no namespace: " & spec.sourceLabel)
+      if spec.wildcard:
+        spec.wildcardNames = runtimeExportNames(iface)
   # Cross-module macros: selections that name a macro exported by the target
   # module become compile-time definitions here and are stripped from the
   # runtime spec (macros are not runtime namespace bindings). The opImport
@@ -3719,11 +4332,26 @@ proc compileImport(c: var Compiler, node: Value) =
         else:
           runtimeSelections.add sel
       spec.selections = runtimeSelections
+  # Macro path selections were stripped above; a value selection that still
+  # names a nested path (`[ops/add]`) has no leaf local name and opImport would
+  # look up the literal "ops/add" key and fail with a confusing runtime error.
+  # Reject it at compile time — nested exports are reached with `n/*` or
+  # qualified access, not selection lists.
+  for sel in spec.selections:
+    if '/' in sel.name:
+      raise newException(GeneError,
+        "import selection '" & sel.name & "' names a nested path; import the " &
+        "namespace with `n/*` (optionally `: alias`) and use qualified access")
   if c.useLocalSlots:
     if spec.alias.len > 0:
       discard c.reserveLocal(spec.alias)
     for sel in spec.selections:
       discard c.reserveLocal(sel.local)
+  if not spec.reexport:
+    if spec.alias.len > 0:
+      c.chunk.exportExcludedNames.add spec.alias
+    for sel in spec.selections:
+      c.chunk.exportExcludedNames.add sel.local
   # Cross-module fn! names (design §3/§11.1): the values import as ordinary
   # runtime bindings above; the name set keeps the importer's call sites on
   # the syntax_call path. Registered after reserveLocal, which clears names.
@@ -3752,6 +4380,14 @@ proc compileImportImpl(c: var Compiler, node: Value) =
 proc markStaticImplForm(c: var Compiler, form: Value) =
   if form.kind == vkNode:
     c.staticTopLevelImpls.incl form.bits
+    # `do` is a transparent grouping form: the compile-interface collectors,
+    # static-import prepass, and the "unconditional top-level" checks all
+    # recurse into it, so its child declarations are unconditional too. Mark
+    # them, or a macro/^private/wildcard inside a top-level `do` would be
+    # advertised by the interface yet fail its own static-membership gate.
+    if form.head.isSymbol("do"):
+      for child in form.body:
+        c.markStaticImplForm(child)
 
 proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first = 0) =
   if first <= forms.high:
@@ -3768,6 +4404,7 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
     raise newException(GeneError, "duplicate module declaration")
   if node.body.len == 0 or node.body[0].kind != vkSymbol:
     raise newException(GeneError, "mod requires a name")
+  validateBindingName(node.body[0].symVal)
   c.seenModDecl = true
   var meta = initPropTable()
   for key, val in node.meta:
@@ -3791,6 +4428,8 @@ proc compileNs(c: var Compiler, node: Value) =
   var nsForms: seq[Value]
   for i in 1 ..< body.len:
     nsForms.add body[i]
+  nsCompiler.namespacePath = c.namespacePath & @[name]
+  nsCompiler.prepareStaticImports(nsForms)
   nsCompiler.prepareProtocolFlow(nsForms, c.currentProtocolFlow)
   compileBodyFrom(nsCompiler, body, 1)
   discard nsCompiler.emit(opReturn)
@@ -4014,6 +4653,14 @@ proc compilePath(c: var Compiler, node: Value) =
   if parts.len == 1:
     compileExpr(c, parts[0])
     return
+  let imported = c.importedPathEntry(node)
+  if imported.found and imported.candidate.category == cbcMacro:
+    var spelling: seq[string]
+    for part in parts:
+      spelling.add part.symbolText
+    raise newException(GeneError,
+      "macro '" & spelling.join("/") &
+      "' cannot be used as a value; call it in head position")
   compileExpr(c, parts[0])
   var i = 1
   while i < parts.len:
@@ -4181,9 +4828,10 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
     compileCall(c, newNode(node.body[1], node.props, args, node.meta),
                 allowSyntax = false)
     return
-  if c.syntaxFnNames.len > 0 and node.head.kind == vkSymbol and
-      c.syntaxFnNames.hasKey(node.head.symVal) and
-      node.head.symVal notin c.mutableBindingNames:
+  let localSyntaxHead = c.syntaxFnNames.len > 0 and
+    node.head.kind == vkSymbol and c.syntaxFnNames.hasKey(node.head.symVal) and
+    node.head.symVal notin c.mutableBindingNames
+  if localSyntaxHead or c.importedSyntaxHead(node.head):
     if not allowSyntax:
       compileExpr(c, node.head)
       discard c.emit(opRejectSyntaxSend)
@@ -4577,6 +5225,7 @@ proc compileFor(c: var Compiler, node: Value) =
   if forForms.len > 0 and forForms[0].kind == vkNode and
       c.protocolFlowAt != nil and c.protocolFlowAt[].hasKey(forForms[0].bits):
     forEntry = c.protocolFlowAt[][forForms[0].bits]
+  bodyCompiler.prepareStaticImports(forForms)
   bodyCompiler.prepareProtocolFlow(forForms, forEntry)
   compileBodyFrom(bodyCompiler, body, 3)
   discard bodyCompiler.emit(opReturn)
@@ -4738,7 +5387,7 @@ proc parseTypeBodySchema(schema: Value): seq[TypeBodyField] =
 
 proc rejectUnknownTypeProps(node: Value) =
   for key in node.props.keys:
-    if key in ["props", "body", "impl", "derive", "is"]:
+    if key in ["props", "body", "impl", "derive", "is", "private"]:
       continue
     if key in ["sealed", "repr"]:
       raise newException(GeneError,
@@ -5064,7 +5713,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
     raise newException(GeneError, "protocol requires a name")
   let name = body[0].symVal
   for key in node.props.keys:
-    if key notin ["inherit", "universal"]:
+    if key notin ["inherit", "universal", "private"]:
       raise newException(GeneError,
         "protocol got unexpected named argument: " & key)
   let universal =
@@ -5182,6 +5831,20 @@ proc compileImpl(c: var Compiler, node: Value) =
 
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
+  if node.props.hasKey("private"):
+    if h.kind != vkSymbol or h.symVal notin
+        ["var", "fn", "fn!", "macro", "type", "enum", "protocol", "ns"]:
+      raise newException(GeneError,
+        "^private is only valid on a named declaration " &
+        "(var, fn, fn!, macro, type, enum, protocol, ns)")
+    if node.declarationIsPrivate:
+      if node.bits notin c.staticTopLevelImpls:
+        raise newException(GeneError,
+          "^private declarations must be unconditional module/namespace forms")
+      let name = node.declaredName
+      if name.len == 0:
+        raise newException(GeneError, "^private declaration requires a name")
+      c.chunk.exportExcludedNames.add name
   if h.isPath(["ffi", "library"]):
     compileFfiLibrary(c, node)
     return
@@ -5338,6 +6001,18 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       if c.hasMacros and c.macros.hasKey(h.symVal):
         compileMacroCall(c, node, c.macros[h.symVal])
         return
+  let importedMacro = c.importedMacroForHead(h)
+  if importedMacro.found:
+    compileMacroCall(c, node, importedMacro.def)
+    return
+  let builtinPath = h.pathSymbolSegments
+  if builtinPath.len > 1:
+    let definitions = builtinNamespaceMacros(
+      builtinPath.toOpenArray(0, builtinPath.high - 1))
+    let name = builtinPath[^1]
+    if definitions.hasKey(name):
+      compileMacroCall(c, node, definitions[name])
+      return
   compileCall(c, node)
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
@@ -5430,6 +6105,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   if useLocalSlots:
     c.enableLocalSlots()
   c.markStaticImplForms(forms)
+  c.prepareStaticImports(forms)
   c.prepareProtocolFlow(forms, @[])
   if forms.len == 0:
     c.emitConst NIL
@@ -5476,7 +6152,8 @@ proc compileSourceUnit*(unit: SourceUnit,
 
 proc compileFormsWithMacros*(forms: openArray[Value],
     importedMacros: Table[string, Table[string, MacroDef]],
-    importedSyntaxFns = initTable[string, seq[string]]()):
+    importedSyntaxFns = initTable[string, seq[string]](),
+    importedInterfaces = initTable[string, CompileNamespaceInterface]()):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   ## Module-loader entry point (design §11/§15): compile a source unit with the
@@ -5485,26 +6162,39 @@ proc compileFormsWithMacros*(forms: openArray[Value],
   ## macros are usable but not re-exported. fn! names travel the same way so
   ## importers keep syntax_call sites (design §3/§11.1); the fn! values remain
   ## ordinary runtime bindings.
+  var moduleMacroExports: ref Table[string, MacroDef]
+  new(moduleMacroExports)
+  moduleMacroExports[] = initTable[string, MacroDef]()
+  var moduleSyntaxFnExports: ref HashSet[string]
+  new(moduleSyntaxFnExports)
+  moduleSyntaxFnExports[] = initHashSet[string]()
   var c = Compiler(chunk: newChunk(), allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
                    sourceLocs:
                      sharedSourceLocs(initTable[uint64, SourceLoc]()),
                    importedMacroSets: importedMacros,
-                   importedSyntaxFnSets: importedSyntaxFns)
+                   importedSyntaxFnSets: importedSyntaxFns,
+                   importedInterfaces: importedInterfaces,
+                   moduleMacroExports: moduleMacroExports,
+                   moduleSyntaxFnExports: moduleSyntaxFnExports)
   result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
-  if c.hasMacros:
-    for name, def in c.macros:
-      if name notin c.importedMacroNames:
-        result.macroExports[name] = def
-  for name in c.syntaxFnNames.keys:
-    if name notin c.importedSyntaxFnNames:
-      result.syntaxFnExports.add name
+  result.macroExports = moduleMacroExports[]
+  for name in moduleSyntaxFnExports[]:
+    result.syntaxFnExports.add name
+  result.syntaxFnExports.sort()
 
 proc compileFormsWithMacros*(unit: SourceUnit,
     importedMacros: Table[string, Table[string, MacroDef]],
-    importedSyntaxFns = initTable[string, seq[string]]()):
+    importedSyntaxFns = initTable[string, seq[string]](),
+    importedInterfaces = initTable[string, CompileNamespaceInterface]()):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
+  var moduleMacroExports: ref Table[string, MacroDef]
+  new(moduleMacroExports)
+  moduleMacroExports[] = initTable[string, MacroDef]()
+  var moduleSyntaxFnExports: ref HashSet[string]
+  new(moduleSyntaxFnExports)
+  moduleSyntaxFnExports[] = initHashSet[string]()
   var c = Compiler(chunk: newChunk(unit.sourceName),
                    sourceName: unit.sourceName,
                    sourceLocs: sharedSourceLocs(unit.locs),
@@ -5512,15 +6202,15 @@ proc compileFormsWithMacros*(unit: SourceUnit,
                    allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
                    importedMacroSets: importedMacros,
-                   importedSyntaxFnSets: importedSyntaxFns)
+                   importedSyntaxFnSets: importedSyntaxFns,
+                   importedInterfaces: importedInterfaces,
+                   moduleMacroExports: moduleMacroExports,
+                   moduleSyntaxFnExports: moduleSyntaxFnExports)
   result.chunk = compileFormsInto(c, unit.forms, useLocalSlots = true)
-  if c.hasMacros:
-    for name, def in c.macros:
-      if name notin c.importedMacroNames:
-        result.macroExports[name] = def
-  for name in c.syntaxFnNames.keys:
-    if name notin c.importedSyntaxFnNames:
-      result.syntaxFnExports.add name
+  result.macroExports = moduleMacroExports[]
+  for name in moduleSyntaxFnExports[]:
+    result.syntaxFnExports.add name
+  result.syntaxFnExports.sort()
 
 proc compileForm*(form: Value): Chunk =
   let forms = @[form]

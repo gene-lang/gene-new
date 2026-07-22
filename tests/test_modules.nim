@@ -27,21 +27,186 @@ suite "modules — file imports":
   test "aliased selection (name : local)":
     writeModule("math.gene", "(fn sub [a b] (- a b))")
     check runProgram("(import [sub : minus] from \"./math\") (minus 10 4)").print() == "6"
+    check runProgram("(import sub : minus from \"./math\") " &
+      "(minus 9 4)").print() == "5"
 
-  test "bind module value with ^as":
+  test "bare wildcard imports are non-reexporting fallbacks":
+    writeModule("wild_base.gene",
+      "(var answer 42) (fn twice [x] (* x 2))")
+    writeModule("wild_mid.gene",
+      "(import * from \"./wild_base\") " &
+      "(var observed (twice answer))")
+    let app = newApplication(modDir)
+    let mid = app.loadFileModule(modDir / "wild_mid.gene")
+    check mid.moduleRootNamespace.nsScope.lookup("observed").print() == "84"
+    expect GeneError:
+      discard run(compileSource(
+        "(import [answer] from \"./wild_mid\") answer"),
+        newGlobalScope(app))
+
+  test "wildcard collisions are lazy and share the prelude collision domain":
+    writeModule("wild_left.gene", "(var shared 1) (var left_only 2)")
+    writeModule("wild_right.gene", "(var shared 3) (var right_only 4)")
+    writeModule("wild_builtin.gene", "(var map 42)")
+    writeModule("wild_unused_user.gene",
+      "(import * from \"./wild_left\") " &
+      "(import * from \"./wild_right\") " &
+      "(var observed (+ left_only right_only))")
+    writeModule("wild_collision_user.gene",
+      "(import * from \"./wild_left\") " &
+      "(import * from \"./wild_right\") (var observed shared)")
+    writeModule("wild_builtin_user.gene",
+      "(import * from \"./wild_builtin\") (var observed map)")
+    writeModule("wild_qualified_user.gene",
+      "(import * : imported from \"./wild_builtin\") " &
+      "(var observed [(== gene/map gene/map) imported/map])")
+    let app = newApplication(modDir)
+    let unused = app.loadFileModule(modDir / "wild_unused_user.gene")
+    check unused.moduleRootNamespace.nsScope.lookup("observed").print() == "6"
+    var collision = ""
+    try:
+      discard app.loadFileModule(modDir / "wild_collision_user.gene")
+    except GeneError as error:
+      collision = error.msg
+    check collision.contains("ambiguous imported name 'shared'")
+    check collision.contains("./wild_left")
+    check collision.contains("./wild_right")
+    expect GeneError:
+      discard app.loadFileModule(modDir / "wild_builtin_user.gene")
+    let qualified = app.loadFileModule(modDir / "wild_qualified_user.gene")
+    check qualified.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "[true 42]"
+
+  test "static declarations and selected imports beat wildcard fallback":
+    writeModule("wild_explicit.gene", "(var answer 42)")
+    writeModule("wild_before_local.gene",
+      "(import * from \"./wild_explicit\") " &
+      "(var observed answer) (var answer 1)")
+    writeModule("wild_before_function_local.gene",
+      "(import * from \"./wild_explicit\") " &
+      "(fn observe [] answer (var answer 1)) (var observed (observe))")
+    writeModule("wild_selected_user.gene",
+      "(import * from \"./wild_explicit\") " &
+      "(import [answer] from \"./wild_explicit\") (var observed answer)")
+    let app = newApplication(modDir)
+    expect GeneError:
+      discard app.loadFileModule(modDir / "wild_before_local.gene")
+    expect GeneError:
+      discard app.loadFileModule(modDir / "wild_before_function_local.gene")
+    let selected = app.loadFileModule(modDir / "wild_selected_user.gene")
+    check selected.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "42"
+
+  test "wildcard and alias imports reject conditional placement":
+    writeModule("wild_conditional.gene", "(var answer 42)")
+    expect GeneError:
+      discard runProgram("(if true " &
+        "(import * from \"./wild_conditional\"))")
+    expect GeneError:
+      discard runProgram("(if true " &
+        "(import * : m from \"./wild_conditional\"))")
+    expect GeneError:
+      discard runProgram("(if true " &
+        "(import [answer] from \"./wild_conditional\" ^export true))")
+
+  test "namespace wildcard and alias use the static namespace interface":
+    writeModule("nested.gene",
+      "(ns math (var answer 42) (fn twice [x] (* x 2)))")
+    writeModule("nested_user.gene",
+      "(import math/* from \"./nested\") " &
+      "(import math/* : m from \"./nested\") " &
+      "(var observed [(twice answer) (m/twice m/answer)])")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "nested_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "[84 84]"
+
+  test "wildcards carry qualified and bare macro and fn! metadata":
+    writeModule("syntax_exports.gene",
+      "(macro twice! [x] `(+ %x %x)) " &
+      "(fn! raw! [x] x) " &
+      "(ns tools " &
+      "  (macro thrice! [x] `(+ %x %x %x)) " &
+      "  (fn! nested_raw! [x] x))")
+    writeModule("syntax_user.gene",
+      "(import * from \"./syntax_exports\") " &
+      "(import * : syntax from \"./syntax_exports\") " &
+      "(import tools/* : tools from \"./syntax_exports\") " &
+      "(var observed [(twice! 21) (syntax/twice! 20) " &
+      "  (tools/thrice! 10) (raw! (+ 1 2)) " &
+      "  (syntax/raw! (+ 2 3)) (tools/nested_raw! (+ 3 4))])")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "syntax_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "[42 40 30 (+ 1 2) (+ 2 3) (+ 3 4)]"
+
+  test "private declarations stay out of selections and wildcard interfaces":
+    writeModule("private_exports.gene",
+      "(var public 1) (var hidden ^private true 2) " &
+      "(var visible ^private false 4) " &
+      "(ns secret ^private true (var value 3))")
+    writeModule("private_user.gene",
+      "(import * from \"./private_exports\") (var observed public)")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "private_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "1"
+    check run(compileSource(
+      "(import [visible] from \"./private_exports\") visible"),
+      newGlobalScope(app)).print() == "4"
+    expect GeneError:
+      discard run(compileSource(
+        "(import [hidden] from \"./private_exports\") hidden"),
+        newGlobalScope(app))
+    expect GeneError:
+      discard run(compileSource(
+        "(import [secret] from \"./private_exports\") secret"),
+        newGlobalScope(app))
+    check run(compileSource(
+      "(import * : exports from \"./private_exports\") exports/hidden"),
+      newGlobalScope(app)).kind == vkVoid
+
+  test "explicit selected re-exports enter downstream wildcard interfaces":
+    writeModule("reexport_base.gene",
+      "(var answer 42) (macro twice! [x] `(+ %x %x))")
+    writeModule("reexport_mid.gene",
+      "(import [answer twice!] from \"./reexport_base\" ^export true)")
+    writeModule("reexport_user.gene",
+      "(import * from \"./reexport_mid\") " &
+      "(var observed [(twice! answer) answer])")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "reexport_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "[84 42]"
+
+  test "explicit alias re-exports retain their namespace interface":
+    writeModule("alias_reexport_base.gene", "(var answer 42)")
+    writeModule("alias_reexport_mid.gene",
+      "(import * : base from \"./alias_reexport_base\" ^export true)")
+    writeModule("alias_reexport_user.gene",
+      "(import * from \"./alias_reexport_mid\") " &
+      "(var observed base/answer)")
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "alias_reexport_user.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "42"
+
+  test "bind module value with wildcard alias":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
-    check runProgram("(import from \"./math\" ^as m) m/pi").print() == "3"
-    check runProgram("(import from \"./math\" ^as m) (m/add 1 1)").print() == "2"
+    check runProgram("(import * : m from \"./math\") m/pi").print() == "3"
+    check runProgram("(import * : m from \"./math\") (m/add 1 1)").print() == "2"
+    expect GeneError:
+      discard runProgram("(import from \"./math\" ^as m)")
+    expect GeneError:
+      discard runProgram("(import std/stream ^as stream)")
 
   test "module reflection exposes normalized file path":
     writeModule("math.gene", "(var pi 3)")
     let expected = normalizedPath(absolutePath("math.gene", modDir))
-    check runProgram("(import from \"./math\" ^as m) (m ~ Module/path)").strVal ==
+    check runProgram("(import * : m from \"./math\") (m ~ Module/path)").strVal ==
       expected
 
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
-    check runProgram("(import from \"./decls\" ^as m) " &
+    check runProgram("(import * : m from \"./decls\") " &
       "(var ds (filter (declarations m) (fn [d] (== d/name \"exported\")))) " &
       "(ds ~ Stream/next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
@@ -49,7 +214,7 @@ suite "modules — file imports":
   test "runtime declarations exclude compile-time macros":
     writeModule("macro_decls.gene",
       "(macro twice [x] `(+ %x %x)) (var runtime-value 7)")
-    check runProgram("(import from \"./macro_decls\" ^as m) " &
+    check runProgram("(import * : m from \"./macro_decls\") " &
       "(var macros (filter (declarations m) (fn [d] (== d/name \"twice\")))) " &
       "(var values (filter (declarations m) " &
       "  (fn [d] (== d/name \"runtime-value\")))) " &
@@ -90,7 +255,7 @@ suite "modules — file imports":
 
   test "Module annotations accept module values":
     writeModule("math.gene", "(var pi 3)")
-    check runProgram("(import from \"./math\" ^as m) " &
+    check runProgram("(import * : m from \"./math\") " &
       "(fn module_path [m : Module] (m ~ Module/path)) (module_path m)").strVal ==
       normalizedPath(absolutePath("math.gene", modDir))
     expect GeneError:
@@ -101,14 +266,14 @@ suite "modules — file imports":
 
   test "a module is loaded once (cache returns the same module value)":
     writeModule("m.gene", "(var v 1)")
-    check runProgram("(import from \"./m\" ^as a) (import from \"./m\" ^as b) (== a b)").print() == "true"
+    check runProgram("(import * : a from \"./m\") (import * : b from \"./m\") (== a b)").print() == "true"
 
   test "entry file modules load through the application cache":
     let entryPath = modDir / "entry.gene"
     writeFile(entryPath, "(var value 11) (fn main [] value)")
     let app = newApplication(modDir)
     let entryModule = app.loadFileModule(entryPath)
-    let imported = run(compileSource("(import from \"./entry\" ^as e) e"),
+    let imported = run(compileSource("(import * : e from \"./entry\") e"),
                        newGlobalScope(app))
     check imported.bits == entryModule.bits
     var mainBinding: Value
@@ -153,7 +318,7 @@ suite "modules — file imports":
     expect GeneError:
       discard runProgram("(import [ToJson] from \"./json\") " &
         "(import [User] from \"./model\") " &
-        "(import from \"./json_ext\" ^as ext) " &
+        "(import * : ext from \"./json_ext\") " &
         "((User ^name \"Ada\") ~ to_json)")
 
   test "import_impl imports one exported scoped pair idempotently":
@@ -179,7 +344,7 @@ suite "modules — file imports":
       "(protocol P (message value [self])) (type T ^props {}) " &
       "(impl P for T ^export true (message value [self] 1))")
     expect GeneError:
-      discard runProgram("(import from \"./canonical_export\" ^as bad)")
+      discard runProgram("(import * : bad from \"./canonical_export\")")
 
     writeModule("private_ext.gene",
       "(import [P T] from \"./export_base\") " &
@@ -194,7 +359,7 @@ suite "modules — file imports":
       "  (impl P for T ^export true (message value [self] 1))) " &
       "(install)")
     expect GeneError:
-      discard runProgram("(import from \"./overlay_export\" ^as bad)")
+      discard runProgram("(import * : bad from \"./overlay_export\")")
 
   test "protocol-typed boundaries use their declaration module":
     writeModule("typed_base.gene",
@@ -275,6 +440,20 @@ suite "modules — file imports":
     check app.implActivationEpoch == stableEpoch
     check run(compileSource("((Item) ~ render)"), scope).print() == "\"two\""
 
+  test "reload rejects compile-interface changes":
+    writeModule("reload_interface.gene", "(var value 1)")
+    let app = newApplication(modDir)
+    let original = app.loadFileModule(modDir / "reload_interface.gene")
+    check original.moduleRootNamespace.nsScope.lookup("value").print() == "1"
+    writeModule("reload_interface.gene", "(var value 2) (var added 3)")
+    expect GeneError:
+      discard app.reloadFileModule(modDir / "reload_interface.gene")
+    check app.loadFileModule(modDir / "reload_interface.gene").bits ==
+      original.bits
+    writeModule("reload_interface.gene", "(var value 2)")
+    let replacement = app.reloadFileModule(modDir / "reload_interface.gene")
+    check replacement.moduleRootNamespace.nsScope.lookup("value").print() == "2"
+
   test "failed module activation does not publish earlier staged impls":
     writeModule("base.gene",
       "(protocol P (message value [self] : Str)) " &
@@ -289,7 +468,7 @@ suite "modules — file imports":
     discard run(compileSource(
       "(import [P A B] from \"./base\")"), scope)
     expect GeneError:
-      discard run(compileSource("(import from \"./ext_bad\" ^as bad)"), scope)
+      discard run(compileSource("(import * : bad from \"./ext_bad\")"), scope)
     expect GeneError:
       discard run(compileSource("((A) ~ P/value)"), scope)
     check run(compileSource("((B) ~ P/value)"), scope).print() ==
@@ -311,7 +490,7 @@ suite "modules — file imports":
       "(import [A B T] from \"./late_base\") " &
       "(fn send_render [x] (x ~ render))"), scope)
     check run(compileSource("(send_render (T))"), scope).print() == "\"a\""
-    discard run(compileSource("(import from \"./late_q\" ^as q)"), scope)
+    discard run(compileSource("(import * : q from \"./late_q\")"), scope)
     expect GeneError:
       discard run(compileSource("(send_render (T))"), scope)
 
@@ -373,11 +552,35 @@ suite "modules — file imports":
       "(type T ^props {}) " &
       "(impl Render for T (message render [self] : Str \"interface\"))")
     writeModule("interface_mid.gene",
-      "(import [Render T] from \"./interface_base\")")
-    check runProgram("(import from \"./interface_base\" ^as base) " &
-      "((base/T) ~ render)").print() == "\"interface\""
+      "(import [Render T] from \"./interface_base\" ^export true)")
+    check runProgram("(import * : base from \"./interface_base\") " &
+      "((base/T) ~ base/Render/render)").print() == "\"interface\""
     check runProgram("(import [Render T] from \"./interface_mid\") " &
       "((T) ~ render)").print() == "\"interface\""
+
+  test "wildcard protocols seed sends only through exact interface use":
+    writeModule("wild_protocol.gene",
+      "(protocol Render (message render [self] : Str)) " &
+      "(type T ^props {}) " &
+      "(impl Render for T (message render [self] : Str \"wild\"))")
+    writeModule("wild_protocol_user.gene",
+      "(import * from \"./wild_protocol\") " &
+      "(fn draw [x : Render] (x ~ render)) " &
+      "(var observed (draw (T)))")
+    writeModule("alias_protocol_user.gene",
+      "(import * : graphics from \"./wild_protocol\") " &
+      "(fn draw [x : graphics/Render] (x ~ render)) " &
+      "(var observed (draw (graphics/T)))")
+    let app = newApplication(modDir)
+    let wildcardUser = app.loadFileModule(modDir / "wild_protocol_user.gene")
+    check wildcardUser.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "\"wild\""
+    let aliasUser = app.loadFileModule(modDir / "alias_protocol_user.gene")
+    check aliasUser.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "\"wild\""
+    expect GeneError:
+      discard runProgram("(import * : graphics from \"./wild_protocol\") " &
+        "((graphics/T) ~ render)")
 
   test "caught import failures do not establish protocol candidates":
     writeModule("candidate_type.gene", "(type T ^props {})")
@@ -392,11 +595,11 @@ suite "modules — file imports":
     check not message.contains("uninitialized protocol candidate")
 
   test "runtime import cycles have a runtime-phase diagnostic":
-    writeModule("a.gene", "(import from \"./b\" ^as b) (var x 1)")
-    writeModule("b.gene", "(import from \"./a\" ^as a) (var y 2)")
+    writeModule("a.gene", "(import * : b from \"./b\") (var x 1)")
+    writeModule("b.gene", "(import * : a from \"./a\") (var y 2)")
     var message = ""
     try:
-      discard runProgram("(import from \"./a\" ^as a) a/x")
+      discard runProgram("(import * : a from \"./a\") a/x")
     except GeneError as e:
       message = e.msg
     check message.contains("runtime module initialization cycle")
@@ -417,14 +620,33 @@ suite "modules — built-in identity and scope hygiene":
       "(fn f ^errors [Boom] [] (boom)) " &
       "(try (f) catch (Boom ^message m) m)").print() == "\"x\""
 
+  test "gene exposes builtins and stdlib namespaces without shadowing":
+    check runProgram("[(== gene/Error Error) " &
+      "(gene/str/join [\"a\" \"b\"] \"-\")]").print() ==
+      "[true \"a-b\"]"
+    discard compileSource(
+      "(fn log_message [logger] (gene/log/info! logger \"hello\"))")
+    for source in [
+      "(var gene 1)",
+      "(fn f [genex] genex)",
+      "(var [geney] [1])",
+      "(set gene 1)",
+      "(mod gene)",
+      "(import * : gene from \"./reserved_source\")"
+    ]:
+      if source.contains("reserved_source"):
+        writeModule("reserved_source.gene", "(var value 1)")
+      expect GeneError:
+        discard runProgram(source)
+
   test "module declarations do not include built-ins":
     writeModule("decls2.gene", "(var only-me 1)")
     # Filtering the module's declarations for a built-in name finds nothing,
     # because built-ins live in the shared parent scope, not the module root.
-    check runProgram("(import from \"./decls2\" ^as m) " &
+    check runProgram("(import * : m from \"./decls2\") " &
       "(var ds (filter (declarations m) (fn [d] (== d/name \"map\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
-    check runProgram("(import from \"./decls2\" ^as m) " &
+    check runProgram("(import * : m from \"./decls2\") " &
       "(var ds (filter (declarations m) (fn [d] (== d/name \"this_mod\")))) " &
       "(ds ~ Stream/has_next)").print() == "false"
 
@@ -445,9 +667,9 @@ suite "modules — namespace-path imports and mod":
       "(ns m (var a 1) (fn double [x] (* x 2))) (import m [a, double]) (double a)"),
       newGlobalScope()).print() == "2"
 
-  test "bind an in-file namespace with ^as":
+  test "bind an in-file namespace with colon alias":
     initModuleContext(getTempDir())
-    check run(compileSource("(ns m (var a 5)) (import m ^as mm) mm/a"),
+    check run(compileSource("(ns m (var a 5)) (import m : mm) mm/a"),
       newGlobalScope()).print() == "5"
 
   test "co-located namespace impls are canonical":
