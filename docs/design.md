@@ -203,6 +203,35 @@ Examples conceptually:
 
 Selector missing lookup returns `void`, not `nil`. Pattern matching distinguishes present `nil` from missing/`void`.
 
+The two-absence model has first-class prelude predicates. Absence means either
+`nil` or `void`; presence means a real value, so `false`, `0`, and `""` are
+present:
+
+```gene
+(nil? v)      # v is exactly nil
+(void? v)     # v is exactly void
+(absent? v)   # v is nil or void
+(present? v)  # v is neither nil nor void
+```
+
+| `v`            | `nil?` | `void?` | `absent?` | `present?` |
+| -------------- | ------ | ------- | --------- | ---------- |
+| `nil`          | true   | false   | true      | false      |
+| `void`         | false  | true    | true      | false      |
+| `false`, `0`, `""`, other | false | false | false | true |
+
+The absence-coalescing operator `??` yields its first **present** operand,
+else the last, short-circuiting like `||`:
+
+```gene
+(?? a b c)         # first present of a, b, c; else c
+(?? user/name "?") # the name, or "?" when the key is missing (void) or nil
+```
+
+`??` fills both `void` and `nil` (`absent?`), unlike `||`, which stops at the
+first truthy operand and therefore replaces a stored `false`. Use `||` for
+boolean logic and `??` for defaults over absence.
+
 `Void` is Gene's singleton type of `void`. It is **not** the uninhabited type.
 
 `Never` is the uninhabited type. It has no values. Use it for impossible results/errors, such as `(Stream User Never)`.
@@ -693,13 +722,14 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ! var set ~ fn fn! macro quote quasiquote select path
+do if if_yes if_not && || ?? ! var set ~ fn fn! macro quote quasiquote select path
 ns env eval import mod match while loop repeat for break continue yield return try
 scope supervisor spawn await fail panic type enum protocol impl derive
 ```
 <!-- compiler-head-dispatch:end -->
 
-`&&`, `||`, and `!` are boolean control flow (§9); `while`, `loop`, `repeat`,
+`&&`, `||`, and `!` are boolean control flow (§9), and `??` is
+absence-coalescing (§1.6); `while`, `loop`, `repeat`,
 `break`, and `continue` are loop control; `supervisor` owns a concurrency scope
 (§13.6). Like the rest, they are reserved in head position, so `(&& ...)`,
 `(while ...)`, and `(break)` always use the special-form rule and cannot be
@@ -2112,13 +2142,16 @@ Short-circuit boolean operators:
 ```gene
 (&& a b c)   # left to right; stop at the first falsy operand
 (|| a b c)   # left to right; stop at the first truthy operand
+(?? a b c)   # left to right; stop at the first present (non-nil, non-void) operand
 (! x)        # Bool inverse of x's truthiness
 ```
 
-`&&` and `||` yield the last operand evaluated — not a coerced `Bool` — so
-`||` doubles as a default-value form over falsy `void`/`nil` results:
-`(|| maybe-missing "default")`. With no operands `(&&)` is `true` and `(||)`
-is `nil`. `!` takes exactly one operand and always yields a `Bool`.
+`&&`, `||`, and `??` yield the last operand evaluated — not a coerced `Bool`.
+For a default over absence use `??` (`(?? maybe-missing "default")`), which
+fills `nil`/`void` but keeps a stored `false`; `||` stops at the first truthy
+operand, so it is boolean logic, not a null-coalescing default (§1.6). With no
+operands `(&&)` is `true`, and `(||)` and `(??)` are `nil`. `!` takes exactly
+one operand and always yields a `Bool`.
 
 Recoverable errors are typed nodes whose type implements the marker protocol `Error`:
 

@@ -1369,6 +1369,25 @@ proc requireOne(name: string, args: openArray[Value]) =
   if args.len != 1:
     raise newException(GeneError, name & " expects 1 argument, got " & $args.len)
 
+# Absence vocabulary (design §1.6). `nil?`/`void?` test the exact singleton;
+# `absent?` is either absence form; `present?` is neither. `false`/`0`/`""`
+# are present — this is the distinction `||`-as-default blurs and `??` respects.
+proc biIsNil(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("nil?", args)
+  newBool(args[0].kind == vkNil)
+
+proc biIsVoid(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("void?", args)
+  newBool(args[0].kind == vkVoid)
+
+proc biIsAbsent(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("absent?", args)
+  newBool(args[0].isAbsent)
+
+proc biIsPresent(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("present?", args)
+  newBool(not args[0].isAbsent)
+
 proc requireStr(name: string, value: Value) =
   if value.kind != vkString:
     raise newException(GeneError, name & " expects a Str")
@@ -5183,6 +5202,10 @@ proc buildBuiltins(app: Application): Scope =
   result.define("set_size", newNativeFn("set_size", biSetSize))
   result.define("size", newNativeFn("size", biListSize))
   result.define("empty?", newNativeFn("empty?", biListEmpty))
+  result.define("nil?", newNativeFn("nil?", biIsNil))
+  result.define("void?", newNativeFn("void?", biIsVoid))
+  result.define("absent?", newNativeFn("absent?", biIsAbsent))
+  result.define("present?", newNativeFn("present?", biIsPresent))
   result.define("first", newNativeFn("first", biListFirst))
   result.define("last", newNativeFn("last", biListLast))
   let listScope = newScope(result)
@@ -11945,6 +11968,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
           if stack[sp - 1].isTruthy:
+            ip = inst[].intArg
+          else:
+            strunc(sp - 1)
+        of opJumpIfPresentOrPop:
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in conditional jump")
+          if not stack[sp - 1].isAbsent:
             ip = inst[].intArg
           else:
             strunc(sp - 1)

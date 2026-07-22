@@ -162,6 +162,8 @@
 (var agent_resume (get_env Env "GENE_AGENT_RESUME" "1"))
 (var guard_flag (get_env Env "GENE_AGENT_GUARD" "1"))
 
+# `present?`/`absent?`/`nil?`/`void?` are now builtins (design §1.6); this
+# module keeps its own `present?` export for the importers that select it.
 (fn present? [v]
   (! (|| (== v void) (== v nil))))
 

@@ -154,7 +154,7 @@ type
 const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
-  "do", "if", "if_yes", "if_not", "&&", "||", "!", "var", "set", "~",
+  "do", "if", "if_yes", "if_not", "&&", "||", "??", "!", "var", "set", "~",
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -3470,7 +3470,7 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
       let itemName = c.flowNameStr(item.name)
       if itemName notin macroLocals:
         discard c.reserveLocal(itemName)
-  of "do", "if", "if_yes", "if_not", "&&", "||", "while", "loop",
+  of "do", "if", "if_yes", "if_not", "&&", "||", "??", "while", "loop",
      "repeat":
     c.reserveProtocolBindings(value.body)
   of "try":
@@ -3702,7 +3702,7 @@ proc flowExpr(c: var Compiler, value: Value,
     result = c.flowSequence(value.body, 0, input)
   of "if", "if_yes", "if_not":
     result = c.flowIf(value, input)
-  of "&&", "||":
+  of "&&", "||", "??":
     if value.body.len == 0:
       return
     result = c.flowExpr(value.body[0], input)
@@ -5882,6 +5882,12 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "||":
       compileShortCircuit(c, node, opJumpIfTrueOrPop, NIL)
+      return
+    of "??":
+      # Absence-coalescing: yield the first present (non-nil, non-void)
+      # operand, else the last. Short-circuits like ||, but tests absence
+      # rather than falsiness, so a stored `false`/`0`/`""` is kept.
+      compileShortCircuit(c, node, opJumpIfPresentOrPop, NIL)
       return
     of "!":
       compileNot(c, node)

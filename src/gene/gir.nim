@@ -107,6 +107,7 @@ type
     opJumpIfFalse
     opJumpIfFalseOrPop # falsy top: jump keeping the value; truthy: pop it (&&)
     opJumpIfTrueOrPop  # truthy top: jump keeping the value; falsy: pop it (||)
+    opJumpIfPresentOrPop # present top (not nil/void): jump keeping it; absent: pop (??)
     opNot              # replace the top with the Bool inverse of its truthiness
     opJump
     opReturn
@@ -774,7 +775,8 @@ proc formatInstruction(inst: Instruction): string =
       result.add " sinks=" & formatNames(inst.names)
   of opFail, opPanic:
     discard
-  of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJump:
+  of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+     opJumpIfPresentOrPop, opJump:
     result.add " target=" & $inst.intArg
   of opSyntaxCall, opRejectSyntaxSend:
     discard
@@ -2017,6 +2019,7 @@ const scopelessOps = {
   opNoop, opPushConst, opPop, opNot,
   opLoadLocal, opLoadLocalFast,
   opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+  opJumpIfPresentOrPop,
   opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2,
   opIntLt2, opIntGt2, opIntLe2, opIntGe2,
   opIntAddConst, opIntSubConst, opIntMulConst,

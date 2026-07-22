@@ -143,7 +143,8 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
       "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
     fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
-    fixture(["&&", "||", "!"], "[(&& true 1) (|| nil 2) (! false)]")
+    fixture(["&&", "||", "??", "!"],
+            "[(&& true 1) (|| nil 2) (?? nil 2) (! false)]")
     fixture(["~"], "(fn size-of [self] (~ size))")
     fixture(["fn"], "(fn identity [x] x)")
     fixture(["fn!"], "(fn! syntax-id! [x] x)")
@@ -1510,6 +1511,28 @@ suite "spec — short-circuit operators from design":
       discard compileSource("(! 1 2)")
     expect GeneError:
       discard compileSource("(!)")
+
+suite "spec — absence vocabulary from design §1.6":
+  test "nil?/void?/absent?/present? follow the two-absence truth table":
+    check_eval("[(nil? nil) (nil? void) (nil? false) (nil? 0)]",
+               "[true false false false]")
+    check_eval("[(void? void) (void? nil) (void? false)]",
+               "[true false false]")
+    check_eval("[(absent? nil) (absent? void) (absent? false) (absent? 0) (absent? \"\")]",
+               "[true true false false false]")
+    check_eval("[(present? nil) (present? void) (present? false) (present? 0)]",
+               "[false false true true]")
+
+  test "?? yields the first present operand and keeps stored false":
+    check_eval("[(?? nil 5) (?? void 5) (?? nil void 7) (?? \"a\" \"b\") (??)]",
+               "[5 5 7 \"a\" nil]")
+    # The B1 distinction: `||` replaces a stored false, `??` keeps it.
+    check_eval("[(?? false 5) (|| false 5)]", "[false 5]")
+    check_eval("[(?? 0 5) (?? \"\" \"d\")]", "[0 \"\"]")
+
+  test "?? short-circuits at the first present operand":
+    check_eval("(var n 0) (?? 1 (set n 9)) n", "0")
+    check_eval("(?? nil void 3 (panic \"not reached\"))", "3")
 
 suite "spec — checked errors from design":
   test "Never contributes no errors and rows deduplicate":

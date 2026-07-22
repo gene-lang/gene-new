@@ -5381,6 +5381,12 @@ proc isTruthy*(v: Value): bool {.inline.} =
   of vkBool: v.boolVal
   else: true
 
+proc isAbsent*(v: Value): bool {.inline.} =
+  ## Absence in Gene's two-absence model (design §1.6): explicit empty `nil`
+  ## or missing/skipped `void`. Distinct from falsiness — `false`, `0`, and
+  ## `""` are present. This is the test behind `absent?`/`present?` and `??`.
+  v.kind == vkNil or v.kind == vkVoid
+
 proc isImmutable*(v: Value): bool =
   case v.kind
   of vkBytes, vkRegex, vkRange, vkDate, vkTime, vkDateTime, vkTimezone,
