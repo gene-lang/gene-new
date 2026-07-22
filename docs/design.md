@@ -1973,7 +1973,32 @@ Patterns are open over props by default: unmentioned props are allowed. A prop p
 
 Alternation patterns must bind the same set of names with compatible types in every branch. Negative patterns must not introduce new bindings.
 
-`match` performs structural selection. It does not have `guard`; use normal `if` inside a matched branch.
+`match` performs structural selection only, and deliberately has no per-arm
+`guard`. A value condition that decides between outcomes *within* one matched
+shape is a normal `if` inside that arm:
+
+```gene
+(match shape
+  (when (Circle r) (if (> r 10) "big" "small"))
+  (when (Rect w h) "rect"))
+```
+
+A guard's unique power — letting a value condition fall through to a
+structurally *different* pattern — is rarely needed and is not worth a
+dedicated form; write a more specific pattern, or restructure the arms.
+
+To refine a value to a narrower type, use a type pattern rather than an `if`
+type check: `(when (c : Cat) ...)` matches the shape, binds `c`, and treats it
+as a `Cat` for the arm. This is Gene's narrowing idiom — the bound name carries
+the refined type — so a separate flow-sensitive `if` narrowing is unnecessary
+in the MVP:
+
+```gene
+(fn describe [x : (| Cat Dog)] : Str
+  (match x
+    (when (c : Cat) (c ~ say))
+    (when (d : Dog) (d ~ say))))
+```
 
 ```gene
 (match value
@@ -2373,6 +2398,24 @@ global-promotion operation in the MVP. Each successful application-level
 activation advances an impl-registry epoch; native/direct protocol-call
 optimization must guard that epoch (and deopt/re-resolve on mismatch) before
 it may cache an impl address across activation.
+
+**Dispatch cost and the call-site cache.** An unqualified send costs more than
+a plain call, and this cost is budgeted, not incidental. A resolved send walks
+the send scope's parent chain, scanning each scope's impls for the nearest
+applicable receiver on the `^is` chain; an unqualified send additionally builds
+its compile-time candidate set and filters it per receiver identity. On the
+reference VM an unqualified send is roughly an order of magnitude slower than a
+simple call (about 10×), and a qualified send about 6× — most of that shared
+base cost is the receiver-impl walk, which both forms pay. The sanctioned
+optimization is a **per-call-site inline cache** keyed by `(receiver runtime
+type, candidate-set identity, send-scope version, activation epoch)`: a hit
+returns the cached callee after a guard comparison; any key mismatch — a new
+receiver type, a scope whose bindings changed, or a bumped impl epoch —
+re-resolves and refills. The cache is side storage indexed by call site, never
+a field widening the instruction stream (that layout is bench-protected). Until
+that lands, static-typed receivers and qualified sends resolve with less work,
+so hot paths that must minimize dispatch cost should type their receivers.
+`docs/core.md §9.1` states the same expectation for the receiver-first tier.
 
 MVP restrictions:
 
