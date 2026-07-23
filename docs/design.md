@@ -608,16 +608,17 @@ into head position; it does not thread it in as an argument. For a data-flow
 chain, compose pipes with `~` message sends (Section 3):
 
 ```gene
-(xs ~ filter p; ~ map f; ~ take 10)
-# reader keeps every send: (((xs ~ filter p) ~ map f) ~ take 10)
+(xs ~ to_stream; ~ filter p; ~ map f; ~ take 10)
+# reader keeps every send: (((( xs ~ to_stream) ~ filter p) ~ map f) ~ take 10)
 ```
 
 Each `~` here is a receiver-first message send, **not** a reader rewrite to a
-flipped call `(f x)`. The reader preserves the send form and resolution happens
-at dispatch time. A `List`/`Stream` defines no `filter`/`map`/`take` message, so
-each name resolves through to the plain stdlib function and the chain then
-behaves like `(take (map (filter xs p) f) 10)`. Had the receiver's type defined
-`filter`, that message would dispatch instead and this reduction would not hold.
+flipped call `(f x)` (§3). `~` dispatches and only dispatches: `filter`, `map`,
+and `take` are **type-direct messages on `Stream`**, and `to_stream` is a
+message on iterable receivers such as `List` — there is no lexical fallback to a
+plain function. Sending a name the receiver's type does not define is a
+recoverable `MessageError`, so a raw `List` must reach the stream operations via
+`to_stream` first.
 
 A segment containing `_` is a slot form: the folded previous segment lands at
 `_` instead of head position.
@@ -716,27 +717,33 @@ There is no implicit subject-call rule.
 Message sends use `~`:
 
 ```gene
-(x ~ f a b)   # send f to x: f resolves in x's context, then evaluates as (f x a b)
-(x ~ X/f a b) # qualified: X/f resolves lexically, then (X/f x a b)
+(x ~ f a b)   # send message f to x; dispatches on x's runtime type
+(x ~ X/f a b) # qualified: X/f names the message identity, still dispatched on x
+(x ~ %m a b)  # send a held message value m (§8)
+(super ~ f a) # delegate to the implementation above this one (§10)
 (~ f a b)     # send to lexical self: (self ~ f a b)
 ```
 
-`~` resolves only ordinary `Callable` behavior. A lexical fallback or
-expression callee that is an `Fn!`/`SyntaxCallable` is rejected immediately
-after the receiver/callee is resolved and before any remaining send argument
-is evaluated. The recoverable error is `CallKindError`, a subtype of
-`TypeError`, with `^where`, `^expected`, `^actual`, and `^actual_value`
-diagnostics. Syntax callables are invoked only in ordinary call-head position;
-send syntax is never reinterpreted as a syntax call.
+**`~` dispatches, and only dispatches — there is no lexical fallback.** A bare
+name in send position resolves receiver-first against the receiver's type; it is
+never resolved as an ordinary lexical binding. A bare call `(f x)` stays purely
+lexical, and message names are not bound in the enclosing scope, so the two
+mechanisms never mix.
 
 For an unqualified send, `f` is resolved receiver-first: the receiver's
-type-direct messages (walking `^is`), then protocol messages provided by
-impls visible for the receiver's type, then the enclosing lexical scope as a
-fallback — so pipeline sends like `(xs ~ filter p)` reach the plain `filter`
-function when the receiver defines no such message. A bare call `(f x)`
-remains purely lexical, and message names are not bound in the enclosing
-scope, so `(f x)` never resolves to a protocol message. Full resolution
-rules: `docs/core.md §9`.
+type-direct messages (walking `^is`), then protocol messages provided by impls
+visible for the receiver's type. If neither provides `f`, the send raises a
+recoverable **`MessageError`** (a subtype of `TypeError`) carrying `^where`,
+`^receiver_type`, and `^message`; when the failed name also names a lexical
+callable, the diagnostic says so ("… is a function — did you mean to call it,
+not send it?"). Full resolution rules: `docs/core.md §9`.
+
+`~` resolves only ordinary `Callable` behavior. An expression or `%m` callee
+that is an `Fn!`/`SyntaxCallable` is rejected immediately, before any remaining
+send argument is evaluated. The recoverable error is `CallKindError`, a subtype
+of `TypeError`, with `^where`, `^expected`, `^actual`, and `^actual_value`
+diagnostics. Syntax callables are invoked only in ordinary call-head position;
+send syntax is never reinterpreted as a syntax call.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 

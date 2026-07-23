@@ -653,7 +653,7 @@
     (if (< i (- tokens/~size 1))
       (rebuilt ~ List/push! tokens/%i)))
   (rebuilt ~ List/push! replacement)
-  (rebuilt ~ join " "))
+  (join rebuilt " "))
 
 (fn worker_completion_items [app, prefix : Str, agents_only : Bool]
   (var out [])
@@ -754,7 +754,7 @@
     (if (< i (- parts/~size 1))
       (directories ~ List/push! parts/%i)))
   (var last (- parts/~size 1))
-  {^directory (directories ~ join "/")
+  {^directory (join directories "/")
    ^base (if (empty? parts) "" parts/%last)})
 
 (fn shell_completion_render [context, candidate : Str]
@@ -2359,7 +2359,7 @@
   (var entries [])
   (for operation in (worker_operations_for_kind worker/kind)
     (entries ~ List/push! operation/usage))
-  (var joined (entries ~ join " | "))
+  (var joined (join entries " | "))
   $"operations: ${joined}")
 
 (fn handle_worker_command [line : Str, transcript, streaming]
@@ -3021,16 +3021,16 @@
   (var known
     ["agent" "shell" "terminal" "repl" "output" "log_tail"
      "file_view" "stats"])
-  (var known_text (known ~ join ", "))
+  (var known_text (join known ", "))
   (if_not (known ~ contains? kind)
     (return $"unknown worker kind '${kind}'\nworker kinds: ${known_text}"))
   (var lines [$"${kind} worker operations"])
   (for operation in (worker_operations_for_kind kind)
-    (var effects (operation/effects ~ join "+"))
-    (var audience (operation/audience ~ join ","))
+    (var effects (join operation/effects "+"))
+    (var audience (join operation/audience ","))
     (lines ~ List/push!
       $"${operation/usage}\n    ${operation/summary} [${effects}; ${operation/admission}; ${operation/audit}; ${audience}]"))
-  (lines ~ join "\n"))
+  (join lines "\n"))
 
 (fn surface_command_spec [name : Str]
   (var requested (if (starts_with? name "/") name $"/${name}"))
@@ -3052,7 +3052,7 @@
       (lines ~ List/push! $"${spec/usage}\n    ${spec/summary}")))
   (if (== (lines ~ size) 1)
     $"no help matches '${term}'"
-    (lines ~ join "\n")))
+    (join lines "\n")))
 
 (fn common_prefix_size [a : Str, b : Str] : Int
   (var aa (editor_chars a))

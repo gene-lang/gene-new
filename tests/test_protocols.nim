@@ -572,9 +572,18 @@ suite "types — type-direct messages and sends":
        "[(b ~ get) (get b)]",
        "[7 \"lexical\"]"
 
-  test "sends fall back to lexical bindings for plain receivers":
-    ck "(var xs [1 2 3]) (fn second [l] l/1) (xs ~ second)",
-       "2"
+  test "sends do not fall back to lexical bindings (D6)":
+    # `(xs ~ second)` has no `second` message on List, so it is a MessageError
+    # — there is no lexical send fallback. Call the function: `(second xs)`.
+    var message = ""
+    try:
+      discard run(compileSource(
+        "(var xs [1 2 3]) (fn second [l] l/1) (xs ~ second)"),
+        newGlobalScope())
+    except GeneError as e:
+      message = e.msg
+    check message.contains("no message 'second' on List")
+    ck "(var xs [1 2 3]) (fn second [l] l/1) (second xs)", "2"
 
   test "implicit-self sends resolve in the receiver's context":
     ck "(type Box ^props {^val Int} (message get [self] self/val)) " &

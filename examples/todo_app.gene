@@ -113,16 +113,18 @@
     $" ${(to_str k)}=\"${(escape (to_str v))}\""))
 
 (fn render_attrs [n : Node] : Str
-  (n/%props/%to_pairs_stream
-    ~ map render_attr
-    ; ~ into []
-    ; ~ join ""))
+  (join
+    (n/%props/%to_pairs_stream
+      ~ map render_attr
+      ; ~ into [])
+    ""))
 
 (fn render_children [n : Node] : Str
-  (n/%body/%to_stream
-    ~ map render
-    ; ~ into []
-    ; ~ join ""))
+  (join
+    (n/%body/%to_stream
+      ~ map render
+      ; ~ into [])
+    ""))
 
 (fn void_tag? [tag : Str] : Bool
   (|| (== tag "input") (== tag "br") (== tag "hr") (== tag "meta")))

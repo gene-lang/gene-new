@@ -2176,7 +2176,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
 (fn restore_session_id_seq [id : Str]
   (if (starts_with? id "s")
     (try
-      (var n (parse_int ((split id "s") ~ join "")))
+      (var n (parse_int (join (split id "s") "")))
       (if (> n (session_seq ~ Cell/get))
         (session_seq ~ Cell/set n))
     catch _ nil)))
@@ -2188,7 +2188,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (var saved ((gw_store ~ Cell/get) ~ get id))
       (var hook
         (if (starts_with? id "tg-")
-          (make_telegram_sender ((split id "tg-") ~ join ""))))
+          (make_telegram_sender (join (split id "tg-") ""))))
       # Redact legacy snapshots at restore as well as new writes, before any
       # retained model context or transcript becomes live session state.
       (sessions ~ Map/put! id

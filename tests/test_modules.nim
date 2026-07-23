@@ -591,7 +591,7 @@ suite "modules — file imports":
         "((T) ~ render)")
     except GeneError as error:
       message = error.msg
-    check message.contains("undefined symbol: render")
+    check message.contains("no message 'render' on T")
     check not message.contains("uninitialized protocol candidate")
 
   test "runtime import cycles have a runtime-phase diagnostic":

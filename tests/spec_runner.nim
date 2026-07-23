@@ -485,20 +485,25 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
                "(eval (quote (+ (set never 1))) ^in e)",
                "(set never 1)")
 
-  test "message sends reject fn! before evaluating send arguments":
-    check_eval("(fn f [self y ^x] [self y x]) ([1] ~ f ^x 2 3)",
-               "[[1] 3 2]")
-    check_eval("(fn! q! [x] x) (var side 0) " &
-               "(try ([1] ~ q! (set side 1)) catch _ side)",
+  test "sends resolve receiver-first and raise before evaluating arguments":
+    # D6: `~` dispatches only. A bare name that is not a message on the
+    # receiver's type is a recoverable MessageError, with a hint when the name
+    # is a lexical callable (there is no lexical send fallback).
+    check_eval("(fn f [self y] [self y]) " &
+               "(try ([1] ~ f 2) catch (MessageError ^receiver_type rt) rt)",
+               "\"List\"")
+    check_eval("(try ([1] ~ nope 1) catch (MessageError ^message m) m)",
+               "\"no message 'nope' on List\"")
+    # The MessageError is raised before any send argument runs.
+    check_eval("(var side 0) (try ([1] ~ nope (set side 1)) catch _ side)",
                "0")
-    check_eval("(fn! q! [^x] x) (var side 0) " &
-               "(try ([1] ~ q! ^x (set side 1)) catch _ side)",
-               "0")
+    # An expression callee that is a fn! is rejected as a CallKindError, also
+    # before evaluating any send argument (design §3/§7).
     check_eval("(fn! q! [x] x) (var side 0) " &
                "(try ([1] ~ (do q!) (set side 1)) catch _ side)",
                "0")
     check_eval("(fn! q! [x] x) " &
-               "(try ([1] ~ q! 1) " &
+               "(try ([1] ~ (do q!) 1) " &
                " catch (CallKindError ^where w ^expected e ^actual a) " &
                " [w e a])",
                "[\"message send\" \"Callable\" \"SyntaxCallable\"]")
@@ -2072,6 +2077,15 @@ suite "spec — mutable containers from design":
 
   test "qualified built-in sends remain valid alongside the unqualified form":
     check_eval("(var c (cell 1)) (c ~ Cell/set 5) (c ~ Cell/get)", "5")
+
+  test "pipeline operations are messages: to_stream on iterables, map/filter/take/into on streams (D6)":
+    check_eval("(var xs [1 2 3 4 5]) " &
+               "((((xs ~ to_stream) ~ filter (fn [x] (> x 2))) " &
+               "  ~ map (fn [x] (* x 10))) ~ into [])",
+               "[30 40 50]")
+    check_eval("(((range 0 3) ~ to_stream) ~ into [])", "[0 1 2]")
+    check_eval("(var m {^a 1 ^b 2}) ((m ~ to_pairs_stream) ~ into [])",
+               "[[a 1] [b 2]]")
 
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":
@@ -3656,7 +3670,8 @@ suite "spec — stdlib namespaces from stdlib plan":
 
   test "str module covers join/split/trim/lower and predicates":
     check_eval("(import str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
-    check_eval("(import str [join]) ([\"a\" \"b\"] ~ join \"\")", "\"ab\"")
+    # D6: `join` is a function, not a List message — call it, don't send it.
+    check_eval("(import str [join]) (join [\"a\" \"b\"] \"\")", "\"ab\"")
     check_eval("(import str [split]) (split \"a,b,,c\" \",\")",
                "[\"a\" \"b\" \"\" \"c\"]")
     check_eval("(import str [trim lower]) (lower (trim \"  MiXeD  \"))",

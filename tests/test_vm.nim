@@ -542,7 +542,10 @@ suite "compiler — GIR emission":
 
   test "leading flipped calls require lexical self":
     expect GeneError: discard compileSource("(~ + 1)")
-    ck "(fn inc [self] (~ + 1)) (inc 2)", "3"
+    # D6: `(~ msg)` dispatches on self's type; use a real message, not a
+    # lexical function like `+` (Int has no `+` message).
+    ck "(type Box ^props {^n Int} (message plus1 [self] (+ self/n 1))) " &
+       "(fn run [self] (~ plus1)) (run (Box ^n 2))", "3"
 
 suite "gir — disassembly":
   test "prints constants and instructions":

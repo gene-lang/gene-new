@@ -352,6 +352,8 @@ const supervisorFailureRetryCapacity = 64
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope)
+proc raiseMessageError(message, receiverType: string, scope: Scope,
+                       lexicalHint = false)
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
@@ -5063,6 +5065,12 @@ proc buildBuiltins(app: Application): Scope =
   # callers can catch it specifically without losing ordinary type matching.
   let callKindError = newType("CallKindError", typeError, @[], @[], result)
   result.define("CallKindError", callKindError)
+  # A `~` send whose message resolves to no type-direct message or visible
+  # protocol impl on the receiver is a recoverable MessageError (design §3/§9,
+  # grill D6/D16). It inherits TypeError so `catch (TypeError ...)` still
+  # matches, and carries where/receiver_type/message diagnostics.
+  let messageError = newType("MessageError", typeError, @[], @[], result)
+  result.define("MessageError", messageError)
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
                                        typeExpr: newSym("Str"), scope: result)],
@@ -7278,6 +7286,26 @@ proc typeNsMessage(scope: Scope, nsName, name: string): Value =
   let binding = exportedBinding(ns, name)
   if binding.kind == vkVoid: NIL else: binding
 
+proc convertMessage(scope: Scope, name: string,
+                    names: openArray[string]): Value =
+  ## The stream/pipeline operations (design §6) reachable as type-direct
+  ## messages on iterable/stream receivers, so `(xs ~ to_stream)` and
+  ## `(s ~ map f)` dispatch without the removed lexical fallback (grill D6).
+  ## Resolved from the `stream` namespace, which carries the full pipeline
+  ## surface (map/filter/take/into/each/to_stream/to_pairs_stream); `names`
+  ## restricts which ops are valid for a given receiver type.
+  if name notin names:
+    return NIL
+  let root =
+    if scope == nil: builtinsScope()
+    else: scope.application().builtinsScope()
+  var v: Value
+  if root.lookupOptional(name, v):
+    return v                       # head/props/body/meta and most pipeline ops
+  let streamNs = builtinBinding(scope, "stream")
+  let binding = exportedBinding(streamNs, name)   # `each` lives only here
+  if binding.kind == vkVoid: NIL else: binding
+
 proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value =
   if receiver.isEnumType:
     let message = enumReflectionMessage(name)
@@ -7301,23 +7329,41 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     of "size", "empty?", "first", "last", "contains?":
       builtinBinding(scope, name)
     else:
-      typeNsMessage(scope, "List", name)
+      var m = typeNsMessage(scope, "List", name)
+      if m.kind == vkNil: m = convertMessage(scope, name, ["to_stream"])
+      m
   of vkSet:
     case name
     of "contains?":
       builtinBinding(scope, name)
     else:
-      NIL
+      convertMessage(scope, name, ["to_stream"])
+  of vkRange:
+    var m = typeNsMessage(scope, "Range", name)
+    if m.kind == vkNil: m = convertMessage(scope, name, ["to_stream"])
+    m
   of vkMap, vkHashMap:
-    typeNsMessage(scope, "Map", name)
+    var m = typeNsMessage(scope, "Map", name)
+    if m.kind == vkNil:
+      m = convertMessage(scope, name, ["to_stream", "to_pairs_stream"])
+    m
   of vkNode:
-    typeNsMessage(scope, "Node", name)
+    var m = typeNsMessage(scope, "Node", name)
+    # head/props/body/meta are the Node protocol accessors (§1.2), reachable as
+    # messages on a node in addition to the `(head n)` wrapper form (§1.3/D12).
+    if m.kind == vkNil:
+      m = convertMessage(scope, name, ["head", "props", "body", "meta"])
+    m
   of vkCell:
     typeNsMessage(scope, "Cell", name)
   of vkAtomicCell:
     typeNsMessage(scope, "AtomicCell", name)
   of vkStream:
-    typeNsMessage(scope, "Stream", name)
+    var m = typeNsMessage(scope, "Stream", name)
+    if m.kind == vkNil:
+      m = convertMessage(scope, name,
+        ["map", "filter", "take", "into", "each", "to_pairs_stream"])
+    m
   of vkChannel:
     typeNsMessage(scope, "Channel", name)
   of vkTask:
@@ -7329,10 +7375,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
-    if binding.kind == vkVoid: NIL else: binding
-  of vkRange:
-    let rangeNs = builtinBinding(scope, "Range")
-    let binding = exportedBinding(rangeNs, name)
     if binding.kind == vkVoid: NIL else: binding
   of vkDate:
     let dateNs = builtinBinding(scope, "Date")
@@ -11056,8 +11098,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if callee.kind == vkNil:
             callee = builtinReceiverMessage(scope, receiver, inst[].name)
           if callee.kind == vkNil:
-            if not scope.lookupOptional(inst[].name, callee):
-              raiseUndefinedSymbol(inst[].name)
+            # D6: `~` dispatches only. There is no lexical fallback — a name
+            # that resolves to no message on the receiver's type is a
+            # MessageError, with a hint when it names a lexical callable.
+            var lexical: Value
+            let lexicalHint = scope.lookupOptional(inst[].name, lexical) and
+              lexical.kind in {vkFunction, vkNativeFn}
+            let recvTypeName =
+              if recvType.kind == vkType: recvType.typeName
+              else: declarationKind(receiver)
+            raiseMessageError(inst[].name, recvTypeName, scope, lexicalHint)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
@@ -14305,6 +14355,32 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   var e: ref GeneError
   new(e)
   e.msg = message
+  e.errVal = newNode(head, props = props)
+  e.hasErrVal = true
+  raise e
+
+proc raiseMessageError(message, receiverType: string, scope: Scope,
+                       lexicalHint = false) =
+  ## Design §3/§9, grill D6/D16: a `~` send that resolves to no message on the
+  ## receiver's type. Recoverable MessageError (a TypeError subtype).
+  ## `lexicalHint` marks the case where the message name also names a lexical
+  ## callable — the D6 migration signpost ("did you mean the function call?").
+  var full = "no message '" & message & "' on " & receiverType
+  if lexicalHint:
+    full = full & "; '" & message &
+      "' is a function — did you mean to call it, not send it?"
+  var props = initPropTable()
+  props["message"] = newStr(full)
+  props["where"] = newStr("message send")
+  props["receiver_type"] = newStr(receiverType)
+  var head = newSym("MessageError")
+  var messageError: Value
+  if scope != nil and scope.lookupOptional("MessageError", messageError) and
+      messageError.kind == vkType:
+    head = messageError
+  var e: ref GeneError
+  new(e)
+  e.msg = full
   e.errVal = newNode(head, props = props)
   e.hasErrVal = true
   raise e

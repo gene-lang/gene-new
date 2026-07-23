@@ -318,7 +318,7 @@
 # -----------------------------------------------------------------------------
 
 (fn replace_all [s : Str, from : Str, to : Str] : Str
-  ((split s from) ~ join to))
+  (join (split s from) to))
 
 # Never let the API token surface in transcript, logs, events, or errors.
 (fn redact [s : Str] : Str
@@ -3051,7 +3051,7 @@
     (var p (if (== args/path void) "." args/path))
     (var checked_path (safe_path p))
     (var instructions (newly_loaded_instruction_text p true))
-    (var listing ((list_dir ReadDir checked_path) ~ join "\n"))
+    (var listing (join (list_dir ReadDir checked_path) "\n"))
     (if (== instructions "")
       listing
       $"New applicable instructions (parent-to-child):\n${instructions}\n--- listing ---\n${listing}"))))
@@ -4689,7 +4689,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (for artifact in (agent_artifacts ~ Cell/get)
         (lines ~ List/push!
           $"${artifact/id} ${artifact/kind} source=${artifact/source_worker} bytes=${artifact/size} blob=${artifact/blob_id}"))
-      (lines ~ join "\n"))))
+      (join lines "\n"))))
 
 (fn handler_ref_matches? [current, saved] : Bool
   (&& current saved
@@ -6609,7 +6609,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (fail (OsError ^message "tail n must be between 1 and 500")))
   (var lines (split (worker/output ~ Cell/get) "\n"))
   {^worker_id worker/id
-   ^text ((bounded_list_tail lines n) ~ join "\n")
+   ^text (join (bounded_list_tail lines n) "\n")
    ^requested n ^dropped_bytes (worker/dropped_bytes ~ Cell/get)
    ^dropped_before (worker/dropped_before ~ Cell/get)
    ^history_dropped (worker/history_dropped ~ Cell/get)})
