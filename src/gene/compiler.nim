@@ -4878,13 +4878,21 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         not node.props.hasKey("types"):
       compileSend(c, node, node.head, node.body[1].symVal, 2)
       return
+    # D8: (x ~ %m a) sends a held message value — `%m` reads as (unquote m);
+    # unwrap it so the callee is the evaluated `m`, then dispatch it on x. A
+    # protocol-message value called with args dispatches on arg 0, so this
+    # reuses the ordinary flipped-call path; allowSyntax=false rejects a fn!.
+    var calleeHead = node.body[1]
+    if calleeHead.kind == vkNode and calleeHead.head.isSymbol("unquote") and
+        calleeHead.body.len == 1:
+      calleeHead = calleeHead.body[0]
     # Qualified or expression callees keep flipped-call semantics:
     # (x ~ X/f a) => (X/f x a). Direct-call metadata also stays on this path.
     var args = newSeqOfCap[Value](node.body.len - 1)
     args.add node.head
     for i in 2 ..< node.body.len:
       args.add node.body[i]
-    compileCall(c, newNode(node.body[1], node.props, args, node.meta),
+    compileCall(c, newNode(calleeHead, node.props, args, node.meta),
                 allowSyntax = false)
     return
   let localSyntaxHead = c.syntaxFnNames.len > 0 and

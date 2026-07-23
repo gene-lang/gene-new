@@ -1966,6 +1966,20 @@ suite "spec — implicit self in message bodies from design §10 (D9)":
                "(var b (Box ^val 10)) [(b ~ get) (b ~ add 5)]",
                "[10 15]")
 
+  test "a held message value is sent with (x ~ %m) (D8)":
+    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
+               "(type M ^props {^name Str} " &
+               "  (impl ToHtml (message to_html [] : Str self/name))) " &
+               "(var m ToHtml/to_html) " &
+               "(var items [(M ^name \"a\") (M ^name \"b\")]) " &
+               "((map (to_stream items) (fn [x] (x ~ %m))) ~ into [])",
+               "[\"a\" \"b\"]")
+
+  test "sending a held fn! value is a CallKindError":
+    check_eval("(fn! q! [x] x) (var f q!) " &
+               "(try ([1] ~ %f 1) catch (CallKindError ^where w) w)",
+               "\"message send\"")
+
   test "an inline impl message binds self implicitly":
     check_eval("(protocol Greet (message hi [] : Str)) " &
                "(type P ^props {^name Str} " &
