@@ -99,6 +99,10 @@ type
     # A name in this set is not a stable callable proof, including when the
     # mutation appears after a closure that captures the binding.
     mutableBindingNames: HashSet[string]
+    # Names bound with `let`/`const` in the current lexical scope (design §12.1,
+    # D3). A `set` targeting one is a compile error. childCompiler copies the
+    # set so a nested `var` shadows an outer `let` without un-marking the outer.
+    letNames: HashSet[string]
     importedSyntaxFnSets: Table[string, seq[string]]
     importedSyntaxFnNames: HashSet[string]
     importedInterfaces: Table[string, CompileNamespaceInterface]
@@ -155,7 +159,8 @@ type
 const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
-  "do", "if", "if_yes", "if_not", "&&", "||", "??", "!", "var", "set", "~",
+  "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
+  "let", "var", "const", "set", "~",
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -585,6 +590,7 @@ proc childCompiler(c: Compiler): Compiler =
            syntaxFnNames: c.syntaxFnNames,
            ordinaryFnNames: c.ordinaryFnNames,
            mutableBindingNames: c.mutableBindingNames,
+           letNames: c.letNames,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
            importedSyntaxFnNames: c.importedSyntaxFnNames,
            importedInterfaces: c.importedInterfaces,
@@ -1159,6 +1165,9 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
     child.parentSlots = c.parentFrames()
     for name in patternBindingNames(pattern):
       discard child.reserveLocal(name)
+      # A fresh branch-local binding shadows (un-marks) an outer `let` of the
+      # same name so it stays rebindable in this arm (§12.1).
+      child.letNames.excl name
       if name == "self":
         child.selfAvailable = true
   elif patternBindsSelf(pattern):
@@ -1513,7 +1522,7 @@ proc introducedBinderName(node: Value): string =
   if node.kind != vkNode or node.head.kind != vkSymbol or node.body.len == 0:
     return ""
   case node.head.symVal
-  of "var", "type", "protocol", "ns", "macro":
+  of "var", "let", "const", "type", "protocol", "ns", "macro":
     if node.body[0].kind == vkSymbol:
       return node.body[0].symVal
   of "fn", "fn!":
@@ -2310,10 +2319,13 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     let sig = functionSigFromParts(specs.positional.len, typeParams, returnType)
     if sig.known:
       fnCompiler.parentFunctionSigs[0][name] = sig.sig
+  # Parameters are fresh rebindable bindings, so they shadow (un-mark) any
+  # outer `let` of the same name inherited into fnCompiler.letNames (§12.1).
   var positionalSlots: seq[int]
   for i, name in specs.positional:
     let slot = fnCompiler.reserveLocal(name)
     positionalSlots.add slot
+    fnCompiler.letNames.excl name
     if i < specs.positionalTypes.len:
       fnCompiler.recordLocalType(name, specs.positionalTypes[i])
       if specs.positionalTypes[i].isBareIntType:
@@ -2321,10 +2333,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   var namedSlots: seq[int]
   for p in specs.named:
     namedSlots.add fnCompiler.reserveLocal(p.local)
+    fnCompiler.letNames.excl p.local
     fnCompiler.recordLocalType(p.local, p.typeExpr)
   var restSlot = -1
   if specs.rest.len > 0:
     restSlot = fnCompiler.reserveLocal(specs.rest)
+    fnCompiler.letNames.excl specs.rest
   fnCompiler.allowYield = true
   fnCompiler.inFunction = true
   fnCompiler.inGenerator = body.bodyContainsYield(start)
@@ -2600,10 +2614,11 @@ proc compileNot(c: var Compiler, node: Value) =
   compileExpr(c, node.body[0])
   discard c.emit(opNot)
 
-proc compileVar(c: var Compiler, node: Value) =
+proc compileVar(c: var Compiler, node: Value, immutable = false) =
   let body = node.body
   if body.len == 0:
-    raise newException(GeneError, "var requires a name or pattern")
+    let form = if immutable: "let" else: "var"
+    raise newException(GeneError, form & " requires a name or pattern")
   let typed = body.len >= 2 and body[1].isSymbol(":")
   if typed and body.len < 3:
     raise newException(GeneError, "var type annotation requires a type")
@@ -2626,6 +2641,10 @@ proc compileVar(c: var Compiler, node: Value) =
     discard c.emit(opCheckType, c.chunk.addConst(body[2]), name = where)
   if body[0].kind == vkSymbol:
     c.emitDefineBinding(body[0].symVal)
+    # Record binding mutability (design §12.1, D3). A later `set` on a `let`
+    # name is a compile error; a `var` un-marks a name an outer scope froze.
+    if immutable: c.letNames.incl body[0].symVal
+    else: c.letNames.excl body[0].symVal
     if typed:
       c.recordLocalType(body[0].symVal, body[2])
       c.emitDeclareType(body[0].symVal, body[2])
@@ -2653,6 +2672,9 @@ proc compileVar(c: var Compiler, node: Value) =
     if c.useLocalSlots:
       for name in patternBindingNames(body[0]):
         discard c.reserveLocal(name)
+    for name in patternBindingNames(body[0]):
+      if immutable: c.letNames.incl name
+      else: c.letNames.excl name
     discard c.emit(opMatchBind, c.chunk.addConst(body[0]))  # destructuring
     if patternBindsSelf(body[0]):
       c.selfAvailable = true
@@ -2662,6 +2684,10 @@ proc compileSet(c: var Compiler, node: Value) =
   if body.len < 2 or body[0].kind != vkSymbol:
     raise newException(GeneError, "set requires a name and a value")
   validateBindingName(body[0].symVal)
+  if body[0].symVal in c.letNames:
+    raise newException(GeneError,
+      "cannot set immutable binding '" & body[0].symVal &
+      "' (declared with let/const); use var for a rebindable binding")
   compileExpr(c, body[1])
   c.syntaxFnNames.del(body[0].symVal)
   if c.moduleSyntaxFnExports != nil:
@@ -2972,7 +2998,7 @@ proc collectCompileInterfaceForm(form: Value,
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcValue)
-  of "var":
+  of "var", "let", "const":
     let name = form.declaredName
     if name.len == 0:
       return
@@ -3104,7 +3130,8 @@ proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
-  of "var", "fn", "fn!", "macro", "type", "enum", "protocol", "ns", "alias":
+  of "var", "let", "const", "fn", "fn!", "macro", "type", "enum", "protocol",
+     "ns", "alias":
     let name = form.declaredName
     if name.len > 0:
       names.incl name
@@ -3126,7 +3153,8 @@ proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
-  of "var", "fn", "fn!", "type", "enum", "protocol", "ns", "alias":
+  of "var", "let", "const", "fn", "fn!", "type", "enum", "protocol", "ns",
+     "alias":
     let name = form.declaredName
     if name.len > 0:
       names.incl name
@@ -5857,10 +5885,11 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
   if node.props.hasKey("private"):
     if h.kind != vkSymbol or h.symVal notin
-        ["var", "fn", "fn!", "macro", "type", "alias", "enum", "protocol", "ns"]:
+        ["var", "let", "const", "fn", "fn!", "macro", "type", "alias", "enum",
+         "protocol", "ns"]:
       raise newException(GeneError,
         "^private is only valid on a named declaration " &
-        "(var, fn, fn!, macro, type, alias, enum, protocol, ns)")
+        "(let, var, const, fn, fn!, macro, type, alias, enum, protocol, ns)")
     if node.declarationIsPrivate:
       if node.bits notin c.staticTopLevelImpls:
         raise newException(GeneError,
@@ -5918,6 +5947,13 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "var":
       compileVar(c, node)
+      return
+    of "let":
+      compileVar(c, node, immutable = true)
+      return
+    of "const":
+      raise newException(GeneError,
+        "const is reserved but not yet implemented (design §12.1); use let")
       return
     of "set":
       compileSet(c, node)

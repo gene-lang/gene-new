@@ -354,11 +354,33 @@ Context determines interpretation:
 
 The reader may represent selector paths and qualified names with related path nodes, but the compiler resolves them by context. Static qualified names are resolved during name/type checking and must not require evaluating runtime values named `C`, `Stream`, or `net`.
 
-In runtime expression and call-head position, the first segment is resolved
-lexically and the remaining segments select from that runtime value. Ordinary
-lexical shadowing therefore applies to the base name. Declaration, type,
-protocol-message, and namespace-import contexts instead resolve the complete
-qualified name statically.
+A slash path is member selection: `a/b` denotes the member `b` of the value the
+base `a` denotes. Selection is uniform across member kinds — a namespace member
+is its bound function or value, a protocol member `P/m` is the message `m`, a
+type member `T/m` is that member. Native and standard-library functions hold no
+special status: they are ordinary members reached by this same selection, so the
+language defines **no hard-coded mapping from particular names or paths to native
+functions**. `gene/str/join`, a user `ns/helper`, and `Color/red` are the same
+mechanism.
+
+Resolving a path is separate from invoking the result. A function member is
+applied in call-head position, `(ns/f x)`; a protocol-message member is invoked
+with `~`, `(x ~ P/m)`, which dispatches on the receiver's type (§3, §10). `P/m`
+on its own is the first-class message value.
+
+Where the selection is resolved — compile time or runtime — is an implementation
+choice constrained by soundness, not part of the semantics. When the base is a
+compile-time-known binding that cannot be reassigned or shadowed at the use site
+— a reserved stdlib root, or a namespace, protocol, or type declaration in scope
+— the compiler resolves the whole path at compile time to a constant member and
+MAY emit it directly, including a direct native call in call position. That
+mapping is a performance optimization that must be observationally identical to
+selecting the member from the base value, and it privileges no specific name.
+When the base is a genuinely dynamic value, the path desugars to runtime selector
+application, `((select b) a)`. Ordinary lexical shadowing always applies to the
+base name: a local binding wins over an ambient stdlib namespace, and the path
+then follows the local value. Declaration, type, protocol-message, and
+namespace-import contexts always resolve statically.
 
 The printer must preserve token boundaries so slash paths and delimited symbols round-trip exactly. The standard library may also expose `(div a b)`, but `/` remains available as a normal callable symbol when delimited.
 
@@ -722,9 +744,10 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! var set ~ fn fn! macro quote quasiquote select path
-ns env eval import mod match while loop repeat for break continue yield return try
-scope supervisor spawn await fail panic type enum protocol impl derive
+do if if_yes if_not && || ?? ! let var const set ~ fn fn! macro quote quasiquote
+select path ns env eval import mod match while loop repeat for break continue yield
+return try scope supervisor spawn await fail panic type alias enum protocol impl
+derive import_impl
 ```
 <!-- compiler-head-dispatch:end -->
 
@@ -1681,6 +1704,19 @@ hashes. These rules ensure that every admissible pair equal under `==` has the
 same hash.
 
 FFI types such as `C/Int32`, `C/Long`, and `C/Size` are ABI types, not aliases for Gene `Int`. Passing a Gene `Int` to an FFI integer parameter performs an explicit range check and then marshals to the target ABI width.
+
+Division is `(/ a b)`. The remainder operator is the identifier `rem`, not `%`
+or `mod`: `%` is the unquote prefix (§2) and `mod` is the module declaration
+form (§15.4), and neither can be shadowed. `(rem a b)` truncates toward zero so
+its sign follows the dividend, matching `/`:
+
+```gene
+(rem 17 5)   # 2
+(rem -17 5)  # -2
+(rem 17 -5)  # 2
+```
+
+A floored variant (`mod_floor`) may be added later.
 
 
 Generic functions put type parameters on the function name:
@@ -2852,14 +2888,55 @@ accumulators; repeated copy-and-append growth is quadratic.
 
 Selectors remain read-only paths; Gene does not overload selector access with hidden mutation.
 
-### 12.1 Binding mutation
+### 12.1 Binding forms and mutation
+
+Gene has three binding forms. They differ only in whether the binding may be
+rebound, never in what the value can do:
 
 ```gene
-(var x 1)
-(set x 2)
+(let x 1)     # fixed binding, fixed value — the default idiom
+(var y 1)     # fixed binding, rebindable value
+(const K 1)   # fixed compile-time constant (reserved; see below)
+(set y 2)     # rebinds a `var`; `(set x ...)` on a `let`/`const` is a compile error
 ```
 
-`set` changes a lexical binding. It does not mutate the value previously stored in that binding.
+| Form    | Binding | Value       | `set` allowed |
+| ------- | ------- | ----------- | ------------- |
+| `let`   | fixed   | fixed       | no            |
+| `var`   | fixed   | rebindable  | yes           |
+| `const` | fixed   | fixed, compile-time | no    |
+
+`set` changes a lexical binding. It does not mutate the value previously stored
+in that binding. `set` requires a `var` target; applying it to a `let` or
+`const` binding is a compile-time error.
+
+**`let` is the default; `var` is the marked exception.** "Fixed value" means the
+binding is not rebound, not that the value's internal state is frozen. Mutable
+state lives *inside* the value, so idiomatic mutable state is a `let` binding of
+a mutable value:
+
+```gene
+(let counter (cell 0))          # the binding never moves; the Cell mutates
+(counter ~ Cell/update (fn [x] (+ x 1)))
+```
+
+A namespace-level `var` is unsynchronized mutable global state — shared across
+tasks and not `Send` (§13) — so it is deliberately the unusual spelling. Named
+declarations (`fn`, `fn!`, `type`, `enum`, `protocol`, `ns`, `macro`, `alias`)
+behave as `let`: their bindings are fixed.
+
+**Stable bindings enable member folding (§2.1).** Because a `let`/`const` member
+is fixed in both slot and value, a slash path resolving to one may be compiled to
+a direct member reference. A `var` member is fixed in slot but rebindable, so a
+path to one compiles to a guarded slot load, never a folded value. The
+`let`/`var` distinction is therefore part of a module's compile interface and a
+binding *category* for reload compatibility (§15.6).
+
+**`const` is reserved, not yet implemented.** It denotes a value that must
+resolve before runtime — the only form permitted to be *embedded* into a compile
+artifact — and requires the compile-time-evaluation subset deferred in §11.2.
+Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
+`let` covers every current need.
 
 ### 12.2 `Cell`
 
@@ -2875,6 +2952,13 @@ Selectors remain read-only paths; Gene does not overload selector access with hi
 (count ~ Cell/swap 20)                 # returns the old value
 (count ~ Cell/update (fn [x] (+ x 1)))
 ```
+
+These operations are **type-direct messages** on the receiver's built-in type
+(§3), so the qualifier is optional: `(count ~ get)`, `(count ~ set 10)`, and the
+path form `count/~get` resolve the same message as `(count ~ Cell/get)`. The
+same holds for the other built-in types — `List`, `Map`, `Node`, `Buffer`,
+`AtomicCell`, `Stream`, `Channel`, `Task`, `ReplyTo` — whose operations are
+reachable both qualified and unqualified.
 
 Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed inside specialized typed cells, but the semantic model is a mutable reference containing a Gene value.
 

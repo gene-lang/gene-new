@@ -176,7 +176,7 @@ proc headerBodyCount(head: string, body: openArray[Value]): int =
   ## Number of positional items kept on the opening line of a broken form.
   case head
   of "if", "if_yes", "if_not", "while", "when", "elif", "match", "case",
-     "var", "set", "spawn":
+     "let", "var", "const", "set", "spawn":
     1
   of "for", "repeat":
     if body.len >= 3 and body[1].isSym("in"): 3 else: 1

@@ -13,6 +13,16 @@ template check_read(src: string, expected: string) =
 template check_eval(src: string, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
 
+template check_compile_error(src: string, fragment: string) =
+  ## Asserts that compiling `src` raises with `fragment` in the message.
+  var raised = false
+  try:
+    discard compileSource(src)
+  except CatchableError as e:
+    raised = true
+    check fragment in e.msg
+  check raised
+
 proc geneString(s: string): string =
   "\"" & s.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
 
@@ -141,6 +151,10 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
 
     fixture(["do", "var", "set", "if"],
       "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
+    fixture(["let"], "(let x 1)")
+    expect GeneError:
+      discard compileSource("(const K 1)")
+    covered.add "const"
     fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
     fixture(["&&", "||", "??", "!"],
@@ -1046,6 +1060,12 @@ suite "spec — numeric boundaries from design":
                "[9223372036854775808 " &
                "10000000000000000000000000000000000000000 " &
                "true]")
+
+  test "rem is truncated remainder; sign follows the dividend":
+    check_eval("[(rem 17 5) (rem -17 5) (rem 17 -5) (rem 10 2) (rem 5.5 2.0)]",
+               "[2 -2 2 0 1.5]")
+    expect GeneError:
+      discard run(compileSource("(rem 1 0)"), newGlobalScope())
 
   test "fixed-width integer annotations are range checked":
     check_eval("(fn signed [x : SignedInt] x) " &
@@ -1962,6 +1982,42 @@ suite "spec — protocol derive from design":
                                 "  ^derive [HasLabel])"),
                   newGlobalScope())
 
+suite "spec — binding forms from design §12.1":
+  test "let binds a fixed value; var is rebindable":
+    check_eval("(let x 10) (var y 1) (set y 2) [x y]", "[10 2]")
+
+  test "set on a let binding is a compile error":
+    check_compile_error("(let x 10) (set x 20)",
+                        "cannot set immutable binding 'x'")
+
+  test "let destructuring names are immutable":
+    check_compile_error("(let [a b] [1 2]) (set a 9)",
+                        "cannot set immutable binding 'a'")
+
+  test "const is reserved but not yet implemented":
+    check_compile_error("(const K 10)", "const is reserved")
+
+  test "an inner var shadows an outer let without freezing it":
+    check_eval("(let x 1) " &
+               "(fn f [] (var x 2) (set x 3) x) " &
+               "[(f) x]",
+               "[3 1]")
+
+  test "an inner let over an outer var is immutable in that scope":
+    check_compile_error("(var x 1) (fn f [] (let x 2) (set x 3) x)",
+                        "cannot set immutable binding 'x'")
+
+  test "a function parameter shadowing an outer let stays rebindable":
+    check_eval("(let y 5) (fn g [y] (set y (+ y 1)) y) [(g 10) y]", "[11 5]")
+
+  test "a match-arm binding shadowing an outer let stays rebindable":
+    check_eval("(let z 1) " &
+               "[(match [7] (when [z] (do (set z (+ z 1)) z))) z]",
+               "[8 1]")
+
+  test "typed let checks its value at the boundary":
+    check_eval("(let n : Int 5) (+ n 1)", "6")
+
 suite "spec — cells from design":
   test "Cell get, set, swap, and update are explicit mutation":
     check_eval("(var count (cell 0)) " &
@@ -2003,6 +2059,19 @@ suite "spec — mutable containers from design":
     check_eval("(try (#[1] ~ List/push! 2) " &
                " catch (Error ^message message) message)",
                "\"cannot mutate immutable List\"")
+
+  test "built-in operations are type-direct messages (unqualified and path)":
+    # grill D6/D11: `(x ~ Cell/get)` is also reachable as `(x ~ get)` / `x/~get`.
+    check_eval("(var c (cell 7)) (c ~ set 20) [(c ~ get) c/~get]", "[20 20]")
+    check_eval("(var xs [1 2 3]) (xs ~ set! 0 9) (xs ~ push! 4) xs",
+               "[9 2 3 4]")
+    check_eval("(var m {^a 1}) (m ~ put! \"b\" 2) (m ~ get \"b\")", "2")
+    check_eval("(var n (quote (user ^name \"Ada\"))) " &
+               "(n ~ set_prop! \"name\" \"Bob\") (n ~ /name)",
+               "\"Bob\"")
+
+  test "qualified built-in sends remain valid alongside the unqualified form":
+    check_eval("(var c (cell 1)) (c ~ Cell/set 5) (c ~ Cell/get)", "5")
 
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":

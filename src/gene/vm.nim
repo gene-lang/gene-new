@@ -1197,6 +1197,23 @@ proc biDiv(args: openArray[Value]): Value {.nimcall.} =
       s = s / d
     newFloat(s)
 
+proc biRem(args: openArray[Value]): Value {.nimcall.} =
+  ## Truncated remainder (`rem`), design §12.1 / grill D15: `mod` names the
+  ## module form and `%` is the unquote prefix, so modulo is the identifier
+  ## `rem`. Truncates toward zero to match `/`.
+  requireNums("rem", args)
+  if args.len != 2:
+    raise newException(GeneError, "rem expects exactly 2 arguments")
+  let a = args[0]
+  let b = args[1]
+  if a.kind == vkInt and b.kind == vkInt:
+    if b.intIsZero: raise newException(GeneError, "division by zero")
+    # a - (a div b) * b, truncating; reuses overflow-safe Value ops.
+    return intSub(a, intMul(intDiv(a, b), b))
+  let bf = b.toFloat
+  if bf == 0.0: raise newException(GeneError, "division by zero")
+  newFloat(a.toFloat mod bf)
+
 template comparison(name: string, op: untyped): NativeProc =
   (proc(args: openArray[Value]): Value {.nimcall.} =
     requireNums(name, args)
@@ -5160,6 +5177,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("-", app.nativeSub)
   result.define("*", app.nativeMul)
   result.define("/", newNativeFn("/", biDiv))
+  result.define("rem", newNativeFn("rem", biRem))
   result.define("<", app.nativeLt)
   result.define(">", app.nativeGt)
   result.define("<=", app.nativeLe)
@@ -7251,6 +7269,15 @@ proc enumReflectionMessage(name: string): Value =
   of "from_backing": newNativeFn("Enum/from_backing", biEnumFromBacking)
   else: NIL
 
+proc typeNsMessage(scope: Scope, nsName, name: string): Value =
+  ## Resolve `name` as a type-direct message from the built-in type namespace
+  ## `nsName` (design §12/grill D6/D11: built-in operations are messages on
+  ## their type, so `(x ~ Cell/get)` is also reachable as `(x ~ get)` and
+  ## `x/~get`). Returns NIL when the namespace has no such member.
+  let ns = builtinBinding(scope, nsName)
+  let binding = exportedBinding(ns, name)
+  if binding.kind == vkVoid: NIL else: binding
+
 proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value =
   if receiver.isEnumType:
     let message = enumReflectionMessage(name)
@@ -7274,13 +7301,31 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     of "size", "empty?", "first", "last", "contains?":
       builtinBinding(scope, name)
     else:
-      NIL
+      typeNsMessage(scope, "List", name)
   of vkSet:
     case name
     of "contains?":
       builtinBinding(scope, name)
     else:
       NIL
+  of vkMap, vkHashMap:
+    typeNsMessage(scope, "Map", name)
+  of vkNode:
+    typeNsMessage(scope, "Node", name)
+  of vkCell:
+    typeNsMessage(scope, "Cell", name)
+  of vkAtomicCell:
+    typeNsMessage(scope, "AtomicCell", name)
+  of vkStream:
+    typeNsMessage(scope, "Stream", name)
+  of vkChannel:
+    typeNsMessage(scope, "Channel", name)
+  of vkTask:
+    typeNsMessage(scope, "Task", name)
+  of vkReplyTo:
+    typeNsMessage(scope, "ReplyTo", name)
+  of vkBuffer:
+    typeNsMessage(scope, "Buffer", name)
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
