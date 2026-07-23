@@ -4575,8 +4575,8 @@ Deferred until after the first implementation slice:
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- `~` is the message-send operator: `(x ~ f a)` resolves `f` receiver-first (type-direct messages, then protocol impls, then lexical fallback); `(x ~ X/f a)` resolves `X/f` lexically. Message names are not bound in the enclosing scope. See `docs/core.md §9`.
-- Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope.
+- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` on `x`'s runtime type (type-direct messages walking `^is`, then visible protocol impls); an unresolved name is a recoverable `MessageError`. `(x ~ X/f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
+- Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
 - `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `Env/snapshot`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
