@@ -210,10 +210,19 @@ proc enableLocalSlots(c: var Compiler) =
 
 const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 
+# D13: `~` is the send operator and is reserved in executable position. The
+# reader still tokenizes it (so quoted data like `(quote (a ~ b))` round-trips),
+# but it may not be bound, set, or declared as a name.
+const reservedOperatorNames = ["~"]
+
 proc validateBindingName(name: string) =
   if name in reservedStdlibRoots:
     raise newException(GeneError,
       "reserved standard-library root cannot be bound: " & name)
+  if name in reservedOperatorNames:
+    raise newException(GeneError,
+      "'" & name & "' is the message-send operator and cannot be bound " &
+      "(design §3, grill D13)")
 
 proc reserveLocal(c: var Compiler, name: string): int =
   validateBindingName(name)

@@ -2049,6 +2049,12 @@ suite "spec — binding forms from design §12.1":
   test "typed let checks its value at the boundary":
     check_eval("(let n : Int 5) (+ n 1)", "6")
 
+  test "the send operator ~ is reserved and cannot be bound (D13)":
+    check_compile_error("(var ~ 5)", "message-send operator")
+    check_compile_error("(let ~ 5)", "message-send operator")
+    # still tokenizes inside quoted data
+    check_eval("(quote (a ~ b))", "(a ~ b)")
+
 suite "spec — cells from design":
   test "Cell get, set, swap, and update are explicit mutation":
     check_eval("(var count (cell 0)) " &

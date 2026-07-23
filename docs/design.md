@@ -788,7 +788,7 @@ read comments/discards
 → macro expansion and special-form analysis
 ```
 
-`~` is recognized only in call-like forms where it appears as the second token or as a leading send to `self`. Elsewhere it is an ordinary symbol. The reader preserves send forms as read (they round-trip); resolution happens at compile/dispatch time (`docs/core.md §9`).
+`~` is recognized only in call-like forms where it appears as the second token or as a leading send to `self`. The reader preserves send forms as read (they round-trip), and `~` still tokenizes inside quoted data; resolution happens at compile/dispatch time (`docs/core.md §9`). But `~` is **reserved**: it may not be bound, `set`, or declared as a name (`(var ~ …)`, a parameter named `~`, etc. are compile errors), so its only executable meaning is the message-send operator.
 
 ---
 
