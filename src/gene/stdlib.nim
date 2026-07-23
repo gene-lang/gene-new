@@ -6506,7 +6506,10 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       raiseSerdeError(r.scope, "type " & head.typeName &
         " has a serde_state message but no serde_restore", r.path)
     try:
-      applyCall(restoreFn, [state], NamedArgs(), r.scope)
+      # D9: `self` is implicit in message bodies, so serde_restore's proto is
+      # (self, state). It is a static factory, so pass the type as the implicit
+      # self receiver; the body binds `state` from the second argument.
+      applyCall(restoreFn, [head, state], NamedArgs(), r.scope)
     except GeneError as e:
       raiseSerdeError(r.scope, "serde_restore: " & e.msg, r.path)
       NIL

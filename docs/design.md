@@ -2322,12 +2322,28 @@ raises/panics. Unhandled errors propagate.
 
 ```gene
 (protocol ToHtml
-  (message to_html [self : Self] : Node))
+  (message to_html [] : Node))
 
 (impl ToHtml for MenuItem
-  (message to_html [self] : Node
+  (message to_html [] : Node
     `(tr (td %self/name))))
 ```
+
+**`self` is implicit in a message body and does not appear in the parameter
+vector** — the parameter vector describes only the send arguments, and the
+compiler binds `self` to the receiver (as it does for `ctor`, §7.1.1). A
+message that takes an argument declares just that argument:
+
+```gene
+(message add [n] : Int (+ self/n n))   # self implicit; n is the send argument
+```
+
+`self` is an immutable, compiler-owned binding (§12.1): `(set self …)` and
+declaring another `self` are compile errors, and it cannot be shadowed, so
+`(~ m)` always denotes the receiver. `Self` remains a type name in annotation
+position, e.g. `(message eq [other : Self] : Bool)`. The legacy form that names
+the receiver explicitly as the first parameter (`[self …]`) is still accepted
+during migration.
 
 Message dispatch is on the first argument's head/type. Messages are ordinary callable values, but their names are **not** bound in the enclosing lexical scope — a message is reached with a send, or as a qualified member of its protocol (`docs/core.md §1/§9`):
 

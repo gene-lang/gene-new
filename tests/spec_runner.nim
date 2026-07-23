@@ -1958,6 +1958,32 @@ suite "spec — Date/time type family":
                " (== (hash 2026-07-04T09:30Z) (hash 2026-07-04T09:30Z))]",
                "[true false true]")
 
+suite "spec — implicit self in message bodies from design §10 (D9)":
+  test "self is implicit; the receiver leaves the parameter vector":
+    check_eval("(type Box ^props {^val Int} " &
+               "  (message get [] self/val) " &
+               "  (message add [n] (+ self/val n))) " &
+               "(var b (Box ^val 10)) [(b ~ get) (b ~ add 5)]",
+               "[10 15]")
+
+  test "an inline impl message binds self implicitly":
+    check_eval("(protocol Greet (message hi [] : Str)) " &
+               "(type P ^props {^name Str} " &
+               "  (impl Greet (message hi [] : Str $\"hi ${self/name}\"))) " &
+               "((P ^name \"Ada\") ~ hi)",
+               "\"hi Ada\"")
+
+  test "enum messages bind self implicitly":
+    check_eval("(enum Direction north east south west " &
+               "  (message degrees [] : Int (* (self ~ ordinal) 90))) " &
+               "(Direction/south ~ degrees)",
+               "180")
+
+  test "the legacy explicit-self form still binds the receiver":
+    check_eval("(type Box2 ^props {^val Int} (message get [self] self/val)) " &
+               "((Box2 ^val 7) ~ get)",
+               "7")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &

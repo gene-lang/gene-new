@@ -5460,6 +5460,20 @@ proc messageName(node: Value): string =
       parts.protocolPath.join("/") & "/" & parts.name)
   parts.name
 
+proc messageParamVector(paramList: Value): Value =
+  ## D9: `self` is implicit in a message body. Inject it as the receiver
+  ## parameter unless the (legacy) vector already begins with `self`, so both
+  ## `(message m [x] ...)` and `(message m [self x] ...)` bind `self` as the
+  ## receiver and enable leading sends `(~ m)`.
+  if paramList.kind == vkList and paramList.listItems.len > 0 and
+      paramList.listItems[0].isSymbol("self"):
+    return paramList
+  var items = @[newSym("self")]
+  if paramList.kind == vkList:
+    for item in paramList.listItems:
+      items.add item
+  newList(items)
+
 proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
   let parts = messageNameParts(node)
   let displayName =
@@ -5468,7 +5482,8 @@ proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
   let errorRow = compileErrorRow(c, node)
   ImplMessageProto(name: parts.name,
                    protocolPath: parts.protocolPath,
-                   fn: buildFunctionProto(c, displayName, node.body[1],
+                   fn: buildFunctionProto(c, displayName,
+                                          messageParamVector(node.body[1]),
                                           node.body, 2,
                                           checksErrors = errorRow.checks,
                                           errorTypeCount = errorRow.count))
