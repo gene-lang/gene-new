@@ -1984,6 +1984,27 @@ suite "spec — implicit self in message bodies from design §10 (D9)":
                "((Box2 ^val 7) ~ get)",
                "7")
 
+  test "super delegates to the implementation above, relative to the enclosing type (D19)":
+    check_eval("(type A ^props {} (message greet [] : Str \"A\")) " &
+               "(type B ^is A ^props {} " &
+               "  (message greet [] : Str ($ \"B+\" (super ~ greet)))) " &
+               "(type C ^is B ^props {} " &
+               "  (message greet [] : Str ($ \"C+\" (super ~ greet)))) " &
+               "[((B) ~ greet) ((C) ~ greet)]",
+               "[\"B+A\" \"C+B+A\"]")
+
+  test "super passes arguments to the parent implementation":
+    check_eval("(type A ^props {} (message scale [n] : Int (* n 2))) " &
+               "(type B ^is A ^props {} " &
+               "  (message scale [n] : Int (+ (super ~ scale n) 1))) " &
+               "((B) ~ scale 10)",
+               "21")
+
+  test "super with no parent is a compile error":
+    check_compile_error(
+      "(type X ^props {} (message m [] : Str (super ~ m)))",
+      "super is only valid")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &
@@ -2050,8 +2071,8 @@ suite "spec — binding forms from design §12.1":
     check_eval("(let n : Int 5) (+ n 1)", "6")
 
   test "the send operator ~ is reserved and cannot be bound (D13)":
-    check_compile_error("(var ~ 5)", "message-send operator")
-    check_compile_error("(let ~ 5)", "message-send operator")
+    check_compile_error("(var ~ 5)", "reserved")
+    check_compile_error("(let ~ 5)", "reserved")
     # still tokenizes inside quoted data
     check_eval("(quote (a ~ b))", "(a ~ b)")
 

@@ -66,6 +66,7 @@ type
     opCall
     opCallSplice
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
+    opSuperSend       # pop self + super(parent) type; resolve msg from the parent's ^is chain, push callee + self (grill D19)
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
     opReturnIntAdd2
@@ -765,6 +766,8 @@ proc formatInstruction(inst: Instruction): string =
       result.add " names=" & formatNames(inst.names)
   of opResolveMessage:
     result.add " name=" & inst.name & " candidates=" & $inst.depth
+  of opSuperSend:
+    result.add " name=" & inst.name
   of opPlaceSendReceiver:
     result.add " named=" & $inst.intArg
   of opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,

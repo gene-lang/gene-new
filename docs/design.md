@@ -2340,7 +2340,25 @@ message that takes an argument declares just that argument:
 
 `self` is an immutable, compiler-owned binding (§12.1): `(set self …)` and
 declaring another `self` are compile errors, and it cannot be shadowed, so
-`(~ m)` always denotes the receiver. `Self` remains a type name in annotation
+`(~ m)` always denotes the receiver.
+
+**Parent delegation uses `super` as a receiver.** Inside a type message body,
+`(super ~ m args…)` invokes the implementation of `m` **above the enclosing
+type** on the `^is` chain, called with `self`:
+
+```gene
+(type Animal ^props {} (message speak [] : Str "…"))
+(type Dog ^is Animal ^props {}
+  (message speak [] : Str ($ "woof; " (super ~ speak))))
+```
+
+`super` resolves from the *enclosing type's* parent, not the receiver's runtime
+type, so in `C ^is B ^is A` each `super` steps exactly one level relative to the
+body it appears in. It is statically resolved (the enclosing type is known when
+the message compiles) and needs no runtime type reflection. `super` is reserved
+and cannot be bound. Using it outside a type message body with an `^is` parent
+is a compile error. (`(super ~ Proto/m)` for protocol-impl delegation is
+deferred — it needs the protocol-impl precedence rule.) `Self` remains a type name in annotation
 position, e.g. `(message eq [other : Self] : Bool)`. The legacy form that names
 the receiver explicitly as the first parameter (`[self …]`) is still accepted
 during migration.

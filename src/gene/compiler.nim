@@ -103,6 +103,9 @@ type
     # D3). A `set` targeting one is a compile error. childCompiler copies the
     # set so a nested `var` shadows an outer `let` without un-marking the outer.
     letNames: HashSet[string]
+    # D19: while compiling a type-direct message body, the enclosing type's
+    # `^is` parent expression, so `(super ~ m)` dispatches from it. NIL outside.
+    superType: Value
     importedSyntaxFnSets: Table[string, seq[string]]
     importedSyntaxFnNames: HashSet[string]
     importedInterfaces: Table[string, CompileNamespaceInterface]
@@ -213,7 +216,7 @@ const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 # D13: `~` is the send operator and is reserved in executable position. The
 # reader still tokenizes it (so quoted data like `(quote (a ~ b))` round-trips),
 # but it may not be bound, set, or declared as a name.
-const reservedOperatorNames = ["~"]
+const reservedOperatorNames = ["~", "super"]
 
 proc validateBindingName(name: string) =
   if name in reservedStdlibRoots:
@@ -221,8 +224,8 @@ proc validateBindingName(name: string) =
       "reserved standard-library root cannot be bound: " & name)
   if name in reservedOperatorNames:
     raise newException(GeneError,
-      "'" & name & "' is the message-send operator and cannot be bound " &
-      "(design §3, grill D13)")
+      "'" & name & "' is reserved (send operator / super receiver) and " &
+      "cannot be bound (design §3/§10)")
 
 proc reserveLocal(c: var Compiler, name: string): int =
   validateBindingName(name)
@@ -600,6 +603,7 @@ proc childCompiler(c: Compiler): Compiler =
            ordinaryFnNames: c.ordinaryFnNames,
            mutableBindingNames: c.mutableBindingNames,
            letNames: c.letNames,
+           superType: c.superType,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
            importedSyntaxFnNames: c.importedSyntaxFnNames,
            importedInterfaces: c.importedInterfaces,
@@ -4827,11 +4831,22 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   ## receiver-first at runtime, falling back to the lexical binding. Stack
   ## shape matches ordinary calls: [callee, named..., receiver, args...].
   var names: seq[string]
-  compileExpr(c, receiver)
-  # Resolve before every send argument. In particular, a lexical fn! fallback
-  # is rejected here without running named or positional argument forms.
-  discard c.emit(opResolveMessage, 0, name = sendName,
-                 depth = c.messageCandidateSetIndex())
+  let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
+  if isSuper:
+    # D19: (super ~ m) dispatches m from the enclosing type's ^is parent, but
+    # calls it with `self`. Push [superType, self]; opSuperSend resolves.
+    if c.superType.kind == vkNil:
+      raise newException(GeneError,
+        "super is only valid in a type message body with an ^is parent")
+    compileExpr(c, c.superType)
+    compileExpr(c, newSym("self"))
+    discard c.emit(opSuperSend, 0, name = sendName)
+  else:
+    compileExpr(c, receiver)
+    # Resolve before every send argument. In particular, a lexical fn! fallback
+    # is rejected here without running named or positional argument forms.
+    discard c.emit(opResolveMessage, 0, name = sendName,
+                   depth = c.messageCandidateSetIndex())
   for k, value in node.props:
     names.add k
     compileExpr(c, value)
@@ -5568,6 +5583,10 @@ proc compileType(c: var Compiler, node: Value) =
                                 errorTypeCount = errorRow.count)
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
+  # D19: type-direct message bodies see the enclosing type's `^is` parent as
+  # their super type, so `(super ~ m)` dispatches from it.
+  let savedSuperType = c.superType
+  c.superType = if node.props.hasKey("is"): node.props["is"] else: NIL
   for item in messageNodes:
     rejectReservedEffects(item)
     let mp = implMessageProto(c, item)
@@ -5579,6 +5598,7 @@ proc compileType(c: var Compiler, node: Value) =
       raise newException(GeneError, "duplicate type message: " & mp.name)
     seenMessages[mp.name] = true
     messages.add mp
+  c.superType = savedSuperType
   # Inline impls (docs/core.md §8): (impl P (message ...) ...) with the
   # receiver implied — the enclosing type. Each impl emits its message error
   # rows and then its protocol expression, in declaration order.

@@ -11128,6 +11128,37 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             spush callee
           spush receiver
+        of opSuperSend:
+          # Parent delegation (grill D19): resolve the message from the super
+          # (parent) type's ^is chain rather than the receiver's runtime type,
+          # but call it with `self` as the receiver. The compiler pushed
+          # [superType, self]; the super type is statically the enclosing
+          # type's ^is parent.
+          let receiver = spop()             # self
+          let superType = spop()            # the enclosing type's parent
+          var callee = NIL
+          if superType.kind == vkType:
+            callee = typeDirectMessage(superType, inst[].name)
+          if callee.kind == vkNil:
+            raiseMessageError(inst[].name,
+              (if superType.kind == vkType: "super " & superType.typeName
+               else: "super"),
+              scope, false)
+          if callee.isSyntaxFn:
+            rejectSyntaxSend(callee, scope)
+          if inst[].intArg > 0:
+            if sp >= stack.len:
+              spGrow(stack)
+            var insertAt = sp - inst[].intArg
+            var shiftIndex = sp
+            while shiftIndex > insertAt:
+              stack[shiftIndex] = move stack[shiftIndex - 1]
+              dec shiftIndex
+            stack[insertAt] = callee
+            inc sp
+          else:
+            spush callee
+          spush receiver
         of opPlaceSendReceiver:
           # [callee, receiver, named...] -> [callee, named..., receiver]. The
           # resolution itself happened before named argument evaluation.
