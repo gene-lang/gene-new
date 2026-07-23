@@ -750,3 +750,56 @@ suite "protocols — namespace-qualified declaration paths":
        "(type U ^props {^name Str} ^derive [p/HasLabel]) " &
        "((U ^name \"Ada\") ~ label)",
        "\"Ada\""
+
+suite "protocols — dispatch inline cache soundness (item D1)":
+  # The per-call-site send cache must never serve a stale callee. Each program
+  # reuses one call site across activations so a warmed entry is exercised.
+  test "polymorphic receivers at one call site stay type-correct":
+    # A monomorphic entry keyed only on ip would return the first type's impl
+    # for the second; the recvType guard must force a refill per type.
+    ck "(protocol Speak (message say [self] : Str)) " &
+       "(type Dog ^props {}) (type Cat ^props {}) " &
+       "(impl Speak for Dog (message say [self] : Str \"woof\")) " &
+       "(impl Speak for Cat (message say [self] : Str \"meow\")) " &
+       "(var d (Dog)) (var c (Cat)) " &
+       "(fn describe [x] (x ~ say)) " &
+       "[(describe d) (describe c) (describe d) (describe c)]",
+       "[\"woof\" \"meow\" \"woof\" \"meow\"]"
+
+  test "a nearer impl added mid-session invalidates a warmed entry":
+    # Warm `dv ~ g` against Base's impl (distance 1), then add Derived's own
+    # impl (distance 0). The implEpoch bump must invalidate and pick the nearer.
+    ck "(protocol Grow (message g [self] : Int)) " &
+       "(type Base ^props {}) (type Derived ^is Base ^props {}) " &
+       "(impl Grow for Base (message g [self] : Int 1)) " &
+       "(var dv (Derived)) (fn go [] (dv ~ g)) " &
+       "(var warm [(go) (go)]) " &
+       "(impl Grow for Derived (message g [self] : Int 2)) " &
+       "[warm (go) (go)]",
+       "[[1 1] 2 2]"
+
+  test "an overlay in a captured scope does not leak across closures":
+    # `a` and `b` share one `inner` chunk/call site. `a`'s captured scope holds
+    # an overlay impl (-> 2); `b`'s does not, so its send must miss the overlay
+    # and fail — not be served `a`'s cached callee. chainHasTransientImpls keeps
+    # the overlay-bearing activation from ever populating the shared entry.
+    ck "(protocol P (message m [self] : Int)) " &
+       "(type T ^props {}) (var t (T)) " &
+       "(fn outer [add_overlay] " &
+       "  (if add_overlay (impl P for T (message m [self] : Int 2))) " &
+       "  (fn inner [] (t ~ m))) " &
+       "(var a (outer true)) (var b (outer false)) " &
+       "[(a) (try (b) catch e -1) (a)]",
+       "[2 -1 2]"
+
+  test "qualified sends of two messages at one call site stay distinct":
+    # A first-class protocol message reused at one opCall ip; the message
+    # identity (msgBits) must join the guard so B/m does not hit A/m's entry.
+    ck "(protocol A (message m [self] : Int)) " &
+       "(protocol B (message m [self] : Int)) " &
+       "(type W ^props {}) " &
+       "(impl A for W (message m [self] : Int 10)) " &
+       "(impl B for W (message m [self] : Int 20)) " &
+       "(var w (W)) (fn apply [msg] (msg w)) " &
+       "[(apply A/m) (apply B/m) (apply A/m) (apply B/m)]",
+       "[10 20 10 20]"

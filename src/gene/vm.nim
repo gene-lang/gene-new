@@ -8665,6 +8665,83 @@ proc resolveReceiverMessage(scope: Scope, recvType: Value, name: string,
     raise newException(GeneError,
       "ambiguous message '" & name & "' for " & recvType.typeName)
 
+# --------------------------------------------------------------------------
+# Protocol-message dispatch inline cache (design §10, item D1)
+# --------------------------------------------------------------------------
+# Both send tiers (qualified `resolveProtocolMessage` and unqualified
+# `compiledProtocolCandidates` + `resolveReceiverMessage`) walk the whole
+# send-scope parent chain, linear-scanning every scope's `impls` with an ^is
+# receiver-distance probe per impl — ~10x a plain call. A per-call-site
+# monomorphic cache turns the repeated resolution into a guard check plus a
+# pointer materialization. The guard is sound because:
+#   * the receiver's runtime type is compared (recvTypeBits);
+#   * `implEpoch` is bumped by every impl mutation (canonical/scoped/overlay
+#     add, staged activation, import_impl, reload), so any change to the
+#     visible impl set — and any newly ambiguating or shadowing impl, since a
+#     candidate protocol only affects the result through an impl — invalidates;
+#   * a candidate protocol that gains no relevant impl is inert, so the
+#     name-fixed unqualified candidate set needs no separate signal;
+#   * activation-local overlay impls are the one impl source not pinned by the
+#     epoch across activations, so `chainHasTransientImpls` refuses the cache
+#     whenever a transient scope carries impls (fill and lookup alike).
+# Type-direct messages fold into the same entry: they are immutable per type
+# object, so recvTypeBits covers them.
+const dispatchCacheEnabled = not (compileOption("threads") and defined(gcAtomicArc))
+  ## The cache mutates per-Chunk side storage without synchronization. Only the
+  ## atomicArc worker lane (`compileOption("threads") and defined(gcAtomicArc)`,
+  ## the exact gate the scheduler uses) runs Chunks on multiple OS threads
+  ## concurrently; there the send falls back to full resolution — correct and
+  ## unchanged, just uncached. Every other build (default/test/spec/perf run
+  ## orc with cooperative single-lane fibers) caches. Note Nim 2.x defaults
+  ## `--threads:on`, so gating on threads alone would disable the cache
+  ## everywhere.
+
+when dispatchCacheEnabled:
+  proc chainHasTransientImpls(scope: Scope): bool {.inline.} =
+    ## True when a scope strictly below the first stable base (module root or
+    ## eval overlay root) carries impls. Those activation-local overlay impls
+    ## make a send context-sensitive — the same call site can resolve
+    ## differently across activations at one epoch — so such sends are neither
+    ## cached nor served from the cache. Stable-base impls (canonical/scoped/
+    ## import_impl) are epoch-guarded and live on reused scope objects, so the
+    ## walk stops at the base without inspecting them. Cost is O(transient
+    ## depth) of `.impls.len` reads; a module/eval root send scope returns at
+    ## once.
+    var s = scope
+    while s != nil:
+      if s.moduleRoot or s.implOverlayRoot:
+        return false
+      if s.impls.len > 0:
+        return true
+      s = s.parent
+    false
+
+  proc dispatchCacheLookup(chunk: Chunk, site: int, recvType: Value,
+                           msgBits, epoch: uint64): Value {.inline.} =
+    ## Owned cached callee on a full guard match, else NIL. An empty slot has
+    ## recvTypeBits 0, which never equals a live type's bits.
+    if site >= 0 and site < chunk.dispatchCache.len:
+      let e = addr chunk.dispatchCache[site]
+      if e.recvTypeBits == recvType.bits and e.msgBits == msgBits and
+          e.epoch == epoch:
+        return ownedValueFromBits(e.calleeBits)
+    NIL
+
+  proc dispatchCacheFill(chunk: Chunk, site: int, recvType: Value,
+                         msgBits, epoch: uint64, callee: Value) {.inline.} =
+    ## Record a monomorphic resolution, lazily sizing the side array to the
+    ## chunk's instruction count on first use. `calleeBits` is stored
+    ## non-owning; it is re-materialized only while the guard (epoch) still
+    ## holds, and an unchanged epoch implies the resolving impl — hence the
+    ## callee — is still registered and alive.
+    if site < 0:
+      return
+    if chunk.dispatchCache.len != chunk.instructions.len:
+      chunk.dispatchCache.setLen(chunk.instructions.len)
+    chunk.dispatchCache[site] = DispatchCacheEntry(
+      recvTypeBits: recvType.bits, msgBits: msgBits, epoch: epoch,
+      calleeBits: callee.bits)
+
 
 proc appendSplicedBody(target: var seq[Value], value: Value) =
   case value.kind
@@ -10583,7 +10660,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               else:
                 scope.loadSlotAt(inst[].depth, slot, inst[].name)
           if callee.kind == vkProtocolMessage and argCount >= 1:
-            callee = resolveProtocolMessage(scope, callee, stack[argsStart])
+            let receiver = stack[argsStart]
+            when dispatchCacheEnabled:
+              # A protocol message is first-class, so the message value can vary
+              # at one opCall ip; its identity joins the guard (msgBits).
+              let recvType = receiver.receiverType
+              let msgBits = callee.bits
+              var resolved = NIL
+              if recvType.kind == vkType and not scope.chainHasTransientImpls():
+                let site = ip - 1
+                let epoch = scope.application().implEpoch
+                resolved = chunk.dispatchCacheLookup(site, recvType, msgBits,
+                                                     epoch)
+                if resolved.kind == vkNil:
+                  resolved = resolveProtocolMessage(scope, callee, receiver)
+                  chunk.dispatchCacheFill(site, recvType, msgBits, epoch,
+                                          resolved)
+              else:
+                resolved = resolveProtocolMessage(scope, callee, receiver)
+              callee = resolved
+            else:
+              callee = resolveProtocolMessage(scope, callee, receiver)
           if callee.kind == vkFunction:
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
@@ -10884,13 +10981,25 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var uninitializedProtocolCandidates: seq[string]
           let recvType = receiver.receiverType
           if recvType.kind == vkType:
-            callee = typeDirectMessage(recvType, inst[].name)
+            when dispatchCacheEnabled:
+              # site = this instruction's index (ip was advanced at loop top).
+              let site = ip - 1
+              let epoch = scope.application().implEpoch
+              let cacheable = not scope.chainHasTransientImpls()
+              if cacheable:
+                callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
             if callee.kind == vkNil:
-              let candidates = scope.compiledProtocolCandidates(
-                chunk, inst[].depth - 1, uninitializedProtocolCandidates)
-              callee = resolveReceiverMessage(scope, recvType, inst[].name,
-                                              candidates,
-                                              knownProtocolCandidate)
+              callee = typeDirectMessage(recvType, inst[].name)
+              if callee.kind == vkNil:
+                let candidates = scope.compiledProtocolCandidates(
+                  chunk, inst[].depth - 1, uninitializedProtocolCandidates)
+                callee = resolveReceiverMessage(scope, recvType, inst[].name,
+                                                candidates,
+                                                knownProtocolCandidate)
+              when dispatchCacheEnabled:
+                if cacheable and callee.kind != vkNil and
+                    uninitializedProtocolCandidates.len == 0:
+                  chunk.dispatchCacheFill(site, recvType, 0'u64, epoch, callee)
           if callee.kind == vkNil and uninitializedProtocolCandidates.len > 0:
             raise newException(GeneError,
               "uninitialized protocol candidate for message '" & inst[].name &
@@ -10957,7 +11066,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # impl up front, so the call rides the same frame-push paths below instead
           # of double-recursing through applyCall (message dispatch + impl call).
           if callee.kind == vkProtocolMessage and argCount >= 1:
-            callee = resolveProtocolMessage(scope, callee, stack[argsStart])
+            let receiver = stack[argsStart]
+            when dispatchCacheEnabled:
+              # A protocol message is first-class, so the message value can vary
+              # at one opCall ip; its identity joins the guard (msgBits).
+              let recvType = receiver.receiverType
+              let msgBits = callee.bits
+              var resolved = NIL
+              if recvType.kind == vkType and not scope.chainHasTransientImpls():
+                let site = ip - 1
+                let epoch = scope.application().implEpoch
+                resolved = chunk.dispatchCacheLookup(site, recvType, msgBits,
+                                                     epoch)
+                if resolved.kind == vkNil:
+                  resolved = resolveProtocolMessage(scope, callee, receiver)
+                  chunk.dispatchCacheFill(site, recvType, msgBits, epoch,
+                                          resolved)
+              else:
+                resolved = resolveProtocolMessage(scope, callee, receiver)
+              callee = resolved
+            else:
+              callee = resolveProtocolMessage(scope, callee, receiver)
           # Frame-push paths: route Gene function calls onto the explicit frame stack
           # instead of recursing through Nim. ^errors functions push a frame too and
           # carry their error boundary (translated by the loop's handler on throw);

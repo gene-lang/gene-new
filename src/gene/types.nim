@@ -213,6 +213,16 @@ proc retainedCopy*(src: Value): Value {.inline.} =
     rcRetain(src.bits)
   result.bits = src.bits
 
+proc ownedValueFromBits*(bits: uint64): Value {.inline.} =
+  ## Materialize an owned Value from raw bits held by a non-owning side store
+  ## (e.g. the dispatch inline cache). The caller must guarantee the boxed
+  ## object is still alive — a retain here without a prior matching one would
+  ## otherwise double-count. `result.bits` starts nil (0), so the assignment
+  ## touches no hook; the retain balances the eventual `=destroy`.
+  if (bits shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRetain(bits)
+  result.bits = bits
+
 type
   ## Props and meta are symbol-keyed ordered maps. Keys are the bare symbol
   ## text (without the leading `^`/`@`), stored as interned symbol ids —

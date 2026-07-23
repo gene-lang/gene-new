@@ -262,6 +262,23 @@ type
   MessageCandidateSet* = object
     refs*: seq[ProtocolCandidateRef]
 
+  DispatchCacheEntry* = object
+    ## Per-call-site inline cache for protocol-message dispatch (design §10,
+    ## item D1). Side storage keyed by the send instruction's index in the
+    ## chunk — never a field on `Instruction`, which is bench-frozen at 64
+    ## bytes. All fields are plain integers: the cache holds NO owning Value
+    ## ref (that would risk an `{.acyclic.}`-Chunk retain cycle through a
+    ## recursive impl), so a hit re-materializes an owned callee from
+    ## `calleeBits` via `ownedValueFromBits`. `recvTypeBits == 0` marks an
+    ## empty slot (a real type Value is never 0/nil). Guard = receiver type
+    ## identity + message identity (0 for name-fixed unqualified sends) +
+    ## `Application.implEpoch`; every impl mutation bumps the epoch, so any
+    ## change to the visible impl set invalidates every entry.
+    recvTypeBits*: uint64
+    msgBits*: uint64
+    epoch*: uint64
+    calleeBits*: uint64
+
   CompileDiagnostic* = object
     message*: string
     loc*: SourceLoc
@@ -450,6 +467,7 @@ type
     imports*: seq[ImportSpec]
     importImpls*: seq[ImportImplSpec]
     messageCandidateSets*: seq[MessageCandidateSet]
+    dispatchCache*: seq[DispatchCacheEntry] # inline send cache; lazily sized to instructions.len (item D1)
     diagnostics*: seq[CompileDiagnostic]
     forLoops*: seq[ForProto]
     matches*: seq[MatchProto]
