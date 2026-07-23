@@ -333,11 +333,39 @@ proc main() =
   let protocolScope = newGlobalScope()
   discard run(compileSource(
     "(protocol ToInt (message to_int [self] : Int)) " &
-    "(type Box ^props {^x Int}) " &
+    "(protocol Adder (message add [self n] : Int)) " &
+    # Triv's impl body just returns self, matching `identity` below so the send
+    # and the plain 1-arg call differ only in dispatch, not in body work.
+    "(protocol Triv (message triv [self]))" &
+    # Box also carries a type-direct message `get` alongside its protocol impls.
+    "(type Box ^props {^x Int} (message get [self] : Int self/x)) " &
+    # Animal/Dog exercise inherited dispatch: the impl lives on the parent, so
+    # resolution walks the ^is chain (receiverDistance 1) before the cache warms.
+    "(type Animal ^props {^x Int}) " &
+    "(type Dog ^is Animal ^props {}) " &
     "(impl ToInt for Box (message to_int [self] : Int self/x)) " &
-    "(var box (Box ^x 10))"), protocolScope)
-  # Message names are not lexical bindings (docs/core.md §1); the hot
-  # dispatch path is now the send form, resolved receiver-first (§9.1).
+    "(impl Adder for Box (message add [self n] : Int (+ self/x n))) " &
+    "(impl Triv for Box (message triv [self] self)) " &
+    "(impl ToInt for Animal (message to_int [self] : Int self/x)) " &
+    "(var box (Box ^x 10)) " &
+    "(var dog (Dog ^x 10)) " &
+    # Reference: a 1-arg Gene function call — the target sends aim to approach.
+    "(var identity (fn [x] x))"), protocolScope)
+  # Message names are not lexical bindings (docs/core.md §1); the hot dispatch
+  # path is the send form, resolved receiver-first (§9.1). The per-call-site
+  # inline cache (item D1) collapses the resolution walk: a trivial-body send
+  # (`box ~ triv`) sits right on the 1-arg Gene call reference, so the extra
+  # cost of the other sends is impl-body work (a `self/x` selector plus a
+  # `: Int` return-type check), not dispatch. `qualified` is the exception — it
+  # still pays selector extraction of `Proto/msg` at the call site.
+  let referenceCallChunk = compileSource("(identity box)")
+  bench("vm.call.gene_one_arg.compiled_chunk", 500_000, i):
+    let v = run(referenceCallChunk, protocolScope)
+    checksum = checksum + int64(v.props["x"].intVal)
+  let trivialSendChunk = compileSource("(box ~ triv)")
+  bench("vm.protocol_message.trivial_body.compiled_chunk", 500_000, i):
+    let v = run(trivialSendChunk, protocolScope)
+    checksum = checksum + int64(v.props["x"].intVal)
   let protocolChunk = compileSource("(box ~ to_int)")
   bench("vm.protocol_message.compiled_chunk", 500_000, i):
     let v = run(protocolChunk, protocolScope)
@@ -345,6 +373,18 @@ proc main() =
   let qualifiedChunk = compileSource("(box ~ ToInt/to_int)")
   bench("vm.protocol_message.qualified.compiled_chunk", 500_000, i):
     let v = run(qualifiedChunk, protocolScope)
+    checksum = checksum + v.intVal
+  let inheritedChunk = compileSource("(dog ~ to_int)")
+  bench("vm.protocol_message.inherited.compiled_chunk", 500_000, i):
+    let v = run(inheritedChunk, protocolScope)
+    checksum = checksum + v.intVal
+  let typeDirectChunk = compileSource("(box ~ get)")
+  bench("vm.protocol_message.type_direct.compiled_chunk", 500_000, i):
+    let v = run(typeDirectChunk, protocolScope)
+    checksum = checksum + v.intVal
+  let sendArgChunk = compileSource("(box ~ add 5)")
+  bench("vm.protocol_message.with_arg.compiled_chunk", 500_000, i):
+    let v = run(sendArgChunk, protocolScope)
     checksum = checksum + v.intVal
 
   let restScope = newGlobalScope()
