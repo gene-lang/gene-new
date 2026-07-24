@@ -229,7 +229,7 @@ suite "net/http server e2e":
   (var r d/%meta/route)
   (route ^method r/method ^path r/path ^handler d/value))
 (var routes
-  ((map (filter (Module/declarations this_mod) routed?) route-entry)
+  ((map (filter (this_mod ~ declarations) routed?) route-entry)
    ~ into []))
 (serve (Server ^host "127.0.0.1" ^port 8194)
   ^max_requests 2

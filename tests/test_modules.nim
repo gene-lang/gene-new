@@ -201,7 +201,7 @@ suite "modules — file imports":
   test "module reflection exposes normalized file path":
     writeModule("math.gene", "(var pi 3)")
     let expected = normalizedPath(absolutePath("math.gene", modDir))
-    check runProgram("(import * : m from \"./math\") (Module/path m)").strVal ==
+    check runProgram("(import * : m from \"./math\") (m ~ path)").strVal ==
       expected
 
   test "imported module roots expose declaration streams":
@@ -233,9 +233,9 @@ suite "modules — file imports":
   test "this_mod exposes module reflection helpers":
     writeModule("selfpath.gene",
       "(var marker 42) " &
-      "(var root (Module/root_namespace this_mod)) " &
-      "(var reflected [(Module/name this_mod) " &
-      "                (Module/path this_mod) " &
+      "(var root (this_mod ~ root_namespace)) " &
+      "(var reflected [(this_mod ~ name) " &
+      "                (this_mod ~ path) " &
       "                (== root this_mod) " &
       "                (/marker root)])")
     let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
@@ -248,15 +248,15 @@ suite "modules — file imports":
   test "mod metadata persists on the module value":
     writeModule("meta.gene",
       "(mod renamed @doc \"module docs\") " &
-      "(var reflected [(Module/name this_mod) " &
-      "                (/doc (Module/meta this_mod))])")
+      "(var reflected [(this_mod ~ name) " &
+      "                (/doc (this_mod ~ meta))])")
     check runProgram("(import [reflected] from \"./meta\") reflected").print() ==
       "[\"renamed\" \"module docs\"]"
 
   test "Module annotations accept module values":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import * : m from \"./math\") " &
-      "(fn module_path [m : Module] (Module/path m)) (module_path m)").strVal ==
+      "(fn module_path [m : Module] (m ~ path)) (module_path m)").strVal ==
       normalizedPath(absolutePath("math.gene", modDir))
     expect GeneError:
       discard runProgram("(fn module_id [m : Module] m) (module_id [1])")

@@ -1378,21 +1378,21 @@ suite "vm — namespaces":
   test "namespaces compare by identity":
     ck "(ns m (var a 1)) (== m m)", "true"
   test "namespace reflection exposes bindings and lookup":
-    ck "(ns m (var b 2) (var a 1)) [(Namespace/lookup m \"a\") (Namespace/lookup m \"missing\")]",
+    ck "(ns m (var b 2) (var a 1)) [(m ~ lookup \"a\") (m ~ lookup \"missing\")]",
        "[1 void]"
-    ck "(ns m (var b 2) (var a 1)) (Namespace/bindings m)",
+    ck "(ns m (var b 2) (var a 1)) (m ~ bindings)",
        "{^a 1 ^b 2}"
   test "declarations exposes namespace bindings as a stream":
     ck "(ns m (var b 2) (var a 1)) " &
        "(var names m/%declarations/name) " &
        "[(names ~ next) (names ~ next) (names ~ has_next)]",
        "[\"a\" \"b\" false]"
-    ck "(ns m (var a 1)) (var ds (Namespace/declarations m)) (ds ~ next)",
+    ck "(ns m (var a 1)) (var ds (m ~ declarations)) (ds ~ next)",
        "(Declaration ^name \"a\" ^kind \"Int\" ^value 1)"
   test "namespace reflection operations require namespaces":
     expect GeneError: discard runStr("(declarations [1])")
-    expect GeneError: discard runStr("(Namespace/bindings [1])")
-    expect GeneError: discard runStr("(Namespace/lookup [1] \"a\")")
+    expect GeneError: discard runStr("([1] ~ bindings)")
+    expect GeneError: discard runStr("([1] ~ lookup \"a\")")
 
 suite "vm — env and eval":
   test "env values are opaque display values":
@@ -1427,7 +1427,7 @@ suite "vm — env and eval":
        "(eval (quote fs) ^in e)",
        "\"binding\""
     ck "(var base (env ^capabilities {^fs \"sandbox\"})) " &
-       "(var child (Env/extend base {^x 1})) " &
+       "(var child (base ~ extend {^x 1})) " &
        "(eval (quote [fs x]) ^in child)",
        "[\"sandbox\" 1]"
     expect GeneError:
@@ -1754,7 +1754,7 @@ suite "vm — cooperative scheduler":
     ck "(scope (var ch (channel ^capacity 1)) " &
        "  (var t (spawn (ns m (var x (ch ~ recv))))) " &
        "  (spawn (ch ~ send 10)) " &
-       "  (Namespace/lookup (await t) (quote x)))", "10"
+       "  ((await t) ~ lookup (quote x)))", "10"
   test "await with no way to make progress is a deadlock error":
     expect GeneError:
       discard runStr("(scope (var ch (channel ^capacity 1)) " &
@@ -2062,7 +2062,7 @@ suite "vm — cooperative scheduler":
        "  (actor/continue state)) " &
        "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var p (spawn (ch ~ send 100))) " &
-       "(actor/send a 5) " &
+       "(a ~ send 5) " &
        "(out ~ get)", "105"
   test "an actor handler can suspend on a timer mid-message":
     ck "(var out (cell 0)) " &
@@ -2071,7 +2071,7 @@ suite "vm — cooperative scheduler":
        "  (out ~ set msg) " &
        "  (actor/continue state)) " &
        "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(actor/send a 42) " &
+       "(a ~ send 42) " &
        "(out ~ get)", "42"
   test "actor ask returns a pending task instead of driving synchronously":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -2084,7 +2084,7 @@ suite "vm — cooperative scheduler":
        "      (reply ~ send (+ state got)) " &
        "      (actor/continue state)))) " &
        "(var a (actor/spawn ^init (fn [] 40) ^handle handle)) " &
-       "(var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+       "(var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
        "(ch ~ send 2) " &
        "(await pending)", "42"
   test "actor ask awaited inside a fiber parks until the reply is sent":
@@ -2097,7 +2097,7 @@ suite "vm — cooperative scheduler":
        "        (when (Get ^reply reply) " &
        "          (reply ~ send state) " &
        "          (actor/continue state)))))) " &
-       "  (var t (spawn (await (actor/ask a (fn [reply] (Get ^reply reply)))))) " &
+       "  (var t (spawn (await (a ~ ask (fn [reply] (Get ^reply reply)))))) " &
        "  (await t))", "41"
 
   test "actor ask timeout fails pending request and ignores late reply":
@@ -2112,7 +2112,7 @@ suite "vm — cooperative scheduler":
        "  (out ~ set got) " &
        "  (actor/continue state)) " &
        "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var pending (actor/ask ^timeout_ms 5 a (fn [reply] (Get ^reply reply)))) " &
+       "(var pending (a ~ ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
        "(var err (try (await pending) catch (ActorError ^message m) m)) " &
        "(ch ~ send 7) " &
        "[err (sleep 1) (out ~ get)]",
@@ -2128,7 +2128,7 @@ suite "vm — cooperative scheduler":
        "  (try (reply ~ send got) catch {^message m} m) " &
        "  (actor/continue state)) " &
        "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var pending (actor/ask ^timeout_ms 5 a " &
+       "(var pending (a ~ ask ^timeout_ms 5 " &
        "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
        "(var err (try (await pending) catch (ActorError ^message m) m)) " &
        "(var first-late (try ((saved ~ get) ~ send 9) " &
@@ -2153,10 +2153,10 @@ suite "vm — cooperative scheduler":
                      "      (actor/continue state)) " &
                      "    (when (Tick) (actor/continue state)))) " &
                      "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-                     "(var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+                     "(var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
                      "(pending ~ cancel) " &
                      "(ch ~ send 7) " &
-                     "(actor/send a (Tick)) " &
+                     "(a ~ send (Tick)) " &
                      "(await pending)")
     ck "(scope " &
        "  (type Get ^props {^reply (ReplyTo Int)}) " &
@@ -2169,7 +2169,7 @@ suite "vm — cooperative scheduler":
        "  (try (reply ~ send got) catch {^message m} m) " &
        "  (actor/continue state)) " &
        "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var pending (actor/ask a " &
+       "(var pending (a ~ ask " &
        "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
        "(pending ~ cancel) " &
        "(var first-late (try ((saved ~ get) ~ send 9) " &
@@ -2191,7 +2191,7 @@ suite "vm — cooperative scheduler":
                      "        (when (Get ^reply reply) " &
                      "          (reply ~ send state) " &
                      "          (actor/continue state)))))) " &
-                     "  (set pending (actor/ask a " &
+                     "  (set pending (a ~ ask " &
                      "    (fn [reply] (Get ^reply reply)))) " &
                      "  nil) " &
                      "(await pending)")
@@ -2205,7 +2205,7 @@ suite "vm — cooperative scheduler":
        "      (var got (ch ~ recv)) " &
        "      (out ~ set got) " &
        "      (actor/continue state)))) " &
-       "  (actor/send a 1) " &
+       "  (a ~ send 1) " &
        "  nil) " &
        "(ch ~ send 7) " &
        "(var gate (channel ^capacity 1)) " &
@@ -2250,8 +2250,8 @@ suite "vm — actors":
        "  (actor/continue next)) " &
        "(var counter : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(actor/send counter 2) " &
-       "(actor/send counter 5) " &
+       "(counter ~ send 2) " &
+       "(counter ~ send 5) " &
        "(out ~ get)",
        "7"
 
@@ -2263,7 +2263,7 @@ suite "vm — actors":
        "    (gate ~ recv) " &
        "    (seen ~ set msg) " &
        "    (actor/continue msg)))) " &
-       "(var before [(actor/try_send a 7) (seen ~ get)]) " &
+       "(var before [(a ~ try_send 7) (seen ~ get)]) " &
        "(gate ~ send 1) " &
        "(sleep 0) " &
        "before",
@@ -2275,7 +2275,7 @@ suite "vm — actors":
        "    (gate ~ recv) " &
        "    (seen ~ set msg) " &
        "    (actor/continue msg)))) " &
-       "(actor/try_send a 7) " &
+       "(a ~ try_send 7) " &
        "(gate ~ send 1) " &
        "(sleep 0) " &
        "(seen ~ get)",
@@ -2285,25 +2285,25 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/stop)))) " &
-       "(actor/send a 1) " &
-       "(try (actor/send a 2) catch (ActorClosed ^message m) m)",
+       "(a ~ send 1) " &
+       "(try (a ~ send 2) catch (ActorClosed ^message m) m)",
        "\"actor is closed\""
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/stop)))) " &
-       "(actor/send a 1) " &
-       "(actor/try_send a 2)",
+       "(a ~ send 1) " &
+       "(a ~ try_send 2)",
        "false"
 
   test "actor sends check message type and Send":
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
-       "(try (actor/send a \"bad\") catch (TypeError ^where w) w)",
+       "(try (a ~ send \"bad\") catch (TypeError ^where w) w)",
        "\"actor/send message\""
     ck "(var a (actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
-       "(try (actor/send a [1]) catch (TypeError ^expected e) e)",
+       "(try (a ~ send [1]) catch (TypeError ^expected e) e)",
        "\"Send\""
 
   test "actor message type is explicit inferred or Any":
@@ -2344,7 +2344,7 @@ suite "vm — actors":
        "      (actor/continue state)))) " &
        "(var a : (ActorRef Get) " &
        "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
-       "(await (actor/ask a (fn [reply] (Get ^reply reply))))",
+       "(await (a ~ ask (fn [reply] (Get ^reply reply))))",
        "41"
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
@@ -2358,7 +2358,7 @@ suite "vm — actors":
        "            (actor/continue state)))))) " &
        "  (fn (choose result err) [t : (Task result err) fallback : result] " &
        "    fallback) " &
-       "  (try (choose (actor/ask a (fn [reply] (Get ^reply reply))) \"bad\") " &
+       "  (try (choose (a ~ ask (fn [reply] (Get ^reply reply))) \"bad\") " &
        "       catch (TypeError ^expected e) e))",
        "\"Int\""
 
@@ -2372,7 +2372,7 @@ suite "vm — actors":
        "        (when (Get ^reply reply) " &
        "          (reply ~ send \"bad\") " &
        "          (actor/continue state)))))) " &
-       "(try (await (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+       "(try (await (a ~ ask (fn [reply] (Get ^reply reply)))) " &
        "catch (TypeError ^where w) w)",
        "\"ReplyTo/send value\""
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -2380,7 +2380,7 @@ suite "vm — actors":
        "(var a : (ActorRef Get) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
-       "(try (await (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+       "(try (await (a ~ ask (fn [reply] (Get ^reply reply)))) " &
        "catch (ActorError ^message m) m)",
        "\"actor/ask did not receive a reply\""
 
@@ -2388,7 +2388,7 @@ suite "vm — actors":
     ck "(var a (scope " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-       "(actor/try_send a 1)",
+       "(a ~ try_send 1)",
        "false"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -2399,14 +2399,14 @@ suite "vm — actors":
        "      ^handle (fn [ctx state msg] (actor/continue state)))) " &
        "    (fail (Boom ^message \"x\"))) " &
        "catch (Boom ^message m) m) " &
-       "(actor/try_send a 1)",
+       "(a ~ try_send 1)",
        "false"
 
   test "supervisors own actors and apply failure strategies":
     ck "(var a (supervisor ^strategy stop " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-       "(actor/try_send a 1)",
+       "(a ~ try_send 1)",
        "false"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -2419,8 +2419,8 @@ suite "vm — actors":
        "        (do " &
        "          (seen ~ set state) " &
        "          (actor/continue (+ state msg))))))) " &
-       "  (actor/send a 1) " &
-       "  (actor/send a 5) " &
+       "  (a ~ send 1) " &
+       "  (a ~ send 5) " &
        "  (seen ~ get))",
        "10"
 
@@ -2434,7 +2434,7 @@ suite "vm — actors":
        "    (set a (actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] " &
        "        (fail (Boom ^message \"bad\"))))) " &
-       "    (spawn (actor/send a i)) " &
+       "    (spawn (a ~ send i)) " &
        "    (set i (+ i 1))) " &
        "  (sleep 20) " &
        "  (var stats (Runtime/gc_stats)) " &
@@ -2464,8 +2464,8 @@ suite "vm — actors":
        "        (do " &
        "          (seen ~ set state) " &
        "          (actor/continue (+ state msg))))))) " &
-       "  (spawn (actor/send a 1)) " &
-       "  (spawn (actor/send a 5)) " &
+       "  (spawn (a ~ send 1)) " &
+       "  (spawn (a ~ send 5)) " &
        "  (sleep 1) " &
        "  (var event (events ~ recv)) " &
        "  (var tries 0) " &
@@ -2489,7 +2489,7 @@ suite "vm — actors":
        "  (var a (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (actor/send a 1) " &
+       "  (a ~ send 1) " &
        "  (sleep 1) " &
        "  (var event (dead ~ recv)) " &
        "  (var busy (events ~ recv)) " &
@@ -2510,7 +2510,7 @@ suite "vm — actors":
        "  (var a (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (actor/send a 4) " &
+       "  (a ~ send 4) " &
        "  (sleep 1) " &
        "  (var dead-busy (dead ~ recv)) " &
        "  (var event (dead ~ recv)) " &
@@ -2530,7 +2530,7 @@ suite "vm — actors":
        "  (var a (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (actor/send a 3) " &
+       "  (a ~ send 3) " &
        "  (var busy (events ~ recv)) " &
        "  (var event (events ~ recv)) " &
        "  [busy " &
@@ -2549,7 +2549,7 @@ suite "vm — actors":
        "  (var a (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (actor/send a 2) " &
+       "  (a ~ send 2) " &
        "  (sleep 1) " &
        "  (var event (dead ~ recv)) " &
        "  (match event " &
@@ -2566,7 +2566,7 @@ suite "vm — actors":
        "  (var a (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (actor/send a 6) " &
+       "  (a ~ send 6) " &
        "  (sleep 1) " &
        "  (var event (dead ~ recv)) " &
        "  (match event " &
@@ -2590,8 +2590,8 @@ suite "vm — actors":
        "        (do " &
        "          (seen ~ set state) " &
        "          (actor/continue (+ state msg))))))) " &
-       "  (actor/send a 1) " &
-       "  (actor/send a 5) " &
+       "  (a ~ send 1) " &
+       "  (a ~ send 5) " &
        "  (sleep 1) " &
        "  (seen ~ get))",
        "10"
@@ -2603,9 +2603,9 @@ suite "vm — actors":
        "     (set a (actor/spawn ^init (fn [] 0) " &
        "       ^handle (fn [ctx state msg] " &
        "         (fail (Boom ^message \"bad\"))))) " &
-       "     (actor/send a 1)) " &
+       "     (a ~ send 1)) " &
        "   catch (Boom ^message m) m) " &
-       " (actor/try_send a 2)]",
+       " (a ~ try_send 2)]",
        "[\"bad\" false]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -2616,7 +2616,7 @@ suite "vm — actors":
        "    (var a (actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] " &
        "        (fail (Boom ^message \"bad\"))))) " &
-       "    (var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+       "    (var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
        "    (sleep 1) " &
        "    \"after\") " &
        "  catch (Boom ^message m) m)",
@@ -2631,7 +2631,7 @@ suite "vm — actors":
        "        (var a (actor/spawn ^init (fn [] 0) " &
        "          ^handle (fn [ctx state msg] " &
        "            (fail (Boom ^message \"bad\"))))) " &
-       "        (actor/send a 7))) " &
+       "        (a ~ send 7))) " &
        "    catch (Boom ^message m) m)) " &
        "(var event (parent-events ~ recv)) " &
        "[outcome " &
@@ -2648,7 +2648,7 @@ suite "vm — actors":
                      "  (var a (actor/spawn ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &
                      "      (panic \"halt\")))) " &
-                     "  (var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+                     "  (var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
                      "  (sleep 1) " &
                      "  \"after\")")
     expect GeneCancel:
@@ -2660,8 +2660,8 @@ suite "vm — actors":
                      "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &
                      "      (fail (Boom ^message \"bad\"))))) " &
-                     "  (var first (actor/ask a (fn [reply] (Get ^reply reply)))) " &
-                     "  (var second (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+                     "  (var first (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (var second (a ~ ask (fn [reply] (Get ^reply reply)))) " &
                      "  (sleep 1) " &
                      "  (await second))")
     expect GeneError:
@@ -2677,13 +2677,13 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  (actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] 99))) " &
-       "(try (actor/send a 1) catch (TypeError ^where w) w)",
+       "(try (a ~ send 1) catch (TypeError ^where w) w)",
        "\"actor handler return\""
 
   test "actor operations require actors":
     expect GeneError:
       discard runStr("(actor/spawn ^handle (fn [ctx state msg] (actor/stop)))")
-    expect GeneError: discard runStr("(actor/send 1 2)")
+    expect GeneError: discard runStr("(1 ~ send 2)")
     expect GeneError: discard runStr("(ReplyTo/send 1 2)")
 
 suite "vm — streams":

@@ -754,6 +754,27 @@ operations are type-direct messages, so they take the bare form — `(c ~ get)`,
 not `(c ~ Cell/get)` — while `Cell/get` remains an ordinary member usable in
 call position, `(Cell/get c)`.
 
+**Case carries meaning in the stdlib: `Name` is a type's message surface,
+`name` is a namespace of functions.** Both live under the `gene` root, so an
+actor reference is `gene/Actor` and the actor functions are `gene/actor`. Which
+one an operation belongs to follows from whether it has a receiver:
+
+```gene
+(a ~ send msg)              # Actor/send — acts on an actor reference
+(a ~ ask   f)               # Actor/ask, Actor/try_send, Actor/snapshot, ...
+(actor/spawn ^init i ^handle h)   # makes one — no receiver, so a function
+(actor/continue state)            # actor-body control signal — no receiver
+```
+
+The same split applies to `Module`, `Namespace`, `Capability`, and `Env`:
+`(this_mod ~ path)`, `(ns ~ lookup "x")`, `(cap ~ name)`. A namespace member
+stays callable — `(Actor/send a msg)` works like `(Cell/get c)` — but the send
+is the idiomatic form, because the receiver is what the operation is about.
+
+Not every `Name/op` pair splits this way: `Env/snapshot` takes a `CallerEnv`
+rather than an `Env`, so it stays a function. The rule is the receiver, not the
+spelling.
+
 The one exception is a **selector** callee, `(x ~ /name)`: a selector projects
 the receiver rather than naming a message, and keeps its projection meaning.
 
@@ -2772,7 +2793,7 @@ An `Env` is an opaque, garbage-collected value. It may be stored, passed, return
     ^imports [std/math]))
 
 (var child
-  (Env/extend base {^y 20}))
+  (base ~ extend {^y 20}))
 ```
 
 Environments are immutable by default. `Env/extend` creates a child environment whose parent is the original environment; it does not mutate the parent.
@@ -3294,8 +3315,8 @@ A handler commonly returns immutable replacement state. It may also use actor-pr
 Actor mailboxes are bounded by default.
 
 ```gene
-(actor/send counter (Increment ^amount 5))
-(actor/try_send counter (Increment ^amount 1))
+(counter ~ send (Increment ^amount 5))
+(counter ~ try_send (Increment ^amount 1))
 ```
 
 Conceptual behavior:
@@ -3308,7 +3329,7 @@ Request/reply uses an explicit one-shot reply capability:
 
 ```gene
 (var pending
-  (actor/ask counter
+  (counter ~ ask
     (fn [reply]
       (Get ^reply reply))))
 
@@ -3405,11 +3426,11 @@ finish current message
 The experimental API exposes:
 
 ```gene
-(actor/upgrade ref new-handler
+(ref ~ upgrade new-handler
   ^migrate migrate-state)
 ```
 
-The MVP may expose an explicit experimental `(actor/snapshot ref)` operation
+The MVP may expose an explicit experimental `(ref ~ snapshot)` operation
 for migration tooling. It is only valid at an idle actor safe point and returns
 the last committed private state plus mailbox/lifecycle metadata; it must not
 replace the normal message protocol for application-level state access.
@@ -3648,7 +3669,7 @@ this_mod : Module
 
 ```gene
 this_mod/%declarations
-(Module/path this_mod)
+(this_mod ~ path)
 ```
 
 Top-level execution rules:

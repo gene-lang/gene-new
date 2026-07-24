@@ -2718,10 +2718,10 @@ suite "spec — streams from design":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "spec")
     check run(compileSource("(var x 9) " &
-                            "(var ds (filter (Module/declarations this_mod) " &
+                            "(var ds (filter (this_mod ~ declarations) " &
                             "  (fn [d] (== d/name \"x\")))) " &
                             "(var decl (ds ~ next)) " &
-                            "[(/value decl) (Module/path this_mod)]"),
+                            "[(/value decl) (this_mod ~ path)]"),
               scope).print() == "[9 nil]"
 
 suite "spec — structured tasks from design":
@@ -2993,6 +2993,30 @@ suite "spec — bounded channels from design":
                "\"Send\"")
 
 suite "spec — actors from design":
+  test "Actor is the type message surface; actor is the function namespace":
+    # Case carries meaning: operations with a receiver are messages on `Actor`,
+    # while the ones without stay functions under `actor` (design §3).
+    check_eval("(fn handle [ctx, state, msg] (actor/continue (+ state msg))) " &
+               "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(a ~ send 4) " &
+               "[(same? gene/Actor Actor) (same? gene/actor actor) " &
+               " ((a ~ snapshot) ~ /state)]",
+               "[true true 4]")
+    # The namespace member stays callable, like (Cell/get c).
+    check_eval("(fn handle [ctx, state, msg] (actor/continue (+ state msg))) " &
+               "(var a (actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "(Actor/send a 6) " &
+               "((a ~ snapshot) ~ /state)",
+               "6")
+
+  test "namespaces and capabilities receive messages":
+    # Module/Namespace/Capability/Env are uppercase namespaces whose operations
+    # take the receiver first, so they are sends (design §3). `Module` itself
+    # needs a real module and is covered in tests/test_modules.nim.
+    check_eval("(import net/http_client [Http]) (Http ~ name)",
+               "\"Net/Http\"")
+    check_eval("(ns N (var x 1)) ((N ~ bindings) ~ get \"x\")", "1")
+
   test "actor send processes messages sequentially":
     check_eval("(var out (cell 0)) " &
                "(fn handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
@@ -3001,8 +3025,8 @@ suite "spec — actors from design":
                "  (actor/continue next)) " &
                "(var counter : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(actor/send counter 2) " &
-               "(actor/send counter 5) " &
+               "(counter ~ send 2) " &
+               "(counter ~ send 5) " &
                "(out ~ get)",
                "7")
 
@@ -3014,7 +3038,7 @@ suite "spec — actors from design":
                "    (gate ~ recv) " &
                "    (seen ~ set msg) " &
                "    (actor/continue msg)))) " &
-               "(var before [(actor/try_send a 7) (seen ~ get)]) " &
+               "(var before [(a ~ try_send 7) (seen ~ get)]) " &
                "(gate ~ send 1) " &
                "(sleep 0) " &
                "before",
@@ -3025,9 +3049,9 @@ suite "spec — actors from design":
                "  (actor/continue (+ state msg))) " &
                "(var counter : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(actor/send counter 2) " &
-               "(actor/send counter 5) " &
-               "(var snap (actor/snapshot counter)) " &
+               "(counter ~ send 2) " &
+               "(counter ~ send 5) " &
+               "(var snap (counter ~ snapshot)) " &
                "[snap/state snap/mailbox snap/closed snap/processing]",
                "[7 0 false false]")
 
@@ -3038,14 +3062,14 @@ suite "spec — actors from design":
                "  (actor/continue (* state msg))) " &
                "(var counter : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 1) ^handle add)) " &
-               "(actor/send counter 2) " &
-               "(actor/upgrade counter mul ^migrate (fn [state] (+ state 1))) " &
-               "(actor/send counter 3) " &
-               "(var before (actor/snapshot counter)) " &
-               "(var err (try (actor/upgrade counter 99) " &
+               "(counter ~ send 2) " &
+               "(counter ~ upgrade mul ^migrate (fn [state] (+ state 1))) " &
+               "(counter ~ send 3) " &
+               "(var before (counter ~ snapshot)) " &
+               "(var err (try (counter ~ upgrade 99) " &
                "  catch (TypeError ^where w) w)) " &
-               "(actor/send counter 2) " &
-               "(var after (actor/snapshot counter)) " &
+               "(counter ~ send 2) " &
+               "(var after (counter ~ snapshot)) " &
                "[before/state err after/state]",
                "[12 \"actor/upgrade handler\" 24]")
 
@@ -3053,19 +3077,19 @@ suite "spec — actors from design":
     check_eval("(var a : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/stop)))) " &
-               "(actor/send a 1) " &
-               "(try (actor/send a 2) catch (ActorClosed ^message m) m)",
+               "(a ~ send 1) " &
+               "(try (a ~ send 2) catch (ActorClosed ^message m) m)",
                "\"actor is closed\"")
 
   test "actor sends require typed Send messages":
     check_eval("(var a : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
-               "(try (actor/send a \"bad\") catch (TypeError ^where w) w)",
+               "(try (a ~ send \"bad\") catch (TypeError ^where w) w)",
                "\"actor/send message\"")
     check_eval("(var a (actor/spawn ^init (fn [] 0) " &
                "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
-               "(try (actor/send a [1]) catch (TypeError ^expected e) e)",
+               "(try (a ~ send [1]) catch (TypeError ^expected e) e)",
                "\"Send\"")
 
   test "actor ask uses an explicit one-shot ReplyTo capability":
@@ -3078,7 +3102,7 @@ suite "spec — actors from design":
                "      (actor/continue state)))) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
-               "(await (actor/ask counter (fn [reply] (Get ^reply reply))))",
+               "(await (counter ~ ask (fn [reply] (Get ^reply reply))))",
                "41")
 
   test "a second send on a ReplyTo raises ReplyAlreadySent":
@@ -3093,7 +3117,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 7) ^handle handle)) " &
-               "(var got (await (actor/ask counter (fn [reply] (Get ^reply reply))))) " &
+               "(var got (await (counter ~ ask (fn [reply] (Get ^reply reply))))) " &
                "[got (sleep 1) (out ~ get)]",
                "[7 nil \"reply has already been sent\"]")
     # ReplyAlreadySent is a subtype of ActorError, so a broad handler-level
@@ -3109,7 +3133,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 7) ^handle handle)) " &
-               "(await (actor/ask counter (fn [reply] (Get ^reply reply)))) " &
+               "(await (counter ~ ask (fn [reply] (Get ^reply reply)))) " &
                "[(sleep 1) (out ~ get)]",
                "[nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -3124,7 +3148,7 @@ suite "spec — actors from design":
                "            (actor/continue state)))))) " &
                "  (fn (choose result err) [t : (Task result err) fallback : result] " &
                "    fallback) " &
-               "  (try (choose (actor/ask counter (fn [reply] (Get ^reply reply))) \"bad\") " &
+               "  (try (choose (counter ~ ask (fn [reply] (Get ^reply reply))) \"bad\") " &
                "       catch (TypeError ^expected e) e))",
                "\"Int\"")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -3138,7 +3162,7 @@ suite "spec — actors from design":
                "      (actor/continue state)))) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 40) ^handle handle)) " &
-               "(var pending (actor/ask counter (fn [reply] (Get ^reply reply)))) " &
+               "(var pending (counter ~ ask (fn [reply] (Get ^reply reply)))) " &
                "(ch ~ send 2) " &
                "(await pending)",
                "42")
@@ -3154,7 +3178,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(var pending (actor/ask ^timeout_ms 5 counter (fn [reply] (Get ^reply reply)))) " &
+               "(var pending (counter ~ ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
                "(var err (try (await pending) catch (ActorError ^message m) m)) " &
                "(ch ~ send 7) " &
                "[err (sleep 1) (out ~ get)]",
@@ -3171,7 +3195,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(var pending (actor/ask ^timeout_ms 5 counter " &
+               "(var pending (counter ~ ask ^timeout_ms 5 " &
                "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
                "(var err (try (await pending) catch (ActorError ^message m) m)) " &
                "(var first-late (try ((saved ~ get) ~ send 9) " &
@@ -3189,7 +3213,7 @@ suite "spec — actors from design":
                "        (when (Get ^reply reply) " &
                "          (reply ~ send \"bad\") " &
                "          (actor/continue state)))))) " &
-               "(try (await (actor/ask counter (fn [reply] (Get ^reply reply)))) " &
+               "(try (await (counter ~ ask (fn [reply] (Get ^reply reply)))) " &
                "catch (TypeError ^where w) w)",
                "\"ReplyTo/send value\"")
 
@@ -3205,7 +3229,7 @@ suite "spec — actors from design":
                                 "        (when (Get ^reply reply) " &
                                 "          (reply ~ send state) " &
                                 "          (actor/continue state)))))) " &
-                                "  (set pending (actor/ask a " &
+                                "  (set pending (a ~ ask " &
                                 "    (fn [reply] (Get ^reply reply)))) " &
                                 "  nil) " &
                                 "(await pending)"),
@@ -3222,7 +3246,7 @@ suite "spec — actors from design":
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(var pending (actor/ask counter " &
+               "(var pending (counter ~ ask " &
                "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
                "(pending ~ cancel) " &
                "(var first-late (try ((saved ~ get) ~ send 9) " &
@@ -3240,8 +3264,8 @@ suite "spec — actors from design":
                                 "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                                 "    ^handle (fn [ctx state msg] " &
                                 "      (fail (Boom ^message \"bad\"))))) " &
-                                "  (var first (actor/ask a (fn [reply] (Get ^reply reply)))) " &
-                                "  (var second (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+                                "  (var first (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+                                "  (var second (a ~ ask (fn [reply] (Get ^reply reply)))) " &
                                 "  (sleep 1) " &
                                 "  (await second))"),
                   newGlobalScope())
@@ -3250,13 +3274,13 @@ suite "spec — actors from design":
     check_eval("(var a (scope " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "(actor/try_send a 1)",
+               "(a ~ try_send 1)",
                "false")
     check_eval("(scope " &
                "  (var a (scope " &
                "    (actor/spawn ^init (fn [] 0) " &
                "      ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "  (actor/try_send a 1))",
+               "  (a ~ try_send 1))",
                "false")
 
   test "restart budget stops the actor when max_restarts is exhausted":
@@ -3265,9 +3289,9 @@ suite "spec — actors from design":
                "(supervisor ^strategy restart ^max_restarts 1 ^within_ms 60000 " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (fail (Boom ^message \"boom\"))))) " &
-               "  (actor/send a 1) " &   # restart consumes the budget
-               "  (var second (try (actor/send a 2) catch (Boom ^message m) m)) " &
-               "  (var third (try (actor/send a 3) catch (ActorClosed ^message m) m)) " &
+               "  (a ~ send 1) " &   # restart consumes the budget
+               "  (var second (try (a ~ send 2) catch (Boom ^message m) m)) " &
+               "  (var third (try (a ~ send 3) catch (ActorClosed ^message m) m)) " &
                "  [second third])",
                "[\"boom\" \"actor is closed\"]")
 
@@ -3281,10 +3305,10 @@ suite "spec — actors from design":
                "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do (seen ~ set state) (actor/continue state)))))) " &
-               "  (actor/send a 1) " &
+               "  (a ~ send 1) " &
                "  (sleep 80) " &          # window expires; budget refills
-               "  (actor/send a 1) " &
-               "  (actor/send a 5) " &
+               "  (a ~ send 1) " &
+               "  (a ~ send 5) " &
                "  (seen ~ get))",
                "10")
 
@@ -3300,8 +3324,8 @@ suite "spec — actors from design":
                "        (do " &
                "          (seen ~ set state) " &
                "          (actor/continue (+ state msg))))))) " &
-               "  (actor/send a 1) " &
-               "  (actor/send a 5) " &
+               "  (a ~ send 1) " &
+               "  (a ~ send 5) " &
                "  (seen ~ get))",
                "10")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -3316,8 +3340,8 @@ suite "spec — actors from design":
                "        (do " &
                "          (seen ~ set state) " &
                "          (actor/continue (+ state msg))))))) " &
-               "  (spawn (actor/send a 1)) " &
-               "  (spawn (actor/send a 5)) " &
+               "  (spawn (a ~ send 1)) " &
+               "  (spawn (a ~ send 5)) " &
                "  (sleep 1) " &
                "  (var event (events ~ recv)) " &
                "  (var tries 0) " &
@@ -3341,7 +3365,7 @@ suite "spec — actors from design":
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (actor/send a 1) " &
+               "  (a ~ send 1) " &
                "  (sleep 1) " &
                "  (var event (dead ~ recv)) " &
                "  (var busy (events ~ recv)) " &
@@ -3362,7 +3386,7 @@ suite "spec — actors from design":
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (actor/send a 4) " &
+               "  (a ~ send 4) " &
                "  (sleep 1) " &
                "  (var dead-busy (dead ~ recv)) " &
                "  (var event (dead ~ recv)) " &
@@ -3383,7 +3407,7 @@ suite "spec — actors from design":
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (actor/send a 2) " &
+               "  (a ~ send 2) " &
                "  (sleep 1) " &
                "  (var event (dead ~ recv)) " &
                "  (match event " &
@@ -3400,7 +3424,7 @@ suite "spec — actors from design":
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (actor/send a 6) " &
+               "  (a ~ send 6) " &
                "  (sleep 1) " &
                "  (var event (dead ~ recv)) " &
                "  (match event " &
@@ -3424,15 +3448,15 @@ suite "spec — actors from design":
                "        (do " &
                "          (seen ~ set state) " &
                "          (actor/continue (+ state msg))))))) " &
-               "  (actor/send a 1) " &
-               "  (actor/send a 5) " &
+               "  (a ~ send 1) " &
+               "  (a ~ send 5) " &
                "  (sleep 1) " &
                "  (seen ~ get))",
                "10")
     check_eval("(var a (supervisor ^strategy stop " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "(actor/try_send a 1)",
+               "(a ~ try_send 1)",
                "false")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -3443,7 +3467,7 @@ suite "spec — actors from design":
                "    (var a (actor/spawn ^init (fn [] 0) " &
                "      ^handle (fn [ctx state msg] " &
                "        (fail (Boom ^message \"bad\"))))) " &
-               "    (var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+               "    (var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
                "    (sleep 1) " &
                "    \"after\") " &
                "  catch (Boom ^message m) m)",
@@ -3458,7 +3482,7 @@ suite "spec — actors from design":
                "        (var a (actor/spawn ^init (fn [] 0) " &
                "          ^handle (fn [ctx state msg] " &
                "            (fail (Boom ^message \"bad\"))))) " &
-               "        (actor/send a 7))) " &
+               "        (a ~ send 7))) " &
                "    catch (Boom ^message m) m)) " &
                "(var event (parent-events ~ recv)) " &
                "[outcome " &
@@ -3475,7 +3499,7 @@ suite "spec — actors from design":
                                 "  (var a (actor/spawn ^init (fn [] 0) " &
                                 "    ^handle (fn [ctx state msg] " &
                                 "      (panic \"halt\")))) " &
-                                "  (var pending (actor/ask a " &
+                                "  (var pending (a ~ ask " &
                                 "    (fn [reply] (Get ^reply reply)))) " &
                                 "  (sleep 1) " &
                                 "  \"after\")"),
@@ -3496,7 +3520,7 @@ suite "spec — Env and eval from design":
 
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &
-               "(var child (Env/extend base {^y 20})) " &
+               "(var child (base ~ extend {^y 20})) " &
                "[(eval (quote x) ^in child) " &
                " (eval (quote y) ^in child) " &
                " (try (eval (quote y) ^in base) catch {^message m} m)]",
@@ -3540,11 +3564,11 @@ suite "spec — Env and eval from design":
 
   test "runtime capabilities are opaque library values":
     check_eval("[Fs/ReadDir " &
-               " (Capability/name Fs/ReadDir) " &
-               " ((fn [cap : Capability] (Capability/name cap)) Fs/WriteDir)]",
+               " (Fs/ReadDir ~ name) " &
+               " ((fn [cap : Capability] (cap ~ name)) Fs/WriteDir)]",
                "[(capability Fs/ReadDir) \"Fs/ReadDir\" \"Fs/WriteDir\"]")
     check_eval("(var e (env ^capabilities {^fs Fs/ReadDir})) " &
-               "(eval (quote (Capability/name fs)) ^in e)",
+               "(eval (quote (fs ~ name)) ^in e)",
                "\"Fs/ReadDir\"")
     check_eval("(var ch (channel)) " &
                "(try (ch ~ send Fs/ReadDir) " &
@@ -3939,7 +3963,7 @@ suite "spec — net/http surface from stdlib plan":
 suite "spec — net/http_client native client contract":
   test "client authority and entry points are importable":
     check_eval("(import net/http_client [Http request stream HttpClientError]) " &
-               "[(Capability/name Http)]",
+               "[(Http ~ name)]",
                "[\"Net/Http\"]")
 
   test "client rejects non-http URL schemes before starting work":
@@ -4053,9 +4077,9 @@ suite "spec — db protocol from stdlib plan":
 
   test "sqlite and postgres share one Db protocol":
     check_eval("(import db [Db]) " &
-               "[(same? Db (Namespace/lookup db/sqlite \"Db\")) " &
-               " (same? Db (Namespace/lookup db/postgres \"Db\")) " &
-               " (not (== (Namespace/lookup db/postgres \"open\") void))]",
+               "[(same? Db (db/sqlite ~ lookup \"Db\")) " &
+               " (same? Db (db/postgres ~ lookup \"Db\")) " &
+               " (not (== (db/postgres ~ lookup \"open\") void))]",
                "[true true true]")
 
 suite "spec — store persistence protocol":

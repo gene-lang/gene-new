@@ -117,7 +117,7 @@ when defined(geneRcStats):
       check leakedManaged("(supervisor ^strategy restart " &
                           "  (var a (actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] 99))) " &
-                          "  (actor/send a 1))") == 0
+                          "  (a ~ send 1))") == 0
       # A top-level `impl Send for Get` belongs in the global-retention test
       # below. Eval impls, tested above, remain reclaimable overlays.
 
@@ -263,7 +263,7 @@ when defined(geneRcStats):
       block:
         var scope = newGlobalScope()
         scope.define("a", actor)
-        discard run(compileSource("(actor/send a 1)"), scope)
+        discard run(compileSource("(a ~ send 1)"), scope)
       check actor.actorClosed
       actor = NIL
 
@@ -305,7 +305,7 @@ when defined(geneRcStats):
 
     test "an Env/extend binding closure cycle is reclaimed":
       check heapGrowth(
-        "(var e (env)) (set e (Env/extend e {^f (fn [] e)}))",
+        "(var e (env)) (set e (e ~ extend {^f (fn [] e)}))",
         N) < 100_000
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

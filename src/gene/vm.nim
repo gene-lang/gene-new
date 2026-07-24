@@ -5436,18 +5436,27 @@ proc buildBuiltins(app: Application): Scope =
   channelScope.define("close", newNativeCallFn("Channel/close", biChannelClose,
                                               acceptsNamed = false))
   result.define("Channel", newNamespace("Channel", channelScope))
+  # A lowercase namespace holds functions; an uppercase one is a type's message
+  # surface (design §3). So operations that act *on* an actor reference live on
+  # `Actor` and are sent — `(a ~ send v)` — while the ones that take no receiver
+  # stay functions under `actor`: `spawn` creates a reference, and `stop` /
+  # `continue` are actor-body control signals.
+  let actorTypeScope = newScope(result)
+  actorTypeScope.define("send", newNativeCallFn("Actor/send", biActorSend,
+                                                acceptsNamed = false))
+  actorTypeScope.define("try_send", newNativeCallFn("Actor/try_send",
+                                                    biActorTrySend,
+                                                    acceptsNamed = false))
+  actorTypeScope.define("ask", newNativeCallFn("Actor/ask", biActorAsk))
+  actorTypeScope.define("snapshot", newNativeFn("Actor/snapshot",
+                                                biActorSnapshot))
+  actorTypeScope.define("upgrade", newNativeCallFn("Actor/upgrade",
+                                                   biActorUpgrade))
+  result.define("Actor", newNamespace("Actor", actorTypeScope))
   let actorScope = newScope(result)
   actorScope.define("spawn", newNativeCallFn("actor/spawn", biActorSpawn))
-  actorScope.define("send", newNativeCallFn("actor/send", biActorSend,
-                                           acceptsNamed = false))
-  actorScope.define("try_send", newNativeCallFn("actor/try_send",
-                                               biActorTrySend,
-                                               acceptsNamed = false))
-  actorScope.define("ask", newNativeCallFn("actor/ask", biActorAsk))
   actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
   actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
-  actorScope.define("snapshot", newNativeFn("actor/snapshot", biActorSnapshot))
-  actorScope.define("upgrade", newNativeCallFn("actor/upgrade", biActorUpgrade))
   result.define("actor", newNamespace("actor", actorScope))
   let replyToScope = newScope(result)
   replyToScope.define("send", newNativeCallFn("ReplyTo/send", biReplyToSend,
@@ -7380,6 +7389,16 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     typeNsMessage(scope, "ReplyTo", name)
   of vkBuffer:
     typeNsMessage(scope, "Buffer", name)
+  of vkActorRef:
+    typeNsMessage(scope, "Actor", name)
+  of vkModule:
+    typeNsMessage(scope, "Module", name)
+  of vkNamespace:
+    typeNsMessage(scope, "Namespace", name)
+  of vkCapability:
+    typeNsMessage(scope, "Capability", name)
+  of vkEnv:
+    typeNsMessage(scope, "Env", name)
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)

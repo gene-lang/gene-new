@@ -38,7 +38,7 @@
 #            capability-shaped listener; (status server) metrics; (stop
 #            server) graceful drain.
 #   Phase 3  ^routes table with :param captures (/job/:id -> req/params/id),
-#            meta-based route discovery over (Module/declarations this_mod),
+#            meta-based route discovery over (this_mod ~ declarations),
 #            ^on_error mapping typed error values to responses, and
 #            ^access_log / ^error_log with ^redact_headers.
 #   Phase 2  actor_pool dispatch is not shown here (^routes and ^dispatch
@@ -265,7 +265,7 @@
   (route ^method r/method ^path r/path ^handler d/value))
 
 (var routes
-  ((map (filter (Module/declarations this_mod) routed?) route_entry)
+  ((map (filter (this_mod ~ declarations) routed?) route_entry)
    ~ into [(route ^method "GET" ^path "/" ^handler help)]))
 
 (println "async HTTP server listening on http://127.0.0.1:8091")

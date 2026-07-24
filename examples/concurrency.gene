@@ -191,10 +191,10 @@
   (actor/spawn ^init (fn [] 0) ^handle counter_handle))
 
 (println "   - sequential processing — ordering is preserved per-actor")
-(actor/send counter 2)
-(actor/send counter 5)
-(actor/send counter 7)
-(var snap1 (actor/snapshot counter))
+(counter ~ send 2)
+(counter ~ send 5)
+(counter ~ send 7)
+(var snap1 (counter ~ snapshot))
 (println "     final state after 2 + 5 + 7:" snap1/state)
 
 (println "   - actor/ask with explicit ReplyTo capability")
@@ -211,7 +211,7 @@
   (actor/spawn ^init (fn [] 41) ^handle ask_handle))
 
 (var reply_task
-  (actor/ask ask_counter (fn [reply] (Counter ^reply reply))))
+  (ask_counter ~ ask (fn [reply] (Counter ^reply reply))))
 (println "     actor/ask current state:" (await reply_task))
 
 (println "")
@@ -237,12 +237,12 @@
           (fail (Boom ^message "bad"))
           (actor/continue (+ state msg))))))
   (println "   - feed 1 + 5 + 0 (failure → restart)")
-  (spawn (actor/send counter 1))
-  (spawn (actor/send counter 5))
-  (spawn (actor/send counter 0))
+  (spawn (counter ~ send 1))
+  (spawn (counter ~ send 5))
+  (spawn (counter ~ send 0))
   (sleep 1)
   (var event (failure_events ~ recv))
-  (var snap (actor/snapshot counter))
+  (var snap (counter ~ snapshot))
   (println "     restarted state (now):" snap/state)
   (println "     actor failure event received"))
 
@@ -265,13 +265,13 @@
           (actor/continue (+ state msg))))))
   (var first_send
     (try
-      (actor/send stoptest 0)
+      (stoptest ~ send 0)
       "first_send"
       catch (Boom ^message m) m))
   (sleep 1)                                           # let failure propagate
   (var post_failure
     (try
-      (actor/send stoptest 99)
+      (stoptest ~ send 99)
       "second-send"
       catch (ActorClosed ^message m) m))
   (println "   - first send (failure trapped):" first_send)

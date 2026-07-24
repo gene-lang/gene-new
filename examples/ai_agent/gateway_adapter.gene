@@ -466,7 +466,7 @@
         # Shared worker state lets the TUI observe admission before this
         # adapter's actor installs the Task.
         (app/main_agent/input_reserved ~ set true)
-        (actor/send turn_actor
+        (turn_actor ~ send
           (freeze
             {^text text ^adapter adapter
              ^attachment_id (if attachment attachment/id)

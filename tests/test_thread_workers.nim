@@ -260,7 +260,7 @@ suite "threaded scheduler workers":
         "    (record-thread 1) " &
         "    (reply ~ send state) " &
         "    (actor/continue state)))) " &
-        "(var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+        "(var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
         "pending"), scope)
@@ -283,7 +283,7 @@ suite "threaded scheduler workers":
         "    (record-thread 1) " &
         "    (seen ~ store value) " &
         "    (actor/continue value)))) " &
-        "(spawn (actor/try_send a (Put ^value 42))) " &
+        "(spawn (a ~ try_send (Put ^value 42))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
         "(seen ~ load)"), scope).print() == "42"
@@ -295,7 +295,7 @@ suite "threaded scheduler workers":
         discard run(compileSource(
           "(var a (actor/spawn ^init (fn [] 0) " &
           "  ^handle (fn [ctx state msg] 99))) " &
-          "(actor/send a 1)"), newGlobalScope())
+          "(a ~ send 1)"), newGlobalScope())
 
   test "worker-candidate snapshots publish cloned closures":
     withGeneWorkerSetting "8":
@@ -411,7 +411,7 @@ suite "threaded scheduler workers":
          "    ^handle (fn [ctx state msg] " &
          "      (gate ~ recv) " &
          "      (actor/continue (+ state msg))))) " &
-         "  (actor/send a 0) " &
+         "  (a ~ send 0) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
@@ -419,7 +419,7 @@ suite "threaded scheduler workers":
          "      (set old (success ~ load)) " &
          "      (set stored (success ~ compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (actor/try_send a value) (mark_success) nil)) " &
+         "    (if (a ~ try_send value) (mark_success) nil)) " &
          "  (var t1 (spawn (send_once 1))) " &
          "  (var t2 (spawn (send_once 2))) " &
          "  (var t3 (spawn (send_once 3))) " &
@@ -694,7 +694,7 @@ suite "threaded scheduler workers":
          "      (var value (gate ~ recv)) " &
          "      (try (reply ~ send value) catch _ nil) " &
          "      (actor/continue state)))) " &
-         "  (var pending (actor/ask a " &
+         "  (var pending (a ~ ask " &
          "    (fn [reply] " &
          "      (reply_cell ~ store reply) " &
          "      (Get ^reply reply)))) " &
@@ -793,7 +793,7 @@ suite "threaded scheduler workers":
         "    (var value (gate ~ recv)) " &
         "    (reply ~ send value) " &
         "    (actor/continue state)))) " &
-        "(var pending (actor/ask a ^timeout_ms 5 " &
+        "(var pending (a ~ ask ^timeout_ms 5 " &
         "  (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
@@ -813,7 +813,7 @@ suite "threaded scheduler workers":
          "      (var value (gate ~ recv)) " &
          "      (reply ~ send value) " &
          "      (actor/continue state)))) " &
-         "  (var pending (actor/ask a ^timeout_ms 5 " &
+         "  (var pending (a ~ ask ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
          "  (try (await pending) catch (ActorError ^message m) m))",
          "\"actor/ask timed out\""
