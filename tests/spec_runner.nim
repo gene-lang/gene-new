@@ -429,8 +429,8 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
   test "fn! call arguments are not evaluated":
     check_eval("(var hit (cell 0)) " &
                "(fn! ignore! [e] nil) " &
-               "(ignore! (hit ~ Cell/set 9)) " &
-               "(hit ~ Cell/get)",
+               "(ignore! (hit ~ set 9)) " &
+               "(hit ~ get)",
                "0")
 
   test "syntax_call carries the raw envelope including site":
@@ -545,7 +545,7 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var leaked []) " &
-               "(fn! leak! [] (leaked ~ List/push! caller_env)) " &
+               "(fn! leak! [] (leaked ~ push! caller_env)) " &
                "[(try (leak!) catch _ \"blocked\") leaked]",
                "[\"blocked\" []]")
     check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller_env))) " &
@@ -564,7 +564,7 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
                "\"blocked\"")
     check_eval("(var ch (channel ^capacity 1)) " &
                "(fn! leak! [] " &
-               "  (try (ch ~ Channel/send caller_env) " &
+               "  (try (ch ~ send caller_env) " &
                "   catch (TypeError ^expected e) e)) " &
                "(leak!)",
                "\"Send\"")
@@ -1233,17 +1233,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
                "  (ctor [x : F64, y : F64] " &
-               "    (self ~ Node/set_prop! `x x) " &
-               "    (self ~ Node/set_prop! `y y))) " &
+               "    (self ~ set_prop! `x x) " &
+               "    (self ~ set_prop! `y y))) " &
                "(var p (new Point 10.0 20.0)) [p/x p/y]",
                "[10.0 20.0]")
 
   test "ctor uses function-style argument matching with named defaults":
     check_eval("(type User ^props {^name Str ^age Int ^active Bool} " &
                "  (ctor [name : Str, ^age : Int = 0, ^active : Bool = true] " &
-               "    (self ~ Node/set_prop! `name name) " &
-               "    (self ~ Node/set_prop! `age age) " &
-               "    (self ~ Node/set_prop! `active active))) " &
+               "    (self ~ set_prop! `name name) " &
+               "    (self ~ set_prop! `age age) " &
+               "    (self ~ set_prop! `active active))) " &
                "(var u (new User \"Ada\" ^age 37)) [u/name u/age u/active]",
                "[\"Ada\" 37 true]")
 
@@ -1253,7 +1253,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type Port ^props {^value Int} " &
                "  (ctor [n : Int] ^errors [ValidationError] " &
                "    (if (&& (>= n 0) (<= n 65535)) " &
-               "      (self ~ Node/set_prop! `value n) " &
+               "      (self ~ set_prop! `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
                "(var ok (new Port 8080)) " &
                "[(try (new Port 99999) catch (ValidationError ^message m) m) " &
@@ -1265,18 +1265,18 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (new Bad) catch _ \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
-               "  (ctor [] (self ~ Node/set_prop! `a 1) " &
-               "           (self ~ Node/set_prop! `zzz 9))) " &
+               "  (ctor [] (self ~ set_prop! `a 1) " &
+               "           (self ~ set_prop! `zzz 9))) " &
                "(try (new Sneaky) catch _ \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
-               "  (ctor [] (self ~ Node/set_prop! `a \"nope\"))) " &
+               "  (ctor [] (self ~ set_prop! `a \"nope\"))) " &
                "(try (new Typed) catch (TypeError ^where w) w)",
                "\"field 'a' for Typed\"")
 
   test "(T ...) is direct data construction and never runs the ctor":
     check_eval("(type Port2 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ Node/set_prop! `value (* n 2)))) " &
+               "  (ctor [n : Int] (self ~ set_prop! `value (* n 2)))) " &
                "(var direct (Port2 ^value 8080)) " &
                "(var made (new Port2 8080)) " &
                "[direct/value made/value]",
@@ -1284,11 +1284,11 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "direct construction still schema-validates on a ctor type":
     check_eval("(type Port3 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ Node/set_prop! `value n))) " &
+               "  (ctor [n : Int] (self ~ set_prop! `value n))) " &
                "(try (Port3 ^value \"nope\") catch (TypeError ^where w) w)",
                "\"field 'value' for Port3\"")
     check_eval("(type Port4 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ Node/set_prop! `value n))) " &
+               "  (ctor [n : Int] (self ~ set_prop! `value n))) " &
                "(try (Port4) catch _ \"missing field\")",
                "\"missing field\"")
 
@@ -1320,16 +1320,16 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(type Animal ^props {^name Str}) " &
                "(type Dog ^is Animal ^props {^breed Str} " &
                "  (ctor [name : Str, breed : Str] " &
-               "    (self ~ Node/set_prop! `name name) " &
-               "    (self ~ Node/set_prop! `breed breed))) " &
+               "    (self ~ set_prop! `name name) " &
+               "    (self ~ set_prop! `breed breed))) " &
                "(var d (new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
                "[\"Rex\" \"Lab\"]")
 
   test "ctor fills body fields through mutable node APIs":
     check_eval("(type Pair ^body [Int Int] " &
                "  (ctor [a : Int, b : Int] " &
-               "    (self ~ Node/push_body! a) " &
-               "    (self ~ Node/push_body! b))) " &
+               "    (self ~ push_body! a) " &
+               "    (self ~ push_body! b))) " &
                "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
@@ -1344,17 +1344,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked self) " &
-               "    (self ~ Node/set_prop! `x 1))) " &
+               "    (self ~ set_prop! `x 1))) " &
                "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(var box (cell nil)) " &
                "(type T ^props {^x Int} " &
-               "  (ctor [] (box ~ Cell/set self) " &
-               "    (self ~ Node/set_prop! `x 1))) " &
-               "[(try (new T) catch _ \"blocked\") (box ~ Cell/get)]",
+               "  (ctor [] (box ~ set self) " &
+               "    (self ~ set_prop! `x 1))) " &
+               "[(try (new T) catch _ \"blocked\") (box ~ get)]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
-               "  (ctor [] [self] (self ~ Node/set_prop! `x 1))) " &
+               "  (ctor [] [self] (self ~ set_prop! `x 1))) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
@@ -1369,35 +1369,35 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked (fn [] self)) " &
-               "    (self ~ Node/set_prop! `x 1))) " &
+               "    (self ~ set_prop! `x 1))) " &
                "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (message inspect [self] self/x) " &
                "  (ctor [] (self ~ inspect) " &
-               "    (self ~ Node/set_prop! `x 1))) " &
+               "    (self ~ set_prop! `x 1))) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] (spawn self) " &
-               "    (self ~ Node/set_prop! `x 1))) " &
+               "    (self ~ set_prop! `x 1))) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var ch (channel ^capacity 1)) " &
                "(type T ^props {^x Int} ^impl [Send] " &
-               "  (ctor [] (ch ~ Channel/send self) " &
-               "    (self ~ Node/set_prop! `x 1))) " &
+               "  (ctor [] (ch ~ send self) " &
+               "    (self ~ set_prop! `x 1))) " &
                "(impl Send for T) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
 
   test "successful construction clears the publication guard":
     check_eval("(type T ^props {^x Int} ^impl [Send] " &
-               "  (ctor [] (self ~ Node/set_prop! `x 1))) " &
+               "  (ctor [] (self ~ set_prop! `x 1))) " &
                "(impl Send for T) " &
                "(var ch (channel ^capacity 1)) (var value (new T)) " &
-               "(ch ~ Channel/send value) " &
-               "(var received (ch ~ Channel/recv)) received/x",
+               "(ch ~ send value) " &
+               "(var received (ch ~ recv)) received/x",
                "1")
 
   test "failed construction unwinds ensure cleanup":
@@ -1406,8 +1406,8 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type T ^props {^x Int} " &
                "  (ctor [] " &
                "    (try (fail (Boom ^message \"bad\")) " &
-               "      ensure (cleaned ~ Cell/set true)))) " &
-               "(try (new T) catch (Boom) nil) (cleaned ~ Cell/get)",
+               "      ensure (cleaned ~ set true)))) " &
+               "(try (new T) catch (Boom) nil) (cleaned ~ get)",
                "true")
 
 suite "spec — typed variable boundaries from design":
@@ -1427,7 +1427,7 @@ suite "spec — typed variable boundaries from design":
                "\"set 'x'\"")
     check_eval("(try (var s : (Stream Int Never) (to_stream [1])) " &
                "     (set s (to_stream [\"bad\"])) " &
-               "     (s ~ Stream/next) " &
+               "     (s ~ next) " &
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
 
@@ -1480,7 +1480,7 @@ suite "spec — generic functions from design":
                "9")
     check_eval("(fn ints [] : (Stream Int Never) (yield 7)) " &
                "(fn (first item err) [s : (Stream item err)] : item " &
-               "  (s ~ Stream/next)) " &
+               "  (s ~ next)) " &
                "(first (ints))",
                "7")
     check_eval("(fn (first item) [b : (Buffer item)] : item " &
@@ -1660,18 +1660,18 @@ suite "spec — pattern destructuring from design":
   test "for iterates streams lazily and closes on pattern failure":
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &
-               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(var first-hits 0) " &
                "(for x in source " &
-               "  (if (== x 1) (set first-hits (hits ~ Cell/get)))) " &
+               "  (if (== x 1) (set first-hits (hits ~ get)))) " &
                "first-hits",
                "1")
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &
-               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(try (for [a b] in source nil) " &
                " catch (MatchError ^message m) nil) " &
-               "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+               "[(hits ~ get) (source ~ has_next)]",
                "[1 false]")
 
   test "for treats strings as char streams":
@@ -1736,9 +1736,9 @@ suite "spec — pattern destructuring from design":
                "8")
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &
-               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(for x in source (break)) " &
-               "[(hits ~ Cell/get) (source ~ Stream/has_next)]",
+               "[(hits ~ get) (source ~ has_next)]",
                "[1 false]")
     expect GeneError:
       discard compileSource("(break)")
@@ -1905,7 +1905,7 @@ suite "spec — Range type":
     check_eval("(fn size-of [r : Range] (r ~ size)) " &
                "(size-of (range 0 3))",
                "3")
-    check_eval("(fn first-int [s : (Stream Int Never)] (s ~ Stream/next)) " &
+    check_eval("(fn first-int [s : (Stream Int Never)] (s ~ next)) " &
                "(first-int (to_stream (range 5 6)))",
                "5")
 
@@ -1990,6 +1990,37 @@ suite "spec — implicit self in message bodies from design §10":
                "(try ([1] ~ (do f)) catch (CallKindError ^where w) w)",
                "\"message send\"")
 
+  test "a qualified send requires a protocol message, not a namespace member":
+    # Only a protocol gives a message a qualified spelling, so the qualifier is
+    # a reliable signal: bare means type-direct, qualified means protocol.
+    check_eval("(import str [join]) " &
+               "(try ([\"a\" \"b\"] ~ str/join \"-\") " &
+               "catch (CallKindError ^expected e) e)",
+               "\"Message\"")
+    # A built-in operation is type-direct, so it takes the bare form; the
+    # namespace member stays available in ordinary call position.
+    check_eval("(var c (cell 7)) " &
+               "[(c ~ get) (Cell/get c) " &
+               " (try (c ~ Cell/get) catch (CallKindError ^expected e) e)]",
+               "[7 7 \"Message\"]")
+
+  test "a message identity is not callable outside a send":
+    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
+               "(type M ^props {^name Str} " &
+               "  (impl ToHtml (message to_html [] : Str self/name))) " &
+               "(try (ToHtml/to_html (M ^name \"x\")) " &
+               "catch (CallKindError ^actual a) a)",
+               "\"Message\"")
+    # Higher-order use is the same rejection; use a lambda instead.
+    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
+               "(type M ^props {^name Str} " &
+               "  (impl ToHtml (message to_html [] : Str self/name))) " &
+               "(var items [(M ^name \"a\")]) " &
+               "[(try ((map (to_stream items) ToHtml/to_html) ~ into []) " &
+               "  catch (CallKindError ^actual a) a) " &
+               " ((map (to_stream items) (fn [x] (x ~ ToHtml/to_html))) ~ into [])]",
+               "[\"Message\" [\"a\"]]")
+
   test "a dynamic send accepts an expression that yields a message value":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &
                "(type M ^props {^name Str} " &
@@ -2054,16 +2085,55 @@ suite "spec — implicit self in message bodies from design §10":
       "(type X ^props {} (message m [] : Str (super ~ m)))",
       "super is only valid")
 
-  test "super is robust against a message-body local shadowing the parent name":
+  test "super rejects qualified and dynamic callees at compile time":
+    # Protocol-impl delegation needs a precedence rule that does not exist yet.
+    check_compile_error(
+      "(protocol P (message m [] : Str)) " &
+      "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
+      "(type B ^is A ^props {} (message go [] : Str (super ~ P/m)))",
+      "super delegates to a type-direct message only")
+    check_compile_error(
+      "(protocol P (message m [] : Str)) " &
+      "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
+      "(type B ^is A ^props {} " &
+      "  (message go [] : Str (var q P/m) (super ~ %q)))",
+      "super delegates to a type-direct message only")
+
+  test "super is robust against a local shadowing the parent or enclosing name":
+    # super resolves no user-visible name: the owner's ^is parent is recorded on
+    # the message body when the type is created.
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B ^is A ^props {} " &
                "  (message m [] : Str (do (let A 1) (super ~ m)))) " &
                "((B) ~ m)",
                "\"A\"")
+    check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
+               "(type B ^is A ^props {} " &
+               "  (message m [] : Str (do (let B 1) (super ~ m)))) " &
+               "((B) ~ m)",
+               "\"A\"")
+
+  test "super works inside a closure nested in the message body":
+    check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
+               "(type B ^is A ^props {} " &
+               "  (message m [] : Str (var f (fn [] (super ~ m))) " &
+               "                      ($ \"B+\" (f)))) " &
+               "((B) ~ m)",
+               "\"B+A\"")
+
+  test "self cannot be rebound by a nested binder in a message body":
+    check_compile_error(
+      "(type T ^props {} (message m [] (fn f [self] self) (f 42)))",
+      "cannot be rebound in a message body")
 
   test "a qualified send with no visible impl raises a catchable MessageError":
     check_eval("(protocol P (message m [] : Int)) (type T ^props {}) " &
                "(try ((T) ~ P/m) catch (MessageError ^protocol pr) pr)",
+               "\"P\"")
+
+  test "a receiver with no nominal type still raises a catchable MessageError":
+    check_eval("(protocol P (message m [] : Int)) " &
+               "(try (nil ~ P/m) catch (MessageError ^protocol pr) pr)",
                "\"P\"")
 
 suite "spec — protocol derive from design":
@@ -2135,6 +2205,12 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(fn f [] 1) (set f 2)", "cannot set immutable binding 'f'")
     check_compile_error("(type T ^props {}) (set T 2)",
                         "cannot set immutable binding 'T'")
+    check_compile_error("(ns N (let x 1)) (set N 2)",
+                        "cannot set immutable binding 'N'")
+    check_compile_error("(protocol P) (set P 2)",
+                        "cannot set immutable binding 'P'")
+    check_compile_error("(enum E a b) (set E 2)",
+                        "cannot set immutable binding 'E'")
 
   test "the send operator ~ is reserved and cannot be bound":
     check_compile_error("(var ~ 5)", "reserved")
@@ -2145,47 +2221,47 @@ suite "spec — binding forms from design §12.1":
 suite "spec — cells from design":
   test "Cell get, set, swap, and update are explicit mutation":
     check_eval("(var count (cell 0)) " &
-               "[(count ~ Cell/get) " &
-               " (count ~ Cell/set 10) " &
-               " (count ~ Cell/swap 20) " &
-               " (count ~ Cell/update (fn [x] (+ x 1))) " &
-               " (count ~ Cell/get)]",
+               "[(count ~ get) " &
+               " (count ~ set 10) " &
+               " (count ~ swap 20) " &
+               " (count ~ update (fn [x] (+ x 1))) " &
+               " (count ~ get)]",
                "[0 10 10 21 21]")
 
 suite "spec — atomic cells from design":
   test "AtomicCell load, store, swap, and compare_exchange are explicit mutation":
     check_eval("(var state (atomic_cell 0)) " &
-               "[(state ~ AtomicCell/load) " &
-               " (state ~ AtomicCell/store 1) " &
-               " (state ~ AtomicCell/swap 2) " &
-               " (state ~ AtomicCell/compare_exchange 2 3) " &
-               " (state ~ AtomicCell/load)]",
+               "[(state ~ load) " &
+               " (state ~ store 1) " &
+               " (state ~ swap 2) " &
+               " (state ~ compare_exchange 2 3) " &
+               " (state ~ load)]",
                "[0 1 1 true 3]")
 
 suite "spec — mutable containers from design":
   test "persistent and mutating container updates are explicit":
     check_eval("(var xs #[1 2 3]) " &
-               "(var xs2 (xs ~ List/assoc 1 20)) " &
+               "(var xs2 (xs ~ assoc 1 20)) " &
                "(var ys [1 2]) " &
-               "(ys ~ List/set! 0 9) " &
+               "(ys ~ set! 0 9) " &
                "(var zs []) " &
-               "(var pushed (zs ~ List/push! void)) " &
+               "(var pushed (zs ~ push! void)) " &
                "(var m #{^a 1}) " &
-               "(var m2 (m ~ Map/assoc \"b\" 2)) " &
+               "(var m2 (m ~ assoc \"b\" 2)) " &
                "(var mm {^a 1}) " &
-               "(mm ~ Map/put! \"b\" 3) " &
+               "(mm ~ put! \"b\" 3) " &
                "(var n (quote (user ^name \"Ada\"))) " &
-               "(n ~ Node/set_prop! \"name\" \"Bob\") " &
-               "[xs xs2 ys pushed zs m m2 (mm ~ Map/get \"b\") (n ~ /name)]",
+               "(n ~ set_prop! \"name\" \"Bob\") " &
+               "[xs xs2 ys pushed zs m m2 (mm ~ get \"b\") (n ~ /name)]",
                "[#[1 2 3] #[1 20 3] [9 2] nil [nil] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
 
   test "List/push! rejects immutable lists":
-    check_eval("(try (#[1] ~ List/push! 2) " &
+    check_eval("(try (#[1] ~ push! 2) " &
                " catch (Error ^message message) message)",
                "\"cannot mutate immutable List\"")
 
   test "built-in operations are type-direct messages (unqualified and path)":
-    # `(x ~ Cell/get)` is also reachable as `(x ~ get)` / `x/~get`.
+    # `(x ~ get)` is also reachable as `(x ~ get)` / `x/~get`.
     check_eval("(var c (cell 7)) (c ~ set 20) [(c ~ get) c/~get]", "[20 20]")
     check_eval("(var xs [1 2 3]) (xs ~ set! 0 9) (xs ~ push! 4) xs",
                "[9 2 3 4]")
@@ -2195,7 +2271,7 @@ suite "spec — mutable containers from design":
                "\"Bob\"")
 
   test "qualified built-in sends remain valid alongside the unqualified form":
-    check_eval("(var c (cell 1)) (c ~ Cell/set 5) (c ~ Cell/get)", "5")
+    check_eval("(var c (cell 1)) (c ~ set 5) (c ~ get)", "5")
 
   test "pipeline operations are messages: to_stream on iterables, map/filter/take/into on streams":
     check_eval("(var xs [1 2 3 4 5]) " &
@@ -2253,22 +2329,22 @@ suite "spec — optionality lives on the type, not the key":
 suite "spec — streams from design":
   test "streams expose pull operations":
     check_eval("(var s (to_stream [1 2])) " &
-               "[(s ~ Stream/has_next) " &
-               " (s ~ Stream/peek) " &
-               " (s ~ Stream/next) " &
-               " (s ~ Stream/next) " &
-               " (s ~ Stream/has_next)]",
+               "[(s ~ has_next) " &
+               " (s ~ peek) " &
+               " (s ~ next) " &
+               " (s ~ next) " &
+               " (s ~ has_next)]",
                "[true 1 1 2 false]")
 
   test "next on an exhausted stream raises EndOfStream":
-    check_eval("(try (var s (to_stream [])) (s ~ Stream/next) " &
+    check_eval("(try (var s (to_stream [])) (s ~ next) " &
                "catch (EndOfStream ^message m) m)",
                "\"end of stream\"")
 
   test "has_next surfaces producer errors without EndOfStream":
     check_eval("(try " &
                "  (var s (map (to_stream [1]) (fn [x] (/ 1 0)))) " &
-               "  (s ~ Stream/has_next) " &
+               "  (s ~ has_next) " &
                "catch {^message m} m)",
                "\"division by zero\"")
 
@@ -2278,32 +2354,32 @@ suite "spec — streams from design":
                "    (map (to_stream [1 2 3]) (fn [x] (+ x 1))) " &
                "    (fn [x] (> x 2))) " &
                "  2)) " &
-               "[(s ~ Stream/next) " &
-               " (s ~ Stream/next) " &
-               " (s ~ Stream/has_next) " &
+               "[(s ~ next) " &
+               " (s ~ next) " &
+               " (s ~ has_next) " &
                " (do (var pairs (to_pairs_stream {^a 1})) " &
-               "     (pairs ~ Stream/next)) " &
+               "     (pairs ~ next)) " &
                " (into (to_pairs_stream {^a 1}) {})]",
                "[3 4 false [a 1] {^a 1}]")
     check_eval("(var pairs (to_pairs_stream {^a 1})) " &
-               "(var pair (pairs ~ Stream/next)) " &
+               "(var pair (pairs ~ next)) " &
                "(fn key [x : Sym] x) (key pair/0)",
                "a")
 
   test "closing downstream stream helpers closes upstream":
     check_eval("(var source (to_stream [1 2])) " &
                "(var s (map source (fn [x] x))) " &
-               "(s ~ Stream/close) " &
-               "(source ~ Stream/has_next)",
+               "(s ~ close) " &
+               "(source ~ has_next)",
                "false")
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2]) " &
-               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(var s (take source 1)) " &
-               "[(s ~ Stream/next) " &
-               " (s ~ Stream/has_next) " &
-               " (hits ~ Cell/get) " &
-               " (source ~ Stream/has_next)]",
+               "[(s ~ next) " &
+               " (s ~ has_next) " &
+               " (hits ~ get) " &
+               " (source ~ has_next)]",
                "[1 false 1 true]")
 
   test "lazy streams own inline callables beyond the defining frame":
@@ -2321,26 +2397,26 @@ suite "spec — streams from design":
   test "stream helpers are lazy":
     check_eval("(var hits (cell 0)) " &
                "(var s (map (to_stream [1 2]) " &
-               "            (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
-               "[(hits ~ Cell/get) " &
-               " (s ~ Stream/next) " &
-               " (hits ~ Cell/get)]",
+               "            (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
+               "[(hits ~ get) " &
+               " (s ~ next) " &
+               " (hits ~ get)]",
                "[0 1 1]")
 
   test "yield functions return lazy streams":
     check_eval("(var hits (cell 0)) " &
                "(fn gen [] : (Stream Int Never) " &
-               "  (hits ~ Cell/set 1) " &
+               "  (hits ~ set 1) " &
                "  (yield 10) " &
-               "  (hits ~ Cell/set 2) " &
+               "  (hits ~ set 2) " &
                "  (yield 20)) " &
                "(var s (gen)) " &
-               "[(hits ~ Cell/get) " &
-               " (s ~ Stream/next) " &
-               " (hits ~ Cell/get) " &
-               " (s ~ Stream/next) " &
-               " (hits ~ Cell/get) " &
-               " (s ~ Stream/has_next)]",
+               "[(hits ~ get) " &
+               " (s ~ next) " &
+               " (hits ~ get) " &
+               " (s ~ next) " &
+               " (hits ~ get) " &
+               " (s ~ has_next)]",
                "[0 10 1 20 2 false]")
 
   test "yield skips void and resumes while loops":
@@ -2350,46 +2426,46 @@ suite "spec — streams from design":
                "    (yield (if (== i 1) void i)) " &
                "    (set i (+ i 1)))) " &
                "(var s (nums)) " &
-               "[(s ~ Stream/next) " &
-               " (s ~ Stream/next) " &
-               " (s ~ Stream/has_next)]",
+               "[(s ~ next) " &
+               " (s ~ next) " &
+               " (s ~ has_next)]",
                "[0 2 false]")
 
   test "yield resumes for loops lazily":
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &
-               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(fn copy [s] : (Stream Int Never) " &
                "  (for x in s (yield x))) " &
                "(var out (copy source)) " &
-               "[(hits ~ Cell/get) " &
-               " (out ~ Stream/next) " &
-               " (hits ~ Cell/get) " &
-               " (out ~ Stream/next) " &
-               " (hits ~ Cell/get)]",
+               "[(hits ~ get) " &
+               " (out ~ next) " &
+               " (hits ~ get) " &
+               " (out ~ next) " &
+               " (hits ~ get)]",
                "[0 1 1 2 2]")
     check_eval("(var hits (cell 0)) " &
                "(var source (map (to_stream [1 2 3]) " &
-               "  (fn [x] (hits ~ Cell/update (fn [n] (+ n 1))) x))) " &
+               "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(fn take-one [s] : (Stream Int Never) " &
                "  (for x in s " &
                "    (if (== x 2) (then (break))) " &
                "    (yield x))) " &
                "(var out (take-one source)) " &
-               "[(out ~ Stream/next) " &
-               " (out ~ Stream/has_next) " &
-               " (hits ~ Cell/get) " &
-               " (source ~ Stream/has_next)]",
+               "[(out ~ next) " &
+               " (out ~ has_next) " &
+               " (hits ~ get) " &
+               " (source ~ has_next)]",
                "[1 false 2 false]")
 
   test "typed stream boundaries check items when pulled":
-    check_eval("(try (fn first [s : (Stream Int Never)] (s ~ Stream/next)) " &
+    check_eval("(try (fn first [s : (Stream Int Never)] (s ~ next)) " &
                "     (first (to_stream [\"bad\"])) " &
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
     check_eval("(try (fn bad [] : (Stream Int Never) (yield \"bad\")) " &
                "     (var s (bad)) " &
-               "     (s ~ Stream/next) " &
+               "     (s ~ next) " &
                "catch (TypeError ^where w) w)",
                "\"Stream/next item\"")
 
@@ -2403,9 +2479,9 @@ suite "spec — streams from design":
                "  (yield void) " &
                "  (yield 2)) " &
                "(var s (skip)) " &
-               "[(s ~ Stream/next) " &
-               " (s ~ Stream/next) " &
-               " (s ~ Stream/has_next)]",
+               "[(s ~ next) " &
+               " (s ~ next) " &
+               " (s ~ has_next)]",
                "[1 2 false]")
 
   test "natural fall-through closes the generator with no item remaining":
@@ -2413,28 +2489,28 @@ suite "spec — streams from design":
                "  (yield 1) " &
                "  (yield 2)) " &
                "(var s (two)) " &
-               "[(s ~ Stream/next) " &
-               " (s ~ Stream/next) " &
-               " (s ~ Stream/has_next)]",
+               "[(s ~ next) " &
+               " (s ~ next) " &
+               " (s ~ has_next)]",
                "[1 2 false]")
 
   test "Stream/close after natural take exhaustion stays local":
     check_eval("(var upstream (to_stream [1 2 3 4 5])) " &
                "(var taken (take upstream 2)) " &
-               "[(taken ~ Stream/next) " &
-               " (taken ~ Stream/next) " &
-               " (taken ~ Stream/has_next) " &
-               " (upstream ~ Stream/has_next) " &
-               " (do (taken ~ Stream/close) " &
-               "     (upstream ~ Stream/next))]",
+               "[(taken ~ next) " &
+               " (taken ~ next) " &
+               " (taken ~ has_next) " &
+               " (upstream ~ has_next) " &
+               " (do (taken ~ close) " &
+               "     (upstream ~ next))]",
                "[1 2 false true 3]")
     check_eval("(var closes (cell 0)) " &
                "(fn source [] : (Stream Int Never) " &
                "  (try (yield 1) (yield 2) " &
-               "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+               "   ensure (closes ~ update (fn [n] (+ n 1))))) " &
                "(var upstream (source)) " &
                "(for x in (take upstream 2) (break)) " &
-               "[(closes ~ Cell/get) (upstream ~ Stream/has_next)]",
+               "[(closes ~ get) (upstream ~ has_next)]",
                "[1 false]")
 
   test "generator return is terminal and close unwinds ensure blocks":
@@ -2444,19 +2520,19 @@ suite "spec — streams from design":
                "[(choose true) (choose false)]",
                "[7 9]")
     check_eval("(var log (cell [])) " &
-               "(fn note [x] (log ~ Cell/update (fn [xs] [xs... x]))) " &
+               "(fn note [x] (log ~ update (fn [xs] [xs... x]))) " &
                "(fn gen [] : (Stream Int Never) " &
                "  (try " &
                "    (try (yield 1) (return) " &
                "     ensure (note `inner)) " &
                "   ensure (note `outer))) " &
                "(var completed (gen)) " &
-               "(completed ~ Stream/next) " &
-               "(var done (completed ~ Stream/has_next)) " &
+               "(completed ~ next) " &
+               "(var done (completed ~ has_next)) " &
                "(var closed (gen)) " &
-               "(closed ~ Stream/next) " &
-               "(closed ~ Stream/close) " &
-               "[done (log ~ Cell/get)]",
+               "(closed ~ next) " &
+               "(closed ~ close) " &
+               "[done (log ~ get)]",
                "[false [inner outer inner outer]]")
     expect GeneError:
       discard compileSource("(fn bad [] : (Stream Int Never) " &
@@ -2471,47 +2547,47 @@ suite "spec — streams from design":
                "(var closes (cell 0)) " &
                "(fn source [] : (Stream Int Never) " &
                "  (try (yield 1) " &
-               "   ensure (closes ~ Cell/update (fn [n] (+ n 1))))) " &
+               "   ensure (closes ~ update (fn [n] (+ n 1))))) " &
                "(var s (map (source) " &
-               "  (fn [x] (calls ~ Cell/update (fn [n] (+ n 1))) " &
+               "  (fn [x] (calls ~ update (fn [n] (+ n 1))) " &
                "          (fail (Boom ^message \"boom\"))))) " &
-               "(var first (try (s ~ Stream/next) " &
+               "(var first (try (s ~ next) " &
                "  catch (Boom ^message m) m)) " &
-               "[first (s ~ Stream/has_next) " &
-               " (try (s ~ Stream/next) " &
+               "[first (s ~ has_next) " &
+               " (try (s ~ next) " &
                "  catch (EndOfStream ^message m) m) " &
-               " (calls ~ Cell/get) (closes ~ Cell/get)]",
+               " (calls ~ get) (closes ~ get)]",
                "[\"boom\" false \"end of stream\" 1 1]")
     check_eval("(type GenBoom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for GenBoom) " &
                "(var runs (cell 0)) " &
                "(fn bad ^errors [GenBoom] [] : (Stream Int GenBoom) " &
                "  (yield 1) " &
-               "  (runs ~ Cell/update (fn [n] (+ n 1))) " &
+               "  (runs ~ update (fn [n] (+ n 1))) " &
                "  (fail (GenBoom ^message \"generator failed\"))) " &
                "(var s (bad)) " &
-               "(var first (s ~ Stream/next)) " &
-               "(var message (try (s ~ Stream/has_next) " &
+               "(var first (s ~ next)) " &
+               "(var message (try (s ~ has_next) " &
                "  catch (GenBoom ^message m) m)) " &
-               "[first message (s ~ Stream/has_next) " &
-               " (try (s ~ Stream/peek) " &
+               "[first message (s ~ has_next) " &
+               " (try (s ~ peek) " &
                "  catch (EndOfStream ^message m) m) " &
-               " (runs ~ Cell/get)]",
+               " (runs ~ get)]",
                "[1 \"generator failed\" false \"end of stream\" 1]")
 
   test "has_next on an empty stream returns false without raising":
-    check_eval("(var s (to_stream [])) (s ~ Stream/has_next)", "false")
+    check_eval("(var s (to_stream [])) (s ~ has_next)", "false")
 
   test "Stream/close is idempotent":
     check_eval("(var s (to_stream [1])) " &
                "  (do " &
-               "    (s ~ Stream/close) " &
-               "    (s ~ Stream/close))",
+               "    (s ~ close) " &
+               "    (s ~ close))",
                "nil")
 
   test "Stream/try_next returns exhausted when empty":
     check_eval("(var s (to_stream [])) " &
-               "(match (s ~ Stream/try_next) " &
+               "(match (s ~ try_next) " &
                "  (when TryNext/exhausted true) " &
                "  (when (TryNext/value _) false) " &
                "  (when (TryNext/error _) false))",
@@ -2519,30 +2595,30 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns value for each item then exhausted":
     check_eval("(var s (to_stream [1 2])) " &
-               "[(match (s ~ Stream/try_next) " &
+               "[(match (s ~ try_next) " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0)) " &
-               " (match (s ~ Stream/try_next) " &
+               " (match (s ~ try_next) " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0)) " &
-               " (match (s ~ Stream/try_next) " &
+               " (match (s ~ try_next) " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted 0))]",
                "[1 2 0]")
 
   test "Stream/try_next preserves nil as a distinct value":
     check_eval("(var s (to_stream [nil 9])) " &
-               "[(match (s ~ Stream/try_next) " &
+               "[(match (s ~ try_next) " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted `empty)) " &
-               " (match (s ~ Stream/try_next) " &
+               " (match (s ~ try_next) " &
                "    (when (TryNext/value v) v) " &
                "    (when TryNext/exhausted `empty))]",
                "[nil 9]")
 
   test "Stream/try_next returns error for producer errors":
     check_eval("(var s (map (to_stream [1]) (fn [x] (/ x 0)))) " &
-               "(match (s ~ Stream/try_next) " &
+               "(match (s ~ try_next) " &
                "  (when (TryNext/error e) true) " &
                "  (when (TryNext/value _) false) " &
                "  (when TryNext/exhausted false))",
@@ -2550,11 +2626,11 @@ suite "spec — streams from design":
 
   test "Stream/try_next returns exhausted after a producer error":
     check_eval("(var s (map (to_stream [1]) (fn [x] (/ x 0)))) " &
-               "[(match (s ~ Stream/try_next) " &
+               "[(match (s ~ try_next) " &
                "    (when (TryNext/error _) true) " &
                "    (when (TryNext/value _) false) " &
                "    (when TryNext/exhausted false)) " &
-               " (match (s ~ Stream/try_next) " &
+               " (match (s ~ try_next) " &
                "    (when TryNext/exhausted true) " &
                "    (when (TryNext/value _) false) " &
                "    (when (TryNext/error _) false))]",
@@ -2562,7 +2638,7 @@ suite "spec — streams from design":
 
   test "TryNext can be used as an annotation type":
     check_eval("(fn next_or [s : Stream] : (TryNext Int Error) " &
-               "  (s ~ Stream/try_next)) " &
+               "  (s ~ try_next)) " &
                "(match (next_or (to_stream [42])) " &
                "  (when (TryNext/value v) v) " &
                "  (when TryNext/exhausted 0))",
@@ -2571,9 +2647,9 @@ suite "spec — streams from design":
   test "selectors map static lookup over stream items":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
                "(var names users/%to_stream/name) " &
-               "[(names ~ Stream/next) " &
-               " (names ~ Stream/next) " &
-               " (names ~ Stream/has_next)]",
+               "[(names ~ next) " &
+               " (names ~ next) " &
+               " (names ~ has_next)]",
                "[\"Ada\" \"Bob\" false]")
 
   test "selector strict and default options make missing lookup explicit":
@@ -2604,9 +2680,9 @@ suite "spec — streams from design":
                "            {^name \"Tim\" ^adult false} " &
                "            {^name \"Bob\" ^adult true}]) " &
                "(var names ((select %to_stream %(filter /adult) name) users)) " &
-               "[(names ~ Stream/next) " &
-               " (names ~ Stream/next) " &
-               " (names ~ Stream/has_next)]",
+               "[(names ~ next) " &
+               " (names ~ next) " &
+               " (names ~ has_next)]",
                "[\"Ada\" \"Bob\" false]")
     check_eval("(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
                "((select %to_stream %(map /name) %(take 2) %(into [])) users)",
@@ -2624,17 +2700,17 @@ suite "spec — streams from design":
   test "declarations is an ordinary stream selector stage":
     check_eval("(ns m (var b 2) (var a 1)) " &
                "(var names m/%declarations/name) " &
-               "[(names ~ Stream/next) " &
-               " (names ~ Stream/next) " &
-               " (names ~ Stream/has_next)]",
+               "[(names ~ next) " &
+               " (names ~ next) " &
+               " (names ~ has_next)]",
                "[\"a\" \"b\" false]")
 
   test "declaration records expose source @meta through %meta":
     check_eval("(ns m (fn home [] @doc \"hi\" 1) (var x 2)) " &
                "(var d ((filter m/%declarations (fn [d] (== d/name \"home\"))) " &
-               "        ~ Stream/next)) " &
+               "        ~ next)) " &
                "(var v ((filter m/%declarations (fn [d] (== d/name \"x\"))) " &
-               "        ~ Stream/next)) " &
+               "        ~ next)) " &
                "[d/%meta/doc d/kind (== v/%meta/doc void)]",
                "[\"hi\" \"Fn\" true]")
 
@@ -2642,10 +2718,10 @@ suite "spec — streams from design":
     let scope = newGlobalScope()
     discard bindThisModule(scope, "spec")
     check run(compileSource("(var x 9) " &
-                            "(var ds (filter (this_mod ~ Module/declarations) " &
+                            "(var ds (filter (Module/declarations this_mod) " &
                             "  (fn [d] (== d/name \"x\")))) " &
-                            "(var decl (ds ~ Stream/next)) " &
-                            "[(/value decl) (this_mod ~ Module/path)]"),
+                            "(var decl (ds ~ next)) " &
+                            "[(/value decl) (Module/path this_mod)]"),
               scope).print() == "[9 nil]"
 
 suite "spec — structured tasks from design":
@@ -2661,10 +2737,10 @@ suite "spec — structured tasks from design":
                "  (var slow (spawn (do " &
                "    (var i 0) " &
                "    (while (< i 5000) (set i (+ i 1))) " &
-               "    (out ~ Cell/set 1)))) " &
-               "  (var fast (spawn (out ~ Cell/set 2))) " &
+               "    (out ~ set 1)))) " &
+               "  (var fast (spawn (out ~ set 2))) " &
                "  (await fast) " &
-               "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
+               "  [(out ~ get) (await slow) (out ~ get)])",
                "[2 1 1]")
 
   test "worker-candidate spawns snapshot Send captures":
@@ -2680,8 +2756,8 @@ suite "spec — structured tasks from design":
                "  (await t))",
                "3")
     check_eval("(scope (var c (cell 0)) " &
-               "  (var t (spawn (c ~ Cell/get))) " &
-               "  (c ~ Cell/set 2) " &
+               "  (var t (spawn (c ~ get))) " &
+               "  (c ~ set 2) " &
                "  (await t))",
                "2")
     check_eval("(scope (var x 41) " &
@@ -2691,25 +2767,25 @@ suite "spec — structured tasks from design":
 
   test "timer waits suspend only the current task":
     check_eval("(scope (var out (cell 0)) " &
-               "  (var slow (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
-               "  (var fast (spawn (out ~ Cell/set 2))) " &
+               "  (var slow (spawn (do (sleep 5) (out ~ set 1)))) " &
+               "  (var fast (spawn (out ~ set 2))) " &
                "  (await fast) " &
-               "  [(out ~ Cell/get) (await slow) (out ~ Cell/get)])",
+               "  [(out ~ get) (await slow) (out ~ get)])",
                "[2 1 1]")
 
   test "zero-duration sleep yields a scheduler turn":
     check_eval("(var out (cell 0)) " &
-               "(spawn (out ~ Cell/set 1)) " &
-               "[(out ~ Cell/get) (sleep 0) (out ~ Cell/get)]",
+               "(spawn (out ~ set 1)) " &
+               "[(out ~ get) (sleep 0) (out ~ get)]",
                "[0 nil 1]")
 
   test "scope normal exit waits for live child tasks":
     check_eval("(var out (cell 0)) " &
                "(scope (var ch (channel ^capacity 1)) " &
-               "  (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 7))) " &
-               "  (spawn (ch ~ Channel/send 1)) " &
+               "  (spawn (do (ch ~ recv) (out ~ set 7))) " &
+               "  (spawn (ch ~ send 1)) " &
                "  nil) " &
-               "(out ~ Cell/get)",
+               "(out ~ get)",
                "7")
 
   test "spawn can require the owning root lane":
@@ -2727,8 +2803,8 @@ suite "spec — structured tasks from design":
   test "await propagates task cancellation outside catch":
     expect GeneCancel:
       discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
-                                "  (var t (spawn (ch ~ Channel/recv))) " &
-                                "  (t ~ Task/cancel) " &
+                                "  (var t (spawn (ch ~ recv))) " &
+                                "  (t ~ cancel) " &
                                 "  (try (await t) catch _ \"caught\"))"),
                   newGlobalScope())
 
@@ -2737,12 +2813,12 @@ suite "spec — structured tasks from design":
                "(var out (cell 0)) " &
                "(try " &
                "  (scope " &
-               "    (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 1))) " &
+               "    (spawn (do (ch ~ recv) (out ~ set 1))) " &
                "    nil) " &
                "  catch {^message m} m) " &
-               "(ch ~ Channel/send 1) " &
+               "(ch ~ send 1) " &
                "(sleep 1) " &
-               "(out ~ Cell/get)",
+               "(out ~ get)",
                "0")
 
   test "scope error exit cancels pending child tasks":
@@ -2752,12 +2828,12 @@ suite "spec — structured tasks from design":
                "(var out (cell 0)) " &
                "(try " &
                "  (scope " &
-               "    (spawn (do (ch ~ Channel/recv) (out ~ Cell/set 1))) " &
+               "    (spawn (do (ch ~ recv) (out ~ set 1))) " &
                "    (fail (Boom ^message \"stop\"))) " &
                "  catch (Boom) nil) " &
-               "(ch ~ Channel/send 1) " &
+               "(ch ~ send 1) " &
                "(scope nil) " &
-               "(out ~ Cell/get)",
+               "(out ~ get)",
                "0")
 
   test "scope error exit waits for child cancellation cleanup":
@@ -2767,41 +2843,41 @@ suite "spec — structured tasks from design":
                "(var out (cell 0)) " &
                "(try " &
                "  (scope " &
-               "    (spawn (try (ch ~ Channel/recv) " &
-               "                ensure (out ~ Cell/set 9))) " &
+               "    (spawn (try (ch ~ recv) " &
+               "                ensure (out ~ set 9))) " &
                "    (sleep 1) " &
                "    (fail (Boom ^message \"stop\"))) " &
                "  catch (Boom) nil) " &
-               "(out ~ Cell/get)",
+               "(out ~ get)",
                "9")
 
   test "explicit Task/cancel still runs the ensure cleanup":
     check_eval("(var ch (channel ^capacity 1)) " &
                "(var out (cell 0)) " &
                "(scope " &
-               "  (var t (spawn (try (ch ~ Channel/recv) " &
-               "                   ensure (out ~ Cell/set 7)))) " &
+               "  (var t (spawn (try (ch ~ recv) " &
+               "                   ensure (out ~ set 7)))) " &
                "  (sleep 1) " &
-               "  (t ~ Task/cancel)) " &
+               "  (t ~ cancel)) " &
                "(sleep 1) " &
-               "(out ~ Cell/get)",
+               "(out ~ get)",
                "7")
 
   test "wildcard catch does not intercept task cancellation":
     expect GeneCancel:
       discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
-                                "  (var t (spawn (ch ~ Channel/recv))) " &
-                                "  (t ~ Task/cancel) " &
+                                "  (var t (spawn (ch ~ recv))) " &
+                                "  (t ~ cancel) " &
                                 "  (try (await t) catch _ \"caught\"))"),
                   newGlobalScope())
 
   test "detached tasks outlive scope ownership":
     check_eval("(var out (cell 0)) " &
                "(scope " &
-               "  (var t (spawn (do (sleep 5) (out ~ Cell/set 1)))) " &
-               "  (t ~ Task/detach) " &
+               "  (var t (spawn (do (sleep 5) (out ~ set 1)))) " &
+               "  (t ~ detach) " &
                "  nil) " &
-               "[(out ~ Cell/get) (sleep 10) (out ~ Cell/get)]",
+               "[(out ~ get) (sleep 10) (out ~ get)]",
                "[0 nil 1]")
 
   test "Task annotations accept task handles":
@@ -2830,90 +2906,90 @@ suite "spec — structured tasks from design":
 suite "spec — bounded channels from design":
   test "channels send, receive, and close in FIFO order":
     check_eval("(var ch (channel ^capacity 2)) " &
-               "(ch ~ Channel/send 1) " &
-               "(ch ~ Channel/send 2) " &
-               "(ch ~ Channel/close) " &
-               "[(ch ~ Channel/recv) " &
-               " (ch ~ Channel/recv) " &
-               " (try (ch ~ Channel/recv) catch (ChannelClosed ^message m) m)]",
+               "(ch ~ send 1) " &
+               "(ch ~ send 2) " &
+               "(ch ~ close) " &
+               "[(ch ~ recv) " &
+               " (ch ~ recv) " &
+               " (try (ch ~ recv) catch (ChannelClosed ^message m) m)]",
                "[1 2 \"channel is closed\"]")
     check_eval("(scope (var ch (channel ^capacity 1)) " &
-               "  (var t (spawn (try (ch ~ Channel/recv) " &
+               "  (var t (spawn (try (ch ~ recv) " &
                "                  catch (ChannelClosed ^message m) m))) " &
-               "  (spawn (ch ~ Channel/close)) " &
+               "  (spawn (ch ~ close)) " &
                "  (await t))",
                "\"channel is closed\"")
     check_eval("(scope (var ch (channel ^capacity 1)) " &
-               "  (ch ~ Channel/send 1) " &
-               "  (var t (spawn (try (ch ~ Channel/send 2) " &
+               "  (ch ~ send 1) " &
+               "  (var t (spawn (try (ch ~ send 2) " &
                "                  catch (ChannelClosed ^message m) m))) " &
-               "  (spawn (ch ~ Channel/close)) " &
+               "  (spawn (ch ~ close)) " &
                "  (await t))",
                "\"channel is closed\"")
 
   test "try_send and try_recv expose non-suspending channel checks":
     check_eval("(var ch (channel ^capacity 1)) " &
-               "[(ch ~ Channel/try_send 1) " &
-               " (ch ~ Channel/try_send 2) " &
-               " (ch ~ Channel/recv) " &
-               " (match (ch ~ Channel/try_recv) " &
+               "[(ch ~ try_send 1) " &
+               " (ch ~ try_send 2) " &
+               " (ch ~ recv) " &
+               " (match (ch ~ try_recv) " &
                "   (when TryRecv/empty true) " &
                "   (when (TryRecv/value _) false))]",
                "[true false 1 true]")
 
   test "try_recv tags empty and preserves Void and Nil payloads":
     check_eval("(var ch (channel ^capacity 3)) " &
-               "(var empty (ch ~ Channel/try_recv)) " &
-               "(ch ~ Channel/send void) " &
-               "(ch ~ Channel/send nil) " &
-               "(ch ~ Channel/send 9) " &
+               "(var empty (ch ~ try_recv)) " &
+               "(ch ~ send void) " &
+               "(ch ~ send nil) " &
+               "(ch ~ send 9) " &
                "[(match empty (when TryRecv/empty `empty)) " &
-               " (match (ch ~ Channel/try_recv) " &
+               " (match (ch ~ try_recv) " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch ~ Channel/try_recv) " &
+               " (match (ch ~ try_recv) " &
                "   (when (TryRecv/value v) v)) " &
-               " (match (ch ~ Channel/try_recv) " &
+               " (match (ch ~ try_recv) " &
                "   (when (TryRecv/value v) v))]",
                "[empty void nil 9]")
     check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
-               "  (ch ~ Channel/try_recv)) " &
+               "  (ch ~ try_recv)) " &
                "(match (poll (channel)) (when TryRecv/empty true))",
                "true")
 
   test "typed channel boundaries check items before enqueue":
     check_eval("(var ch : (Channel Int) (channel)) " &
-               "(try (ch ~ Channel/send \"bad\") catch (TypeError ^where w) w)",
+               "(try (ch ~ send \"bad\") catch (TypeError ^where w) w)",
                "\"Channel/send item\"")
 
   test "channel sends enforce dynamic Send values":
     check_eval("(var ch (channel)) " &
-               "(ch ~ Channel/send #[1 #{^a 2}]) " &
-               "(ch ~ Channel/recv)",
+               "(ch ~ send #[1 #{^a 2}]) " &
+               "(ch ~ recv)",
                "#[1 #{^a 2}]")
     check_eval("(var ch (channel)) " &
                "(var captured #[1 #{^a 2}]) " &
                "(var f (fn [] captured)) " &
-               "(ch ~ Channel/send f) " &
-               "(var g (ch ~ Channel/recv)) " &
+               "(ch ~ send f) " &
+               "(var g (ch ~ recv)) " &
                "(g)",
                "#[1 #{^a 2}]")
     check_eval("(var ch (channel)) " &
                "(var f (fn [x y = x] y)) " &
-               "(ch ~ Channel/send f) " &
-               "(var g (ch ~ Channel/recv)) " &
+               "(ch ~ send f) " &
+               "(var g (ch ~ recv)) " &
                "(g 7)",
                "7")
     check_eval("(var ch (channel)) " &
-               "(try (ch ~ Channel/send [1]) catch (TypeError ^expected e) e)",
+               "(try (ch ~ send [1]) catch (TypeError ^expected e) e)",
                "\"Send\"")
     check_eval("(var ch (channel)) " &
-               "(try (ch ~ Channel/send #[(cell 1)]) " &
+               "(try (ch ~ send #[(cell 1)]) " &
                "catch (TypeError ^where w) w)",
                "\"Channel/send item\"")
     check_eval("(var ch (channel)) " &
                "(var captured (cell 1)) " &
-               "(var f (fn [] (captured ~ Cell/get))) " &
-               "(try (ch ~ Channel/send f) catch (TypeError ^expected e) e)",
+               "(var f (fn [] (captured ~ get))) " &
+               "(try (ch ~ send f) catch (TypeError ^expected e) e)",
                "\"Send\"")
 
 suite "spec — actors from design":
@@ -2921,13 +2997,13 @@ suite "spec — actors from design":
     check_eval("(var out (cell 0)) " &
                "(fn handle [ctx : (ActorContext Int), state : Int, msg : Int] : (ActorStep Int) " &
                "  (var next (+ state msg)) " &
-               "  (out ~ Cell/set next) " &
+               "  (out ~ set next) " &
                "  (actor/continue next)) " &
                "(var counter : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(counter ~ actor/send 2) " &
-               "(counter ~ actor/send 5) " &
-               "(out ~ Cell/get)",
+               "(actor/send counter 2) " &
+               "(actor/send counter 5) " &
+               "(out ~ get)",
                "7")
 
   test "actor try_send returns immediately":
@@ -2935,11 +3011,11 @@ suite "spec — actors from design":
                "(var seen (cell 0)) " &
                "(var a (actor/spawn ^init (fn [] 0) " &
                "  ^handle (fn [ctx state msg] " &
-               "    (gate ~ Channel/recv) " &
-               "    (seen ~ Cell/set msg) " &
+               "    (gate ~ recv) " &
+               "    (seen ~ set msg) " &
                "    (actor/continue msg)))) " &
-               "(var before [(a ~ actor/try_send 7) (seen ~ Cell/get)]) " &
-               "(gate ~ Channel/send 1) " &
+               "(var before [(actor/try_send a 7) (seen ~ get)]) " &
+               "(gate ~ send 1) " &
                "(sleep 0) " &
                "before",
                "[true 0]")
@@ -2949,9 +3025,9 @@ suite "spec — actors from design":
                "  (actor/continue (+ state msg))) " &
                "(var counter : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(counter ~ actor/send 2) " &
-               "(counter ~ actor/send 5) " &
-               "(var snap (counter ~ actor/snapshot)) " &
+               "(actor/send counter 2) " &
+               "(actor/send counter 5) " &
+               "(var snap (actor/snapshot counter)) " &
                "[snap/state snap/mailbox snap/closed snap/processing]",
                "[7 0 false false]")
 
@@ -2962,14 +3038,14 @@ suite "spec — actors from design":
                "  (actor/continue (* state msg))) " &
                "(var counter : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 1) ^handle add)) " &
-               "(counter ~ actor/send 2) " &
+               "(actor/send counter 2) " &
                "(actor/upgrade counter mul ^migrate (fn [state] (+ state 1))) " &
-               "(counter ~ actor/send 3) " &
-               "(var before (counter ~ actor/snapshot)) " &
+               "(actor/send counter 3) " &
+               "(var before (actor/snapshot counter)) " &
                "(var err (try (actor/upgrade counter 99) " &
                "  catch (TypeError ^where w) w)) " &
-               "(counter ~ actor/send 2) " &
-               "(var after (counter ~ actor/snapshot)) " &
+               "(actor/send counter 2) " &
+               "(var after (actor/snapshot counter)) " &
                "[before/state err after/state]",
                "[12 \"actor/upgrade handler\" 24]")
 
@@ -2977,19 +3053,19 @@ suite "spec — actors from design":
     check_eval("(var a : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/stop)))) " &
-               "(a ~ actor/send 1) " &
-               "(try (a ~ actor/send 2) catch (ActorClosed ^message m) m)",
+               "(actor/send a 1) " &
+               "(try (actor/send a 2) catch (ActorClosed ^message m) m)",
                "\"actor is closed\"")
 
   test "actor sends require typed Send messages":
     check_eval("(var a : (ActorRef Int) " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state)))) " &
-               "(try (a ~ actor/send \"bad\") catch (TypeError ^where w) w)",
+               "(try (actor/send a \"bad\") catch (TypeError ^where w) w)",
                "\"actor/send message\"")
     check_eval("(var a (actor/spawn ^init (fn [] 0) " &
                "  ^handle (fn [ctx state msg] (actor/continue state)))) " &
-               "(try (a ~ actor/send [1]) catch (TypeError ^expected e) e)",
+               "(try (actor/send a [1]) catch (TypeError ^expected e) e)",
                "\"Send\"")
 
   test "actor ask uses an explicit one-shot ReplyTo capability":
@@ -2998,11 +3074,11 @@ suite "spec — actors from design":
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (match msg " &
                "    (when (Get ^reply reply) " &
-               "      (reply ~ ReplyTo/send state) " &
+               "      (reply ~ send state) " &
                "      (actor/continue state)))) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 41) ^handle handle)) " &
-               "(await (counter ~ actor/ask (fn [reply] (Get ^reply reply))))",
+               "(await (actor/ask counter (fn [reply] (Get ^reply reply))))",
                "41")
 
   test "a second send on a ReplyTo raises ReplyAlreadySent":
@@ -3011,14 +3087,14 @@ suite "spec — actors from design":
                "(var out (cell nil)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var (Get ^reply reply) msg) " &
-               "  (reply ~ ReplyTo/send state) " &
-               "  (try (reply ~ ReplyTo/send state) " &
-               "   catch (ReplyAlreadySent ^message m) (out ~ Cell/set m)) " &
+               "  (reply ~ send state) " &
+               "  (try (reply ~ send state) " &
+               "   catch (ReplyAlreadySent ^message m) (out ~ set m)) " &
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 7) ^handle handle)) " &
-               "(var got (await (counter ~ actor/ask (fn [reply] (Get ^reply reply))))) " &
-               "[got (sleep 1) (out ~ Cell/get)]",
+               "(var got (await (actor/ask counter (fn [reply] (Get ^reply reply))))) " &
+               "[got (sleep 1) (out ~ get)]",
                "[7 nil \"reply has already been sent\"]")
     # ReplyAlreadySent is a subtype of ActorError, so a broad handler-level
     # catch also sees it.
@@ -3027,14 +3103,14 @@ suite "spec — actors from design":
                "(var out (cell nil)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var (Get ^reply reply) msg) " &
-               "  (reply ~ ReplyTo/send state) " &
-               "  (try (reply ~ ReplyTo/send state) " &
-               "   catch (ActorError ^message m) (out ~ Cell/set m)) " &
+               "  (reply ~ send state) " &
+               "  (try (reply ~ send state) " &
+               "   catch (ActorError ^message m) (out ~ set m)) " &
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 7) ^handle handle)) " &
-               "(await (counter ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
-               "[(sleep 1) (out ~ Cell/get)]",
+               "(await (actor/ask counter (fn [reply] (Get ^reply reply)))) " &
+               "[(sleep 1) (out ~ get)]",
                "[nil \"reply has already been sent\"]")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send for Get) " &
@@ -3044,26 +3120,26 @@ suite "spec — actors from design":
                "      ^handle (fn [ctx state msg] " &
                "        (match msg " &
                "          (when (Get ^reply reply) " &
-               "            (reply ~ ReplyTo/send state) " &
+               "            (reply ~ send state) " &
                "            (actor/continue state)))))) " &
                "  (fn (choose result err) [t : (Task result err) fallback : result] " &
                "    fallback) " &
-               "  (try (choose (counter ~ actor/ask (fn [reply] (Get ^reply reply))) \"bad\") " &
+               "  (try (choose (actor/ask counter (fn [reply] (Get ^reply reply))) \"bad\") " &
                "       catch (TypeError ^expected e) e))",
                "\"Int\"")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
                "(impl Send for Get) " &
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
-               "  (var got (ch ~ Channel/recv)) " &
+               "  (var got (ch ~ recv)) " &
                "  (match msg " &
                "    (when (Get ^reply reply) " &
-               "      (reply ~ ReplyTo/send (+ state got)) " &
+               "      (reply ~ send (+ state got)) " &
                "      (actor/continue state)))) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 40) ^handle handle)) " &
-               "(var pending (counter ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
-               "(ch ~ Channel/send 2) " &
+               "(var pending (actor/ask counter (fn [reply] (Get ^reply reply)))) " &
+               "(ch ~ send 2) " &
                "(await pending)",
                "42")
     check_eval("(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -3072,16 +3148,16 @@ suite "spec — actors from design":
                "(var out (cell 0)) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var (Get ^reply reply) msg) " &
-               "  (var got (ch ~ Channel/recv)) " &
-               "  (reply ~ ReplyTo/send got) " &
-               "  (out ~ Cell/set got) " &
+               "  (var got (ch ~ recv)) " &
+               "  (reply ~ send got) " &
+               "  (out ~ set got) " &
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "(var pending (actor/ask ^timeout_ms 5 counter (fn [reply] (Get ^reply reply)))) " &
                "(var err (try (await pending) catch (ActorError ^message m) m)) " &
-               "(ch ~ Channel/send 7) " &
-               "[err (sleep 1) (out ~ Cell/get)]",
+               "(ch ~ send 7) " &
+               "[err (sleep 1) (out ~ get)]",
                "[\"actor/ask timed out\" nil 7]")
     check_eval("(scope " &
                "  (type Get ^props {^reply (ReplyTo Int)}) " &
@@ -3090,17 +3166,17 @@ suite "spec — actors from design":
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx state msg] " &
                "  (var (Get ^reply reply) msg) " &
-               "  (var got (ch ~ Channel/recv)) " &
-               "  (try (reply ~ ReplyTo/send got) catch {^message m} m) " &
+               "  (var got (ch ~ recv)) " &
+               "  (try (reply ~ send got) catch {^message m} m) " &
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "(var pending (actor/ask ^timeout_ms 5 counter " &
-               "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
+               "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
                "(var err (try (await pending) catch (ActorError ^message m) m)) " &
-               "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
+               "(var first-late (try ((saved ~ get) ~ send 9) " &
                "                  catch {^message m} m)) " &
-               "(var second-late (try ((saved ~ Cell/get) ~ ReplyTo/send 10) " &
+               "(var second-late (try ((saved ~ get) ~ send 10) " &
                "                   catch {^message m} m)) " &
                "[err first-late second-late])",
                "[\"actor/ask timed out\" nil \"reply has already been sent\"]")
@@ -3111,9 +3187,9 @@ suite "spec — actors from design":
                "    ^handle (fn [ctx state msg] " &
                "      (match msg " &
                "        (when (Get ^reply reply) " &
-               "          (reply ~ ReplyTo/send \"bad\") " &
+               "          (reply ~ send \"bad\") " &
                "          (actor/continue state)))))) " &
-               "(try (await (counter ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+               "(try (await (actor/ask counter (fn [reply] (Get ^reply reply)))) " &
                "catch (TypeError ^where w) w)",
                "\"ReplyTo/send value\"")
 
@@ -3127,9 +3203,9 @@ suite "spec — actors from design":
                                 "    ^handle (fn [ctx state msg] " &
                                 "      (match msg " &
                                 "        (when (Get ^reply reply) " &
-                                "          (reply ~ ReplyTo/send state) " &
+                                "          (reply ~ send state) " &
                                 "          (actor/continue state)))))) " &
-                                "  (set pending (a ~ actor/ask " &
+                                "  (set pending (actor/ask a " &
                                 "    (fn [reply] (Get ^reply reply)))) " &
                                 "  nil) " &
                                 "(await pending)"),
@@ -3141,17 +3217,17 @@ suite "spec — actors from design":
                "(var ch (channel ^capacity 1)) " &
                "(fn handle [ctx state msg] " &
                "  (var (Get ^reply reply) msg) " &
-               "  (var got (ch ~ Channel/recv)) " &
-               "  (try (reply ~ ReplyTo/send got) catch {^message m} m) " &
+               "  (var got (ch ~ recv)) " &
+               "  (try (reply ~ send got) catch {^message m} m) " &
                "  (actor/continue state)) " &
                "(var counter : (ActorRef Get) " &
                "  (actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(var pending (counter ~ actor/ask " &
-               "  (fn [reply] (saved ~ Cell/set reply) (Get ^reply reply)))) " &
-               "(pending ~ Task/cancel) " &
-               "(var first-late (try ((saved ~ Cell/get) ~ ReplyTo/send 9) " &
+               "(var pending (actor/ask counter " &
+               "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
+               "(pending ~ cancel) " &
+               "(var first-late (try ((saved ~ get) ~ send 9) " &
                "                  catch {^message m} m)) " &
-               "(var second-late (try ((saved ~ Cell/get) ~ ReplyTo/send 10) " &
+               "(var second-late (try ((saved ~ get) ~ send 10) " &
                "                   catch {^message m} m)) " &
                "[first-late second-late])",
                "[nil \"reply has already been sent\"]")
@@ -3164,8 +3240,8 @@ suite "spec — actors from design":
                                 "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                                 "    ^handle (fn [ctx state msg] " &
                                 "      (fail (Boom ^message \"bad\"))))) " &
-                                "  (var first (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
-                                "  (var second (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+                                "  (var first (actor/ask a (fn [reply] (Get ^reply reply)))) " &
+                                "  (var second (actor/ask a (fn [reply] (Get ^reply reply)))) " &
                                 "  (sleep 1) " &
                                 "  (await second))"),
                   newGlobalScope())
@@ -3174,13 +3250,13 @@ suite "spec — actors from design":
     check_eval("(var a (scope " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "(a ~ actor/try_send 1)",
+               "(actor/try_send a 1)",
                "false")
     check_eval("(scope " &
                "  (var a (scope " &
                "    (actor/spawn ^init (fn [] 0) " &
                "      ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "  (a ~ actor/try_send 1))",
+               "  (actor/try_send a 1))",
                "false")
 
   test "restart budget stops the actor when max_restarts is exhausted":
@@ -3189,9 +3265,9 @@ suite "spec — actors from design":
                "(supervisor ^strategy restart ^max_restarts 1 ^within_ms 60000 " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (fail (Boom ^message \"boom\"))))) " &
-               "  (a ~ actor/send 1) " &   # restart consumes the budget
-               "  (var second (try (a ~ actor/send 2) catch (Boom ^message m) m)) " &
-               "  (var third (try (a ~ actor/send 3) catch (ActorClosed ^message m) m)) " &
+               "  (actor/send a 1) " &   # restart consumes the budget
+               "  (var second (try (actor/send a 2) catch (Boom ^message m) m)) " &
+               "  (var third (try (actor/send a 3) catch (ActorClosed ^message m) m)) " &
                "  [second third])",
                "[\"boom\" \"actor is closed\"]")
 
@@ -3204,12 +3280,12 @@ suite "spec — actors from design":
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
-               "        (do (seen ~ Cell/set state) (actor/continue state)))))) " &
-               "  (a ~ actor/send 1) " &
+               "        (do (seen ~ set state) (actor/continue state)))))) " &
+               "  (actor/send a 1) " &
                "  (sleep 80) " &          # window expires; budget refills
-               "  (a ~ actor/send 1) " &
-               "  (a ~ actor/send 5) " &
-               "  (seen ~ Cell/get))",
+               "  (actor/send a 1) " &
+               "  (actor/send a 5) " &
+               "  (seen ~ get))",
                "10")
 
   test "supervisor owns actors and restarts after recoverable handler errors":
@@ -3222,11 +3298,11 @@ suite "spec — actors from design":
                "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do " &
-               "          (seen ~ Cell/set state) " &
+               "          (seen ~ set state) " &
                "          (actor/continue (+ state msg))))))) " &
-               "  (a ~ actor/send 1) " &
-               "  (a ~ actor/send 5) " &
-               "  (seen ~ Cell/get))",
+               "  (actor/send a 1) " &
+               "  (actor/send a 5) " &
+               "  (seen ~ get))",
                "10")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -3238,18 +3314,18 @@ suite "spec — actors from design":
                "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do " &
-               "          (seen ~ Cell/set state) " &
+               "          (seen ~ set state) " &
                "          (actor/continue (+ state msg))))))) " &
-               "  (spawn (a ~ actor/send 1)) " &
-               "  (spawn (a ~ actor/send 5)) " &
+               "  (spawn (actor/send a 1)) " &
+               "  (spawn (actor/send a 5)) " &
                "  (sleep 1) " &
-               "  (var event (events ~ Channel/recv)) " &
+               "  (var event (events ~ recv)) " &
                "  (var tries 0) " &
                "  (while (< tries 100) " &
-               "    (if (== (seen ~ Cell/get) 0) " &
+               "    (if (== (seen ~ get) 0) " &
                "      (do (sleep 1) (set tries (+ tries 1))) " &
                "      (set tries 100))) " &
-               "  [(seen ~ Cell/get) " &
+               "  [(seen ~ get) " &
                "   (match event " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
@@ -3260,15 +3336,15 @@ suite "spec — actors from design":
                "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 2)) " &
-               "(events ~ Channel/send \"busy\") " &
+               "(events ~ send \"busy\") " &
                "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (a ~ actor/send 1) " &
+               "  (actor/send a 1) " &
                "  (sleep 1) " &
-               "  (var event (dead ~ Channel/recv)) " &
-               "  (var busy (events ~ Channel/recv)) " &
+               "  (var event (dead ~ recv)) " &
+               "  (var busy (events ~ recv)) " &
                "  [busy " &
                "   (match event " &
                "     (when (ActorFailure ^failed_message failed " &
@@ -3280,17 +3356,17 @@ suite "spec — actors from design":
                "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
-               "(events ~ Channel/send \"busy\") " &
-               "(dead ~ Channel/send \"dead-busy\") " &
+               "(events ~ send \"busy\") " &
+               "(dead ~ send \"dead-busy\") " &
                "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (a ~ actor/send 4) " &
+               "  (actor/send a 4) " &
                "  (sleep 1) " &
-               "  (var dead-busy (dead ~ Channel/recv)) " &
-               "  (var event (dead ~ Channel/recv)) " &
-               "  (var busy (events ~ Channel/recv)) " &
+               "  (var dead-busy (dead ~ recv)) " &
+               "  (var event (dead ~ recv)) " &
+               "  (var busy (events ~ recv)) " &
                "  [busy dead-busy " &
                "   (match event " &
                "     (when (ActorFailure ^failed_message failed " &
@@ -3302,14 +3378,14 @@ suite "spec — actors from design":
                "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
-               "(events ~ Channel/close) " &
+               "(events ~ close) " &
                "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (a ~ actor/send 2) " &
+               "  (actor/send a 2) " &
                "  (sleep 1) " &
-               "  (var event (dead ~ Channel/recv)) " &
+               "  (var event (dead ~ recv)) " &
                "  (match event " &
                "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
@@ -3324,9 +3400,9 @@ suite "spec — actors from design":
                "  (var a (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (fail (Boom ^message \"bad\"))))) " &
-               "  (a ~ actor/send 6) " &
+               "  (actor/send a 6) " &
                "  (sleep 1) " &
-               "  (var event (dead ~ Channel/recv)) " &
+               "  (var event (dead ~ recv)) " &
                "  (match event " &
                "    (when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^message m) " &
@@ -3337,8 +3413,8 @@ suite "spec — actors from design":
                "(impl Error for Boom) " &
                "(var events (channel ^capacity 1)) " &
                "(var dead (channel ^capacity 1)) " &
-               "(events ~ Channel/close) " &
-               "(dead ~ Channel/close) " &
+               "(events ~ close) " &
+               "(dead ~ close) " &
                "(var seen (cell 0)) " &
                "(supervisor ^strategy restart ^events events ^dead_letter dead " &
                "  (var a (actor/spawn ^mailbox 4 ^init (fn [] 10) " &
@@ -3346,17 +3422,17 @@ suite "spec — actors from design":
                "      (if (== msg 1) " &
                "        (fail (Boom ^message \"bad\")) " &
                "        (do " &
-               "          (seen ~ Cell/set state) " &
+               "          (seen ~ set state) " &
                "          (actor/continue (+ state msg))))))) " &
-               "  (a ~ actor/send 1) " &
-               "  (a ~ actor/send 5) " &
+               "  (actor/send a 1) " &
+               "  (actor/send a 5) " &
                "  (sleep 1) " &
-               "  (seen ~ Cell/get))",
+               "  (seen ~ get))",
                "10")
     check_eval("(var a (supervisor ^strategy stop " &
                "  (actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] (actor/continue state))))) " &
-               "(a ~ actor/try_send 1)",
+               "(actor/try_send a 1)",
                "false")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -3367,7 +3443,7 @@ suite "spec — actors from design":
                "    (var a (actor/spawn ^init (fn [] 0) " &
                "      ^handle (fn [ctx state msg] " &
                "        (fail (Boom ^message \"bad\"))))) " &
-               "    (var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+               "    (var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
                "    (sleep 1) " &
                "    \"after\") " &
                "  catch (Boom ^message m) m)",
@@ -3382,9 +3458,9 @@ suite "spec — actors from design":
                "        (var a (actor/spawn ^init (fn [] 0) " &
                "          ^handle (fn [ctx state msg] " &
                "            (fail (Boom ^message \"bad\"))))) " &
-               "        (a ~ actor/send 7))) " &
+               "        (actor/send a 7))) " &
                "    catch (Boom ^message m) m)) " &
-               "(var event (parent-events ~ Channel/recv)) " &
+               "(var event (parent-events ~ recv)) " &
                "[outcome " &
                " (match event " &
                "   (when (ActorFailure ^failed_message failed " &
@@ -3399,7 +3475,7 @@ suite "spec — actors from design":
                                 "  (var a (actor/spawn ^init (fn [] 0) " &
                                 "    ^handle (fn [ctx state msg] " &
                                 "      (panic \"halt\")))) " &
-                                "  (var pending (a ~ actor/ask " &
+                                "  (var pending (actor/ask a " &
                                 "    (fn [reply] (Get ^reply reply)))) " &
                                 "  (sleep 1) " &
                                 "  \"after\")"),
@@ -3420,7 +3496,7 @@ suite "spec — Env and eval from design":
 
   test "Env/extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &
-               "(var child (base ~ Env/extend {^y 20})) " &
+               "(var child (Env/extend base {^y 20})) " &
                "[(eval (quote x) ^in child) " &
                " (eval (quote y) ^in child) " &
                " (try (eval (quote y) ^in base) catch {^message m} m)]",
@@ -3471,7 +3547,7 @@ suite "spec — Env and eval from design":
                "(eval (quote (Capability/name fs)) ^in e)",
                "\"Fs/ReadDir\"")
     check_eval("(var ch (channel)) " &
-               "(try (ch ~ Channel/send Fs/ReadDir) " &
+               "(try (ch ~ send Fs/ReadDir) " &
                "catch (TypeError ^expected e) e)",
                "\"Send\"")
 
@@ -3504,7 +3580,7 @@ suite "spec — parser helpers from design":
   test "read_one feeds eval and read_all returns a stream":
     check_eval("(eval (read_one \"(+ 1 2)\") ^in (env))", "3")
     check_eval("(var s (read_all \"(a) (b 2)\")) " &
-               "[(s ~ Stream/next) (s ~ Stream/next) (s ~ Stream/has_next)]",
+               "[(s ~ next) (s ~ next) (s ~ has_next)]",
                "[(a) (b 2) false]")
 
   test "reader failures preserve structured location and open-form context":
@@ -3519,7 +3595,7 @@ suite "spec — parser helpers from design":
                "0")
 
   test "lex_all exposes a token stream":
-    check_eval("(fn first-token [s : (Stream Token Never)] (s ~ Stream/next)) " &
+    check_eval("(fn first-token [s : (Stream Token Never)] (s ~ next)) " &
                "(var t (first-token (lex_all \"(+ 1)\"))) " &
                "(var k t/kind) (var x t/lexeme) " &
                "(var l t/line) (var c t/col) [k x l c]",
@@ -3605,7 +3681,7 @@ suite "spec — macros across modules (design §11/§15)":
     writeFile(dir / "phase_dep.gene",
       "(macro identity! [x] `%x)\n" &
       "(var starts (cell 0))\n" &
-      "(starts ~ Cell/update (fn [n] (+ n 1)))\n")
+      "(starts ~ update (fn [n] (+ n 1)))\n")
     writeFile(dir / "phase_user.gene",
       "(import [identity!] from \"./phase_dep\")\n" &
       "(var answer (identity! 42))\n")
@@ -3863,7 +3939,7 @@ suite "spec — net/http surface from stdlib plan":
 suite "spec — net/http_client native client contract":
   test "client authority and entry points are importable":
     check_eval("(import net/http_client [Http request stream HttpClientError]) " &
-               "[(Http ~ Capability/name)]",
+               "[(Capability/name Http)]",
                "[\"Net/Http\"]")
 
   test "client rejects non-http URL schemes before starting work":
@@ -4146,8 +4222,8 @@ suite "spec — os and json from ai-agent plan":
                "(var seen (cell [])) " &
                "(var r (exec_stream Exec ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
                "                    ^stdout_line (fn [line] " &
-               "                      (seen ~ Cell/set ((to_stream [line]) ~ into (seen ~ Cell/get)))))) " &
-               "[r/status r/stdout (seen ~ Cell/get)]",
+               "                      (seen ~ set ((to_stream [line]) ~ into (seen ~ get)))))) " &
+               "[r/status r/stdout (seen ~ get)]",
                "[0 \"a\\nb\\n\" [\"a\" \"b\"]]")
 
   test "os/exec_stdio runs with parent streams and returns status":
@@ -4161,11 +4237,11 @@ suite "spec — os and json from ai-agent plan":
                "(var status (cell -1)) " &
                "(scope " &
                "  (spawn (repeat 5 (do (sleep 20) " &
-               "    (ticks ~ Cell/set (+ (ticks ~ Cell/get) 1))))) " &
-               "  (status ~ Cell/set " &
+               "    (ticks ~ set (+ (ticks ~ get) 1))))) " &
+               "  (status ~ set " &
                "    (await (exec_stdio_async Exec ^cmd \"sh\" " &
                "      ^args [\"-c\" \"sleep 0.2; exit 7\"])))) " &
-               "[(status ~ Cell/get) (ticks ~ Cell/get)]",
+               "[(status ~ get) (ticks ~ get)]",
                "[7 5]")
 
   test "os/exec_async settles a task off-thread with the exec result map":
@@ -4194,7 +4270,7 @@ suite "spec — os and json from ai-agent plan":
                "  (var r (await (exec_async Exec ^cmd \"sh\" " &
                "    ^args [\"-c\" \"sleep 0.05\"]))) " &
                "  (set status r/status) " &
-               "  (distant ~ Task/cancel)) " &
+               "  (distant ~ cancel)) " &
                "status",
                "0")
     check getMonoTime() - started < initDuration(milliseconds = 800)
@@ -4206,11 +4282,11 @@ suite "spec — os and json from ai-agent plan":
                "(var t (exec_stream_async Exec ^cmd \"printf\" " &
                "         ^args [\"a\\nb\\n\"] ^stdout_chan ch)) " &
                "(var seen (cell [])) (var line nil) " &
-               "(try (loop (set line (ch ~ Channel/recv)) " &
-               "  (seen ~ Cell/set ((to_stream [line]) ~ into (seen ~ Cell/get)))) " &
+               "(try (loop (set line (ch ~ recv)) " &
+               "  (seen ~ set ((to_stream [line]) ~ into (seen ~ get)))) " &
                "catch (ChannelClosed) nil) " &
                "(var r (await t)) " &
-               "[(seen ~ Cell/get) r/stdout r/status]",
+               "[(seen ~ get) r/stdout r/status]",
                "[[\"a\" \"b\"] \"a\\nb\\n\" 0]")
 
   test "os turn interrupt polling is scoped and consumptive":
@@ -4235,8 +4311,8 @@ suite "spec — os and json from ai-agent plan":
                "  (var ch (channel ^capacity 1)) " &
                "  (var t (exec_stream_async Exec ^cmd \"sleep\" ^args [\"2\"] " &
                "           ^stdout_chan ch)) " &
-               "  (spawn (do (sleep 50) (t ~ Task/cancel))) " &
-               "  (try (loop (ch ~ Channel/recv)) " &
+               "  (spawn (do (sleep 50) (t ~ cancel))) " &
+               "  (try (loop (ch ~ recv)) " &
                "    catch (ChannelClosed) \"closed\"))",
                "\"closed\"")
     check getMonoTime() - started < initDuration(milliseconds = 1200)
@@ -4246,7 +4322,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import os [exec_stdio_async Exec]) " &
                "(scope " &
                "  (var t (exec_stdio_async Exec ^cmd \"sleep\" ^args [\"2\"])) " &
-               "  (spawn (do (sleep 50) (t ~ Task/cancel))) " &
+               "  (spawn (do (sleep 50) (t ~ cancel))) " &
                "  (sleep 200) " &
                "  \"cancelled\")",
                "\"cancelled\"")
@@ -4261,10 +4337,10 @@ suite "spec — os and json from ai-agent plan":
                "(var during (cell 0)) " &
                "(scope " &
                "  (spawn (repeat 5 (do (sleep 20) " &
-               "    (ticks ~ Cell/set (+ (ticks ~ Cell/get) 1))))) " &
+               "    (ticks ~ set (+ (ticks ~ get) 1))))) " &
                "  (var r (await (exec_async Exec ^cmd \"sleep\" ^args [\"0.3\"]))) " &
-               "  (during ~ Cell/set (ticks ~ Cell/get))) " &
-               "(during ~ Cell/get)",
+               "  (during ~ set (ticks ~ get))) " &
+               "(during ~ get)",
                "5")
 
   test "Fs sync helpers read, write, and list under capabilities":
@@ -4474,7 +4550,7 @@ suite "spec — serde data core (docs/serialization.md stage 1)":
   test "maps with non-literal keys use the serde_map escape":
     check_eval("(import serde [write_data read_data]) " &
                "(import str [contains?]) " &
-               "(var m {}) (m ~ Map/put! \"weird key\" 1) " &
+               "(var m {}) (m ~ put! \"weird key\" 1) " &
                "(var text (write_data m)) " &
                "[(contains? text \"serde_map\") " &
                " (== m (read_data text))]",
@@ -4514,7 +4590,7 @@ suite "spec — serde data core (docs/serialization.md stage 1)":
   test "cycles are detected with a path":
     check_eval("(import serde [write_data SerdeError]) " &
                "(import str [contains?]) " &
-               "(var m {}) (m ~ Map/put! \"self\" m) " &
+               "(var m {}) (m ~ put! \"self\" m) " &
                "(try (write_data m) " &
                "catch (SerdeError ^message msg) (contains? msg \"cycle\"))",
                "true")
@@ -4648,7 +4724,7 @@ suite "spec — serde references (stage 3)":
   test "cells snapshot through serde/write, outside the equality guarantee":
     check_eval("(import serde [write read]) " &
                "(var c (cell 41)) (var c2 (read (write c))) " &
-               "[(c2 ~ Cell/get) (!= c c2)]",
+               "[(c2 ~ get) (!= c c2)]",
                "[41 true]")
 
   test "write_data refuses cells; read_data refuses snapshot-cells":

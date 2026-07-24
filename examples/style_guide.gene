@@ -80,7 +80,7 @@ line two"""
 
 (fn append_all [target, values...]
   (for value in values
-    (target ~ List/push! value))
+    (target ~ push! value))
   target)
 
 (fn active_names [users : (List User)] : (List Str)
@@ -107,8 +107,8 @@ line two"""
 
 (fn note_activation [user : User, events]
   (if_yes user/active
-    (events ~ List/push! $"activated ${user/name}")
-    (events ~ List/push! "notification queued"))
+    (events ~ push! $"activated ${user/name}")
+    (events ~ push! "notification queued"))
   events)
 
 (fn load_if_missing [cached, load, save]

@@ -201,14 +201,14 @@ suite "modules — file imports":
   test "module reflection exposes normalized file path":
     writeModule("math.gene", "(var pi 3)")
     let expected = normalizedPath(absolutePath("math.gene", modDir))
-    check runProgram("(import * : m from \"./math\") (m ~ Module/path)").strVal ==
+    check runProgram("(import * : m from \"./math\") (Module/path m)").strVal ==
       expected
 
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
     check runProgram("(import * : m from \"./decls\") " &
       "(var ds (filter (declarations m) (fn [d] (== d/name \"exported\")))) " &
-      "(ds ~ Stream/next)").print() ==
+      "(ds ~ next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
 
   test "runtime declarations exclude compile-time macros":
@@ -218,24 +218,24 @@ suite "modules — file imports":
       "(var macros (filter (declarations m) (fn [d] (== d/name \"twice\")))) " &
       "(var values (filter (declarations m) " &
       "  (fn [d] (== d/name \"runtime-value\")))) " &
-      "(var decl (values ~ Stream/next)) " &
-      "[(macros ~ Stream/has_next) decl/value]").print() ==
+      "(var decl (values ~ next)) " &
+      "[(macros ~ has_next) decl/value]").print() ==
       "[false 7]"
 
   test "file modules receive a this_mod binding":
     writeModule("self.gene",
       "(var x 9) " &
       "(var ds (filter (declarations this_mod) (fn [d] (== d/name \"x\")))) " &
-      "(var decl (ds ~ Stream/next)) " &
+      "(var decl (ds ~ next)) " &
       "(var seen decl/value)")
     check runProgram("(import [seen] from \"./self\") seen").print() == "9"
 
   test "this_mod exposes module reflection helpers":
     writeModule("selfpath.gene",
       "(var marker 42) " &
-      "(var root (this_mod ~ Module/root_namespace)) " &
-      "(var reflected [(this_mod ~ Module/name) " &
-      "                (this_mod ~ Module/path) " &
+      "(var root (Module/root_namespace this_mod)) " &
+      "(var reflected [(Module/name this_mod) " &
+      "                (Module/path this_mod) " &
       "                (== root this_mod) " &
       "                (/marker root)])")
     let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
@@ -248,15 +248,15 @@ suite "modules — file imports":
   test "mod metadata persists on the module value":
     writeModule("meta.gene",
       "(mod renamed @doc \"module docs\") " &
-      "(var reflected [(this_mod ~ Module/name) " &
-      "                (/doc (this_mod ~ Module/meta))])")
+      "(var reflected [(Module/name this_mod) " &
+      "                (/doc (Module/meta this_mod))])")
     check runProgram("(import [reflected] from \"./meta\") reflected").print() ==
       "[\"renamed\" \"module docs\"]"
 
   test "Module annotations accept module values":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import * : m from \"./math\") " &
-      "(fn module_path [m : Module] (m ~ Module/path)) (module_path m)").strVal ==
+      "(fn module_path [m : Module] (Module/path m)) (module_path m)").strVal ==
       normalizedPath(absolutePath("math.gene", modDir))
     expect GeneError:
       discard runProgram("(fn module_id [m : Module] m) (module_id [1])")
@@ -579,10 +579,10 @@ suite "modules — built-in identity and scope hygiene":
     # because built-ins live in the shared parent scope, not the module root.
     check runProgram("(import * : m from \"./decls2\") " &
       "(var ds (filter (declarations m) (fn [d] (== d/name \"map\")))) " &
-      "(ds ~ Stream/has_next)").print() == "false"
+      "(ds ~ has_next)").print() == "false"
     check runProgram("(import * : m from \"./decls2\") " &
       "(var ds (filter (declarations m) (fn [d] (== d/name \"this_mod\")))) " &
-      "(ds ~ Stream/has_next)").print() == "false"
+      "(ds ~ has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":
     writeModule("decls2.gene", "(var only-me 1)")

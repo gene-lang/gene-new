@@ -2091,11 +2091,11 @@ pseudocode.
        ^tools (tool_schemas_now)
        ^tool_choice "auto"
        ^parallel_tool_calls true}))
-  (var effort (reasoning_effort ~ Cell/get))
+  (var effort (reasoning_effort ~ get))
   (if (!= effort "default")
     (if (== api_flavor "chat")
-      (request ~ Map/put! "reasoning_effort" effort)
-      (request ~ Map/put! "reasoning" {^effort effort})))
+      (request ~ put! "reasoning_effort" effort)
+      (request ~ put! "reasoning" {^effort effort})))
   (transport (stringify request) render_stream))
 
 # Call the model; if it asks for tools, execute them and recur with the model
@@ -2136,11 +2136,11 @@ pseudocode.
           # cannot strand a subprocess in a lazy mapper continuation.
           (var outputs (cell []))
           (for c in calls
-            ((outputs ~ Cell/get) ~ List/push! (run_tool_call c emit))
+            ((outputs ~ get) ~ push! (run_tool_call c emit))
             (render $"  · tool ${c/name} ${c/arguments}"))
           (run_turn
             transport
-            ((to_stream (outputs ~ Cell/get)) ~ into
+            ((to_stream (outputs ~ get)) ~ into
               (append_all input_items (response_output_items resp)))
             render
             render_stream
@@ -2148,9 +2148,9 @@ pseudocode.
             emit))))))
 
 # The interactive path adds one user item and stores the returned item list.
-(items ~ Cell/set
+(items ~ set
   (run_turn_tracked live_transport
-            (append (items ~ Cell/get) (user_item line))
+            (append (items ~ get) (user_item line))
             (fn [text]
               (render_agent_text transcript streaming text))
             (fn [text]

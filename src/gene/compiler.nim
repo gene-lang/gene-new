@@ -104,6 +104,10 @@ type
     # childCompiler copies the set so a nested `var` shadows an outer `let`
     # without un-marking the outer.
     letNames: HashSet[string]
+    # Inside a message/ctor body the receiver `self` is reserved: no nested
+    # binder may shadow it, so a leading send `(~ m)` always means the original
+    # receiver (design §10). Inherited by every descendant compiler.
+    selfReserved: bool
     # While compiling a type-direct message body, the enclosing type's name, so
     # `(super ~ m)` resolves it to the type value then its `^is` parent at send
     # time (design §10). NIL outside a message body with an `^is` parent.
@@ -232,6 +236,15 @@ proc validateBindingName(name: string) =
 
 proc reserveLocal(c: var Compiler, name: string): int =
   validateBindingName(name)
+  # `self` is the compiler-owned receiver and is reserved throughout a message
+  # or ctor body, nested scopes included (design §10/§12.1) — otherwise an inner
+  # `(fn f [self] ...)` or pattern binding would retarget every later leading
+  # send `(~ m)`. The injected receiver parameter itself is bound before this
+  # flag is set, so only genuine shadowing is rejected.
+  if c.selfReserved and name == "self":
+    raise newException(GeneError,
+      "'self' is the receiver and cannot be rebound in a message body " &
+      "(design §10)")
   # One name, one meaning: a binding may not reuse a visible macro's name —
   # head-position dispatch would still pick the macro, so the binding could
   # never mean the same thing in both positions (design §11).
@@ -611,6 +624,7 @@ proc childCompiler(c: Compiler): Compiler =
            ordinaryFnNames: c.ordinaryFnNames,
            mutableBindingNames: c.mutableBindingNames,
            letNames: c.letNames,
+           selfReserved: c.selfReserved,
            superType: c.superType,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
            importedSyntaxFnNames: c.importedSyntaxFnNames,
@@ -2363,9 +2377,11 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     fnCompiler.letNames.excl specs.rest
   # In a message/ctor body the receiver `self` is a compiler-owned immutable
   # binding — `(set self ...)` is a compile error (design §10/§12.1), so it
-  # cannot be retargeted mid-body. Re-mark it after the param loop cleared it.
+  # cannot be retargeted mid-body. Re-mark it after the param loop cleared it,
+  # and reserve the name so no nested binder can shadow it either.
   if immutableSelf:
     fnCompiler.letNames.incl "self"
+    fnCompiler.selfReserved = true
   fnCompiler.allowYield = true
   fnCompiler.inFunction = true
   fnCompiler.inGenerator = body.bodyContainsYield(start)
@@ -2425,12 +2441,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                    not hasParamTypes and not hasNamedParamTypes and
                    returnType.kind == vkNil and not fnCompiler.sawYield and
                    not specs.hasOptionalPositional
-  # A function using unqualified message candidates needs its own scope even
-  # when it has no locals. The scope carries the protocol entry snapshot
-  # frozen into the function value; consulting the mutable enclosing module
-  # would let later REPL/eval units change an already-compiled send.
-  let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk) or
-                       fnCompiler.chunk.messageCandidateSets.len > 0
+  let needsCallScope = chunkNeedsCallScope(fnCompiler.chunk)
   var defaultsCanCapture = specs.hasOptionalPositional
   if not defaultsCanCapture:
     for p in specs.named:
@@ -4498,6 +4509,8 @@ proc compileNs(c: var Compiler, node: Value) =
   nsCompiler.chunk.localNames = nsCompiler.localNames
   nsCompiler.chunk.mirrorSlots = true
   discard c.reserveLocal(name)
+  # A named declaration is let-class (design §12.1): `(set N ...)` is an error.
+  c.letNames.incl name
   let idx = c.chunk.addSubchunk(nsCompiler.chunk)
   discard c.emit(opMakeNamespace, idx, name = name,
                  flag = node.bits in c.staticTopLevelImpls)
@@ -4705,7 +4718,6 @@ proc isPathSendSegment(part: Value): bool =
 proc pathSendName(part: Value): string =
   part.symVal[1 .. ^1]
 
-proc messageCandidateSetIndex(c: var Compiler): int
 
 proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
@@ -4727,8 +4739,7 @@ proc compilePath(c: var Compiler, node: Value) =
   var i = 1
   while i < parts.len:
     if parts[i].isPathSendSegment:
-      discard c.emit(opResolveMessage, name = parts[i].pathSendName,
-                     depth = c.messageCandidateSetIndex())
+      discard c.emit(opResolveMessage, name = parts[i].pathSendName)
       c.chunk.callSites[c.emitPlainCall(1)] = node
       inc i
     else:
@@ -4819,51 +4830,85 @@ proc compileHashMapValue(c: var Compiler, value: Value) =
     compileExpr(c, entry.val)
   discard c.emit(opMakeHashMap, value.hashMapEntries.len)
 
-proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
-                 requireMessage = false)
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true)
 
-proc messageCandidateSetIndex(c: var Compiler): int =
-  var refs: seq[ProtocolCandidateRef]
-  var names = initHashSet[string]()
-  for candidate in c.currentProtocolFlow:
-    let candidateName = c.flowNameStr(candidate.name)
-    if candidateName.len > 0 and candidateName notin names:
-      names.incl candidateName
-      let bindingName = candidateName.split('/')[0]
-      let local = c.localSlot(bindingName)
-      if local >= 0:
-        refs.add ProtocolCandidateRef(name: candidateName, slot: local)
-      else:
-        let outer = c.parentSlot(bindingName)
-        refs.add ProtocolCandidateRef(name: candidateName,
-                                      slot: outer.slot,
-                                      depth: outer.depth)
-  c.chunk.addMessageCandidateSet(MessageCandidateSet(refs: refs)) + 1
+proc sendCalleeName(callee: Value): string =
+  ## Display name for a non-bare send callee, used in diagnostics only.
+  if callee.kind == vkSymbol:
+    callee.symVal
+  elif callee.kind == vkNode and callee.head.isSymbol("path"):
+    var parts: seq[string]
+    for segment in callee.body:
+      parts.add (if segment.kind == vkSymbol: segment.symVal else: $segment)
+    parts.join("/")
+  elif callee.kind == vkNode and callee.head.isSymbol("unquote") and
+      callee.body.len == 1 and callee.body[0].kind == vkSymbol:
+    "%" & callee.body[0].symVal
+  else:
+    "message"
+
+proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
+  ## The expression yielding the message value for a non-bare send. Pre-resolved
+  ## `^protocol`/`^receiver` metadata names the message through its protocol
+  ## value (message names are not lexical bindings, docs/core.md §1); `%m` reads
+  ## as `(unquote m)`, so unwrap it to the held value `m`.
+  if node.props.hasKey("protocol") or node.props.hasKey("receiver"):
+    if not (node.props.hasKey("protocol") and node.props.hasKey("receiver")):
+      raise newException(GeneError,
+        "direct protocol call metadata requires ^protocol and ^receiver")
+    if callee.kind != vkSymbol:
+      raise newException(GeneError,
+        "direct protocol call metadata requires a message name")
+    discard c.chunk.addDirectProtocolCall(DirectProtocolCallSpec(
+      messageName: callee.symVal,
+      protocolExpr: node.props["protocol"],
+      receiverExpr: node.props["receiver"]))
+    return newNode(newSym("path"), body = @[node.props["protocol"], callee])
+  if callee.kind == vkNode and callee.head.isSymbol("unquote") and
+      callee.body.len == 1:
+    return callee.body[0]
+  callee
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
-                 sendName: string, argsStart: int) =
+                 sendName: string, argsStart: int, messageExpr = NIL) =
   ## Message send (docs/core.md §9.1): the name after `~` resolves
-  ## receiver-first at runtime, falling back to the lexical binding. Stack
-  ## shape matches ordinary calls: [callee, named..., receiver, args...].
+  ## receiver-first at runtime. Stack shape matches ordinary calls:
+  ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
+  ## dynamic callee (`P/m`, `%m`, an expression); it must evaluate to a message
+  ## value, and its impl is resolved here rather than by lowering the send to an
+  ## ordinary call — so a message value never reaches a call opcode.
   var names: seq[string]
   let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
   if isSuper:
     # (super ~ m) dispatches m from the enclosing type's ^is parent, but calls
-    # it with `self` (design §10). Push [enclosingType, self]; opSuperSend walks
-    # to the parent and resolves. Only bare-name messages are supported.
+    # it with `self` (design §10). The parent identity is stamped onto this
+    # body's chunk when the type is created, so only `self` is pushed here — no
+    # user-visible name is resolved, and a body-local cannot redirect the
+    # delegation. Only bare-name messages are supported.
     if c.superType.kind == vkNil:
       raise newException(GeneError,
         "super is only valid in a type message body with an ^is parent")
-    compileExpr(c, c.superType)
+    if messageExpr.kind != vkNil:
+      # Protocol-impl delegation needs a precedence rule that does not exist
+      # yet, and a dynamic callee cannot be checked for one, so both are
+      # rejected here rather than reported as a missing message at run time.
+      raise newException(GeneError,
+        "super delegates to a type-direct message only: '" & sendName &
+        "' is a qualified or dynamic callee, which is not yet supported")
     compileExpr(c, newSym("self"))
     discard c.emit(opSuperSend, 0, name = sendName)
+  elif messageExpr.kind != vkNil:
+    compileExpr(c, receiver)
+    compileExpr(c, messageExpr)
+    discard c.emit(opResolveQualifiedMessage, 0, name = sendName)
   else:
     compileExpr(c, receiver)
-    # Resolve before every send argument. In particular, a lexical fn! fallback
-    # is rejected here without running named or positional argument forms.
-    discard c.emit(opResolveMessage, 0, name = sendName,
-                   depth = c.messageCandidateSetIndex())
+    # Resolve before every send argument, so a failed resolution does not run
+    # named or positional argument forms.
+    discard c.emit(opResolveMessage, 0, name = sendName)
   for k, value in node.props:
+    if k in ["types", "protocol", "receiver"]:
+      continue
     names.add k
     compileExpr(c, value)
   if names.len > 0:
@@ -4884,8 +4929,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         c.emit(opCall, argCount, names = names)
     c.chunk.callSites[callIndex] = node
 
-proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
-                 requireMessage = false) =
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       node.body[0].symVal == "~":
     # (x ~ f a) — infix message send (docs/core.md §9.1).
@@ -4895,30 +4939,22 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
         not node.props.hasKey("types"):
       compileSend(c, node, node.head, node.body[1].symVal, 2)
       return
-    # A non-bare callee is one of two things (design §3/§8):
-    #   * a literal member form — a qualified path (x ~ P/m a) / (x ~ Cell/get),
-    #     a selector (x ~ /name), or pre-resolved protocol metadata. Each names a
-    #     member syntactically, so evaluate it and flip x in as the receiver.
-    #   * a dynamic value — (x ~ %m a) / (x ~ (expr) a): the callee is a runtime
-    #     value that MUST be a message value, so a plain function or held fn! is
-    #     rejected (opRequireMessage) rather than invoked. `%m` reads as
-    #     (unquote m); unwrap it so the callee is the evaluated `m`.
-    var calleeHead = node.body[1]
-    if calleeHead.kind == vkNode and calleeHead.head.isSymbol("unquote") and
-        calleeHead.body.len == 1:
-      calleeHead = calleeHead.body[0]
-    let staticMember =
-      (node.body[1].kind == vkNode and
-       (node.body[1].head.isSymbol("path") or
-        node.body[1].head.isSymbol("select"))) or
-      node.props.hasKey("protocol") or node.props.hasKey("receiver") or
-      node.props.hasKey("types")
-    var args = newSeqOfCap[Value](node.body.len - 1)
-    args.add node.head
-    for i in 2 ..< node.body.len:
-      args.add node.body[i]
-    compileCall(c, newNode(calleeHead, node.props, args, node.meta),
-                allowSyntax = false, requireMessage = not staticMember)
+    # A selector callee (x ~ /name) is a projection of the receiver, not a
+    # message; it keeps the flipped-call lowering. Every other non-bare callee —
+    # a qualified path (x ~ P/m), `%m`, an expression, or `^protocol`/`^receiver`
+    # metadata — must evaluate to a message value and is dispatched by
+    # opResolveQualifiedMessage, so `~` can never invoke an ordinary function
+    # (design §3/§8).
+    if node.body[1].kind == vkNode and node.body[1].head.isSymbol("select"):
+      var args = newSeqOfCap[Value](node.body.len - 1)
+      args.add node.head
+      for i in 2 ..< node.body.len:
+        args.add node.body[i]
+      compileCall(c, newNode(node.body[1], node.props, args, node.meta),
+                  allowSyntax = false)
+      return
+    compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
+                messageExpr = sendMessageExpr(c, node, node.body[1]))
     return
   let localSyntaxHead = c.syntaxFnNames.len > 0 and
     node.head.kind == vkSymbol and c.syntaxFnNames.hasKey(node.head.symVal) and
@@ -4934,11 +4970,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
     c.emitConst node
     c.chunk.callSites[c.emit(opSyntaxCall)] = node
     return
-  # A dynamic send (requireMessage) must reach the generic evaluated-head path
-  # so opRequireMessage guards the callee value; the fast direct-call paths
-  # below would emit an ordinary call with no message check.
-  let knownOrdinary = (c.calleeKnownOrdinary(node.head) or
-    node.props.hasKey("protocol")) and not requireMessage
+  let knownOrdinary = c.calleeKnownOrdinary(node.head)
   if knownOrdinary and node.props.len == 0 and
       node.head.kind == vkSymbol and node.body.len == 0:
     let direct = c.lexicalCallSlot0(node.head.symVal)
@@ -5017,25 +5049,19 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
     discard c.chunk.addMonomorphization(MonomorphizationSpec(
       functionName: node.head.symVal,
       typeArgs: types.listItems))
-  let hasProtocol = node.props.hasKey("protocol")
-  let hasReceiver = node.props.hasKey("receiver")
-  if hasProtocol or hasReceiver:
-    if not (hasProtocol and hasReceiver):
+  if node.props.hasKey("protocol") or node.props.hasKey("receiver"):
+    # `(m ^protocol P ^receiver T recv args...)` is the pre-resolved spelling of
+    # `(recv ~ P/m args...)`, so dispatch it as a send. A message identity is
+    # not callable in head position (design §3), and routing it here keeps the
+    # message value out of the ordinary call opcodes.
+    let messageExpr = sendMessageExpr(c, node, node.head)
+    if node.body.len == 0:
       raise newException(GeneError,
-        "direct protocol call metadata requires ^protocol and ^receiver")
-    if node.head.kind != vkSymbol:
-      raise newException(GeneError,
-        "direct protocol call metadata requires a message name")
-    discard c.chunk.addDirectProtocolCall(DirectProtocolCallSpec(
-      messageName: node.head.symVal,
-      protocolExpr: node.props["protocol"],
-      receiverExpr: node.props["receiver"]))
-    # Message names are not lexical bindings (docs/core.md §1); reach the
-    # message through the protocol value: (path <protocol> <name>).
-    compileExpr(c, newNode(newSym("path"),
-                           body = @[node.props["protocol"], node.head]))
-  else:
-    compileExpr(c, node.head)
+        "direct protocol call metadata requires a receiver argument")
+    compileSend(c, node, node.body[0], node.head.symVal, 1,
+                messageExpr = messageExpr)
+    return
+  compileExpr(c, node.head)
   # Generic evaluated-head path (design §3): the callee value may turn out to
   # be a fn!, so guard before evaluating props/body. On the syntax branch the
   # VM performs the syntax call from the raw node and jumps past the plain
@@ -5044,9 +5070,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
     if allowSyntax and not knownOrdinary:
       c.emit(opSyntaxGuard, 0, depth = c.chunk.addConst(node))
     elif not allowSyntax:
-      # A dynamic `~` send requires a message value; an ordinary evaluated-head
-      # call only rejects a held fn!.
-      discard c.emit(if requireMessage: opRequireMessage else: opRejectSyntaxSend)
+      discard c.emit(opRejectSyntaxSend)
       -1
     else:
       -1
@@ -5084,60 +5108,19 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
       not node.props.hasKey("types"):
     compileSend(c, node, newSym("self"), node.body[0].symVal, 1)
     return
-  let hasProtocol = node.props.hasKey("protocol")
-  let hasReceiver = node.props.hasKey("receiver")
-  if hasProtocol or hasReceiver:
-    if not (hasProtocol and hasReceiver):
-      raise newException(GeneError,
-        "direct protocol call metadata requires ^protocol and ^receiver")
-    if node.body[0].kind != vkSymbol:
-      raise newException(GeneError,
-        "direct protocol call metadata requires a message name")
-    discard c.chunk.addDirectProtocolCall(DirectProtocolCallSpec(
-      messageName: node.body[0].symVal,
-      protocolExpr: node.props["protocol"],
-      receiverExpr: node.props["receiver"]))
-    # Message names are not lexical bindings (docs/core.md §1); reach the
-    # message through the protocol value: (path <protocol> <name>).
-    compileExpr(c, newNode(newSym("path"),
-                           body = @[node.props["protocol"], node.body[0]]))
-  else:
-    # `%m` reads as (unquote m); unwrap it so the callee is the evaluated `m`,
-    # matching `(x ~ %m)` — `(~ f)` is just `(self ~ f)`.
-    var calleeHead = node.body[0]
-    if calleeHead.kind == vkNode and calleeHead.head.isSymbol("unquote") and
-        calleeHead.body.len == 1:
-      calleeHead = calleeHead.body[0]
-    compileExpr(c, calleeHead)
-  # A literal member form (qualified path, selector, protocol metadata) names a
-  # member and dispatches through it; a dynamic callee must be a message value,
-  # since `~` dispatches only (design §3/§8). Either way rejection precedes send
-  # arguments — SyntaxCallable values are valid only in call-head position.
-  let staticMember = hasProtocol or hasReceiver or
-    (node.body[0].kind == vkNode and
-     (node.body[0].head.isSymbol("path") or
-      node.body[0].head.isSymbol("select")))
-  discard c.emit(if staticMember: opRejectSyntaxSend else: opRequireMessage)
-  var names: seq[string]
-  for k, value in node.props:
-    if k in ["types", "protocol", "receiver"]:
-      continue
-    names.add k
-    compileExpr(c, value)
-  var splices = @[false]
-  var hasSplice = false
-  compileExpr(c, newSym("self"))
-  compileSpreadValues(c, node.body, 1, forList = false, splices, hasSplice)
-  if hasSplice:
-    let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
-    c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
-  else:
-    let callIndex =
-      if names.len == 0:
-        c.emitPlainCall(node.body.len)
-      else:
-        c.emit(opCall, node.body.len, names = names)
-    c.chunk.callSites[callIndex] = node
+  # A selector callee projects the receiver rather than naming a message, so it
+  # keeps the flipped-call lowering; everything else must be a message value and
+  # goes through the same qualified-send path as `(x ~ ...)` (design §3/§8).
+  if node.body[0].kind == vkNode and node.body[0].head.isSymbol("select"):
+    var args = newSeqOfCap[Value](node.body.len)
+    args.add newSym("self")
+    for i in 1 ..< node.body.len:
+      args.add node.body[i]
+    compileCall(c, newNode(node.body[0], node.props, args, node.meta),
+                allowSyntax = false)
+    return
+  compileSend(c, node, newSym("self"), sendCalleeName(node.body[0]), 1,
+              messageExpr = sendMessageExpr(c, node, node.body[0]))
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body

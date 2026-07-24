@@ -77,10 +77,10 @@ Recommended direction:
 Long-term public API:
 
 ```gene
-(server ~ http/serve ^handler handle_request)
-(server ~ http/start ^handler handle_request)
-(server ~ http/stop)
-(server ~ http/status)
+(http/serve server ^handler handle_request)
+(http/start server ^handler handle_request)
+(http/stop server)
+(http/status server)
 ```
 
 `http/Server`, `http/Request`, `http/Response`, `http/Headers`, WebSocket types, and helper constructors should live in `net/http`. If an experimental namespace is needed during transition, use something explicit such as `net/http/async`, then converge back to `net/http`.
@@ -121,7 +121,7 @@ Preferred forms:
 
 ```gene
 (fn main [args : (List Str), ^server : http/Server] : Int
-  (server ~ http/serve
+  (http/serve server
     ^handler handle_request)
   0)
 ```
@@ -135,7 +135,7 @@ or, when the application creates the listener:
       ^host "0.0.0.0"
       ^port 8080))
 
-  (server ~ http/serve
+  (http/serve server
     ^handler handle_request)
 
   0)
@@ -201,7 +201,7 @@ The native runtime owns raw sockets and buffers. Gene code receives immutable, t
 Each accepted request runs in its own Gene task.
 
 ```gene
-(server ~ http/serve
+(http/serve server
   ^dispatch task_per_request
   ^max_in_flight 5000
   ^request_timeout_ms 30000
@@ -236,7 +236,7 @@ This is the recommended default for web applications.
 A fixed actor pool is useful when handlers must own private state, serialize access, or run CPU-heavy work with bounded parallelism.
 
 ```gene
-(server ~ http/serve
+(http/serve server
   ^dispatch (actor_pool
     ^workers 8
     ^mailbox 1024
@@ -278,9 +278,9 @@ Handler shape:
   (match msg
     (when (http/RequestMsg ^req req ^reply reply)
       (try
-        (reply ~ ReplyTo/send (route req state))
+        (reply ~ send (route req state))
       catch e
-        (reply ~ ReplyTo/send
+        (reply ~ send
           (http/text 500 "internal server error")))
       (actor/continue state))))
 ```
@@ -296,7 +296,7 @@ Actor-pool handlers should avoid long awaits. If a handler needs asynchronous wo
 Later, routes may choose dispatch explicitly:
 
 ```gene
-(server ~ http/serve_routes
+(http/serve_routes server
   ^routes [
     (route ^method "GET"  ^path "/"       ^handler home)
     (route ^method "POST" ^path "/state"  ^dispatch stateful_pool ^handler update_state)
@@ -389,9 +389,9 @@ Semantics:
 Helpers:
 
 ```gene
-(headers ~ http/header "content-type")   # first value or void
-(headers ~ http/headers "set-cookie")    # list/stream of all values
-(headers ~ http/with_header "cache-control" "no-store")
+(http/header headers "content-type")   # first value or void
+(http/headers headers "set-cookie")    # list/stream of all values
+(http/with_header headers "cache-control" "no-store")
 ```
 
 ---
@@ -428,7 +428,7 @@ For shared state, pass an immutable state bundle containing actor references or 
 (fn handle [req : http/Request, app : App] : http/Response
   (var user
     (await
-      (app/users ~ actor/ask
+      (actor/ask app/users
         (fn [reply]
           (GetUser ^id req/params/id ^reply reply)))))
 
@@ -444,7 +444,7 @@ sendable when all captured values are (design §13.3):
 ```gene
 (var app (App ^users users ^db db_pool))
 
-(server ~ http/serve
+(http/serve server
   ^handler (fn [req] (handle req app)))
 ```
 
@@ -494,9 +494,9 @@ Router construction:
   (route
     ^method  r/method
     ^path    r/path
-    ^handler (ns ~ Namespace/lookup decl/0)))
+    ^handler (Namespace/lookup ns decl/0)))
 
-(var app_ns (this_mod ~ Module/root_namespace))
+(var app_ns (Module/root_namespace this_mod))
 
 (var routes
   (this_mod/%declarations
@@ -527,7 +527,7 @@ Every queue must be bounded.
 Recommended limits:
 
 ```gene
-(server ~ http/serve
+(http/serve server
   ^max_connections 10000
   ^max_in_flight 5000
   ^max_body_bytes 10485760
@@ -612,7 +612,7 @@ request timeout                         -> 504 + cancellation
 A default error mapper can be supplied:
 
 ```gene
-(server ~ http/serve
+(http/serve server
   ^handler handle
   ^on_error error_to_response)
 ```
@@ -640,7 +640,7 @@ actor spawns; it is not a value. Server configuration therefore passes a
 creates internally:
 
 ```gene
-(server ~ http/serve
+(http/serve server
   ^supervision (supervisor_policy
     ^strategy restart
     ^max_restarts 10
@@ -668,7 +668,7 @@ Recommended failure event (declared unqualified inside `net/http`, seen as
 Status snapshot:
 
 ```gene
-(var status (server ~ http/status))
+(var status (http/status server))
 
 status/active_requests
 status/queued_requests
@@ -747,9 +747,9 @@ Messages:
 Commands:
 
 ```gene
-(conn ~ ws/send_text "hello")
-(conn ~ ws/send_bytes bytes)
-(conn ~ ws/close ^code 1000 ^reason "bye")
+(ws/send_text conn "hello")
+(ws/send_bytes conn bytes)
+(ws/close conn ^code 1000 ^reason "bye")
 ```
 
 Architecture:
@@ -771,7 +771,7 @@ For per-connection state, spawn one session actor per WebSocket. For very high f
 ### 15.1 Blocking serve
 
 ```gene
-(server ~ http/serve ^handler handle)
+(http/serve server ^handler handle)
 ```
 
 Runs until stopped, cancelled, or failed. Owned by the current scope.
@@ -780,9 +780,9 @@ Runs until stopped, cancelled, or failed. Owned by the current scope.
 
 ```gene
 (var running
-  (server ~ http/start ^handler handle))
+  (http/start server ^handler handle))
 
-(running ~ http/stop)
+(http/stop running)
 ```
 
 `http/start` returns an `http/Running` handle. Because it creates tasks/actors that outlive the caller’s immediate expression, it must have an explicit owner:
@@ -817,7 +817,7 @@ If using an actor pool with per-worker state, avoid opening a separate DB pool i
 ```gene
 (var db_pool (Db/open_pool config))
 
-(server ~ http/serve
+(http/serve server
   ^dispatch (actor_pool
     ^workers 8
     ^init (fn [] (WorkerState ^db db_pool))
@@ -846,7 +846,7 @@ Defaults:
 Logging hook:
 
 ```gene
-(server ~ http/serve
+(http/serve server
   ^access_log access_log
   ^error_log error_log
   ^redact_headers #["authorization" "cookie" "set-cookie"]
@@ -1042,7 +1042,7 @@ For most applications:
   (var server
     (http/listen net ^host "0.0.0.0" ^port 8080))
 
-  (server ~ http/serve
+  (http/serve server
     ^dispatch task_per_request
     ^max_in_flight 5000
     ^request_timeout_ms 30000

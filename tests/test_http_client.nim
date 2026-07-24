@@ -49,11 +49,11 @@ suite "net/http_client e2e":
 (var seen (cell ""))
 (try
   (loop
-    (var chunk (transfer/channel ~ Channel/recv))
-    (seen ~ Cell/set $"${(seen ~ Cell/get)}${chunk}"))
+    (var chunk (transfer/channel ~ recv))
+    (seen ~ set $"${(seen ~ get)}${chunk}"))
  catch (ChannelClosed) nil)
 (var r (await transfer/task))
-(println [r/status r/body (seen ~ Cell/get)])
+(println [r/status r/body (seen ~ get)])
 """)
     check client.exitCode == 0
     check client.output == "[200 \"alpha\\nbeta\\n\" \"alpha\\nbeta\\n\"]"
@@ -89,7 +89,7 @@ suite "net/http_client e2e":
 (import net/http_client [Http request])
 (var t (request Http ^url "http://127.0.0.1:8204/slow"))
 (sleep 100)
-(t ~ Task/cancel)
+(t ~ cancel)
 (println "cancelled")
 """)
     let elapsed = (getMonoTime() - started).inMilliseconds

@@ -1936,7 +1936,7 @@ suite "types — function boundaries":
 
   test "generic functions infer typed stream item types":
     ck "(fn nums [] : (Stream Int Never) (yield 4)) " &
-       "(fn (first item err) [s : (Stream item err)] : item (s ~ Stream/next)) " &
+       "(fn (first item err) [s : (Stream item err)] : item (s ~ next)) " &
        "(first (nums))",
        "4"
 

@@ -623,20 +623,24 @@ points at the call form (`did you mean to call it, not send it?`), and when it
 names a protocol message it hints to qualify.
 
 The **qualified send** `(x ~ X/name ...)` names the protocol message `X/name`
-and dispatches it on `x`. `X/name` is a message identity, not a callable in
-call-head position: `(X/name x)` is not the invocation form. The built-in type
-operations are likewise reachable both qualified and unqualified — `(c ~
-Cell/get)` and `(c ~ get)` resolve the same message.
+and dispatches it on `x`. `X/name` is a message identity, not a callable:
+`(X/name x)` and higher-order use `(map xs X/name)` both raise `CallKindError`.
+Only a protocol gives a message a qualified spelling, so the qualifier is a
+reliable signal — **bare means type-direct, qualified means protocol.** The
+built-in type operations are type-direct, hence bare: `(c ~ get)`, never
+`(c ~ Cell/get)`. `Cell/get` stays an ordinary namespace member for call
+position, `(Cell/get c)`.
 
 The **held-value send** `(x ~ %m ...)` evaluates `m` to a message value and
 dispatches it on `x`. `%m` is the ordinary `%` escape (design §5): a bare name
 after `~` is a static message name, `%m` pulls a message value from lexical
 scope. This is the one path by which a lexically-held value participates in a
-send — and it stays a *send*: the value must be a message, so a plain function
-or a held `Fn!` raises `CallKindError` (`^expected "Message"`) rather than being
-invoked. A parenthesized expression callee `(x ~ (expr) ...)` carries the same
-requirement. Selector callees `(x ~ /name)` are literal member forms, not
-dynamic values, and select the member as written.
+send — and it stays a *send*: the value must be a message, so a plain function,
+a namespace member, or a held `Fn!` raises `CallKindError`
+(`^expected "Message"`) rather than being invoked. A parenthesized expression
+callee `(x ~ (expr) ...)` carries the same requirement. The one exception is a
+**selector** callee `(x ~ /name)`, which projects the receiver rather than
+naming a message and keeps its projection meaning.
 
 The **implicit-self** form `(~ name ...)` desugars to `(self ~ name ...)`, a
 compile-time error when no `self` is in scope. Inside a message or `ctor` body
@@ -757,11 +761,15 @@ implemented and stable, and sit at implementation-order item 13; base
   (round-trips exactly); `opResolveMessage` resolves type-direct messages
   walking `^is`, raising `MessageError` when nothing matches (no lexical
   fallback); `(~ f a)` sends to lexical `self`; `(super ~ f a)` delegates via
-  `opSuperSend`; `(x ~ %m a)` sends a held message value, guarded by
-  `opRequireMessage` so a dynamic callee that is not a message value raises
-  `CallKindError`; qualified sends, selector sends, and the
-  `^protocol`/`^receiver` direct-call metadata path go through protocol
-  member access
+  `opSuperSend`, reading the owner's `^is` parent from the identity stamped on
+  the message body's chunk when the type is created, so no user-visible name is
+  resolved. Every non-bare callee — `P/m`, `%m`, an expression, and the
+  `^protocol`/`^receiver` direct-call metadata form — dispatches through
+  `opResolveQualifiedMessage`, which requires a message value and resolves the
+  impl (cached per site on receiver type + message identity + impl epoch). A
+  message value therefore never reaches a call opcode, so the call paths and
+  `applyCall` reject one outright: `(P/m x)` and `(map xs P/m)` are
+  `CallKindError`. Selector callees keep their projection lowering.
 - Tests: `tests/test_protocols.nim`, plus migrated cases in
   `tests/test_modules.nim`, `tests/test_errors.nim`, `tests/test_vm.nim`,
   `tests/test_reader.nim`, `tests/test_rc.nim`, `tests/spec_runner.nim`

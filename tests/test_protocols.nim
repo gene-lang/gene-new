@@ -776,13 +776,27 @@ suite "protocols — dispatch inline cache soundness (item D1)":
        "[2 -1 2]"
 
   test "qualified sends of two messages at one call site stay distinct":
-    # A first-class protocol message reused at one opCall ip; the message
-    # identity (msgBits) must join the guard so B/m does not hit A/m's entry.
+    # Two first-class protocol messages reused at one send site; the message
+    # identity (msgBits) must join the dispatch-cache guard so B/m does not hit
+    # A/m's entry. A message is invoked only through `~`, so the held value is
+    # sent with `%msg` rather than called.
     ck "(protocol A (message m [self] : Int)) " &
        "(protocol B (message m [self] : Int)) " &
        "(type W ^props {}) " &
        "(impl A for W (message m [self] : Int 10)) " &
        "(impl B for W (message m [self] : Int 20)) " &
-       "(var w (W)) (fn apply [msg] (msg w)) " &
+       "(var w (W)) (fn apply [msg] (w ~ %msg)) " &
        "[(apply A/m) (apply B/m) (apply A/m) (apply B/m)]",
        "[10 20 10 20]"
+
+  test "a message identity is not callable in head or argument position":
+    # `~` is the only way to invoke a message (design §3).
+    ck "(protocol A (message m [self] : Int)) " &
+       "(type W ^props {}) (impl A for W (message m [self] : Int 10)) " &
+       "(try (A/m (W)) catch (CallKindError ^actual a) a)",
+       "\"Message\""
+    ck "(protocol A (message m [self] : Int)) " &
+       "(type W ^props {}) (impl A for W (message m [self] : Int 10)) " &
+       "(fn apply [f x] (f x)) " &
+       "(try (apply A/m (W)) catch (CallKindError ^actual a) a)",
+       "\"Message\""

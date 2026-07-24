@@ -108,7 +108,7 @@ spaces:
   (var output [])
   (for item in items
     (if_yes (< output/~size limit)
-      (output ~ List/push! item)))
+      (output ~ push! item)))
   output)
 ```
 
@@ -163,7 +163,7 @@ Use receiver syntax when it reads as an operation on the receiver, and slash
 paths for static navigation:
 
 ```gene
-(items ~ List/push! value)
+(items ~ push! value)
 session/user/name
 session/items/-1
 ```

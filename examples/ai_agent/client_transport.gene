@@ -68,26 +68,26 @@
   (var request_seq (cell 0))
 
   (fn next_idempotency_key [] : Str
-    (request_seq ~ Cell/set (+ (request_seq ~ Cell/get) 1))
-    $"client-${(request_seq ~ Cell/get)}-${(random_hex 12)}")
+    (request_seq ~ set (+ (request_seq ~ get) 1))
+    $"client-${(request_seq ~ get)}-${(random_hex 12)}")
 
   (fn call
     [method : Str, path : Str, body, attached : Bool, mutation : Bool]
     (var headers {})
     (if_not (== bearer "")
-      (headers ~ Map/put! "authorization" $"Bearer ${bearer}"))
+      (headers ~ put! "authorization" $"Bearer ${bearer}"))
     (if_yes attached
-      (var aid (attachment_id ~ Cell/get))
+      (var aid (attachment_id ~ get))
       (if (== aid nil)
         (transport_error "not_attached"
           "client has no logical gateway attachment" nil nil))
-      (headers ~ Map/put! "x-gene-attachment" aid))
+      (headers ~ put! "x-gene-attachment" aid))
     (var encoded "")
     (if_not (== body nil)
       (set encoded (stringify body))
-      (headers ~ Map/put! "content-type" "application/json"))
+      (headers ~ put! "content-type" "application/json"))
     (if mutation
-      (headers ~ Map/put! "idempotency-key" (next_idempotency_key)))
+      (headers ~ put! "idempotency-key" (next_idempotency_key)))
     (try
       (parsed_response
         (await
@@ -100,74 +100,74 @@
   (fn create_session []
     (var created (require_success
       (call "POST" "/api/sessions" nil false false)))
-    (session_id ~ Cell/set created/id)
+    (session_id ~ set created/id)
     created)
 
   (fn attach [label : Str]
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (if (== sid nil)
       (transport_error "no_session" "create or select a session first" nil nil))
     (var attached (require_success
       (call "POST" $"/api/sessions/${sid}/attachments"
         {^display_label label} false false)))
-    (attachment_id ~ Cell/set attached/attachment_id)
-    (resume_credential ~ Cell/set attached/resume_credential)
-    (cursor ~ Cell/set attached/acknowledged_cursor)
+    (attachment_id ~ set attached/attachment_id)
+    (resume_credential ~ set attached/resume_credential)
+    (cursor ~ set attached/acknowledged_cursor)
     attached)
 
   (fn connect [requested_session, label : Str]
     (if (|| (== requested_session nil) (== (trim requested_session) ""))
       (create_session)
-      (session_id ~ Cell/set requested_session))
+      (session_id ~ set requested_session))
     (attach label))
 
   (fn resume []
-    (var sid (session_id ~ Cell/get))
-    (var aid (attachment_id ~ Cell/get))
-    (var credential (resume_credential ~ Cell/get))
+    (var sid (session_id ~ get))
+    (var aid (attachment_id ~ get))
+    (var credential (resume_credential ~ get))
     (if (|| (== sid nil) (== aid nil) (== credential nil))
       (transport_error "not_resumable"
         "session, attachment, and resume credential are required" nil nil))
     (var resumed (require_success
       (call "POST" $"/api/sessions/${sid}/attachments/${aid}/resume"
         {^resume_credential credential} false false)))
-    (cursor ~ Cell/set resumed/acknowledged_cursor)
+    (cursor ~ set resumed/acknowledged_cursor)
     resumed)
 
   (fn snapshot []
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (var value (require_success
       (call "GET" $"/api/sessions/${sid}/snapshot" nil true false)))
-    (cursor ~ Cell/set value/cursor)
+    (cursor ~ set value/cursor)
     value)
 
   (fn acknowledge [value : Int]
-    (var sid (session_id ~ Cell/get))
-    (var aid (attachment_id ~ Cell/get))
+    (var sid (session_id ~ get))
+    (var aid (attachment_id ~ get))
     (var acked (require_success
       (call "POST" $"/api/sessions/${sid}/attachments/${aid}/ack"
         {^cursor value} true true)))
-    (cursor ~ Cell/set acked/acknowledged_cursor)
+    (cursor ~ set acked/acknowledged_cursor)
     acked)
 
   (fn poll []
-    (var sid (session_id ~ Cell/get))
-    (var current (cursor ~ Cell/get))
+    (var sid (session_id ~ get))
+    (var current (cursor ~ get))
     (var response
       (call "GET" $"/api/sessions/${sid}/events?cursor=${current}"
         nil true false))
     (if (&& (! response/ok)
             (== response/value/error "cursor_gap"))
       (return {^gap true ^snapshot (snapshot) ^events []
-               ^cursor (cursor ~ Cell/get)}))
+               ^cursor (cursor ~ get)}))
     (var value (require_success response))
     (if (> value/cursor current)
-      (cursor ~ Cell/set value/cursor))
+      (cursor ~ set value/cursor))
     {^gap false ^events value/events ^cursor value/cursor
      ^changed_worker_ids value/changed_worker_ids})
 
   (fn send_message [text : Str]
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "POST" $"/api/sessions/${sid}/messages"
         {^text text} true true)))
@@ -176,51 +176,51 @@
     (require_success (call "GET" "/api/operations" nil false false)))
 
   (fn workers []
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "GET" $"/api/sessions/${sid}/workers" nil true false)))
 
   (fn create_worker [kind : Str, config]
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "POST" $"/api/sessions/${sid}/workers"
         {^kind kind ^config config} true true)))
 
   (fn call_worker [worker_id : Str, operation : Str, args]
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "POST"
         $"/api/sessions/${sid}/workers/${worker_id}/ops/${operation}"
         {^args args} true true)))
 
   (fn artifacts []
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "GET" $"/api/sessions/${sid}/artifacts" nil true false)))
 
   (fn pin [source : Str, worker_id : Str]
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "POST" $"/api/sessions/${sid}/artifacts"
         {^source source ^worker_id worker_id} true true)))
 
   (fn resolve_confirmation [confirmation_id : Str, decision : Str]
-    (var sid (session_id ~ Cell/get))
+    (var sid (session_id ~ get))
     (require_success
       (call "POST"
         $"/api/sessions/${sid}/confirmations/${confirmation_id}"
         {^decision decision} true true)))
 
   (fn detach []
-    (var sid (session_id ~ Cell/get))
-    (var aid (attachment_id ~ Cell/get))
+    (var sid (session_id ~ get))
+    (var aid (attachment_id ~ get))
     (if (|| (== sid nil) (== aid nil))
       (return {^ok true}))
     (var detached (require_success
       (call "DELETE" $"/api/sessions/${sid}/attachments/${aid}"
         nil true true)))
-    (attachment_id ~ Cell/set nil)
-    (resume_credential ~ Cell/set nil)
+    (attachment_id ~ set nil)
+    (resume_credential ~ set nil)
     detached)
 
   {^mode "remote" ^origin origin
@@ -237,5 +237,5 @@
   # Shape A injects the same method set over direct application calls. Keeping
   # this constructor intentionally boring makes the interface, not localhost
   # serialization, the architectural boundary.
-  (service ~ Map/put! "mode" "direct")
+  (service ~ put! "mode" "direct")
   service)

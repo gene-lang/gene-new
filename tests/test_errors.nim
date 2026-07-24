@@ -193,8 +193,8 @@ suite "errors — ensure":
                  newNativeFn("mark-cancellation-ensure", markCancellationEnsure))
     expect GeneCancel:
       discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
-                                "  (var t (spawn (ch ~ Channel/recv))) " &
-                                "  (t ~ Task/cancel) " &
+                                "  (var t (spawn (ch ~ recv))) " &
+                                "  (t ~ cancel) " &
                                 "  (try (await t) catch _ \"caught\" " &
                                 "       ensure (mark-cancellation-ensure)))"),
                   scope)
@@ -209,11 +209,11 @@ suite "errors — ensure":
     expect GeneCancel:
       discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
                                 "  (var t (spawn " &
-                                "    (try (ch ~ Channel/recv) " &
+                                "    (try (ch ~ recv) " &
                                 "         ensure " &
                                 "           (mark-child-cancellation-ensure)))) " &
                                 "  (sleep 1) " &
-                                "  (t ~ Task/cancel) " &
+                                "  (t ~ cancel) " &
                                 "  (await t))"),
                   scope)
     check childCancellationEnsureRan
@@ -228,11 +228,11 @@ suite "errors — ensure":
       discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
                                 "  (var t : (Task Int Never) " &
                                 "    (spawn " &
-                                "      (try (ch ~ Channel/recv) " &
+                                "      (try (ch ~ recv) " &
                                 "           ensure " &
                                 "             (mark-child-cancellation-ensure)))) " &
                                 "  (sleep 1) " &
-                                "  (t ~ Task/cancel) " &
+                                "  (t ~ cancel) " &
                                 "  (await t))"),
                   scope)
     check childCancellationEnsureRan

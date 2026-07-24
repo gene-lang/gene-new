@@ -13,7 +13,7 @@
 #   - structural subtyping: implementing a child protocol satisfies every
 #     ^inherit ancestor for a ^impl [...] requirement (docs/core.md §3.5)
 #   - message sends: (x ~ name) resolves receiver-first; (~ name) sends to
-#     self; (x ~ Protocol/name) is always unambiguous (docs/core.md §9)
+#     self; (Protocol/name x) is always unambiguous (docs/core.md §9)
 #
 # Note: message names are not lexical bindings (docs/core.md §1) — behavior
 # is reached with sends or qualified names, never bare calls like (name x).

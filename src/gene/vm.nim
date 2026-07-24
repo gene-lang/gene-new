@@ -1067,6 +1067,13 @@ proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
   raiseCallKindError("message send", "Callable", "SyntaxCallable", callee,
                      scope)
 
+proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
+  ## `~` is the only way to invoke a message (design §3): a message identity is
+  ## not callable in head position, so `(P/m x)` is a CallKindError. Qualified
+  ## sends resolve the impl through `opResolveQualifiedMessage`, so an ordinary
+  ## call never legitimately holds a message value here.
+  raiseCallKindError("call", "Callable", "Message", callee, scope)
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value
@@ -7281,7 +7288,7 @@ proc enumReflectionMessage(name: string): Value =
 proc typeNsMessage(scope: Scope, nsName, name: string): Value =
   ## Resolve `name` as a type-direct message from the built-in type namespace
   ## `nsName` (design §12): built-in operations are messages on their type, so
-  ## `(x ~ Cell/get)` is also reachable as `(x ~ get)` and `x/~get`. Returns
+  ## `(x ~ get)` is also reachable as `(x ~ get)` and `x/~get`. Returns
   ## NIL when the namespace has no such member.
   let ns = builtinBinding(scope, nsName)
   let binding = exportedBinding(ns, name)
@@ -8595,6 +8602,25 @@ proc collectProtocolMatches(scope: Scope, recvType, message: Value,
         matches.setLen(0)
       matches.add entry.fn
 
+proc stampSuperType(proto: FunctionProto, parent: Value,
+                    seen: var HashSet[pointer]) =
+  ## Record a type-direct message body's `^is` parent on its chunk, and on every
+  ## chunk nested inside it, so `(super ~ m)` in the body — or in a closure
+  ## lexically inside it — reads the owner's parent identity instead of
+  ## resolving a shadowable name (design §10).
+  if proto == nil:
+    return
+  for chunk in [proto.chunk, proto.scopelessChunk]:
+    if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
+      continue
+    chunk.superType = parent
+    for nested in chunk.functions:
+      stampSuperType(nested, parent, seen)
+
+proc stampSuperType(proto: FunctionProto, parent: Value) =
+  var seen = initHashSet[pointer]()
+  stampSuperType(proto, parent, seen)
+
 proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
   var matches: seq[Value]
   var bestDepth = -1
@@ -8622,9 +8648,10 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
   let protocol = message.protocolMessageProtocol
   let recvType = receiver.receiverType
   if recvType.kind != vkType:
-    raise newException(GeneError,
-      "protocol message '" & message.protocolMessageName &
-      "' requires a typed receiver")
+    # A receiver with no nominal type carries no impl, but the send still failed
+    # for the ordinary reason, so it stays a recoverable MessageError (§9).
+    raiseMessageError(message.protocolMessageName, declarationKind(receiver),
+                      scope, protocol = protocol.protocolName, missingImpl = true)
   result = scope.tryResolveProtocolMessage(recvType, message)
   if result.kind == vkNil:
     # A qualified send with no visible impl is a recoverable MessageError (§9).
@@ -8678,88 +8705,11 @@ proc snapshotProtocolBindings(scope: Scope): seq[Value] =
       result.addInterfaceProtocolCandidates(value, seenInterfaces)
     current = current.parent
 
-proc resolveProtocolCandidateRef(scope: Scope, reference: ProtocolCandidateRef,
-                                 value: var Value,
-                                 uninitialized: var bool): bool =
-  let parts = reference.name.split('/')
-  let bindingName = if parts.len > 0: parts[0] else: reference.name
-  if reference.slot >= 0:
-    var target = scope
-    for _ in 0 ..< reference.depth:
-      if target == nil:
-        uninitialized = true
-        return false
-      target = target.parent
-    if target == nil or reference.slot >= target.slots.len or
-        not target.slotDefined(reference.slot):
-      uninitialized = true
-      return false
-    value = target.slots[reference.slot]
-  else:
-    # Interface references reached through wildcard fallback are deliberately
-    # not ordinary slots. Use normal lexical resolution here so an exact
-    # annotation reference can recover that one protocol without treating the
-    # wildcard's whole namespace as a candidate source.
-    if not scope.lookupOptional(bindingName, value):
-      uninitialized = true
-      return false
-  for i in 1 ..< parts.len:
-    if value.kind == vkModule:
-      value = value.moduleRootNamespace
-    if value.kind != vkNamespace:
-      uninitialized = true
-      return false
-    value = value.exportedBinding(parts[i])
-    if value.kind == vkVoid:
-      uninitialized = true
-      return false
-  true
-
-proc compiledProtocolCandidates(scope: Scope, chunk: Chunk, setIndex: int,
-                                uninitialized: var seq[string]): seq[Value] =
-  for protocol in scope.entryProtocols:
-    result.addProtocolCandidate(protocol)
-  if setIndex < 0 or setIndex >= chunk.messageCandidateSets.len:
-    return
-  for reference in chunk.messageCandidateSets[setIndex].refs:
-    var value: Value
-    var missing = false
-    if scope.resolveProtocolCandidateRef(reference, value, missing):
-      var seenInterfaces: seq[uint64]
-      result.addInterfaceProtocolCandidates(value, seenInterfaces)
-    elif missing and reference.name notin uninitialized:
-      uninitialized.add reference.name
-
-proc resolveReceiverMessage(scope: Scope, recvType: Value, name: string,
-                            candidates: openArray[Value],
-                            knownCandidate: var bool): Value =
-  var matchedMessages: seq[Value]
-  for protocol in candidates:
-    if protocol.kind != vkProtocol:
-      continue
-    for message in protocol.protocolClosureByName(name):
-      knownCandidate = true
-      var seen = false
-      for existing in matchedMessages:
-        if same(existing, message):
-          seen = true
-          break
-      if seen:
-        continue
-      let fn = scope.tryResolveProtocolMessage(recvType, message)
-      if fn.kind != vkNil:
-        matchedMessages.add message
-        result = fn
-  if matchedMessages.len > 1:
-    raise newException(GeneError,
-      "ambiguous message '" & name & "' for " & recvType.typeName)
-
 # --------------------------------------------------------------------------
-# Protocol-message dispatch inline cache (design §10, item D1)
+# Protocol-message dispatch inline cache (design §10)
 # --------------------------------------------------------------------------
-# Both send tiers (qualified `resolveProtocolMessage` and unqualified
-# `compiledProtocolCandidates` + `resolveReceiverMessage`) walk the whole
-# send-scope parent chain, linear-scanning every scope's `impls` with an ^is
+# Qualified dispatch (`resolveProtocolMessage`) walks the whole send-scope
+# parent chain, linear-scanning every scope's `impls` with an ^is
 # receiver-distance probe per impl — ~10x a plain call. A per-call-site
 # monomorphic cache turns the repeated resolution into a guard check plus a
 # pointer materialization. The guard is sound because:
@@ -10309,6 +10259,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount, scope)
           var messages = initTable[string, Value]()
           for i, message in proto.messages:
+            # `(super ~ m)` in this body delegates to the enclosing type's `^is`
+            # parent; stamp that identity on the body now that it is known.
+            stampSuperType(message.fn, parent)
             let fn = newFunction(message.fn.name, message.fn.params, message.fn,
                                  scope, message.fn.checksErrors,
                                  messageErrorTypes[i])
@@ -10748,28 +10701,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 outer.slots[slot]
               else:
                 scope.loadSlotAt(inst[].depth, slot, inst[].name)
-          if callee.kind == vkProtocolMessage and argCount >= 1:
-            let receiver = stack[argsStart]
-            when dispatchCacheEnabled:
-              # A protocol message is first-class, so the message value can vary
-              # at one opCall ip; its identity joins the guard (msgBits).
-              let recvType = receiver.receiverType
-              let msgBits = callee.bits
-              var resolved = NIL
-              if recvType.kind == vkType and not scope.chainHasTransientImpls():
-                let site = ip - 1
-                let epoch = scope.application().implEpoch
-                resolved = chunk.dispatchCacheLookup(site, recvType, msgBits,
-                                                     epoch)
-                if resolved.kind == vkNil:
-                  resolved = resolveProtocolMessage(scope, callee, receiver)
-                  chunk.dispatchCacheFill(site, recvType, msgBits, epoch,
-                                          resolved)
-              else:
-                resolved = resolveProtocolMessage(scope, callee, receiver)
-              callee = resolved
-            else:
-              callee = resolveProtocolMessage(scope, callee, receiver)
+          if callee.kind == vkProtocolMessage:
+            rejectMessageCall(callee, scope)
           if callee.kind == vkFunction:
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
@@ -11062,7 +10995,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # the first positional argument.
           let receiver = spop()
           if receiver.nodeConstructing and inst[].name notin
-              ["Node/set_prop!", "Node/set_body!", "Node/push_body!"]:
+              ["set_prop!", "set_body!", "push_body!"]:
             raise newException(GeneError,
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
@@ -11121,17 +11054,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opSuperSend:
           # Parent delegation (design §10): resolve the message from the parent
           # of the *enclosing* type (not the receiver's runtime type), but call
-          # it with `self`. The compiler pushed [enclosingType, self]; walking
-          # `^is` here — rather than baking in the parent spelling — keeps super
-          # robust against a message-body local that shadows the parent's name.
+          # it with `self`. The parent identity was stamped onto this chunk when
+          # the type was created, so no user-visible name is resolved here and a
+          # message-body local cannot redirect the delegation.
           let receiver = spop()             # self
-          let enclosingType = spop()
-          let superType =
-            if enclosingType.kind == vkType: enclosingType.typeParent
-            else: NIL
+          let superType = chunk.superType
           var callee = NIL
           if superType.kind == vkType:
-            callee = typeDirectMessage(superType, inst[].name)
+            # A super site is statically monomorphic — the parent type comes
+            # from the chunk and the message name from the instruction — so the
+            # per-site cache only has to guard the impl epoch (reload/overlay).
+            when dispatchCacheEnabled:
+              let site = ip - 1
+              let epoch = scope.application().implEpoch
+              callee = chunk.dispatchCacheLookup(site, superType, 0'u64, epoch)
+              if callee.kind == vkNil:
+                callee = typeDirectMessage(superType, inst[].name)
+                if callee.kind != vkNil:
+                  chunk.dispatchCacheFill(site, superType, 0'u64, epoch, callee)
+            else:
+              callee = typeDirectMessage(superType, inst[].name)
           if callee.kind == vkNil:
             raiseMessageError(inst[].name,
               (if superType.kind == vkType: "super " & superType.typeName
@@ -11181,31 +11123,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow in call")
           let calleeIndex = argsStart - namedCount - 1
           var callee = stack[calleeIndex]
-          # Protocol-message dispatch (e.g. `(run obj)`) resolves to the receiver's
-          # impl up front, so the call rides the same frame-push paths below instead
-          # of double-recursing through applyCall (message dispatch + impl call).
-          if callee.kind == vkProtocolMessage and argCount >= 1:
-            let receiver = stack[argsStart]
-            when dispatchCacheEnabled:
-              # A protocol message is first-class, so the message value can vary
-              # at one opCall ip; its identity joins the guard (msgBits).
-              let recvType = receiver.receiverType
-              let msgBits = callee.bits
-              var resolved = NIL
-              if recvType.kind == vkType and not scope.chainHasTransientImpls():
-                let site = ip - 1
-                let epoch = scope.application().implEpoch
-                resolved = chunk.dispatchCacheLookup(site, recvType, msgBits,
-                                                     epoch)
-                if resolved.kind == vkNil:
-                  resolved = resolveProtocolMessage(scope, callee, receiver)
-                  chunk.dispatchCacheFill(site, recvType, msgBits, epoch,
-                                          resolved)
-              else:
-                resolved = resolveProtocolMessage(scope, callee, receiver)
-              callee = resolved
-            else:
-              callee = resolveProtocolMessage(scope, callee, receiver)
+          # A message identity is not callable in head position (design §3):
+          # qualified sends resolve their impl in opResolveQualifiedMessage, so a
+          # message value reaching an ordinary call is source like `(P/m x)`.
+          if callee.kind == vkProtocolMessage:
+            rejectMessageCall(callee, scope)
           # Frame-push paths: route Gene function calls onto the explicit frame stack
           # instead of recursing through Nim. ^errors functions push a frame too and
           # carry their error boundary (translated by the loop's handler on throw);
@@ -11409,10 +11331,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               appendSplicedBody(args, part)
             else:
               args.add part
-          # Resolve protocol-message dispatch to the receiver's impl up front (see
-          # opCall) so spread message calls ride the frame-push paths below too.
-          if callee.kind == vkProtocolMessage and args.len >= 1:
-            callee = resolveProtocolMessage(scope, callee, args[0])
+          # A message identity is not callable in head position (see opCall).
+          if callee.kind == vkProtocolMessage:
+            rejectMessageCall(callee, scope)
           # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
           # frame stack (^errors included; only generators fall through to applyCall).
           if callee.kind == vkFunction:
@@ -12358,20 +12279,41 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "VM stack underflow checking message callable")
           if stack[sp - 1].isSyntaxFn:
             rejectSyntaxSend(stack[sp - 1], scope)
-        of opRequireMessage:
-          # A dynamic send — (x ~ %m) / (x ~ (expr)) — must resolve to a message
-          # value; `~` dispatches only and never invokes an arbitrary function or
-          # a held fn! (design §3/§8). A protocol message is the one first-class
-          # message value; anything else is a CallKindError (a TypeError subtype).
-          if sp == 0:
+        of opResolveQualifiedMessage:
+          # Qualified/dynamic send — (x ~ P/m), (x ~ %m), (x ~ (expr)). The
+          # callee must be a message value; `~` dispatches only and never
+          # invokes an arbitrary function or a held fn! (design §3/§8). The impl
+          # is resolved here rather than by lowering the send to a flipped call,
+          # so an ordinary call never legitimately receives a message value.
+          if sp < 2:
             raise newException(GeneError,
-              "VM stack underflow checking message value")
-          let callee = stack[sp - 1]
-          if callee.kind != vkProtocolMessage:
-            if callee.isSyntaxFn:
-              rejectSyntaxSend(callee, scope)
+              "VM stack underflow resolving qualified message")
+          let message = spop()
+          let receiver = spop()
+          if message.kind != vkProtocolMessage:
+            if message.isSyntaxFn:
+              rejectSyntaxSend(message, scope)
             raiseCallKindError("message send", "Message",
-                               freezeRejectName(callee), callee, scope)
+                               freezeRejectName(message), message, scope)
+          var callee = NIL
+          when dispatchCacheEnabled:
+            # A message value is first-class, so one site can see several; its
+            # identity joins the guard (msgBits), as in the opCall path.
+            let recvType = receiver.receiverType
+            if recvType.kind == vkType and not scope.chainHasTransientImpls():
+              let site = ip - 1
+              let epoch = scope.application().implEpoch
+              let msgBits = message.bits
+              callee = chunk.dispatchCacheLookup(site, recvType, msgBits, epoch)
+              if callee.kind == vkNil:
+                callee = resolveProtocolMessage(scope, message, receiver)
+                chunk.dispatchCacheFill(site, recvType, msgBits, epoch, callee)
+          if callee.kind == vkNil:
+            callee = resolveProtocolMessage(scope, message, receiver)
+          if callee.isSyntaxFn:
+            rejectSyntaxSend(callee, scope)
+          spush callee
+          spush receiver
         of opReturn:
           frameReturn(if sp > 0: spop() else: NIL)
         of opReturnBareInt:
@@ -20696,11 +20638,10 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     # `new` only.
     constructTypedInstance(callee, args, named)
   of vkProtocolMessage:
-    if args.len == 0:
-      raise newException(GeneError,
-        "protocol message '" & callee.protocolMessageName & "' expects a receiver")
-    let implFn = resolveProtocolMessage(dispatchScope, callee, args[0])
-    applyCall(implFn, args, named, dispatchScope, site)
+    # `~` is the only way to invoke a message (design §3), so a message value
+    # is not callable — not in head position and not as a higher-order function
+    # (`(map xs P/m)`). Use a lambda: `(map xs (fn [x] (x ~ P/m)))`.
+    rejectMessageCall(callee, dispatchScope)
   of vkNode:
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):

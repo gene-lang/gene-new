@@ -172,7 +172,7 @@ suite "threaded scheduler workers":
     scope1.define("ch", ch)
     var pending: Value
     withGeneWorkerSetting "0":
-      pending = run(compileSource("(spawn (ch ~ Channel/send 42))"), scope1)
+      pending = run(compileSource("(spawn (ch ~ send 42))"), scope1)
     check pending.kind == vkTask
     check not pending.taskDone
     check ch.channelLen == 0
@@ -199,9 +199,9 @@ suite "threaded scheduler workers":
   test "high worker counts do not false-deadlock task await chains":
     withGeneWorkerSetting "8":
       ck "(scope (var ch (channel ^capacity 1)) " &
-         "  (var producer (spawn (do (ch ~ Channel/recv) 5))) " &
+         "  (var producer (spawn (do (ch ~ recv) 5))) " &
          "  (var doubler (spawn (* 2 (await producer)))) " &
-         "  (ch ~ Channel/send 1) " &
+         "  (ch ~ send 1) " &
          "  (await doubler))", "10"
 
   test "high worker counts wake task cancellation awaiters":
@@ -209,9 +209,9 @@ suite "threaded scheduler workers":
       expect GeneCancel:
         discard run(compileSource(
           "(scope (var ch (channel ^capacity 1)) " &
-          "  (var t (spawn (ch ~ Channel/recv))) " &
+          "  (var t (spawn (ch ~ recv))) " &
           "  (var w (spawn (await t))) " &
-          "  (t ~ Task/cancel) " &
+          "  (t ~ cancel) " &
           "  (await w))"), newGlobalScope())
 
   test "high worker counts wake sleeping task cancellation":
@@ -219,7 +219,7 @@ suite "threaded scheduler workers":
       expect GeneCancel:
         discard run(compileSource(
           "(scope (var t (spawn (sleep 1000))) " &
-          "  (t ~ Task/cancel) " &
+          "  (t ~ cancel) " &
           "  (await t))"), newGlobalScope())
 
   test "active worker-candidate cancellation wakes root awaiters":
@@ -229,13 +229,13 @@ suite "threaded scheduler workers":
           "(scope " &
           "  (var started (atomic_cell 0)) " &
           "  (var t (spawn (do " &
-          "    (started ~ AtomicCell/store 1) " &
+          "    (started ~ store 1) " &
           "    (var i 0) " &
           "    (while (< i 50000000) (set i (+ i 1))) " &
           "    i))) " &
           "  (sleep 10) " &
-          "  (if (< (started ~ AtomicCell/load) 1) (panic \"worker did not start\") nil) " &
-          "  (t ~ Task/cancel) " &
+          "  (if (< (started ~ load) 1) (panic \"worker did not start\") nil) " &
+          "  (t ~ cancel) " &
           "  (await t))"), newGlobalScope())
 
   test "worker pool runs worker-candidate tasks":
@@ -258,9 +258,9 @@ suite "threaded scheduler workers":
         "  ^handle (fn [ctx state msg] " &
         "    (var (Get ^reply reply) msg) " &
         "    (record-thread 1) " &
-        "    (reply ~ ReplyTo/send state) " &
+        "    (reply ~ send state) " &
         "    (actor/continue state)))) " &
-        "(var pending (a ~ actor/ask (fn [reply] (Get ^reply reply)))) " &
+        "(var pending (actor/ask a (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
         "pending"), scope)
@@ -281,12 +281,12 @@ suite "threaded scheduler workers":
         "  ^handle (fn [ctx state msg] " &
         "    (var (Put ^value value) msg) " &
         "    (record-thread 1) " &
-        "    (seen ~ AtomicCell/store value) " &
+        "    (seen ~ store value) " &
         "    (actor/continue value)))) " &
-        "(spawn (a ~ actor/try_send (Put ^value 42))) " &
+        "(spawn (actor/try_send a (Put ^value 42))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
-        "(seen ~ AtomicCell/load)"), scope).print() == "42"
+        "(seen ~ load)"), scope).print() == "42"
       check seenThreadCount() >= 1
 
   test "root actor send errors stay on root lane":
@@ -295,7 +295,7 @@ suite "threaded scheduler workers":
         discard run(compileSource(
           "(var a (actor/spawn ^init (fn [] 0) " &
           "  ^handle (fn [ctx state msg] 99))) " &
-          "(a ~ actor/send 1)"), newGlobalScope())
+          "(actor/send a 1)"), newGlobalScope())
 
   test "worker-candidate snapshots publish cloned closures":
     withGeneWorkerSetting "8":
@@ -318,8 +318,8 @@ suite "threaded scheduler workers":
          "    (while (< i limit) " &
          "      (set stored false) " &
          "      (while (not stored) " &
-         "        (set old (counter ~ AtomicCell/load)) " &
-         "        (set stored (counter ~ AtomicCell/compare_exchange old (+ old 1)))) " &
+         "        (set old (counter ~ load)) " &
+         "        (set stored (counter ~ compare_exchange old (+ old 1)))) " &
          "      (set i (+ i 1))) " &
          "    nil) " &
          "  (var a (spawn (inc_many 200))) " &
@@ -332,7 +332,7 @@ suite "threaded scheduler workers":
          "  (var h (spawn (inc_many 200))) " &
          "  (await a) (await b) (await c) (await d) " &
          "  (await e) (await f) (await g) (await h) " &
-         "  (counter ~ AtomicCell/load))",
+         "  (counter ~ load))",
          "1600"
 
   test "worker-candidate channel try_send respects capacity":
@@ -344,10 +344,10 @@ suite "threaded scheduler workers":
          "    (var stored false) " &
          "    (var old 0) " &
          "    (while (not stored) " &
-         "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
+         "      (set old (success ~ load)) " &
+         "      (set stored (success ~ compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (ch ~ Channel/try_send value) (mark_success) nil)) " &
+         "    (if (ch ~ try_send value) (mark_success) nil)) " &
          "  (var a (spawn (send_once 1))) " &
          "  (var b (spawn (send_once 2))) " &
          "  (var c (spawn (send_once 3))) " &
@@ -358,7 +358,7 @@ suite "threaded scheduler workers":
          "  (var h (spawn (send_once 8))) " &
          "  (await a) (await b) (await c) (await d) " &
          "  (await e) (await f) (await g) (await h) " &
-         "  (success ~ AtomicCell/load))",
+         "  (success ~ load))",
          "1"
 
   test "worker-candidate channel try_recv claims one item":
@@ -366,15 +366,15 @@ suite "threaded scheduler workers":
       ck "(scope " &
          "  (var ch (channel ^capacity 1)) " &
          "  (var success (atomic_cell 0)) " &
-         "  (ch ~ Channel/send 99) " &
+         "  (ch ~ send 99) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
          "    (while (not stored) " &
-         "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
+         "      (set old (success ~ load)) " &
+         "      (set stored (success ~ compare_exchange old (+ old 1))))) " &
          "  (fn recv_once [] " &
-         "    (var got (ch ~ Channel/try_recv)) " &
+         "    (var got (ch ~ try_recv)) " &
          "    (match got " &
          "      (when TryRecv/empty nil) " &
          "      (when (TryRecv/value _) (mark_success)))) " &
@@ -388,15 +388,15 @@ suite "threaded scheduler workers":
          "  (var h (spawn (recv_once))) " &
          "  (await a) (await b) (await c) (await d) " &
          "  (await e) (await f) (await g) (await h) " &
-         "  (success ~ AtomicCell/load))",
+         "  (success ~ load))",
          "1"
 
   test "worker-candidate try_recv may return its immutable tagged result":
     withGeneWorkerSetting "2":
       ck "(scope " &
          "  (var ch (channel ^capacity 1)) " &
-         "  (ch ~ Channel/send 41) " &
-         "  (var result (await (spawn (ch ~ Channel/try_recv)))) " &
+         "  (ch ~ send 41) " &
+         "  (var result (await (spawn (ch ~ try_recv)))) " &
          "  (match result " &
          "    (when (TryRecv/value n) (+ n 1)) " &
          "    (when TryRecv/empty 0)))",
@@ -409,17 +409,17 @@ suite "threaded scheduler workers":
          "  (var success (atomic_cell 0)) " &
          "  (var a (actor/spawn ^mailbox 1 ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
-         "      (gate ~ Channel/recv) " &
+         "      (gate ~ recv) " &
          "      (actor/continue (+ state msg))))) " &
-         "  (a ~ actor/send 0) " &
+         "  (actor/send a 0) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
          "    (while (not stored) " &
-         "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
+         "      (set old (success ~ load)) " &
+         "      (set stored (success ~ compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (a ~ actor/try_send value) (mark_success) nil)) " &
+         "    (if (actor/try_send a value) (mark_success) nil)) " &
          "  (var t1 (spawn (send_once 1))) " &
          "  (var t2 (spawn (send_once 2))) " &
          "  (var t3 (spawn (send_once 3))) " &
@@ -430,7 +430,7 @@ suite "threaded scheduler workers":
          "  (var t8 (spawn (send_once 8))) " &
          "  (await t1) (await t2) (await t3) (await t4) " &
          "  (await t5) (await t6) (await t7) (await t8) " &
-         "  (success ~ AtomicCell/load))",
+         "  (success ~ load))",
          "1"
 
   test "actor mailbox reservations count toward capacity":
@@ -475,9 +475,9 @@ suite "threaded scheduler workers":
         "(scope " &
         "  (var out (atomic_cell 0)) " &
         "  (var read-task (Fs/read_text_async Fs/ReadDir path)) " &
-        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
-        "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
+        "  [(out ~ load) (await read-task)])"), scope).print() ==
         "[1 \"worker async\"]"
 
   test "worker-backed async file read burst drains queued requests":
@@ -534,9 +534,9 @@ suite "threaded scheduler workers":
         "(scope " &
         "  (var out (atomic_cell 0)) " &
         "  (var write-task (Fs/write_text_async Fs/WriteDir path \"worker write\")) " &
-        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
-        "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
+        "  [(out ~ load) (await write-task)])"), scope).print() ==
         "[1 nil]"
     check readFile(path) == "worker write"
 
@@ -554,9 +554,9 @@ suite "threaded scheduler workers":
         "(scope " &
         "  (var out (atomic_cell 0)) " &
         "  (var read-task (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
-        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
-        "  [(out ~ AtomicCell/load) (await read-task)])"), scope).print() ==
+        "  [(out ~ load) (await read-task)])"), scope).print() ==
         "[1 \"worker tcp\"]"
     joinThread(serverThread)
 
@@ -575,9 +575,9 @@ suite "threaded scheduler workers":
         "(scope " &
         "  (var out (atomic_cell 0)) " &
         "  (var write-task (Net/tcp_write_text_async Net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
-        "  (var marker (spawn (out ~ AtomicCell/store 1))) " &
+        "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
-        "  [(out ~ AtomicCell/load) (await write-task)])"), scope).print() ==
+        "  [(out ~ load) (await write-task)])"), scope).print() ==
         "[1 nil]"
     joinThread(serverThread)
     check receiveArgs.payload == "worker tcp write"
@@ -601,7 +601,7 @@ suite "threaded scheduler workers":
         "(scope " &
         "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
         "  (var write-task (Fs/write_text_async Fs/WriteDir path \"cancelled write\")) " &
-        "  (write-task ~ Task/cancel) " &
+        "  (write-task ~ cancel) " &
         "  (await blocker))"), scope).print() ==
         "\"worker release\""
     joinThread(serverThread)
@@ -634,7 +634,7 @@ suite "threaded scheduler workers":
           "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
           "  (sleep 10) " &
           "  (var cancelled (Fs/write_text_async Fs/WriteDir cancelledPath \"cancelled\")) " &
-          "  (cancelled ~ Task/cancel) " &
+          "  (cancelled ~ cancel) " &
           "  (var next (Fs/write_text_async Fs/WriteDir nextPath \"next\")) " &
           "  [(await blocker) (try (await next) catch {^message m} m)])"),
           scope).print() == "[\"worker release\" nil]"
@@ -691,21 +691,21 @@ suite "threaded scheduler workers":
          "  (var a (actor/spawn ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
          "      (var (Get ^reply reply) msg) " &
-         "      (var value (gate ~ Channel/recv)) " &
-         "      (try (reply ~ ReplyTo/send value) catch _ nil) " &
+         "      (var value (gate ~ recv)) " &
+         "      (try (reply ~ send value) catch _ nil) " &
          "      (actor/continue state)))) " &
-         "  (var pending (a ~ actor/ask " &
+         "  (var pending (actor/ask a " &
          "    (fn [reply] " &
-         "      (reply_cell ~ AtomicCell/store reply) " &
+         "      (reply_cell ~ store reply) " &
          "      (Get ^reply reply)))) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
          "    (while (not stored) " &
-         "      (set old (success ~ AtomicCell/load)) " &
-         "      (set stored (success ~ AtomicCell/compare_exchange old (+ old 1))))) " &
+         "      (set old (success ~ load)) " &
+         "      (set stored (success ~ compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (try (do ((reply_cell ~ AtomicCell/load) ~ ReplyTo/send value) " &
+         "    (try (do ((reply_cell ~ load) ~ send value) " &
          "             (mark_success)) " &
          "      catch _ nil)) " &
          "  (var a1 (spawn (send_once 1))) " &
@@ -719,16 +719,16 @@ suite "threaded scheduler workers":
          "  (await a1) (await a2) (await a3) (await a4) " &
          "  (await a5) (await a6) (await a7) (await a8) " &
          "  (var got (await pending)) " &
-         "  (gate ~ Channel/send 99) " &
-         "  (success ~ AtomicCell/load))",
+         "  (gate ~ send 99) " &
+         "  (success ~ load))",
          "1"
 
   test "root channel waits run worker-candidate tasks on workers":
     withGeneWorkers:
       ck "(scope (var ch (channel ^capacity 1)) " &
          "  (var x 40) " &
-         "  (spawn (ch ~ Channel/send (+ x 2))) " &
-         "  (ch ~ Channel/recv))",
+         "  (spawn (ch ~ send (+ x 2))) " &
+         "  (ch ~ recv))",
          "42"
 
   test "root execution lease runs worker-candidate tasks before blocking waits":
@@ -763,7 +763,7 @@ suite "threaded scheduler workers":
         "  (while (< i 200000) (set i (+ i 1))) " &
         "  (yield t)) " &
         "(var s (gen)) " &
-        "(s ~ Stream/next)"), newGlobalScope())
+        "(s ~ next)"), newGlobalScope())
       check task.kind == vkTask
       check task.taskDone
 
@@ -790,10 +790,10 @@ suite "threaded scheduler workers":
         "(var a (actor/spawn ^init (fn [] 0) " &
         "  ^handle (fn [ctx state msg] " &
         "    (var (Get ^reply reply) msg) " &
-        "    (var value (gate ~ Channel/recv)) " &
-        "    (reply ~ ReplyTo/send value) " &
+        "    (var value (gate ~ recv)) " &
+        "    (reply ~ send value) " &
         "    (actor/continue state)))) " &
-        "(var pending (a ~ actor/ask ^timeout_ms 5 " &
+        "(var pending (actor/ask a ^timeout_ms 5 " &
         "  (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
@@ -810,10 +810,10 @@ suite "threaded scheduler workers":
          "  (var a (actor/spawn ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
          "      (var (Get ^reply reply) msg) " &
-         "      (var value (gate ~ Channel/recv)) " &
-         "      (reply ~ ReplyTo/send value) " &
+         "      (var value (gate ~ recv)) " &
+         "      (reply ~ send value) " &
          "      (actor/continue state)))) " &
-         "  (var pending (a ~ actor/ask ^timeout_ms 5 " &
+         "  (var pending (actor/ask a ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
          "  (try (await pending) catch (ActorError ^message m) m))",
          "\"actor/ask timed out\""

@@ -740,17 +740,32 @@ callable, the diagnostic says so ("… is a function — did you mean to call it
 not send it?"), and when it names a protocol message it hints to qualify. Full
 resolution rules: `docs/core.md §9`.
 
-A **non-bare callee** is one of two things. A *literal member form* — a
-qualified path (`x ~ P/m`, `x ~ Cell/get`) or a selector (`x ~ /name`) — names a
-member syntactically and dispatches through it. A *dynamic callee* — `%m` or a
-parenthesized expression — must evaluate to a **message value**: `~` dispatches
-only, so a plain function or a held `Fn!` in that position is rejected rather
-than invoked, and `(x ~ %some_fn)` never becomes a back-door function call. The
-recoverable error is `CallKindError`, a subtype of `TypeError`, with `^where`,
-`^expected` (`"Message"`), `^actual`, and `^actual_value` diagnostics; rejection
-happens before any remaining send argument is evaluated. Syntax callables are
-invoked only in ordinary call-head position; send syntax is never reinterpreted
-as a syntax call.
+**Every non-bare callee must be a message value.** A qualified path
+(`x ~ P/m`), a held value (`x ~ %m`), and a parenthesized expression all resolve
+to a value that has to be a message identity; the impl is then dispatched on
+`x`. A plain function, a namespace member, or a held `Fn!` is **rejected, not
+invoked** — so `(xs ~ str/join "-")` and `(x ~ %some_fn)` are errors rather than
+back-door function calls. This is what makes "dispatches, and only dispatches"
+true of the whole operator and not just of bare names.
+
+Because only protocols give a message a qualified spelling, the qualifier is a
+reliable signal: **bare means type-direct, qualified means protocol.** Built-in
+operations are type-direct messages, so they take the bare form — `(c ~ get)`,
+not `(c ~ Cell/get)` — while `Cell/get` remains an ordinary member usable in
+call position, `(Cell/get c)`.
+
+The one exception is a **selector** callee, `(x ~ /name)`: a selector projects
+the receiver rather than naming a message, and keeps its projection meaning.
+
+The recoverable error is `CallKindError`, a subtype of `TypeError`, with
+`^where`, `^expected` (`"Message"`), `^actual`, and `^actual_value` diagnostics;
+rejection happens before any remaining send argument is evaluated. Syntax
+callables are invoked only in ordinary call-head position; send syntax is never
+reinterpreted as a syntax call.
+
+Symmetrically, a message identity is **not callable outside `~`**: `(P/m x)` in
+head position and higher-order use such as `(map xs P/m)` both raise
+`CallKindError`. Reach for a lambda instead: `(map xs (fn [x] (x ~ P/m)))`.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
@@ -1019,7 +1034,7 @@ without throwing. The `TryNext` enum follows the `TryRecv` pattern:
 ```
 
 ```gene
-(match (s ~ Stream/try_next)
+(match (s ~ try_next)
   (when TryNext/exhausted # ...)
   (when (TryNext/value v) # ...)
   (when (TryNext/error e) # ...))
@@ -1119,7 +1134,7 @@ These rules combine into a simple consumer idiom:
 
 ```gene
 (while true
-  (match (try-ok (s ~ Stream/next))
+  (match (try-ok (s ~ next))
     (when (Ok v)   (yield-handler v))
     (when (Err e)  (if (== e (EndOfStream)) (break) (handle e)))))
 ```
@@ -1201,8 +1216,8 @@ A type may additionally define one constructor with `ctor`:
   ^props {^x F64 ^y F64}
 
   (ctor [x : F64, y : F64]
-    (self ~ Node/set_prop! `x x)
-    (self ~ Node/set_prop! `y y)))
+    (self ~ set_prop! `x x)
+    (self ~ set_prop! `y y)))
 ```
 
 Constructor invocation uses `new`:
@@ -1239,9 +1254,9 @@ A constructor uses normal function-style argument matching:
   ^props {^name Str ^age Int ^active Bool}
 
   (ctor [name : Str, ^age : Int = 0, ^active : Bool = true]
-    (self ~ Node/set_prop! `name name)
-    (self ~ Node/set_prop! `age age)
-    (self ~ Node/set_prop! `active active)))
+    (self ~ set_prop! `name name)
+    (self ~ set_prop! `age age)
+    (self ~ set_prop! `active active)))
 
 (new User "Ada" ^age 37)
 (User ^name "Ada" ^age 37 ^active true) # direct data construction
@@ -1256,7 +1271,7 @@ Constructors may declare checked errors:
   (ctor [n : Int]
     ^errors [ValidationError]
     (if (&& (>= n 0) (<= n 65535))
-      (self ~ Node/set_prop! `value n)
+      (self ~ set_prop! `value n)
       (fail (ValidationError ^message "invalid port")))))
 
 (new Port 8080)
@@ -1290,8 +1305,8 @@ parent constructor is not called automatically:
   ^props {^breed Str}
 
   (ctor [name : Str, breed : Str]
-    (self ~ Node/set_prop! `name name)
-    (self ~ Node/set_prop! `breed breed)))
+    (self ~ set_prop! `name name)
+    (self ~ set_prop! `breed breed)))
 ```
 
 A partially constructed `self` carries an in-progress construction marker and
@@ -1456,11 +1471,11 @@ unqualified through the receiver-message resolver:
 
 ```gene
 (d ~ year)
-(d ~ Date/year)
-(t ~ Time/hour)
-(dt ~ DateTime/offset)
-(tz ~ Timezone/name)
-(dur ~ Duration/seconds)
+(d ~ year)
+(t ~ hour)
+(dt ~ offset)
+(tz ~ name)
+(dur ~ seconds)
 ```
 
 `Duration` is included with the family because date arithmetic is incomplete
@@ -1738,7 +1753,7 @@ Generic functions put type parameters on the function name:
 ```gene
 (fn (first item err) [s : (Stream item err)] : item
   ^errors [EndOfStream err]
-  (s ~ Stream/next))
+  (s ~ next))
 ```
 
 Call-site inference uses local unification. Given:
@@ -2361,14 +2376,23 @@ type** on the `^is` chain, called with `self`:
 
 `super` resolves from the *enclosing type's* parent, not the receiver's runtime
 type, so in `C ^is B ^is A` each `super` steps exactly one level relative to the
-body it appears in. It is statically resolved (the enclosing type is known when
-the message compiles) and needs no runtime type reflection. `super` is reserved
-and cannot be bound. Using it outside a type message body with an `^is` parent
-is a compile error. (`(super ~ Proto/m)` for protocol-impl delegation is
-deferred — it needs the protocol-impl precedence rule.) `Self` remains a type name in annotation
-position, e.g. `(message eq [other : Self] : Bool)`. The legacy form that names
-the receiver explicitly as the first parameter (`[self …]`) is still accepted
-during migration.
+body it appears in. The parent identity is fixed when the type is created and
+recorded on the message body itself, so `super` resolves **no user-visible
+name** — a local binding that happens to share the parent's or the enclosing
+type's spelling cannot redirect the delegation. A closure written inside a
+message body may use `super`, and it delegates from the same parent. `super` is
+reserved and cannot be bound. Using it outside a type message body with an `^is`
+parent is a compile error.
+
+Two forms remain unsupported, pending the protocol-impl precedence rule:
+`(super ~ Proto/m)` for protocol-impl delegation, and the dynamic
+`(super ~ %m)`. Both are diagnosed rather than silently mis-dispatched.
+
+`Self` remains a type name in annotation position, e.g.
+`(message eq [other : Self] : Bool)`. The legacy form that names the receiver
+explicitly as the first parameter (`[self …]`) is still accepted during
+migration, but `self` may not be rebound anywhere inside a message or `ctor`
+body — nested functions and pattern bindings included.
 
 Message dispatch is on the first argument's head/type. Messages are ordinary callable values, but their names are **not** bound in the enclosing lexical scope — a message is reached with a send, or as a qualified member of its protocol (`docs/core.md §1/§9`):
 
@@ -2748,7 +2772,7 @@ An `Env` is an opaque, garbage-collected value. It may be stored, passed, return
     ^imports [std/math]))
 
 (var child
-  (base ~ Env/extend {^y 20}))
+  (Env/extend base {^y 20}))
 ```
 
 Environments are immutable by default. `Env/extend` creates a child environment whose parent is the original environment; it does not mutate the parent.
@@ -2791,8 +2815,8 @@ Shared mutation is explicit. Ordinary environment bindings are read-only, but an
 (var e (env ^bindings {^counter counter}))
 
 (eval
-  `(counter ~ Cell/set
-     (+ (counter ~ Cell/get) 1))
+  `(counter ~ set
+     (+ (counter ~ get) 1))
   ^in e)
 ```
 
@@ -2913,7 +2937,7 @@ Immutable containers support persistent functional updates with structural shari
 
 ```gene
 (var xs  #[1 2 3])
-(var xs2 (xs ~ List/assoc 1 20))
+(var xs2 (xs ~ assoc 1 20))
 
 (var user2 (assoc_in user /address/city "Raleigh"))
 (var user3 (update_in user /score (fn [x] (+ x 1))))
@@ -2924,10 +2948,10 @@ Immutable containers support persistent functional updates with structural shari
 Mutable containers use explicit mutating operations, conventionally named with `!`:
 
 ```gene
-(xs ~ List/set! 1 20)
-(xs ~ List/push! 30)
-(m ~ Map/put! key value)
-(n ~ Node/set_prop! name value)
+(xs ~ set! 1 20)
+(xs ~ push! 30)
+(m ~ put! key value)
+(n ~ set_prop! name value)
 ```
 
 `List/push!` appends to a mutable list in amortized O(1) time and returns the
@@ -2965,7 +2989,7 @@ a mutable value:
 
 ```gene
 (let counter (cell 0))          # the binding never moves; the Cell mutates
-(counter ~ Cell/update (fn [x] (+ x 1)))
+(counter ~ update (fn [x] (+ x 1)))
 ```
 
 A namespace-level `var` is unsynchronized mutable global state — shared across
@@ -2995,18 +3019,19 @@ Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
 (var enabled (cell true))
 (var current (cell nil))
 
-(count ~ Cell/get)
-(count ~ Cell/set 10)
-(count ~ Cell/swap 20)                 # returns the old value
-(count ~ Cell/update (fn [x] (+ x 1)))
+(count ~ get)
+(count ~ set 10)
+(count ~ swap 20)                 # returns the old value
+(count ~ update (fn [x] (+ x 1)))
 ```
 
 These operations are **type-direct messages** on the receiver's built-in type
-(§3), so the qualifier is optional: `(count ~ get)`, `(count ~ set 10)`, and the
-path form `count/~get` resolve the same message as `(count ~ Cell/get)`. The
+(§3), so they take the bare form: `(count ~ get)`, `(count ~ set 10)`, and the
+path form `count/~get` all resolve the same message. A qualified send names a
+*protocol* message, so `(count ~ Cell/get)` is an error — `Cell/get` is an
+ordinary namespace member and is used in call position, `(Cell/get count)`. The
 same holds for the other built-in types — `List`, `Map`, `Node`, `Buffer`,
-`AtomicCell`, `Stream`, `Channel`, `Task`, `ReplyTo` — whose operations are
-reachable both qualified and unqualified.
+`AtomicCell`, `Stream`, `Channel`, `Task`, `ReplyTo`.
 
 Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed inside specialized typed cells, but the semantic model is a mutable reference containing a Gene value.
 
@@ -3019,10 +3044,10 @@ Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed 
 ```gene
 (var state (atomic_cell 0))
 
-(state ~ AtomicCell/load)
-(state ~ AtomicCell/store 1)
-(state ~ AtomicCell/swap 2)
-(state ~ AtomicCell/compare_exchange 2 3)
+(state ~ load)
+(state ~ store 1)
+(state ~ swap 2)
+(state ~ compare_exchange 2 3)
 ```
 
 Operations are linearizable. The runtime may use machine atomics for supported immediate types and a lock-backed representation for general Gene values. `AtomicCell T` may implement `Send` when `T` is sendable and the implementation provides the required GC barriers.
@@ -3110,7 +3135,7 @@ The program entry point runs as a root task, so `await` is meaningful without an
 A task may be cancelled explicitly:
 
 ```gene
-(t ~ Task/cancel)
+(t ~ cancel)
 ```
 
 Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate. Concretely:
@@ -3135,9 +3160,9 @@ Channels are bounded by default to provide backpressure:
 ```gene
 (var ch (channel ^capacity 64))
 
-(ch ~ Channel/send value)       # suspends while full
-(var value (ch ~ Channel/recv)) # suspends while empty
-(ch ~ Channel/close)
+(ch ~ send value)       # suspends while full
+(var value (ch ~ recv)) # suspends while empty
+(ch ~ close)
 ```
 
 Conceptual operations:
@@ -3238,7 +3263,7 @@ A handler processes one message and returns an actor step:
       (actor/continue (+ state n)))
 
     (when (Get ^reply reply)
-      (reply ~ ReplyTo/send state)
+      (reply ~ send state)
       (actor/continue state))
 
     (when Stop
@@ -3269,8 +3294,8 @@ A handler commonly returns immutable replacement state. It may also use actor-pr
 Actor mailboxes are bounded by default.
 
 ```gene
-(counter ~ actor/send (Increment ^amount 5))
-(counter ~ actor/try_send (Increment ^amount 1))
+(actor/send counter (Increment ^amount 5))
+(actor/try_send counter (Increment ^amount 1))
 ```
 
 Conceptual behavior:
@@ -3283,7 +3308,7 @@ Request/reply uses an explicit one-shot reply capability:
 
 ```gene
 (var pending
-  (counter ~ actor/ask
+  (actor/ask counter
     (fn [reply]
       (Get ^reply reply))))
 
@@ -3623,7 +3648,7 @@ this_mod : Module
 
 ```gene
 this_mod/%declarations
-(this_mod ~ Module/path)
+(Module/path this_mod)
 ```
 
 Top-level execution rules:

@@ -166,16 +166,16 @@
   # Agent panes share pane 0's `agent> ` turn prefix; other worker kinds keep
   # the neutral assistant marker.
   (var prefix (if (== pane/kind "agent") "agent> " "assistant|"))
-  (if (pane/pending_visible ~ Cell/get)
+  (if (pane/pending_visible ~ get)
     $"${prefix}...\n"
-    (if (!= (pane/current_task ~ Cell/get) nil) $"${prefix}   \n" "")))
+    (if (!= (pane/current_task ~ get) nil) $"${prefix}   \n" "")))
 
 (fn main_pending_marker [app] : Str
   (if (|| (== app nil) (== app/local_surface nil))
     ""
-    (if (app/local_surface/main_pending_visible ~ Cell/get)
+    (if (app/local_surface/main_pending_visible ~ get)
       "agent> ...\n"
-      (if (!= (app/main_agent/current_task ~ Cell/get) nil)
+      (if (!= (app/main_agent/current_task ~ get) nil)
         "agent>    \n" ""))))
 
 (fn output_with_pending_marker [output : Str, marker : Str] : Str
@@ -189,8 +189,8 @@
 (fn main_presented_output [app, transcript] : Str
   (var notice
     (if (|| (== app nil) (== app/local_surface nil)) ""
-      (app/local_surface/help_notice ~ Cell/get)))
-  (var base (transcript ~ Cell/get))
+      (app/local_surface/help_notice ~ get)))
+  (var base (transcript ~ get))
   (var separator
     (if (|| (== base "") (ends_with? base "\n")) "" "\n"))
   (var presented
@@ -202,43 +202,43 @@
 (fn application_pane_views [app]
   (var surface app/local_surface)
   (var views (cell []))
-  (for pane in (if (== surface nil) [] (surface/panes ~ Cell/get))
-    (if_not (pane/hidden ~ Cell/get)
+  (for pane in (if (== surface nil) [] (surface/panes ~ get))
+    (if_not (pane/hidden ~ get)
       (var marker
-        (if (== (surface/focused_pane ~ Cell/get) pane/id) "*" ""))
+        (if (== (surface/focused_pane ~ get) pane/id) "*" ""))
       (var unread
         (if (== pane/kind "agent")
-          (match (pane/worker/result ~ Cell/get)
+          (match (pane/worker/result ~ get)
             (when (m : Map) (if (== m/read false) "!" ""))
             (else ""))
           ""))
-      ((views ~ Cell/get) ~ List/push!
-        {^title $"[${pane/id}]${marker}${unread} ${pane/title} (${(pane/status ~ Cell/get)})"
+      ((views ~ get) ~ push!
+        {^title $"[${pane/id}]${marker}${unread} ${pane/title} (${(pane/status ~ get)})"
          ^output
            (output_with_pending_marker
              (if (== pane/kind "terminal")
-               (pane/worker/controller/restored_text ~ Cell/get)
-               (pane/output ~ Cell/get))
+               (pane/worker/controller/restored_text ~ get)
+               (pane/output ~ get))
              (pane_pending_marker pane))
-         ^scroll (pane/scroll ~ Cell/get)
+         ^scroll (pane/scroll ~ get)
          ^terminal_id
            (if (&& (== pane/kind "terminal")
                     pane/worker/controller/session)
              pane/worker/controller/session/id 0)
-         ^focused (== (surface/focused_pane ~ Cell/get) pane/id)
-         ^maximized (== (surface/maximized_pane ~ Cell/get) pane/id)})))
-  (views ~ Cell/get))
+         ^focused (== (surface/focused_pane ~ get) pane/id)
+         ^maximized (== (surface/maximized_pane ~ get) pane/id)})))
+  (views ~ get))
 
 (fn application_scroll_target! [app, main_scroll, direction : Int,
                                 amount : Int]
   (var surface app/local_surface)
   (var pane_id
-    (if surface (surface/focused_pane ~ Cell/get)))
+    (if surface (surface/focused_pane ~ get)))
   (var pane
     (if pane_id (application_find_pane app pane_id)))
   (var target (if (== pane nil) main_scroll pane/scroll))
-  (var current (target ~ Cell/get))
-  (target ~ Cell/set
+  (var current (target ~ get))
+  (target ~ set
     (if (> direction 0)
       (+ current amount)
       (if (> current amount) (- current amount) 0)))
@@ -248,11 +248,11 @@
   (var surface app/local_surface)
   (var available (if (> rows 5) (- rows 5) 1))
   (var pane_count 0)
-  (for pane in (if (== surface nil) [] (surface/panes ~ Cell/get))
-    (if_not (pane/hidden ~ Cell/get)
+  (for pane in (if (== surface nil) [] (surface/panes ~ get))
+    (if_not (pane/hidden ~ get)
       (set pane_count (+ pane_count 1))))
   (var page
-    (if (|| (== surface nil) (== (surface/focused_pane ~ Cell/get) nil))
+    (if (|| (== surface nil) (== (surface/focused_pane ~ get) nil))
       available
       (if (> pane_count 0)
         (if (< available (* pane_count 7))
@@ -265,11 +265,11 @@
   (var surface app/local_surface)
   (if_not (== surface nil)
     (var ids [0])
-    (for pane in (surface/panes ~ Cell/get)
-      (if_not (pane/hidden ~ Cell/get) (ids ~ List/push! pane/id)))
+    (for pane in (surface/panes ~ get)
+      (if_not (pane/hidden ~ get) (ids ~ push! pane/id)))
     (var current
-      (if (== (surface/focused_pane ~ Cell/get) nil)
-        0 (surface/focused_pane ~ Cell/get)))
+      (if (== (surface/focused_pane ~ get) nil)
+        0 (surface/focused_pane ~ get)))
     (var index 0)
     (repeat i in ids/~size
       (if (== ids/%i current) (set index i)))
@@ -277,12 +277,12 @@
     (if (< next 0) (set next (- ids/~size 1)))
     (if (>= next ids/~size) (set next 0))
     (var target ids/%next)
-    (surface/focused_pane ~ Cell/set (if (== target 0) nil target))
-    (surface/maximized_pane ~ Cell/set nil)
+    (surface/focused_pane ~ set (if (== target 0) nil target))
+    (surface/maximized_pane ~ set nil)
     target))
 
 (fn undo_command [line : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var worker_id (if (== app nil) "main" app/main_agent/id))
   (if (== line "/undo")
     (undo_with_workspace_lease app worker_id nil)
@@ -350,7 +350,7 @@
   (["exit" "quit"] ~ contains? line))
 
 (fn append_transcript [transcript, text : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (&& (!= app nil) (== app/main_agent/transcript transcript))
     (then (append_agent_transcript! app/main_agent text))
     # Offline/demo callers without an application still stay bounded; shared
@@ -366,19 +366,19 @@
           (var start (- total budget))
           (var retained "")
           (var sliced (cell false))
-          (while (&& (! (sliced ~ Cell/get)) (< start total))
+          (while (&& (! (sliced ~ get)) (< start total))
             (try
               (set retained (slice_bytes combined start (- total start)))
-              (sliced ~ Cell/set true)
+              (sliced ~ set true)
             catch _ (set start (+ start 1))))
           (Cell/set transcript $"${marker}${retained}"))))))
 
 (fn input_route_label []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (|| (== app nil) (== app/local_surface nil))
     (then "[0 main]")
     (else
-      (var pane_id (app/local_surface/focused_pane ~ Cell/get))
+      (var pane_id (app/local_surface/focused_pane ~ get))
       (var pane
         (if pane_id (application_find_pane app pane_id)))
       (if (== pane nil) "[0 main]" $"[${pane/id} ${pane/kind}]"))))
@@ -386,37 +386,37 @@
 (fn focused_terminal_pane [app]
   (var result nil)
   (if_not (|| (== app nil) (== app/local_surface nil))
-    (var pane_id (app/local_surface/focused_pane ~ Cell/get))
+    (var pane_id (app/local_surface/focused_pane ~ get))
     (var pane (if pane_id (application_find_pane app pane_id)))
     (if (&& pane (== pane/kind "terminal")) (set result pane)))
   result)
 
 (fn terminal_pane_controlled? [pane] : Bool
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (&& pane app app/local_surface
-          (== (app/local_surface/focused_pane ~ Cell/get) pane/id)
-          (== (pane/worker/lifecycle ~ Cell/get) "running")
-          (!= (pane/worker/status ~ Cell/get) "stopping")
+          (== (app/local_surface/focused_pane ~ get) pane/id)
+          (== (pane/worker/lifecycle ~ get) "running")
+          (!= (pane/worker/status ~ get) "stopping")
           pane/worker/controller/session
-          (== (pane/worker/controller/controller_surface_id ~ Cell/get)
-              (app/local_surface/instance_id ~ Cell/get)))
+          (== (pane/worker/controller/controller_surface_id ~ get)
+              (app/local_surface/instance_id ~ get)))
     true false))
 
 (fn editor_terminal_direct? [editor] : Bool
-  (if (&& editor (editor/terminal_direct ~ Cell/get)
+  (if (&& editor (editor/terminal_direct ~ get)
           (terminal_pane_controlled? editor/terminal_pane))
     true false))
 
 (fn current_input_status []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var pane_id
     (if (|| (== app nil) (== app/local_surface nil)) nil
-      (app/local_surface/focused_pane ~ Cell/get)))
+      (app/local_surface/focused_pane ~ get)))
   (var pane
     (if pane_id (application_find_pane app pane_id)))
   (if (== pane nil)
     (then
-      (var progress (if app (app/progress ~ Cell/get)))
+      (var progress (if app (app/progress ~ get)))
       (var progress_hint
         (if (|| (== progress nil) (== progress/objective "")) ""
           $" | ${progress/phase}/${progress/status}"))
@@ -424,8 +424,8 @@
     (else
       (var worker pane/worker)
       (var state
-        (if (!= (worker/current_task ~ Cell/get) nil) "working"
-          (worker/status ~ Cell/get)))
+        (if (!= (worker/current_task ~ get) nil) "working"
+          (worker/status ~ get)))
       (match pane/kind
         (when "agent"
           $"[${pane/id} agent ${worker/id}: ${state}] Enter send | /0 main | Esc cancel | PgUp/PgDn scroll")
@@ -434,7 +434,7 @@
         (when "repl"
           $"[${pane/id} repl ${worker/id}: ${state}] Enter eval | /0 main | //literal slash | Ctrl-C cancel | PgUp/PgDn scroll")
         (when "terminal"
-          (if (editor_terminal_direct? (active_editor ~ Cell/get))
+          (if (editor_terminal_direct? (active_editor ~ get))
             $"[${pane/id} terminal ${worker/id}: direct/unmediated] ${terminal_leader_label} commands | Shift-PgUp scroll"
             (if (terminal_pane_controlled? pane)
               $"[${pane/id} terminal ${worker/id}: app commands] Esc direct | ${terminal_leader_label} literal | /help"
@@ -446,64 +446,64 @@
   (if (|| (== app nil) (== app/local_surface nil))
     (then true)
     (else
-      (var pane_id (app/local_surface/focused_pane ~ Cell/get))
+      (var pane_id (app/local_surface/focused_pane ~ get))
       (var pane (if pane_id (application_find_pane app pane_id)))
       (|| (== pane nil)
           (["agent" "shell" "repl" "log_tail"] ~ contains? pane/kind)))))
 
 (fn editor_accepts_surface_text? [app, editor, text : Str] : Bool
   (|| (surface_route_input_capable? app)
-      (starts_with? (editor_text (editor/values ~ Cell/get)) "/")
+      (starts_with? (editor_text (editor/values ~ get)) "/")
       (starts_with? text "/")))
 
 (fn surface_route_history [app]
   (var surface app/local_surface)
-  (var pane_id (surface/focused_pane ~ Cell/get))
+  (var pane_id (surface/focused_pane ~ get))
   (var pane
     (if pane_id (application_find_pane app pane_id)))
   (var worker_id (if (== pane nil) app/main_agent/id pane/worker_id))
-  (var histories (surface/input_histories ~ Cell/get))
-  (var history (histories ~ Map/get worker_id))
+  (var histories (surface/input_histories ~ get))
+  (var history (histories ~ get worker_id))
   (if_yes (== history void)
     (set history (cell []))
-    (histories ~ Map/put! worker_id history))
+    (histories ~ put! worker_id history))
   history)
 
 (fn surface_route_draft [app]
   (var surface app/local_surface)
-  (var pane_id (surface/focused_pane ~ Cell/get))
+  (var pane_id (surface/focused_pane ~ get))
   (var pane
     (if pane_id (application_find_pane app pane_id)))
   (var worker_id (if (== pane nil) app/main_agent/id pane/worker_id))
-  (var drafts (surface/drafts ~ Cell/get))
-  (var draft (drafts ~ Map/get worker_id))
+  (var drafts (surface/drafts ~ get))
+  (var draft (drafts ~ get worker_id))
   (if_yes (== draft void)
     (set draft (cell ""))
-    (drafts ~ Map/put! worker_id draft))
+    (drafts ~ put! worker_id draft))
   draft)
 
 (fn surface_history_push! [history, value]
-  ((history ~ Cell/get) ~ List/push! value)
-  (if_yes (> ((history ~ Cell/get) ~ size) surface_history_max)
-    (var current (history ~ Cell/get))
+  ((history ~ get) ~ push! value)
+  (if_yes (> ((history ~ get) ~ size) surface_history_max)
+    (var current (history ~ get))
     (var first (- (current ~ size) surface_history_max))
     (var kept [])
     (repeat i in current/~size
-      (if (>= i first) (kept ~ List/push! current/%i)))
-    (history ~ Cell/set kept)))
+      (if (>= i first) (kept ~ push! current/%i)))
+    (history ~ set kept)))
 
 (fn record_local_surface_history! [worker_id : Str, value : Str, surface_id]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (&& app app/local_surface
           (|| (== surface_id nil)
-              (== surface_id (app/local_surface/instance_id ~ Cell/get))))
+              (== surface_id (app/local_surface/instance_id ~ get))))
     (then
-      (var histories (app/local_surface/input_histories ~ Cell/get))
-      (var history (histories ~ Map/get worker_id))
+      (var histories (app/local_surface/input_histories ~ get))
+      (var history (histories ~ get worker_id))
       (if (== history void)
         (then
           (set history (cell []))
-          (histories ~ Map/put! worker_id history)))
+          (histories ~ put! worker_id history)))
       # Worker history stores the semantic input after routing. Surface recall
       # must restore the escape needed to submit a literal leading slash
       # through the command parser again.
@@ -511,32 +511,32 @@
         (if (starts_with? value "/") $"/${value}" value)))))
 
 (fn extension_views []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (== app nil) [] (application_pane_views app)))
 
 (fn find_extension [id : Int]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if app (application_find_pane app id)))
 
 (fn ensure_user_screen []
-  (if (== (user_screen ~ Cell/get) nil)
-    (user_screen ~ Cell/set (curses_open)))
-  (user_screen ~ Cell/get))
+  (if (== (user_screen ~ get) nil)
+    (user_screen ~ set (curses_open)))
+  (user_screen ~ get))
 
 (fn close_user_input []
-  (if_yes (!= (user_screen ~ Cell/get) nil)
-    (curses_close (user_screen ~ Cell/get))
-    (user_screen ~ Cell/set nil)))
+  (if_yes (!= (user_screen ~ get) nil)
+    (curses_close (user_screen ~ get))
+    (user_screen ~ set nil)))
 
 (fn suspend_user_input []
   # Surface-local terminal handoffs must not let an event callback reopen
   # curses over the external editor or real shell while application fibers
   # continue progressing in the background.
-  (user_input_suspended ~ Cell/set true)
+  (user_input_suspended ~ set true)
   (close_user_input))
 
 (fn resume_user_input []
-  (user_input_suspended ~ Cell/set false))
+  (user_input_suspended ~ set false))
 
 (fn editor_chars [text : Str]
   # Graphemes are strings (unlike `chars`, whose Char values print as source
@@ -549,12 +549,12 @@
 (fn editor_cursor_byte [values, cursor : Int]
   (var prefix [])
   (repeat i in cursor
-    (prefix ~ List/push! values/%i))
+    (prefix ~ push! values/%i))
   (byte_size (editor_text prefix)))
 
 (fn editor_insert! [editor, text : Str]
-  (var values (editor/values ~ Cell/get))
-  (var cursor (editor/cursor ~ Cell/get))
+  (var values (editor/values ~ get))
+  (var cursor (editor/cursor ~ get))
   (var current_text (editor_text values))
   (var remaining (- surface_draft_max_bytes (byte_size current_text)))
   (var accepted
@@ -564,75 +564,75 @@
   (var updated [])
   (repeat i in values/~size
     (if (== i cursor)
-      (for value in additions (updated ~ List/push! value)))
-    (updated ~ List/push! values/%i))
+      (for value in additions (updated ~ push! value)))
+    (updated ~ push! values/%i))
   (if (== cursor values/~size)
-    (for value in additions (updated ~ List/push! value)))
-  (editor/values ~ Cell/set updated)
-  (editor/cursor ~ Cell/set (+ cursor additions/~size))
+    (for value in additions (updated ~ push! value)))
+  (editor/values ~ set updated)
+  (editor/cursor ~ set (+ cursor additions/~size))
   nil)
 
 (fn editor_remove! [editor, index : Int]
-  (var values (editor/values ~ Cell/get))
+  (var values (editor/values ~ get))
   (if (|| (< index 0) (>= index values/~size))
     (then false)
     (else
       (var updated [])
       (repeat i in values/~size
-        (if (!= i index) (updated ~ List/push! values/%i)))
-      (editor/values ~ Cell/set updated)
+        (if (!= i index) (updated ~ push! values/%i)))
+      (editor/values ~ set updated)
       true)))
 
 (fn editor_set_text! [editor, text : Str]
   (var values (editor_chars text))
-  (editor/values ~ Cell/set values)
-  (editor/cursor ~ Cell/set values/~size)
+  (editor/values ~ set values)
+  (editor/cursor ~ set values/~size)
   nil)
 
 (fn editor_clear! [editor]
-  (editor/values ~ Cell/set [])
-  (editor/cursor ~ Cell/set 0)
-  (editor/history_index ~ Cell/set editor/history/~size)
-  (editor/draft ~ Cell/set "")
+  (editor/values ~ set [])
+  (editor/cursor ~ set 0)
+  (editor/history_index ~ set editor/history/~size)
+  (editor/draft ~ set "")
   nil)
 
 (fn editor_history! [editor, direction : Int]
   (var history editor/history)
-  (var index (editor/history_index ~ Cell/get))
+  (var index (editor/history_index ~ get))
   (if (&& (< direction 0) (> index 0))
     (then
       (if (== index history/~size)
-        (editor/draft ~ Cell/set
-          (editor_text (editor/values ~ Cell/get))))
+        (editor/draft ~ set
+          (editor_text (editor/values ~ get))))
       (set index (- index 1))
-      (editor/history_index ~ Cell/set index)
+      (editor/history_index ~ set index)
       (editor_set_text! editor history/%index)
       true)
     (else
       (if (&& (> direction 0) (< index history/~size))
         (then
           (set index (+ index 1))
-          (editor/history_index ~ Cell/set index)
+          (editor/history_index ~ set index)
           (editor_set_text! editor
             (if (== index history/~size)
-              (editor/draft ~ Cell/get)
+              (editor/draft ~ get)
               history/%index))
           true)
         (else false)))))
 
 (fn editor_home! [editor]
-  (var values (editor/values ~ Cell/get))
-  (var cursor (editor/cursor ~ Cell/get))
+  (var values (editor/values ~ get))
+  (var cursor (editor/cursor ~ get))
   (while (&& (> cursor 0) (!= values/%(- cursor 1) "\n"))
     (set cursor (- cursor 1)))
-  (editor/cursor ~ Cell/set cursor))
+  (editor/cursor ~ set cursor))
 
 (fn editor_end! [editor]
-  (var values (editor/values ~ Cell/get))
-  (var cursor (editor/cursor ~ Cell/get))
+  (var values (editor/values ~ get))
+  (var cursor (editor/cursor ~ get))
   (while (&& (< cursor values/~size) (!= values/%cursor "\n"))
     (set cursor (+ cursor 1)))
-  (editor/cursor ~ Cell/set cursor))
+  (editor/cursor ~ set cursor))
 
 (fn completion_item [value : Str, label : Str, detail : Str]
   {^value value ^label label ^detail detail})
@@ -641,7 +641,7 @@
   (var labels [])
   (if overlay
     (for item in overlay/items
-      (labels ~ List/push!
+      (labels ~ push!
         (if (== item/detail "") item/label
           $"${item/label}  ${item/detail}"))))
   labels)
@@ -651,35 +651,35 @@
   (var rebuilt [])
   (repeat i in tokens/~size
     (if (< i (- tokens/~size 1))
-      (rebuilt ~ List/push! tokens/%i)))
-  (rebuilt ~ List/push! replacement)
+      (rebuilt ~ push! tokens/%i)))
+  (rebuilt ~ push! replacement)
   (join rebuilt " "))
 
 (fn worker_completion_items [app, prefix : Str, agents_only : Bool]
   (var out [])
-  (for worker in (app/workers ~ Cell/get)
+  (for worker in (app/workers ~ get)
     (if_yes (|| (! agents_only) (== worker/kind "agent"))
       (var label (if worker/name worker/name worker/id))
       (if_yes (starts_with? label prefix)
-        (out ~ List/push!
+        (out ~ push!
           (completion_item label label
-            $"${worker/kind} ${(worker/status ~ Cell/get)}")))
+            $"${worker/kind} ${(worker/status ~ get)}")))
       (if_yes (&& worker/name (starts_with? worker/id prefix))
-        (out ~ List/push!
+        (out ~ push!
           (completion_item worker/id worker/id
-            $"${worker/kind} ${(worker/status ~ Cell/get)}")))))
+            $"${worker/kind} ${(worker/status ~ get)}")))))
   out)
 
 (fn pane_completion_items [app, prefix : Str, include_main : Bool]
   (var out [])
   (if (&& include_main (starts_with? "0" prefix))
-    (out ~ List/push! (completion_item "0" "0" "main agent")))
-  (for pane in (app/local_surface/panes ~ Cell/get)
+    (out ~ push! (completion_item "0" "0" "main agent")))
+  (for pane in (app/local_surface/panes ~ get)
     (var id $"${pane/id}")
     (if (starts_with? id prefix)
-      (out ~ List/push!
+      (out ~ push!
         (completion_item id id
-          $"${pane/kind} ${(pane/status ~ Cell/get)}"))))
+          $"${pane/kind} ${(pane/status ~ get)}"))))
   out)
 
 (fn operation_visible_to_local? [operation] : Bool
@@ -690,7 +690,7 @@
   (var out [])
   (for verb in verbs
     (if (starts_with? verb prefix)
-      (out ~ List/push! (completion_item $"${base}${verb} " verb "action"))))
+      (out ~ push! (completion_item $"${base}${verb} " verb "action"))))
   out)
 
 (fn shell_completion_context [text : Str]
@@ -708,13 +708,13 @@
     (set ch values/%i)
     (if escaped
       (then
-        (token ~ List/push! ch)
+        (token ~ push! ch)
         (set escaped false))
       (else
         (match state
         (when "single"
           (if (== ch "'") (set state "plain")
-            (token ~ List/push! ch)))
+            (token ~ push! ch)))
         (when "double"
           (if (== ch "\"")
             (set state "plain")
@@ -722,7 +722,7 @@
               (set escaped true)
               (if (|| (== ch "$") (== ch "`"))
                 (return nil)
-                (token ~ List/push! ch)))))
+                (token ~ push! ch)))))
         (else
           (if (contains? " \t\n" ch)
             (then
@@ -741,10 +741,10 @@
                       (else
                         (set quote ch)
                         (set state (if (== ch "'") "single" "double"))))
-                    (token ~ List/push! ch)))))))))))
+                    (token ~ push! ch)))))))))))
   (if escaped (return nil))
   (var before [])
-  (repeat j in token_start (before ~ List/push! values/%j))
+  (repeat j in token_start (before ~ push! values/%j))
   {^before (editor_text before) ^prefix (editor_text token) ^quote quote})
 
 (fn shell_completion_path_parts [prefix : Str]
@@ -752,7 +752,7 @@
   (var directories [])
   (repeat i in parts/~size
     (if (< i (- parts/~size 1))
-      (directories ~ List/push! parts/%i)))
+      (directories ~ push! parts/%i)))
   (var last (- parts/~size 1))
   {^directory (join directories "/")
    ^base (if (empty? parts) "" parts/%last)})
@@ -794,29 +794,29 @@
         catch _ nil)
         (var value (shell_completion_render context candidate))
         (if_yes value
-          (out ~ List/push! (completion_item value candidate detail)))))
+          (out ~ push! (completion_item value candidate detail)))))
   catch _ nil)
   out)
 
 (fn shell_route_completion_items [worker, text : Str]
   (var out (workspace_path_completion_items text))
   (var seen {})
-  (for item in out (seen ~ Map/put! item/label true))
+  (for item in out (seen ~ put! item/label true))
   (var context (shell_completion_context text))
   (if (== context nil) (return out))
-  (for record in (worker/history ~ Cell/get)
+  (for record in (worker/history ~ get)
     (for token in (split record/text " ")
       (if_yes (&& (< out/~size surface_overlay_max_items)
                   (!= token "")
                   (starts_with? token context/prefix)
-                  (== (seen ~ Map/get token) void)
+                  (== (seen ~ get token) void)
                   (! (contains? token "$")) (! (contains? token "`"))
                   (! (contains? token "'")) (! (contains? token "\""))
                   (! (contains? token "\\")))
         (var value (shell_completion_render context token))
         (if_yes value
-          (seen ~ Map/put! token true)
-          (out ~ List/push!
+          (seen ~ put! token true)
+          (out ~ push!
             (completion_item value token "shell history"))))))
   out)
 
@@ -824,7 +824,7 @@
   (var out [])
   (for spec in surface_command_specs
     (if (starts_with? spec/name text)
-      (out ~ List/push!
+      (out ~ push!
         (completion_item spec/name spec/name spec/summary))))
   out)
 
@@ -839,7 +839,7 @@
     (then
       (var prefix (if (== parts/~size 2) parts/1 ""))
       (for item in (worker_completion_items app prefix false)
-        (out ~ List/push!
+        (out ~ push!
           (completion_item $"/worker ${item/value} " item/label item/detail))))
     (else
       (var target parts/1)
@@ -851,7 +851,7 @@
             (for operation in (worker_operations_for_kind worker/kind)
               (if_yes (&& (operation_visible_to_local? operation)
                           (starts_with? operation/name operation_name))
-                (out ~ List/push!
+                (out ~ push!
                   (completion_item $"/worker ${target} ${operation/name} "
                     operation/name operation/summary)))))
           (else
@@ -865,7 +865,7 @@
                 (var last (- parts/~size 1))
                 (var prefix parts/%last)
                 (for item in (worker_completion_items app prefix false)
-                  (out ~ List/push!
+                  (out ~ push!
                     (completion_item
                       (replace_last_token text item/value)
                       item/label item/detail))))))))))
@@ -877,21 +877,21 @@
   (if (<= parts/~size 2)
     (then
       (for item in (verb_completion_items ["list" "new"] target "/agent ")
-        (out ~ List/push! item))
+        (out ~ push! item))
       (for item in (worker_completion_items app target true)
-        (out ~ List/push!
+        (out ~ push!
           (completion_item $"/agent ${item/value} " item/label item/detail))))
     (else
       (var agent (application_find_agent app target))
       (if_yes agent
         (var prefix parts/2)
         (if_yes (starts_with? "open" prefix)
-          (out ~ List/push!
+          (out ~ push!
             (completion_item $"/agent ${target} open " "open" "open pane")))
         (for operation in (worker_operations_for_kind "agent")
           (if_yes (&& (operation_visible_to_local? operation)
                       (starts_with? operation/name prefix))
-            (out ~ List/push!
+            (out ~ push!
               (completion_item $"/agent ${target} ${operation/name} "
                 operation/name operation/summary)))))))
   out)
@@ -905,9 +905,9 @@
           (verb_completion_items
             ["list" "new" "open" "focus" "show" "hide" "close" "max"]
             action "/pane ")
-        (out ~ List/push! item))
+        (out ~ push! item))
       (for item in (pane_completion_items app action true)
-        (out ~ List/push!
+        (out ~ push!
           (completion_item $"/pane ${item/value} " item/label item/detail))))
     (else
       (var prefix parts/2)
@@ -916,22 +916,22 @@
             (verb_completion_items
               ["agent" "shell" "terminal" "repl" "tail" "output" "view" "stats"]
               prefix "/pane new ")
-          (out ~ List/push! item)))
+          (out ~ push! item)))
       (if_yes (== action "open")
         (for item in (worker_completion_items app prefix false)
-          (out ~ List/push!
+          (out ~ push!
             (completion_item $"/pane open ${item/value} "
               item/label item/detail))))
       (if_yes (["focus" "show" "hide" "close" "max"] ~ contains? action)
         (for item in (pane_completion_items app prefix (== action "focus"))
-          (out ~ List/push!
+          (out ~ push!
             (completion_item $"/pane ${action} ${item/value}"
               item/label item/detail))))
       (if_yes (!= (pane_command_id action) nil)
         (for item in
             (verb_completion_items ["focus" "show" "hide" "close" "max"]
               prefix $"/pane ${action} ")
-          (out ~ List/push! item)))))
+          (out ~ push! item)))))
   out)
 
 (fn trace_completion_items [text : Str, parts]
@@ -941,7 +941,7 @@
   (for key in ["type=" "tool=" "path=" "turn=" "worker=" "agent="
                "task=" "from=" "to=" "--detail"]
     (if (starts_with? key prefix)
-      (out ~ List/push!
+      (out ~ push!
         (completion_item (replace_last_token text key) key "trace filter"))))
   out)
 
@@ -949,16 +949,16 @@
   (var out [])
   (var last (- parts/~size 1))
   (var prefix parts/%last)
-  (for artifact in (agent_artifacts ~ Cell/get)
+  (for artifact in (agent_artifacts ~ get)
     (if (starts_with? artifact/id prefix)
-      (out ~ List/push!
+      (out ~ push!
         (completion_item (replace_last_token text artifact/id)
           artifact/id artifact/kind))))
   out)
 
 (fn editor_completion_items [editor]
-  (var app (active_application ~ Cell/get))
-  (var text (editor_text (editor/values ~ Cell/get)))
+  (var app (active_application ~ get))
+  (var text (editor_text (editor/values ~ get)))
   (var parts (split text " "))
   (if (&& (starts_with? text "/") (== parts/~size 1))
     (return (command_completion_items text)))
@@ -972,7 +972,7 @@
     (return (trace_completion_items text parts)))
   (if (starts_with? text "/artifact ")
     (return (artifact_completion_items text parts)))
-  (var pane_id (app/local_surface/focused_pane ~ Cell/get))
+  (var pane_id (app/local_surface/focused_pane ~ get))
   (var pane (if pane_id (application_find_pane app pane_id)))
   (if (&& pane (== pane/worker/kind "shell"))
     (return (shell_route_completion_items pane/worker text)))
@@ -981,126 +981,126 @@
     (for binding in ["session" "session/items" "session/events"
                      "session/workers" "session/main_agent"]
       (if (starts_with? binding text)
-        (out ~ List/push! (completion_item binding binding "REPL binding")))))
+        (out ~ push! (completion_item binding binding "REPL binding")))))
   out)
 
 (fn editor_show_completion! [editor, kind : Str]
   (var items (editor_completion_items editor))
   (if (empty? items)
-    (editor/overlay ~ Cell/set nil)
-    (editor/overlay ~ Cell/set
+    (editor/overlay ~ set nil)
+    (editor/overlay ~ set
       {^kind kind ^title (if (== kind "palette") "commands" "completion")
        ^items items ^selected (cell 0) ^query (cell "")
-       ^original (editor_text (editor/values ~ Cell/get))})))
+       ^original (editor_text (editor/values ~ get))})))
 
 (fn reverse_search_items [editor, query : Str]
   (var items [])
   (for value in editor/history
     (if (|| (== query "") (contains? value query))
-      (items ~ List/push! (completion_item value value "history"))))
+      (items ~ push! (completion_item value value "history"))))
   (bounded_list_tail items surface_overlay_max_items))
 
 (fn editor_begin_reverse_search! [editor]
-  (var current (editor/overlay ~ Cell/get))
+  (var current (editor/overlay ~ get))
   (if (&& current (== current/kind "reverse_search"))
     (then
-      (var selected (current/selected ~ Cell/get))
+      (var selected (current/selected ~ get))
       (if_yes (> selected 0)
-        (current/selected ~ Cell/set (- selected 1))))
+        (current/selected ~ set (- selected 1))))
     (else
       (var items (reverse_search_items editor ""))
-      (editor/overlay ~ Cell/set
+      (editor/overlay ~ set
         {^kind "reverse_search" ^title "reverse history"
          ^items items ^selected (cell (if (empty? items) 0 (- items/~size 1)))
          ^query (cell "")
-         ^original (editor_text (editor/values ~ Cell/get))}))))
+         ^original (editor_text (editor/values ~ get))}))))
 
 (fn editor_refresh_reverse_search! [editor]
-  (var overlay (editor/overlay ~ Cell/get))
-  (var items (reverse_search_items editor (overlay/query ~ Cell/get)))
-  (overlay ~ Map/put! "items" items)
-  (overlay/selected ~ Cell/set (if (empty? items) 0 (- items/~size 1)))
-  (overlay ~ Map/put! "title"
-    $"reverse history: ${(overlay/query ~ Cell/get)}"))
+  (var overlay (editor/overlay ~ get))
+  (var items (reverse_search_items editor (overlay/query ~ get)))
+  (overlay ~ put! "items" items)
+  (overlay/selected ~ set (if (empty? items) 0 (- items/~size 1)))
+  (overlay ~ put! "title"
+    $"reverse history: ${(overlay/query ~ get)}"))
 
 (fn editor_overlay_move! [editor, direction : Int]
-  (var overlay (editor/overlay ~ Cell/get))
+  (var overlay (editor/overlay ~ get))
   (if_yes overlay
-    (var selected (overlay/selected ~ Cell/get))
+    (var selected (overlay/selected ~ get))
     (var last (- overlay/items/~size 1))
     (if_yes (> last -1)
-      (overlay/selected ~ Cell/set
+      (overlay/selected ~ set
         (if (< (+ selected direction) 0)
           0
           (if (> (+ selected direction) last) last
             (+ selected direction)))))))
 
 (fn editor_accept_overlay! [editor] : Bool
-  (var overlay (editor/overlay ~ Cell/get))
+  (var overlay (editor/overlay ~ get))
   (if (|| (== overlay nil) (empty? overlay/items))
     (then
       false)
     (else
-      (var selected (overlay/selected ~ Cell/get))
+      (var selected (overlay/selected ~ get))
       (editor_set_text! editor overlay/items/%selected/value)
-      (editor/overlay ~ Cell/set nil)
+      (editor/overlay ~ set nil)
       true)))
 
 (fn editor_overlay_is_current_draft? [editor] : Bool
-  (var overlay (editor/overlay ~ Cell/get))
+  (var overlay (editor/overlay ~ get))
   (if (|| (== overlay nil) (== overlay/kind "reverse_search")
           (empty? overlay/items))
     (then
       false)
     (else
-      (var selected (overlay/selected ~ Cell/get))
+      (var selected (overlay/selected ~ get))
       (== overlay/items/%selected/value
-          (editor_text (editor/values ~ Cell/get))))))
+          (editor_text (editor/values ~ get))))))
 
 (fn editor_dismiss_overlay! [editor, restore : Bool]
-  (var overlay (editor/overlay ~ Cell/get))
+  (var overlay (editor/overlay ~ get))
   (if (&& restore overlay (== overlay/kind "reverse_search"))
     (editor_set_text! editor overlay/original))
-  (editor/overlay ~ Cell/set nil))
+  (editor/overlay ~ set nil))
 
 (fn draw_editor [editor]
-  (var values (editor/values ~ Cell/get))
-  (var app (active_application ~ Cell/get))
-  (var overlay (editor/overlay ~ Cell/get))
+  (var values (editor/values ~ get))
+  (var app (active_application ~ get))
+  (var overlay (editor/overlay ~ get))
   (var terminal_direct (editor_terminal_direct? editor))
   (curses_draw (ensure_user_screen)
     ^prompt (input_route_label) ^status (current_input_status)
     ^output (main_presented_output app editor/transcript)
     ^input (if terminal_direct "" (editor_text values))
     ^cursor (if terminal_direct 0
-              (editor_cursor_byte values (editor/cursor ~ Cell/get)))
-    ^output_scroll (editor/output_scroll ~ Cell/get)
+              (editor_cursor_byte values (editor/cursor ~ get)))
+    ^output_scroll (editor/output_scroll ~ get)
     ^panes (extension_views)
     ^terminal_direct terminal_direct
     ^overlay (if terminal_direct [] (completion_labels overlay))
-    ^overlay_selected (if overlay (overlay/selected ~ Cell/get) 0)
+    ^overlay_selected (if overlay (overlay/selected ~ get) 0)
     ^overlay_title (if overlay overlay/title "")))
 
 (fn terminal_editor_enter_command! [editor]
-  (editor/terminal_direct ~ Cell/set false)
+  (editor/terminal_direct ~ set false)
   (editor_set_text! editor "/")
-  (editor/overlay ~ Cell/set nil)
+  (editor/overlay ~ set nil)
   (editor_show_completion! editor "palette"))
 
 (fn terminal_editor_return_direct! [editor]
-  (editor/terminal_direct ~ Cell/set true)
+  (editor/terminal_direct ~ set true)
   (editor_clear! editor)
-  (editor/overlay ~ Cell/set nil))
+  (editor/overlay ~ set nil))
 
 (fn terminal_editor_handle_leader! [editor, event] : Bool
   (if (&& editor/terminal_pane
           (terminal_pane_controlled? editor/terminal_pane)
           (== event/code terminal_leader_code)
-          (! (editor/paste ~ Cell/get)))
+          (! (editor/paste ~ get)))
     (then
       (if (editor_terminal_direct? editor)
         (terminal_editor_enter_command! editor)
-        (if (== (editor_text (editor/values ~ Cell/get)) "/")
+        (if (== (editor_text (editor/values ~ get)) "/")
           (then
             (var session editor/terminal_pane/worker/controller/session)
             (terminal_key session ^key "control"
@@ -1110,30 +1110,30 @@
     (else false)))
 
 (fn editor_sync_focused_route! [editor]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if_yes (&& app app/local_surface)
     # Preserve the draft owned by the route that just lost focus before
     # retargeting the long-lived input editor to the newly focused route.
     (if_not (editor_terminal_direct? editor)
-      (editor/draft ~ Cell/set
-        (editor_text (editor/values ~ Cell/get))))
+      (editor/draft ~ set
+        (editor_text (editor/values ~ get))))
     (var pane (focused_terminal_pane app))
     (var draft (surface_route_draft app))
     (var history (surface_route_history app))
-    (editor ~ Map/put! "terminal_pane" pane)
-    (editor ~ Map/put! "draft" draft)
-    (editor ~ Map/put! "history" (history ~ Cell/get))
-    (editor/history_index ~ Cell/set editor/history/~size)
-    (editor/paste ~ Cell/set false)
-    (editor/overlay ~ Cell/set nil)
+    (editor ~ put! "terminal_pane" pane)
+    (editor ~ put! "draft" draft)
+    (editor ~ put! "history" (history ~ get))
+    (editor/history_index ~ set editor/history/~size)
+    (editor/paste ~ set false)
+    (editor/overlay ~ set nil)
     (if (terminal_pane_controlled? pane)
       (then
-        (editor/terminal_direct ~ Cell/set true)
-        (editor/values ~ Cell/set [])
-        (editor/cursor ~ Cell/set 0))
+        (editor/terminal_direct ~ set true)
+        (editor/values ~ set [])
+        (editor/cursor ~ set 0))
       (else
-        (editor/terminal_direct ~ Cell/set false)
-        (editor_set_text! editor (draft ~ Cell/get))))))
+        (editor/terminal_direct ~ set false)
+        (editor_set_text! editor (draft ~ get))))))
 
 (fn terminal_editor_session [editor]
   (var pane editor/terminal_pane)
@@ -1159,7 +1159,7 @@
   (var session (terminal_editor_session editor))
   (var snapshot
     (if editor/terminal_pane
-      (editor/terminal_pane/worker/controller/snapshot ~ Cell/get)))
+      (editor/terminal_pane/worker/controller/snapshot ~ get)))
   (if (&& session snapshot event/inside_terminal (! event/shift)
           (> snapshot/mouse_mode 0)
           (|| (== event/direction 1) (== event/direction -1)))
@@ -1175,13 +1175,13 @@
         (when "text"
           (terminal_editor_write! editor event/text))
         (when "paste_start"
-          (editor/paste ~ Cell/set true)
+          (editor/paste ~ set true)
           (var session (terminal_editor_session editor))
           (if session (terminal_paste session ^active true)))
         (when "paste_end"
           (var session (terminal_editor_session editor))
           (if session (terminal_paste session ^active false))
-          (editor/paste ~ Cell/set false))
+          (editor/paste ~ set false))
         (when "focus_in"
           (var session (terminal_editor_session editor))
           (if session (terminal_focus session ^active true)))
@@ -1210,11 +1210,11 @@
         (when "escape_sequence"
           (terminal_editor_escape_sequence! editor event/sequence))
         (when "scroll_page_up"
-          (var app (active_application ~ Cell/get))
+          (var app (active_application ~ get))
           (application_scroll_target! app editor/output_scroll 1
             (application_pane_page_rows app event/rows)))
         (when "scroll_page_down"
-          (var app (active_application ~ Cell/get))
+          (var app (active_application ~ get))
           (application_scroll_target! app editor/output_scroll -1
             (application_pane_page_rows app event/rows)))
         # Ctrl-PgUp/PgDown remain application-level pane cycling. Shift-wheel
@@ -1222,20 +1222,20 @@
         # the child only when its VT mode requests mouse reports.
         (when "pane_previous"
           (application_cycle_visible_pane!
-            (active_application ~ Cell/get) -1)
+            (active_application ~ get) -1)
           (editor_sync_focused_route! editor))
         (when "pane_next"
           (application_cycle_visible_pane!
-            (active_application ~ Cell/get) 1)
+            (active_application ~ get) 1)
           (editor_sync_focused_route! editor))
         (when "scroll_up"
           (if_not (terminal_editor_mouse! editor event)
             (application_scroll_target!
-              (active_application ~ Cell/get) editor/output_scroll 1 3)))
+              (active_application ~ get) editor/output_scroll 1 3)))
         (when "scroll_down"
           (if_not (terminal_editor_mouse! editor event)
             (application_scroll_target!
-              (active_application ~ Cell/get) editor/output_scroll -1 3)))
+              (active_application ~ get) editor/output_scroll -1 3)))
     (else nil))
   true)
 
@@ -1250,32 +1250,32 @@
     (else false)))
 
 (fn handle_surface_escape! [editor]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (== app nil)
     (then false)
     (else
       (var surface app/local_surface)
-      (var pane_id (surface/focused_pane ~ Cell/get))
+      (var pane_id (surface/focused_pane ~ get))
       (var pane
         (if pane_id (application_find_pane app pane_id)))
       (var worker (if (== pane nil) app/main_agent pane/worker))
-      (var task (worker/current_task ~ Cell/get))
+      (var task (worker/current_task ~ get))
       (if (!= task nil)
         (then (application_cancel_worker app worker) true)
         (elif (&& (!= pane nil) (== pane/kind "repl")
-                  (worker/controller/pending ~ Cell/get))
+                  (worker/controller/pending ~ get))
           # §7.1 ladder: discard a pending incomplete form before unmaximize.
           (repl_discard_pending worker/controller/session)
-          (worker/controller/pending ~ Cell/set false)
+          (worker/controller/pending ~ set false)
           (append_worker_transcript! app worker "[discarded pending form]\n")
           true)
         (else
-          (if (!= (surface/maximized_pane ~ Cell/get) nil)
-            (then (surface/maximized_pane ~ Cell/set nil) true)
+          (if (!= (surface/maximized_pane ~ get) nil)
+            (then (surface/maximized_pane ~ set nil) true)
             (else
-              (if (&& (== ((editor/values ~ Cell/get) ~ size) 0)
+              (if (&& (== ((editor/values ~ get) ~ size) 0)
                       (!= pane_id nil))
-                (then (surface/focused_pane ~ Cell/set nil) true)
+                (then (surface/focused_pane ~ set nil) true)
                 (else false)))))))))
 
 (fn read_user_input [transcript, history]
@@ -1287,7 +1287,7 @@
       # while the user is composing the next prompt.
       (var submitted (cell nil))
       (var done (cell false))
-      (var app (active_application ~ Cell/get))
+      (var app (active_application ~ get))
       (var route_draft (surface_route_draft app))
       (var terminal_pane (focused_terminal_pane app))
       (var terminal_direct
@@ -1295,18 +1295,18 @@
           true false))
       (var initial_values
         (if terminal_direct []
-          (editor_chars (route_draft ~ Cell/get))))
+          (editor_chars (route_draft ~ get))))
       (var editor
         {^values (cell initial_values)
-         ^cursor (cell (initial_values ~ size)) ^history (history ~ Cell/get)
-         ^history_index (cell ((history ~ Cell/get) ~ size))
+         ^cursor (cell (initial_values ~ size)) ^history (history ~ get)
+         ^history_index (cell ((history ~ get) ~ size))
          ^draft route_draft ^paste (cell false)
          ^terminal_pane terminal_pane
          ^terminal_direct (cell terminal_direct)
          ^overlay (cell nil)
          ^output_scroll app/local_surface/main_scroll
          ^transcript transcript})
-      (active_editor ~ Cell/set editor)
+      (active_editor ~ set editor)
       (try
         (draw_editor editor)
         # Hoisted because a `var` declaration inside a loop would attempt to
@@ -1314,32 +1314,32 @@
         (var event nil)
         (var cursor 0)
         (var event_app nil)
-        (while (! (done ~ Cell/get))
+        (while (! (done ~ get))
           (set event (await (curses_next_event (ensure_user_screen))))
           (if_not (terminal_editor_handle_leader! editor event)
             (if_not (handle_terminal_direct_event! editor event)
             (match event/type
               (when "text"
-                (var overlay (editor/overlay ~ Cell/get))
+                (var overlay (editor/overlay ~ get))
                 (if (&& overlay (== overlay/kind "reverse_search"))
                   (then
-                    (overlay/query ~ Cell/set
-                      $"${(overlay/query ~ Cell/get)}${event/text}")
+                    (overlay/query ~ set
+                      $"${(overlay/query ~ get)}${event/text}")
                     (editor_refresh_reverse_search! editor))
                   (else
                     (if_yes
                       (editor_accepts_surface_text?
-                        (active_application ~ Cell/get) editor event/text)
+                        (active_application ~ get) editor event/text)
                       (editor_insert! editor event/text)
                       (var current
-                        (editor_text (editor/values ~ Cell/get)))
+                        (editor_text (editor/values ~ get)))
                       (if (&& (starts_with? current "/")
                               (! (starts_with? current "//"))
                               (! (contains? current " ")))
                         (editor_show_completion! editor "palette")
                         (editor_dismiss_overlay! editor false))))))
-              (when "paste_start" (editor/paste ~ Cell/set true))
-              (when "paste_end" (editor/paste ~ Cell/set false))
+              (when "paste_start" (editor/paste ~ set true))
+              (when "paste_end" (editor/paste ~ set false))
               (when "focus_in"
                 (var session (terminal_editor_session editor))
                 (if session (terminal_focus session ^active true)))
@@ -1348,10 +1348,10 @@
                 (if session (terminal_focus session ^active false)))
               (when "newline"
                 (if (surface_route_input_capable?
-                      (active_application ~ Cell/get))
+                      (active_application ~ get))
                   (editor_insert! editor "\n")))
               (when "enter"
-                (if (editor/paste ~ Cell/get)
+                (if (editor/paste ~ get)
                   (then (editor_insert! editor "\n"))
                   (else
                     # An exact command should remain one-Enter interaction
@@ -1361,73 +1361,73 @@
                     (if (editor_overlay_is_current_draft? editor)
                       (then
                         (editor_dismiss_overlay! editor false)
-                        (submitted ~ Cell/set
-                          (editor_text (editor/values ~ Cell/get)))
-                        (done ~ Cell/set true))
+                        (submitted ~ set
+                          (editor_text (editor/values ~ get)))
+                        (done ~ set true))
                       (else
                         (if_not (editor_accept_overlay! editor)
-                          (submitted ~ Cell/set
-                            (editor_text (editor/values ~ Cell/get)))
-                          (done ~ Cell/set true)))))))
-              (when "eof" (done ~ Cell/set true))
+                          (submitted ~ set
+                            (editor_text (editor/values ~ get)))
+                          (done ~ set true)))))))
+              (when "eof" (done ~ set true))
               (when "interrupt" (editor_clear! editor))
               (when "escape"
                 (if (&& editor/terminal_pane
                         (terminal_pane_controlled? editor/terminal_pane)
-                        (|| (== (editor_text (editor/values ~ Cell/get)) "")
-                            (== (editor_text (editor/values ~ Cell/get)) "/")))
+                        (|| (== (editor_text (editor/values ~ get)) "")
+                            (== (editor_text (editor/values ~ get)) "/")))
                   (then (terminal_editor_return_direct! editor))
-                  (elif (editor/overlay ~ Cell/get)
+                  (elif (editor/overlay ~ get)
                     (editor_dismiss_overlay! editor true))
-                  (elif (confirmation_active ~ Cell/get)
-                    (submitted ~ Cell/set "n")
-                    (done ~ Cell/set true))
+                  (elif (confirmation_active ~ get)
+                    (submitted ~ set "n")
+                    (done ~ set true))
                   (else
                     (if_yes (handle_surface_escape! editor)
                       (editor_sync_focused_route! editor)))))
               (when "backspace"
-                (var overlay (editor/overlay ~ Cell/get))
+                (var overlay (editor/overlay ~ get))
                 (if (&& overlay (== overlay/kind "reverse_search"))
                   (then
                     (var query_values
-                      (editor_chars (overlay/query ~ Cell/get)))
+                      (editor_chars (overlay/query ~ get)))
                     (if_not (empty? query_values)
                       (var shortened [])
                       (repeat i in (- query_values/~size 1)
-                        (shortened ~ List/push! query_values/%i))
+                        (shortened ~ push! query_values/%i))
                       (set query_values shortened))
-                    (overlay/query ~ Cell/set (editor_text query_values))
+                    (overlay/query ~ set (editor_text query_values))
                     (editor_refresh_reverse_search! editor))
                   (else
-                    (set cursor (editor/cursor ~ Cell/get))
+                    (set cursor (editor/cursor ~ get))
                     (if_yes (> cursor 0)
                       (editor_remove! editor (- cursor 1))
-                      (editor/cursor ~ Cell/set (- cursor 1))))))
+                      (editor/cursor ~ set (- cursor 1))))))
               (when "delete"
-                (editor_remove! editor (editor/cursor ~ Cell/get)))
+                (editor_remove! editor (editor/cursor ~ get)))
               (when "left"
-                (set cursor (editor/cursor ~ Cell/get))
-                (if (> cursor 0) (editor/cursor ~ Cell/set (- cursor 1))))
+                (set cursor (editor/cursor ~ get))
+                (if (> cursor 0) (editor/cursor ~ set (- cursor 1))))
               (when "right"
-                (set cursor (editor/cursor ~ Cell/get))
-                (if (< cursor ((editor/values ~ Cell/get) ~ size))
-                  (editor/cursor ~ Cell/set (+ cursor 1))))
+                (set cursor (editor/cursor ~ get))
+                (if (< cursor ((editor/values ~ get) ~ size))
+                  (editor/cursor ~ set (+ cursor 1))))
               (when "home" (editor_home! editor))
               (when "end" (editor_end! editor))
               (when "up"
-                (if (editor/overlay ~ Cell/get)
+                (if (editor/overlay ~ get)
                   (editor_overlay_move! editor -1)
                   (editor_history! editor -1)))
               (when "down"
-                (if (editor/overlay ~ Cell/get)
+                (if (editor/overlay ~ get)
                   (editor_overlay_move! editor 1)
                   (editor_history! editor 1)))
               (when "complete"
-                (var overlay (editor/overlay ~ Cell/get))
+                (var overlay (editor/overlay ~ get))
                 (if (&& overlay (== overlay/kind "palette"))
                   (then
-                    (overlay ~ Map/put! "kind" "completion")
-                    (overlay ~ Map/put! "title" "completion"))
+                    (overlay ~ put! "kind" "completion")
+                    (overlay ~ put! "title" "completion"))
                   (else
                     (if (&& overlay (!= overlay/kind "reverse_search"))
                       (editor_overlay_move! editor 1)
@@ -1439,60 +1439,60 @@
                 (try
                   (editor_set_text! editor
                     (external_editor_draft
-                      (editor_text (editor/values ~ Cell/get))))
+                      (editor_text (editor/values ~ get))))
                 catch {^message message}
-                  (var app (active_application ~ Cell/get))
+                  (var app (active_application ~ get))
                   (if app
-                    (app/local_surface/help_notice ~ Cell/set
+                    (app/local_surface/help_notice ~ set
                       $"external editor failed: ${message}"))))
               (when "scroll_up"
                 (application_scroll_target!
-                  (active_application ~ Cell/get) editor/output_scroll 1 3))
+                  (active_application ~ get) editor/output_scroll 1 3))
               (when "scroll_down"
                 (application_scroll_target!
-                  (active_application ~ Cell/get) editor/output_scroll -1 3))
+                  (active_application ~ get) editor/output_scroll -1 3))
               (when "page_up"
-                (set event_app (active_application ~ Cell/get))
+                (set event_app (active_application ~ get))
                 (application_scroll_target! event_app editor/output_scroll 1
                   (application_pane_page_rows event_app event/rows)))
               (when "page_down"
-                (set event_app (active_application ~ Cell/get))
+                (set event_app (active_application ~ get))
                 (application_scroll_target! event_app editor/output_scroll -1
                   (application_pane_page_rows event_app event/rows)))
               (when "scroll_page_up"
-                (set event_app (active_application ~ Cell/get))
+                (set event_app (active_application ~ get))
                 (application_scroll_target! event_app editor/output_scroll 1
                   (application_pane_page_rows event_app event/rows)))
               (when "scroll_page_down"
-                (set event_app (active_application ~ Cell/get))
+                (set event_app (active_application ~ get))
                 (application_scroll_target! event_app editor/output_scroll -1
                   (application_pane_page_rows event_app event/rows)))
               (when "pane_previous"
                 (application_cycle_visible_pane!
-                  (active_application ~ Cell/get) -1)
+                  (active_application ~ get) -1)
                 (editor_sync_focused_route! editor))
               (when "pane_next"
                 (application_cycle_visible_pane!
-                  (active_application ~ Cell/get) 1)
+                  (active_application ~ get) 1)
                 (editor_sync_focused_route! editor))
               (else nil))))
-          (if (! (done ~ Cell/get)) (draw_editor editor)))
-        (if (== (submitted ~ Cell/get) nil)
-          (editor/draft ~ Cell/set
-            (editor_text (editor/values ~ Cell/get)))
-          (editor/draft ~ Cell/set ""))
-        (submitted ~ Cell/get)
+          (if (! (done ~ get)) (draw_editor editor)))
+        (if (== (submitted ~ get) nil)
+          (editor/draft ~ set
+            (editor_text (editor/values ~ get)))
+          (editor/draft ~ set ""))
+        (submitted ~ get)
       ensure
-        (active_editor ~ Cell/set nil)))
+        (active_editor ~ set nil)))
     (else
       (print "you> ")
       (read_line))))
 
 (fn confirmation_answer [prompt : Str] : Bool
-  (var transcript (interactive_transcript ~ Cell/get))
+  (var transcript (interactive_transcript ~ get))
   (if (&& (stdin_tty?) (!= transcript nil))
     (then
-      (if (!= (active_editor ~ Cell/get) nil)
+      (if (!= (active_editor ~ get) nil)
       # A background worker must not steal the terminal or replace a composed
       # draft. Until the optional §12.8 multi-surface confirmation channel
       # lands, default-deny this rare collision without blocking the scheduler.
@@ -1500,12 +1500,12 @@
         (else
           (append_transcript transcript $"${prompt}\n")
           (refresh_user_input transcript)
-          (confirmation_active ~ Cell/set true)
+          (confirmation_active ~ set true)
           (var answer nil)
           (try
             (set answer (read_user_input transcript (cell [])))
           ensure
-            (confirmation_active ~ Cell/set false))
+            (confirmation_active ~ set false))
           (if (== answer nil)
             (then false)
             (else
@@ -1524,14 +1524,14 @@
           (|| (== answer "y") (== answer "yes")))))))
 
 (fn refresh_user_input [transcript]
-  (if_yes (&& (stdin_tty?) (! (user_input_suspended ~ Cell/get)))
-    (var editor (active_editor ~ Cell/get))
+  (if_yes (&& (stdin_tty?) (! (user_input_suspended ~ get)))
+    (var editor (active_editor ~ get))
     (if (== editor nil)
       (curses_refresh_input (ensure_user_screen)
                             ^prompt (input_route_label)
                             ^output
                               (main_presented_output
-                                (active_application ~ Cell/get) transcript)
+                                (active_application ~ get) transcript)
                             ^panes (extension_views)
                             ^status (current_input_status))
       (draw_editor editor))))
@@ -1541,46 +1541,46 @@
   # Draw synchronously there: a detached/timer repaint can remain parked while
   # the root fiber awaits curses input, leaving PTY output one key behind.
   # The guard prevents nested callbacks from recursively redrawing.
-  (if_not (active_repaint_pending ~ Cell/get)
-    (active_repaint_pending ~ Cell/set true)
+  (if_not (active_repaint_pending ~ get)
+    (active_repaint_pending ~ set true)
     (try
-      (var transcript (interactive_transcript ~ Cell/get))
+      (var transcript (interactive_transcript ~ get))
       (if (!= transcript nil) (refresh_user_input transcript))
     ensure
-      (active_repaint_pending ~ Cell/set false))))
+      (active_repaint_pending ~ set false))))
 
 # A pending turn owns the final transcript line until it produces visible
 # output. The pulse task alternates the dots and spaces while the scheduler is
 # waiting on a model or tool task; the first real output restores the saved
 # transcript and replaces that line.
 (fn refresh_agent_pending [transcript pending dots_visible]
-  (if_yes (pending ~ Cell/get)
-    (var app (active_application ~ Cell/get))
+  (if_yes (pending ~ get)
+    (var app (active_application ~ get))
     (if (&& (!= app nil) (!= app/local_surface nil))
-      (app/local_surface/main_pending_visible ~ Cell/set
-        (dots_visible ~ Cell/get)))
+      (app/local_surface/main_pending_visible ~ set
+        (dots_visible ~ get)))
     (if (stdin_tty?)
       (refresh_user_input transcript)
-      (print (if (dots_visible ~ Cell/get) "\ragent> ..." "\ragent>    ")))))
+      (print (if (dots_visible ~ get) "\ragent> ..." "\ragent>    ")))))
 
 # Remove the currently drawn placeholder before appending output, but retain
 # the pending state: the placeholder is redrawn beneath that output until the
 # whole turn completes.
 (fn advance_agent_pending [transcript pending]
-  (if_yes (pending ~ Cell/get)
-    (var app (active_application ~ Cell/get))
+  (if_yes (pending ~ get)
+    (var app (active_application ~ get))
     (if (&& (!= app nil) (!= app/local_surface nil))
-      (app/local_surface/main_pending_visible ~ Cell/set false))
+      (app/local_surface/main_pending_visible ~ set false))
     (if (stdin_tty?)
       (refresh_user_input transcript)
       (print "\r"))))
 
 (fn stop_agent_pending [transcript pending]
-  (if_yes (pending ~ Cell/get)
-    (pending ~ Cell/set false)
-    (var app (active_application ~ Cell/get))
+  (if_yes (pending ~ get)
+    (pending ~ set false)
+    (var app (active_application ~ get))
     (if (&& (!= app nil) (!= app/local_surface nil))
-      (app/local_surface/main_pending_visible ~ Cell/set false))
+      (app/local_surface/main_pending_visible ~ set false))
     (if (stdin_tty?)
       (refresh_user_input transcript)
       (print "\r"))))
@@ -1595,7 +1595,7 @@
     (else
       (advance_agent_pending transcript pending)
       (render)
-      (if (pending ~ Cell/get)
+      (if (pending ~ get)
         (refresh_agent_pending transcript pending dots_visible)))))
 
 (fn start_agent_pending [transcript]
@@ -1604,15 +1604,15 @@
   (refresh_agent_pending transcript pending dots_visible)
   {^pending pending ^dots_visible dots_visible
    ^task (spawn ^lane root
-     (while (pending ~ Cell/get)
+     (while (pending ~ get)
        (sleep 400)
-       (if_yes (pending ~ Cell/get)
-         (dots_visible ~ Cell/set (! (dots_visible ~ Cell/get)))
+       (if_yes (pending ~ get)
+         (dots_visible ~ set (! (dots_visible ~ get)))
          (refresh_agent_pending transcript pending dots_visible))))})
 
 (fn run_interactive_turn [transcript streaming transport input_items]
   (var placeholder (start_agent_pending transcript))
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var context
     (if app {^app app ^agent app/main_agent ^pane nil}))
   (var turn_emit
@@ -1622,7 +1622,7 @@
         (var tagged {^worker_id app/main_agent/id
                      ^agent_id app/main_agent/id})
         (for [key value] in props
-          (tagged ~ Map/put! key value))
+          (tagged ~ put! key value))
         (application_emit app type tagged))))
   (try
     (run_turn_tracked_in transport input_items
@@ -1638,7 +1638,7 @@
   ensure
     (stop_agent_pending transcript placeholder/pending)
     (finish_agent_stream transcript streaming)
-    (placeholder/task ~ Task/cancel)))
+    (placeholder/task ~ cancel)))
 
 (fn render_agent_delta [transcript streaming text]
   (if_not (== text "")
@@ -1672,7 +1672,7 @@
 # agent and opening its pane is a surface composite; their identities and
 # lifecycles remain independent underneath.
 (fn open_extension_pane [title : Str, memory]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if_yes app
     (var label (if (== (trim title) "") "sub-agent" (trim title)))
     (var transcript (cell "ready\n"))
@@ -1691,7 +1691,7 @@
       pane)))
 
 (fn open_output_pane [title : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if_yes app
     (var label (if (== (trim title) "") "output" (trim title)))
     (application_open_pane app "output" nil label
@@ -1699,7 +1699,7 @@
       (OutputController ^source "manual" ^following (cell [])) "detach")))
 
 (fn open_stats_pane []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var worker (application_find_worker_kind app "stats"))
   (if_yes (== worker nil)
     (set worker
@@ -1708,7 +1708,7 @@
     (if_yes worker
       (application_set_projection_output!
         app worker (stats_worker_text app) "stats")
-      ((app/event_observers ~ Cell/get) ~ List/push!
+      ((app/event_observers ~ get) ~ push!
         {^worker_id worker/id
          ^handler (fn [event]
            (if_not (== event/projection true)
@@ -1723,7 +1723,7 @@
     pane))
 
 (fn open_log_tail_pane [filter_text : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var filters (parse_trace_filters filter_text))
   (var worker
     (application_new_worker app "log_tail" "event tail"
@@ -1732,14 +1732,14 @@
     # Seed the local TUI projection from retained events; headless sessions
     # begin at their creation cursor and receive subsequent app events.
     (for event in (if (== app/local_surface nil) []
-                    (agent_events ~ Cell/get))
+                    (agent_events ~ get))
       (if (event_matches? event filters)
         (bounded_worker_append! worker
           $"${(format_event_with_filters event filters)}\n")))
-    ((app/event_observers ~ Cell/get) ~ List/push!
+    ((app/event_observers ~ get) ~ push!
       {^worker_id worker/id
        ^handler (fn [event]
-         (var current (worker/controller/filter ~ Cell/get))
+         (var current (worker/controller/filter ~ get))
          (if_yes (&& (!= event/projection true)
                  (event_matches? event current))
              (application_append_projection_output!
@@ -1749,7 +1749,7 @@
     (application_attach_worker_pane app worker nil "detach")))
 
 (fn open_file_view_pane [requested_path : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (try
     # A file-view worker is shared session state and may be exposed through
     # gateway snapshots, so even a user-originated local view stays within
@@ -1767,7 +1767,7 @@
     catch _ nil))
 
 (fn open_terminal_pane [command, args]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if_yes app
     (var worker (application_find_worker_kind app "terminal"))
     (var existing
@@ -1792,7 +1792,7 @@
               ^restored_text (cell "")
               ^pump_task (cell nil)
               ^controller_surface_id
-                (cell (app/local_surface/instance_id ~ Cell/get))
+                (cell (app/local_surface/instance_id ~ get))
               ^command executable ^args child_args
               ^cwd workspace_real))
           (set worker
@@ -1803,7 +1803,7 @@
           (application_attach_worker_pane app worker "user" "detach"))))))
 
 (fn open_shell_pane []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if_yes app
     (var worker (application_find_worker_kind app "shell"))
     (var previous
@@ -1826,11 +1826,11 @@
         (application_attach_worker_pane app worker "user" "detach")))))
 
 (fn run_shell_pane_command_unchecked [pane, command : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var result
     (run_shell_worker_command_unchecked app pane/worker command nil "local_tui"
       (if app/local_surface
-        (app/local_surface/instance_id ~ Cell/get))
+        (app/local_surface/instance_id ~ get))
       $"pane ${pane/id}" (stdin_tty?)))
   (if (== result "accepted")
     $"shell command started in pane ${pane/id}" result))
@@ -1838,27 +1838,27 @@
 (fn run_shell_pane_command [pane, command : Str]
   # A visible shell pane is attributable application input, not the raw /tty
   # escape hatch. Classify it on TTY and pipe surfaces alike.
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var result
     (run_shell_worker_command app pane/worker command nil "local_tui"
       (if app/local_surface
-        (app/local_surface/instance_id ~ Cell/get))
+        (app/local_surface/instance_id ~ get))
       $"pane ${pane/id}" (stdin_tty?) false))
   (if (== result "accepted")
     $"shell command started in pane ${pane/id}" result))
 
 (fn run_repl_pane_command [pane, source : Str]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var result
     (run_repl_worker_command app pane/worker source "local_tui"
       (if app/local_surface
-        (app/local_surface/instance_id ~ Cell/get))
+        (app/local_surface/instance_id ~ get))
       $"pane ${pane/id}" (stdin_tty?)))
   (if (== result "accepted")
     $"REPL evaluation started in pane ${pane/id}" result))
 
 (fn close_extension_pane [id : Int] : Bool
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (== app nil)
     (then false)
     (else
@@ -1867,11 +1867,11 @@
       removed)))
 
 (fn handle_close_command [line : Str, transcript, streaming]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var rest (trim (after_prefix line "/close")))
   (var id
     (if (== rest "")
-      (app/local_surface/focused_pane ~ Cell/get)
+      (app/local_surface/focused_pane ~ get)
       (pane_command_id rest)))
   (if (&& (!= rest "") (== id nil))
     (render_agent_text transcript streaming "usage: /close [N]")
@@ -1905,8 +1905,8 @@
         (then
           (var captured (terminal_capture_text controller/session))
           (redact captured/text))
-        (else (|| (controller/restored_text ~ Cell/get) ""))))
-    (else (pane/output ~ Cell/get))))
+        (else (|| (controller/restored_text ~ get) ""))))
+    (else (pane/output ~ get))))
 
 (fn pane_export_report [pane, raw_path : Str, transcript] : Str
   # pane nil exports the main transcript. Paths are workspace-confined like
@@ -1922,7 +1922,7 @@
         (do
           (var text
             (if (== pane nil)
-              (transcript ~ Cell/get)
+              (transcript ~ get)
               (pane_export_text pane)))
           (write_text WriteDir path text)
           (emit_event! "pane_exported"
@@ -1948,33 +1948,33 @@
       (close_extension_pane id)
       (render_agent_text transcript streaming $"closed pane ${id}"))
       (when ""
-        (var app (active_application ~ Cell/get))
+        (var app (active_application ~ get))
         (application_focus_pane! app id)
         (render_agent_text transcript streaming $"focused pane ${id}"))
     (when "cancel"
-      (var app (active_application ~ Cell/get))
+      (var app (active_application ~ get))
       (var response
         (application_call_worker app pane/worker/id "cancel" {}
           {^origin "user" ^adapter "local_tui"
            ^caller_worker_id app/main_agent/id
-           ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
+           ^surface_id (app/local_surface/instance_id ~ get)}))
       (render_agent_text transcript streaming
         (worker_operation_cli_text pane/worker "cancel" response)))
     (when "stop"
-      (var app (active_application ~ Cell/get))
+      (var app (active_application ~ get))
       (var response
         (application_call_worker app pane/worker/id "stop" {}
           {^origin "user" ^adapter "local_tui"
            ^caller_worker_id app/main_agent/id
-           ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
+           ^surface_id (app/local_surface/instance_id ~ get)}))
       (render_agent_text transcript streaming
         (worker_operation_cli_text pane/worker "stop" response)))
     (when "focus"
-      (var app (active_application ~ Cell/get))
+      (var app (active_application ~ get))
       (application_focus_pane! app id)
       (render_agent_text transcript streaming $"focused pane ${id}"))
     (when "max"
-      (var app (active_application ~ Cell/get))
+      (var app (active_application ~ get))
       (render_agent_text transcript streaming
         (application_toggle_max_pane! app id)))
     (else
@@ -1991,23 +1991,23 @@
           (after_prefix command "-- ") command))
       (match pane/kind
         (when "agent"
-          (interactive_memory ~ Cell/set (memory ~ Cell/get))
+          (interactive_memory ~ set (memory ~ get))
           (begin_turn!)
           (emit_event! "user_input"
             {^text routed ^worker_id pane/worker_id
              ^pane_id id ^agent_id pane/controller/id})
           (render_agent_text transcript streaming
             (application_send_worker_input
-              (active_application ~ Cell/get) pane/worker routed "local_tui")))
+              (active_application ~ get) pane/worker routed "local_tui")))
         (when "shell"
           (var response (application_send_worker_input
-            (active_application ~ Cell/get) pane/worker routed "local_tui"))
+            (active_application ~ get) pane/worker routed "local_tui"))
           (if (== response "accepted")
             (refresh_user_input transcript)
             (render_agent_text transcript streaming response)))
         (when "repl"
           (var response (application_send_worker_input
-            (active_application ~ Cell/get) pane/worker routed "local_tui"))
+            (active_application ~ get) pane/worker routed "local_tui"))
           (if (== response "accepted")
             (refresh_user_input transcript)
             (render_agent_text transcript streaming response)))
@@ -2015,14 +2015,14 @@
           (if (starts_with? routed "send ")
             (then
               (var line_text (after_prefix routed "send "))
-              (var app (active_application ~ Cell/get))
+              (var app (active_application ~ get))
               (var response
                 (application_call_worker app pane/worker/id "write"
                   {^bytes $"${line_text}\n"}
                   {^origin "user" ^adapter "local_tui"
                    ^caller_worker_id app/main_agent/id
                    ^surface_id
-                     (app/local_surface/instance_id ~ Cell/get)}))
+                     (app/local_surface/instance_id ~ get)}))
               (if response/ok
                 (refresh_user_input transcript)
                 (render_agent_text transcript streaming
@@ -2033,7 +2033,7 @@
                 $"terminal pane ${id} is direct; use /${id} send <line> or focus it"))))
         (when "log_tail"
           (var response (application_send_worker_input
-            (active_application ~ Cell/get) pane/worker routed "local_tui"))
+            (active_application ~ get) pane/worker routed "local_tui"))
           (if (== response "accepted")
             (refresh_user_input transcript)
             (render_agent_text transcript streaming response)))
@@ -2042,7 +2042,7 @@
             (then
               (var text (after_prefix routed "append "))
               (var response
-                (application_call_worker (active_application ~ Cell/get)
+                (application_call_worker (active_application ~ get)
                   pane/worker/id "append" {^text text}
                   {^origin "user" ^caller_worker_id "main"}))
               (render_agent_text transcript streaming
@@ -2056,7 +2056,7 @@
             $"pane ${id} (${pane/kind}) does not accept input")))))))
 
 (fn handle_open_extension [transcript, memory, streaming]
-  (var pane (open_extension_pane "" (memory ~ Cell/get)))
+  (var pane (open_extension_pane "" (memory ~ get)))
   (if (== pane nil)
     (render_agent_text transcript streaming "sub-agent limit reached")
     (render_agent_text transcript streaming
@@ -2064,44 +2064,44 @@
 
 (fn worker_result_unread? [worker] : Bool
   (if (!= worker/kind "agent") false
-    (match (worker/result ~ Cell/get)
+    (match (worker/result ~ get)
       (when (m : Map) (== m/read false))
       (else false))))
 
 (fn agents_report []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (== app nil)
     (then "application is not running")
     (else
       (var lines [])
-      (for agent in (app/agents ~ Cell/get)
+      (for agent in (app/agents ~ get)
         (var unread (worker_result_unread? agent))
-        (var last (agent/last_outcome ~ Cell/get))
+        (var last (agent/last_outcome ~ get))
         (var last_text (if (== last nil) "none" last))
         (var address
           (if (present? agent/name) $"${agent/name} (${agent/id})" agent/id))
-        (lines ~ List/push!
-          $"${address} model=${(agent/model ~ Cell/get)} lifecycle=${(agent/lifecycle ~ Cell/get)} availability=${(agent/status ~ Cell/get)} last=${last_text} unread=${unread} panes=${(application_pane_ids_for_worker app agent/id)} ${agent/title}"))
+        (lines ~ push!
+          $"${address} model=${(agent/model ~ get)} lifecycle=${(agent/lifecycle ~ get)} availability=${(agent/status ~ get)} last=${last_text} unread=${unread} panes=${(application_pane_ids_for_worker app agent/id)} ${agent/title}"))
       (join lines "\n"))))
 
 (fn workers_report []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (== app nil)
     (then "application is not running")
     (else
       (var lines [])
-      (for worker in (app/workers ~ Cell/get)
+      (for worker in (app/workers ~ get)
         (var pane_refs [])
-        (for candidate in (app/local_surface/panes ~ Cell/get)
+        (for candidate in (app/local_surface/panes ~ get)
           (if (== candidate/worker_id worker/id)
-            (pane_refs ~ List/push!
-              (if (candidate/hidden ~ Cell/get)
+            (pane_refs ~ push!
+              (if (candidate/hidden ~ get)
                 $"${candidate/id}:hidden" $"${candidate/id}"))))
-        (var operation (worker/current_operation ~ Cell/get))
+        (var operation (worker/current_operation ~ get))
         (var state
-          (if (== (worker/lifecycle ~ Cell/get) "stopped")
+          (if (== (worker/lifecycle ~ get) "stopped")
             "stopped"
-            (if (worker/input_reserved ~ Cell/get)
+            (if (worker/input_reserved ~ get)
               "confirming"
               (if (== operation nil) "idle" "busy"))))
         (var location
@@ -2109,41 +2109,41 @@
             (if (empty? pane_refs) "headless"
               (if (== pane_refs/~size 1)
                 $"pane=${pane_refs/0}" $"panes=${pane_refs}"))))
-        (var last (worker/last_outcome ~ Cell/get))
+        (var last (worker/last_outcome ~ get))
         (var last_text (if (== last nil) "none" last))
         (var unread (worker_result_unread? worker))
         (var address
           (if (present? worker/name) $"${worker/name} (${worker/id})" worker/id))
-        (lines ~ List/push!
+        (lines ~ push!
           $"${address} ${worker/kind} ${state} ${location} ${worker/title} last=${last_text} unread=${unread}"))
       (join lines "\n"))))
 
 (fn panes_report []
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (if (|| (== app nil) (== app/local_surface nil))
     (then "this session has no local layout surface")
     (else
       (var surface app/local_surface)
-      (var main_outcome (app/main_agent/last_outcome ~ Cell/get))
+      (var main_outcome (app/main_agent/last_outcome ~ get))
       (var main_outcome_text
         (if (== main_outcome nil) "none" main_outcome))
       (var lines [
-        $"0 main agent visible lifecycle=${(app/main_agent/lifecycle ~ Cell/get)} ${(app/main_agent/status ~ Cell/get)} last=${main_outcome_text} unread=${(worker_result_unread? app/main_agent)} main"])
-      (for pane in (surface/panes ~ Cell/get)
+        $"0 main agent visible lifecycle=${(app/main_agent/lifecycle ~ get)} ${(app/main_agent/status ~ get)} last=${main_outcome_text} unread=${(worker_result_unread? app/main_agent)} main"])
+      (for pane in (surface/panes ~ get)
         (var worker pane/worker)
-        (var operation (worker/current_operation ~ Cell/get))
+        (var operation (worker/current_operation ~ get))
         (var operation_text
           (if (== operation nil) "idle"
             $"busy:${operation/kind}:${operation/task_id}"))
-        (var outcome (worker/last_outcome ~ Cell/get))
+        (var outcome (worker/last_outcome ~ get))
         (var outcome_text (if (== outcome nil) "none" outcome))
         (var visibility
-          (if (pane/hidden ~ Cell/get) "hidden"
-            (if (== (surface/maximized_pane ~ Cell/get) pane/id)
+          (if (pane/hidden ~ get) "hidden"
+            (if (== (surface/maximized_pane ~ get) pane/id)
               "maximized" "visible")))
         (var unread (worker_result_unread? worker))
-        (lines ~ List/push!
-          $"${pane/id} ${pane/worker_id} ${pane/kind} ${visibility} lifecycle=${(worker/lifecycle ~ Cell/get)} ${operation_text} last=${outcome_text} unread=${unread} ${pane/title}"))
+        (lines ~ push!
+          $"${pane/id} ${pane/worker_id} ${pane/kind} ${visibility} lifecycle=${(worker/lifecycle ~ get)} ${operation_text} last=${outcome_text} unread=${unread} ${pane/title}"))
       (join lines "\n"))))
 
 (fn application_focus_pane! [app, id : Int] : Bool
@@ -2153,21 +2153,21 @@
     (else
       (if (== id 0)
         (then
-          (surface/focused_pane ~ Cell/set nil)
-          (surface/maximized_pane ~ Cell/set nil)
+          (surface/focused_pane ~ set nil)
+          (surface/maximized_pane ~ set nil)
           true)
         (else
           (var pane (application_find_pane app id))
           (if (== pane nil)
             (then false)
             (else
-              (pane/hidden ~ Cell/set false)
-              (surface/focused_pane ~ Cell/set id)
+              (pane/hidden ~ set false)
+              (surface/focused_pane ~ set id)
               # The maximized pane is always the focused pane; switching focus
               # anywhere else restores the split so the focused pane is never
               # hidden behind another pane's maximized view.
-              (if (!= (surface/maximized_pane ~ Cell/get) id)
-                (surface/maximized_pane ~ Cell/set nil))
+              (if (!= (surface/maximized_pane ~ get) id)
+                (surface/maximized_pane ~ set nil))
               true)))))))
 
 (fn application_toggle_max_pane! [app, id : Int] : Str
@@ -2181,11 +2181,11 @@
         (else
           # Maximize claims focus so the maximized pane stays the focused
           # pane; any later focus change restores the split.
-          (pane/hidden ~ Cell/set false)
-          (surface/focused_pane ~ Cell/set id)
-          (surface/maximized_pane ~ Cell/set
-            (if_not (== (surface/maximized_pane ~ Cell/get) id) id))
-          (if (== (surface/maximized_pane ~ Cell/get) id)
+          (pane/hidden ~ set false)
+          (surface/focused_pane ~ set id)
+          (surface/maximized_pane ~ set
+            (if_not (== (surface/maximized_pane ~ get) id) id))
+          (if (== (surface/maximized_pane ~ get) id)
             $"maximized pane ${id}" "restored split layout"))))))
 
 (fn application_hide_pane! [app, id : Int] : Bool
@@ -2193,11 +2193,11 @@
   (if (== pane nil)
     (then false)
     (else
-      (pane/hidden ~ Cell/set true)
-      (if (== (app/local_surface/focused_pane ~ Cell/get) id)
-        (app/local_surface/focused_pane ~ Cell/set nil))
-      (if (== (app/local_surface/maximized_pane ~ Cell/get) id)
-        (app/local_surface/maximized_pane ~ Cell/set nil))
+      (pane/hidden ~ set true)
+      (if (== (app/local_surface/focused_pane ~ get) id)
+        (app/local_surface/focused_pane ~ set nil))
+      (if (== (app/local_surface/maximized_pane ~ get) id)
+        (app/local_surface/maximized_pane ~ set nil))
       true)))
 
 (fn application_show_pane! [app, id : Int] : Bool
@@ -2205,14 +2205,14 @@
   (if (== pane nil)
     (then false)
     (else
-      (pane/hidden ~ Cell/set false)
+      (pane/hidden ~ set false)
       true)))
 
 (fn pane_command_id [text : Str]
   (try (parse_int (trim text)) catch _ nil))
 
 (fn handle_pane_command [line : Str, items, transcript, memory, streaming]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var rest (trim (after_prefix line "/pane")))
   # Preserve the shipped `/pane output [title]` spelling as a concise alias.
   (if (|| (== rest "output") (starts_with? rest "output "))
@@ -2358,12 +2358,12 @@
 (fn worker_operations_usage [worker] : Str
   (var entries [])
   (for operation in (worker_operations_for_kind worker/kind)
-    (entries ~ List/push! operation/usage))
+    (entries ~ push! operation/usage))
   (var joined (join entries " | "))
   $"operations: ${joined}")
 
 (fn handle_worker_command [line : Str, transcript, streaming]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var rest (trim (after_prefix line "/worker")))
   (var parts (split rest " "))
   (var worker_ref (if (empty? parts) "" parts/0))
@@ -2397,7 +2397,7 @@
             (application_call_worker app worker/id operation_name {}
               {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
                ^caller_worker_id app/main_agent/id
-               ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
+               ^surface_id (app/local_surface/instance_id ~ get)}))
           (render_agent_text transcript streaming
             $"${response/error/kind}: ${response/error/message}; ${(worker_operations_usage worker)}"))
         (else
@@ -2407,7 +2407,7 @@
               (application_call_worker app worker/id operation_name raw_args
                 {^origin "user" ^adapter "local_tui" ^detached (stdin_tty?)
                  ^caller_worker_id app/main_agent/id
-                 ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
+                 ^surface_id (app/local_surface/instance_id ~ get)}))
             (render_agent_text transcript streaming
               (worker_operation_cli_text worker operation_name response))
           catch {^message message}
@@ -2415,7 +2415,7 @@
               $"usage: /worker ${worker_ref} ${operation/usage}\n${message}")))))))
 
 (fn handle_agent_command [line : Str, transcript, memory, streaming]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var rest (trim (after_prefix line "/agent")))
   (if (== rest "list")
     (then (render_agent_text transcript streaming (agents_report)))
@@ -2423,7 +2423,7 @@
       (handle_open_extension transcript memory streaming))
     (elif (starts_with? rest "new ")
       (var prompt (trim (after_prefix rest "new ")))
-      (var pane (open_extension_pane "" (memory ~ Cell/get)))
+      (var pane (open_extension_pane "" (memory ~ get)))
       (if (== pane nil)
         (then
           (render_agent_text transcript streaming "sub-agent limit reached"))
@@ -2514,7 +2514,7 @@
   (if (== pane nil)
     (then (render_agent_text transcript streaming "application is not running"))
     (else
-      (var app (active_application ~ Cell/get))
+      (var app (active_application ~ get))
       (application_focus_pane! app pane/id)
       (render_agent_text transcript streaming
         $"shell pane ${pane/id}; use /${pane/id} <command>"))))
@@ -2528,7 +2528,7 @@
     (if_not (empty? words)
       (set command words/0)
       (repeat i in words/~size
-        (if (> i 0) (args ~ List/push! words/%i)))))
+        (if (> i 0) (args ~ push! words/%i)))))
   (var pane (open_terminal_pane command args))
   (if (== pane nil)
     (render_agent_text transcript streaming "application is not running")
@@ -2537,22 +2537,22 @@
 
 (fn agent_status_report [items, memory] : Str
   (var state_label
-    (if (== (agent_store ~ Cell/get) nil) "off" (state_display)))
-  (var context (context_stats (items ~ Cell/get) (memory ~ Cell/get)))
+    (if (== (agent_store ~ get) nil) "off" (state_display)))
+  (var context (context_stats (items ~ get) (memory ~ get)))
   (var item_count context/items)
   (var memory_count context/memory_items)
-  (var event_count ((agent_events ~ Cell/get) ~ size))
-  (var instruction_count ((agent_instruction_records ~ Cell/get) ~ size))
+  (var event_count ((agent_events ~ get) ~ size))
+  (var instruction_count ((agent_instruction_records ~ get) ~ size))
   (var guard_label (if (guard_enabled?) "on" "off"))
-  (var app (active_application ~ Cell/get))
-  (var agent_count (if (== app nil) 1 ((app/agents ~ Cell/get) ~ size)))
+  (var app (active_application ~ get))
+  (var agent_count (if (== app nil) 1 ((app/agents ~ get) ~ size)))
   (var main_model
-    (if (== app nil) model (app/main_agent/model ~ Cell/get)))
+    (if (== app nil) model (app/main_agent/model ~ get)))
   (var pane_count
     (if (|| (== app nil) (== app/local_surface nil))
       0
-      ((app/local_surface/panes ~ Cell/get) ~ size)))
-  $"state: ${state_label}\nmodel: ${main_model}\napi: ${api_flavor}\neffort: ${(reasoning_effort ~ Cell/get)}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
+      ((app/local_surface/panes ~ get) ~ size)))
+  $"state: ${state_label}\nmodel: ${main_model}\napi: ${api_flavor}\neffort: ${(reasoning_effort ~ get)}\ntool rounds: max ${max_tool_rounds}\ncontext: ${context/bytes} bytes (~${context/approx_tokens} tokens), ${item_count} items, ${context/retained_turns} turns\ncontext limits: ${context/max_bytes} bytes, ${context/max_items} items, keep ${context/keep_turns} turns\nmemory: ${memory_count} items, ${context/memory_bytes} bytes\nevents: ${event_count}\ninstructions: ${instruction_count}\nagents: ${agent_count}\npanes: ${pane_count}\nguard: ${guard_label}")
 
 (fn run_shell_session []
   (suspend_user_input)
@@ -2619,20 +2619,20 @@
 
   # Durable note: memory list + system prompt + persisted state stay in sync.
   (message remember [self, note : Str]
-    (self/memory ~ Cell/set (append (self/memory ~ Cell/get) note))
-    (self/items ~ Cell/set
-      (refresh_system_memory (self/items ~ Cell/get) (self/memory ~ Cell/get)))
+    (self/memory ~ set (append (self/memory ~ get) note))
+    (self/items ~ set
+      (refresh_system_memory (self/items ~ get) (self/memory ~ get)))
     (emit_event! "memory" {^text note})
-    (save_agent_state (self/items ~ Cell/get)
-                      (self/transcript ~ Cell/get)
-                      (self/memory ~ Cell/get))
+    (save_agent_state (self/items ~ get)
+                      (self/transcript ~ get)
+                      (self/memory ~ get))
     $"remembered: ${note}")
 
   # Echo future events of this type into the transcript as they are emitted.
   (message subscribe [self, type]
     (var t $"${type}")
-    (event_subscriptions ~ Cell/set
-      (append (event_subscriptions ~ Cell/get) t))
+    (event_subscriptions ~ set
+      (append (event_subscriptions ~ get) t))
     $"subscribed to ${t} events")
 
   # Query the event log with the same filters as /trace.
@@ -2651,7 +2651,7 @@
     (var agent
       (application_spawn_agent app "sub-agent" assignment
         (cell
-          (append (initial_items (self/memory ~ Cell/get))
+          (append (initial_items (self/memory ~ get))
             (system_item
               $"You are a supervised sub-agent. Assignment: ${assignment}\nKeep private tool chatter out of the main context and return a concise result.")))
         child_transcript))
@@ -2682,7 +2682,7 @@
     (match source
       (when "result"
         (var agent (application_find_agent app worker_id))
-        (var result (if agent (agent/result ~ Cell/get)))
+        (var result (if agent (agent/result ~ get)))
         (if (== result nil)
           {^ok false ^error "agent result not found"}
           (application_pin_artifact! app "result"
@@ -2692,9 +2692,9 @@
         (if (== worker nil)
           {^ok false ^error "worker not found"}
           (then
-            (var operation (worker/current_operation ~ Cell/get))
+            (var operation (worker/current_operation ~ get))
             (application_pin_artifact! app "capture"
-              (worker/output ~ Cell/get) worker/id
+              (worker/output ~ get) worker/id
               (if operation operation/task_id nil)))))
       (else
         {^ok false ^error "source must be result or tail"})))
@@ -2732,26 +2732,26 @@
   # Cancel the active model/tool turn. The embedded CLI exposes this through
   # the programmable session; the gateway adapter also maps it to HTTP.
   (message cancel [self]
-    (var task (self/current_task ~ Cell/get))
+    (var task (self/current_task ~ get))
     (if (== task nil)
       (then "no turn in flight")
       (else
-        (task ~ Task/cancel)
+        (task ~ cancel)
         "cancellation requested")))
 
   # Ask the agent to run another model turn on the current items (no new user
   # input) right after the REPL exits — the add-a-tool-and-continue flow.
   (message resume [self]
-    (self/resume_requested ~ Cell/set true)
+    (self/resume_requested ~ set true)
     "resume requested: exit the REPL (exit/quit) to continue the current turn"))
 
 (fn make_live_session [items, transcript, memory, resume_flag]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (Session ^items items ^transcript transcript ^memory memory
            ^tools tool_registry ^events agent_events ^changes file_changes
            ^evidence agent_evidence ^instructions agent_instruction_records
-           ^config (session_config_snapshot (items ~ Cell/get)
-                                            (memory ~ Cell/get))
+           ^config (session_config_snapshot (items ~ get)
+                                            (memory ~ get))
            ^workspace workspace_real ^current_task active_turn_task
            ^resume_requested resume_flag ^application app
            ^main_agent app/main_agent ^agents app/agents ^workers app/workers
@@ -2764,7 +2764,7 @@
      ^Tool Tool ^classify_command classify_command}))
 
 (fn open_repl_pane [items, transcript, memory]
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (var worker (application_find_worker_kind app "repl"))
   (var previous
     (if (== worker nil)
@@ -2794,7 +2794,7 @@
 
 (fn handle_repl_pane [items, transcript, memory, streaming]
   (var pane (open_repl_pane items transcript memory))
-  (var app (active_application ~ Cell/get))
+  (var app (active_application ~ get))
   (application_focus_pane! app pane/id)
   (render_agent_text transcript streaming
     $"REPL pane ${pane/id}; use /${pane/id} <Gene form>"))
@@ -2808,18 +2808,18 @@
   (var repl_env (live_session_env items transcript memory resume_flag))
   (println "Entering Gene REPL. `session` is bound: session/items session/events session/evidence session/instructions session/changes session/current_task (session ~ diff) (session ~ undo nil) (session ~ add_tool (Tool ...)) (session ~ remember \"...\") (session ~ trace \"type=tool_call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run_repl_session repl_env ^interactive true)
-  (resume_flag ~ Cell/get))
+  (resume_flag ~ get))
 
 (fn handle_main_input [app, input : Str, items, transcript, memory, streaming]
-  (if (|| (app/main_agent/input_reserved ~ Cell/get)
-          (!= (app/main_agent/current_task ~ Cell/get) nil))
+  (if (|| (app/main_agent/input_reserved ~ get)
+          (!= (app/main_agent/current_task ~ get) nil))
     (then
       (render_agent_text transcript streaming
         "main agent is already working; press Esc to cancel it or send this input after it finishes"))
     (else
       (worker_history_push! app/main_agent input "local_tui"
         (if app/local_surface
-          (app/local_surface/instance_id ~ Cell/get)))
+          (app/local_surface/instance_id ~ get)))
       (Cell/set streaming false)
       (begin_turn!)
       (application_emit app "user_input"
@@ -2827,9 +2827,9 @@
       (Cell/set items
         (run_interactive_turn transcript streaming (interactive_transport)
           (append (Cell/get items) (user_item input))))
-      (save_agent_state (items ~ Cell/get)
-                        (transcript ~ Cell/get)
-                        (memory ~ Cell/get)))))
+      (save_agent_state (items ~ get)
+                        (transcript ~ get)
+                        (memory ~ get)))))
 
 (fn editor_command_words [command : Str]
   (var words [])
@@ -2839,30 +2839,30 @@
   (var quote_char (cell ""))
   (var escaped (cell false))
   (for ch in (graphemes command)
-    (if (escaped ~ Cell/get)
+    (if (escaped ~ get)
       (then
-        (current ~ Cell/set $"${(current ~ Cell/get)}${ch}")
-        (escaped ~ Cell/set false))
+        (current ~ set $"${(current ~ get)}${ch}")
+        (escaped ~ set false))
       (else
         (if (== ch "\\")
-          (escaped ~ Cell/set true)
-          (if (!= (quote_char ~ Cell/get) "")
-            (if (== ch (quote_char ~ Cell/get))
-              (quote_char ~ Cell/set "")
-              (current ~ Cell/set $"${(current ~ Cell/get)}${ch}"))
+          (escaped ~ set true)
+          (if (!= (quote_char ~ get) "")
+            (if (== ch (quote_char ~ get))
+              (quote_char ~ set "")
+              (current ~ set $"${(current ~ get)}${ch}"))
             (if (|| (== ch "\"") (== ch "'"))
-              (quote_char ~ Cell/set ch)
+              (quote_char ~ set ch)
               (if (|| (== ch " ") (== ch "\t"))
-                (if_not (== (current ~ Cell/get) "")
-                  (words ~ List/push! (current ~ Cell/get))
-                  (current ~ Cell/set ""))
-                (current ~ Cell/set $"${(current ~ Cell/get)}${ch}"))))))))
-  (if (escaped ~ Cell/get)
-    (current ~ Cell/set $"${(current ~ Cell/get)}\\"))
-  (if (!= (quote_char ~ Cell/get) "")
+                (if_not (== (current ~ get) "")
+                  (words ~ push! (current ~ get))
+                  (current ~ set ""))
+                (current ~ set $"${(current ~ get)}${ch}"))))))))
+  (if (escaped ~ get)
+    (current ~ set $"${(current ~ get)}\\"))
+  (if (!= (quote_char ~ get) "")
     (fail (OsError ^message "unterminated quote in $VISUAL/$EDITOR")))
-  (if (!= (current ~ Cell/get) "")
-    (words ~ List/push! (current ~ Cell/get)))
+  (if (!= (current ~ get) "")
+    (words ~ push! (current ~ get)))
   words)
 
 (fn external_editor_draft [draft : Str]
@@ -2880,12 +2880,12 @@
   (var executable words/0)
   (var args [])
   (repeat i in words/~size
-    (if (> i 0) (args ~ List/push! words/%i)))
+    (if (> i 0) (args ~ push! words/%i)))
   (var path $".gene-agent-draft-${(monotonic_ms)}.tmp")
   (write_text WriteDir path draft)
   (suspend_user_input)
   (try
-    (args ~ List/push! path)
+    (args ~ push! path)
     (var status
       (await (exec_stdio_async Exec ^cmd executable ^args args
                                ^dir workspace_root)))
@@ -3008,8 +3008,8 @@
   (var head (surface_command_head line))
   (var found (cell false))
   (for spec in surface_command_specs
-    (if (== spec/name head) (found ~ Cell/set true)))
-  (found ~ Cell/get))
+    (if (== spec/name head) (found ~ set true)))
+  (found ~ get))
 
 (fn unregistered_surface_command? [line : Str] : Bool
   (&& (starts_with? line "/")
@@ -3028,7 +3028,7 @@
   (for operation in (worker_operations_for_kind kind)
     (var effects (join operation/effects "+"))
     (var audience (join operation/audience ","))
-    (lines ~ List/push!
+    (lines ~ push!
       $"${operation/usage}\n    ${operation/summary} [${effects}; ${operation/admission}; ${operation/audit}; ${audience}]"))
   (join lines "\n"))
 
@@ -3036,8 +3036,8 @@
   (var requested (if (starts_with? name "/") name $"/${name}"))
   (var found (cell nil))
   (for spec in surface_command_specs
-    (if (== spec/name requested) (found ~ Cell/set spec)))
-  (found ~ Cell/get))
+    (if (== spec/name requested) (found ~ set spec)))
+  (found ~ get))
 
 (fn command_help_page [spec] : Str
   $"${spec/name}\nusage: ${spec/usage}\n${spec/summary}\nsection: ${spec/section}")
@@ -3049,7 +3049,7 @@
     (var haystack
       (lower $"${spec/name} ${spec/usage} ${spec/summary} ${spec/section}"))
     (if (contains? haystack query)
-      (lines ~ List/push! $"${spec/usage}\n    ${spec/summary}")))
+      (lines ~ push! $"${spec/usage}\n    ${spec/summary}")))
   (if (== (lines ~ size) 1)
     $"no help matches '${term}'"
     (join lines "\n")))
@@ -3096,14 +3096,14 @@
       (var lines ["Gene agent help" "topics: pane, agent, worker, input, session, trace" ""])
       (for spec in surface_command_specs
         (if (|| (== topic "") (== spec/section topic))
-          (lines ~ List/push! $"${spec/usage}\n    ${spec/summary}")))
+          (lines ~ push! $"${spec/usage}\n    ${spec/summary}")))
       (if (|| (== topic "") (== topic "input"))
         (then
-          (lines ~ List/push! "")
-          (lines ~ List/push! "keys: Up/Down history | Tab complete | Ctrl-R search | Ctrl-E edit | PgUp/PgDn or wheel scroll | Ctrl-PgUp/PgDn cycle panes | Esc cancel/back | Ctrl-C clear | Ctrl-D exit")
-          (lines ~ List/push! "literal leading slash: //text for focused input | /N -- /absolute/path for pane N")))
-      (lines ~ List/push! "")
-      (lines ~ List/push! "pane shortcuts: /N focus | /close [N] | /max [N] | /N cancel|stop|max | /N export <file> | /N <input> | /0 main")
+          (lines ~ push! "")
+          (lines ~ push! "keys: Up/Down history | Tab complete | Ctrl-R search | Ctrl-E edit | PgUp/PgDn or wheel scroll | Ctrl-PgUp/PgDn cycle panes | Esc cancel/back | Ctrl-C clear | Ctrl-D exit")
+          (lines ~ push! "literal leading slash: //text for focused input | /N -- /absolute/path for pane N")))
+      (lines ~ push! "")
+      (lines ~ push! "pane shortcuts: /N focus | /close [N] | /max [N] | /N cancel|stop|max | /N export <file> | /N <input> | /0 main")
       (var line_separator "\n")
       (var help_text (join lines line_separator))
       $"${help_text}\n")))
@@ -3113,10 +3113,10 @@
   (var text (comprehensive_help (help_command_topic line)))
   (if surface
     (then
-      (surface/focused_pane ~ Cell/set nil)
-      (surface/maximized_pane ~ Cell/set nil)
-      (surface/main_scroll ~ Cell/set 0)
-      (surface/help_notice ~ Cell/set text)
+      (surface/focused_pane ~ set nil)
+      (surface/maximized_pane ~ set nil)
+      (surface/main_scroll ~ set 0)
+      (surface/help_notice ~ set text)
       (if (stdin_tty?)
         (refresh_user_input transcript)
         (println text)))
@@ -3124,11 +3124,11 @@
   text)
 
 (fn effort_report [] : Str
-  $"reasoning effort levels: ${reasoning_effort_levels_text}\ncurrent effort: ${(reasoning_effort ~ Cell/get)}\navailability depends on the selected model")
+  $"reasoning effort levels: ${reasoning_effort_levels_text}\ncurrent effort: ${(reasoning_effort ~ get)}\navailability depends on the selected model")
 
 (fn latest_subagent [app]
   (var found nil)
-  (for agent in (app/agents ~ Cell/get)
+  (for agent in (app/agents ~ get)
     (if (!= agent/id "main") (set found agent)))
   found)
 
@@ -3144,7 +3144,7 @@
         (then
           (render_agent_text transcript streaming "agent result not found"))
         (else
-          (var result (agent/result ~ Cell/get))
+          (var result (agent/result ~ get))
           (if (== result nil)
             (then
               (render_agent_text transcript streaming $"agent ${agent/id} has no result"))
@@ -3167,10 +3167,10 @@
           (render_agent_text transcript streaming
             "usage: /pin worker <W> tail"))
         (else
-          (var operation (worker/current_operation ~ Cell/get))
+          (var operation (worker/current_operation ~ get))
           (var pinned
             (application_pin_artifact! app "capture"
-              (worker/output ~ Cell/get) worker/id
+              (worker/output ~ get) worker/id
               (if operation operation/task_id nil)))
           (render_agent_text transcript streaming
             (if pinned/ok
@@ -3212,7 +3212,7 @@
           (render_agent_text transcript streaming
             $"invalid reasoning effort '${requested}'\n${(effort_report)}"))
         (else
-          (reasoning_effort ~ Cell/set level)
+          (reasoning_effort ~ set level)
           (application_emit app "config_changed"
             {^setting "reasoning_effort" ^value level})
           (render_agent_text transcript streaming
@@ -3251,16 +3251,16 @@
   (if (== requested "")
     (then
       (render_agent_text transcript streaming
-        $"${label} model: ${(agent/model ~ Cell/get)}"))
+        $"${label} model: ${(agent/model ~ get)}"))
     (else
       (var response
         (application_call_worker app agent/id "set_model" {^model requested}
           {^origin "user" ^adapter "local_tui"
            ^caller_worker_id app/main_agent/id
-           ^surface_id (app/local_surface/instance_id ~ Cell/get)}))
+           ^surface_id (app/local_surface/instance_id ~ get)}))
       (render_agent_text transcript streaming
         (if response/ok
-          $"${label} model set to ${(agent/model ~ Cell/get)}"
+          $"${label} model set to ${(agent/model ~ get)}"
           (worker_operation_cli_text agent "set_model" response))))))
 
 (fn handle_surface_global_command [line : Str, app, items, transcript, memory,
@@ -3294,7 +3294,7 @@
       (var max_rest (trim (after_prefix line "/max")))
       (if (== max_rest "")
         (then
-          (var focused_id (app/local_surface/focused_pane ~ Cell/get))
+          (var focused_id (app/local_surface/focused_pane ~ get))
           (render_agent_text transcript streaming
             (if (== focused_id nil)
               "no pane is focused; use /max <N> or /N max"
@@ -3328,7 +3328,7 @@
         (if (== line "/export") "" (after_prefix line "/export ")))
       (var export_surface app/local_surface)
       (var export_pane_id
-        (if export_surface (export_surface/focused_pane ~ Cell/get)))
+        (if export_surface (export_surface/focused_pane ~ get)))
       (var export_pane
         (if export_pane_id (application_find_pane app export_pane_id)))
       (render_agent_text transcript streaming
@@ -3366,10 +3366,10 @@
       (var draft (surface_route_draft app))
       (var initial
         (if (== line "/edit")
-          (draft ~ Cell/get)
+          (draft ~ get)
           (after_prefix line "/edit ")))
       (try
-        (draft ~ Cell/set (external_editor_draft initial))
+        (draft ~ set (external_editor_draft initial))
         (render_agent_text transcript streaming
           "external editor draft loaded; Enter submits it")
       catch {^message message}
@@ -3405,7 +3405,7 @@
           $"invalid command form: ${line}\nuse /help or /? for syntax${literal_hint}"
           $"unknown command: ${(surface_command_head line)}${(surface_command_suggestion (surface_command_head line))}\nuse /help or /?${literal_hint}")))
     (else
-      (var pane_id (app/local_surface/focused_pane ~ Cell/get))
+      (var pane_id (app/local_surface/focused_pane ~ get))
       (var routed_line
         (if (starts_with? line "//") (after_prefix line "/") line))
       (if (!= pane_id nil)
@@ -3418,7 +3418,7 @@
 # while body is a duplicate binding on the second /memory. A helper reads
 # better than either.
 (fn memory_report [memory] : Str
-  (join (memory ~ Cell/get) "\n"))
+  (join (memory ~ get) "\n"))
 
 (fn run_repl []
   (init_agent_state)
@@ -3431,8 +3431,8 @@
   (var items
     (cell
       (if (== saved nil)
-        (initial_items (memory ~ Cell/get))
-        (refresh_system_memory saved/items (memory ~ Cell/get)))))
+        (initial_items (memory ~ get))
+        (refresh_system_memory saved/items (memory ~ get)))))
   (var transcript
     (cell
       (if (== saved nil)
@@ -3446,30 +3446,30 @@
   (var memory_note nil)
   (var streaming (cell false))
   (var app (make_application items transcript memory emit_event!))
-  (active_application ~ Cell/set app)
+  (active_application ~ set app)
   (restore_dynamic_registrations! app)
   (restore_application! app)
   (println
-    $"Started Gene AI agent - model ${(app/main_agent/model ~ Cell/get)}.")
-  (interactive_transcript ~ Cell/set transcript)
-  (interactive_memory ~ Cell/set (memory ~ Cell/get))
+    $"Started Gene AI agent - model ${(app/main_agent/model ~ get)}.")
+  (interactive_transcript ~ set transcript)
+  (interactive_memory ~ set (memory ~ get))
   # Subscribed event types echo into the transcript as they are emitted.
-  (event_echo ~ Cell/set
+  (event_echo ~ set
     (fn [text] (render_agent_text transcript streaming $"[event] ${text}")))
   (if_yes saved
     (append_transcript transcript $"[restored session from ${(state_display)}]\n")
     (refresh_user_input transcript))
   (while (Cell/get running)
-    (interactive_memory ~ Cell/set (memory ~ Cell/get))
+    (interactive_memory ~ set (memory ~ get))
     (set input_history (surface_route_history app))
     (set line (read_user_input transcript input_history))
     (if (== line nil)
       (then
         (close_user_input)
-        (save_agent_state (items ~ Cell/get)
-                          (transcript ~ Cell/get)
-                          (memory ~ Cell/get))
-        (interactive_transcript ~ Cell/set nil)
+        (save_agent_state (items ~ get)
+                          (transcript ~ get)
+                          (memory ~ get))
+        (interactive_transcript ~ set nil)
         (Cell/set running false))
       (else
         (if_not (blank_line? line)
@@ -3478,12 +3478,12 @@
             # transcript. Help is a replaceable surface notice and deliberately
             # bypasses both transcript and checkpoint state.
             (if app/local_surface
-              (app/local_surface/help_notice ~ Cell/set ""))
+              (app/local_surface/help_notice ~ set ""))
             # Routed bare input echoes once at its destination pane (§C7);
             # commands and main-agent prompts keep the main-transcript echo.
             (if (|| (starts_with? line "/")
                     (== app/local_surface nil)
-                    (== (app/local_surface/focused_pane ~ Cell/get) nil))
+                    (== (app/local_surface/focused_pane ~ get) nil))
               (append_transcript transcript $"──────\n${line}\n")
               (refresh_user_input transcript))
             (checkpoint_agent_state! app "input_submitted"))
@@ -3497,10 +3497,10 @@
               (if (|| (== line "/quit") (== line "/exit"))
                 (then
                   (close_user_input)
-                  (save_agent_state (items ~ Cell/get)
-                                    (transcript ~ Cell/get)
-                                    (memory ~ Cell/get))
-                  (interactive_transcript ~ Cell/set nil)
+                  (save_agent_state (items ~ get)
+                                    (transcript ~ get)
+                                    (memory ~ get))
+                  (interactive_transcript ~ set nil)
                   (Cell/set running false))
                 (elif (== line "/agents")
                   (render_agent_text transcript streaming (agents_report)))
@@ -3518,18 +3518,18 @@
                   (handle_repl_pane items transcript memory streaming))
                 (elif (== line "/memory")
                   (render_agent_text transcript streaming
-                    (if (empty? (memory ~ Cell/get))
+                    (if (empty? (memory ~ get))
                       "memory is empty"
                       $"memory:\n${(memory_report memory)}")))
                 (elif (== line "/forget")
-                  (memory ~ Cell/set [])
-                  (items ~ Cell/set
-                    (refresh_system_memory (items ~ Cell/get)
-                                          (memory ~ Cell/get)))
+                  (memory ~ set [])
+                  (items ~ set
+                    (refresh_system_memory (items ~ get)
+                                          (memory ~ get)))
                   (emit_event! "memory" {^action "clear" ^text "memory cleared"})
-                  (save_agent_state (items ~ Cell/get)
-                                    (transcript ~ Cell/get)
-                                    (memory ~ Cell/get))
+                  (save_agent_state (items ~ get)
+                                    (transcript ~ get)
+                                    (memory ~ get))
                   (render_agent_text transcript streaming "memory cleared"))
                 (elif (starts_with? line "/remember ")
                   (set memory_note (trim (after_prefix line "/remember ")))
@@ -3538,16 +3538,16 @@
                       (render_agent_text transcript streaming
                         "usage: /remember <note>"))
                     (else
-                      (memory ~ Cell/set
-                        (append (memory ~ Cell/get) memory_note))
-                      (items ~ Cell/set
-                        (refresh_system_memory (items ~ Cell/get)
-                                              (memory ~ Cell/get)))
+                      (memory ~ set
+                        (append (memory ~ get) memory_note))
+                      (items ~ set
+                        (refresh_system_memory (items ~ get)
+                                              (memory ~ get)))
                       (emit_event! "memory"
                         {^action "remember" ^text memory_note})
-                      (save_agent_state (items ~ Cell/get)
-                                        (transcript ~ Cell/get)
-                                        (memory ~ Cell/get))
+                      (save_agent_state (items ~ get)
+                                        (transcript ~ get)
+                                        (memory ~ get))
                       (render_agent_text transcript streaming
                         $"remembered: ${memory_note}"))))
                 (elif (== line "/status")
@@ -3588,49 +3588,49 @@
   (var task_parts [])
   (for token in (split (trim raw) " ")
     (if_not (== token "")
-      (var pending (pending_option ~ Cell/get))
+      (var pending (pending_option ~ get))
       (if pending
         (then
           (if (== pending "connect")
-            (connect ~ Cell/set token)
-            (session ~ Cell/set token))
-          (pending_option ~ Cell/set nil))
+            (connect ~ set token)
+            (session ~ set token))
+          (pending_option ~ set nil))
         (else
           (if (== token "--gateway")
-            (gateway ~ Cell/set true)
+            (gateway ~ set true)
             (if (starts_with? token "--gateway=")
               (then
-                (gateway ~ Cell/set true)
-                (port ~ Cell/set
+                (gateway ~ set true)
+                (port ~ set
                   (parse_int (after_prefix token "--gateway="))))
               (else
                 (match token
-                  (when "--headless" (headless ~ Cell/set true))
-                  (when "--connect" (pending_option ~ Cell/set "connect"))
-                  (when "--session" (pending_option ~ Cell/set "session"))
+                  (when "--headless" (headless ~ set true))
+                  (when "--connect" (pending_option ~ set "connect"))
+                  (when "--session" (pending_option ~ set "session"))
                   (else
                     (if (starts_with? token "--connect=")
-                      (connect ~ Cell/set
+                      (connect ~ set
                         (after_prefix token "--connect="))
                       (if (starts_with? token "--session=")
-                        (session ~ Cell/set
+                        (session ~ set
                           (after_prefix token "--session="))
-                        (task_parts ~ List/push! token))))))))))))
-  (if (pending_option ~ Cell/get)
+                        (task_parts ~ push! token))))))))))))
+  (if (pending_option ~ get)
     (fail (OsError
-      ^message $"--${(pending_option ~ Cell/get)} requires a value")))
-  (if (&& (headless ~ Cell/get) (! (gateway ~ Cell/get)))
+      ^message $"--${(pending_option ~ get)} requires a value")))
+  (if (&& (headless ~ get) (! (gateway ~ get)))
     (fail (OsError ^message "--headless requires --gateway")))
-  (if (&& (connect ~ Cell/get)
-          (|| (gateway ~ Cell/get) (headless ~ Cell/get)))
+  (if (&& (connect ~ get)
+          (|| (gateway ~ get) (headless ~ get)))
     (fail (OsError
       ^message "--connect cannot be combined with --gateway or --headless")))
-  (if (&& (!= (port ~ Cell/get) void)
-          (|| (< (port ~ Cell/get) 1) (> (port ~ Cell/get) 65535)))
+  (if (&& (!= (port ~ get) void)
+          (|| (< (port ~ get) 1) (> (port ~ get) 65535)))
     (fail (OsError ^message "--gateway port must be between 1 and 65535")))
-  {^gateway (gateway ~ Cell/get) ^headless (headless ~ Cell/get)
-   ^port (port ~ Cell/get) ^connect (connect ~ Cell/get)
-   ^session (session ~ Cell/get) ^task (join task_parts " ")})
+  {^gateway (gateway ~ get) ^headless (headless ~ get)
+   ^port (port ~ get) ^connect (connect ~ get)
+   ^session (session ~ get) ^task (join task_parts " ")})
 
 (fn remote_confirmation_decision [event, interactive : Bool] : Str
   (if_not interactive (return "deny"))
@@ -3644,31 +3644,31 @@
   (client/send_message text)
   (var streaming (cell false))
   (var done (cell false))
-  (while (! (done ~ Cell/get))
+  (while (! (done ~ get))
     (var batch (client/poll))
     (for event in batch/events
       (match event/type
         (when "text_delta"
-          (if_not (streaming ~ Cell/get)
+          (if_not (streaming ~ get)
             (print "agent> ")
-            (streaming ~ Cell/set true))
+            (streaming ~ set true))
           (print event/text))
         (when "agent_text"
-          (if_not (streaming ~ Cell/get)
+          (if_not (streaming ~ get)
             (println $"agent> ${event/text}")))
         (when "confirmation_requested"
-          (if_yes (streaming ~ Cell/get)
+          (if_yes (streaming ~ get)
             (println "")
-            (streaming ~ Cell/set false))
+            (streaming ~ set false))
           (var decision
             (remote_confirmation_decision event interactive))
           (client/resolve_confirmation event/confirmation_id decision)
           (println $"confirmation ${decision}"))
         (when "turn_done"
-          (if_yes (streaming ~ Cell/get)
+          (if_yes (streaming ~ get)
             (println "")
-            (streaming ~ Cell/set false))
-          (done ~ Cell/set true))
+            (streaming ~ set false))
+          (done ~ set true))
         (else nil)))
     (client/acknowledge batch/cursor)))
 
@@ -3697,10 +3697,10 @@
     (if (&& (== operation/name op)
             (|| (== operation/worker_kind kind)
                 (== operation/worker_kind "*"))
-            (|| (== (descriptor ~ Cell/get) nil)
+            (|| (== (descriptor ~ get) nil)
                 (== operation/worker_kind kind)))
-      (descriptor ~ Cell/set operation)))
-  (var found (descriptor ~ Cell/get))
+      (descriptor ~ set operation)))
+  (var found (descriptor ~ get))
   (if (== found nil)
     (fail (ClientTransportError
       ^kind "unknown_operation"
@@ -3715,7 +3715,7 @@
       (try (parse_int (trim rest)) catch _ (trim rest))
       (trim rest)))
   (var args {})
-  (args ~ Map/put! placeholder/field value)
+  (args ~ put! placeholder/field value)
   args)
 
 (fn remote_worker_kind [client, worker_ref : Str]
@@ -3724,8 +3724,8 @@
   (for worker in listing/workers
     (if (|| (== worker/worker_id worker_ref)
             (== worker/name worker_ref))
-      (kind ~ Cell/set worker/kind)))
-  (kind ~ Cell/get))
+      (kind ~ set worker/kind)))
+  (kind ~ get))
 
 (fn remote_workers_report [client]
   (var listing (client/workers))
@@ -3807,7 +3807,7 @@
   (try
     (var attached (client/connect launch/session "gene-tui"))
     (println
-      $"Gene AI agent - remote session ${(client/session_id ~ Cell/get)} at ${launch/connect}")
+      $"Gene AI agent - remote session ${(client/session_id ~ get)} at ${launch/connect}")
     (if_not (blank_line? task)
       (println $"user> ${task}")
       (run_remote_turn client task false)
@@ -3894,7 +3894,7 @@
               ^resume_enabled (resume_enabled?) ^guard_enabled (guard_enabled?)
               ^approve_all (flag_enabled? approve_all)
               ^max_tool_rounds max_tool_rounds
-              ^tool_count ((tool_names ~ Cell/get) ~ size)})
+              ^tool_count ((tool_names ~ get) ~ size)})
   (var gateway_server (cell nil))
   (var gateway_task (cell nil))
   (try
@@ -3905,71 +3905,71 @@
       (else
         (if launch/gateway
           (then
-            (gateway_server ~ Cell/set
+            (gateway_server ~ set
               (prepare_gateway (gateway_api)
                 {^port launch/port ^quiet true}))
             # `net/http/serve` is itself the scheduler-driving root loop. Keep
             # it at the root and make the local entrypoint a sibling Task;
             # spawning `serve` from inside the TUI fiber would recursively pump
             # the scheduler and starve curses input in combined mode.
-            (gateway_task ~ Cell/set
+            (gateway_task ~ set
               (spawn ^lane root
                 (try
                   (run_local_entry launch task)
                 ensure
-                  (stop_gateway (gateway_server ~ Cell/get)))))
-            ((gateway_task ~ Cell/get) ~ Task/detach)
-            (serve_gateway (gateway_server ~ Cell/get))
-            (try (await (gateway_task ~ Cell/get)) catch _ nil)
+                  (stop_gateway (gateway_server ~ get)))))
+            ((gateway_task ~ get) ~ detach)
+            (serve_gateway (gateway_server ~ get))
+            (try (await (gateway_task ~ get)) catch _ nil)
             # The local task requested and completed gateway shutdown. Clear
             # both handles so the outer failure-cleanup path does not stop the
             # already-dropped native listener a second time.
-            (gateway_task ~ Cell/set nil)
-            (gateway_server ~ Cell/set nil))
+            (gateway_task ~ set nil)
+            (gateway_server ~ set nil))
           (else (run_local_entry launch task))))))
   ensure
-    (if_yes (gateway_server ~ Cell/get)
-      (var task (gateway_task ~ Cell/get))
+    (if_yes (gateway_server ~ get)
+      (var task (gateway_task ~ get))
       (if_yes task
-        (task ~ Task/cancel)
+        (task ~ cancel)
         (try (await task) catch _ nil))
       # An interrupted local task normally stops the server in its own
       # ensure. The fallback is intentionally idempotent at this boundary.
-      (try (stop_gateway (gateway_server ~ Cell/get)) catch _ nil))
-    (var app (active_application ~ Cell/get))
+      (try (stop_gateway (gateway_server ~ get)) catch _ nil))
+    (var app (active_application ~ get))
     (if_yes app
       (application_shutdown app)
       # The ordinary /exit checkpoint precedes process teardown. Publish one
       # final generation after terminal sessions have been stopped, captured,
       # and closed so restore never sees a fake live PTY.
       (save_agent_state_with_reason
-        (app/main_agent/items ~ Cell/get)
-        (app/main_agent/transcript ~ Cell/get)
-        (app/memory ~ Cell/get) "application_stopped"))
-    (active_application ~ Cell/set nil)
+        (app/main_agent/items ~ get)
+        (app/main_agent/transcript ~ get)
+        (app/memory ~ get) "application_stopped"))
+    (active_application ~ set nil)
     (close_agent_state)
     (close_user_input)
     (info! agent_log "agent stopped"
       ^payload {^run_mode run_mode
-                ^turns (current_turn ~ Cell/get)
-                ^events ((agent_events ~ Cell/get) ~ size)})))
+                ^turns (current_turn ~ get)
+                ^events ((agent_events ~ get) ~ size)})))
 
 # -----------------------------------------------------------------------------
 # Surface hook installation (slice C9): the core stays UI-free; this TUI
 # provides the curses confirmation prompt, repaint, Escape polling, and the
 # interactive repl-worker restart factory.
 # -----------------------------------------------------------------------------
-(interactive_confirm ~ Cell/set confirmation_answer)
-(ui_refresh ~ Cell/set refresh_active_input)
-(surface_history_recorder ~ Cell/set record_local_surface_history!)
-(interactive_resume_turn ~ Cell/set
+(interactive_confirm ~ set confirmation_answer)
+(ui_refresh ~ set refresh_active_input)
+(surface_history_recorder ~ set record_local_surface_history!)
+(interactive_resume_turn ~ set
   (fn [transcript, streaming, items]
     (run_interactive_turn transcript streaming (interactive_transport) items)))
-(ui_escape_poll ~ Cell/set
+(ui_escape_poll ~ set
   (fn []
-    (&& (!= (user_screen ~ Cell/get) nil)
-        (escape_pressed? (user_screen ~ Cell/get)))))
-(repl_restart_factory ~ Cell/set
+    (&& (!= (user_screen ~ get) nil)
+        (escape_pressed? (user_screen ~ get)))))
+(repl_restart_factory ~ set
   (fn [app, previous]
     (var resume_flag (cell false))
     (var session
@@ -3992,11 +3992,11 @@
 (var tui_surface_store (cell nil))
 
 (fn tui_surface_store_now []
-  (if (== (tui_surface_store ~ Cell/get) nil)
-    (tui_surface_store ~ Cell/set (open_client_store "surface_local_tui")))
-  (tui_surface_store ~ Cell/get))
+  (if (== (tui_surface_store ~ get) nil)
+    (tui_surface_store ~ set (open_client_store "surface_local_tui")))
+  (tui_surface_store ~ get))
 
-(client_surface_checkpoint_hook ~ Cell/set
+(client_surface_checkpoint_hook ~ set
   (fn [app, _reason]
     (var store (tui_surface_store_now))
     (if_yes (&& (!= store nil) (checkpoint_local_application? app))
@@ -4005,7 +4005,7 @@
           {^schema 1 ^kind "surface" ^data (surface_snapshot app)})
       catch _ nil))))
 
-(client_surface_record_loader ~ Cell/set
+(client_surface_record_loader ~ set
   (fn []
     (var store (tui_surface_store_now))
     (if_yes (!= store nil)

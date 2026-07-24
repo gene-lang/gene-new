@@ -119,7 +119,7 @@ type
     opSyntaxCall  # pop raw call node + fn! callee, apply the syntax call (design §3/§11.1)
     opSyntaxGuard # if the callee on top is a fn!, syntax_call the const node and jump
     opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
-    opRequireMessage # require the callee on top to be a message value at a dynamic (%m/expr) send
+    opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
 
   Instruction* = object
     op*: OpCode
@@ -488,6 +488,11 @@ type
     monomorphizations*: seq[MonomorphizationSpec]
     directProtocolCalls*: seq[DirectProtocolCallSpec]
     callSites*: Table[int, Value]   # opCall/opCallSplice index -> source node (design §3 `Call ^site`)
+    superType*: Value        # for a type-direct message body (and closures
+                             # nested in it): the enclosing type's `^is` parent,
+                             # stamped in by opMakeType. `(super ~ m)` reads it
+                             # here rather than resolving a user-visible name,
+                             # so a body-local cannot redirect delegation.
 
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
@@ -804,8 +809,10 @@ proc formatInstruction(inst: Instruction): string =
   of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
      opJumpIfPresentOrPop, opJump:
     result.add " target=" & $inst.intArg
-  of opSyntaxCall, opRejectSyntaxSend, opRequireMessage:
+  of opSyntaxCall, opRejectSyntaxSend:
     discard
+  of opResolveQualifiedMessage:
+    result.add " name=" & inst.name
   of opSyntaxGuard:
     result.add " target=" & $inst.intArg & " const=" & $inst.depth
   of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,

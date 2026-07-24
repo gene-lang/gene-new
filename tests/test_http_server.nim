@@ -229,7 +229,7 @@ suite "net/http server e2e":
   (var r d/%meta/route)
   (route ^method r/method ^path r/path ^handler d/value))
 (var routes
-  ((map (filter (this_mod ~ Module/declarations) routed?) route-entry)
+  ((map (filter (Module/declarations this_mod) routed?) route-entry)
    ~ into []))
 (serve (Server ^host "127.0.0.1" ^port 8194)
   ^max_requests 2
@@ -244,14 +244,14 @@ suite "net/http server e2e":
 (import net/http [Server serve text])
 (var access-entries (cell nil))
 (var error-entries (cell nil))
-(fn on-access [rec] (access-entries ~ Cell/set rec))
-(fn on-error-log [rec] (error-entries ~ Cell/set rec))
+(fn on-access [rec] (access-entries ~ set rec))
+(fn on-error-log [rec] (error-entries ~ set rec))
 (fn handle [req]
   (if (== req/path "/boom")
     (nonexistent-fn)
     (do
-      (var last (access-entries ~ Cell/get))
-      (var last-err (error-entries ~ Cell/get))
+      (var last (access-entries ~ get))
+      (var last-err (error-entries ~ get))
       (if (== last nil)
         (text "no-log")
         (text ($ "logged:" last/method ":" last/path ":" last/status
@@ -308,12 +308,12 @@ suite "net/http server e2e":
   (if (== req/path "/boom")
     (fail (Boom ^message "worker boom"))
     (do
-      (var ev (failures ~ Channel/try_recv))
+      (var ev (failures ~ try_recv))
       (match ev
         (when TryRecv/empty
-          (reply ~ ReplyTo/send (text "no-failures")))
+          (reply ~ send (text "no-failures")))
         (when (TryRecv/value failure)
-          (reply ~ ReplyTo/send (text ($ "saw:" failure/message)))))
+          (reply ~ send (text ($ "saw:" failure/message)))))
       (actor/continue state))))
 (serve (Server ^host "127.0.0.1" ^port 8191)
   ^max_requests 2

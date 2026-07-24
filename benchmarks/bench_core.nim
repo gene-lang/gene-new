@@ -347,8 +347,17 @@ proc main() =
     "(impl Adder for Box (message add [self n] : Int (+ self/x n))) " &
     "(impl Triv for Box (message triv [self] self)) " &
     "(impl ToInt for Animal (message to_int [self] : Int self/x)) " &
+    # Base/Derived measure `super`: the override delegates one level up the ^is
+    # chain, so the send pays parent lookup on top of the impl body.
+    "(type Base ^props {} (message tag [] : Int 1)) " &
+    "(type Derived ^is Base ^props {} " &
+    "  (message tag [] : Int (super ~ tag))) " &
     "(var box (Box ^x 10)) " &
     "(var dog (Dog ^x 10)) " &
+    "(var derived (Derived)) " &
+    # A built-in receiver: `(c ~ get)` resolves through the Cell type namespace
+    # rather than a user type's message table.
+    "(var c (cell 10)) " &
     # Reference: a 1-arg Gene function call — the target sends aim to approach.
     "(var identity (fn [x] x))"), protocolScope)
   # Message names are not lexical bindings (docs/core.md §1); the hot dispatch
@@ -382,6 +391,21 @@ proc main() =
   let sendArgChunk = compileSource("(box ~ Adder/add 5)")
   bench("vm.protocol_message.with_arg.compiled_chunk", 500_000, i):
     let v = run(sendArgChunk, protocolScope)
+    checksum = checksum + v.intVal
+  # Built-in and `super` dispatch are measured separately from protocol sends.
+  # The built-in send resolves through its type namespace and lands slightly
+  # above the 1-arg call reference. `super` reads the parent identity stamped on
+  # the body's chunk, then resolves in that type's message table; the site is
+  # statically monomorphic (fixed parent, fixed name), so it is cached under an
+  # impl-epoch guard. This case runs two dispatches and two bodies (the override
+  # plus the parent), so ~0.6x the one-call reference is the expected shape.
+  let builtinSendChunk = compileSource("(c ~ get)")
+  bench("vm.builtin_message.compiled_chunk", 500_000, i):
+    let v = run(builtinSendChunk, protocolScope)
+    checksum = checksum + v.intVal
+  let superSendChunk = compileSource("(derived ~ tag)")
+  bench("vm.super_send.compiled_chunk", 500_000, i):
+    let v = run(superSendChunk, protocolScope)
     checksum = checksum + v.intVal
 
   let restScope = newGlobalScope()
