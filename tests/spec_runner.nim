@@ -34,6 +34,18 @@ suite "spec — reader surface from design":
     check forms[1].print() == "(import (path gene stream) [map])"
     check forms[2].print() == "(fn main [] nil)"
 
+  test "$x selects from the gene root without occupying a bare name":
+    check_read("$x", "(path gene x)")
+    check_read("$str/join", "(path gene str join)")
+    check_read("$Actor", "(path gene Actor)")
+    # The bare `$` concat head and `$"..."` interpolation are unaffected: `\"`
+    # is not a symbol character, so neither can be read as a member path.
+    check_read("($ \"a\" 1)", "($ \"a\" 1)")
+    check_eval("($println \"x\") ($str/join [\"a\" \"b\"] \"-\")", "\"a-b\"")
+    check_eval("[(same? $Actor Actor) (same? $Env Env) ($ \"a\" 1)]",
+               "[true true \"a1\"]")
+    check_eval("(var x 5) $\"v=${x}\"", "\"v=5\"")
+
   test "selector literals and context-neutral paths stay distinct":
     check_read("/user/name", "(select user name)")
     check_read("user/name", "(path user name)")

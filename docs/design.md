@@ -3748,9 +3748,25 @@ namespaces. They are reserved in *binding* position the way core special forms
 are reserved in head position: user code may not declare, bind, alias,
 import-as, or shadow them anywhere. The standard library lives under `gene`, so
 every built-in is reachable qualified — `gene/map`, `gene/str/join`,
-`gene/net/http/serve` — and existing bare names remain available for now. There
-is no `std` namespace; the former `std/*` stream/node/parse namespaces are
-`gene/stream`, `gene/node`, `gene/parse` (and bare `stream`/`node`/`parse`).
+`gene/net/http/serve`. There is no `std` namespace; the former `std/*`
+stream/node/parse namespaces are `gene/stream`, `gene/node`, `gene/parse`.
+
+**`$x` is sugar for `gene/x`**, so the qualified form costs one character:
+`$map`, `$str/join`, `$Actor`, `$net/http/serve`. It reads as the ordinary
+member path it desugars to — `$foo` is exactly `(path gene foo)` — and since
+the `gene` root cannot be shadowed, `$x` always means the standard library
+regardless of what is bound locally.
+
+The sigil is unambiguous against the two other uses of `$`, because `"` is not
+a symbol character: `$"a ${b}"` stays interpolation and a lone `$` stays the
+concat head (`($ "a" 1)` → `"a1"`). Only `$` immediately followed by a symbol
+character is a member path.
+
+This is what lets the bare surface shrink. The goal is that **nothing is
+special except keywords and the reserved roots**: a bare name means whatever the
+program binds it to, and the standard library is reached through `$`. Bare
+built-in names remain available during the migration, so both spellings work
+today.
 
 The four roots form a library lifecycle in which each transition is a root-swap
 with the internal path preserved (a mechanical rename that defers the semantic

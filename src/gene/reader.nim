@@ -27,7 +27,7 @@ type
     tkString, tkBytes, tkRegex, tkInt, tkFloat, tkDate, tkTime, tkDateTime,
     tkSymbol, tkChar,
     tkComma, tkColon, tkEqual, tkSemi, tkSlash, tkPercent,
-    tkBacktick, tkDollar, tkUnderscore,
+    tkBacktick, tkDollar, tkGeneMember, tkUnderscore,
     tkLineComment, tkBlockComment
 
   Token* = object
@@ -881,11 +881,19 @@ proc tokenizeImpl(r: var Reader,
     of '%': r.advance(); r.addToken(tkPercent, "%", startLine, startCol, startByte)
     of '`': r.advance(); r.addToken(tkBacktick, "`", startLine, startCol, startByte)
     of '$':
-      r.advance()
-      if r.nextChar() == '"':
-        # Interpolated string handled by string logic
-        r.addToken(tkDollar, "$", startLine, startCol, startByte)
+      # `$x` is sugar for the `gene/x` member path, so the stdlib is reachable
+      # without occupying a bare name (design §2.1). A `"` is not a symbol
+      # char, so `$"..."` interpolation and the bare `$` concat head both fall
+      # through to the plain dollar token.
+      if r.pos + 1 < r.src.len and r.src[r.pos + 1].isSymbolChar:
+        r.advance()
+        let lexStart = r.pos
+        while r.pos < r.src.len and r.src[r.pos].isSymbolChar:
+          r.advance()
+        r.addToken(tkGeneMember, r.src[lexStart ..< r.pos],
+                   startLine, startCol, startByte)
       else:
+        r.advance()
         r.addToken(tkDollar, "$", startLine, startCol, startByte)
     of '^':
       r.advance()
@@ -1030,6 +1038,7 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkTime: "time"
   of tkDateTime: "datetime"
   of tkSymbol: "symbol"
+  of tkGeneMember: "gene_member"
   of tkChar: "char"
   of tkComma: "comma"
   of tkColon: "colon"
@@ -1479,6 +1488,12 @@ proc parseForm(r: var Reader, inList = false): Value =
           finish newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])
         finish desugarPath(lex)
       else: finish newSym(lex)
+  of tkGeneMember:
+    # `$x` / `$str/join` select from the `gene` root, which cannot be shadowed.
+    if tok.lexeme.endsWith("..."):
+      finish newNode(newSym("..."),
+                     body = @[desugarPath("gene/" & tok.lexeme[0..^4])])
+    finish desugarPath("gene/" & tok.lexeme)
   of tkLParen:
     r.pushReadContext(tok)
     finish r.parseNode(tkRParen)
