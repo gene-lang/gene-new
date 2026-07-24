@@ -119,6 +119,7 @@ type
     opSyntaxCall  # pop raw call node + fn! callee, apply the syntax call (design §3/§11.1)
     opSyntaxGuard # if the callee on top is a fn!, syntax_call the const node and jump
     opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
+    opRequireMessage # require the callee on top to be a message value at a dynamic (%m/expr) send
 
   Instruction* = object
     op*: OpCode
@@ -803,7 +804,7 @@ proc formatInstruction(inst: Instruction): string =
   of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
      opJumpIfPresentOrPop, opJump:
     result.add " target=" & $inst.intArg
-  of opSyntaxCall, opRejectSyntaxSend:
+  of opSyntaxCall, opRejectSyntaxSend, opRequireMessage:
     discard
   of opSyntaxGuard:
     result.add " target=" & $inst.intArg & " const=" & $inst.depth

@@ -4819,7 +4819,8 @@ proc compileHashMapValue(c: var Compiler, value: Value) =
     compileExpr(c, entry.val)
   discard c.emit(opMakeHashMap, value.hashMapEntries.len)
 
-proc compileCall(c: var Compiler, node: Value, allowSyntax = true)
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
+                 requireMessage = false)
 
 proc messageCandidateSetIndex(c: var Compiler): int =
   var refs: seq[ProtocolCandidateRef]
@@ -4883,33 +4884,41 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         c.emit(opCall, argCount, names = names)
     c.chunk.callSites[callIndex] = node
 
-proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
+                 requireMessage = false) =
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       node.body[0].symVal == "~":
-    # (x ~ f a) — infix message send / flipped call (docs/core.md §9.1).
+    # (x ~ f a) — infix message send (docs/core.md §9.1).
     if node.body[1].kind == vkSymbol and
         not node.props.hasKey("protocol") and
         not node.props.hasKey("receiver") and
         not node.props.hasKey("types"):
       compileSend(c, node, node.head, node.body[1].symVal, 2)
       return
-    # (x ~ %m a) sends a held message value (design §8) — `%m` reads as
-    # (unquote m);
-    # unwrap it so the callee is the evaluated `m`, then dispatch it on x. A
-    # protocol-message value called with args dispatches on arg 0, so this
-    # reuses the ordinary flipped-call path; allowSyntax=false rejects a fn!.
+    # A non-bare callee is one of two things (design §3/§8):
+    #   * a literal member form — a qualified path (x ~ P/m a) / (x ~ Cell/get),
+    #     a selector (x ~ /name), or pre-resolved protocol metadata. Each names a
+    #     member syntactically, so evaluate it and flip x in as the receiver.
+    #   * a dynamic value — (x ~ %m a) / (x ~ (expr) a): the callee is a runtime
+    #     value that MUST be a message value, so a plain function or held fn! is
+    #     rejected (opRequireMessage) rather than invoked. `%m` reads as
+    #     (unquote m); unwrap it so the callee is the evaluated `m`.
     var calleeHead = node.body[1]
     if calleeHead.kind == vkNode and calleeHead.head.isSymbol("unquote") and
         calleeHead.body.len == 1:
       calleeHead = calleeHead.body[0]
-    # Qualified or expression callees keep flipped-call semantics:
-    # (x ~ X/f a) => (X/f x a). Direct-call metadata also stays on this path.
+    let staticMember =
+      (node.body[1].kind == vkNode and
+       (node.body[1].head.isSymbol("path") or
+        node.body[1].head.isSymbol("select"))) or
+      node.props.hasKey("protocol") or node.props.hasKey("receiver") or
+      node.props.hasKey("types")
     var args = newSeqOfCap[Value](node.body.len - 1)
     args.add node.head
     for i in 2 ..< node.body.len:
       args.add node.body[i]
     compileCall(c, newNode(calleeHead, node.props, args, node.meta),
-                allowSyntax = false)
+                allowSyntax = false, requireMessage = not staticMember)
     return
   let localSyntaxHead = c.syntaxFnNames.len > 0 and
     node.head.kind == vkSymbol and c.syntaxFnNames.hasKey(node.head.symVal) and
@@ -4925,8 +4934,11 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
     c.emitConst node
     c.chunk.callSites[c.emit(opSyntaxCall)] = node
     return
-  let knownOrdinary = c.calleeKnownOrdinary(node.head) or
-    node.props.hasKey("protocol")
+  # A dynamic send (requireMessage) must reach the generic evaluated-head path
+  # so opRequireMessage guards the callee value; the fast direct-call paths
+  # below would emit an ordinary call with no message check.
+  let knownOrdinary = (c.calleeKnownOrdinary(node.head) or
+    node.props.hasKey("protocol")) and not requireMessage
   if knownOrdinary and node.props.len == 0 and
       node.head.kind == vkSymbol and node.body.len == 0:
     let direct = c.lexicalCallSlot0(node.head.symVal)
@@ -5032,7 +5044,9 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
     if allowSyntax and not knownOrdinary:
       c.emit(opSyntaxGuard, 0, depth = c.chunk.addConst(node))
     elif not allowSyntax:
-      discard c.emit(opRejectSyntaxSend)
+      # A dynamic `~` send requires a message value; an ordinary evaluated-head
+      # call only rejects a held fn!.
+      discard c.emit(if requireMessage: opRequireMessage else: opRejectSyntaxSend)
       -1
     else:
       -1
@@ -5088,10 +5102,22 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
     compileExpr(c, newNode(newSym("path"),
                            body = @[node.props["protocol"], node.body[0]]))
   else:
-    compileExpr(c, node.body[0])
-  # `~` is ordinary message-send/flipped-call syntax. SyntaxCallable values
-  # are valid only in call-head position, and rejection precedes send args.
-  discard c.emit(opRejectSyntaxSend)
+    # `%m` reads as (unquote m); unwrap it so the callee is the evaluated `m`,
+    # matching `(x ~ %m)` — `(~ f)` is just `(self ~ f)`.
+    var calleeHead = node.body[0]
+    if calleeHead.kind == vkNode and calleeHead.head.isSymbol("unquote") and
+        calleeHead.body.len == 1:
+      calleeHead = calleeHead.body[0]
+    compileExpr(c, calleeHead)
+  # A literal member form (qualified path, selector, protocol metadata) names a
+  # member and dispatches through it; a dynamic callee must be a message value,
+  # since `~` dispatches only (design §3/§8). Either way rejection precedes send
+  # arguments — SyntaxCallable values are valid only in call-head position.
+  let staticMember = hasProtocol or hasReceiver or
+    (node.body[0].kind == vkNode and
+     (node.body[0].head.isSymbol("path") or
+      node.body[0].head.isSymbol("select")))
+  discard c.emit(if staticMember: opRejectSyntaxSend else: opRequireMessage)
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:

@@ -323,9 +323,10 @@ Simple names are a secondary index, not the dispatch key. A protocol can have
 more than one closure message whose local name is `do_x`; the key used by
 completeness checking and dispatch is the message value / qualified identity
 (`A/do_x`, `B/do_x`). The simple-name index is useful for diagnostics and for
-the unique-name shorthand in impl bodies and unqualified sends, but it must
-be able to represent "ambiguous: qualify this name" rather than storing only
-one message.
+the unique-name shorthand in impl bodies, but it must be able to represent
+"ambiguous: qualify this name" rather than storing only one message. It is not
+a send-resolution path: an unqualified send never reaches a protocol message
+(§9.1).
 
 **Protocol-ancestor matching at dispatch time walks the parent chain, and
 this is a deliberate deviation from an earlier draft of this section**, which
@@ -589,10 +590,12 @@ what created the cross-type collision problem in the first place.
 
 `~` is Gene's message-send operator. Three sources can provide behavior for
 a receiver: protocol messages (§1, §4), type-direct messages (§8), and
-fully-defaulted protocols (§5). `~` reaches all of them by unqualified name,
-resolved **in the receiver's context** — this is what distinguishes a send
-from an ordinary call. A bare call `(f x)` resolves `f` lexically, like any
-call head; a send `(x ~ f)` resolves `f` against `x` first.
+fully-defaulted protocols (§5). `~` reaches all of them, resolved **in the
+receiver's context** — this is what distinguishes a send from an ordinary call.
+A bare call `(f x)` resolves `f` lexically, like any call head; a send `(x ~ f)`
+resolves `f` against `x` first. An **unqualified** name reaches type-direct
+messages only; protocol messages are reached by their qualified name
+`(x ~ P/m)`.
 
 ### 9.1 The send forms
 
@@ -629,7 +632,11 @@ The **held-value send** `(x ~ %m ...)` evaluates `m` to a message value and
 dispatches it on `x`. `%m` is the ordinary `%` escape (design §5): a bare name
 after `~` is a static message name, `%m` pulls a message value from lexical
 scope. This is the one path by which a lexically-held value participates in a
-send.
+send — and it stays a *send*: the value must be a message, so a plain function
+or a held `Fn!` raises `CallKindError` (`^expected "Message"`) rather than being
+invoked. A parenthesized expression callee `(x ~ (expr) ...)` carries the same
+requirement. Selector callees `(x ~ /name)` are literal member forms, not
+dynamic values, and select the member as written.
 
 The **implicit-self** form `(~ name ...)` desugars to `(self ~ name ...)`, a
 compile-time error when no `self` is in scope. Inside a message or `ctor` body
@@ -750,8 +757,10 @@ implemented and stable, and sit at implementation-order item 13; base
   (round-trips exactly); `opResolveMessage` resolves type-direct messages
   walking `^is`, raising `MessageError` when nothing matches (no lexical
   fallback); `(~ f a)` sends to lexical `self`; `(super ~ f a)` delegates via
-  `opSuperSend`; `(x ~ %m a)` sends a held message value; qualified sends and
-  the `^protocol`/`^receiver` direct-call metadata path go through protocol
+  `opSuperSend`; `(x ~ %m a)` sends a held message value, guarded by
+  `opRequireMessage` so a dynamic callee that is not a message value raises
+  `CallKindError`; qualified sends, selector sends, and the
+  `^protocol`/`^receiver` direct-call metadata path go through protocol
   member access
 - Tests: `tests/test_protocols.nim`, plus migrated cases in
   `tests/test_modules.nim`, `tests/test_errors.nim`, `tests/test_vm.nim`,
@@ -780,7 +789,7 @@ implemented and stable, and sit at implementation-order item 13; base
 | OQ-E | Defaults (§5) and derive (§6) both feed the impl-completeness checker at compile time. Should they be one compiler pass or two? | Keep them as two separate, ordered passes: resolve default-fallback dispatch entries as a dispatch-table concern (§4/§5), and run derive expansion as a separate codegen concern, with completeness-checking happening only after both have run. A single merged pass makes it harder to tell whether a missing-message error came from a broken default or a broken derive. |
 | OQ-F | Under receiver-first resolution (§9.1), a type message silently shadows a same-named lexical binding at `~` send sites. Error, lint, or silence? | **Moot.** The lexical fallback was removed; `~` and lexical names never share a resolution path (§9.3), so there is nothing to shadow. |
 | OQ-G | Should the lexical fallback exist at all, or should `~` be receiver-only? | **Resolved — receiver-only.** The fallback is removed. A bare name that resolves to no message is a `MessageError` (§9.1). The pipeline ops (`map`/`filter`/`take`/`into`/`each`, `to_stream`) are now type-direct messages on their receivers. |
-| OQ-H | Should bare `(x ~ name)` ever resolve a protocol message? | **Settled.** Resolves iff exactly one applicable protocol message has that simple name; ambiguity requires qualification. |
+| OQ-H | Should bare `(x ~ name)` ever resolve a protocol message? | **Resolved — no.** An unqualified send reaches type-direct messages only, walking `^is`; protocol messages are always qualified (`x ~ P/m`). The earlier rule ("resolves iff exactly one applicable protocol message has that simple name") is superseded: it made adding a same-named protocol message silently redirect existing sends, and the compile-time candidate set it required is gone (§9.1). |
 | OQ-I | Should protocol declarations also bind message simple names in the enclosing scope (enabling bare calls like `(to_name x)`)? | **Settled — no, for now.** Messages are reachable via qualified access and sends only (§1). Scope binding can be added later as an additive feature; adding it would require an ambiguity-marker binding design for same-named messages across protocols in one scope. |
 | OQ-J | Does Gene need a `super` / `call-next-method` to invoke an overridden implementation from within an override? | **Resolved — implemented for type-direct messages.** `(super ~ m ...)` delegates to the implementation above the enclosing type on the `^is` chain, called with `self`, resolved statically and relative to the enclosing type (so `C ^is B ^is A` steps one level per body). `(super ~ Proto/m)` for protocol-impl delegation stays deferred: overlapping `impl P A` + `impl P B` (`B ^is A`) is an ambiguity error today, so protocols need a precedence rule first. |
 

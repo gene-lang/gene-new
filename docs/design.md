@@ -740,12 +740,17 @@ callable, the diagnostic says so ("… is a function — did you mean to call it
 not send it?"), and when it names a protocol message it hints to qualify. Full
 resolution rules: `docs/core.md §9`.
 
-`~` resolves only ordinary `Callable` behavior. An expression or `%m` callee
-that is an `Fn!`/`SyntaxCallable` is rejected immediately, before any remaining
-send argument is evaluated. The recoverable error is `CallKindError`, a subtype
-of `TypeError`, with `^where`, `^expected`, `^actual`, and `^actual_value`
-diagnostics. Syntax callables are invoked only in ordinary call-head position;
-send syntax is never reinterpreted as a syntax call.
+A **non-bare callee** is one of two things. A *literal member form* — a
+qualified path (`x ~ P/m`, `x ~ Cell/get`) or a selector (`x ~ /name`) — names a
+member syntactically and dispatches through it. A *dynamic callee* — `%m` or a
+parenthesized expression — must evaluate to a **message value**: `~` dispatches
+only, so a plain function or a held `Fn!` in that position is rejected rather
+than invoked, and `(x ~ %some_fn)` never becomes a back-door function call. The
+recoverable error is `CallKindError`, a subtype of `TypeError`, with `^where`,
+`^expected` (`"Message"`), `^actual`, and `^actual_value` diagnostics; rejection
+happens before any remaining send argument is evaluated. Syntax callables are
+invoked only in ordinary call-head position; send syntax is never reinterpreted
+as a syntax call.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
@@ -4577,7 +4582,7 @@ Deferred until after the first implementation slice:
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` on `x`'s runtime type (type-direct messages walking `^is`, then visible protocol impls); an unresolved name is a recoverable `MessageError`. `(x ~ X/f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
+- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ X/f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
 - `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `Env/snapshot`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.

@@ -12358,6 +12358,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "VM stack underflow checking message callable")
           if stack[sp - 1].isSyntaxFn:
             rejectSyntaxSend(stack[sp - 1], scope)
+        of opRequireMessage:
+          # A dynamic send — (x ~ %m) / (x ~ (expr)) — must resolve to a message
+          # value; `~` dispatches only and never invokes an arbitrary function or
+          # a held fn! (design §3/§8). A protocol message is the one first-class
+          # message value; anything else is a CallKindError (a TypeError subtype).
+          if sp == 0:
+            raise newException(GeneError,
+              "VM stack underflow checking message value")
+          let callee = stack[sp - 1]
+          if callee.kind != vkProtocolMessage:
+            if callee.isSyntaxFn:
+              rejectSyntaxSend(callee, scope)
+            raiseCallKindError("message send", "Message",
+                               freezeRejectName(callee), callee, scope)
         of opReturn:
           frameReturn(if sp > 0: spop() else: NIL)
         of opReturnBareInt:

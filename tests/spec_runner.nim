@@ -1980,6 +1980,36 @@ suite "spec — implicit self in message bodies from design §10":
                "(try ([1] ~ %f 1) catch (CallKindError ^where w) w)",
                "\"message send\"")
 
+  test "a dynamic send requires a message value, not an arbitrary function":
+    # (x ~ %m) / (x ~ (expr)) dispatch only: a plain function held in the
+    # callee value is rejected, so `~` never invokes an arbitrary function.
+    check_eval("(fn f [x] x) (var m f) " &
+               "(try ([1] ~ %m) catch (CallKindError ^expected e) e)",
+               "\"Message\"")
+    check_eval("(fn f [x] x) " &
+               "(try ([1] ~ (do f)) catch (CallKindError ^where w) w)",
+               "\"message send\"")
+
+  test "a dynamic send accepts an expression that yields a message value":
+    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
+               "(type M ^props {^name Str} " &
+               "  (impl ToHtml (message to_html [] : Str self/name))) " &
+               "(var m ToHtml/to_html) " &
+               "((M ^name \"z\") ~ (do m))",
+               "\"z\"")
+
+  test "a leading self send takes held, qualified, and selector callees":
+    # `(~ f)` is `(self ~ f)`, so it accepts the same callee forms.
+    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
+               "(type M ^props {^name Str} " &
+               "  (impl ToHtml (message to_html [] : Str self/name)) " &
+               "  (message held [] (var m ToHtml/to_html) (~ %m)) " &
+               "  (message qual [] (~ ToHtml/to_html)) " &
+               "  (message sel  [] (~ /name))) " &
+               "(var x (M ^name \"n\")) " &
+               "[(x ~ held) (x ~ qual) (x ~ sel)]",
+               "[\"n\" \"n\" \"n\"]")
+
   test "an inline impl message binds self implicitly":
     check_eval("(protocol Greet (message hi [] : Str)) " &
                "(type P ^props {^name Str} " &
