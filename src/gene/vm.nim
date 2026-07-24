@@ -306,6 +306,12 @@ type
 
   Application* = ref object of RuntimeContext
     builtins: Scope
+    # The whole standard library, i.e. the scope behind the `gene` namespace.
+    # `builtins` is only the *lexical* root, which deliberately exposes almost
+    # nothing (design §2.1): user code reaches the library as `gene/x` / `$x`.
+    # Internal resolution — built-in type messages, error types raised by the
+    # VM — goes through here so it does not depend on the bare surface.
+    stdlib: Scope
     spawnBuiltinsPublished: bool
     scheduler: SchedulerState
     nativeAdd: Value
@@ -380,6 +386,14 @@ proc application*(scope: Scope): Application
 proc builtinsScope*(app: Application): Scope
 proc builtinsScope*(): Scope
 proc resolveModulePath*(app: Application, rawPath: string): string
+
+proc builtinTypeBinding(scope: Scope, name: string, value: var Value): bool =
+  ## Resolve a standard-library type the VM raises or checks against (`Error`,
+  ## `TypeError`, `Send`, ...). These come from the `gene` scope rather than the
+  ## lexical chain: nothing is pre-bound bare (design §2.1), and a local binding
+  ## of the same name must not change which type an internal raise constructs.
+  value = builtinBinding(scope, name)
+  value.kind != vkNil
 
 type
   SuspendError = object of CatchableError
@@ -1547,7 +1561,7 @@ proc raiseChannelClosed(scope: Scope) =
   props["message"] = newStr("channel is closed")
   var head = newSym("ChannelClosed")
   var closedType: Value
-  if scope != nil and scope.lookupOptional("ChannelClosed", closedType) and
+  if builtinTypeBinding(scope, "ChannelClosed", closedType) and
       closedType.kind == vkType:
     head = closedType
   var e: ref GeneError
@@ -1807,7 +1821,7 @@ proc raiseActorClosed(scope: Scope) =
   props["message"] = newStr("actor is closed")
   var head = newSym("ActorClosed")
   var closedType: Value
-  if scope != nil and scope.lookupOptional("ActorClosed", closedType) and
+  if builtinTypeBinding(scope, "ActorClosed", closedType) and
       closedType.kind == vkType:
     head = closedType
   var e: ref GeneError
@@ -1825,7 +1839,7 @@ proc raiseReplyAlreadySent(scope: Scope) =
   props["message"] = newStr(message)
   var head = newSym("ReplyAlreadySent")
   var sentType: Value
-  if scope != nil and scope.lookupOptional("ReplyAlreadySent", sentType) and
+  if builtinTypeBinding(scope, "ReplyAlreadySent", sentType) and
       sentType.kind == vkType:
     head = sentType
   var e: ref GeneError
@@ -1840,7 +1854,7 @@ proc actorErrorValue(scope: Scope, message: string): Value =
   props["message"] = newStr(message)
   var head = newSym("ActorError")
   var actorError: Value
-  if scope != nil and scope.lookupOptional("ActorError", actorError) and
+  if builtinTypeBinding(scope, "ActorError", actorError) and
       actorError.kind == vkType:
     head = actorError
   newNode(head, props = props)
@@ -1863,7 +1877,7 @@ proc supervisorFailureValue(scope: Scope, actor, failedMessage: Value,
   props["strategy"] = newSym(actorFailureStrategyName(actor.actorFailureStrategy))
   var head = newSym("ActorFailure")
   var failureType: Value
-  if scope != nil and scope.lookupOptional("ActorFailure", failureType) and
+  if builtinTypeBinding(scope, "ActorFailure", failureType) and
       failureType.kind == vkType:
     head = failureType
   newNode(head, props = props)
@@ -5009,6 +5023,14 @@ proc typeReflectionMessage(name: string): Value =
   of "name": newNativeFn("Type/name", biTypeName)
   else: NIL
 
+const bareRootNames = [
+  # Operators are a closed, language-defined set (design §2.2): users cannot
+  # declare them, so pre-binding them costs no name and `($+ 1 2)` would be
+  # noise. `$` is the concat/interpolation head. Everything else lives under
+  # the `gene` root and is written `gene/x` or `$x`.
+  "+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$",
+]
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -5510,20 +5532,33 @@ proc buildBuiltins(app: Application): Scope =
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
   registerStdlibNamespaces(result)
-  # Stage 1 of the stdlib-root migration: every existing builtin remains bare
-  # for compatibility and is also reachable through the unshadowable `gene`
-  # root. Nested namespace values are shared, preserving builtin identities.
-  # Defined after all bare builtins (incl. the former std/* → gene/stream,
-  # gene/node, gene/parse) so the whole surface is mirrored, and before
-  # `genex` so `gene` never contains a reserved sibling root.
+  # The standard library lives under the unshadowable `gene` root and is reached
+  # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
+  # bare name means whatever the program binds it to, so reading a name tells
+  # you where it comes from. Operators stay bare — they are a closed,
+  # language-defined set that users cannot declare anyway.
   let geneScope = newScope(result)
   for name, value in result.vars:
     geneScope.define(name, value)
+  # Bare-surface removal, staged. `GENE_NO_BARE_BUILTINS=1` prunes the lexical
+  # root to operators + the reserved roots, which is the end state: nothing
+  # pre-bound, the library reached as `$x`. It is opt-in until two things land —
+  # the test corpus migration, and a decision on type annotations, which resolve
+  # names structurally and today accept `: List` but not `: $List`.
+  if getEnv("GENE_NO_BARE_BUILTINS").len > 0:
+    var bare: seq[(string, Value)]
+    for name, value in result.vars:
+      if name in bareRootNames:
+        bare.add (name, value)
+    result.vars.clear()
+    for entry in bare:
+      result.define(entry[0], entry[1])
   result.define("gene", newNamespace("gene", geneScope))
   # `genex` is an active, initially empty root for experimental/incubating
   # APIs; `geney`/`genez` stay reserved but undefined. All four are rejected in
   # binding position by the compiler (reservedStdlibRoots).
   result.define("genex", newNamespace("genex", newScope(result)))
+  app.stdlib = geneScope
 
 var gApplication: Application
 
@@ -7184,10 +7219,16 @@ proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
   scope != nil and scope.hasVisibleImpl(protocol, typ)
 
 proc builtinBinding(scope: Scope, name: string): Value =
-  let root =
-    if scope == nil: builtinsScope()
-    else: scope.application().builtinsScope()
-  root.lookup(name)
+  ## Resolve a standard-library name for the VM's own use. This reads the
+  ## `gene` scope, not the lexical root, so built-in type messages and the
+  ## error types the VM raises keep working even though almost nothing is
+  ## pre-bound bare (design §2.1).
+  let app =
+    if scope == nil: currentApplication()
+    else: scope.application()
+  discard app.builtinsScope()      # forces construction, which fills `stdlib`
+  if app.stdlib != nil: app.stdlib.lookup(name)
+  else: NIL
 
 proc isBuiltinCallable(value: Value): bool =
   # fn! values implement SyntaxCallable, not Callable (design §3).
@@ -7593,7 +7634,7 @@ proc isSendableValue(value: Value, scope: Scope,
       return false
     var sendProtocol: Value
     if value.head.kind == vkType and scope != nil and
-        scope.lookupOptional("Send", sendProtocol) and
+        builtinTypeBinding(scope, "Send", sendProtocol) and
         sendProtocol.kind == vkProtocol and
         scope.typeImplementsProtocol(value.head, sendProtocol):
       return true
@@ -8282,7 +8323,7 @@ proc isErrorValue(scope: Scope, value: Value): bool =
   if value.kind != vkNode or value.head.kind != vkType:
     return false
   var errorProtocol: Value
-  if scope == nil or not scope.lookupOptional("Error", errorProtocol) or
+  if not builtinTypeBinding(scope, "Error", errorProtocol) or
       errorProtocol.kind != vkProtocol:
     return false
   scope.typeImplementsProtocol(value.head, errorProtocol)
@@ -8291,7 +8332,7 @@ proc isErrorType(scope: Scope, typ: Value): bool =
   if typ.kind != vkType:
     return false
   var errorProtocol: Value
-  if scope == nil or not scope.lookupOptional("Error", errorProtocol) or
+  if not builtinTypeBinding(scope, "Error", errorProtocol) or
       errorProtocol.kind != vkProtocol:
     return false
   scope.typeImplementsProtocol(typ, errorProtocol)
@@ -8380,7 +8421,7 @@ proc isBoundaryTypeError(value: Value, scope: Scope): bool =
   if value.kind != vkNode:
     return false
   var typeError: Value
-  scope != nil and scope.lookupOptional("TypeError", typeError) and
+  builtinTypeBinding(scope, "TypeError", typeError) and
     typeError.kind == vkType and value.head.isSubtypeOf(typeError)
 
 proc checkTaskError(task: Value, hasValue: bool, value: Value) =
@@ -8443,7 +8484,7 @@ proc raiseMatchError(scope: Scope, message: string) =
   props["message"] = newStr(message)
   var head = newSym("MatchError")
   var matchError: Value
-  if scope != nil and scope.lookupOptional("MatchError", matchError) and
+  if builtinTypeBinding(scope, "MatchError", matchError) and
       matchError.kind == vkType:
     head = matchError
   var e: ref MatchError
@@ -8458,7 +8499,7 @@ proc raiseCompileError(scope: Scope, message: string) =
   props["message"] = newStr(message)
   var head = newSym("CompileError")
   var compileError: Value
-  if scope != nil and scope.lookupOptional("CompileError", compileError) and
+  if builtinTypeBinding(scope, "CompileError", compileError) and
       compileError.kind == vkType:
     head = compileError
   var e: ref GeneError
@@ -14327,7 +14368,7 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   props["actual_value"] = value
   var head = newSym("TypeError")
   var typeError: Value
-  if scope != nil and scope.lookupOptional("TypeError", typeError) and
+  if builtinTypeBinding(scope, "TypeError", typeError) and
       typeError.kind == vkType:
     head = typeError
   var e: ref GeneError
@@ -14348,7 +14389,7 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   props["actual_value"] = value
   var head = newSym("CallKindError")
   var callKindError: Value
-  if scope != nil and scope.lookupOptional("CallKindError", callKindError) and
+  if builtinTypeBinding(scope, "CallKindError", callKindError) and
       callKindError.kind == vkType:
     head = callKindError
   var e: ref GeneError
@@ -14383,7 +14424,7 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
     props["protocol"] = newStr(protocol)
   var head = newSym("MessageError")
   var messageError: Value
-  if scope != nil and scope.lookupOptional("MessageError", messageError) and
+  if builtinTypeBinding(scope, "MessageError", messageError) and
       messageError.kind == vkType:
     head = messageError
   var e: ref GeneError
@@ -15413,7 +15454,7 @@ proc raiseSelectorMissing(segment: Value) =
   var head = newSym("SelectorMissing")
   let root = builtinsScope()
   var missingType: Value
-  if root.lookupOptional("SelectorMissing", missingType) and
+  if builtinTypeBinding(root, "SelectorMissing", missingType) and
       missingType.kind == vkType:
     head = missingType
   var e: ref GeneError

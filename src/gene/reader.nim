@@ -1145,7 +1145,15 @@ proc desugarPath*(lexeme: string): Value =
   for p in parts:
     if p.len == 0: continue # leading or trailing slash
     if p.startsWith("%"):
-      body.add newNode(newSym("unquote"), body = @[newSym(p[1..^1])])
+      # `%x` escapes to a lexical value; `%$x` escapes to a standard-library
+      # one, so `$` means `gene/` wherever a name is legal.
+      let inner = p[1..^1]
+      let escaped =
+        if inner.startsWith("$") and inner.len > 1:
+          desugarPath("gene/" & inner[1..^1])
+        else:
+          newSym(inner)
+      body.add newNode(newSym("unquote"), body = @[escaped])
     else:
       if p.isIntLexeme:
         body.add newIntFromDecimal(p)

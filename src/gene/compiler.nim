@@ -1,6 +1,6 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
-import std/[algorithm, sets, strutils, tables]
+import std/[algorithm, os, sets, strutils, tables]
 import ./[equality, gir, reader, types]
 
 type
@@ -104,6 +104,13 @@ type
     # childCompiler copies the set so a nested `var` shadows an outer `let`
     # without un-marking the outer.
     letNames: HashSet[string]
+    # Every name this compiler has bound, slots or not. `localSlots` is empty
+    # when a body compiles without slots, so it cannot answer "is this name a
+    # binding?"; this set can. It is never pruned on scope exit, which biases
+    # the bare-name lint toward under-reporting — a missed site is caught later
+    # as an undefined symbol, whereas a false positive would silently rewrite a
+    # local into a standard-library reference.
+    declaredNames: HashSet[string]
     # Inside a message/ctor body the receiver `self` is reserved: no nested
     # binder may shadow it, so a leading send `(~ m)` always means the original
     # receiver (design §10). Inherited by every descendant compiler.
@@ -255,6 +262,7 @@ proc reserveLocal(c: var Compiler, name: string): int =
   # not survive shadowing (design §11.1). fn! definitions re-add themselves.
   c.syntaxFnNames.del(name)
   c.ordinaryFnNames.del(name)
+  c.declaredNames.incl name
   if not c.useLocalSlots:
     return -1
   if c.localSlots.hasKey(name):
@@ -472,6 +480,26 @@ proc lexicalCallSlot0(c: Compiler, name: string): tuple[op: OpCode, depth: int, 
     return (opCallOuterLocal0, outer.depth, outer.slot)
   (opCall, -1, -1)
 
+# Migration aid for the bare-surface removal (design §2.1). With GENE_LINT_BARE
+# set, the compiler reports every symbol that is not lexically bound — i.e.
+# every reference that used to reach a root built-in — as `file:line:col name`.
+# The compiler is the only thing that can tell those apart from a local, a
+# message name, or a property key, so the rewrite is driven from this list.
+let lintBareNames* = getEnv("GENE_LINT_BARE").len > 0
+
+proc reportBareName(c: Compiler, name: string) =
+  if not lintBareNames or c.hasLexicalBinding(name) or
+      name in c.declaredNames:
+    return
+  # The reserved roots stay bare (they are how `$x` resolves), and so do the
+  # operators, which users cannot declare in the first place.
+  if name in reservedStdlibRoots or
+      name in ["+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$"]:
+    return
+  let loc = c.currentLoc
+  stderr.writeLine("BARE\t" & loc.sourceName & "\t" & $loc.line & "\t" &
+                   $loc.col & "\t" & name)
+
 proc emitLoadBinding(c: var Compiler, name: string) =
   # One name, one meaning: a macro name may not be used in value position
   # (design §11). Macros are compile-time rewriters, not runtime values.
@@ -499,6 +527,7 @@ proc emitLoadBinding(c: var Compiler, name: string) =
             "' cannot be used as a value; call it in head position")
         discard c.emit(opLoadName, name = name)
         return
+      c.reportBareName(name)
       let fastKind = nativeFastLoadKind(name)
       if fastKind != nfkNone and c.allowAmbientImports:
         discard c.emit(opLoadNativeFast, ord(fastKind), name = name)
@@ -624,6 +653,7 @@ proc childCompiler(c: Compiler): Compiler =
            ordinaryFnNames: c.ordinaryFnNames,
            mutableBindingNames: c.mutableBindingNames,
            letNames: c.letNames,
+           declaredNames: c.declaredNames,
            selfReserved: c.selfReserved,
            superType: c.superType,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
@@ -4980,6 +5010,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
                                depth = direct.depth)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
+      c.reportBareName(node.head.symVal)
       c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
       return
   if knownOrdinary and node.props.len == 0 and
@@ -5017,6 +5048,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
     if not c.hasLexicalBinding(node.head.symVal):
       let argKnownBareInt = c.exprKnownBareInt(node.body[0])
       compileExpr(c, node.body[0])
+      c.reportBareName(node.head.symVal)
       c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal,
                                flag = argKnownBareInt)] = node
       return
@@ -5038,6 +5070,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       for arg in node.body:
         argsKnownBareInt = argsKnownBareInt and c.exprKnownBareInt(arg)
         compileExpr(c, arg)
+      c.reportBareName(node.head.symVal)
       c.chunk.callSites[c.emit(opCallNameN, name = node.head.symVal,
                                depth = node.body.len,
                                flag = argsKnownBareInt)] = node

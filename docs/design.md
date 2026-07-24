@@ -3768,6 +3768,24 @@ program binds it to, and the standard library is reached through `$`. Bare
 built-in names remain available during the migration, so both spellings work
 today.
 
+The end state is implemented but not yet switched on: with
+`GENE_NO_BARE_BUILTINS=1` the lexical root holds only the operators and the
+reserved roots, and the VM resolves its own needs (built-in type messages, the
+error types it raises) from the `gene` scope rather than the lexical chain. Two
+things gate the flip:
+
+- **Type annotations.** They resolve names structurally, not as bindings, which
+  is why `Int`, `Str`, and `Bool` work without being bound at all. `List`,
+  `Map`, `Set`, and `C` are *both* annotation names and namespaces, and today
+  `[xs : List]` resolves while `[xs : $List]` does not. Either annotation
+  resolution learns the `gene` root, or these names stay bare.
+- **Corpus migration.** It has to be driven by real resolution failures, not by
+  rewriting ahead of time. Built-in names like `body`, `url`, `key`, `data`,
+  `parse`, and `store` are common local-variable names, so any approximate
+  scope analysis silently turns a local into a standard-library reference.
+  Removing the bindings first makes every stale reference an *error*, which is
+  the only signal that cannot produce a false positive.
+
 The four roots form a library lifecycle in which each transition is a root-swap
 with the internal path preserved (a mechanical rename that defers the semantic
 migration and frees the stable name for a replacement):
