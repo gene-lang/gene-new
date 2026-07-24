@@ -730,13 +730,15 @@ never resolved as an ordinary lexical binding. A bare call `(f x)` stays purely
 lexical, and message names are not bound in the enclosing scope, so the two
 mechanisms never mix.
 
-For an unqualified send, `f` is resolved receiver-first: the receiver's
-type-direct messages (walking `^is`), then protocol messages provided by impls
-visible for the receiver's type. If neither provides `f`, the send raises a
-recoverable **`MessageError`** (a subtype of `TypeError`) carrying `^where`,
+An unqualified send resolves `f` against the receiver's **type-direct** messages
+only, walking the `^is` chain. Protocol messages are **always qualified** —
+`(x ~ P/m)` — so a protocol impl is never reached by a bare name. If the
+receiver's type declares no such message, the send raises a recoverable
+**`MessageError`** (a subtype of `TypeError`) carrying `^where`,
 `^receiver_type`, and `^message`; when the failed name also names a lexical
 callable, the diagnostic says so ("… is a function — did you mean to call it,
-not send it?"). Full resolution rules: `docs/core.md §9`.
+not send it?"), and when it names a protocol message it hints to qualify. Full
+resolution rules: `docs/core.md §9`.
 
 `~` resolves only ordinary `Callable` behavior. An expression or `%m` callee
 that is an `Fn!`/`SyntaxCallable` is rejected immediately, before any remaining

@@ -353,7 +353,8 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope)
 proc raiseMessageError(message, receiverType: string, scope: Scope,
-                       lexicalHint = false)
+                       lexicalHint = false, protocol = "",
+                       missingImpl = false)
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
@@ -1200,7 +1201,7 @@ proc biDiv(args: openArray[Value]): Value {.nimcall.} =
     newFloat(s)
 
 proc biRem(args: openArray[Value]): Value {.nimcall.} =
-  ## Truncated remainder (`rem`), design §12.1 / grill D15: `mod` names the
+  ## Truncated remainder (`rem`), design §7.4: `mod` names the
   ## module form and `%` is the unquote prefix, so modulo is the identifier
   ## `rem`. Truncates toward zero to match `/`.
   requireNums("rem", args)
@@ -5067,7 +5068,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("CallKindError", callKindError)
   # A `~` send whose message resolves to no type-direct message or visible
   # protocol impl on the receiver is a recoverable MessageError (design §3/§9,
-  # grill D6/D16). It inherits TypeError so `catch (TypeError ...)` still
+  # design §3/§9). It inherits TypeError so `catch (TypeError ...)` still
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
@@ -7279,9 +7280,9 @@ proc enumReflectionMessage(name: string): Value =
 
 proc typeNsMessage(scope: Scope, nsName, name: string): Value =
   ## Resolve `name` as a type-direct message from the built-in type namespace
-  ## `nsName` (design §12/grill D6/D11: built-in operations are messages on
-  ## their type, so `(x ~ Cell/get)` is also reachable as `(x ~ get)` and
-  ## `x/~get`). Returns NIL when the namespace has no such member.
+  ## `nsName` (design §12): built-in operations are messages on their type, so
+  ## `(x ~ Cell/get)` is also reachable as `(x ~ get)` and `x/~get`. Returns
+  ## NIL when the namespace has no such member.
   let ns = builtinBinding(scope, nsName)
   let binding = exportedBinding(ns, name)
   if binding.kind == vkVoid: NIL else: binding
@@ -7290,7 +7291,7 @@ proc convertMessage(scope: Scope, name: string,
                     names: openArray[string]): Value =
   ## The stream/pipeline operations (design §6) reachable as type-direct
   ## messages on iterable/stream receivers, so `(xs ~ to_stream)` and
-  ## `(s ~ map f)` dispatch without the removed lexical fallback (grill D6).
+  ## `(s ~ map f)` dispatch — `~` has no lexical fallback (design §3).
   ## Resolved from the `stream` namespace, which carries the full pipeline
   ## surface (map/filter/take/into/each/to_stream/to_pairs_stream); `names`
   ## restricts which ops are valid for a given receiver type.
@@ -7350,7 +7351,7 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
   of vkNode:
     var m = typeNsMessage(scope, "Node", name)
     # head/props/body/meta are the Node protocol accessors (§1.2), reachable as
-    # messages on a node in addition to the `(head n)` wrapper form (§1.3/D12).
+    # messages on a node in addition to the `(head n)` wrapper form (§1.3).
     if m.kind == vkNil:
       m = convertMessage(scope, name, ["head", "props", "body", "meta"])
     m
@@ -8626,8 +8627,9 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
       "' requires a typed receiver")
   result = scope.tryResolveProtocolMessage(recvType, message)
   if result.kind == vkNil:
-    raise newException(GeneError,
-      "missing impl " & protocol.protocolName & " for " & recvType.typeName)
+    # A qualified send with no visible impl is a recoverable MessageError (§9).
+    raiseMessageError(message.protocolMessageName, recvType.typeName, scope,
+                      protocol = protocol.protocolName, missingImpl = true)
 
 proc addProtocolCandidate(candidates: var seq[Value], value: Value) =
   if value.kind != vkProtocol:
@@ -11051,12 +11053,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
           ip += 4
         of opResolveMessage:
-          # Receiver-first message send (docs/core.md §9.1): tier 1 is the
-          # receiver's runtime type context (type-direct messages walking ^is,
-          # then protocol messages from visible impls); tier 2 is the ordinary
-          # lexical binding. The resolved callee is inserted below any named
-          # argument values already on the stack, then the receiver goes back
-          # on top as the first positional argument.
+          # Receiver-first message send (docs/core.md §9.1): an unqualified send
+          # reaches only the receiver's type-direct messages (walking `^is`),
+          # then the built-in type-direct surface. There is no protocol tier and
+          # no lexical fallback — protocol messages are always qualified
+          # (`x ~ P/m`). The resolved callee is inserted below any named argument
+          # values already on the stack, then the receiver goes back on top as
+          # the first positional argument.
           let receiver = spop()
           if receiver.nodeConstructing and inst[].name notin
               ["Node/set_prop!", "Node/set_body!", "Node/push_body!"]:
@@ -11064,9 +11067,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
           var callee = NIL
-          var knownProtocolCandidate = false
-          var uninitializedProtocolCandidates: seq[string]
           let recvType = receiver.receiverType
+          # An unqualified send reaches only type-direct messages, walking the
+          # `^is` chain (design §3/§9). Protocol messages are always qualified —
+          # `(x ~ P/m)` — so a protocol impl is never reached by a bare name.
           if recvType.kind == vkType:
             when dispatchCacheEnabled:
               # site = this instruction's index (ip was advanced at loop top).
@@ -11077,30 +11081,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 callee = chunk.dispatchCacheLookup(site, recvType, 0'u64, epoch)
             if callee.kind == vkNil:
               callee = typeDirectMessage(recvType, inst[].name)
-              if callee.kind == vkNil:
-                let candidates = scope.compiledProtocolCandidates(
-                  chunk, inst[].depth - 1, uninitializedProtocolCandidates)
-                callee = resolveReceiverMessage(scope, recvType, inst[].name,
-                                                candidates,
-                                                knownProtocolCandidate)
               when dispatchCacheEnabled:
-                if cacheable and callee.kind != vkNil and
-                    uninitializedProtocolCandidates.len == 0:
+                if cacheable and callee.kind != vkNil:
                   chunk.dispatchCacheFill(site, recvType, 0'u64, epoch, callee)
-          if callee.kind == vkNil and uninitializedProtocolCandidates.len > 0:
-            raise newException(GeneError,
-              "uninitialized protocol candidate for message '" & inst[].name &
-              "': " & uninitializedProtocolCandidates.join(", "))
-          if callee.kind == vkNil and knownProtocolCandidate:
-            raise newException(GeneError,
-              "missing implementation for message '" & inst[].name &
-              "' on " & recvType.typeName)
           if callee.kind == vkNil:
             callee = builtinReceiverMessage(scope, receiver, inst[].name)
           if callee.kind == vkNil:
-            # D6: `~` dispatches only. There is no lexical fallback — a name
-            # that resolves to no message on the receiver's type is a
-            # MessageError, with a hint when it names a lexical callable.
+            # `~` dispatches only (design §3). There is no lexical fallback — a
+            # name that resolves to no type-direct message is a MessageError,
+            # with a hint when it names a lexical callable (likely a call, not a
+            # send) or a same-named protocol message (needs qualification).
             var lexical: Value
             let lexicalHint = scope.lookupOptional(inst[].name, lexical) and
               lexical.kind in {vkFunction, vkNativeFn}
@@ -11129,13 +11119,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             spush callee
           spush receiver
         of opSuperSend:
-          # Parent delegation (grill D19): resolve the message from the super
-          # (parent) type's ^is chain rather than the receiver's runtime type,
-          # but call it with `self` as the receiver. The compiler pushed
-          # [superType, self]; the super type is statically the enclosing
-          # type's ^is parent.
+          # Parent delegation (design §10): resolve the message from the parent
+          # of the *enclosing* type (not the receiver's runtime type), but call
+          # it with `self`. The compiler pushed [enclosingType, self]; walking
+          # `^is` here — rather than baking in the parent spelling — keeps super
+          # robust against a message-body local that shadows the parent's name.
           let receiver = spop()             # self
-          let superType = spop()            # the enclosing type's parent
+          let enclosingType = spop()
+          let superType =
+            if enclosingType.kind == vkType: enclosingType.typeParent
+            else: NIL
           var callee = NIL
           if superType.kind == vkType:
             callee = typeDirectMessage(superType, inst[].name)
@@ -14391,12 +14384,19 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   raise e
 
 proc raiseMessageError(message, receiverType: string, scope: Scope,
-                       lexicalHint = false) =
-  ## Design §3/§9, grill D6/D16: a `~` send that resolves to no message on the
+                       lexicalHint = false, protocol = "",
+                       missingImpl = false) =
+  ## Design §3/§9: a `~` send that resolves to no message on the
   ## receiver's type. Recoverable MessageError (a TypeError subtype).
   ## `lexicalHint` marks the case where the message name also names a lexical
-  ## callable — the D6 migration signpost ("did you mean the function call?").
-  var full = "no message '" & message & "' on " & receiverType
+  ## callable — a signpost that a function call, not a send, was likely meant.
+  ## `missingImpl` distinguishes a known protocol message with no visible impl
+  ## for the receiver; `protocol` names it when the send was qualified.
+  var full =
+    if missingImpl:
+      "no implementation of message '" & message & "' for " & receiverType
+    else:
+      "no message '" & message & "' on " & receiverType
   if lexicalHint:
     full = full & "; '" & message &
       "' is a function — did you mean to call it, not send it?"
@@ -14404,6 +14404,8 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
   props["message"] = newStr(full)
   props["where"] = newStr("message send")
   props["receiver_type"] = newStr(receiverType)
+  if protocol.len > 0:
+    props["protocol"] = newStr(protocol)
   var head = newSym("MessageError")
   var messageError: Value
   if scope != nil and scope.lookupOptional("MessageError", messageError) and

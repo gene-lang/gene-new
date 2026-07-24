@@ -145,7 +145,7 @@
             ReadDir WriteDir ReadWriteDir])
 (import net/http_client [Http stream HttpClientError])
 (import db/sqlite [open : sqlite_open DbError])
-(import store/fs [open : store_fs_open StoreError])
+(import store/fs [open : store_fs_open StoreError Store])
 (import store/sqlite [open : store_sqlite_open])
 (import repl [run : run_repl_session open : repl_open
               eval_source : repl_eval
@@ -4001,7 +4001,7 @@
     (var store (tui_surface_store_now))
     (if_yes (&& (!= store nil) (checkpoint_local_application? app))
       (try
-        (store ~ put "surface"
+        (store ~ Store/put "surface"
           {^schema 1 ^kind "surface" ^data (surface_snapshot app)})
       catch _ nil))))
 
@@ -4010,7 +4010,7 @@
     (var store (tui_surface_store_now))
     (if_yes (!= store nil)
       (try
-        (var record (store ~ get "surface" ^default nil))
+        (var record (store ~ Store/get "surface" ^default nil))
         (if_yes (present? record)
           (if (present? record/data) (redact_any record/data)))
       catch _ nil))))

@@ -99,12 +99,14 @@ type
     # A name in this set is not a stable callable proof, including when the
     # mutation appears after a closure that captures the binding.
     mutableBindingNames: HashSet[string]
-    # Names bound with `let`/`const` in the current lexical scope (design §12.1,
-    # D3). A `set` targeting one is a compile error. childCompiler copies the
-    # set so a nested `var` shadows an outer `let` without un-marking the outer.
+    # Names bound with `let`/`const` (or a named declaration) in the current
+    # lexical scope (design §12.1). A `set` targeting one is a compile error.
+    # childCompiler copies the set so a nested `var` shadows an outer `let`
+    # without un-marking the outer.
     letNames: HashSet[string]
-    # D19: while compiling a type-direct message body, the enclosing type's
-    # `^is` parent expression, so `(super ~ m)` dispatches from it. NIL outside.
+    # While compiling a type-direct message body, the enclosing type's name, so
+    # `(super ~ m)` resolves it to the type value then its `^is` parent at send
+    # time (design §10). NIL outside a message body with an `^is` parent.
     superType: Value
     importedSyntaxFnSets: Table[string, seq[string]]
     importedSyntaxFnNames: HashSet[string]
@@ -213,7 +215,8 @@ proc enableLocalSlots(c: var Compiler) =
 
 const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 
-# D13: `~` is the send operator and is reserved in executable position. The
+# `~` is the send operator and is reserved in executable position (design §3).
+# The
 # reader still tokenizes it (so quoted data like `(quote (a ~ b))` round-trips),
 # but it may not be bound, set, or declared as a name.
 const reservedOperatorNames = ["~", "super"]
@@ -511,8 +514,13 @@ proc intFastConstOp(kind: NativeFastKind): OpCode =
   of nfkGe: opIntGeConst
   else: opIntFastConst
 
-proc emitDefineBinding(c: var Compiler, name: string) =
+proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
   validateBindingName(name)
+  # Named declarations (fn/type/enum/protocol/ns/macro/alias) are let-class
+  # (design §12.1): their bindings are fixed, so `(set name ...)` is a compile
+  # error. `var`/loop bindings pass immutable=false and stay rebindable.
+  if immutable: c.letNames.incl name
+  else: c.letNames.excl name
   if c.useLocalSlots:
     discard c.emit(opDefineLocal, c.reserveLocal(name), name = name)
   else:
@@ -2299,7 +2307,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         body: openArray[Value], bodyStart: int,
                         typeParams: seq[string] = @[],
                         checksErrors = false,
-                        errorTypeCount = 0): FunctionProto =
+                        errorTypeCount = 0,
+                        immutableSelf = false): FunctionProto =
   var start = bodyStart
   var returnType = NIL
   if start < body.len and body[start].isSymbol(":"):
@@ -2352,6 +2361,11 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   if specs.rest.len > 0:
     restSlot = fnCompiler.reserveLocal(specs.rest)
     fnCompiler.letNames.excl specs.rest
+  # In a message/ctor body the receiver `self` is a compiler-owned immutable
+  # binding — `(set self ...)` is a compile error (design §10/§12.1), so it
+  # cannot be retargeted mid-body. Re-mark it after the param loop cleared it.
+  if immutableSelf:
+    fnCompiler.letNames.incl "self"
   fnCompiler.allowYield = true
   fnCompiler.inFunction = true
   fnCompiler.inGenerator = body.bodyContainsYield(start)
@@ -2654,7 +2668,7 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
     discard c.emit(opCheckType, c.chunk.addConst(body[2]), name = where)
   if body[0].kind == vkSymbol:
     c.emitDefineBinding(body[0].symVal)
-    # Record binding mutability (design §12.1, D3). A later `set` on a `let`
+    # Record binding mutability (design §12.1). A later `set` on a `let`
     # name is a compile error; a `var` un-marks a name an outer scope froze.
     if immutable: c.letNames.incl body[0].symVal
     else: c.letNames.excl body[0].symVal
@@ -2745,7 +2759,7 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   c.recordLocalFunctionSig(name, proto)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
-    c.emitDefineBinding(name)
+    c.emitDefineBinding(name, immutable = true)
     c.ordinaryFnNames[name] = true
 
 proc compileFnBang(c: var Compiler, node: Value) =
@@ -2787,7 +2801,7 @@ proc compileFnBang(c: var Compiler, node: Value) =
   proto.fastBindRequiredNamed = false
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
-    c.emitDefineBinding(name)
+    c.emitDefineBinding(name, immutable = true)
     c.syntaxFnNames[name] = true
     if c.moduleSyntaxFnExports != nil and
         node.bits in c.staticTopLevelImpls and not node.declarationIsPrivate:
@@ -4207,7 +4221,7 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   validateFfiCallingConvention("ffi/fn", proto.calling)
   discard c.chunk.addFfiFn(proto)
   c.emitConst(newNativeFn(name, nil))
-  c.emitDefineBinding(name)
+  c.emitDefineBinding(name, immutable = true)
 
 proc compileFfiStruct(c: var Compiler, node: Value) =
   let body = node.body
@@ -4833,8 +4847,9 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   var names: seq[string]
   let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
   if isSuper:
-    # D19: (super ~ m) dispatches m from the enclosing type's ^is parent, but
-    # calls it with `self`. Push [superType, self]; opSuperSend resolves.
+    # (super ~ m) dispatches m from the enclosing type's ^is parent, but calls
+    # it with `self` (design §10). Push [enclosingType, self]; opSuperSend walks
+    # to the parent and resolves. Only bare-name messages are supported.
     if c.superType.kind == vkNil:
       raise newException(GeneError,
         "super is only valid in a type message body with an ^is parent")
@@ -4878,7 +4893,8 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         not node.props.hasKey("types"):
       compileSend(c, node, node.head, node.body[1].symVal, 2)
       return
-    # D8: (x ~ %m a) sends a held message value — `%m` reads as (unquote m);
+    # (x ~ %m a) sends a held message value (design §8) — `%m` reads as
+    # (unquote m);
     # unwrap it so the callee is the evaluated `m`, then dispatch it on x. A
     # protocol-message value called with args dispatches on arg 0, so this
     # reuses the ordinary flipped-call path; allowSyntax=false rejects a fn!.
@@ -5493,7 +5509,7 @@ proc messageName(node: Value): string =
   parts.name
 
 proc messageParamVector(paramList: Value): Value =
-  ## D9: `self` is implicit in a message body. Inject it as the receiver
+  ## `self` is implicit in a message body (design §10). Inject it as the receiver
   ## parameter unless the (legacy) vector already begins with `self`, so both
   ## `(message m [x] ...)` and `(message m [self x] ...)` bind `self` as the
   ## receiver and enable leading sends `(~ m)`.
@@ -5518,7 +5534,8 @@ proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
                                           messageParamVector(node.body[1]),
                                           node.body, 2,
                                           checksErrors = errorRow.checks,
-                                          errorTypeCount = errorRow.count))
+                                          errorTypeCount = errorRow.count,
+                                          immutableSelf = true))
 
 proc protocolMessageHasDefault(node: Value): bool =
   ## A protocol message declaration ends after its parameter vector and
@@ -5543,7 +5560,7 @@ proc compileAlias(c: var Compiler, node: Value) =
         "alias got unexpected named argument: ^" & key)
   c.emitConst(body[1])
   discard c.emit(opMakeAlias, name = body[0].symVal)
-  c.emitDefineBinding(body[0].symVal)
+  c.emitDefineBinding(body[0].symVal, immutable = true)
 
 proc compileType(c: var Compiler, node: Value) =
   ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]
@@ -5588,13 +5605,16 @@ proc compileType(c: var Compiler, node: Value) =
     ctorFn = buildFunctionProto(c, name & "/ctor", newList(ctorParams),
                                 ctorNode.body, 1,
                                 checksErrors = errorRow.checks,
-                                errorTypeCount = errorRow.count)
+                                errorTypeCount = errorRow.count,
+                                immutableSelf = true)
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
-  # D19: type-direct message bodies see the enclosing type's `^is` parent as
-  # their super type, so `(super ~ m)` dispatches from it.
+  # Type-direct message bodies can delegate to `(super ~ m)` (design §10). Store the
+  # *enclosing type name* (resolved at send time to the type value, then to its
+  # ^is parent), not the raw `^is` expression — so a message-body local that
+  # happens to shadow the parent's spelling cannot redirect the delegation.
   let savedSuperType = c.superType
-  c.superType = if node.props.hasKey("is"): node.props["is"] else: NIL
+  c.superType = if node.props.hasKey("is"): newSym(name) else: NIL
   for item in messageNodes:
     rejectReservedEffects(item)
     let mp = implMessageProto(c, item)
@@ -5687,7 +5707,7 @@ proc compileType(c: var Compiler, node: Value) =
                                            messages: messages,
                                            inlineImpls: inlineImpls,
                                            ctorFn: ctorFn)))
-  c.emitDefineBinding(name)
+  c.emitDefineBinding(name, immutable = true)
 
 proc compileEnum(c: var Compiler, node: Value) =
   let body = node.body
@@ -5809,7 +5829,7 @@ proc compileEnum(c: var Compiler, node: Value) =
                                            variants: variants,
                                            messages: messages,
                                            inlineImpls: inlineImpls)))
-  c.emitDefineBinding(name)
+  c.emitDefineBinding(name, immutable = true)
 
 proc compileProtocol(c: var Compiler, node: Value) =
   let body = node.body
@@ -5866,7 +5886,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
                                               parentCount: parentCount,
                                               universal: universal))
   discard c.emit(opMakeProtocol, idx)
-  c.emitDefineBinding(name)
+  c.emitDefineBinding(name, immutable = true)
 
 proc isStaticBindingPath(value: Value): bool =
   if value.kind == vkSymbol:

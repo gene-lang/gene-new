@@ -34,35 +34,35 @@
 (import gene/parse [parse_int ParseError])
 (import gene/stream [to_stream map filter into])
 (import net/http [Request Response Server serve json redirect not_found])
-(import db/sqlite [open DbError])
+(import db/sqlite [open DbError Db])
 
 # -----------------------------------------------------------------------------
 # Store: SQLite via the Db protocol. `done` is stored as 0/1.
 # -----------------------------------------------------------------------------
 
 (var db (open "todo.db"))
-(db ~ exec "create table if not exists todos (
+(db ~ Db/exec "create table if not exists todos (
   id integer primary key autoincrement,
   text text not null,
   done integer not null default 0)")
 
 (fn list_todos [] : (List Map)
-  (db ~ query "select id, text, done from todos order by id"))
+  (db ~ Db/query "select id, text, done from todos order by id"))
 
 (fn add_todo [text : Str] : Nil
-  (db ~ execute "insert into todos(text) values (?)" text)
+  (db ~ Db/execute "insert into todos(text) values (?)" text)
   nil)
 
 (fn toggle_todo [id : Int] : Nil
-  (db ~ execute "update todos set done = 1 - done where id = ?" id)
+  (db ~ Db/execute "update todos set done = 1 - done where id = ?" id)
   nil)
 
 (fn delete_todo [id : Int] : Nil
-  (db ~ execute "delete from todos where id = ?" id)
+  (db ~ Db/execute "delete from todos where id = ?" id)
   nil)
 
 (fn clear_done [] : Nil
-  (db ~ execute "delete from todos where done = 1")
+  (db ~ Db/execute "delete from todos where done = 1")
   nil)
 
 (fn done? [t] : Bool

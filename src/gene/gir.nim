@@ -66,7 +66,7 @@ type
     opCall
     opCallSplice
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
-    opSuperSend       # pop self + super(parent) type; resolve msg from the parent's ^is chain, push callee + self (grill D19)
+    opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
     opReturnIntAdd2

@@ -23,6 +23,7 @@
 
 (import os [get_env exec_async monotonic_ms Env Exec])
 (import crypto [random_hex secure_equal?])
+(import store/fs [Store])
 (import json [parse stringify JsonError])
 (import str [split trim join starts_with? contains? byte_size lower
              slice_bytes])
@@ -116,7 +117,7 @@
 (fn persist_session [id, items, events, next_v, dropped_before, app]
   (if (gw_store ~ Cell/get)
     (try
-      ((gw_store ~ Cell/get) ~ put
+      ((gw_store ~ Cell/get) ~ Store/put
         id
         {^items (agent_api/redact_any (items ~ Cell/get))
          ^events (agent_api/redact_any (events ~ Cell/get))
@@ -2183,9 +2184,9 @@ document.getElementById('f').addEventListener('submit', function (e) {
 
 (fn restore_sessions []
   (var count (cell 0))
-  (for id in ((gw_store ~ Cell/get) ~ keys)
+  (for id in ((gw_store ~ Cell/get) ~ Store/keys)
     (try
-      (var saved ((gw_store ~ Cell/get) ~ get id))
+      (var saved ((gw_store ~ Cell/get) ~ Store/get id))
       (var hook
         (if (starts_with? id "tg-")
           (make_telegram_sender (join (split id "tg-") ""))))
@@ -2201,7 +2202,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
 (fn finish_gateway_store [label : Str]
   (if (== gw_resume "0")
     (then
-      ((gw_store ~ Cell/get) ~ clear)
+      ((gw_store ~ Cell/get) ~ Store/clear)
       (gw_notice $"Persistence enabled - ${label} (fresh start)"))
     (else
       (var n (restore_sessions))

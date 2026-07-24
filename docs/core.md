@@ -31,10 +31,10 @@ as follow-on patches.
 - Message dispatch is on the receiver's runtime type, not literal node head
   identity — this already holds for scalars (`docs/design.md §1.1`) and
   extends unchanged to inheritance and `Nil` below.
-- Messages are ordinary callable values. The qualified spelling
-  (`(item ~ ToHtml/to_html)`) is always unambiguous; bare `(item ~ to_html)`
-  is only shorthand when receiver-context lookup finds a unique applicable
-  message with that simple name (§9).
+- Messages are ordinary callable values. A protocol message is always sent
+  qualified — `(item ~ ToHtml/to_html)` — which is unambiguous by construction.
+  A bare `(item ~ m)` reaches only a **type-direct** message on the receiver's
+  type; it never resolves to a protocol impl (§9).
 - **Message names are not bound in the enclosing lexical scope.** Declaring
   `(protocol ToName (message to_name ...))` binds `ToName` only; `to_name`
   is reachable as `ToName/to_name` (qualified member access, like
@@ -99,10 +99,9 @@ dispatching `compare` on a `Dog` selects `Dog`'s impl — the nearest receiver o
 the `^is` chain — because they supply the *same* message identity at different
 receiver depths, and single inheritance totally orders that chain, so this axis
 is never ambiguous (see `tests/test_protocols.nim`, "nearest receiver wins
-within one message identity"). Ambiguity remains only across *unrelated*
-message identities: two different protocols that both declare `render`, each
-with a visible impl applicable to the receiver, make the unqualified
-`(x ~ render)` ambiguous unless qualified (`(x ~ P/render)`). Overlapping impls
+within one message identity"). Protocol messages are always sent qualified
+(`(x ~ P/render)`), so two protocols that both declare `render` never collide
+at a send site — the qualifier names the identity. Overlapping impls
 of a protocol and one of its `^inherit` ancestors for the *same* receiver are
 rejected where visibility is assembled — a descendant impl already supplies
 every inherited message, so the pair is a redundant registration, not a use-
@@ -185,13 +184,10 @@ The collision is resolved by qualified message identity:
 (t ~ Y/clash ...)
 ```
 
-Bare `(t ~ clash ...)` is not a protocol conflict resolver. If `T` has no
-type-direct `clash` message and more than one visible protocol message named
-`clash` applies, the unqualified send is ambiguous and must be written with
-`X/clash` or `Y/clash`. If exactly one protocol message named `clash`
-applies, the bare send resolves to it — this exactly-one rule is normative
-(OQ-H), not implementation-defined. The qualified form is always available
-and always unambiguous.
+Bare `(t ~ clash ...)` reaches only a type-direct `clash` message; it never
+resolves to a protocol message, however many (or few) protocol messages named
+`clash` are visible. A protocol message is always sent qualified — `X/clash`
+or `Y/clash` — which is unambiguous by construction.
 
 Because message names are never bound in the enclosing scope (§1), declaring
 `X` and `Y` with the same message name in one module is not a binding
@@ -613,17 +609,15 @@ resolved against the receiver's runtime type, never as a lexical binding.
 Message names are not bound in the enclosing scope (§1), so `~` and an ordinary
 call `(f x)` never share a resolution path.
 
-The **unqualified send** `(x ~ name ...)` resolves `name` in the receiver's
-runtime type's context: type-direct messages (§8) walking the `^is` chain, then
-protocol messages provided by impls visible for the receiver's type. A
-type-direct message wins over protocol-message candidates. A bare protocol
-match is usable only when exactly one qualified protocol message with that
-simple name applies; if `A/do_x` and `B/do_x` both apply, the caller must
-qualify. If nothing resolves, the send raises a recoverable **`MessageError`**
-(a `TypeError` subtype) — at compile time when the receiver's static type is
-known, otherwise at the send. When the failed name also names a lexical
-callable, the diagnostic points at the call form (`did you mean to call it, not
-send it?`).
+The **unqualified send** `(x ~ name ...)` resolves `name` against the receiver's
+**type-direct** messages only (§8), walking the `^is` chain. Protocol messages
+are always qualified, so a bare name never reaches a protocol impl — write
+`(x ~ P/m)` for a protocol message. If the receiver's type declares no such
+message, the send raises a recoverable **`MessageError`** (a `TypeError`
+subtype) — at compile time when the receiver's static type is known, otherwise
+at the send. When the failed name also names a lexical callable, the diagnostic
+points at the call form (`did you mean to call it, not send it?`), and when it
+names a protocol message it hints to qualify.
 
 The **qualified send** `(x ~ X/name ...)` names the protocol message `X/name`
 and dispatches it on `x`. `X/name` is a message identity, not a callable in
@@ -754,8 +748,7 @@ implemented and stable, and sit at implementation-order item 13; base
   rules; `(impl Send)` works for markers)
 - §9.1 — receiver-first sends: the reader preserves `(x ~ f a)` nodes
   (round-trips exactly); `opResolveMessage` resolves type-direct messages
-  walking `^is`, then visible protocol impl entries by simple name with the
-  exactly-one rule, raising `MessageError` when nothing matches (no lexical
+  walking `^is`, raising `MessageError` when nothing matches (no lexical
   fallback); `(~ f a)` sends to lexical `self`; `(super ~ f a)` delegates via
   `opSuperSend`; `(x ~ %m a)` sends a held message value; qualified sends and
   the `^protocol`/`^receiver` direct-call metadata path go through protocol

@@ -271,13 +271,13 @@ suite "spec — enums from design":
                "  (impl Label " &
                "    (message label [self] : Str " &
                "      (if (== self Light/on) \"on\" \"off\")))) " &
-               "(Light/on ~ label)",
+               "(Light/on ~ Label/label)",
                "\"on\"")
     check_eval("(protocol Code (message code [self] : Int)) " &
                "(enum Status active closed) " &
                "(impl Code for Status " &
                "  (message code [self] : Int (self ~ ordinal))) " &
-               "(Status/closed ~ code)",
+               "(Status/closed ~ Code/code)",
                "1")
 
 suite "spec — templates from design":
@@ -470,7 +470,7 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
                "[(hof q!) side]",
                "[(set side 1) 0]")
     check_eval("(fn! z! [] 42) (fn hof [f] (f)) (hof z!)", "42")
-    check_eval("(fn f [x] x) (var side 0) " &
+    check_eval("(var f (fn [x] x)) (var side 0) " &
                "(fn invoke [] (f (set side 1))) " &
                "(set f (fn! [x] x)) [(invoke) side]",
                "[(set side 1) 0]")
@@ -1958,7 +1958,7 @@ suite "spec — Date/time type family":
                " (== (hash 2026-07-04T09:30Z) (hash 2026-07-04T09:30Z))]",
                "[true false true]")
 
-suite "spec — implicit self in message bodies from design §10 (D9)":
+suite "spec — implicit self in message bodies from design §10":
   test "self is implicit; the receiver leaves the parameter vector":
     check_eval("(type Box ^props {^val Int} " &
                "  (message get [] self/val) " &
@@ -1966,7 +1966,7 @@ suite "spec — implicit self in message bodies from design §10 (D9)":
                "(var b (Box ^val 10)) [(b ~ get) (b ~ add 5)]",
                "[10 15]")
 
-  test "a held message value is sent with (x ~ %m) (D8)":
+  test "a held message value is sent with (x ~ %m)":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &
                "(type M ^props {^name Str} " &
                "  (impl ToHtml (message to_html [] : Str self/name))) " &
@@ -1984,7 +1984,7 @@ suite "spec — implicit self in message bodies from design §10 (D9)":
     check_eval("(protocol Greet (message hi [] : Str)) " &
                "(type P ^props {^name Str} " &
                "  (impl Greet (message hi [] : Str $\"hi ${self/name}\"))) " &
-               "((P ^name \"Ada\") ~ hi)",
+               "((P ^name \"Ada\") ~ Greet/hi)",
                "\"hi Ada\"")
 
   test "enum messages bind self implicitly":
@@ -1998,7 +1998,12 @@ suite "spec — implicit self in message bodies from design §10 (D9)":
                "((Box2 ^val 7) ~ get)",
                "7")
 
-  test "super delegates to the implementation above, relative to the enclosing type (D19)":
+  test "self is immutable inside a message body":
+    check_compile_error(
+      "(type Box ^props {^v Int} (message bad [] (set self 42) self))",
+      "cannot set immutable binding 'self'")
+
+  test "super delegates to the implementation above, relative to the enclosing type":
     check_eval("(type A ^props {} (message greet [] : Str \"A\")) " &
                "(type B ^is A ^props {} " &
                "  (message greet [] : Str ($ \"B+\" (super ~ greet)))) " &
@@ -2019,6 +2024,18 @@ suite "spec — implicit self in message bodies from design §10 (D9)":
       "(type X ^props {} (message m [] : Str (super ~ m)))",
       "super is only valid")
 
+  test "super is robust against a message-body local shadowing the parent name":
+    check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
+               "(type B ^is A ^props {} " &
+               "  (message m [] : Str (do (let A 1) (super ~ m)))) " &
+               "((B) ~ m)",
+               "\"A\"")
+
+  test "a qualified send with no visible impl raises a catchable MessageError":
+    check_eval("(protocol P (message m [] : Int)) (type T ^props {}) " &
+               "(try ((T) ~ P/m) catch (MessageError ^protocol pr) pr)",
+               "\"P\"")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &
@@ -2027,7 +2044,7 @@ suite "spec — protocol derive from design":
                "    `(impl HasLabel for %t " &
                "       (message label [self] : Str self/name)))) " &
                "(type MenuItem ^props {^name Str} ^derive [HasLabel]) " &
-               "((MenuItem ^name \"Soup\") ~ label)",
+               "((MenuItem ^name \"Soup\") ~ HasLabel/label)",
                "\"Soup\"")
 
   test "derive may target another protocol but only the deriving type":
@@ -2084,7 +2101,12 @@ suite "spec — binding forms from design §12.1":
   test "typed let checks its value at the boundary":
     check_eval("(let n : Int 5) (+ n 1)", "6")
 
-  test "the send operator ~ is reserved and cannot be bound (D13)":
+  test "named declarations are immutable bindings":
+    check_compile_error("(fn f [] 1) (set f 2)", "cannot set immutable binding 'f'")
+    check_compile_error("(type T ^props {}) (set T 2)",
+                        "cannot set immutable binding 'T'")
+
+  test "the send operator ~ is reserved and cannot be bound":
     check_compile_error("(var ~ 5)", "reserved")
     check_compile_error("(let ~ 5)", "reserved")
     # still tokenizes inside quoted data
@@ -2133,7 +2155,7 @@ suite "spec — mutable containers from design":
                "\"cannot mutate immutable List\"")
 
   test "built-in operations are type-direct messages (unqualified and path)":
-    # grill D6/D11: `(x ~ Cell/get)` is also reachable as `(x ~ get)` / `x/~get`.
+    # `(x ~ Cell/get)` is also reachable as `(x ~ get)` / `x/~get`.
     check_eval("(var c (cell 7)) (c ~ set 20) [(c ~ get) c/~get]", "[20 20]")
     check_eval("(var xs [1 2 3]) (xs ~ set! 0 9) (xs ~ push! 4) xs",
                "[9 2 3 4]")
@@ -2145,7 +2167,7 @@ suite "spec — mutable containers from design":
   test "qualified built-in sends remain valid alongside the unqualified form":
     check_eval("(var c (cell 1)) (c ~ Cell/set 5) (c ~ Cell/get)", "5")
 
-  test "pipeline operations are messages: to_stream on iterables, map/filter/take/into on streams (D6)":
+  test "pipeline operations are messages: to_stream on iterables, map/filter/take/into on streams":
     check_eval("(var xs [1 2 3 4 5]) " &
                "((((xs ~ to_stream) ~ filter (fn [x] (> x 2))) " &
                "  ~ map (fn [x] (* x 10))) ~ into [])",
@@ -3674,12 +3696,12 @@ suite "spec — impl visibility across modules (design §10)":
 
   test "a co-located canonical impl dispatches when its protocol is in scope":
     # The impl is co-located with Greet and Cat in ilib, so it is canonical
-    # and globally active. An unqualified send still needs the protocol in the
-    # call site's candidate set (design §2), so `use` imports Greet as well.
+    # and globally active. A qualified send names the protocol, so `use`
+    # imports Greet to make Greet/greet resolvable at the call site.
     let dir = implModuleDir()
     writeFile(dir / "use.gene",
       "(import [Cat Greet] from \"./ilib\")\n" &
-      "(var r ((Cat ^name \"Tom\") ~ greet))\n")
+      "(var r ((Cat ^name \"Tom\") ~ Greet/greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Tom\""
 
@@ -3692,19 +3714,19 @@ suite "spec — impl visibility across modules (design §10)":
     writeFile(dir / "use.gene",
       "(import [make_cat] from \"./mid\")\n" &
       "(import [Greet] from \"./ilib\")\n" &
-      "(var r ((make_cat \"Felix\") ~ greet))\n")
+      "(var r ((make_cat \"Felix\") ~ Greet/greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Felix\""
 
   test "a canonical impl is global without an import path to its own module":
     let dir = implModuleDir()
-    # `other` imports only the protocol (for the candidate set), never the
-    # Greet/Cat impl. The canonical impl is global once ilib is loaded, so the
-    # unqualified send in `other` dispatches it.
+    # `other` imports only the protocol (to name it in the qualified send),
+    # never the Greet/Cat impl. The canonical impl is global once ilib is
+    # loaded, so the qualified send in `other` dispatches it.
     writeFile(dir / "other.gene",
       "(mod other)\n" &
       "(import [Greet] from \"./ilib\")\n" &
-      "(fn use_cat [c] (c ~ greet))\n")
+      "(fn use_cat [c] (c ~ Greet/greet))\n")
     writeFile(dir / "use.gene",
       "(import [Cat] from \"./ilib\")\n" &
       "(import [use_cat] from \"./other\")\n" &
@@ -3888,38 +3910,38 @@ suite "spec — structured logging contract":
 
 suite "spec — db protocol from stdlib plan":
   test "sqlite backend covers CRUD, typed params, and typed rows":
-    check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
-               "(c ~ exec \"create table t (id integer primary key, x text, f float, b integer)\") " &
-               "(c ~ execute \"insert into t(x, f, b) values (?, ?, ?)\" \"a\" 1.5 true) " &
-               "(c ~ query \"select * from t\")",
+    check_eval("(import db/sqlite [open Db]) (var c (open \":memory:\")) " &
+               "(c ~ Db/exec \"create table t (id integer primary key, x text, f float, b integer)\") " &
+               "(c ~ Db/execute \"insert into t(x, f, b) values (?, ?, ?)\" \"a\" 1.5 true) " &
+               "(c ~ Db/query \"select * from t\")",
                "[{^id 1 ^x \"a\" ^f 1.5 ^b 1}]")
-    check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
-               "(c ~ exec \"create table t (x text)\") " &
-               "(c ~ query_one \"select * from t where x = ?\" \"missing\")",
+    check_eval("(import db/sqlite [open Db]) (var c (open \":memory:\")) " &
+               "(c ~ Db/exec \"create table t (x text)\") " &
+               "(c ~ Db/query_one \"select * from t where x = ?\" \"missing\")",
                "nil")
-    check_eval("(import db/sqlite [open DbError]) " &
+    check_eval("(import db/sqlite [open Db DbError]) " &
                "(var c (open \":memory:\")) " &
-               "(try (c ~ query \"select * from missing\") " &
+               "(try (c ~ Db/query \"select * from missing\") " &
                "catch (DbError ^message _) \"caught\")",
                "\"caught\"")
 
   test "sqlite transactions roll back on recoverable failure":
-    check_eval("(import db/sqlite [open]) (var c (open \":memory:\")) " &
-               "(c ~ exec \"create table t (x text)\") " &
-               "(try (c ~ transaction (fn [d] " &
-               "  (d ~ execute \"insert into t(x) values (?)\" \"doomed\") " &
+    check_eval("(import db/sqlite [open Db]) (var c (open \":memory:\")) " &
+               "(c ~ Db/exec \"create table t (x text)\") " &
+               "(try (c ~ Db/transaction (fn [d] " &
+               "  (d ~ Db/execute \"insert into t(x) values (?)\" \"doomed\") " &
                "  (fail \"abort\"))) catch _ nil) " &
-               "(c ~ transaction (fn [d] " &
-               "  (d ~ execute \"insert into t(x) values (?)\" \"kept\"))) " &
-               "(c ~ query \"select x from t\")",
+               "(c ~ Db/transaction (fn [d] " &
+               "  (d ~ Db/execute \"insert into t(x) values (?)\" \"kept\"))) " &
+               "(c ~ Db/query \"select x from t\")",
                "[{^x \"kept\"}]")
 
   test "connections close explicitly and reject further use":
-    check_eval("(import db/sqlite [open DbError]) " &
+    check_eval("(import db/sqlite [open Db DbError]) " &
                "(var c (open \":memory:\")) " &
-               "(var before (c ~ closed?)) (c ~ close) " &
-               "[before (c ~ closed?) " &
-               " (try (c ~ query \"select 1\") " &
+               "(var before (c ~ Db/closed?)) (c ~ Db/close) " &
+               "[before (c ~ Db/closed?) " &
+               " (try (c ~ Db/query \"select 1\") " &
                " catch (DbError ^message _) \"rejected\")]",
                "[false true \"rejected\"]")
 
@@ -3951,35 +3973,35 @@ suite "spec — store persistence protocol":
 
   test "sqlite store round-trips data records and missing/default semantics":
     check_eval("(import db/sqlite [open]) " &
-               "(import store/sqlite [open : store-open StoreError]) " &
+               "(import store/sqlite [open : store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
-               "(s ~ put \"a\" {^x 1}) " &
-               "(s ~ put \"void\" void) " &
-               "[(s ~ get \"a\") " &
-               " (s ~ get \"void\") " &
-               " (s ~ has? \"a\") " &
-               " (s ~ has? \"missing\") " &
-               " (s ~ get \"missing\" ^default \"fallback\") " &
-               " (try (s ~ get \"missing\") catch (StoreError ^kind k) k)]",
+               "(s ~ Store/put \"a\" {^x 1}) " &
+               "(s ~ Store/put \"void\" void) " &
+               "[(s ~ Store/get \"a\") " &
+               " (s ~ Store/get \"void\") " &
+               " (s ~ Store/has? \"a\") " &
+               " (s ~ Store/has? \"missing\") " &
+               " (s ~ Store/get \"missing\" ^default \"fallback\") " &
+               " (try (s ~ Store/get \"missing\") catch (StoreError ^kind k) k)]",
                "[{^x 1} void true false \"fallback\" missing]")
 
   test "sqlite store supports full mode refs, keys, delete, clear, and close":
     check_eval("(import db/sqlite [open]) " &
-               "(import store/sqlite [open : store-open StoreError]) " &
+               "(import store/sqlite [open : store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
-               "(s ~ put \"fn\" str/join ^mode \"full\") " &
-               "(s ~ put \"n\" 1) " &
-               "(var got (s ~ get \"fn\" ^mode \"full\")) " &
-               "(var before (s ~ keys)) " &
-               "(s ~ delete \"n\") " &
-               "(var after-delete [(s ~ has? \"n\") (s ~ keys)]) " &
-               "(s ~ clear) " &
-               "(var after-clear (s ~ keys)) " &
-               "(s ~ close) " &
+               "(s ~ Store/put \"fn\" str/join ^mode \"full\") " &
+               "(s ~ Store/put \"n\" 1) " &
+               "(var got (s ~ Store/get \"fn\" ^mode \"full\")) " &
+               "(var before (s ~ Store/keys)) " &
+               "(s ~ Store/delete \"n\") " &
+               "(var after-delete [(s ~ Store/has? \"n\") (s ~ Store/keys)]) " &
+               "(s ~ Store/clear) " &
+               "(var after-clear (s ~ Store/keys)) " &
+               "(s ~ Store/close) " &
                "[(same? got str/join) before after-delete after-clear " &
-               " (try (s ~ keys) catch (StoreError ^kind k) k)]",
+               " (try (s ~ Store/keys) catch (StoreError ^kind k) k)]",
                "[true [\"fn\" \"n\"] [false [\"fn\"]] [] closed]")
 
   test "filesystem store uses encoded keys and ignores junk files":
@@ -3988,24 +4010,24 @@ suite "spec — store persistence protocol":
       removeDir(dir)
     createDir(dir)
     writeFile(dir / "junk.tmp", "not a record")
-    check_eval("(import store/fs [open : store-open StoreError]) " &
+    check_eval("(import store/fs [open : store-open Store StoreError]) " &
                "(import Fs [ReadWriteDir]) " &
                "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
-               "(s ~ put \"session:tg/42\" {^x 1}) " &
-               "[(s ~ get \"session:tg/42\") " &
-               " (s ~ keys) " &
-               " (try (s ~ put \"\" 1) catch (StoreError ^kind k) k)]",
+               "(s ~ Store/put \"session:tg/42\" {^x 1}) " &
+               "[(s ~ Store/get \"session:tg/42\") " &
+               " (s ~ Store/keys) " &
+               " (try (s ~ Store/put \"\" 1) catch (StoreError ^kind k) k)]",
                "[{^x 1} [\"session:tg/42\"] invalid_key]")
 
   test "sqlite checkpoints publish one hash-validated generation atomically":
     check_eval("(import db/sqlite [open]) " &
-               "(import store/sqlite [open : store-open]) " &
+               "(import store/sqlite [open : store-open Store]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
-               "(s ~ checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
-               "(s ~ checkpoint 2 {^session {^schema 1 ^data {^x 2}} " &
+               "(s ~ Store/checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+               "(s ~ Store/checkpoint 2 {^session {^schema 1 ^data {^x 2}} " &
                "                   ^events {^schema 1 ^data [\"ok\"]}}) " &
-               "(var loaded (s ~ load_checkpoint)) " &
+               "(var loaded (s ~ Store/load_checkpoint)) " &
                "[loaded/generation loaded/schema " &
                " loaded/records/session/data/x loaded/records/events/data]",
                "[2 1 2 [\"ok\"]]")
@@ -4015,12 +4037,12 @@ suite "spec — store persistence protocol":
       let path = getTempDir() / "gene-store-owner-only-spec.sqlite"
       for suffix in ["", "-wal", "-shm", "-journal"]:
         if fileExists(path & suffix): removeFile(path & suffix)
-      check_eval("(import db/sqlite [open]) " &
-                 "(import store/sqlite [open : store-open]) " &
+      check_eval("(import db/sqlite [open Db]) " &
+                 "(import store/sqlite [open : store-open Store]) " &
                  "(var db (open " & geneString(path) & ")) " &
                  "(var s (store-open db)) " &
-                 "(s ~ checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
-                 "(s ~ close) (db ~ close) true",
+                 "(s ~ Store/checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+                 "(s ~ Store/close) (db ~ Db/close) true",
                  "true")
       check getFilePermissions(path) == {fpUserRead, fpUserWrite}
 
@@ -4029,21 +4051,21 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval("(import store/fs [open : store-open]) " &
+    check_eval("(import store/fs [open : store-open Store]) " &
                "(import Fs [ReadWriteDir]) " &
                "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
-               "(s ~ checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
-               "(s ~ checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
-               "(var loaded (s ~ load_checkpoint)) " &
+               "(s ~ Store/checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+               "(s ~ Store/checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
+               "(var loaded (s ~ Store/load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
                "[2 2]")
     let newest = dir / "generations" / "00000000000000000002" /
                  "session.gene"
     writeFile(newest, "corrupt")
-    check_eval("(import store/fs [open : store-open]) " &
+    check_eval("(import store/fs [open : store-open Store]) " &
                "(import Fs [ReadWriteDir]) " &
                "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
-               "(var loaded (s ~ load_checkpoint)) " &
+               "(var loaded (s ~ Store/load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
                "[1 1]")
     when defined(posix):

@@ -352,29 +352,26 @@ proc main() =
     # Reference: a 1-arg Gene function call — the target sends aim to approach.
     "(var identity (fn [x] x))"), protocolScope)
   # Message names are not lexical bindings (docs/core.md §1); the hot dispatch
-  # path is the send form, resolved receiver-first (§9.1). The per-call-site
-  # inline cache (item D1) collapses the resolution walk: a trivial-body send
-  # (`box ~ triv`) sits right on the 1-arg Gene call reference, so the extra
-  # cost of the other sends is impl-body work (a `self/x` selector plus a
-  # `: Int` return-type check), not dispatch. `qualified` is the exception — it
-  # still pays selector extraction of `Proto/msg` at the call site.
+  # path is the send form, resolved receiver-first (§9.1). Protocol messages are
+  # always qualified (`box ~ Proto/msg`); only type-direct messages take the bare
+  # name (`box ~ get`). The per-call-site inline cache collapses the resolution
+  # walk, so a trivial-body qualified send (`box ~ Triv/triv`) sits right on the
+  # 1-arg Gene call reference: the extra cost of the other sends is impl-body work
+  # (a `self/x` selector plus a `: Int` return-type check) plus the qualified
+  # selector extraction of `Proto/msg`, not the dispatch walk.
   let referenceCallChunk = compileSource("(identity box)")
   bench("vm.call.gene_one_arg.compiled_chunk", 500_000, i):
     let v = run(referenceCallChunk, protocolScope)
     checksum = checksum + int64(v.props["x"].intVal)
-  let trivialSendChunk = compileSource("(box ~ triv)")
+  let trivialSendChunk = compileSource("(box ~ Triv/triv)")
   bench("vm.protocol_message.trivial_body.compiled_chunk", 500_000, i):
     let v = run(trivialSendChunk, protocolScope)
     checksum = checksum + int64(v.props["x"].intVal)
-  let protocolChunk = compileSource("(box ~ to_int)")
+  let protocolChunk = compileSource("(box ~ ToInt/to_int)")
   bench("vm.protocol_message.compiled_chunk", 500_000, i):
     let v = run(protocolChunk, protocolScope)
     checksum = checksum + v.intVal
-  let qualifiedChunk = compileSource("(box ~ ToInt/to_int)")
-  bench("vm.protocol_message.qualified.compiled_chunk", 500_000, i):
-    let v = run(qualifiedChunk, protocolScope)
-    checksum = checksum + v.intVal
-  let inheritedChunk = compileSource("(dog ~ to_int)")
+  let inheritedChunk = compileSource("(dog ~ ToInt/to_int)")
   bench("vm.protocol_message.inherited.compiled_chunk", 500_000, i):
     let v = run(inheritedChunk, protocolScope)
     checksum = checksum + v.intVal
@@ -382,7 +379,7 @@ proc main() =
   bench("vm.protocol_message.type_direct.compiled_chunk", 500_000, i):
     let v = run(typeDirectChunk, protocolScope)
     checksum = checksum + v.intVal
-  let sendArgChunk = compileSource("(box ~ add 5)")
+  let sendArgChunk = compileSource("(box ~ Adder/add 5)")
   bench("vm.protocol_message.with_arg.compiled_chunk", 500_000, i):
     let v = run(sendArgChunk, protocolScope)
     checksum = checksum + v.intVal
