@@ -252,21 +252,9 @@ type
   ImportImplSpec* = object
     modulePath*: string
 
-  ProtocolCandidateRef* = object
-    ## Exact lexical binding location for a protocol reference known to the
-    ## compiler. `depth == 0` addresses the current unit's scope; positive
-    ## depths address captured outer scopes. Entry protocols are frozen on the
-    ## runtime Scope separately and are always considered first.
-    depth*: int
-    slot*: int
-    name*: string
-
-  MessageCandidateSet* = object
-    refs*: seq[ProtocolCandidateRef]
-
   DispatchCacheEntry* = object
-    ## Per-call-site inline cache for protocol-message dispatch (design §10,
-    ## item D1). Side storage keyed by the send instruction's index in the
+    ## Per-call-site inline cache for protocol-message dispatch (design §10).
+    ## Side storage keyed by the send instruction's index in the
     ## chunk — never a field on `Instruction`, which is bench-frozen at 64
     ## bytes. All fields are plain integers: the cache holds NO owning Value
     ## ref (that would risk an `{.acyclic.}`-Chunk retain cycle through a
@@ -468,8 +456,7 @@ type
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
     importImpls*: seq[ImportImplSpec]
-    messageCandidateSets*: seq[MessageCandidateSet]
-    dispatchCache*: seq[DispatchCacheEntry] # inline send cache; lazily sized to instructions.len (item D1)
+    dispatchCache*: seq[DispatchCacheEntry] # inline send cache; lazily sized to instructions.len
     diagnostics*: seq[CompileDiagnostic]
     forLoops*: seq[ForProto]
     matches*: seq[MatchProto]
@@ -492,12 +479,17 @@ type
                              # nested in it): the enclosing type's `^is` parent,
                              # stamped in by opMakeType. `(super ~ m)` reads it
                              # here rather than resolving a user-visible name,
-                             # so a body-local cannot redirect delegation.
+                             # so a body-local cannot redirect delegation. The
+                             # one field written after compilation, and write-
+                             # once: a second creation of the same declaration
+                             # with a different parent copies the body instead
+                             # of re-stamping it (`stampSuperType`), so a stamp
+                             # never changes meaning under a running send.
 
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
         instructionLocs: @[], topLevelForms: @[], functions: @[], subchunks: @[],
-        imports: @[], importImpls: @[], messageCandidateSets: @[],
+        imports: @[], importImpls: @[],
         diagnostics: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
         typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],
@@ -553,11 +545,6 @@ proc addImport*(chunk: Chunk, spec: ImportSpec): int =
 proc addImportImpl*(chunk: Chunk, spec: ImportImplSpec): int =
   result = chunk.importImpls.len
   chunk.importImpls.add spec
-
-proc addMessageCandidateSet*(chunk: Chunk,
-                             candidates: MessageCandidateSet): int =
-  result = chunk.messageCandidateSets.len
-  chunk.messageCandidateSets.add candidates
 
 proc addFfiLibrary*(chunk: Chunk, library: FfiLibraryProto): int =
   result = chunk.ffiLibraries.len

@@ -189,22 +189,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", "/real/entry.gene")
             self.end_headers()
             return
-        $body = ROUTES.get(self.path)
-        if $body is None:
+        body = ROUTES.get(self.path)
+        if body is None:
             self.send_response(404)
             self.end_headers()
             return
         self.send_response(200)
-        self.send_header("Content-Length", $str(len($body)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write($body)
+        self.wfile.write(body)
 
     def log_message(self, *args):
         pass
 
 
 with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
-    $print(f"PORT {srv.server_address[1]}", flush=True)
+    print(f"PORT {srv.server_address[1]}", flush=True)
     srv.serve_forever()
 """)
     let server = startProcess("python3", args = [serverScript],
@@ -3719,7 +3719,7 @@ catch {^message message}
                  ^arguments "{\"path\":\"dirty.txt\",\"old_text\":\"user-before\\n\",\"new_text\":\"agent-owned\\n\"}"}}
      {^index 1 ^id "fc2" ^type "function"
       ^function {^name "write_file"
-                 ^arguments "{\"path\":\"$new.txt\",\"content\":\"new-content\\n\"}"}}
+                 ^arguments "{\"path\":\"new.txt\",\"content\":\"new-content\\n\"}"}}
      {^index 2 ^id "fc3" ^type "function"
       ^function {^name "edit_file"
                  ^arguments "{\"path\":\"safe.txt\",\"old_text\":\"safe-before\\n\",\"new_text\":\"safe-agent\\n\"}"}}]}}]}
@@ -3799,7 +3799,7 @@ catch {^message message}
      {^index 1 ^id "ev2" ^type "function"
       ^function {^name "run_shell" ^arguments "{\"command\":\"exit 7\"}"}}
      {^index 2 ^id "ev3" ^type "function"
-      ^function {^name "run_shell" ^arguments "{\"command\":\"yes x | $head -c 70000\"}"}}]}}]}
+      ^function {^name "run_shell" ^arguments "{\"command\":\"yes x | head -c 70000\"}"}}]}}]}
    {^choices [{^index 0 ^delta {} ^finish_reason "tool_calls"}]}])
 (var done
   [{^choices [{^index 0 ^delta {^content "checks complete"}}]}

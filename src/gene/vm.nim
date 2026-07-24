@@ -360,7 +360,7 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope)
 proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
-                       missingImpl = false)
+                       missingImpl = false) {.noreturn.}
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
@@ -1222,12 +1222,12 @@ proc biDiv(args: openArray[Value]): Value {.nimcall.} =
     newFloat(s)
 
 proc biRem(args: openArray[Value]): Value {.nimcall.} =
-  ## Truncated remainder (`rem`), design §7.4: `mod` names the
-  ## module form and `%` is the unquote prefix, so modulo is the identifier
-  ## `rem`. Truncates toward zero to match `/`.
-  requireNums("rem", args)
+  ## Truncated remainder (`//`), design §7.4: `%` is the unquote prefix and
+  ## `mod` names the module form, so the remainder is spelled `//` — one of the
+  ## closed operator set, next to `/`. Truncates toward zero to match `/`.
+  requireNums("//", args)
   if args.len != 2:
-    raise newException(GeneError, "rem expects exactly 2 arguments")
+    raise newException(GeneError, "// expects exactly 2 arguments")
   let a = args[0]
   let b = args[1]
   if a.kind == vkInt and b.kind == vkInt:
@@ -5023,31 +5023,6 @@ proc typeReflectionMessage(name: string): Value =
   of "name": newNativeFn("Type/name", biTypeName)
   else: NIL
 
-const bareOperatorNames = [
-  # Operators are a closed, language-defined set (design §2.2): users cannot
-  # declare them, so pre-binding them costs no name, and `($+ 1 2)` would be
-  # noise. `$` is the concat/interpolation head.
-  "+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$",
-]
-
-const bareCoreNames = [
-  # Language-level words rather than library functions. `panic` is the
-  # unrecoverable-failure mechanism §9 reserves, and `not`/`same?` are spelled
-  # forms of primitive operations (`!` and identity). Deliberately short: every
-  # entry here is a name a program can no longer use freely.
-  "panic", "not", "same?",
-]
-
-proc staysBare(name: string): bool =
-  ## Case is the rule (design §2.1/§3): an uppercase name is a *type* — a type
-  ## surface, an error type, or a type's message namespace — and stays bare
-  ## because annotations resolve type names structurally, so `[xs : List]` must
-  ## keep working. A lowercase name is a library function or namespace and moves
-  ## under the `gene` root, reached as `$x`.
-  if name.len == 0: return false
-  if name[0] in {'A'..'Z'}: return true
-  name in bareOperatorNames or name in bareCoreNames
-
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -5232,7 +5207,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("-", app.nativeSub)
   result.define("*", app.nativeMul)
   result.define("/", newNativeFn("/", biDiv))
-  result.define("rem", newNativeFn("rem", biRem))
+  result.define("//", newNativeFn("//", biRem))
   result.define("<", app.nativeLt)
   result.define(">", app.nativeGt)
   result.define("<=", app.nativeLe)
@@ -7238,12 +7213,19 @@ proc builtinBinding(scope: Scope, name: string): Value =
   ## `gene` scope, not the lexical root, so built-in type messages and the
   ## error types the VM raises keep working even though almost nothing is
   ## pre-bound bare (design §2.1).
+  ##
+  ## A missing name yields NIL rather than raising: callers probe for optional
+  ## surfaces (`Cell`, `stream/each`, an error type), and a probe must be able
+  ## to fail into the caller's own diagnostic — an internal lookup must never
+  ## surface as "undefined symbol" in user code.
   let app =
     if scope == nil: currentApplication()
     else: scope.application()
   discard app.builtinsScope()      # forces construction, which fills `stdlib`
-  if app.stdlib != nil: app.stdlib.lookup(name)
-  else: NIL
+  if app.stdlib == nil:
+    return NIL
+  if not app.stdlib.lookupOptional(name, result):
+    result = NIL
 
 proc isBuiltinCallable(value: Value): bool =
   # fn! values implement SyntaxCallable, not Callable (design §3).
@@ -7361,20 +7343,20 @@ proc typeNsMessage(scope: Scope, nsName, name: string): Value =
 
 proc convertMessage(scope: Scope, name: string,
                     names: openArray[string]): Value =
-  ## The stream/pipeline operations (design §6) reachable as type-direct
-  ## messages on iterable/stream receivers, so `(xs ~ to_stream)` and
-  ## `(s ~ map f)` dispatch — `~` has no lexical fallback (design §3).
-  ## Resolved from the `stream` namespace, which carries the full pipeline
-  ## surface (map/filter/take/into/each/to_stream/to_pairs_stream); `names`
-  ## restricts which ops are valid for a given receiver type.
+  ## The stream/pipeline operations (design §6) and the Node accessors (§1.2)
+  ## reachable as type-direct messages on iterable/stream/node receivers, so
+  ## `(xs ~ to_stream)`, `(s ~ map f)`, and `(n ~ head)` dispatch — `~` has no
+  ## lexical fallback (design §3). `names` restricts which ops are valid for a
+  ## given receiver type.
+  ##
+  ## Both tiers read the standard library, never the lexical root: almost
+  ## nothing is pre-bound bare (design §2.1), so a root lookup here would find
+  ## none of these.
   if name notin names:
     return NIL
-  let root =
-    if scope == nil: builtinsScope()
-    else: scope.application().builtinsScope()
-  var v: Value
-  if root.lookupOptional(name, v):
-    return v                       # head/props/body/meta and most pipeline ops
+  let direct = builtinBinding(scope, name)
+  if direct.kind != vkNil:
+    return direct                  # head/props/body/meta and most pipeline ops
   let streamNs = builtinBinding(scope, "stream")
   let binding = exportedBinding(streamNs, name)   # `each` lives only here
   if binding.kind == vkVoid: NIL else: binding
@@ -8677,12 +8659,60 @@ proc collectProtocolMatches(scope: Scope, recvType, message: Value,
         matches.setLen(0)
       matches.add entry.fn
 
-proc stampSuperType(proto: FunctionProto, parent: Value,
-                    seen: var HashSet[pointer]) =
-  ## Record a type-direct message body's `^is` parent on its chunk, and on every
-  ## chunk nested inside it, so `(super ~ m)` in the body — or in a closure
-  ## lexically inside it — reads the owner's parent identity instead of
-  ## resolving a shadowable name (design §10).
+proc superStampConflicts(proto: FunctionProto, parent: Value,
+                         seen: var HashSet[pointer]): bool =
+  ## True when this body tree already carries a *different* `^is` parent, i.e.
+  ## one `type` declaration is being created again with another parent — a type
+  ## declared inside a function with a computed `^is`. The chunk tree is shared
+  ## by every creation from that site, so it cannot represent both.
+  if proto == nil:
+    return false
+  for chunk in [proto.chunk, proto.scopelessChunk]:
+    if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
+      continue
+    if chunk.superType.kind != vkNil and not same(chunk.superType, parent):
+      return true
+    for nested in chunk.functions:
+      if superStampConflicts(nested, parent, seen):
+        return true
+  false
+
+proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
+                     cloned: var Table[pointer, FunctionProto]): Chunk
+
+proc cloneSuperProto(proto: FunctionProto,
+                     cloned: var Table[pointer, FunctionProto]): FunctionProto =
+  ## Private copy of a message body (and every closure nested in it) for one
+  ## type creation, so its `super` stamp cannot be observed by the types created
+  ## earlier from the same declaration. Only the code objects `stampSuperType`
+  ## walks are copied; everything else (constants, protos for nested types) is
+  ## shared, and those carry their own stamps.
+  if proto == nil:
+    return nil
+  let key = cast[pointer](proto)
+  if cloned.hasKey(key):
+    return cloned[key]
+  let copy = FunctionProto()
+  copy[] = proto[]
+  cloned[key] = copy
+  copy.chunk = cloneSuperChunk(proto.chunk, copy, cloned)
+  copy.scopelessChunk = cloneSuperChunk(proto.scopelessChunk, copy, cloned)
+  copy
+
+proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
+                     cloned: var Table[pointer, FunctionProto]): Chunk =
+  if chunk == nil:
+    return nil
+  result = Chunk()
+  result[] = chunk[]
+  result.owner = owner
+  result.superType = NIL
+  result.dispatchCache = @[]     # sites are per-chunk; the copy starts cold
+  for i in 0 ..< result.functions.len:
+    result.functions[i] = cloneSuperProto(result.functions[i], cloned)
+
+proc stampSuperTypeInPlace(proto: FunctionProto, parent: Value,
+                           seen: var HashSet[pointer]) =
   if proto == nil:
     return
   for chunk in [proto.chunk, proto.scopelessChunk]:
@@ -8690,11 +8720,28 @@ proc stampSuperType(proto: FunctionProto, parent: Value,
       continue
     chunk.superType = parent
     for nested in chunk.functions:
-      stampSuperType(nested, parent, seen)
+      stampSuperTypeInPlace(nested, parent, seen)
 
-proc stampSuperType(proto: FunctionProto, parent: Value) =
+proc stampSuperType(proto: FunctionProto, parent: Value): FunctionProto =
+  ## Record a type-direct message body's `^is` parent on its chunk, and on every
+  ## chunk nested inside it, so `(super ~ m)` in the body — or in a closure
+  ## lexically inside it — reads the owner's parent identity instead of
+  ## resolving a shadowable name (design §10). Returns the body to instantiate:
+  ## the original when the stamp is fresh or already agrees, a private clone when
+  ## the same declaration site is created again with a different parent. A stamp
+  ## therefore never changes meaning once set, which is what lets the send read
+  ## it straight off the chunk.
+  if proto == nil:
+    return nil
+  var conflictSeen = initHashSet[pointer]()
+  result =
+    if superStampConflicts(proto, parent, conflictSeen):
+      var cloned = initTable[pointer, FunctionProto]()
+      cloneSuperProto(proto, cloned)
+    else:
+      proto
   var seen = initHashSet[pointer]()
-  stampSuperType(proto, parent, seen)
+  stampSuperTypeInPlace(result, parent, seen)
 
 proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
   var matches: seq[Value]
@@ -10335,10 +10382,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var messages = initTable[string, Value]()
           for i, message in proto.messages:
             # `(super ~ m)` in this body delegates to the enclosing type's `^is`
-            # parent; stamp that identity on the body now that it is known.
-            stampSuperType(message.fn, parent)
-            let fn = newFunction(message.fn.name, message.fn.params, message.fn,
-                                 scope, message.fn.checksErrors,
+            # parent; stamp that identity on the body now that it is known. A
+            # declaration site created twice with different parents gets a
+            # private copy of the body rather than a re-stamp.
+            let messageFn = stampSuperType(message.fn, parent)
+            let fn = newFunction(messageFn.name, messageFn.params, messageFn,
+                                 scope, messageFn.checksErrors,
                                  messageErrorTypes[i])
             messages[message.name] = functionForScopeStorage(fn, scope)
           if parent.kind == vkType:
@@ -14416,7 +14465,7 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
 
 proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
-                       missingImpl = false) =
+                       missingImpl = false) {.noreturn.} =
   ## Design §3/§9: a `~` send that resolves to no message on the
   ## receiver's type. Recoverable MessageError (a TypeError subtype).
   ## `lexicalHint` marks the case where the message name also names a lexical

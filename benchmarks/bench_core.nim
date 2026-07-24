@@ -93,7 +93,7 @@ proc main() =
 
   let disabledGeneScope = newGlobalScope()
   discard run(compileSource(
-    "(import log [new_logger debug!]) " &
+    "(import $log [new_logger debug!]) " &
     "(var logger (new_logger \"app/bench\")) " &
     "(var drive (fn [] (debug! logger \"disabled\")))"),
     disabledGeneScope)
@@ -357,7 +357,7 @@ proc main() =
     "(var derived (Derived)) " &
     # A built-in receiver: `(c ~ get)` resolves through the Cell type namespace
     # rather than a user type's message table.
-    "(var c (cell 10)) " &
+    "(var c ($cell 10)) " &
     # Reference: a 1-arg Gene function call — the target sends aim to approach.
     "(var identity (fn [x] x))"), protocolScope)
   # Message names are not lexical bindings (docs/core.md §1); the hot dispatch
@@ -440,14 +440,14 @@ proc main() =
   let projectionStageScope = newGlobalScope()
   projectionStageScope.define("user",
     run(compileSource("(quote (user ^name \"Ada\" ^age 37 10 20))"), projectionStageScope))
-  let projectionStageChunk = compileSource("user/%props/age")
+  let projectionStageChunk = compileSource("user/%$props/age")
   bench("vm.selector_projection_stage.compiled_chunk", 500_000, i):
     let v = run(projectionStageChunk, projectionStageScope)
     checksum = checksum + v.intVal
 
   let assocScope = newGlobalScope()
   assocScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), assocScope))
-  let assocChunk = compileSource("(assoc_in user /age 38)")
+  let assocChunk = compileSource("($assoc_in user /age 38)")
   bench("vm.assoc_in.compiled_chunk", 250_000, i):
     let v = run(assocChunk, assocScope)
     checksum = checksum + v.mapEntries["age"].intVal

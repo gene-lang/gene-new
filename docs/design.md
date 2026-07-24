@@ -1755,16 +1755,23 @@ same hash.
 
 FFI types such as `C/Int32`, `C/Long`, and `C/Size` are ABI types, not aliases for Gene `Int`. Passing a Gene `Int` to an FFI integer parameter performs an explicit range check and then marshals to the target ABI width.
 
-Division is `(/ a b)`. The remainder operator is the identifier `rem`, not `%`
-or `mod`: `%` is the unquote prefix (§2) and `mod` is the module declaration
-form (§15.4), and neither can be shadowed. `(rem a b)` truncates toward zero so
-its sign follows the dividend, matching `/`:
+Division is `(/ a b)`. The remainder operator is `//`, not `%` or `mod`: `%` is
+the unquote prefix (§2) and `mod` is the module declaration form (§15.4), and
+neither can be shadowed. `//` belongs to the closed operator set (§2.2), so it
+stays bare like `/` rather than moving under the `gene` root. `(// a b)`
+truncates toward zero, so its sign follows the dividend and it pairs exactly
+with `/`:
 
 ```gene
-(rem 17 5)   # 2
-(rem -17 5)  # -2
-(rem 17 -5)  # 2
+(/ 17 5)     # 3
+(// 17 5)    # 2
+(// -17 5)   # -2
+(// 17 -5)   # 2
 ```
+
+A selector needs at least one segment, so `//` is never read as one; the reader
+gives it back as the operator symbol. An interior `//` in a path (`a//b`) still
+collapses to `a/b`.
 
 A floored variant (`mod_floor`) may be added later.
 
@@ -3778,9 +3785,9 @@ The split is by **case**, because case already tells types from functions:
 - A **lowercase** name is a library function or namespace (`println`, `map`,
   `cell`, `str`, `net`). These move under the `gene` root and are reached as
   `$x`.
-- **Operators** (`+ - * / < <= > >= == != $`) stay bare — a closed set the user
-  cannot declare — as do a few language-level words spelled as names: `panic`
-  (§9), and `not`/`same?`, the spelled forms of `!` and identity.
+- **Operators** (`+ - * / // < <= > >= == != $`) stay bare — a closed set the
+  user is not expected to declare — as do a few language-level words spelled as
+  names: `panic` (§9), and `not`/`same?`, the spelled forms of `!` and identity.
 
 The VM resolves its own needs — built-in type messages, the error types it
 raises — from the `gene` scope rather than the lexical chain, so a program that

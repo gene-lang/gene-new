@@ -1078,11 +1078,17 @@ suite "spec — numeric boundaries from design":
                "10000000000000000000000000000000000000000 " &
                "true]")
 
-  test "rem is truncated remainder; sign follows the dividend":
-    check_eval("[($rem 17 5) ($rem -17 5) ($rem 17 -5) ($rem 10 2) ($rem 5.5 2.0)]",
+  test "// is truncated remainder; sign follows the dividend":
+    check_eval("[(// 17 5) (// -17 5) (// 17 -5) (// 10 2) (// 5.5 2.0)]",
                "[2 -2 2 0 1.5]")
     expect GeneError:
-      discard run(compileSource("($rem 1 0)"), newGlobalScope())
+      discard run(compileSource("(// 1 0)"), newGlobalScope())
+
+  test "// is an operator, never the empty selector":
+    # A selector needs at least one segment, so `//` reads back as the operator
+    # symbol; an interior `//` in a path still collapses (design §7.4).
+    check_eval("(quote //)", "//")
+    check_eval("[(quote a//b) (quote /a/b)]", "[(path a b) (select a b)]")
 
   test "fixed-width integer annotations are range checked":
     check_eval("(fn signed [x : SignedInt] x) " &
@@ -2072,9 +2078,11 @@ suite "spec — implicit self in message bodies from design §10":
                "7")
 
   test "self is immutable inside a message body":
+    # The diagnostic names the receiver rather than suggesting `var`, which is
+    # not a fix a caller could apply to `self` (design §10).
     check_compile_error(
       "(type Box ^props {^v Int} (message bad [] (set self 42) self))",
-      "cannot set immutable binding 'self'")
+      "'self' is the receiver and cannot be reassigned")
 
   test "super delegates to the implementation above, relative to the enclosing type":
     check_eval("(type A ^props {} (message greet [] : Str \"A\")) " &
@@ -2133,6 +2141,19 @@ suite "spec — implicit self in message bodies from design §10":
                "((B) ~ m)",
                "\"B+A\"")
 
+  test "super stays per-type when one declaration is created with two parents":
+    # The parent identity lives on the message body, which the compiler emits
+    # once for the declaration site. Creating that `type` again with a different
+    # ^is must not retarget the delegation of the types created before it.
+    check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
+               "(type B ^props {} (message m [] : Str \"B\")) " &
+               "(fn make [p] " &
+               "  (type C ^is p ^props {} (message up [] : Str (super ~ m))) " &
+               "  C) " &
+               "(let C1 (make A)) (let C2 (make B)) " &
+               "[((C1) ~ up) ((C2) ~ up)]",
+               "[\"A\" \"B\"]")
+
   test "self cannot be rebound by a nested binder in a message body":
     check_compile_error(
       "(type T ^props {} (message m [] (fn f [self] self) (f 42)))",
@@ -2183,11 +2204,11 @@ suite "spec — binding forms from design §12.1":
 
   test "set on a let binding is a compile error":
     check_compile_error("(let x 10) (set x 20)",
-                        "cannot set immutable binding 'x'")
+                        "cannot set 'x'")
 
   test "let destructuring names are immutable":
     check_compile_error("(let [a b] [1 2]) (set a 9)",
-                        "cannot set immutable binding 'a'")
+                        "cannot set 'a'")
 
   test "const is reserved but not yet implemented":
     check_compile_error("(const K 10)", "const is reserved")
@@ -2200,7 +2221,7 @@ suite "spec — binding forms from design §12.1":
 
   test "an inner let over an outer var is immutable in that scope":
     check_compile_error("(var x 1) (fn f [] (let x 2) (set x 3) x)",
-                        "cannot set immutable binding 'x'")
+                        "cannot set 'x'")
 
   test "a function parameter shadowing an outer let stays rebindable":
     check_eval("(let y 5) (fn g [y] (set y (+ y 1)) y) [(g 10) y]", "[11 5]")
@@ -2214,15 +2235,15 @@ suite "spec — binding forms from design §12.1":
     check_eval("(let n : Int 5) (+ n 1)", "6")
 
   test "named declarations are immutable bindings":
-    check_compile_error("(fn f [] 1) (set f 2)", "cannot set immutable binding 'f'")
+    check_compile_error("(fn f [] 1) (set f 2)", "cannot set 'f'")
     check_compile_error("(type T ^props {}) (set T 2)",
-                        "cannot set immutable binding 'T'")
+                        "cannot set 'T'")
     check_compile_error("(ns N (let x 1)) (set N 2)",
-                        "cannot set immutable binding 'N'")
+                        "cannot set 'N'")
     check_compile_error("(protocol P) (set P 2)",
-                        "cannot set immutable binding 'P'")
+                        "cannot set 'P'")
     check_compile_error("(enum E a b) (set E 2)",
-                        "cannot set immutable binding 'E'")
+                        "cannot set 'E'")
 
   test "the send operator ~ is reserved and cannot be bound":
     check_compile_error("(var ~ 5)", "reserved")
@@ -2293,6 +2314,17 @@ suite "spec — mutable containers from design":
     check_eval("((($range 0 3) ~ to_stream) ~ into [])", "[0 1 2]")
     check_eval("(var m {^a 1 ^b 2}) ((m ~ to_pairs_stream) ~ into [])",
                "[[a 1] [b 2]]")
+    # `each` lives only in gene/stream, the rest are reachable directly from the
+    # library root — both tiers resolve through `gene`, never the bare surface.
+    check_eval("(var acc ($cell 0)) " &
+               "(([1 2 3] ~ to_stream) ~ each (fn [x] (acc ~ set (+ (acc ~ get) x)))) " &
+               "(acc ~ get)",
+               "6")
+
+  test "the Node accessors are messages on a node receiver":
+    check_eval("(var n (quote (foo ^a 1 \"x\"))) " &
+               "[(n ~ head) (n ~ props) (n ~ body) (n ~ meta)]",
+               "[foo {^a 1} [\"x\"] {}]")
 
 suite "spec — void normalization from design":
   test "void does not persist in prop storage":

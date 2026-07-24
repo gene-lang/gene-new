@@ -202,7 +202,7 @@ line two"""
 # Syntax values, macros, fexprs, templates, selectors, and spread.
 
 (macro unless! [condition, body...]
-  `(if_not %condition %$body...))
+  `(if_not %condition %body...))
 
 (fn! raw_head! [form]
   ($head form))

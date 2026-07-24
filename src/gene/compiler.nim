@@ -227,10 +227,41 @@ proc enableLocalSlots(c: var Compiler) =
 const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 
 # `~` is the send operator and is reserved in executable position (design §3).
-# The
-# reader still tokenizes it (so quoted data like `(quote (a ~ b))` round-trips),
-# but it may not be bound, set, or declared as a name.
+# The reader still tokenizes it (so quoted data like `(quote (a ~ b))`
+# round-trips), but it may not be bound, set, or declared as a name.
 const reservedOperatorNames = ["~", "super"]
+
+const bareOperatorNames* = [
+  # Operators are a closed, language-defined set (design §2.2): a program is not
+  # expected to declare them, so pre-binding them costs no name and `($+ 1 2)`
+  # would be noise. (Binding one is still accepted today and shadows it, as for
+  # any other name.) `//` is the remainder (§7.4), `$` the concat/interpolation
+  # head.
+  "+", "-", "*", "/", "//", "<", "<=", ">", ">=", "==", "!=", "$",
+]
+
+const bareCoreNames* = [
+  # Language-level words rather than library functions. `panic` is the
+  # unrecoverable-failure mechanism §9 reserves, and `not`/`same?` are spelled
+  # forms of primitive operations (`!` and identity). Deliberately short: every
+  # entry here is a name a program can no longer use freely.
+  "panic", "not", "same?",
+]
+
+proc staysBare*(name: string): bool =
+  ## Which names the lexical root keeps when the standard library moves under
+  ## the `gene` root (design §2.1). Case is the rule: an uppercase name is a
+  ## *type* — a type surface, an error type, or a type's message namespace — and
+  ## stays bare because annotations resolve type names structurally, so
+  ## `[xs : List]` must keep working. A lowercase name is a library function or
+  ## namespace and is reached as `$x`.
+  ##
+  ## The VM prunes the root with this predicate and the compiler's bare-name
+  ## lint reports against it, so both must read the same list.
+  if name.len == 0: return false
+  if name[0] in {'A'..'Z'}: return true
+  name in bareOperatorNames or name in bareCoreNames or
+    name in reservedStdlibRoots
 
 proc validateBindingName(name: string) =
   if name in reservedStdlibRoots:
@@ -263,6 +294,11 @@ proc reserveLocal(c: var Compiler, name: string): int =
   c.syntaxFnNames.del(name)
   c.ordinaryFnNames.del(name)
   c.declaredNames.incl name
+  # A fresh binding is rebindable until something says otherwise, so it clears
+  # any `let` mark inherited from an outer scope — branch-local `for`/`match`/
+  # `catch` bindings and parameters shadow an outer `let` rather than freezing
+  # (design §12.1). Callers that bind a `let`-class name re-mark it after.
+  c.letNames.excl name
   if not c.useLocalSlots:
     return -1
   if c.localSlots.hasKey(name):
@@ -489,16 +525,7 @@ let lintBareNames* = getEnv("GENE_LINT_BARE").len > 0
 
 proc reportBareName(c: Compiler, name: string) =
   if not lintBareNames or c.hasLexicalBinding(name) or
-      name in c.declaredNames:
-    return
-  # Mirror `staysBare` in vm.nim: uppercase names are types and stay bare (so
-  # annotations keep resolving), as do the operators and the few language-level
-  # words. The reserved roots are how `$x` resolves in the first place.
-  if name.len > 0 and name[0] in {'A'..'Z'}:
-    return
-  if name in reservedStdlibRoots or
-      name in ["+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$",
-               "panic", "not", "same?"]:
+      name in c.declaredNames or staysBare(name):
     return
   let loc = c.currentLoc
   stderr.writeLine("BARE\t" & loc.sourceName & "\t" & $loc.line & "\t" &
@@ -562,11 +589,6 @@ proc intFastConstOp(kind: NativeFastKind): OpCode =
 
 proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
   validateBindingName(name)
-  # Named declarations (fn/type/enum/protocol/ns/macro/alias) are let-class
-  # (design §12.1): their bindings are fixed, so `(set name ...)` is a compile
-  # error. `var`/loop bindings pass immutable=false and stay rebindable.
-  if immutable: c.letNames.incl name
-  else: c.letNames.excl name
   # Record the binding even when this body compiles without slots, so the
   # bare-name lint can tell a declaration from a standard-library reference.
   c.declaredNames.incl name
@@ -574,6 +596,12 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
     discard c.emit(opDefineLocal, c.reserveLocal(name), name = name)
   else:
     discard c.emit(opDefineName, name = name)
+  # Named declarations (fn/type/enum/protocol/ns/macro/alias) are let-class
+  # (design §12.1): their bindings are fixed, so `(set name ...)` is a compile
+  # error. `var`/loop bindings pass immutable=false and stay rebindable. Marked
+  # after reserveLocal, which clears the mark for a fresh binding.
+  if immutable: c.letNames.incl name
+  else: c.letNames.excl name
 
 proc emitSetBinding(c: var Compiler, name: string) =
   let slot = c.localSlot(name)
@@ -1236,10 +1264,9 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
     child.enableLocalSlots()
     child.parentSlots = c.parentFrames()
     for name in patternBindingNames(pattern):
+      # reserveLocal un-marks an outer `let` of the same name, so a branch-local
+      # binding stays rebindable in this arm (§12.1).
       discard child.reserveLocal(name)
-      # A fresh branch-local binding shadows (un-marks) an outer `let` of the
-      # same name so it stays rebindable in this arm (§12.1).
-      child.letNames.excl name
       if name == "self":
         child.selfAvailable = true
   elif patternBindsSelf(pattern):
@@ -2392,13 +2419,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     let sig = functionSigFromParts(specs.positional.len, typeParams, returnType)
     if sig.known:
       fnCompiler.parentFunctionSigs[0][name] = sig.sig
-  # Parameters are fresh rebindable bindings, so they shadow (un-mark) any
-  # outer `let` of the same name inherited into fnCompiler.letNames (§12.1).
+  # Parameters are fresh rebindable bindings, so reserveLocal un-marks any outer
+  # `let` of the same name inherited into fnCompiler.letNames (§12.1).
   var positionalSlots: seq[int]
   for i, name in specs.positional:
     let slot = fnCompiler.reserveLocal(name)
     positionalSlots.add slot
-    fnCompiler.letNames.excl name
     if i < specs.positionalTypes.len:
       fnCompiler.recordLocalType(name, specs.positionalTypes[i])
       if specs.positionalTypes[i].isBareIntType:
@@ -2406,12 +2432,10 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   var namedSlots: seq[int]
   for p in specs.named:
     namedSlots.add fnCompiler.reserveLocal(p.local)
-    fnCompiler.letNames.excl p.local
     fnCompiler.recordLocalType(p.local, p.typeExpr)
   var restSlot = -1
   if specs.rest.len > 0:
     restSlot = fnCompiler.reserveLocal(specs.rest)
-    fnCompiler.letNames.excl specs.rest
   # In a message/ctor body the receiver `self` is a compiler-owned immutable
   # binding — `(set self ...)` is a compile error (design §10/§12.1), so it
   # cannot be retargeted mid-body. Re-mark it after the param loop cleared it,
@@ -2760,9 +2784,17 @@ proc compileSet(c: var Compiler, node: Value) =
     raise newException(GeneError, "set requires a name and a value")
   validateBindingName(body[0].symVal)
   if body[0].symVal in c.letNames:
+    # `self` is compiler-owned, so "use var" is not advice a caller can act on;
+    # a named declaration was not written with `let` either. Name the actual
+    # binder rather than guessing at one (design §10/§12.1).
+    if c.selfReserved and body[0].symVal == "self":
+      raise newException(GeneError,
+        "'self' is the receiver and cannot be reassigned in a message body " &
+        "(design §10)")
     raise newException(GeneError,
-      "cannot set immutable binding '" & body[0].symVal &
-      "' (declared with let/const); use var for a rebindable binding")
+      "cannot set '" & body[0].symVal & "': let, const, and named declarations " &
+      "(fn, fn!, type, enum, protocol, ns, macro, alias) are fixed bindings " &
+      "(design §12.1); use var for a rebindable binding")
   compileExpr(c, body[1])
   c.syntaxFnNames.del(body[0].symVal)
   if c.moduleSyntaxFnExports != nil:
@@ -6075,7 +6107,6 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "const":
       raise newException(GeneError,
         "const is reserved but not yet implemented (design §12.1); use let")
-      return
     of "set":
       compileSet(c, node)
       return

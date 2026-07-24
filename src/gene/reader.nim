@@ -1138,6 +1138,11 @@ proc parsePropKey(r: var Reader): string =
 
 proc desugarPath*(lexeme: string): Value =
   if lexeme == "/": return newSym("/")
+  # `//` is the remainder operator (design §7.4), not a selector: a selector
+  # needs at least one segment, so `//` would otherwise read as the empty
+  # `(select)`, which denotes nothing. Paths with an interior `//` (`a//b`)
+  # keep collapsing the empty segment below.
+  if lexeme == "//": return newSym("//")
   if '/' notin lexeme: return newSym(lexeme)
 
   let parts = lexeme.split('/')

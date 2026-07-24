@@ -182,7 +182,7 @@
   (var cls (if (== flt target) "filter on" "filter"))
   (var key (target ~ backing))
   (var href (if (== target TodoFilter/all) "/" $"/?filter=${key}"))
-  `(a ^class %cls ^href %href %$key))
+  `(a ^class %cls ^href %href %key))
 
 (fn page [flt : TodoFilter] : Str
   (var rows ((to_stream (todos_for flt)) ~ map todo_row ; ~ into []))

@@ -12,11 +12,13 @@
 #     (docs/core.md §3)
 #   - structural subtyping: implementing a child protocol satisfies every
 #     ^inherit ancestor for a ^impl [...] requirement (docs/core.md §3.5)
-#   - message sends: (x ~ name) resolves receiver-first; (~ name) sends to
-#     self; (Protocol/name x) is always unambiguous (docs/core.md §9)
+#   - message sends: bare (x ~ name) reaches a type-direct message; a protocol
+#     message is always qualified, (x ~ Protocol/name); (~ name) sends to self
+#     (docs/core.md §9)
 #
-# Note: message names are not lexical bindings (docs/core.md §1) — behavior
-# is reached with sends or qualified names, never bare calls like (name x).
+# Note: message names are not lexical bindings (docs/core.md §1) and a message
+# identity is not callable — behavior is reached with `~`, never with a bare
+# call like (name x) or (Protocol/name x).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -25,13 +27,13 @@
 # -----------------------------------------------------------------------------
 
 (type Animal ^props {^name Str}
-  (message greet [self] $"${self/name} looks up"))
+  (message greet [] $"${self/name} looks up"))
 
 (protocol Describable
-  (message describe [self : Self] : Str))
+  (message describe [] : Str))
 
 (impl Describable for Animal
-  (message describe [self] : Str $"a creature named ${self/name}"))
+  (message describe [] : Str $"a creature named ${self/name}"))
 
 # -----------------------------------------------------------------------------
 # Protocol inheritance, single parent: an impl of Ord must cover Comparable's
@@ -39,10 +41,10 @@
 # -----------------------------------------------------------------------------
 
 (protocol Comparable
-  (message compare [self : Self, other : Self] : Int))
+  (message compare [other] : Int))
 
 (protocol Ord ^inherit [Comparable]
-  (message bigger [self : Self, other : Self]))
+  (message bigger [other]))
 
 # -----------------------------------------------------------------------------
 # ^impl [Comparable] requires a visible impl by scope completion; the inline
@@ -53,13 +55,15 @@
 # -----------------------------------------------------------------------------
 
 (type Dog ^is Animal ^props {^breed Str ^weight Int} ^impl [Comparable]
-  (message tag [self] $"${self/name} the ${self/breed}")
+  (message tag [] $"${self/name} the ${self/breed}")
   (impl Ord
-    (message compare [self other]
+    # An impl's parameter list must match the declaration position by position,
+    # types included.
+    (message compare [other]
       : Int
       (- self/weight other/weight))
-    (message bigger [self other]
-      (if (< (self ~ compare other) 0) other self))))
+    (message bigger [other]
+      (if (< (self ~ Comparable/compare other) 0) other self))))
 
 # -----------------------------------------------------------------------------
 # Multiple unrelated parents with a same-name message: Sized/size_of and
@@ -68,18 +72,18 @@
 # -----------------------------------------------------------------------------
 
 (protocol Sized
-  (message size_of [self : Self] : Int))
+  (message size_of [] : Int))
 
 (protocol Scored
-  (message size_of [self : Self] : Int))  # same simple name, different meaning
+  (message size_of [] : Int))  # same simple name, different meaning
 
 (protocol Summary ^inherit [Sized Scored]
-  (message blurb [self : Self] : Str))
+  (message blurb [] : Str))
 
 (impl Summary for Dog
-  (message Sized/size_of [self] : Int self/weight)
-  (message Scored/size_of [self] : Int (* self/weight 2))
-  (message blurb [self] : Str
+  (message Sized/size_of [] : Int self/weight)
+  (message Scored/size_of [] : Int (* self/weight 2))
+  (message blurb [] : Str
     $"${self/name}: ${(self ~ Sized/size_of)} lbs, score ${(self ~ Scored/size_of)}"))
 
 # -----------------------------------------------------------------------------
@@ -91,12 +95,13 @@
 
 ($println (rex ~ greet))                  # type-direct message via ^is walk (§8)
 ($println (rex ~ tag))                    # Dog's own type-direct message
-($println (Dog/tag rex))                  # same message, qualified spelling
+($println (Dog/tag rex))                  # a type's message is also a member
 
-($println (rex ~ describe))               # protocol impl via ^is walk (§2.1)
-($println (rex ~ Describable/describe))   # same message, qualified send
+# A protocol message is always qualified — bare `(rex ~ describe)` would look
+# for a type-direct `describe` on Dog and raise MessageError (§9.1).
+($println (rex ~ Describable/describe))   # impl found by walking Dog's ^is chain
 
-($println (rex ~ compare fido))           # Ord's closure includes Comparable
-($println ((rex ~ bigger fido) ~ tag))    # send chaining
+($println (rex ~ Comparable/compare fido)) # Ord's closure includes Comparable
+($println ((rex ~ Ord/bigger fido) ~ tag)) # send chaining
 
-($println (rex ~ blurb))                  # qualified same-name messages (§3.3)
+($println (rex ~ Summary/blurb))          # qualified same-name messages (§3.3)
