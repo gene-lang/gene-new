@@ -220,7 +220,7 @@ suite "native api — roots and trampoline":
   test "versioned API table exposes rooted channel and actor sends":
     let api = geneApi()
     let scope = newGlobalScope()
-    let channel = run(compileSource("(channel ^capacity 1)"), scope)
+    let channel = run(compileSource("($channel ^capacity 1)"), scope)
     let itemRoot = api.root(newInt(7))
     let sent = api.channelTrySend(channel, itemRoot, scope)
     check sent.status == gsOk
@@ -237,7 +237,7 @@ suite "native api — roots and trampoline":
     api.rootRelease(itemRoot)
 
     let typedChannel = run(compileSource("(var ch : (Channel Int) " &
-                                         "  (channel ^capacity 1)) ch"),
+                                         "  ($channel ^capacity 1)) ch"),
                            scope)
     let badRoot = api.root(newStr("bad"))
     let rejected = api.channelTrySend(typedChannel, badRoot, scope)
@@ -246,15 +246,15 @@ suite "native api — roots and trampoline":
     api.rootRelease(badRoot)
 
     let actor = run(compileSource(
-      "(actor/spawn ^init (fn [] 0) " &
-      "  ^handle (fn [ctx state msg] (actor/continue (+ state msg))))"),
+      "($actor/spawn ^init (fn [] 0) " &
+      "  ^handle (fn [ctx state msg] ($actor/continue (+ state msg))))"),
       scope)
     let msgRoot = api.root(newInt(5))
     let actorSent = api.actorTrySend(actor, msgRoot, scope)
     check actorSent.status == gsOk
     check actorSent.value == TRUE
     check actor.actorState.print() == "0"
-    discard run(compileSource("(sleep 1)"), scope)
+    discard run(compileSource("($sleep 1)"), scope)
     check actor.actorState.print() == "5"
     api.rootRelease(msgRoot)
 

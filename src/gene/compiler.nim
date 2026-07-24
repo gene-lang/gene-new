@@ -491,10 +491,14 @@ proc reportBareName(c: Compiler, name: string) =
   if not lintBareNames or c.hasLexicalBinding(name) or
       name in c.declaredNames:
     return
-  # The reserved roots stay bare (they are how `$x` resolves), and so do the
-  # operators, which users cannot declare in the first place.
+  # Mirror `staysBare` in vm.nim: uppercase names are types and stay bare (so
+  # annotations keep resolving), as do the operators and the few language-level
+  # words. The reserved roots are how `$x` resolves in the first place.
+  if name.len > 0 and name[0] in {'A'..'Z'}:
+    return
   if name in reservedStdlibRoots or
-      name in ["+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$"]:
+      name in ["+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$",
+               "panic", "not", "same?"]:
     return
   let loc = c.currentLoc
   stderr.writeLine("BARE\t" & loc.sourceName & "\t" & $loc.line & "\t" &
@@ -563,6 +567,9 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
   # error. `var`/loop bindings pass immutable=false and stay rebindable.
   if immutable: c.letNames.incl name
   else: c.letNames.excl name
+  # Record the binding even when this body compiles without slots, so the
+  # bare-name lint can tell a declaration from a standard-library reference.
+  c.declaredNames.incl name
   if c.useLocalSlots:
     discard c.emit(opDefineLocal, c.reserveLocal(name), name = name)
   else:

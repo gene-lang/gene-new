@@ -16,10 +16,10 @@
 (mod web_demo
   @doc "HTML is just nodes; routes are discovered with selectors and streams")
 
-(import net/http [Request Response serve])
+(import $net/http [Request Response serve])
 (import io [write_line])
-(import html [escape])
-(import str [join])
+(import $html [escape])
+(import $str [join])
 (import gene/stream [to_stream to_pairs_stream map filter take each into])
 (import gene/node [head props body meta declarations])
 (import gene/parse [parse_int ParseError])
@@ -36,7 +36,7 @@
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to_str self/name)))))
+         ($to_str self/name)))))
 
 (protocol ToHtml
   (message to_html [self : Self] : Node))
@@ -195,17 +195,17 @@
 # -----------------------------------------------------------------------------
 
 (fn routed? [decl : Node] : Bool
-  (not (== decl/%meta/route void)))
+  (not (== decl/%$meta/route void)))
 
 (fn route_entry [decl : Node] : (List Any)
   (match decl
     (when (fn name _...)
-      [decl/%meta/route (resolve name)])
+      [decl/%$meta/route (resolve name)])
     (else
       void)))
 
 (var routes : (Map Str Fn)
-  (this_mod/%declarations/%to_stream
+  (this_mod/%$declarations/%$to_stream
     ~ filter routed?
     ; ~ map route_entry
     ; ~ into {}))
@@ -218,24 +218,24 @@
   (var [k, v] pair)
   (if (== v void)
     ""
-    $" ${(to_str k)}=\"${(escape (to_str v))}\""))
+    $" ${($to_str k)}=\"${(escape ($to_str v))}\""))
 
 (fn render_attrs [n : Node] : Str
   (join
-    (n/%props/%to_pairs_stream
+    (n/%$props/%$to_pairs_stream
       ~ map render_attr
       ; ~ into [])
     ""))
 
 (fn render_children [n : Node] : Str
   (join
-    (n/%body/%to_stream
+    (n/%$body/%$to_stream
       ~ map render
       ; ~ into [])
     ""))
 
 (fn render_node [n : Node] : Str
-  (var tag (to_str (n ~ head)))
+  (var tag ($to_str (n ~ head)))
   ($ "<" tag (render_attrs n) ">"
      (render_children n)
      "</" tag ">"))
@@ -247,7 +247,7 @@
     (when (n : Node)
       (render_node n))
     (else
-      (escape (to_str x)))))
+      (escape ($to_str x)))))
 
 # -----------------------------------------------------------------------------
 # The app is pure ordinary code. Request validation is a gradual typed boundary.
@@ -274,7 +274,7 @@
 # -----------------------------------------------------------------------------
 
 (fn main [^server : Http/Server, ^out : Io/Write] : Nil
-  (routes/%to_pairs_stream
+  (routes/%$to_pairs_stream
     ~ each (fn [pair]
       (var [p, _] pair)
       (write_line out $"route: ${p}")))

@@ -21,17 +21,17 @@
 (mod agent_gateway_adapter
   @doc "multi-session gateway over the ai_agent turn loop (§12 milestone 8)")
 
-(import os [get_env exec_async monotonic_ms Env Exec])
-(import crypto [random_hex secure_equal?])
-(import store/fs [Store])
-(import json [parse stringify JsonError])
-(import str [split trim join starts_with? contains? byte_size lower
+(import $os [get_env exec_async monotonic_ms Env Exec])
+(import $crypto [random_hex secure_equal?])
+(import $store/fs [Store])
+(import $json [parse stringify JsonError])
+(import $str [split trim join starts_with? contains? byte_size lower
              slice_bytes])
 (import gene/stream [to_stream filter each into])
 (import gene/parse [parse_int])
-(import net/http [Server serve listen stop Response
+(import $net/http [Server serve listen stop Response
                   ws_accept ws_send ws_close])
-(import net/http_client [Http request HttpClientError])
+(import $net/http_client [Http request HttpClientError])
 
 (var gw_host (get_env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
 (var gw_port 8090)
@@ -59,7 +59,7 @@
     1024 configured_gw_event_max_bytes))
 
 (fn gw_notice [text : Str]
-  (if_not gw_quiet (println text)))
+  (if_not gw_quiet ($println text)))
 
 # Injected by the composing application. Keeping this adapter independent of
 # tui.gene avoids a module cycle and lets the TUI and compatibility launcher
@@ -79,9 +79,9 @@
 # -----------------------------------------------------------------------------
 
 (var sessions {})
-(var session_seq (cell 0))
+(var session_seq ($cell 0))
 
-(var gw_store (cell nil))
+(var gw_store ($cell nil))
 
 # C9 logical client attachments are process-local delivery/authorization state.
 # Durable session state never contains them; a service restart intentionally
@@ -95,8 +95,8 @@
   ^props {^session_id Str ^attachment_id Str ^key Str ^fingerprint Str
           ^status Int ^headers Map ^body Str ^expires_at_ms Int})
 
-(var gateway_attachments (cell []))
-(var gateway_idempotency_records (cell []))
+(var gateway_attachments ($cell []))
+(var gateway_idempotency_records ($cell []))
 (var gateway_attachment_max
   (positive_env_int "GENE_GATEWAY_ATTACHMENT_MAX_COUNT" 64))
 (var gateway_attachment_lease_ms
@@ -140,35 +140,35 @@
   # sockets per session. Standalone sessions fan out at append_event; the
   # combined program's shared session journals through the CLI's global log,
   # where those clients keep the long-poll path (the designed fallback).
-  (var ws_clients (cell []))
+  (var ws_clients ($cell []))
   (var events
     (if shared agent_api/agent_events
-      (cell (if (== saved nil) [] saved/events))))
+      ($cell (if (== saved nil) [] saved/events))))
   (var next_v
     (if shared agent_api/next_event_v
-      (cell (if (== saved nil) 0 saved/next_v))))
+      ($cell (if (== saved nil) 0 saved/next_v))))
   (var dropped_before
     (if shared agent_api/event_dropped_before
-      (cell (if (|| (== saved nil) (== saved/dropped_before void))
+      ($cell (if (|| (== saved nil) (== saved/dropped_before void))
               0 saved/dropped_before))))
-  (var event_bytes (cell 0))
+  (var event_bytes ($cell 0))
   (for retained in (events ~ get)
     (event_bytes ~ set
       (+ (event_bytes ~ get) (byte_size (stringify retained)))))
   (var current_task
-    (if shared existing_app/main_agent/current_task (cell nil)))
-  (var current_terminal_emitted (cell false))
+    (if shared existing_app/main_agent/current_task ($cell nil)))
+  (var current_terminal_emitted ($cell false))
   # Reserve admission before the actor dequeues a message. Two concurrent
   # handlers must not both return 202 while the worker still appears idle.
-  (var input_pending (cell false))
-  (var cancel_requested (cell false))
-  (var pending_confirmation (cell nil))
-  (var confirmation_seq (cell 0))
-  (var current_attachment_id (cell nil))
-  (var current_principal (cell nil))
+  (var input_pending ($cell false))
+  (var cancel_requested ($cell false))
+  (var pending_confirmation ($cell nil))
+  (var confirmation_seq ($cell 0))
+  (var current_attachment_id ($cell nil))
+  (var current_principal ($cell nil))
   (var items
     (if shared existing_app/main_agent/items
-      (cell (if (== saved nil)
+      ($cell (if (== saved nil)
               [(agent_api/system_item agent_api/gene_system_prompt)]
               saved/items))))
   (var app existing_app)
@@ -180,8 +180,8 @@
                (|| (> (- current/~size first) gw_event_max)
                    (> retained_bytes gw_event_max_bytes)))
       (set retained_bytes
-        (- retained_bytes (byte_size (stringify current/%first))))
-      (dropped_before ~ set current/%first/v)
+        (- retained_bytes (byte_size (stringify current/%$first))))
+      (dropped_before ~ set current/%$first/v)
       (set first (+ first 1)))
     (if_yes (> first 0)
       (var kept [])
@@ -205,9 +205,9 @@
   # drop-oldest; a positive drop count means that client's own stream
   # gapped, so it (alone) gets a cursor_gap notice. Dead sockets (-1) fall
   # out of the registry. An overflowing handoff queue gaps every client.
-  (var ws_outbox (channel ^capacity 1024))
-  (var ws_outbox_overflow (cell false))
-  (var ws_sender_started (cell false))
+  (var ws_outbox ($channel ^capacity 1024))
+  (var ws_outbox_overflow ($cell false))
+  (var ws_sender_started ($cell false))
   (fn ws_deliver! [payload : Str]
     (var kept [])
     (for client in (ws_clients ~ get)
@@ -241,7 +241,7 @@
     (event_bytes ~ set
       (+ (event_bytes ~ get) (byte_size (stringify stored))))
     (trim_events!)
-    (if_yes (! (empty? (ws_clients ~ get)))
+    (if_yes (! ($empty? (ws_clients ~ get)))
       (if_not (ws_outbox ~ try_send
                 (stringify {^type "event" ^event stored}))
         (ws_outbox_overflow ~ set true)))
@@ -311,7 +311,7 @@
       (return false))
     (confirmation_seq ~ set (+ (confirmation_seq ~ get) 1))
     (var id $"c${(confirmation_seq ~ get)}")
-    (var reply (channel ^capacity 1))
+    (var reply ($channel ^capacity 1))
     (var record
       {^id id ^attachment_id input/attachment_id
        ^principal input/principal ^risk "destructive"
@@ -335,7 +335,7 @@
         (pending_confirmation ~ set nil))))
   (if (== app nil)
     (set app
-      (agent_api/make_application items (cell "") (cell [])
+      (agent_api/make_application items ($cell "") ($cell [])
                                   emit_turn_event current_task)))
   (if (&& (!= saved nil) (!= saved/application void))
     (agent_api/restore_application app saved/application))
@@ -343,14 +343,14 @@
     (if (== agent_api/auth_token nil)
       (agent_api/demo_transport_for)
       agent_api/live_transport))
-  (var current_final_text (cell ""))
+  (var current_final_text ($cell ""))
   # A small detached monitor owns terminal bookkeeping. It is deliberately a
   # separate task: cancelling a turn before its fiber first runs would skip
   # that fiber's ensure blocks, while the monitor starts normally, observes
   # the cancelled Task, and still emits the terminal events and clears the
   # session's current_task projection.
   (fn monitor_turn [task]
-    (var outcome (cell "running"))
+    (var outcome ($cell "running"))
     (try
       (try
         (await task)
@@ -401,7 +401,7 @@
       (if shared (agent_api/gateway_save_application app))
       (persist_session id items events next_v dropped_before app)))
   (var turn_actor
-    (actor/spawn ^init (fn [] 0)
+    ($actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx, state, input]
         (if (!= (current_task ~ get) nil)
           (then
@@ -455,7 +455,7 @@
             (app/main_agent/input_reserved ~ set false)
             (task ~ detach)
             ((spawn (monitor_turn task)) ~ detach)))
-        (actor/continue state))))
+        ($actor/continue state))))
   (fn submit_input [text : Str, adapter : Str, attachment] : Bool
     (if (|| (input_pending ~ get)
             (app/main_agent/input_reserved ~ get)
@@ -467,7 +467,7 @@
         # adapter's actor installs the Task.
         (app/main_agent/input_reserved ~ set true)
         (turn_actor ~ send
-          (freeze
+          ($freeze
             {^text text ^adapter adapter
              ^attachment_id (if attachment attachment/id)
              ^principal (if attachment attachment/principal)}))
@@ -489,8 +489,8 @@
     ((app/event_observers ~ get) ~ push!
       {^worker_id "__gateway_ws__"
        ^handler (fn [event]
-         (if_yes (&& (! (empty? (ws_clients ~ get)))
-                     (present? event/v))
+         (if_yes (&& (! ($empty? (ws_clients ~ get)))
+                     ($present? event/v))
            (if_not (ws_outbox ~ try_send
                      (stringify {^type "event" ^event event}))
              (ws_outbox_overflow ~ set true))))}))
@@ -510,7 +510,7 @@
     ; ~ into []))
 
 (fn max_event_v [evs, fallback : Int] : Int
-  (var m (cell fallback))
+  (var m ($cell fallback))
   ((to_stream evs)
     ~ each (fn [e] (if (> e/v (m ~ get)) (m ~ set e/v))))
   (m ~ get))
@@ -562,7 +562,7 @@
 # properly, so a slow Telegram call never stalls a turn or another session.
 # Entries cross the channel as JSON strings: channel items must be Send-safe
 # (immutable), which mutable event maps are not.
-(var tg_outbox (channel ^capacity 1024))
+(var tg_outbox ($channel ^capacity 1024))
 
 # Only the display-relevant event types reach Telegram; the structured tool
 # trail (tool_call/tool_result/model_item/...) stays in the session log but is
@@ -594,7 +594,7 @@
   (var st (tg_chat_state ~ get key))
   (if (== st void)
     (then
-      (set st {^pending (cell "") ^sent_id (cell nil) ^sent_len (cell 0)})
+      (set st {^pending ($cell "") ^sent_id ($cell nil) ^sent_len ($cell 0)})
       (tg_chat_state ~ put! key st)
       st)
     (else st)))
@@ -645,7 +645,7 @@
     (then true)
     (else
       (var key $"${chat_id}")
-      (var found (cell false))
+      (var found ($cell false))
       ((to_stream (split tg_allowed ","))
         ~ each (fn [entry]
             (if (== (trim entry) key) (found ~ set true))))
@@ -668,7 +668,7 @@
 # that exceed the tier; unknown commands point at /operations. Slack later
 # reuses this same derivation.
 (fn tg_channel_allowed? [descriptor] : Bool
-  (var ok (cell true))
+  (var ok ($cell true))
   (for effect in descriptor/effects
     (if (!= effect "observe") (ok ~ set false)))
   (ok ~ get))
@@ -694,10 +694,10 @@
 (fn tg_channel_command [chat_id, s, text : Str]
   (var body (trim (slice_bytes text 1 (- (byte_size text) 1))))
   (var parts (split body " "))
-  (var op (if (empty? parts) "" parts/0))
+  (var op (if ($empty? parts) "" parts/0))
   (if (|| (== op "operations") (== op "help"))
     (return (telegram_notice chat_id (tg_channel_operations_text))))
-  (var found (cell nil))
+  (var found ($cell nil))
   (for descriptor in (agent_api/operation_registry_snapshot)
     (if (== descriptor/name op) (found ~ set descriptor)))
   (var descriptor (found ~ get))
@@ -719,7 +719,7 @@
       (tg_channel_invocation)))
   (if response/ok
     (telegram_notice chat_id
-      $"/${op} ${worker_ref} -> ${(stringify (props response/result))}")
+      $"/${op} ${worker_ref} -> ${(stringify ($props response/result))}")
     (telegram_notice chat_id
       $"${response/error/kind}: ${response/error/message}")))
 
@@ -765,20 +765,20 @@
               (if (>= u/update_id (offset ~ get))
                 (offset ~ set (+ u/update_id 1)))
               (tg_handle_update u)))
-        (sleep 2000)))
-    (else (sleep 2000))))
+        ($sleep 2000)))
+    (else ($sleep 2000))))
 
 (fn telegram_loop []
-  (var offset (cell 0))
+  (var offset ($cell 0))
   (loop
     (try
       (telegram_poll_once offset)
     catch {^message message}
       (gw_notice $"telegram: update handling failed: ${message}")
-      (sleep 2000)
+      ($sleep 2000)
     catch _
       (gw_notice "telegram: update handling failed")
-      (sleep 2000))))
+      ($sleep 2000))))
 
 # -----------------------------------------------------------------------------
 # HTTP API.
@@ -824,7 +824,7 @@
 
 (fn remove_gateway_attachment! [id : Str] : Bool
   (var retained [])
-  (var removed (cell false))
+  (var removed ($cell false))
   (for attachment in (gateway_attachments ~ get)
     (if (== attachment/id id)
       (removed ~ set true)
@@ -885,9 +885,9 @@
             ^capabilities full_client_capabilities
             ^label label
             ^resume_credential $"resume_${(random_hex 32)}"
-            ^ack_cursor (cell (session_event_cursor s))
+            ^ack_cursor ($cell (session_event_cursor s))
             ^expires_at_ms
-              (cell (+ (monotonic_ms) gateway_attachment_lease_ms))))
+              ($cell (+ (monotonic_ms) gateway_attachment_lease_ms))))
         ((gateway_attachments ~ get) ~ push! attachment)
         (json_response 201 (attachment_response attachment)))
       (else
@@ -1077,8 +1077,8 @@
     (sessions ~ put! "local" (make_session "local" nil nil app))))
 
 (fn list_sessions []
-  (var out (cell []))
-  (sessions/%to_pairs_stream
+  (var out ($cell []))
+  (sessions/%$to_pairs_stream
     ~ each (fn [pair]
         (var [k, s] pair)
         ((out ~ get) ~ push!
@@ -1153,7 +1153,7 @@
     (if (&& (== worker/lifecycle "running")
             (|| (["stats" "log_tail"] ~ contains? worker/kind)
                 (&& (== worker/kind "output")
-                    (! (empty? worker/following)))))
+                    (! ($empty? worker/following)))))
       (ids ~ push! worker/worker_id)))
   ids)
 
@@ -1252,7 +1252,7 @@
         (return (json_response
           (if (== response/error/kind "worker_not_found") 404 403)
           {^error response/error})))
-      (var result (props response/result))
+      (var result ($props response/result))
       (if_not result/available
         (return (json_response 404 {^error "no agent result"})))
       (json_response 200 {^agent_id response/worker_id ^result result/result}))))
@@ -1367,7 +1367,7 @@
     (persist_gateway_session s))
   (json_response status
     {^ok true ^worker_id response/worker_id ^operation operation
-     ^result (props response/result)}))
+     ^result ($props response/result)}))
 
 (fn worker_operation
   [id : Str, worker_id : Str, operation : Str, req, attachment]
@@ -1537,7 +1537,7 @@
     (if main_target
       (s/cancel_requested ~ set previous_cancel))
     (return (worker_operation_failure_response response)))
-  (var result (props response/result))
+  (var result ($props response/result))
   (if_not result/accepted
     (if main_target
       (s/cancel_requested ~ set previous_cancel))
@@ -1561,7 +1561,7 @@
       (attachment_invocation attachment)))
   (if_not response/ok
     (return (worker_operation_failure_response response)))
-  (var result (props response/result))
+  (var result ($props response/result))
   (if_not result/accepted
     (return
       (json_response 409
@@ -1590,17 +1590,17 @@
              ^oldest_cursor (+ (s/dropped_before ~ get) 1)
              ^snapshot_url $"/api/sessions/${id}/snapshot"}))
         (else
-          (var out (cell (events_after s cursor)))
-          (var waited (cell 0))
-          (while (&& (empty? (out ~ get)) (< (waited ~ get) 200))
-            (sleep 100)
+          (var out ($cell (events_after s cursor)))
+          (var waited ($cell 0))
+          (while (&& ($empty? (out ~ get)) (< (waited ~ get) 200))
+            ($sleep 100)
             (waited ~ set (+ (waited ~ get) 1))
             (out ~ set (events_after s cursor)))
           (var evs (out ~ get))
           (json_response 200 {^events evs
                               ^cursor (max_event_v evs cursor)
                               ^changed_worker_ids
-                                (if (empty? evs) []
+                                (if ($empty? evs) []
                                   (projection_worker_ids s))}))))))
 
 # Client-local surface model for the HTML client (design.md §10.12 stage 5).
@@ -2011,7 +2011,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
 # bearer token itself never rides a query string. Frames deliver journal
 # events only; every mutation (including acks) stays on the HTTP routes.
 # -----------------------------------------------------------------------------
-(var ws_tickets (cell []))
+(var ws_tickets ($cell []))
 (var ws_ticket_ttl_ms 30000)
 
 (fn prune_ws_tickets! []
@@ -2040,7 +2040,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (if (== presented void) (return nil))
   # Single use: the ticket leaves the table on first presentation, valid or
   # expired. secure_equal? keeps the comparison timing-independent.
-  (var found (cell nil))
+  (var found ($cell nil))
   (var kept [])
   (for record in (ws_tickets ~ get)
     (if (secure_equal? record/ticket $"${presented}")
@@ -2183,7 +2183,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
     catch _ nil)))
 
 (fn restore_sessions []
-  (var count (cell 0))
+  (var count ($cell 0))
   (for id in ((gw_store ~ get) ~ Store/keys)
     (try
       (var saved ((gw_store ~ get) ~ Store/get id))
@@ -2261,7 +2261,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
         (serve server handle)))))
 
 (fn stop_gateway [server]
-  (sessions/%to_pairs_stream
+  (sessions/%$to_pairs_stream
     ~ each (fn [pair]
         (var [id, session] pair)
         (agent_api/application_shutdown session/application)))

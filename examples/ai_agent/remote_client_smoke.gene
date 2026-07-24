@@ -5,7 +5,7 @@
 (mod ai_agent_remote_client_smoke
   @doc "attach, inspect, acknowledge, and detach through client_transport")
 
-(import os [get_env Env])
+(import $os [get_env Env])
 (import [remote_transport] from "./client_transport")
 
 (fn main [args]
@@ -19,5 +19,5 @@
   (var snapshot (client/snapshot))
   (client/acknowledge snapshot/cursor)
   (client/detach)
-  (println
+  ($println
     [attached/tier snapshot/session_id (> metadata/operations/~size 0)]))

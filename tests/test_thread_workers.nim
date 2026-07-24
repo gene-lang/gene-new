@@ -168,7 +168,7 @@ suite "threaded scheduler workers":
   test "worker leases keep application scheduler queues isolated":
     let app1 = newApplication()
     let scope1 = newGlobalScope(app1)
-    let ch = run(compileSource("(channel ^capacity 1)"), scope1)
+    let ch = run(compileSource("($channel ^capacity 1)"), scope1)
     scope1.define("ch", ch)
     var pending: Value
     withGeneWorkerSetting "0":
@@ -198,7 +198,7 @@ suite "threaded scheduler workers":
 
   test "high worker counts do not false-deadlock task await chains":
     withGeneWorkerSetting "8":
-      ck "(scope (var ch (channel ^capacity 1)) " &
+      ck "(scope (var ch ($channel ^capacity 1)) " &
          "  (var producer (spawn (do (ch ~ recv) 5))) " &
          "  (var doubler (spawn (* 2 (await producer)))) " &
          "  (ch ~ send 1) " &
@@ -208,7 +208,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "8":
       expect GeneCancel:
         discard run(compileSource(
-          "(scope (var ch (channel ^capacity 1)) " &
+          "(scope (var ch ($channel ^capacity 1)) " &
           "  (var t (spawn (ch ~ recv))) " &
           "  (var w (spawn (await t))) " &
           "  (t ~ cancel) " &
@@ -218,7 +218,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "8":
       expect GeneCancel:
         discard run(compileSource(
-          "(scope (var t (spawn (sleep 1000))) " &
+          "(scope (var t (spawn ($sleep 1000))) " &
           "  (t ~ cancel) " &
           "  (await t))"), newGlobalScope())
 
@@ -227,13 +227,13 @@ suite "threaded scheduler workers":
       expect GeneCancel:
         discard run(compileSource(
           "(scope " &
-          "  (var started (atomic_cell 0)) " &
+          "  (var started ($atomic_cell 0)) " &
           "  (var t (spawn (do " &
           "    (started ~ store 1) " &
           "    (var i 0) " &
           "    (while (< i 50000000) (set i (+ i 1))) " &
           "    i))) " &
-          "  (sleep 10) " &
+          "  ($sleep 10) " &
           "  (if (< (started ~ load) 1) (panic \"worker did not start\") nil) " &
           "  (t ~ cancel) " &
           "  (await t))"), newGlobalScope())
@@ -254,12 +254,12 @@ suite "threaded scheduler workers":
       let pending = run(compileSource(
         "(type Get ^props {^reply (ReplyTo Int)}) " &
         "(impl Send for Get) " &
-        "(var a (actor/spawn ^init (fn [] 41) " &
+        "(var a ($actor/spawn ^init (fn [] 41) " &
         "  ^handle (fn [ctx state msg] " &
         "    (var (Get ^reply reply) msg) " &
         "    (record-thread 1) " &
         "    (reply ~ send state) " &
-        "    (actor/continue state)))) " &
+        "    ($actor/continue state)))) " &
         "(var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
@@ -276,13 +276,13 @@ suite "threaded scheduler workers":
       check run(compileSource(
         "(type Put ^props {^value Int}) " &
         "(impl Send for Put) " &
-        "(var seen (atomic_cell 0)) " &
-        "(var a (actor/spawn ^init (fn [] 0) " &
+        "(var seen ($atomic_cell 0)) " &
+        "(var a ($actor/spawn ^init (fn [] 0) " &
         "  ^handle (fn [ctx state msg] " &
         "    (var (Put ^value value) msg) " &
         "    (record-thread 1) " &
         "    (seen ~ store value) " &
-        "    (actor/continue value)))) " &
+        "    ($actor/continue value)))) " &
         "(spawn (a ~ try_send (Put ^value 42))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
@@ -293,7 +293,7 @@ suite "threaded scheduler workers":
     withGeneWorkers:
       expect GeneError:
         discard run(compileSource(
-          "(var a (actor/spawn ^init (fn [] 0) " &
+          "(var a ($actor/spawn ^init (fn [] 0) " &
           "  ^handle (fn [ctx state msg] 99))) " &
           "(a ~ send 1)"), newGlobalScope())
 
@@ -310,7 +310,7 @@ suite "threaded scheduler workers":
   test "worker-candidate tasks share AtomicCell through CAS":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         "  (var counter (atomic_cell 0)) " &
+         "  (var counter ($atomic_cell 0)) " &
          "  (fn inc_many [limit] " &
          "    (var i 0) " &
          "    (var stored false) " &
@@ -338,8 +338,8 @@ suite "threaded scheduler workers":
   test "worker-candidate channel try_send respects capacity":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         "  (var ch (channel ^capacity 1)) " &
-         "  (var success (atomic_cell 0)) " &
+         "  (var ch ($channel ^capacity 1)) " &
+         "  (var success ($atomic_cell 0)) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
          "    (var old 0) " &
@@ -364,8 +364,8 @@ suite "threaded scheduler workers":
   test "worker-candidate channel try_recv claims one item":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         "  (var ch (channel ^capacity 1)) " &
-         "  (var success (atomic_cell 0)) " &
+         "  (var ch ($channel ^capacity 1)) " &
+         "  (var success ($atomic_cell 0)) " &
          "  (ch ~ send 99) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
@@ -394,7 +394,7 @@ suite "threaded scheduler workers":
   test "worker-candidate try_recv may return its immutable tagged result":
     withGeneWorkerSetting "2":
       ck "(scope " &
-         "  (var ch (channel ^capacity 1)) " &
+         "  (var ch ($channel ^capacity 1)) " &
          "  (ch ~ send 41) " &
          "  (var result (await (spawn (ch ~ try_recv)))) " &
          "  (match result " &
@@ -405,12 +405,12 @@ suite "threaded scheduler workers":
   test "worker-candidate actor try_send respects mailbox capacity":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         "  (var gate (channel ^capacity 1)) " &
-         "  (var success (atomic_cell 0)) " &
-         "  (var a (actor/spawn ^mailbox 1 ^init (fn [] 0) " &
+         "  (var gate ($channel ^capacity 1)) " &
+         "  (var success ($atomic_cell 0)) " &
+         "  (var a ($actor/spawn ^mailbox 1 ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
          "      (gate ~ recv) " &
-         "      (actor/continue (+ state msg))))) " &
+         "      ($actor/continue (+ state msg))))) " &
          "  (a ~ send 0) " &
          "  (fn mark_success [] " &
          "    (var stored false) " &
@@ -473,7 +473,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic_cell 0)) " &
+        "  (var out ($atomic_cell 0)) " &
         "  (var read-task (Fs/read_text_async Fs/ReadDir path)) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
@@ -532,7 +532,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic_cell 0)) " &
+        "  (var out ($atomic_cell 0)) " &
         "  (var write-task (Fs/write_text_async Fs/WriteDir path \"worker write\")) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
@@ -552,7 +552,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic_cell 0)) " &
+        "  (var out ($atomic_cell 0)) " &
         "  (var read-task (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
@@ -573,7 +573,7 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       check run(compileSource(
         "(scope " &
-        "  (var out (atomic_cell 0)) " &
+        "  (var out ($atomic_cell 0)) " &
         "  (var write-task (Net/tcp_write_text_async Net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
@@ -632,7 +632,7 @@ suite "threaded scheduler workers":
         check run(compileSource(
           "(scope " &
           "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
-          "  (sleep 10) " &
+          "  ($sleep 10) " &
           "  (var cancelled (Fs/write_text_async Fs/WriteDir cancelledPath \"cancelled\")) " &
           "  (cancelled ~ cancel) " &
           "  (var next (Fs/write_text_async Fs/WriteDir nextPath \"next\")) " &
@@ -661,7 +661,7 @@ suite "threaded scheduler workers":
       try:
         discard run(compileSource(
           "(scope " &
-          "  (fn make-cell [] (cell 1)) " &
+          "  (fn make-cell [] ($cell 1)) " &
           "  (var t (spawn (make-cell))) " &
           "  (var i 0) " &
           "  (while (< i 200000) (set i (+ i 1))) " &
@@ -685,15 +685,15 @@ suite "threaded scheduler workers":
       ck "(scope " &
          "  (type Get ^props {^reply (ReplyTo Int)}) " &
          "  (impl Send for Get) " &
-         "  (var reply_cell (atomic_cell nil)) " &
-         "  (var success (atomic_cell 0)) " &
-         "  (var gate (channel ^capacity 1)) " &
-         "  (var a (actor/spawn ^init (fn [] 0) " &
+         "  (var reply_cell ($atomic_cell nil)) " &
+         "  (var success ($atomic_cell 0)) " &
+         "  (var gate ($channel ^capacity 1)) " &
+         "  (var a ($actor/spawn ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
          "      (var (Get ^reply reply) msg) " &
          "      (var value (gate ~ recv)) " &
          "      (try (reply ~ send value) catch _ nil) " &
-         "      (actor/continue state)))) " &
+         "      ($actor/continue state)))) " &
          "  (var pending (a ~ ask " &
          "    (fn [reply] " &
          "      (reply_cell ~ store reply) " &
@@ -725,7 +725,7 @@ suite "threaded scheduler workers":
 
   test "root channel waits run worker-candidate tasks on workers":
     withGeneWorkers:
-      ck "(scope (var ch (channel ^capacity 1)) " &
+      ck "(scope (var ch ($channel ^capacity 1)) " &
          "  (var x 40) " &
          "  (spawn (ch ~ send (+ x 2))) " &
          "  (ch ~ recv))",
@@ -770,7 +770,7 @@ suite "threaded scheduler workers":
   test "worker pool wakes sleeping worker-candidate tasks while root runs":
     withGeneWorkers:
       let task = run(compileSource(
-        "(var t (spawn (do (sleep 1) 42))) " &
+        "(var t (spawn (do ($sleep 1) 42))) " &
         "(var i 0) " &
         "(while (< i 800000) (set i (+ i 1))) " &
         "t"), newGlobalScope())
@@ -779,20 +779,20 @@ suite "threaded scheduler workers":
 
   test "root await treats sleeping worker-candidate tasks as progress":
     withGeneWorkers:
-      ck "(await (spawn (do (sleep 1) 42)))", "42"
+      ck "(await (spawn (do ($sleep 1) 42)))", "42"
 
   test "ask timeouts wake parked workers while root runs":
     withGeneWorkerSetting "1":
       let task = run(compileSource(
         "(type Get ^props {^reply (ReplyTo Int)}) " &
         "(impl Send for Get) " &
-        "(var gate (channel ^capacity 1)) " &
-        "(var a (actor/spawn ^init (fn [] 0) " &
+        "(var gate ($channel ^capacity 1)) " &
+        "(var a ($actor/spawn ^init (fn [] 0) " &
         "  ^handle (fn [ctx state msg] " &
         "    (var (Get ^reply reply) msg) " &
         "    (var value (gate ~ recv)) " &
         "    (reply ~ send value) " &
-        "    (actor/continue state)))) " &
+        "    ($actor/continue state)))) " &
         "(var pending (a ~ ask ^timeout_ms 5 " &
         "  (fn [reply] (Get ^reply reply)))) " &
         "(var i 0) " &
@@ -806,13 +806,13 @@ suite "threaded scheduler workers":
       ck "(scope " &
          "  (type Get ^props {^reply (ReplyTo Int)}) " &
          "  (impl Send for Get) " &
-         "  (var gate (channel ^capacity 1)) " &
-         "  (var a (actor/spawn ^init (fn [] 0) " &
+         "  (var gate ($channel ^capacity 1)) " &
+         "  (var a ($actor/spawn ^init (fn [] 0) " &
          "    ^handle (fn [ctx state msg] " &
          "      (var (Get ^reply reply) msg) " &
          "      (var value (gate ~ recv)) " &
          "      (reply ~ send value) " &
-         "      (actor/continue state)))) " &
+         "      ($actor/continue state)))) " &
          "  (var pending (a ~ ask ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
          "  (try (await pending) catch (ActorError ^message m) m))",

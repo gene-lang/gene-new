@@ -12,8 +12,8 @@
 
 (mod style_guide @doc "canonical formatting for representative Gene source")
 
-(import str [join trim])
-(import gene/stream [to_stream map filter into])
+(import $str [join trim])
+(import $stream [to_stream map filter into])
 
 # Scalars, collections, nodes, metadata, and immutable data.
 
@@ -84,7 +84,7 @@ line two"""
   target)
 
 (fn active_names [users : (List User)] : (List Str)
-  (users/%to_stream
+  ((path users %$to_stream)
     ~ filter (fn [user] user/active)
     ; ~ map (fn [user] user/name)
     ; ~ into []))
@@ -202,15 +202,15 @@ line two"""
 # Syntax values, macros, fexprs, templates, selectors, and spread.
 
 (macro unless! [condition, body...]
-  `(if_not %condition %body...))
+  `(if_not %condition %$body...))
 
 (fn! raw_head! [form]
-  (head form))
+  ($head form))
 
 (fn user_card [user : User]
   `(article ^class "user-card"
      (h2 %(user ~ label))
-     (ul %(user/roles/%to_stream ~ map (fn [role] `(li %role)); ~ into []) ...)))
+     (ul %((path user roles %$to_stream) ~ map (fn [role] `(li %role)); ~ into []) ...)))
 
 (fn selector_examples [session, field]
   [session/user/name session/items/-1 /user/name (session ~ (select user %field))])
@@ -221,5 +221,5 @@ line two"""
 (fn main []
   (var users
     [(make_user ^roles ["reader"] " Ada ") (make_user ^roles ["writer"] ^active false "Grace")])
-  (println (join (active_names users) ", "))
+  ($println (join (active_names users) ", "))
   nil)

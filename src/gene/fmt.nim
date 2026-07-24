@@ -131,6 +131,10 @@ proc resugarPath(v: Value): string =
     let seg = pathSegment(item)
     if seg.len == 0: return ""
     parts.add seg
+  # `(path gene x ...)` is what `$x` reads as, so print the sugar back —
+  # otherwise a formatted file would no longer round-trip (design §2.1).
+  if parts.len >= 2 and parts[0] == "gene":
+    return "$" & parts[1 .. ^1].join("/")
   parts.join("/")
 
 proc resugarInterp(v: Value): string =

@@ -5023,13 +5023,30 @@ proc typeReflectionMessage(name: string): Value =
   of "name": newNativeFn("Type/name", biTypeName)
   else: NIL
 
-const bareRootNames = [
+const bareOperatorNames = [
   # Operators are a closed, language-defined set (design §2.2): users cannot
-  # declare them, so pre-binding them costs no name and `($+ 1 2)` would be
-  # noise. `$` is the concat/interpolation head. Everything else lives under
-  # the `gene` root and is written `gene/x` or `$x`.
+  # declare them, so pre-binding them costs no name, and `($+ 1 2)` would be
+  # noise. `$` is the concat/interpolation head.
   "+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "$",
 ]
+
+const bareCoreNames = [
+  # Language-level words rather than library functions. `panic` is the
+  # unrecoverable-failure mechanism §9 reserves, and `not`/`same?` are spelled
+  # forms of primitive operations (`!` and identity). Deliberately short: every
+  # entry here is a name a program can no longer use freely.
+  "panic", "not", "same?",
+]
+
+proc staysBare(name: string): bool =
+  ## Case is the rule (design §2.1/§3): an uppercase name is a *type* — a type
+  ## surface, an error type, or a type's message namespace — and stays bare
+  ## because annotations resolve type names structurally, so `[xs : List]` must
+  ## keep working. A lowercase name is a library function or namespace and moves
+  ## under the `gene` root, reached as `$x`.
+  if name.len == 0: return false
+  if name[0] in {'A'..'Z'}: return true
+  name in bareOperatorNames or name in bareCoreNames
 
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
@@ -5540,15 +5557,13 @@ proc buildBuiltins(app: Application): Scope =
   let geneScope = newScope(result)
   for name, value in result.vars:
     geneScope.define(name, value)
-  # Bare-surface removal, staged. `GENE_NO_BARE_BUILTINS=1` prunes the lexical
-  # root to operators + the reserved roots, which is the end state: nothing
-  # pre-bound, the library reached as `$x`. It is opt-in until two things land —
-  # the test corpus migration, and a decision on type annotations, which resolve
-  # names structurally and today accept `: List` but not `: $List`.
-  if getEnv("GENE_NO_BARE_BUILTINS").len > 0:
+  # Prune the lexical root to what `staysBare` keeps. GENE_BARE_BUILTINS=1
+  # restores the old full surface; it exists only so the bare-name lint can be
+  # collected against pre-migration sources.
+  if getEnv("GENE_BARE_BUILTINS").len == 0:
     var bare: seq[(string, Value)]
     for name, value in result.vars:
-      if name in bareRootNames:
+      if staysBare(name):
         bare.add (name, value)
     result.vars.clear()
     for entry in bare:

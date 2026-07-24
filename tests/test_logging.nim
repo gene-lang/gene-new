@@ -178,10 +178,10 @@ suite "structured logging":
   test "Gene eager methods and lazy macros have distinct evaluation":
     installCaptureLogging(llWarn)
     let result = runLoggingSource("""
-(import log [LogLevel new_logger info! debug!])
+(import $log [LogLevel new_logger info! debug!])
 (var logger (new_logger "app/test" ^payload {^service "spec"}))
-(var eager (cell false))
-(var lazy (cell false))
+(var eager ($cell false))
+(var lazy ($cell false))
 (logger ~ info (do (Cell/set eager true) "eager"))
 (debug! logger (do (Cell/set lazy true) "lazy"))
 (logger ~ warn "warning" ^payload {^token "hidden"})
@@ -200,9 +200,9 @@ suite "structured logging":
     check not logger.enabled(llError)
     logger.emit(llError, "suppressed")
     let result = runLoggingSource("""
-(import log [new_logger error!])
+(import $log [new_logger error!])
 (var logger (new_logger "app/off"))
-(var touched (cell false))
+(var touched ($cell false))
 (error! logger (do (Cell/set touched true) "suppressed"))
 (Cell/get touched)
 """)
@@ -230,7 +230,7 @@ suite "structured logging":
     installCaptureLogging(llInfo)
     let app = newApplication()
     discard run(compileSource(
-      "(import log [new_logger info!])\n" &
+      "(import $log [new_logger info!])\n" &
       "(var logger (new_logger \"app/source\"))\n" &
       "(info! logger \"located\")\n",
       "logging_source.gene"), newGlobalScope(app))
@@ -242,7 +242,7 @@ suite "structured logging":
   test "Logger is immutable and Send-safe":
     installCaptureLogging(llOff)
     let result = runLoggingSource("""
-(import log [new_logger])
+(import $log [new_logger])
 (var logger (new_logger "app/send" ^payload {^x [1 2]}))
 (same? logger (await (spawn logger)))
 """)
@@ -396,7 +396,7 @@ suite "structured logging":
     if fileExists(path): removeFile(path)
     resetLogging()
     discard runLoggingSource(
-      "(import log [new_file_logger]) " &
+      "(import $log [new_file_logger]) " &
       "(import Fs [WriteDir]) " &
       "(var logger (new_file_logger WriteDir \"app/direct\" " &
         loggingGeneQuote(path) & " ^flush \"close\")) " &
@@ -417,7 +417,7 @@ suite "structured logging":
     if fileExists(path): removeFile(path)
     resetLogging()
     discard runLoggingSource(
-      "(import log [new_file_logger]) " &
+      "(import $log [new_file_logger]) " &
       "(import Fs [WriteDir]) " &
       "(var logger (new_file_logger WriteDir \"app/direct_json\" " &
         loggingGeneQuote(path) & " ^format \"json\" ^flush \"close\")) " &
@@ -431,7 +431,7 @@ suite "structured logging":
 
   test "programmatic file logger rejects read-only authority":
     let result = runLoggingSource(
-      "(import log [new_file_logger]) " &
+      "(import $log [new_file_logger]) " &
       "(import Fs [ReadDir]) " &
       "(try (new_file_logger ReadDir \"app/direct\" \"ignored.jsonl\") " &
       "  false catch _ true)")
@@ -439,7 +439,7 @@ suite "structured logging":
 
   test "reserved envelope keys cannot be smuggled through payload":
     let result = runLoggingSource(
-      "(import log [new_logger]) " &
+      "(import $log [new_logger]) " &
       "(try (new_logger \"app/reserved\" ^payload {^level \"fake\"}) " &
       "  false catch _ true)")
     check result == TRUE

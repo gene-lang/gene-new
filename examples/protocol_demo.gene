@@ -89,14 +89,14 @@
 (var rex (Dog ^name "Rex" ^breed "Labrador" ^weight 70))
 (var fido (Dog ^name "Fido" ^breed "Pug" ^weight 18))
 
-(println (rex ~ greet))                  # type-direct message via ^is walk (§8)
-(println (rex ~ tag))                    # Dog's own type-direct message
-(println (Dog/tag rex))                  # same message, qualified spelling
+($println (rex ~ greet))                  # type-direct message via ^is walk (§8)
+($println (rex ~ tag))                    # Dog's own type-direct message
+($println (Dog/tag rex))                  # same message, qualified spelling
 
-(println (rex ~ describe))               # protocol impl via ^is walk (§2.1)
-(println (rex ~ Describable/describe))   # same message, qualified send
+($println (rex ~ describe))               # protocol impl via ^is walk (§2.1)
+($println (rex ~ Describable/describe))   # same message, qualified send
 
-(println (rex ~ compare fido))           # Ord's closure includes Comparable
-(println ((rex ~ bigger fido) ~ tag))    # send chaining
+($println (rex ~ compare fido))           # Ord's closure includes Comparable
+($println ((rex ~ bigger fido) ~ tag))    # send chaining
 
-(println (rex ~ blurb))                  # qualified same-name messages (§3.3)
+($println (rex ~ blurb))                  # qualified same-name messages (§3.3)

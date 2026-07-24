@@ -54,7 +54,7 @@ suite "match — typed patterns":
     ck "(match 1 (when (s : Str) s) (else \"no\"))", "\"no\""
     ck "(match \"hi\" (when (_ : Str) \"str\") (else \"no\"))", "\"str\""
   test "typed patterns adapt streams lazily":
-    ck "(try (match (to_stream [\"bad\"]) " &
+    ck "(try (match ($to_stream [\"bad\"]) " &
        "       (when (s : (Stream Int Never)) (s ~ next))) " &
        "catch (TypeError ^where w) w)",
        "\"Stream/next item\""
@@ -170,8 +170,8 @@ suite "loops — for":
   test "for over a map yields key/value pairs":
     ck "(var pair nil) (for [k v] in {^a 1} (set pair [k v])) pair", "[a 1]"
   test "for over a stream pulls items lazily":
-    ck "(var hits (cell 0)) " &
-       "(var source (map (to_stream [1 2 3]) " &
+    ck "(var hits ($cell 0)) " &
+       "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
        "(var first-hits 0) " &
        "(for x in source " &
@@ -179,15 +179,15 @@ suite "loops — for":
        "first-hits",
        "1"
   test "for closes stream on destructuring failure":
-    ck "(var hits (cell 0)) " &
-       "(var source (map (to_stream [1 2 3]) " &
+    ck "(var hits ($cell 0)) " &
+       "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
        "(try (for [a b] in source nil) catch (MatchError ^message m) nil) " &
        "[(hits ~ get) (source ~ has_next)]",
        "[1 false]"
   test "for closes stream on body error":
-    ck "(var hits (cell 0)) " &
-       "(var source (map (to_stream [1 2 3]) " &
+    ck "(var hits ($cell 0)) " &
+       "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
        "(try (for x in source (/ 1 0)) catch {^message m} nil) " &
        "[(hits ~ get) (source ~ has_next)]",
@@ -201,8 +201,8 @@ suite "loops — for":
        "s",
        "8"
   test "for break closes streams":
-    ck "(var hits (cell 0)) " &
-       "(var source (map (to_stream [1 2 3]) " &
+    ck "(var hits ($cell 0)) " &
+       "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
        "(for x in source (break)) " &
        "[(hits ~ get) (source ~ has_next)]",

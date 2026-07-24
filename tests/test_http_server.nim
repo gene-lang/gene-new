@@ -76,11 +76,11 @@ suite "net/http server e2e":
 
   test "handler parked in sleep does not stall other requests":
     let p = startHttpServer("concurrent.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req]
   (if (== req/path "/slow")
     (then
-      (sleep 800)
+      ($sleep 800)
       (text "slow-done"))
     (else (text "fast-done"))))
 (serve (Server ^host "127.0.0.1" ^port 8181) handle ^max_requests 2)
@@ -101,7 +101,7 @@ suite "net/http server e2e":
 
   test "request bytes may arrive in dribbles":
     let p = startHttpServer("dribble.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req]
   (text req/params/a))
 (serve (Server ^host "127.0.0.1" ^port 8182) handle ^max_requests 1)
@@ -118,7 +118,7 @@ suite "net/http server e2e":
 
   test "POST body and query params reach the handler":
     let p = startHttpServer("post.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req]
   (text ($ req/method ":" req/params/k ":" req/body)))
 (serve (Server ^host "127.0.0.1" ^port 8183) handle ^max_requests 1)
@@ -133,7 +133,7 @@ suite "net/http server e2e":
 
   test "malformed request answers 400":
     let p = startHttpServer("bad.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8184) handle ^max_requests 1)
 """)
@@ -145,7 +145,7 @@ suite "net/http server e2e":
 
   test "handler errors answer 500":
     let p = startHttpServer("boom.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req] (no-such-function))
 (serve (Server ^host "127.0.0.1" ^port 8185) handle ^max_requests 1)
 """)
@@ -155,9 +155,9 @@ suite "net/http server e2e":
 
   test "slow handler answers 504 after request_timeout_ms":
     let p = startHttpServer("late.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req]
-  (sleep 10000)
+  ($sleep 10000)
   (text "late"))
 (serve (Server ^host "127.0.0.1" ^port 8186) handle
   ^max_requests 1 ^request_timeout_ms 300)
@@ -170,9 +170,9 @@ suite "net/http server e2e":
 
   test "requests beyond max_in_flight answer 503":
     let p = startHttpServer("busy.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req]
-  (sleep 900)
+  ($sleep 900)
   (text "done"))
 (serve (Server ^host "127.0.0.1" ^port 8187) handle
   ^max_requests 2 ^max_in_flight 1)
@@ -188,7 +188,7 @@ suite "net/http server e2e":
 
   test "oversized headers answer 400":
     let p = startHttpServer("bighead.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8188) handle ^max_requests 1)
 """)
@@ -200,7 +200,7 @@ suite "net/http server e2e":
 
   test "declared body beyond max_body_bytes answers 413":
     let p = startHttpServer("bigbody.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8189) handle
   ^max_requests 1 ^max_body_bytes 16)
@@ -215,7 +215,7 @@ suite "net/http server e2e":
 
   test "meta-based route discovery serves @route-annotated handlers":
     let p = startHttpServer("discover.gene", """
-(import net/http [Server serve text route])
+(import $net/http [Server serve text route])
 (fn home [req]
   @route (route ^method "GET" ^path "/")
   (text "home-discovered"))
@@ -224,12 +224,12 @@ suite "net/http server e2e":
   (text ($ "job-" req/params/id)))
 (fn not-a-route [x] x)
 (fn routed? [d]
-  (not (== d/%meta/route void)))
+  (not (== d/%$meta/route void)))
 (fn route-entry [d]
-  (var r d/%meta/route)
+  (var r d/%$meta/route)
   (route ^method r/method ^path r/path ^handler d/value))
 (var routes
-  ((map (filter (this_mod ~ declarations) routed?) route-entry)
+  (($map ($filter (this_mod ~ declarations) routed?) route-entry)
    ~ into []))
 (serve (Server ^host "127.0.0.1" ^port 8194)
   ^max_requests 2
@@ -241,9 +241,9 @@ suite "net/http server e2e":
 
   test "access_log records responses with redacted headers; error_log records failures":
     let p = startHttpServer("logs.gene", """
-(import net/http [Server serve text])
-(var access-entries (cell nil))
-(var error-entries (cell nil))
+(import $net/http [Server serve text])
+(var access-entries ($cell nil))
+(var error-entries ($cell nil))
 (fn on-access [rec] (access-entries ~ set rec))
 (fn on-error-log [rec] (error-entries ~ set rec))
 (fn handle [req]
@@ -279,7 +279,7 @@ suite "net/http server e2e":
 
   test "route table matches :param patterns into req/params":
     let p = startHttpServer("routes.gene", """
-(import net/http [Server serve text route])
+(import $net/http [Server serve text route])
 (fn job-handler [req]
   (text ($ "job:" req/params/id ":verbose=" req/params/verbose)))
 (fn home [req] (text "home"))
@@ -298,10 +298,10 @@ suite "net/http server e2e":
 
   test "actor_pool ^supervision restarts workers and emits failure events":
     let p = startHttpServer("pool.gene", """
-(import net/http [Server serve text actor_pool supervisor_policy RequestMsg])
+(import $net/http [Server serve text actor_pool supervisor_policy RequestMsg])
 (type Boom ^props {^message Str} ^impl [Error])
 (impl Error for Boom)
-(var failures (channel ^capacity 8))
+(var failures ($channel ^capacity 8))
 (fn worker-init [] 0)
 (fn worker-handle [ctx state msg]
   (var (RequestMsg ^req req ^reply reply) msg)
@@ -314,7 +314,7 @@ suite "net/http server e2e":
           (reply ~ send (text "no-failures")))
         (when (TryRecv/value failure)
           (reply ~ send (text ($ "saw:" failure/message)))))
-      (actor/continue state))))
+      ($actor/continue state))))
 (serve (Server ^host "127.0.0.1" ^port 8191)
   ^max_requests 2
   ^dispatch (actor_pool ^workers 1 ^mailbox 4
@@ -334,9 +334,9 @@ suite "net/http server e2e":
 
   test "custom overload_response answers admission overflow":
     let p = startHttpServer("busy-custom.gene", """
-(import net/http [Server serve text])
+(import $net/http [Server serve text])
 (fn handle [req]
-  (sleep 900)
+  ($sleep 900)
   (text "done"))
 (serve (Server ^host "127.0.0.1" ^port 8190) handle
   ^max_requests 2 ^max_in_flight 1

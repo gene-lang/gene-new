@@ -23,19 +23,19 @@
           ^drafts Any ^input_histories Any ^events Any ^next_event_v Any
           ^max_panes Int})
 
-(var next_surface_instance (cell 1))
+(var next_surface_instance ($cell 1))
 
 (fn create_surface [id : Str, max_panes : Int]
   (var seq (next_surface_instance ~ get))
   (next_surface_instance ~ set (+ seq 1))
   (SurfaceAttachment
-    ^id id ^instance_id (cell $"${id}:${seq}")
-    ^panes (cell []) ^next_pane_id (cell 1)
-    ^focused_pane (cell nil) ^maximized_pane (cell nil)
-    ^main_scroll (cell 0) ^main_pending_visible (cell false)
-    ^help_notice (cell "")
-    ^drafts (cell {}) ^input_histories (cell {})
-    ^events (cell []) ^next_event_v (cell 1)
+    ^id id ^instance_id ($cell $"${id}:${seq}")
+    ^panes ($cell []) ^next_pane_id ($cell 1)
+    ^focused_pane ($cell nil) ^maximized_pane ($cell nil)
+    ^main_scroll ($cell 0) ^main_pending_visible ($cell false)
+    ^help_notice ($cell "")
+    ^drafts ($cell {}) ^input_histories ($cell {})
+    ^events ($cell []) ^next_event_v ($cell 1)
     ^max_panes max_panes))
 
 (fn emit_surface_event! [surface, type : Str, props]

@@ -81,11 +81,11 @@ suite "protocols — declarations and dispatch":
     ck "(type User ^props {^name Str}) " &
        "(impl ToStr for User (message to_str [self] : Str self/name)) " &
        "(var user (User ^name \"Ada\")) " &
-       "[(to_str user) ($ \"hello \" user) $\"hi ${user}\"]",
+       "[($to_str user) ($ \"hello \" user) $\"hi ${user}\"]",
        "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
     ck "(type Bad ^props {}) " &
        "(impl ToStr for Bad (message to_str [self] 1)) " &
-       "(try (to_str (Bad)) catch (TypeError ^where w) w)",
+       "(try ($to_str (Bad)) catch (TypeError ^where w) w)",
        "\"ToStr/to_str\""
 
   test "namespace protocol messages find receiver-scope impls":

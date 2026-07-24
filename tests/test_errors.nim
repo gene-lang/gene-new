@@ -192,7 +192,7 @@ suite "errors — ensure":
     scope.define("mark-cancellation-ensure",
                  newNativeFn("mark-cancellation-ensure", markCancellationEnsure))
     expect GeneCancel:
-      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+      discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t (spawn (ch ~ recv))) " &
                                 "  (t ~ cancel) " &
                                 "  (try (await t) catch _ \"caught\" " &
@@ -207,12 +207,12 @@ suite "errors — ensure":
                  newNativeFn("mark-child-cancellation-ensure",
                              markChildCancellationEnsure))
     expect GeneCancel:
-      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+      discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t (spawn " &
                                 "    (try (ch ~ recv) " &
                                 "         ensure " &
                                 "           (mark-child-cancellation-ensure)))) " &
-                                "  (sleep 1) " &
+                                "  ($sleep 1) " &
                                 "  (t ~ cancel) " &
                                 "  (await t))"),
                   scope)
@@ -225,13 +225,13 @@ suite "errors — ensure":
                  newNativeFn("mark-child-cancellation-ensure",
                              markChildCancellationEnsure))
     expect GeneCancel:
-      discard run(compileSource("(scope (var ch (channel ^capacity 1)) " &
+      discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t : (Task Int Never) " &
                                 "    (spawn " &
                                 "      (try (ch ~ recv) " &
                                 "           ensure " &
                                 "             (mark-child-cancellation-ensure)))) " &
-                                "  (sleep 1) " &
+                                "  ($sleep 1) " &
                                 "  (t ~ cancel) " &
                                 "  (await t))"),
                   scope)

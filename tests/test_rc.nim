@@ -165,7 +165,7 @@ when defined(geneRcStats):
       block:
         var scope = newGlobalScope()
         functions = run(compileSource(
-          "(var x 40) (fn f [] (+ x 2)) (buffer [f])"), scope)
+          "(var x 40) (fn f [] (+ x 2)) ($buffer [f])"), scope)
         scope = nil
       GC_fullCollect()
       check functions.bufferItem(0).call().intVal == 42
@@ -190,7 +190,7 @@ when defined(geneRcStats):
       block:
         var scope = newGlobalScope()
         stream = run(compileSource("(var x 41) " &
-          "(map (to_stream [1]) (fn [n] (+ x n)))"), scope)
+          "($map ($to_stream [1]) (fn [n] (+ x n)))"), scope)
         scope = nil
       GC_fullCollect()
       check stream.streamNext.intVal == 42
@@ -203,7 +203,7 @@ when defined(geneRcStats):
         stream = run(compileSource(
           "(fn make [] : (Stream Int Never) " &
           "  (var x 41) " &
-          "  (map (to_stream [1]) (fn [n] (+ x n)))) " &
+          "  ($map ($to_stream [1]) (fn [n] (+ x n)))) " &
           "(make)"), scope)
         scope = nil
       GC_fullCollect()
@@ -240,7 +240,7 @@ when defined(geneRcStats):
       block:
         var scope = newGlobalScope()
         channel = run(compileSource(
-          "(var ch (channel)) " &
+          "(var ch ($channel)) " &
           "(ch ~ send #[1 2]) " &
           "ch"), scope)
         scope = nil
@@ -256,8 +256,8 @@ when defined(geneRcStats):
       block:
         var scope = newGlobalScope()
         actor = run(compileSource(
-          "(actor/spawn ^init (fn [] 0) " &
-          "  ^handle (fn [ctx state msg] (actor/stop)))"), scope)
+          "($actor/spawn ^init (fn [] 0) " &
+          "  ^handle (fn [ctx state msg] ($actor/stop)))"), scope)
         scope = nil
       GC_fullCollect()
       block:

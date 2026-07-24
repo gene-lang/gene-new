@@ -16,14 +16,14 @@
 (mod ai_agent_core
   @doc "headless engine for the Gene AI coding agent")
 
-(import os [get_env env? exec exec_async exec_stream_async
+(import $os [get_env env? exec exec_async exec_stream_async
             exec_stdio_async
             executable_path
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
             Env Exec Pty OsError])
-(import terminal [open : terminal_open close : terminal_close
+(import $terminal [open : terminal_open close : terminal_close
                   next_update : terminal_next_update
                   snapshot : terminal_snapshot
                   capture_text : terminal_capture_text
@@ -34,25 +34,25 @@
                   signal : terminal_signal stop : terminal_stop
                   request_stop : terminal_request_stop
                   Session : TerminalSession TerminalError])
-(import json [parse stringify JsonError])
-(import crypto [sha256])
-(import str [join split starts_with? ends_with? contains? lower trim byte_size
+(import $json [parse stringify JsonError])
+(import $crypto [sha256])
+(import $str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
 (import gene/stream [to_stream map filter take into each])
 (import gene/parse [parse_int read_all format ParseError])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
-(import net/http_client [Http stream HttpClientError])
-(import db/sqlite [open : sqlite_open DbError Db])
-(import store/fs [open : store_fs_open StoreError Store])
-(import store/sqlite [open : store_sqlite_open])
-(import repl [run : run_repl_session open : repl_open
+(import $net/http_client [Http stream HttpClientError])
+(import $db/sqlite [open : sqlite_open DbError Db])
+(import $store/fs [open : store_fs_open StoreError Store])
+(import $store/sqlite [open : store_sqlite_open])
+(import $repl [run : run_repl_session open : repl_open
               eval_source : repl_eval
               close : repl_close
               discard_pending : repl_discard_pending
               eval_guard_begin : repl_eval_guard_begin
               eval_guard_end : repl_eval_guard_end])
-(import log [new_logger info! warn! error! debug! trace!])
+(import $log [new_logger info! warn! error! debug! trace!])
 (import [Pane SurfaceAttachment create_surface emit_surface_event!]
         from "./surface")
 
@@ -68,38 +68,38 @@
 # stdin confirmation (EOF denies), no repaint, no Escape polling, and repl
 # workers that cannot restart without an interactive session factory.
 # -----------------------------------------------------------------------------
-(var ui_refresh (cell nil))
-(var ui_escape_poll (cell nil))
-(var interactive_confirm (cell nil))
-(var repl_restart_factory (cell nil))
-(var surface_history_recorder (cell nil))
-(var interactive_resume_turn (cell nil))
+(var ui_refresh ($cell nil))
+(var ui_escape_poll ($cell nil))
+(var interactive_confirm ($cell nil))
+(var repl_restart_factory ($cell nil))
+(var surface_history_recorder ($cell nil))
+(var interactive_resume_turn ($cell nil))
 
 # Pane/layout persistence belongs to the owning client, never to session
 # checkpoints (invariant §0.13). A client installs the hook to save its own
 # surface store and the loader to read it back; headless embeddings leave
 # both unset and keep no pane state at all.
-(var client_surface_checkpoint_hook (cell nil))
-(var client_surface_record_loader (cell nil))
+(var client_surface_checkpoint_hook ($cell nil))
+(var client_surface_record_loader ($cell nil))
 
 (fn client_surface_checkpoint! [app, reason : Str]
   (var sink (client_surface_checkpoint_hook ~ get))
-  (if (present? sink) (sink app reason)))
+  (if ($present? sink) (sink app reason)))
 
 (fn ui_refresh! []
   (var f (ui_refresh ~ get))
-  (if (present? f) (f)))
+  (if ($present? f) (f)))
 
 (fn ui_escape_requested? [] : Bool
   (var f (ui_escape_poll ~ get))
-  (if (present? f) (f) false))
+  (if ($present? f) (f) false))
 
 (fn ask_user_confirmation [prompt : Str] : Bool
   (var f (interactive_confirm ~ get))
-  (if (present? f)
+  (if ($present? f)
     (then (f prompt))
     (else
-      (print prompt)
+      ($print prompt)
       (var answer (read_line))
       (&& answer
           (["y" "yes"] ~ contains? (lower (trim answer)))))))
@@ -149,7 +149,7 @@
 (if_not (valid_reasoning_effort? initial_reasoning_effort)
   (fail (OsError
     ^message $"OPENAI_REASONING_EFFORT must be one of ${reasoning_effort_levels_text}")))
-(var reasoning_effort (cell initial_reasoning_effort))
+(var reasoning_effort ($cell initial_reasoning_effort))
 (var workspace_root ".")
 (var approve_all (get_env Env "GENE_AGENT_APPROVE_ALL" "1"))
 (var agent_home (get_env Env "GENE_AGENT_HOME" ""))
@@ -272,7 +272,7 @@
       (else
         (var finish max_bytes)
         (var out "")
-        (var sliced (cell false))
+        (var sliced ($cell false))
         # A UTF-8 scalar is at most four bytes, so backing up at most three
         # bytes reaches a valid boundary without scanning or copying twice.
         (while (&& (! (sliced ~ get)) (> finish 0))
@@ -291,7 +291,7 @@
       (else
         (var start (- total max_bytes))
         (var out "")
-        (var sliced (cell false))
+        (var sliced ($cell false))
         # Advance at most three bytes to avoid starting inside a UTF-8 scalar.
         (while (&& (! (sliced ~ get)) (< start total))
           (try
@@ -392,7 +392,7 @@
 # A recursive rm is at least destructive; targeting a protected root or a
 # top-level absolute directory (/usr, /etc, ...) is catastrophic.
 (fn classify_rm [cmd : Str] : Str
-  (var worst (cell "destructive"))
+  (var worst ($cell "destructive"))
   ((to_stream (split cmd " "))
     ~ each (fn [raw]
         (var tok (trim raw))
@@ -408,7 +408,7 @@
 # the start of each simple command instead of matching anywhere (a `grep
 # shutdown src/` must stay normal).
 (fn command_segments [cmd : Str]
-  (var segs (cell []))
+  (var segs ($cell []))
   ((to_stream (split cmd "&&"))
     ~ each (fn [a]
         ((to_stream (split a ";"))
@@ -423,10 +423,10 @@
 # to outlive the invoking shell; `/tty` is the explicit user-driven escape.
 # This is a lifecycle contract, not part of the optional catastrophe guard.
 (fn unquoted_background_operator? [cmd : Str] : Bool
-  (var values (graphemes cmd))
-  (var quoted_by (cell ""))
-  (var escaped (cell false))
-  (var found (cell false))
+  (var values ($graphemes cmd))
+  (var quoted_by ($cell ""))
+  (var escaped ($cell false))
+  (var found ($cell false))
   (var c nil)
   (var previous "")
   (var following "")
@@ -482,7 +482,7 @@
   (if (unquoted_background_operator? cmd)
     (then "background operator '&'")
     (else
-      (var reason (cell nil))
+      (var reason ($cell nil))
       ((to_stream (command_segments cmd))
         ~ each (fn [segment]
             (if (segment_detaching_launcher? segment)
@@ -494,7 +494,7 @@
 
 (fn segment_catastrophic? [seg : Str]
   (var s (lower seg))
-  (var hit (cell false))
+  (var hit ($cell false))
   ((to_stream catastrophic_command_starts)
     ~ each (fn [p] (if (starts_with? s p) (Cell/set hit true))))
   (|| (Cell/get hit)
@@ -524,7 +524,7 @@
       (sql_unbounded? s)))
 
 (fn classify_command [cmd : Str] : Str
-  (var worst (cell "normal"))
+  (var worst ($cell "normal"))
   (fn bump [level : Str]
     (if (== level "catastrophic")
       (Cell/set worst "catastrophic")
@@ -557,8 +557,8 @@
 # run_tool_call points guard_emit at the current turn's sink around each
 # handler call; the guard runs synchronously before the handler's first await,
 # so concurrent session actors cannot interleave between set and use.
-(var guard_confirm (cell nil))   # nil -> confirm_destructive? (CLI stdin)
-(var guard_emit (cell nil))      # nil -> emit_event! (CLI global log)
+(var guard_confirm ($cell nil))   # nil -> confirm_destructive? (CLI stdin)
+(var guard_emit ($cell nil))      # nil -> emit_event! (CLI global log)
 
 (fn set_guard_confirm [f]
   (guard_confirm ~ set f))
@@ -583,11 +583,11 @@
 # context_compacted confirmation memory error.
 # -----------------------------------------------------------------------------
 
-(var agent_events (cell []))
-(var agent_evidence (cell []))
-(var agent_event_bytes (cell 0))
-(var next_event_v (cell 1))
-(var event_dropped_before (cell 0))
+(var agent_events ($cell []))
+(var agent_evidence ($cell []))
+(var agent_event_bytes ($cell 0))
+(var next_event_v ($cell 1))
+(var event_dropped_before ($cell 0))
 (var event_max_count (positive_env_int "GENE_AGENT_EVENT_MAX_COUNT" 4096))
 (var configured_event_max_bytes
   (positive_env_int "GENE_AGENT_EVENT_MAX_BYTES" 2097152))
@@ -595,24 +595,24 @@
 # floor would make the configured contract impossible to represent.
 (var event_max_bytes
   (if (< configured_event_max_bytes 1024) 1024 configured_event_max_bytes))
-(var current_turn (cell 0))
-(var event_subscriptions (cell []))
-(var event_echo (cell nil))     # (fn [line]) hook installed by the REPL loop
+(var current_turn ($cell 0))
+(var event_subscriptions ($cell []))
+(var event_echo ($cell nil))     # (fn [line]) hook installed by the REPL loop
 # This process-global log is the embedded-CLI surface's own event log. The
 # gateway imports run_turn but owns a per-session log in the same vocabulary
 # (§12.1/§12.3), so it disables this one to avoid accumulating every session's
 # events in a single shared list across concurrent actor turns.
-(var events_enabled (cell true))
-(var active_turn_task (cell nil))
-(var active_application (cell nil))
-(var agent_checkpoint_suspended (cell false))
-(var agent_checkpoint_writing (cell false))
-(var agent_checkpoint_last_ms (cell 0))
-(var agent_checkpoint_seq (cell 0))
+(var events_enabled ($cell true))
+(var active_turn_task ($cell nil))
+(var active_application ($cell nil))
+(var agent_checkpoint_suspended ($cell false))
+(var agent_checkpoint_writing ($cell false))
+(var agent_checkpoint_last_ms ($cell 0))
+(var agent_checkpoint_seq ($cell 0))
 (var agent_checkpoint_interval_ms
   (positive_env_int "GENE_AGENT_CHECKPOINT_INTERVAL_MS" 1000))
 (var workspace_coordinators {})
-(var next_application_instance (cell 1))
+(var next_application_instance ($cell 1))
 
 # Slice C application model. Agents and panes are independent values: an
 # agent may continue without a visible pane, while output/shell/REPL panes do
@@ -671,9 +671,9 @@
           ^cancellable Bool ^idempotent Bool ^task_managed Bool ^handler Any
           ^primary_input Bool ^parse_cli Any ^handler_ref Any? ^enabled Bool?})
 
-(var registration_capture_enabled (cell false))
-(var restoring_registrations (cell false))
-(var dynamic_registration_records (cell []))
+(var registration_capture_enabled ($cell false))
+(var restoring_registrations ($cell false))
+(var dynamic_registration_records ($cell []))
 
 (type EmptyArgs ^props {})
 (type TailArgs ^props {^n Int?})
@@ -762,40 +762,40 @@
     (then existing)
     (else
       (var coordinator
-        (WorkspaceCoordinator ^root root ^owner (cell nil)
-                              ^waiters (cell []) ^next_request (cell 1)))
+        (WorkspaceCoordinator ^root root ^owner ($cell nil)
+                              ^waiters ($cell []) ^next_request ($cell 1)))
       (workspace_coordinators ~ put! root coordinator)
       coordinator)))
 
 (fn make_worker [id : Str, kind : Str, title : Str, output, controller]
   (Worker ^id id ^name nil ^kind kind ^title title ^output output
-          ^current_task (cell nil) ^current_operation (cell nil)
-          ^lifecycle (cell "running") ^last_outcome (cell nil)
-          ^status (cell "idle")
-          ^history (cell []) ^controller controller
-          ^next_output_seq (cell 1) ^dropped_bytes (cell 0)
-          ^dropped_before (cell nil) ^history_dropped (cell 0)
-          ^retained_output (cell (output ~ get))
-          ^input_reserved (cell false) ^streamed_output (cell false)
-          ^last_finish_event (cell nil) ^pending_invocation (cell nil)))
+          ^current_task ($cell nil) ^current_operation ($cell nil)
+          ^lifecycle ($cell "running") ^last_outcome ($cell nil)
+          ^status ($cell "idle")
+          ^history ($cell []) ^controller controller
+          ^next_output_seq ($cell 1) ^dropped_bytes ($cell 0)
+          ^dropped_before ($cell nil) ^history_dropped ($cell 0)
+          ^retained_output ($cell (output ~ get))
+          ^input_reserved ($cell false) ^streamed_output ($cell false)
+          ^last_finish_event ($cell nil) ^pending_invocation ($cell nil)))
 
 (fn make_agent [id : Str, parent_id, title : Str, assignment : Str,
                 items, transcript, current_task]
   (Agent ^id id ^name nil ^kind "agent" ^title title ^output transcript
-         ^current_task current_task ^current_operation (cell nil)
-         ^lifecycle (cell "running") ^last_outcome (cell nil)
-         ^status (cell "idle")
-         ^history (cell []) ^controller nil ^next_output_seq (cell 1)
-         ^dropped_bytes (cell 0) ^dropped_before (cell nil)
-         ^history_dropped (cell 0) ^retained_output (cell (transcript ~ get))
-         ^input_reserved (cell false) ^streamed_output (cell false)
-         ^last_finish_event (cell nil) ^pending_invocation (cell nil)
+         ^current_task current_task ^current_operation ($cell nil)
+         ^lifecycle ($cell "running") ^last_outcome ($cell nil)
+         ^status ($cell "idle")
+         ^history ($cell []) ^controller nil ^next_output_seq ($cell 1)
+         ^dropped_bytes ($cell 0) ^dropped_before ($cell nil)
+         ^history_dropped ($cell 0) ^retained_output ($cell (transcript ~ get))
+         ^input_reserved ($cell false) ^streamed_output ($cell false)
+         ^last_finish_event ($cell nil) ^pending_invocation ($cell nil)
          ^parent_id parent_id ^assignment assignment ^items items
-         ^transcript transcript ^streaming (cell false) ^result (cell nil)
-         ^attachments (cell []) ^model (cell model)
-         ^transcript_seq (cell 1) ^transcript_dropped_bytes (cell 0)
-         ^transcript_dropped_before (cell nil)
-         ^transcript_retained (cell (transcript ~ get))))
+         ^transcript transcript ^streaming ($cell false) ^result ($cell nil)
+         ^attachments ($cell []) ^model ($cell model)
+         ^transcript_seq ($cell 1) ^transcript_dropped_bytes ($cell 0)
+         ^transcript_dropped_before ($cell nil)
+         ^transcript_retained ($cell (transcript ~ get))))
 
 (fn make_application_core_with_task [main_items, main_transcript, memory,
                                      event_sink, main_task, local_surface]
@@ -806,19 +806,19 @@
                 main_items main_transcript main_task))
   (AgentApplication
     ^coordinator_id $"app${application_seq}"
-    ^main_agent main_agent ^agents (cell [main_agent])
-    ^workers (cell [main_agent]) ^local_surface local_surface
-    ^next_agent_id (cell 1) ^next_worker_id (cell 1)
-    ^next_task_id (cell 1) ^memory memory
-    ^event_sink event_sink ^event_observers (cell [])
+    ^main_agent main_agent ^agents ($cell [main_agent])
+    ^workers ($cell [main_agent]) ^local_surface local_surface
+    ^next_agent_id ($cell 1) ^next_worker_id ($cell 1)
+    ^next_task_id ($cell 1) ^memory memory
+    ^event_sink event_sink ^event_observers ($cell [])
     ^workspace_coordinator (workspace_coordinator_for workspace_real)
-    ^supervisor_inbox (cell [])
-    ^progress (cell
+    ^supervisor_inbox ($cell [])
+    ^progress ($cell
       {^objective "" ^phase "planning" ^status "active"
        ^summary "" ^blocked_reason nil ^required_action nil ^updated_v nil
        ^agent_ids [] ^worker_ids [] ^evidence_v []})
     ^max_agents live_agent_max_count ^max_workers live_worker_max_count
-    ^shutting_down (cell false)))
+    ^shutting_down ($cell false)))
 
 (fn make_application_with_task [main_items, main_transcript, memory, event_sink,
                                 main_task]
@@ -885,7 +885,7 @@
   emitted)
 
 (fn application_find_agent [app, id : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for agent in (app/agents ~ get)
     # Canonical ids win if a future naming policy ever admits an id-shaped
     # name. Names are an ergonomic address, never a second identity.
@@ -896,7 +896,7 @@
   (found ~ get))
 
 (fn application_find_worker [app, id : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for worker in (app/workers ~ get)
     (if (== worker/id id)
       (found ~ set worker)
@@ -909,7 +909,7 @@
   (if (|| (== normalized "") (> (byte_size normalized) 64))
     (fail (OsError
       ^message "worker name must contain 1-64 lowercase letters, digits, '_' or '-'")))
-  (for ch in (graphemes normalized)
+  (for ch in ($graphemes normalized)
     (if_not (contains? "abcdefghijklmnopqrstuvwxyz0123456789_-" ch)
       (fail (OsError
         ^message "worker name must contain only lowercase letters, digits, '_' or '-'"))))
@@ -940,7 +940,7 @@
       name)))
 
 (fn application_find_worker_kind [app, kind : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for worker in (app/workers ~ get)
     (if (&& (== worker/kind kind)
             (!= (worker/lifecycle ~ get) "stopped")
@@ -949,7 +949,7 @@
   (found ~ get))
 
 (fn application_find_stopped_worker_kind [app, kind : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for worker in (app/workers ~ get)
     (if (&& (== worker/kind kind)
             (== (worker/lifecycle ~ get) "stopped"))
@@ -976,7 +976,7 @@
     (app/next_worker_id ~ set (+ seq 1))
     (var normalized_controller
       (if (&& (== kind "output") (== controller nil))
-        (OutputController ^source "manual" ^following (cell []))
+        (OutputController ^source "manual" ^following ($cell []))
         controller))
     (var worker
       (make_worker $"w${seq}" kind title output normalized_controller))
@@ -1002,7 +1002,7 @@
     (app/next_worker_id ~ set (+ seq 1))
     (var normalized_controller
       (if (&& (== kind "output") (== controller nil))
-        (OutputController ^source "manual" ^following (cell []))
+        (OutputController ^source "manual" ^following ($cell []))
         controller))
     (var worker
       (make_worker $"w${seq}" kind title output normalized_controller))
@@ -1021,14 +1021,14 @@
 
 (fn application_find_pane [app, id : Int]
   (var surface app/local_surface)
-  (var found (cell nil))
+  (var found ($cell nil))
   (for pane in (if (== surface nil) [] (surface/panes ~ get))
     (if (== pane/id id) (found ~ set pane)))
   (found ~ get))
 
 (fn application_find_pane_kind [app, kind : Str]
   (var surface app/local_surface)
-  (var found (cell nil))
+  (var found ($cell nil))
   (for pane in (if (== surface nil) [] (surface/panes ~ get))
     (if (&& (== pane/kind kind) (== (found ~ get) nil))
       (found ~ set pane)))
@@ -1036,7 +1036,7 @@
 
 (fn application_find_pane_worker [app, worker_id : Str]
   (var surface app/local_surface)
-  (var found (cell nil))
+  (var found ($cell nil))
   (for pane in (if (== surface nil) [] (surface/panes ~ get))
     (if (&& (== pane/worker_id worker_id)
             (== (found ~ get) nil))
@@ -1107,13 +1107,13 @@
             ^kind worker/kind ^owner_id owner_id ^title pane_title
             ^output worker/output ^status worker/status
             ^current_task worker/current_task ^history worker/history
-            ^scroll (cell 0)
+            ^scroll ($cell 0)
             # Agent panes temporarily retain the shipped `controller` alias;
             # the worker itself is the agent controller. Non-agent panes point
             # at the worker-owned controller. Pane lifecycle never owns either.
             ^controller (if (== worker/kind "agent") worker worker/controller)
-            ^pending_visible (cell false)
-            ^hidden (cell false)
+            ^pending_visible ($cell false)
+            ^hidden ($cell false)
             ^close_policy close_policy))
     ((surface/panes ~ get) ~ push! pane)
     # A newly opened pane is the natural target for pane-local navigation.
@@ -1188,10 +1188,10 @@
       (var marker "")
       (var start 0)
       (var retained "")
-      (var settled (cell false))
+      (var settled ($cell false))
       (var attempts 0)
       (var budget 0)
-      (var sliced (cell false))
+      (var sliced ($cell false))
       (var exact 0)
       # Marker length and the UTF-8-safe tail boundary both affect the exact
       # dropped count. Iterate to a fixed point so digit-width changes cannot
@@ -1290,7 +1290,7 @@
         (then false)
         (else
           (var next_seen (append seen from_id))
-          (var found (cell false))
+          (var found ($cell false))
           (for candidate in (app/workers ~ get)
             (if (&& (! (found ~ get)) (== candidate/kind "output")
                     ((candidate/controller/following ~ get)
@@ -1321,7 +1321,7 @@
     (then false)
     (else
       (var kept [])
-      (var removed (cell false))
+      (var removed ($cell false))
       (for id in (output/controller/following ~ get)
         (if (== id source_id)
           (removed ~ set true)
@@ -1381,7 +1381,7 @@
       (if (== (trim safe_title) "") $"agent ${seq}" (trim safe_title)))
     (var agent
       (make_agent id app/main_agent/id label safe_assignment items transcript
-                  (cell nil)))
+                  ($cell nil)))
     # A child inherits the main agent's current selection at spawn time. It
     # then owns an independent model cell, so later changes are per-agent.
     (agent/model ~ set (app/main_agent/model ~ get))
@@ -1396,7 +1396,7 @@
       {^worker_id id ^agent_id id ^parent_agent_id app/main_agent/id
        ^assignment safe_assignment ^title label
        ^attachment_kinds attachment_kinds
-       ^attachment_digest (hash attachment_text)
+       ^attachment_digest ($hash attachment_text)
        ^attachment_bytes (byte_size attachment_text)})
     agent))
 
@@ -1596,8 +1596,8 @@
   (if (== surface nil)
     (then false)
     (else
-      (var kept (cell []))
-      (var removed (cell nil))
+      (var kept ($cell []))
+      (var removed ($cell nil))
       (for pane in (surface/panes ~ get)
         (if (== pane/id id)
           (removed ~ set pane)
@@ -1904,7 +1904,7 @@
 # supervision boundary. Private child tool transcripts stay private.
 (fn application_drain_supervisor_inbox [app]
   (var inbox (app/supervisor_inbox ~ get))
-  (if_not (empty? inbox)
+  (if_not ($empty? inbox)
     (for result in inbox
       (var agent (application_find_agent app result/agent_id))
       (if agent
@@ -1936,7 +1936,7 @@
 (fn list_of_type? [value, kind : Str] : Bool
   (match value
     (when (items : List)
-      (var valid (cell true))
+      (var valid ($cell true))
       (for item in items
         (if_not
           (match kind
@@ -2085,7 +2085,7 @@
 (fn workspace_request_ready? [coordinator, request_id : Int]
   (var waiters (coordinator/waiters ~ get))
   (&& (== (coordinator/owner ~ get) nil)
-      (! (empty? waiters))
+      (! ($empty? waiters))
       (== waiters/0/id request_id)))
 
 (fn application_acquire_workspace [app, worker_id : Str, operation : Str]
@@ -2097,11 +2097,11 @@
     {^id seq ^application_id app/coordinator_id
      ^worker_id worker_id ^owner_token owner_token ^operation operation})
   ((coordinator/waiters ~ get) ~ push! request)
-  (var acquired (cell false))
+  (var acquired ($cell false))
   (try
     (while (&& (! (app/shutting_down ~ get))
                 (! (workspace_request_ready? coordinator seq)))
-      (sleep 10))
+      ($sleep 10))
     (if (app/shutting_down ~ get)
       (then false)
       (else
@@ -2213,7 +2213,7 @@
   $"#${e/v} t${e/turn} ${e/type} ${(event_summary e)}")
 
 (fn subscribed? [type : Str]
-  (var hit (cell false))
+  (var hit ($cell false))
   ((to_stream (event_subscriptions ~ get))
     ~ each (fn [t] (if (== t type) (Cell/set hit true))))
   (Cell/get hit))
@@ -2253,8 +2253,8 @@
              (|| (> (- current/~size first) event_max_count)
                  (> retained_bytes event_max_bytes)))
     (set retained_bytes
-      (- retained_bytes (byte_size (stringify current/%first))))
-    (event_dropped_before ~ set current/%first/v)
+      (- retained_bytes (byte_size (stringify current/%$first))))
+    (event_dropped_before ~ set current/%$first/v)
     (set first (+ first 1)))
   (if (== first 0)
     (then false)
@@ -2304,8 +2304,8 @@
 # Successful file tools record exact before/after snapshots. `/undo` restores
 # one operation only when the current file still equals that operation's after
 # snapshot, so pre-existing or later edits are never erased by inference.
-(var file_changes (cell []))
-(var next_file_change_id (cell 1))
+(var file_changes ($cell []))
+(var next_file_change_id ($cell 1))
 
 (fn file_snapshot [path : Str]
   (if (exists? ReadDir path)
@@ -2313,7 +2313,7 @@
     {^exists false ^text ""}))
 
 (fn content_identity [text : Str]
-  {^hash (hash text) ^bytes (size (bytes text))})
+  {^hash ($hash text) ^bytes ($size ($bytes text))})
 
 (fn emit_owned_event! [sink, type : Str, props]
   (if (present? sink) (sink type props) (emit_event! type props)))
@@ -2360,13 +2360,13 @@
 
 (fn file_diff_report []
   (var changes (active_file_changes))
-  (if (empty? changes)
+  (if ($empty? changes)
     "no attributable file changes"
     (join ((to_stream changes) ~ map format_file_change ; ~ into [])
           "\n\n")))
 
 (fn find_file_change [wanted]
-  (var found (cell nil))
+  (var found ($cell nil))
   ((to_stream (file_changes ~ get))
     ~ each (fn [c]
         (if (&& (! (== c/undone true))
@@ -2410,9 +2410,9 @@
 # Hierarchical AGENTS.md instructions are loaded only along a target path, not
 # by scanning the whole workspace. This keeps startup bounded and gives the
 # exact parent-to-child precedence for the file or directory being touched.
-(var agent_instruction_records (cell []))
-(var loaded_instruction_paths (cell []))
-(var instruction_bytes (cell 0))
+(var agent_instruction_records ($cell []))
+(var loaded_instruction_paths ($cell []))
+(var instruction_bytes ($cell 0))
 (var max_instruction_depth 8)
 (var max_instruction_file_bytes 32768)
 (var max_instruction_total_bytes 65536)
@@ -2428,7 +2428,7 @@
     (if_not (! (exists? ReadDir safe))
       (try
         (var text (read_text ReadDir safe))
-        (var bytes_count (size (bytes text)))
+        (var bytes_count ($size ($bytes text)))
         (if (> bytes_count max_instruction_file_bytes)
           (then
             {^scope scope ^source source ^skipped "file exceeds byte cap"
@@ -2457,7 +2457,7 @@
       0
       (if include_leaf parts/~size (- parts/~size 1))))
   (if (> count max_instruction_depth) (set count max_instruction_depth))
-  (var scope_cell (cell "."))
+  (var scope_cell ($cell "."))
   (repeat i in count
     (scope_cell ~ set
       (if (== (scope_cell ~ get) ".")
@@ -2482,7 +2482,7 @@
     ; ~ into []))
 
 (fn format_instruction_records [records]
-  (if (empty? records)
+  (if ($empty? records)
     ""
     (join
       ((to_stream records)
@@ -2512,7 +2512,7 @@
 # to=; a bare token is shorthand for type=token) --------------------------------
 
 (fn event_matches? [e, f]
-  (var ok (cell true))
+  (var ok ($cell true))
   (if (present? f/type)
     (if_not (== e/type f/type) (Cell/set ok false)))
   (if (present? f/tool)
@@ -2532,7 +2532,7 @@
   (if (present? f/to)
     (if_not (<= e/v (parse_int f/to)) (Cell/set ok false)))
   (if_yes (present? f/path)
-    (var p (cell ""))
+    (var p ($cell ""))
     (if (present? e/path) (Cell/set p e/path))
     (if (present? e/args)
       (if (present? e/args/path) (Cell/set p e/args/path)))
@@ -2561,7 +2561,7 @@
 
 (fn trace_report [rest : Str] : Str
   (var f (parse_trace_filters rest))
-  (var lines (cell []))
+  (var lines ($cell []))
   (if (> (event_dropped_before ~ get) 0)
     ((lines ~ get) ~ push!
       $"[events through v${(event_dropped_before ~ get)} were dropped]"))
@@ -2570,7 +2570,7 @@
     ; ~ each (fn [e]
         ((lines ~ get) ~ push!
           (format_event_with_filters e f))))
-  (if (empty? (lines ~ get))
+  (if ($empty? (lines ~ get))
     "no matching events"
     (join (lines ~ get) "\n")))
 
@@ -2664,7 +2664,7 @@
   # The model-facing schema in the Responses wire shape.
   (message schema [self]
     (var props {})
-    (var required (cell []))
+    (var required ($cell []))
     (if (present? self/args)
       (for field in (self/args ~ fields)
         (var spec (gene_type_json_schema field/type))
@@ -2692,7 +2692,7 @@
     (var parameters
       {^type "object" ^properties props
        ^additionalProperties (if (present? self/args) false true)})
-    (if_not (empty? (required ~ get))
+    (if_not ($empty? (required ~ get))
       (parameters ~ put! "required" (required ~ get)))
     {^type "function" ^name self/name
      ^description self/description ^parameters parameters})
@@ -2702,12 +2702,12 @@
     (if (present? self/args)
       (return
         (try
-          (construct_type self/args args)
+          ($construct_type self/args args)
           nil
         catch (TypeError ^message message) message
         catch {^message message} message
         catch _ "arguments do not satisfy the declared Gene type")))
-    (var problems (cell []))
+    (var problems ($cell []))
     (for p in self/params
       (var v (args ~ get p/name))
       (if (== v void)
@@ -2717,11 +2717,11 @@
         (if_not (json_type_ok? p/type v)
           ((problems ~ get) ~ push!
             $"argument ${p/name} must be a ${p/type}"))))
-    (if_not (empty? (problems ~ get))
+    (if_not ($empty? (problems ~ get))
       (join (problems ~ get) "; "))))
 
-(var tool_registry (cell {}))
-(var tool_names (cell []))
+(var tool_registry ($cell {}))
+(var tool_names ($cell []))
 
 (fn handler_ref_data [handler_ref]
   (if (|| (== handler_ref nil) (== handler_ref void)) nil
@@ -2814,7 +2814,7 @@
 
 (fn run_checked_exec [sink, tool : Str, command : Str, task]
   (var started (monotonic_ms))
-  (var result (cell nil))
+  (var result ($cell nil))
   (debug! tool_log "subprocess started"
     ^payload {^tool_name tool ^check_scope (command_scope command)})
   (try
@@ -2842,7 +2842,7 @@
 # equal a current line, and at most three candidate windows are
 # returned. Very long lines are elided so an error cannot flood model context.
 (fn first_nonblank_line [text : Str] : Str
-  (var found (cell ""))
+  (var found ($cell ""))
   (for line in (split text "\n")
     (if (&& (== (found ~ get) "") (!= (trim line) ""))
       (found ~ set line)))
@@ -2871,15 +2871,15 @@
     (then "No nonblank anchor was available; read the current file and retry.")
     (else
       (var lines (split current "\n"))
-      (var windows (cell []))
-      (var candidates (cell 0))
+      (var windows ($cell []))
+      (var candidates ($cell 0))
       (repeat i in lines/~size
         (if_yes (&& (< (candidates ~ get) 3)
                 (== lines/%i anchor))
           (candidates ~ set (+ (candidates ~ get) 1))
           ((windows ~ get) ~ push!
             (edit_candidate_window lines i))))
-      (if (empty? (windows ~ get))
+      (if ($empty? (windows ~ get))
         (then $"No current line equals the anchor `${(bounded_line anchor)}`; read the current file and retry.")
         (else
           (var windows_text (join (windows ~ get) "\n\n"))
@@ -2941,7 +2941,7 @@
               (if (|| (> start_byte 0) (< end_byte total_bytes))
                 (headers ~ push!
                   $"bytes ${start_byte}-${end_byte} of ${total_bytes}"))
-              (if (empty? headers)
+              (if ($empty? headers)
                 (then chunk)
                 (else
                   (var header_text (join headers "; "))
@@ -3132,7 +3132,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   present; scripts may also do work at top level.
 - Comments start with `#`. Modules may start with `(mod name @doc "...")`.
 - Imports use namespace/module forms:
-  `(import str [join split trim lower])`
+  `(import $str [join split trim lower])`
   `(import gene/stream [to_stream map filter each into])`
   `(import [foo : local] from "./module")`
 - Bind with `(var name value)` or `(var name : Type value)`. Reassign existing
@@ -3204,7 +3204,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (when (text : Str)
       (+ (byte_size text) 2))
     (when (entries : Map)
-      (var total (cell 2))
+      (var total ($cell 2))
       (for [key item] in entries
         (var key_text $"${key}")
         (total ~ set
@@ -3212,7 +3212,7 @@ State that broader behavior is unverified when no matching successful check ran.
              (byte_size key_text) 3 (approximate_bytes item))))
       (total ~ get))
     (when (values : List)
-      (var total (cell 2))
+      (var total ($cell 2))
       (for item in values
         (total ~ set
           (+ (total ~ get) 1 (approximate_bytes item))))
@@ -3225,22 +3225,22 @@ State that broader behavior is unverified when no matching successful check ran.
   (/ (+ byte_count 3) 4))
 
 (fn context_turns [items]
-  (var turns (cell []))
-  (var current (cell []))
+  (var turns ($cell []))
+  (var current ($cell []))
   (for item in items
     (if_not (== item/role "system")
       (if (== item/role "user")
         (then
-          (if (! (empty? (current ~ get)))
+          (if (! ($empty? (current ~ get)))
             ((turns ~ get) ~ push! (current ~ get)))
           (current ~ set [item]))
         (else ((current ~ get) ~ push! item)))))
-  (if (! (empty? (current ~ get)))
+  (if (! ($empty? (current ~ get)))
     ((turns ~ get) ~ push! (current ~ get)))
   (turns ~ get))
 
 (fn context_system_items [items]
-  (var systems (cell []))
+  (var systems ($cell []))
   (for item in items
     (if (&& (== item/role "system")
             (!= item/context_summary true)
@@ -3249,7 +3249,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (systems ~ get))
 
 (fn has_context_limit_warning [items] : Bool
-  (var found (cell false))
+  (var found ($cell false))
   (for item in items
     (if (== item/context_limit_warning true)
       (found ~ set true)))
@@ -3281,10 +3281,10 @@ State that broader behavior is unverified when no matching successful check ran.
 # remain intact. Work oldest-first so the newest tool evidence survives when
 # older output is enough to get below the byte ceiling.
 (fn elide_old_tool_outputs [items]
-  (var remaining_bytes (cell (approximate_bytes items)))
-  (var elided_count (cell 0))
-  (var elided_bytes (cell 0))
-  (var out (cell []))
+  (var remaining_bytes ($cell (approximate_bytes items)))
+  (var elided_count ($cell 0))
+  (var elided_bytes ($cell 0))
+  (var out ($cell []))
   (for item in items
     (var replacement item)
     (if_yes (&& (> (remaining_bytes ~ get) context_max_bytes)
@@ -3330,7 +3330,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (if (> turn_count context_keep_turns)
           (- turn_count context_keep_turns)
           0))
-      (var compacted (cell (context_system_items items)))
+      (var compacted ($cell (context_system_items items)))
       (if (> start 0)
         (compacted ~ set
           (append (compacted ~ get)
@@ -3437,7 +3437,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 # Joined output_text parts of one assistant message item.
 (fn message_item_text [item] : Str
-  (var acc (cell ""))
+  (var acc ($cell ""))
   ((to_stream item/content)
     ~ each (fn [part]
         (if (== (response_content_kind part) ResponseContentKind/output_text)
@@ -3448,7 +3448,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (!= resp/output_text void)
     (then resp/output_text)
     (else
-      (var acc (cell ""))
+      (var acc ($cell ""))
       ((to_stream (response_output_items resp))
         ~ each (fn [item]
             (if (== (response_item_kind item) ResponseItemKind/assistant_message)
@@ -3487,12 +3487,12 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn mutation_digest [name : Str, args]
   (match name
     (when "write_file"
-      (hash $"write_file\n${args/path}\n${(hash args/content)}"))
+      ($hash $"write_file\n${args/path}\n${($hash args/content)}"))
     (when "edit_file"
-      (hash $"edit_file\n${args/path}\n${(hash args/old_text)}\n${(hash args/new_text)}"))
+      ($hash $"edit_file\n${args/path}\n${($hash args/old_text)}\n${($hash args/new_text)}"))
     (when "run_shell"
-      (hash $"run_shell\n${args/command}\n${args/timeout_ms}"))
-    (else (hash name))))
+      ($hash $"run_shell\n${args/command}\n${args/timeout_ms}"))
+    (else ($hash name))))
 
 (fn mutation_target_real [name : Str, args]
   (if (["write_file" "edit_file"] ~ contains? name)
@@ -3562,8 +3562,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (var started (monotonic_ms))
   (var name call/name)
   (var t (find_tool name))
-  (var args (cell nil))
-  (var parse_err (cell nil))
+  (var args ($cell nil))
+  (var parse_err ($cell nil))
   (try
     (args ~ set (parse call/arguments))
   catch (JsonError ^message m) (parse_err ~ set m))
@@ -3656,7 +3656,7 @@ State that broader behavior is unverified when no matching successful check ran.
 # -----------------------------------------------------------------------------
 
 (fn exec_curl_lines [curl_args, timeout_ms, on_line]
-  (var ch (channel ^capacity 256))
+  (var ch ($channel ^capacity 256))
   (var t (exec_stream_async Exec ^cmd "curl" ^args curl_args
                             ^timeout_ms timeout_ms ^max_bytes 4000000
                             ^stdout_chan ch))
@@ -3680,14 +3680,14 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (ends_with? parts/%i "\r")
         (on_line ((split parts/%i "\r")/%0))
         (on_line parts/%i))))
-  (pending ~ set parts/%last))
+  (pending ~ set parts/%$last))
 
 (fn exec_native_http_lines [url, headers, body, timeout_ms, on_line]
   (var transfer
     (stream Http ^method "POST" ^url url ^headers headers ^body body
                  ^timeout_ms timeout_ms ^max_bytes 4000000
                  ^channel_capacity 256 ^max_pending_bytes 1000000))
-  (var pending (cell ""))
+  (var pending ($cell ""))
   (try
     (try
       (loop
@@ -3758,8 +3758,8 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn sse_data_payload [line : Str]
   (if_yes (starts_with? line "data: ")
     (var parts (split line "data: "))
-    (var i (cell 0))
-    (var acc (cell ""))
+    (var i ($cell 0))
+    (var acc ($cell ""))
     ((to_stream parts)
       ~ each (fn [p]
           (var n (Cell/get i))
@@ -3810,19 +3810,19 @@ State that broader behavior is unverified when no matching successful check ran.
     (sse_handle_payload payload output output_text final render_stream)))
 
 (fn sse_response [raw : Str]
-  (var output (cell []))
-  (var output_text (cell ""))
-  (var final (cell nil))
+  (var output ($cell []))
+  (var output_text ($cell ""))
+  (var final ($cell nil))
   ((to_stream (split raw "\n"))
     ~ each (fn [line]
         (sse_handle_line line output output_text final ignore_stream_delta)))
   (sse_build_response output output_text final))
 
 (fn responses_live_transport [body : Str, render_stream]
-  (var output (cell []))
-  (var output_text (cell ""))
-  (var final (cell nil))
-  (var saw_sse (cell false))
+  (var output ($cell []))
+  (var output_text ($cell ""))
+  (var final ($cell nil))
+  (var saw_sse ($cell false))
   (var request_headers
     [$"Authorization: Bearer ${auth_token}"
      "Content-Type: application/json"
@@ -3883,14 +3883,14 @@ State that broader behavior is unverified when no matching successful check ran.
 # every role:"tool" message follows the assistant message that requested it —
 # the ordering chat endpoints validate.
 (fn items_to_chat_messages [items]
-  (var msgs (cell []))
-  (var pending_text (cell nil))
-  (var pending_calls (cell []))
+  (var msgs ($cell []))
+  (var pending_text ($cell nil))
+  (var pending_calls ($cell []))
   (fn flush_assistant []
     (if_yes (|| (present? (Cell/get pending_text))
-                (! (empty? (Cell/get pending_calls))))
+                (! ($empty? (Cell/get pending_calls))))
         (var m {^role "assistant" ^content (Cell/get pending_text)})
-        (if_not (empty? (Cell/get pending_calls))
+        (if_not ($empty? (Cell/get pending_calls))
           (m ~ put! "tool_calls" (Cell/get pending_calls)))
         ((Cell/get msgs) ~ push! m)
         (Cell/set pending_text nil)
@@ -3944,7 +3944,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (entry ~ put! "arguments" $"${entry/arguments}${frag/function/arguments}")))
 
 (fn chat_call_items [calls_map, max_cell]
-  (var items (cell []))
+  (var items ($cell []))
   (var entry nil)
   (repeat i in (Cell/get max_cell)
     (set entry (calls_map ~ get $"${i}"))
@@ -3955,7 +3955,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (Cell/get items))
 
 (fn chat_build_response [text_cell, calls_map, max_cell]
-  (var items (cell (chat_call_items calls_map max_cell)))
+  (var items ($cell (chat_call_items calls_map max_cell)))
   (if_not (== (Cell/get text_cell) "")
     (Cell/set items
       ((to_stream (Cell/get items))
@@ -3988,7 +3988,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (else
       (var message resp/choices/0/message)
       (var text (if (present? message/content) message/content ""))
-      (var items (cell []))
+      (var items ($cell []))
       (if_not (== text "")
         ((Cell/get items) ~ push!
           {^type "message" ^role "assistant"
@@ -4002,11 +4002,11 @@ State that broader behavior is unverified when no matching successful check ran.
       {^output (Cell/get items) ^output_text text})))
 
 (fn chat_live_transport [body : Str, render_stream]
-  (var text (cell ""))
+  (var text ($cell ""))
   (var calls {})
-  (var callmax (cell 0))
-  (var err (cell nil))
-  (var saw_sse (cell false))
+  (var callmax ($cell 0))
+  (var err ($cell nil))
+  (var saw_sse ($cell false))
   (var chat_headers
     [$"Authorization: Bearer ${auth_token}"
      "Content-Type: application/json"
@@ -4143,7 +4143,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (debug! turn_log "model round started"
     ^payload {^budget_remaining budget ^input_items (active_items ~ size)
               ^request_items (request_items ~ size)})
-  (var streamed (cell false))
+  (var streamed ($cell false))
   (var resp (call_model transport request_items
               (fn [text]
                 (Cell/set streamed true)
@@ -4172,7 +4172,7 @@ State that broader behavior is unverified when no matching successful check ran.
         ^payload {^budget_remaining budget ^tool_calls (calls ~ size)
                   ^response_items ((response_output_items resp) ~ size)
                   ^streamed (Cell/get streamed)})
-      (if (empty? calls)
+      (if ($empty? calls)
         (then
           (emit "agent_text" {^text (response_text resp)})
           (if (Cell/get streamed)
@@ -4196,7 +4196,7 @@ State that broader behavior is unverified when no matching successful check ran.
           # Execute tool handlers in this turn fiber. A lazy stream mapper
           # would own a separate generator continuation; cancelling the turn
           # could then leave an awaited subprocess alive in that continuation.
-          (var outputs (cell []))
+          (var outputs ($cell []))
           (for c in calls
             ((outputs ~ get) ~ push!
               (run_tool_call_in c emit context))
@@ -4228,14 +4228,14 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn run_turn_tracked_in [transport, input_items, render, render_stream, budget,
                          emit, context]
   (var started (monotonic_ms))
-  (var outcome (cell "running"))
-  (var result (cell input_items))
-  (var terminal_emitted (cell false))
-  (var interrupted (cell false))
-  (var failure_text (cell "turn failed"))
-  (var final_text (cell ""))
-  (var watching (cell true))
-  (var done (channel ^capacity 1))
+  (var outcome ($cell "running"))
+  (var result ($cell input_items))
+  (var terminal_emitted ($cell false))
+  (var interrupted ($cell false))
+  (var failure_text ($cell "turn failed"))
+  (var final_text ($cell ""))
+  (var watching ($cell true))
+  (var done ($channel ^capacity 1))
   (fn tracked_emit [type : Str, props]
     (if (== type "turn_done") (terminal_emitted ~ set true))
     (if (&& (== type "agent_text") (present? props/text))
@@ -4272,7 +4272,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var watcher
     (spawn ^lane root
       (while (watching ~ get)
-        (sleep 25)
+        ($sleep 25)
         (if_yes (|| (&& interrupt_armed (take_interrupt)) (ui_escape_requested?))
           (interrupted ~ set true)
           (task ~ cancel)))))
@@ -4352,16 +4352,16 @@ State that broader behavior is unverified when no matching successful check ran.
 # the persistence format.
 # -----------------------------------------------------------------------------
 
-(var agent_store (cell nil))
-(var agent_state_db (cell nil))
-(var agent_loaded_checkpoint (cell nil))
-(var agent_artifacts (cell []))
-(var next_artifact_id (cell 1))
+(var agent_store ($cell nil))
+(var agent_state_db ($cell nil))
+(var agent_loaded_checkpoint ($cell nil))
+(var agent_artifacts ($cell []))
+(var next_artifact_id ($cell 1))
 (var artifact_max_count 128)
 (var artifact_max_bytes 16777216)
-(var registration_restore_done (cell false))
-(var workspace_advisory_owned (cell false))
-(var workspace_heartbeat_task (cell nil))
+(var registration_restore_done ($cell false))
+(var workspace_advisory_owned ($cell false))
+(var workspace_heartbeat_task ($cell nil))
 (var workspace_advisory_key $"workspace/${(sha256 workspace_real)}")
 
 (fn state_enabled? []
@@ -4459,22 +4459,22 @@ State that broader behavior is unverified when no matching successful check ran.
       (close_agent_state)
       (warn! state_log "agent state disabled"
         ^payload {^error_kind "store" ^error_detail (redact m)})
-      (println $"agent state disabled: ${m}")
+      ($println $"agent state disabled: ${m}")
     catch (DbError ^message m)
       (close_agent_state)
       (warn! state_log "agent state disabled"
         ^payload {^error_kind "database" ^error_detail (redact m)})
-      (println $"agent state disabled: ${m}")
+      ($println $"agent state disabled: ${m}")
     catch (OsError ^message m)
       (close_agent_state)
       (warn! state_log "agent state disabled"
         ^payload {^error_kind "configuration" ^error_detail (redact m)})
-      (println $"agent state disabled: ${m}")
+      ($println $"agent state disabled: ${m}")
     catch _
       (close_agent_state)
       (warn! state_log "agent state disabled"
         ^payload {^error_kind "unknown"})
-      (println "agent state disabled: could not open store"))))
+      ($println "agent state disabled: could not open store"))))
 
 (fn state_record_v1 [key : Str, record]
   (if (&& record (== record/schema 1) (== record/kind key)
@@ -4535,7 +4535,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (warn! state_log "state record load failed"
         ^payload {^record_key key ^error_kind "store"
                   ^error_detail (redact m)})
-      (println $"agent state load failed (${key}): ${m}")
+      ($println $"agent state load failed (${key}): ${m}")
       default
     catch _
       (warn! state_log "state record load failed"
@@ -4567,7 +4567,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if live
       (then
         (workspace_advisory_owned ~ set false)
-        (println
+        ($println
           $"WARNING: another Gene agent owns this workspace (pid ${previous/process_id}, ${previous/workspace})"))
       (else
         (workspace_advisory_owned ~ set true)
@@ -4579,7 +4579,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (var task
       (spawn ^lane root
         (loop
-          (sleep 5000)
+          ($sleep 5000)
           (write_workspace_heartbeat!))))
     (workspace_heartbeat_task ~ set task)
     (task ~ detach)))
@@ -4596,7 +4596,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (workspace_advisory_owned ~ set false))
 
 (fn artifact_find [id : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for artifact in (agent_artifacts ~ get)
     (if (== artifact/id id) (found ~ set artifact)))
   (found ~ get))
@@ -4681,7 +4681,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (durable_state_get $"blob/${artifact/blob_id}" nil))
 
 (fn artifacts_report [] : Str
-  (if (empty? (agent_artifacts ~ get))
+  (if ($empty? (agent_artifacts ~ get))
     (then
       "no artifacts")
     (else
@@ -4800,7 +4800,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (reasoning_effort ~ set saved/reasoning_effort))))
 
 (fn prompt_with_memory [memory]
-  (if (empty? memory)
+  (if ($empty? memory)
     (then gene_system_prompt)
     (else
       (var sep "\n")
@@ -4811,8 +4811,8 @@ State that broader behavior is unverified when no matching successful check ran.
   [(system_item (prompt_with_memory memory))])
 
 (fn refresh_system_memory [items, memory]
-  (var out (cell []))
-  (var i (cell 0))
+  (var out ($cell []))
+  (var i ($cell 0))
   (for item in items
     (if (== (i ~ get) 0)
       ((out ~ get) ~ push! (system_item (prompt_with_memory memory)))
@@ -5047,7 +5047,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (match text
             (when (draft_text : Str)
               (drafts ~ put! worker_id
-                (cell (utf8_prefix draft_text surface_draft_max_bytes))))
+                ($cell (utf8_prefix draft_text surface_draft_max_bytes))))
             (else nil)))
         (surface/drafts ~ set drafts))
       (else (fail (OsError ^message "surface drafts must be a map")))))
@@ -5062,7 +5062,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 (fail (OsError
                   ^message "surface input history must contain only Str")))
               (histories ~ put! worker_id
-                (cell (bounded_list_tail history surface_history_max))))
+                ($cell (bounded_list_tail history surface_history_max))))
             (else nil)))
         (surface/input_histories ~ set histories))
       (else
@@ -5203,7 +5203,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (fail (OsError ^message "agent counters must be Int or nil")))
       (var agent
         (make_agent data/id data/parent_id data/title data/assignment
-          (cell data/items) (cell data/transcript) (cell nil)))
+          ($cell data/items) ($cell data/transcript) ($cell nil)))
         (if (present? data/model)
           (agent/model ~ set (trim data/model))
           (agent/model ~ set (app/main_agent/model ~ get)))
@@ -5357,26 +5357,26 @@ State that broader behavior is unverified when no matching successful check ran.
           (match data/kind
             (when "shell"
               (ShellController
-                ^cwd (cell (if (== data/cwd void) workspace_root data/cwd))
+                ^cwd ($cell (if (== data/cwd void) workspace_root data/cwd))
                 ^environment
-                  (cell (if (== data/environment void) {} data/environment))))
+                  ($cell (if (== data/environment void) {} data/environment))))
             (when "repl"
               (ReplController ^session nil ^items nil ^transcript nil
-                              ^memory nil ^streaming (cell false)
-                              ^resume_requested (cell false)
-                              ^pending (cell false)))
+                              ^memory nil ^streaming ($cell false)
+                              ^resume_requested ($cell false)
+                              ^pending ($cell false)))
             (when "terminal"
               (TerminalController
                 ^session nil
-                ^snapshot (cell (safe_terminal_snapshot data/terminal_snapshot))
+                ^snapshot ($cell (safe_terminal_snapshot data/terminal_snapshot))
                 ^restored_text
-                  (cell (utf8_prefix data/terminal_text worker_output_max_bytes))
-                ^pump_task (cell nil) ^controller_surface_id (cell nil)
+                  ($cell (utf8_prefix data/terminal_text worker_output_max_bytes))
+                ^pump_task ($cell nil) ^controller_surface_id ($cell nil)
                 ^command data/terminal_command
                 ^args data/terminal_args ^cwd data/terminal_cwd))
             (when "log_tail"
               (LogTailController
-                ^filter (cell (if (== data/filter void) {} data/filter))))
+                ^filter ($cell (if (== data/filter void) {} data/filter))))
             (when "file_view"
               (FileViewController
                 ^path (if unsafe_file_view ""
@@ -5385,13 +5385,13 @@ State that broader behavior is unverified when no matching successful check ran.
             (else
               (OutputController ^source "restored"
                 ^following
-                  (cell
+                  ($cell
                     (if (match data/following
                           (when (xs : List) true) (else false))
                       data/following []))))))
         (var worker
           (make_worker data/id data/kind data/title
-            (cell (if unsafe_file_view "" data/output)) controller))
+            ($cell (if unsafe_file_view "" data/output)) controller))
         (if_yes (present? data/name)
           (var named (application_assign_worker_name! app worker data/name))
           (if_not named/ok
@@ -5522,27 +5522,27 @@ State that broader behavior is unverified when no matching successful check ran.
             (match data/kind
               (when "shell"
                 (ShellController
-                  ^cwd (cell (if (== data/cwd void)
+                  ^cwd ($cell (if (== data/cwd void)
                                workspace_root data/cwd))
-                  ^environment (cell {})))
+                  ^environment ($cell {})))
               (when "repl"
                 (ReplController ^session nil ^items nil ^transcript nil
-                                ^memory nil ^streaming (cell false)
-                                ^resume_requested (cell false)
-                              ^pending (cell false)))
+                                ^memory nil ^streaming ($cell false)
+                                ^resume_requested ($cell false)
+                              ^pending ($cell false)))
               (when "terminal"
                 (TerminalController
-                  ^session nil ^snapshot (cell nil)
+                  ^session nil ^snapshot ($cell nil)
                   ^restored_text
-                    (cell (if (== data/output void) "" data/output))
-                  ^pump_task (cell nil) ^controller_surface_id (cell nil)
+                    ($cell (if (== data/output void) "" data/output))
+                  ^pump_task ($cell nil) ^controller_surface_id ($cell nil)
                   ^command (get_env Env "SHELL" "/bin/sh")
                   ^args [] ^cwd workspace_root))
-              (else (OutputController ^source "restored" ^following (cell [])))))
+              (else (OutputController ^source "restored" ^following ($cell [])))))
           (set worker
             (make_worker $"w${seq}" data/kind
               (if (== data/title void) data/kind data/title)
-              (cell (if (== data/output void) "" data/output))
+              ($cell (if (== data/output void) "" data/output))
               controller))
           (worker/lifecycle ~ set
             (if (|| (== data/kind "shell") (== data/kind "terminal")
@@ -5563,11 +5563,11 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^output worker/output
                   ^status worker/status ^current_task worker/current_task
                   ^history worker/history
-                  ^scroll (cell (if (== data/scroll void) 0 data/scroll))
+                  ^scroll ($cell (if (== data/scroll void) 0 data/scroll))
                   ^controller (if (== worker/kind "agent")
                                 worker worker/controller)
-                  ^pending_visible (cell false)
-                  ^hidden (cell (if (present? data/hidden)
+                  ^pending_visible ($cell false)
+                  ^hidden ($cell (if (present? data/hidden)
                                   data/hidden false))
                   ^close_policy "detach"))
           ((surface/panes ~ get) ~ push! pane))
@@ -5801,8 +5801,8 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn after_prefix [s : Str, prefix : Str] : Str
   (var parts (split s prefix))
-  (var i (cell 0))
-  (var acc (cell ""))
+  (var i ($cell 0))
+  (var acc ($cell ""))
   ((to_stream parts)
     ~ each (fn [p]
         (var n (i ~ get))
@@ -5814,7 +5814,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (acc ~ get))
 
 (fn demo_transport_for []
-  (var calls (cell 0))
+  (var calls ($cell 0))
   (fn [body, render_stream]
     (Cell/set calls (+ (Cell/get calls) 1))
     (if (== (Cell/get calls) 1)
@@ -5859,9 +5859,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (var budget 0)
       (var start 0)
       (var retained "")
-      (var settled (cell false))
+      (var settled ($cell false))
       (var attempts 0)
-      (var sliced (cell false))
+      (var sliced ($cell false))
       (var exact 0)
       (while (&& (! (settled ~ get)) (< attempts 8))
         (set marker (transcript_loss_marker dropped))
@@ -5967,13 +5967,13 @@ State that broader behavior is unverified when no matching successful check ran.
             (list_dir ReadDir config/cwd)
             (real_path ReadDir config/cwd))))
       (application_new_named_worker app kind title
-        (cell $"cwd: ${cwd}\n")
-        (ShellController ^cwd (cell cwd) ^environment (cell {}))
+        ($cell $"cwd: ${cwd}\n")
+        (ShellController ^cwd ($cell cwd) ^environment ($cell {}))
         requested_name))
     (when "output"
       (var worker
-        (application_new_named_worker app kind title (cell "")
-          (OutputController ^source "gateway" ^following (cell []))
+        (application_new_named_worker app kind title ($cell "")
+          (OutputController ^source "gateway" ^following ($cell []))
           requested_name))
       (if_yes (&& worker (present? config/text))
         (application_append_worker_output!
@@ -5981,7 +5981,7 @@ State that broader behavior is unverified when no matching successful check ran.
       worker)
     (when "stats"
       (var worker
-        (application_new_named_worker app kind title (cell "")
+        (application_new_named_worker app kind title ($cell "")
           (StatsController) requested_name))
       (if_yes worker
         (application_set_projection_output!
@@ -5998,8 +5998,8 @@ State that broader behavior is unverified when no matching successful check ran.
         (parse_trace_filters
           (if (present? config/filter) config/filter "")))
       (var worker
-        (application_new_named_worker app kind title (cell "")
-          (LogTailController ^filter (cell filters)) requested_name))
+        (application_new_named_worker app kind title ($cell "")
+          (LogTailController ^filter ($cell filters)) requested_name))
       (if_yes worker
         ((app/event_observers ~ get) ~ push!
           {^worker_id worker/id
@@ -6019,7 +6019,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (var worker
             (application_new_named_worker app kind
               (if (== title kind) $"view ${path}" title)
-              (cell "") (FileViewController ^path path) requested_name))
+              ($cell "") (FileViewController ^path path) requested_name))
           (if (!= worker nil)
             (application_append_projection_output!
               app worker (read_text ReadDir path) "file_view"))
@@ -6100,9 +6100,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (then $"shell ${route} is already working")
       (else
         (worker_history_push! worker command adapter surface_id)
-        (var last_output (cell ""))
-        (var process_task (cell nil))
-        (var outcome (cell "cancelled"))
+        (var last_output ($cell ""))
+        (var process_task ($cell nil))
+        (var outcome ($cell "cancelled"))
         (var task
           (spawn ^lane root
             (do
@@ -6114,7 +6114,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 (if acquired
                   (then
                     (var started (monotonic_ms))
-                    (var stdout_chan (channel ^capacity 256))
+                    (var stdout_chan ($channel ^capacity 256))
                     (var exec_task
                       (exec_stream_async Exec
                         ^cmd "env"
@@ -6224,8 +6224,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (then $"REPL ${route} is already evaluating")
       (else
         (worker_history_push! worker source adapter surface_id)
-        (var last_output (cell ""))
-        (var outcome (cell "cancelled"))
+        (var last_output ($cell ""))
+        (var outcome ($cell "cancelled"))
         (var task
           (spawn ^lane root
             (do
@@ -6295,7 +6295,7 @@ State that broader behavior is unverified when no matching successful check ran.
   # made their stacked closers read as an extra brace). Display-only: short
   # results echo the canonical print untouched, and text that does not parse
   # (a truncated transcript line) falls back to itself.
-  (if (< (size (bytes text)) width)
+  (if (< ($size ($bytes text)) width)
     text
     (try
       # trim: format ends with the source-unit trailing newline and the
@@ -6376,14 +6376,14 @@ State that broader behavior is unverified when no matching successful check ran.
       (attachment ~ put! "worker_id" worker/id)))
   (var safe_assignment (redact assignment))
   (var context_text
-    (if (empty? attachments) ""
+    (if ($empty? attachments) ""
       $"\nCopied context attachments (redacted, bounded snapshots):\n${(stringify attachments)}"))
   (application_spawn_named_agent_with_attachments app title safe_assignment
-    (cell
+    ($cell
       (append (initial_items (app/memory ~ get))
         (system_item
           $"You are a supervised sub-agent. Assignment: ${safe_assignment}\nKeep private tool chatter out of the main context and return a concise result.${context_text}")))
-    (cell "ready\n") attachments requested_name))
+    ($cell "ready\n") attachments requested_name))
 
 (fn spawn_supervised_agent_with_context
   [app, title : Str, assignment : Str, context]
@@ -6424,11 +6424,11 @@ State that broader behavior is unverified when no matching successful check ran.
         (var task
           (spawn ^lane root
             (do
-                (var result (cell (agent/items ~ get)))
-                (var final_text (cell ""))
-                (var outcome (cell "cancelled"))
-                (var error_kind (cell "cancelled"))
-                (var error_text (cell "agent operation cancelled"))
+                (var result ($cell (agent/items ~ get)))
+                (var final_text ($cell ""))
+                (var outcome ($cell "cancelled"))
+                (var error_kind ($cell "cancelled"))
+                (var error_text ($cell "agent operation cancelled"))
                 (var emit
                   (fn [type props]
                     (if (&& (== type "agent_text") (present? props/text))
@@ -6631,7 +6631,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (|| (== name "") (> (byte_size name) 128))
     (fail (OsError ^message "environment name must contain 1-128 characters")))
   (var first true)
-  (for ch in (graphemes name)
+  (for ch in ($graphemes name)
     (var allowed
       (if first
         (contains? "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_" ch)
@@ -6920,7 +6920,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (fn [text : Str]
     (var value (trim text))
     (var parts (split value " "))
-    (var first (if (empty? parts) "" parts/0))
+    (var first (if ($empty? parts) "" parts/0))
     (var second (trim (after_prefix value first)))
     (if (|| (== first "") (== second ""))
       (fail (OsError
@@ -6960,7 +6960,7 @@ State that broader behavior is unverified when no matching successful check ran.
   out)
 
 (fn worker_operation_for [kind : Str, name : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for op in (worker_operations_for_kind kind)
     (if (== op/name name) (found ~ set op)))
   (found ~ get))
@@ -6987,13 +6987,13 @@ State that broader behavior is unverified when no matching successful check ran.
   descriptors)
 
 (fn worker_primary_operation [kind : Str]
-  (var found (cell nil))
+  (var found ($cell nil))
   (for operation in (worker_operations_for_kind kind)
     (if operation/primary_input (found ~ set operation)))
   (found ~ get))
 
 (fn agent_has_worker_attachment? [agent, worker_id : Str] : Bool
-  (var found (cell false))
+  (var found ($cell false))
   (if agent
     (for attachment in (agent/attachments ~ get)
       (if (&& (== attachment/kind "worker")
@@ -7161,9 +7161,9 @@ State that broader behavior is unverified when no matching successful check ran.
         invocation "worker_stopped" "worker is stopped")))
 
   (var args nil)
-  (var validation_error (cell nil))
+  (var validation_error ($cell nil))
   (try
-    (set args (construct_type operation/args raw_args))
+    (set args ($construct_type operation/args raw_args))
   catch {^message message}
     (validation_error ~ set message)
   catch _
@@ -7186,10 +7186,10 @@ State that broader behavior is unverified when no matching successful check ran.
     (pending ~ put! "operation_name" operation/name)
     (worker/pending_invocation ~ set pending))
   (var value nil)
-  (var execution_error (cell nil))
+  (var execution_error ($cell nil))
   (try
     (set value
-      (construct_type operation/result
+      ($construct_type operation/result
         (operation/handler app worker operation args invocation)))
   catch {^message message}
     (execution_error ~ set message)
@@ -7351,7 +7351,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (then
       (var text response/result/text)
       (if (|| (== text nil) (== text void))
-        (stringify (props response/result)) text))
+        (stringify ($props response/result)) text))
     (else
       $"error: ${response/error/kind}: ${response/error/message}")))
 
@@ -7569,8 +7569,8 @@ State that broader behavior is unverified when no matching successful check ran.
               (var worker
                 (application_new_worker app "output"
                   (if (== args/title void) "output" args/title)
-                  (cell "")
-                  (OutputController ^source "model" ^following (cell []))))
+                  ($cell "")
+                  (OutputController ^source "model" ^following ($cell []))))
               (if (== worker nil)
                 (then "error: worker limit reached")
                 (else
@@ -7686,7 +7686,7 @@ State that broader behavior is unverified when no matching successful check ran.
             (set worker
               (application_spawn_agent_with_attachments app previous/title
                 previous/assignment
-                (cell (previous/items ~ get)) (cell "ready\n")
+                ($cell (previous/items ~ get)) ($cell "ready\n")
                 (previous/attachments ~ get)))
             (if_yes worker
               (application_emit app "worker_started"
@@ -7695,11 +7695,11 @@ State that broader behavior is unverified when no matching successful check ran.
         (when "shell"
           (set worker
             (application_new_worker_from app "shell" previous/title
-              (cell $"cwd: ${(previous/controller/cwd ~ get)}\n")
+              ($cell $"cwd: ${(previous/controller/cwd ~ get)}\n")
               (ShellController
-                ^cwd (cell (previous/controller/cwd ~ get))
+                ^cwd ($cell (previous/controller/cwd ~ get))
                 ^environment
-                  (cell (previous/controller/environment ~ get)))
+                  ($cell (previous/controller/environment ~ get)))
               previous)))
         (when "terminal"
           (var session
@@ -7708,13 +7708,13 @@ State that broader behavior is unverified when no matching successful check ran.
               ^rows 24 ^cols 80 ^scrollback_lines 2000))
           (set worker
             (application_new_worker_from app "terminal" previous/title
-              (cell "interactive terminal (local/unmediated)\n")
+              ($cell "interactive terminal (local/unmediated)\n")
               (TerminalController
-                ^session session ^snapshot (cell (terminal_snapshot session))
-                ^restored_text (cell "")
-                ^pump_task (cell nil)
+                ^session session ^snapshot ($cell (terminal_snapshot session))
+                ^restored_text ($cell "")
+                ^pump_task ($cell nil)
                 ^controller_surface_id
-                  (cell (app/local_surface/instance_id ~ get))
+                  ($cell (app/local_surface/instance_id ~ get))
                 ^command previous/controller/command
                 ^args previous/controller/args ^cwd previous/controller/cwd)
               previous))
@@ -7726,15 +7726,15 @@ State that broader behavior is unverified when no matching successful check ran.
         (when "output"
           (set worker
             (application_new_worker_from app "output" previous/title
-              (cell "")
+              ($cell "")
               (OutputController ^source previous/controller/source
-                                ^following (cell [])) previous)))
+                                ^following ($cell [])) previous)))
         (when "log_tail"
           (set worker
             (application_new_worker_from app "log_tail" previous/title
-              (cell "")
+              ($cell "")
               (LogTailController
-                ^filter (cell (previous/controller/filter ~ get)))
+                ^filter ($cell (previous/controller/filter ~ get)))
               previous))
           (if worker
             ((app/event_observers ~ get) ~ push!
@@ -7751,14 +7751,14 @@ State that broader behavior is unverified when no matching successful check ran.
           (var path previous/controller/path)
           (set worker
             (application_new_worker_from app "file_view" previous/title
-              (cell "") (FileViewController ^path path) previous))
+              ($cell "") (FileViewController ^path path) previous))
           (if worker
             (application_set_projection_output!
               app worker (read_text ReadDir (safe_path path)) "file_view")))
         (when "stats"
           (set worker
             (application_new_worker_from app "stats" previous/title
-              (cell "") (StatsController) previous))
+              ($cell "") (StatsController) previous))
           (if_yes worker
             (application_set_projection_output!
               app worker (stats_worker_text app) "stats")

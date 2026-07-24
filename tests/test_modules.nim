@@ -71,8 +71,11 @@ suite "modules — file imports":
     check collision.contains("ambiguous imported name 'shared'")
     check collision.contains("./wild_left")
     check collision.contains("./wild_right")
-    expect GeneError:
-      discard app.loadFileModule(modDir / "wild_builtin_user.gene")
+    # `map` is no longer a bare built-in (it lives under `gene`, reached as
+    # `$map`), so a wildcard-imported `map` no longer collides with anything and
+    # resolves to the imported value.
+    let builtin = app.loadFileModule(modDir / "wild_builtin_user.gene")
+    check builtin.moduleRootNamespace.nsScope.lookup("observed").print() == "42"
     let qualified = app.loadFileModule(modDir / "wild_qualified_user.gene")
     check qualified.moduleRootNamespace.nsScope.lookup("observed").print() ==
       "[true 42]"
@@ -207,7 +210,7 @@ suite "modules — file imports":
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
     check runProgram("(import * : m from \"./decls\") " &
-      "(var ds (filter (declarations m) (fn [d] (== d/name \"exported\")))) " &
+      "(var ds ($filter ($declarations m) (fn [d] (== d/name \"exported\")))) " &
       "(ds ~ next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
 
@@ -215,8 +218,8 @@ suite "modules — file imports":
     writeModule("macro_decls.gene",
       "(macro twice [x] `(+ %x %x)) (var runtime-value 7)")
     check runProgram("(import * : m from \"./macro_decls\") " &
-      "(var macros (filter (declarations m) (fn [d] (== d/name \"twice\")))) " &
-      "(var values (filter (declarations m) " &
+      "(var macros ($filter ($declarations m) (fn [d] (== d/name \"twice\")))) " &
+      "(var values ($filter ($declarations m) " &
       "  (fn [d] (== d/name \"runtime-value\")))) " &
       "(var decl (values ~ next)) " &
       "[(macros ~ has_next) decl/value]").print() ==
@@ -225,7 +228,7 @@ suite "modules — file imports":
   test "file modules receive a this_mod binding":
     writeModule("self.gene",
       "(var x 9) " &
-      "(var ds (filter (declarations this_mod) (fn [d] (== d/name \"x\")))) " &
+      "(var ds ($filter ($declarations this_mod) (fn [d] (== d/name \"x\")))) " &
       "(var decl (ds ~ next)) " &
       "(var seen decl/value)")
     check runProgram("(import [seen] from \"./self\") seen").print() == "9"
@@ -578,10 +581,10 @@ suite "modules — built-in identity and scope hygiene":
     # Filtering the module's declarations for a built-in name finds nothing,
     # because built-ins live in the shared parent scope, not the module root.
     check runProgram("(import * : m from \"./decls2\") " &
-      "(var ds (filter (declarations m) (fn [d] (== d/name \"map\")))) " &
+      "(var ds ($filter ($declarations m) (fn [d] (== d/name \"map\")))) " &
       "(ds ~ has_next)").print() == "false"
     check runProgram("(import * : m from \"./decls2\") " &
-      "(var ds (filter (declarations m) (fn [d] (== d/name \"this_mod\")))) " &
+      "(var ds ($filter ($declarations m) (fn [d] (== d/name \"this_mod\")))) " &
       "(ds ~ has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":

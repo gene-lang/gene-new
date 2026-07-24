@@ -27,14 +27,14 @@
 (mod todo_app
   @doc "SQLite-backed TODO list with an HTML page and a JSON API")
 
-(import html [escape])
-(import url [parse_query UrlError])
-(import str [join])
-(import json [stringify])
+(import $html [escape])
+(import $url [parse_query UrlError])
+(import $str [join])
+(import $json [stringify])
 (import gene/parse [parse_int ParseError])
 (import gene/stream [to_stream map filter into])
-(import net/http [Request Response Server serve json redirect not_found])
-(import db/sqlite [open DbError Db])
+(import $net/http [Request Response Server serve json redirect not_found])
+(import $db/sqlite [open DbError Db])
 
 # -----------------------------------------------------------------------------
 # Store: SQLite via the Db protocol. `done` is stored as 0/1.
@@ -110,18 +110,18 @@
   (var [k, v] pair)
   (if (== v void)
     ""
-    $" ${(to_str k)}=\"${(escape (to_str v))}\""))
+    $" ${($to_str k)}=\"${(escape ($to_str v))}\""))
 
 (fn render_attrs [n : Node] : Str
   (join
-    (n/%props/%to_pairs_stream
+    (n/%$props/%$to_pairs_stream
       ~ map render_attr
       ; ~ into [])
     ""))
 
 (fn render_children [n : Node] : Str
   (join
-    (n/%body/%to_stream
+    (n/%$body/%$to_stream
       ~ map render
       ; ~ into [])
     ""))
@@ -130,7 +130,7 @@
   (|| (== tag "input") (== tag "br") (== tag "hr") (== tag "meta")))
 
 (fn render_node [n : Node] : Str
-  (var tag (to_str (n ~ head)))
+  (var tag ($to_str (n ~ head)))
   (var open ($ "<" tag (render_attrs n) ">"))
   (if (void_tag? tag)
     open
@@ -143,7 +143,7 @@
     (when (n : Node)
       (render_node n))
     (else
-      (escape (to_str x)))))
+      (escape ($to_str x)))))
 
 (var css """
   body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}
@@ -182,13 +182,13 @@
   (var cls (if (== flt target) "filter on" "filter"))
   (var key (target ~ backing))
   (var href (if (== target TodoFilter/all) "/" $"/?filter=${key}"))
-  `(a ^class %cls ^href %href %key))
+  `(a ^class %cls ^href %href %$key))
 
 (fn page [flt : TodoFilter] : Str
   (var rows ((to_stream (todos_for flt)) ~ map todo_row ; ~ into []))
   (var all_items (list_todos))
-  (var done_count (size ((to_stream all_items) ~ filter done? ; ~ into [])))
-  (var open_count (- (size all_items) done_count))
+  (var done_count ($size ((to_stream all_items) ~ filter done? ; ~ into [])))
+  (var open_count (- ($size all_items) done_count))
   (var counts $"${open_count} open · ${done_count} done")
   (var clear
     (if (> done_count 0)
@@ -290,5 +290,5 @@
 # Entry point: serve until the process is stopped.
 # -----------------------------------------------------------------------------
 
-(println "TODO app listening on http://127.0.0.1:8090")
+($println "TODO app listening on http://127.0.0.1:8090")
 (serve (Server ^host "127.0.0.1" ^port 8090) handle)

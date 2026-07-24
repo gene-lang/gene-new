@@ -3762,29 +3762,33 @@ a symbol character: `$"a ${b}"` stays interpolation and a lone `$` stays the
 concat head (`($ "a" 1)` → `"a1"`). Only `$` immediately followed by a symbol
 character is a member path.
 
-This is what lets the bare surface shrink. The goal is that **nothing is
-special except keywords and the reserved roots**: a bare name means whatever the
-program binds it to, and the standard library is reached through `$`. Bare
-built-in names remain available during the migration, so both spellings work
-today.
+This is what lets the bare surface shrink, and it now has: **nothing is
+special except keywords, operators, and the reserved roots.** A bare name means
+whatever the program binds it to, and the standard library is reached through
+`$`. `(println …)` is an error; write `($println …)` or import the name.
 
-The end state is implemented but not yet switched on: with
-`GENE_NO_BARE_BUILTINS=1` the lexical root holds only the operators and the
-reserved roots, and the VM resolves its own needs (built-in type messages, the
-error types it raises) from the `gene` scope rather than the lexical chain. Two
-things gate the flip:
+The split is by **case**, because case already tells types from functions:
 
-- **Type annotations.** They resolve names structurally, not as bindings, which
-  is why `Int`, `Str`, and `Bool` work without being bound at all. `List`,
-  `Map`, `Set`, and `C` are *both* annotation names and namespaces, and today
-  `[xs : List]` resolves while `[xs : $List]` does not. Either annotation
-  resolution learns the `gene` root, or these names stay bare.
-- **Corpus migration.** It has to be driven by real resolution failures, not by
-  rewriting ahead of time. Built-in names like `body`, `url`, `key`, `data`,
-  `parse`, and `store` are common local-variable names, so any approximate
-  scope analysis silently turns a local into a standard-library reference.
-  Removing the bindings first makes every stale reference an *error*, which is
-  the only signal that cannot produce a false positive.
+- An **uppercase** name is a *type* — a type value, an error type, or a type's
+  message namespace (`Cell`, `List`, `Map`, `TypeError`, `Actor`, `C`). These
+  stay bare, because type annotations resolve names structurally rather than as
+  bindings — `[xs : List]` must keep working, and `[xs : $List]` is not how an
+  annotation reads. Uppercase names are also the ones a program is least likely
+  to collide with by accident.
+- A **lowercase** name is a library function or namespace (`println`, `map`,
+  `cell`, `str`, `net`). These move under the `gene` root and are reached as
+  `$x`.
+- **Operators** (`+ - * / < <= > >= == != $`) stay bare — a closed set the user
+  cannot declare — as do a few language-level words spelled as names: `panic`
+  (§9), and `not`/`same?`, the spelled forms of `!` and identity.
+
+The VM resolves its own needs — built-in type messages, the error types it
+raises — from the `gene` scope rather than the lexical chain, so a program that
+binds `TypeError` locally cannot change which type an internal raise builds.
+
+`GENE_BARE_BUILTINS=1` restores the old fully-bare surface. It exists only to
+collect the bare-name lint against unmigrated sources and is not a supported
+runtime mode.
 
 The four roots form a library lifecycle in which each transition is a root-swap
 with the internal path preserved (a mechanical rename that defers the semantic

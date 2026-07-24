@@ -1801,7 +1801,7 @@ suite "types — declaration and construction":
        "[(e ~ /name) (e ~ /0) (e ~ /1)]",
        "[\"scores\" 1 2]"
   test "the instance head is the type value":
-    ck "(type Task ^props {^id Int}) (== (head (Task ^id 1)) Task)", "true"
+    ck "(type Task ^props {^id Int}) (== ($head (Task ^id 1)) Task)", "true"
   test "distinct types are not equal":
     ck "(type A ^props {^x Int}) (type B ^props {^x Int}) (== A B)", "false"
   test "type declarations reject unsupported props":
@@ -1942,10 +1942,10 @@ suite "types — function boundaries":
 
   test "generic functions infer buffer element types":
     ck "(fn (first item) [b : (Buffer item)] : item (Buffer/get b 0)) " &
-       "(first (buffer [4 5]))",
+       "(first ($buffer [4 5]))",
        "4"
     ck "(try (fn (choose item) [b : (Buffer item) fallback : item] fallback) " &
-       "(choose (buffer [1]) \"bad\") catch (TypeError ^expected e) e)",
+       "(choose ($buffer [1]) \"bad\") catch (TypeError ^expected e) e)",
        "\"Int\""
 
   test "task annotations check results and recoverable errors at await":
@@ -1989,7 +1989,7 @@ suite "types — function boundaries":
     ck "(try (fn size [xs : (List Int)] xs/~size) (size [1 \"bad\"]) " &
        "catch (TypeError ^expected e) e)", "\"(List Int)\""
     ck "(fn value [m : (Map Sym Int)] m/a) (value {^a 3})", "3"
-    ck "(var routes (into (to_stream [[\"handler\" (fn [] 7)]]) {})) " &
+    ck "(var routes ($into ($to_stream [[\"handler\" (fn [] 7)]]) {})) " &
        "(fn run [m : (Map Str Fn)] ((m ~ /handler))) " &
        "(run routes)",
        "7"
@@ -2003,10 +2003,10 @@ suite "types — function boundaries":
        "(value {{\"a\" : 3}})", "3"
     ck "(try (fn value [m : (HashMap Str Int)] m) (value {{1 : 2}}) " &
        "catch (TypeError ^expected e) e)", "\"(HashMap Str Int)\""
-    ck "(fn count [s : (Set Int)] (size s)) (count (Set 1 2 1))", "2"
+    ck "(fn count [s : (Set Int)] ($size s)) (count (Set 1 2 1))", "2"
     ck "(try (fn count [s : (Set Int)] s) (count (Set 1 \"bad\")) " &
        "catch (TypeError ^expected e) e)", "\"(Set Int)\""
-    ck "(fn len [b : Bytes] (size b)) (len 0x4869)", "2"
+    ck "(fn len [b : Bytes] ($size b)) (len 0x4869)", "2"
 
   test "fixed-width integer annotations range-check boundaries":
     ck "(fn f [x : SignedInt] x) [(f -1) (f 0) (f 1)]", "[-1 0 1]"
@@ -2117,23 +2117,23 @@ suite "types — function boundaries":
                   scope)
 
   test "Buffer annotations check Gene-owned typed storage":
-    ck "(var b (buffer [1 2 3])) " &
+    ck "(var b ($buffer [1 2 3])) " &
        "[(Buffer/len b) (Buffer/get b 0) (Buffer/get b -1) " &
        "(Buffer/to_list b) (Buffer/elem_type b)]",
        "[3 1 3 [1 2 3] Int]"
-    ck "(var b (buffer C/UInt8 [1 2])) " &
+    ck "(var b ($buffer C/UInt8 [1 2])) " &
        "[(Buffer/set! b 1 255) (Buffer/to_list b) " &
        "((fn [x : (Buffer C/UInt8)] true) b)]",
        "[255 [1 255] true]"
-    ck "((fn [b : (Buffer Int)] true) (buffer [1 2]))", "true"
-    ck "(try (buffer C/UInt8 [1 256]) " &
+    ck "((fn [b : (Buffer Int)] true) ($buffer [1 2]))", "true"
+    ck "(try ($buffer C/UInt8 [1 256]) " &
        "catch (TypeError ^expected e) e)", "\"C/UInt8\""
     expect GeneError:
-      discard runStr("(var b (buffer C/UInt8 [1])) (Buffer/set! b 0 256)")
+      discard runStr("(var b ($buffer C/UInt8 [1])) (Buffer/set! b 0 256)")
     expect GeneError:
-      discard runStr("((fn [b : (Buffer C/UInt8)] b) (buffer C/Int32 [1]))")
+      discard runStr("((fn [b : (Buffer C/UInt8)] b) ($buffer C/Int32 [1]))")
     expect GeneError:
-      discard runStr("(hash (buffer [1]))")
+      discard runStr("($hash ($buffer [1]))")
 
     let scope = newGlobalScope()
     scope.define("native-buf", newBuffer(newSym("C/Char"),
@@ -2151,15 +2151,15 @@ suite "types — function boundaries":
     expect GeneError:
       discard run(compileSource("((fn [cap : Ffi/Load] cap) nil)"), scope)
     expect GeneError:
-      discard run(compileSource("(ffi/open nil \"libmissing-gene-new\")"), scope)
+      discard run(compileSource("($ffi/open nil \"libmissing-gene-new\")"), scope)
     expect GeneError:
-      discard run(compileSource("(ffi/open native \"libmissing-gene-new\")"),
+      discard run(compileSource("($ffi/open native \"libmissing-gene-new\")"),
                   scope)
 
     let libName = loadableFfiLibrary()
     if libName.len > 0:
       scope.define("lib-name", newStr(libName))
-      let lib = run(compileSource("(ffi/open native lib-name)"), scope)
+      let lib = run(compileSource("($ffi/open native lib-name)"), scope)
       check lib.kind == vkFfiLibrary
       check lib.ffiLibraryPath == libName
       check not lib.ffiLibraryClosed
@@ -2168,7 +2168,7 @@ suite "types — function boundaries":
       check run(compileSource("((fn [handle : Ffi/Library] handle) lib)"),
                 scope).print() == "(ffi-library)"
       check run(compileSource("(var strlen " &
-                              "  (ffi/bind lib \"strlen\" [C/CStr] C/Size)) " &
+                              "  ($ffi/bind lib \"strlen\" [C/CStr] C/Size)) " &
                               "[(strlen \"hello\") " &
                               " ((fn [f : Ffi/Callable] (f \"Ada\")) strlen) " &
                               " strlen]"),
@@ -2181,46 +2181,46 @@ suite "types — function boundaries":
                    newBuffer(newSym("C/UInt8"),
                              @[newInt(65), newInt(66), newInt(67)]))
       expect GeneError:
-        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+        discard run(compileSource("($ffi/bind lib \"ignored\" " &
                                   "  [(quote (C/Array C/Char 4))] C/Void)"),
                     scope)
       expect GeneError:
-        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+        discard run(compileSource("($ffi/bind lib \"ignored\" " &
                                   "  [(quote (C/Ptr C/Char C/Int))] C/Void)"),
                     scope)
       expect GeneError:
-        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+        discard run(compileSource("($ffi/bind lib \"ignored\" " &
                                   "  [(quote (C/Slice C/UInt8 C/UInt16))] C/Void)"),
                     scope)
       expect GeneError:
-        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+        discard run(compileSource("($ffi/bind lib \"ignored\" " &
                                   "  [C/CStr] (quote (C/Slice C/UInt8)))"),
                     scope)
       expect GeneError:
-        discard run(compileSource("(ffi/bind lib \"ignored\" " &
+        discard run(compileSource("($ffi/bind lib \"ignored\" " &
                                   "  [C/Size] (quote (C/OwnedPtr C/Char C/Int)) " &
                                   "  \"free\")"),
                     scope)
       let handle = cast[LibHandle](lib.ffiLibraryHandle)
       if symAddr(handle, "strnlen") != nil:
-        check run(compileSource("((ffi/bind lib \"strnlen\" " &
+        check run(compileSource("(($ffi/bind lib \"strnlen\" " &
                                 "  [(quote (C/Slice C/UInt8))] C/Size) " &
                                 " dyn-byte-slice)"),
                   scope).print() == "3"
-        check run(compileSource("((ffi/bind lib \"strnlen\" " &
+        check run(compileSource("(($ffi/bind lib \"strnlen\" " &
                                 "  [(quote (Buffer C/UInt8))] C/Size) " &
                                 " dyn-byte-buffer)"),
                   scope).print() == "3"
       if symAddr(handle, "atoi") != nil:
-        check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int) " &
+        check run(compileSource("(($ffi/bind lib \"atoi\" [C/CStr] C/Int) " &
                                 " \"-42\")"),
                   scope).print() == "-42"
-        check run(compileSource("((ffi/bind lib \"atoi\" [C/CStr] C/Int32) " &
+        check run(compileSource("(($ffi/bind lib \"atoi\" [C/CStr] C/Int32) " &
                                 " \"-42\")"),
                   scope).print() == "-42"
       if symAddr(handle, "atof") != nil:
         let parsed = run(compileSource(
-          "((ffi/bind lib \"atof\" [C/CStr] C/Double) \"12.5\")"),
+          "(($ffi/bind lib \"atof\" [C/CStr] C/Double) \"12.5\")"),
           scope)
         check parsed.kind == vkFloat
         check abs(parsed.floatVal - 12.5) < 0.000001
@@ -2231,145 +2231,145 @@ suite "types — function boundaries":
           if floatLibName == libName:
             lib
           else:
-            run(compileSource("(ffi/open native float-lib-name)"), scope)
+            run(compileSource("($ffi/open native float-lib-name)"), scope)
         scope.define("float-lib", floatLib)
         let root = run(compileSource(
-          "((ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 9.0)"),
+          "(($ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 9.0)"),
           scope)
         check root.kind == vkFloat
         check abs(root.floatVal - 3.0) < 0.0001
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 1.0e50)"),
+            "(($ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 1.0e50)"),
             scope)
         if floatLibName != libName:
           check run(compileSource("(Ffi/Library/close float-lib)"),
                     scope).print() == "nil"
       if symAddr(handle, "strcmp") != nil:
-        check run(compileSource("((ffi/bind lib \"strcmp\" " &
+        check run(compileSource("(($ffi/bind lib \"strcmp\" " &
                                 "  [C/CStr C/CStr] C/Int) \"abc\" \"abc\")"),
                   scope).print() == "0"
       if symAddr(handle, "abs") != nil:
-        check run(compileSource("((ffi/bind lib \"abs\" [C/Int] C/Int) -9)"),
+        check run(compileSource("(($ffi/bind lib \"abs\" [C/Int] C/Int) -9)"),
                   scope).print() == "9"
         check run(compileSource(
-          "((ffi/bind lib \"abs\" [C/Int32] C/Int32) -9)"),
+          "(($ffi/bind lib \"abs\" [C/Int32] C/Int32) -9)"),
           scope).print() == "9"
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"abs\" [C/Int32] C/Int32) 2147483648)"),
+            "(($ffi/bind lib \"abs\" [C/Int32] C/Int32) 2147483648)"),
             scope)
       if symAddr(handle, "labs") != nil:
-        check run(compileSource("((ffi/bind lib \"labs\" [C/Long] C/Long) -9)"),
+        check run(compileSource("(($ffi/bind lib \"labs\" [C/Long] C/Long) -9)"),
                   scope).print() == "9"
       if symAddr(handle, "llabs") != nil:
         check run(compileSource(
-          "((ffi/bind lib \"llabs\" [C/Int64] C/Int64) -9)"),
+          "(($ffi/bind lib \"llabs\" [C/Int64] C/Int64) -9)"),
           scope).print() == "9"
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"llabs\" [C/Int64] C/Int64) " &
+            "(($ffi/bind lib \"llabs\" [C/Int64] C/Int64) " &
             " 9223372036854775808)"),
             scope)
       if symAddr(handle, "strerror") != nil:
         let message = run(compileSource(
-          "((ffi/bind lib \"strerror\" [C/Int] C/CStr) 0)"),
+          "(($ffi/bind lib \"strerror\" [C/Int] C/CStr) 0)"),
           scope)
         check message.kind == vkString
         check message.strVal.len > 0
       if symAddr(handle, "getpid") != nil:
-        let pid = run(compileSource("((ffi/bind lib \"getpid\" [] C/Int))"),
+        let pid = run(compileSource("(($ffi/bind lib \"getpid\" [] C/Int))"),
                       scope)
         check pid.kind == vkInt
         check pid.intVal > 0
       if symAddr(handle, "getuid") != nil:
-        let uid = run(compileSource("((ffi/bind lib \"getuid\" [] C/UInt))"),
+        let uid = run(compileSource("(($ffi/bind lib \"getuid\" [] C/UInt))"),
                       scope)
         check uid.kind == vkInt
         check uid.intVal >= 0
       if symAddr(handle, "sleep") != nil:
-        check run(compileSource("((ffi/bind lib \"sleep\" [C/UInt] C/UInt) 0)"),
+        check run(compileSource("(($ffi/bind lib \"sleep\" [C/UInt] C/UInt) 0)"),
                   scope).print() == "0"
         check run(compileSource(
-          "((ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) 0)"),
+          "(($ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) 0)"),
           scope).print() == "0"
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"sleep\" [C/UInt] C/UInt) -1)"),
+            "(($ffi/bind lib \"sleep\" [C/UInt] C/UInt) -1)"),
             scope)
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) -1)"),
+            "(($ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) -1)"),
             scope)
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"sleep\" [C/UInt] C/UInt) 4294967296)"),
+            "(($ffi/bind lib \"sleep\" [C/UInt] C/UInt) 4294967296)"),
             scope)
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) 4294967296)"),
+            "(($ffi/bind lib \"sleep\" [C/UInt32] C/UInt32) 4294967296)"),
             scope)
       if symAddr(handle, "getenv") != nil:
-        check run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &
+        check run(compileSource("(($ffi/bind lib \"getenv\" [C/CStr] " &
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"GENE_NEW_TEST_ENV_UNSET\")"),
                   scope).print() == "(c_const_ptr null)"
       if symAddr(handle, "getenv") != nil and symAddr(handle, "strlen") != nil:
-        let envPtr = run(compileSource("((ffi/bind lib \"getenv\" [C/CStr] " &
+        let envPtr = run(compileSource("(($ffi/bind lib \"getenv\" [C/CStr] " &
                                        "  (quote (C/NullableConstPtr C/Char))) " &
                                        " \"PATH\")"),
                          scope)
         if envPtr.kind == vkCPtr and not envPtr.cPtrIsNull:
           scope.define("env-ptr", envPtr)
           let lenResult = run(compileSource(
-            "((ffi/bind lib \"strlen\" [(quote (C/ConstPtr C/Char))] C/Size) env-ptr)"),
+            "(($ffi/bind lib \"strlen\" [(quote (C/ConstPtr C/Char))] C/Size) env-ptr)"),
             scope)
           check lenResult.kind == vkInt
           check lenResult.intVal > 0
           scope.define("wrong-env-ptr",
                        newCConstPtr(envPtr.cPtrAddress, newSym("C/Int32")))
           if symAddr(handle, "memcmp") != nil:
-            check run(compileSource("((ffi/bind lib \"memcmp\" " &
+            check run(compileSource("(($ffi/bind lib \"memcmp\" " &
                                     "  [(quote (C/ConstPtr C/Char)) " &
                                     "   (quote (C/ConstPtr C/Char)) C/Size] " &
                                     "  C/Int) env-ptr env-ptr 1)"),
                       scope).print() == "0"
             expect GeneError:
-              discard run(compileSource("((ffi/bind lib \"memcmp\" " &
+              discard run(compileSource("(($ffi/bind lib \"memcmp\" " &
                                         "  [(quote (C/ConstPtr C/Char)) " &
                                         "   (quote (C/ConstPtr C/Char)) C/Size] " &
                                         "  C/Int) wrong-env-ptr env-ptr 1)"),
                           scope)
             expect GeneError:
-              discard run(compileSource("((ffi/bind lib \"memcmp\" " &
+              discard run(compileSource("(($ffi/bind lib \"memcmp\" " &
                                         "  [(quote (C/ConstPtr C/Char)) " &
                                         "   (quote (C/ConstPtr C/Char)) C/Size] " &
                                         "  C/Int) env-ptr env-ptr -1)"),
                           scope)
           if symAddr(handle, "memchr") != nil:
-            check run(compileSource("((ffi/bind lib \"memchr\" " &
+            check run(compileSource("(($ffi/bind lib \"memchr\" " &
                                     "  [(quote (C/ConstPtr C/Char)) C/Int C/Size] " &
                                     "  (quote (C/NullableConstPtr C/Char))) " &
                                     " env-ptr 0 1)"),
                       scope).print() == "(c_const_ptr null)"
             expect GeneError:
-              discard run(compileSource("((ffi/bind lib \"memchr\" " &
+              discard run(compileSource("(($ffi/bind lib \"memchr\" " &
                                         "  [(quote (C/ConstPtr C/Char)) C/Int C/Size] " &
                                         "  (quote (C/NullableConstPtr C/Char))) " &
                                         " wrong-env-ptr 0 1)"),
                           scope)
       if symAddr(handle, "strchr") != nil:
-        check run(compileSource("((ffi/bind lib \"strchr\" [C/CStr C/Int] " &
+        check run(compileSource("(($ffi/bind lib \"strchr\" [C/CStr C/Int] " &
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"abc\" 98)"),
                   scope).print() == "(c_const_ptr)"
-        check run(compileSource("((ffi/bind lib \"strchr\" [C/CStr C/Int] " &
+        check run(compileSource("(($ffi/bind lib \"strchr\" [C/CStr C/Int] " &
                                 "  (quote (C/NullableConstPtr C/Char))) " &
                                 " \"abc\" 120)"),
                   scope).print() == "(c_const_ptr null)"
       if symAddr(handle, "malloc") != nil and symAddr(handle, "free") != nil:
         let allocated = run(compileSource(
-          "((ffi/bind lib \"malloc\" [C/Size] " &
+          "(($ffi/bind lib \"malloc\" [C/Size] " &
           "   (quote (C/OwnedPtr C/Char)) \"free\") 8)"),
           scope)
         check allocated.kind == vkCPtr
@@ -2381,29 +2381,29 @@ suite "types — function boundaries":
                                 " (C/closed? allocated)]"),
                   scope).print() == "[false nil true]"
         let rawAllocated = run(compileSource(
-          "((ffi/bind lib \"malloc\" [C/Size] " &
+          "(($ffi/bind lib \"malloc\" [C/Size] " &
           "   (quote (C/Ptr C/Char))) 8)"),
           scope)
         check rawAllocated.kind == vkCPtr
         check not rawAllocated.cPtrOwned
         scope.define("raw-allocated", rawAllocated)
         check run(compileSource(
-          "((ffi/bind lib \"free\" [(quote (C/Ptr C/Char))] C/Void) " &
+          "(($ffi/bind lib \"free\" [(quote (C/Ptr C/Char))] C/Void) " &
           " raw-allocated)"),
           scope).print() == "nil"
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"malloc\" [C/Size] " &
+            "(($ffi/bind lib \"malloc\" [C/Size] " &
             "   (quote (C/OwnedPtr C/Char)) \"free\") -1)"),
             scope)
         expect GeneError:
           discard run(compileSource(
-            "(ffi/bind lib \"malloc\" [C/Size] " &
+            "($ffi/bind lib \"malloc\" [C/Size] " &
             "  (quote (C/Ptr C/Char)) \"free\")"),
             scope)
       if symAddr(handle, "calloc") != nil and symAddr(handle, "free") != nil:
         let zeroed = run(compileSource(
-          "((ffi/bind lib \"calloc\" [C/Size C/Size] " &
+          "(($ffi/bind lib \"calloc\" [C/Size C/Size] " &
           "   (quote (C/OwnedPtr C/Char)) \"free\") 2 4)"),
           scope)
         check zeroed.kind == vkCPtr
@@ -2416,16 +2416,16 @@ suite "types — function boundaries":
                   scope).print() == "[false nil true]"
         expect GeneError:
           discard run(compileSource(
-            "((ffi/bind lib \"calloc\" [C/Size C/Size] " &
+            "(($ffi/bind lib \"calloc\" [C/Size C/Size] " &
             "   (quote (C/OwnedPtr C/Char)) \"free\") -1 4)"),
             scope)
       if symAddr(handle, "strdup") != nil and symAddr(handle, "free") != nil:
         expect GeneError:
-          discard run(compileSource("(ffi/bind lib \"strdup\" [C/CStr] " &
+          discard run(compileSource("($ffi/bind lib \"strdup\" [C/CStr] " &
                                     "  (quote (C/OwnedPtr C/Char)))"),
                       scope)
         let ownedDup = run(compileSource(
-          "((ffi/bind lib \"strdup\" [C/CStr] " &
+          "(($ffi/bind lib \"strdup\" [C/CStr] " &
           "   (quote (C/OwnedPtr C/Char)) \"free\") \"owned\")"),
           scope)
         check ownedDup.kind == vkCPtr

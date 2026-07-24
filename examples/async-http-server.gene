@@ -49,22 +49,22 @@
 
 # json/stringify must be imported before net/http's `json` response helper
 # shadows the `json` namespace name.
-(import json [stringify])
-(import str [join])
+(import $json [stringify])
+(import $str [join])
 (import gene/parse [parse_int ParseError])
-(import net/http [Server serve listen stop status route text json])
+(import $net/http [Server serve listen stop status route text json])
 
 # --- shared state ------------------------------------------------------------
 # The event loop runs handler fibers on one scheduler thread, so Cell is safe
 # for counters; AtomicCell keeps the job registry correct even if background
 # worker tasks ever move off-thread.
-(var counter (cell 0))                 # responses served (kept by access_log)
-(var job_counter (atomic_cell 0))      # job id generator
-(var jobs (atomic_cell {}))            # id -> {id, state, ms}
-(var jobs_running (atomic_cell 0))
-(var jobs_completed (atomic_cell 0))
-(var last_access (cell nil))           # last ^access_log record (redacted)
-(var last_error (cell nil))            # last ^error_log record
+(var counter ($cell 0))                 # responses served (kept by access_log)
+(var job_counter ($atomic_cell 0))      # job id generator
+(var jobs ($atomic_cell {}))            # id -> {id, state, ms}
+(var jobs_running ($atomic_cell 0))
+(var jobs_completed ($atomic_cell 0))
+(var last_access ($cell nil))           # last ^access_log record (redacted)
+(var last_error ($cell nil))            # last ^error_log record
 
 # Domain error: raised by GET /job/:id for unknown ids, mapped to a 404 by the
 # ^on_error mapper below instead of the generic 500.
@@ -121,7 +121,7 @@
   (set_job_state id "running" ms)
   (atomic_inc jobs_running)
   (spawn (do
-    (sleep ms)
+    ($sleep ms)
     (set_job_state id "done" ms)
     (atomic_inc jobs_completed)
     (atomic_dec jobs_running)))
@@ -214,7 +214,7 @@
   # other requests keep flowing. Sleeps beyond ^request_timeout_ms answer 504.
   @route (route ^method "GET" ^path "/sleep")
   (var ms (parse_job_ms req 1000))
-  (sleep ms)
+  ($sleep ms)
   (json (stringify {^slept_ms ms})))
 
 (fn server_status [req]
@@ -258,23 +258,23 @@
 # the list, so hand-written and discovered routes are the same plain data.
 
 (fn routed? [d]
-  (not (== d/%meta/route void)))
+  (not (== d/%$meta/route void)))
 
 (fn route_entry [d]
-  (var r d/%meta/route)
+  (var r d/%$meta/route)
   (route ^method r/method ^path r/path ^handler d/value))
 
 (var routes
-  ((map (filter (this_mod ~ declarations) routed?) route_entry)
+  (($map ($filter (this_mod ~ declarations) routed?) route_entry)
    ~ into [(route ^method "GET" ^path "/" ^handler help)]))
 
-(println "async HTTP server listening on http://127.0.0.1:8091")
-(println ($ "    " (size routes) " routes (1 manual + discovered @route decls)"))
-(println "    GET  /help                    usage")
-(println "    GET  /status                  live metrics")
-(println "    GET  /sleep?ms=1000           parked handler fiber")
-(println "    POST /job?ms=1000             async job offload")
-(println "    POST /stop                    graceful shutdown")
+($println "async HTTP server listening on http://127.0.0.1:8091")
+($println ($ "    " ($size routes) " routes (1 manual + discovered @route decls)"))
+($println "    GET  /help                    usage")
+($println "    GET  /status                  live metrics")
+($println "    GET  /sleep?ms=1000           parked handler fiber")
+($println "    POST /job?ms=1000             async job offload")
+($println "    POST /stop                    graceful shutdown")
 
 (serve server
   ^dispatch `task_per_request         # the default, spelled out (quoted: a
@@ -290,4 +290,4 @@
   ^redact_headers ["authorization" "cookie" "set-cookie" "x-api-key"]
   ^routes routes)
 
-(println "server stopped (drained after POST /stop)")
+($println "server stopped (drained after POST /stop)")

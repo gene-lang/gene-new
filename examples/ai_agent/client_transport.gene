@@ -9,10 +9,10 @@
 (mod ai_agent_client_transport
   @doc "direct/remote client boundary for the Gene AI-agent service")
 
-(import net/http_client [Http request HttpClientError])
-(import crypto [random_hex])
-(import json [parse stringify JsonError])
-(import str [starts_with? ends_with? trim byte_size slice_bytes])
+(import $net/http_client [Http request HttpClientError])
+(import $crypto [random_hex])
+(import $json [parse stringify JsonError])
+(import $str [starts_with? ends_with? trim byte_size slice_bytes])
 
 (type ClientTransportError
   ^props {^message Str ^kind Str ^status Int? ^details Any?}
@@ -61,11 +61,11 @@
 
 (fn remote_transport [raw_origin : Str, bearer : Str]
   (var origin (normalized_origin raw_origin))
-  (var session_id (cell nil))
-  (var attachment_id (cell nil))
-  (var resume_credential (cell nil))
-  (var cursor (cell 0))
-  (var request_seq (cell 0))
+  (var session_id ($cell nil))
+  (var attachment_id ($cell nil))
+  (var resume_credential ($cell nil))
+  (var cursor ($cell 0))
+  (var request_seq ($cell 0))
 
   (fn next_idempotency_key [] : Str
     (request_seq ~ set (+ (request_seq ~ get) 1))

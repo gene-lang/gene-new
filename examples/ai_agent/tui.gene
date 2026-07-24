@@ -112,14 +112,14 @@
         from "./client_transport")
 (import [Pane SurfaceAttachment create_surface emit_surface_event!]
         from "./surface")
-(import os [get_env env? exec exec_async exec_stream_async
+(import $os [get_env env? exec exec_async exec_stream_async
             exec_stdio_async
             executable_path
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
             Env Exec Pty OsError])
-(import terminal [open : terminal_open close : terminal_close
+(import $terminal [open : terminal_open close : terminal_close
                   next_update : terminal_next_update
                   snapshot : terminal_snapshot
                   capture_text : terminal_capture_text
@@ -130,38 +130,38 @@
                   signal : terminal_signal stop : terminal_stop
                   request_stop : terminal_request_stop
                   Session : TerminalSession TerminalError])
-(import curses [open : curses_open close : curses_close
+(import $curses [open : curses_open close : curses_close
                 read_input : curses_read_input
                 refresh_input : curses_refresh_input escape_pressed?
                 draw : curses_draw next_event : curses_next_event
                 Screen CursesError])
-(import json [parse stringify JsonError])
-(import crypto [sha256])
-(import str [join split starts_with? ends_with? contains? lower trim byte_size
+(import $json [parse stringify JsonError])
+(import $crypto [sha256])
+(import $str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
 (import gene/stream [to_stream map filter take into each])
 (import gene/parse [parse_int read_all ParseError])
 (import Fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
-(import net/http_client [Http stream HttpClientError])
-(import db/sqlite [open : sqlite_open DbError])
-(import store/fs [open : store_fs_open StoreError Store])
-(import store/sqlite [open : store_sqlite_open])
-(import repl [run : run_repl_session open : repl_open
+(import $net/http_client [Http stream HttpClientError])
+(import $db/sqlite [open : sqlite_open DbError])
+(import $store/fs [open : store_fs_open StoreError Store])
+(import $store/sqlite [open : store_sqlite_open])
+(import $repl [run : run_repl_session open : repl_open
               eval_source : repl_eval
               close : repl_close
               discard_pending : repl_discard_pending
               eval_guard_begin : repl_eval_guard_begin
               eval_guard_end : repl_eval_guard_end])
-(import log [new_logger info! warn! error! debug! trace!])
+(import $log [new_logger info! warn! error! debug! trace!])
 
-(var user_screen (cell nil))
-(var user_input_suspended (cell false))
-(var active_editor (cell nil))
-(var confirmation_active (cell false))
-(var active_repaint_pending (cell false))
-(var interactive_transcript (cell nil))
-(var interactive_memory (cell []))
+(var user_screen ($cell nil))
+(var user_input_suspended ($cell false))
+(var active_editor ($cell nil))
+(var confirmation_active ($cell false))
+(var active_repaint_pending ($cell false))
+(var interactive_transcript ($cell nil))
+(var interactive_memory ($cell []))
 (fn pane_pending_marker [pane] : Str
   # Agent panes share pane 0's `agent> ` turn prefix; other worker kinds keep
   # the neutral assistant marker.
@@ -201,7 +201,7 @@
 
 (fn application_pane_views [app]
   (var surface app/local_surface)
-  (var views (cell []))
+  (var views ($cell []))
   (for pane in (if (== surface nil) [] (surface/panes ~ get))
     (if_not (pane/hidden ~ get)
       (var marker
@@ -298,29 +298,29 @@
 # -----------------------------------------------------------------------------
 
 (fn run_demo []
-  (println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set — running the offline demo.")
-  (println "user> what's in this directory?")
+  ($println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set — running the offline demo.")
+  ($println "user> what's in this directory?")
   (begin_turn!)
   (emit_event! "user_input" {^text "what's in this directory?"})
   (var items [(system_item gene_system_prompt)
               (user_item "what's in this directory?")])
   (run_turn_tracked (demo_transport_for) items
-    (fn [text] (println $"agent> ${text}"))
+    (fn [text] ($println $"agent> ${text}"))
     ignore_stream_delta
     max_tool_rounds
     emit_event!)
-  (println "Demo complete. Set OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN to go live."))
+  ($println "Demo complete. Set OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN to go live."))
 
 (fn run_one_shot [task : Str]
   (init_agent_state)
   (start_workspace_heartbeat!)
   (restore_reasoning_effort!)
   (restore_dynamic_registrations! nil)
-  (println $"Gene AI agent - model ${model}")
-  (println $"user> ${task}")
+  ($println $"Gene AI agent - model ${model}")
+  ($println $"user> ${task}")
   (if (== auth_token nil)
-    (println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set - using offline demo transport."))
-  (var streaming (cell false))
+    ($println "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set - using offline demo transport."))
+  (var streaming ($cell false))
   (var transport (if (== auth_token nil) (demo_transport_for) live_transport))
   (var memory (load_memory))
   (begin_turn!)
@@ -330,21 +330,21 @@
               (append (initial_items memory) (user_item task))
               (fn [text]
                 (if_yes (Cell/get streaming)
-                  (println "")
+                  ($println "")
                   (Cell/set streaming false))
                 (if_not (== text "")
-                  (println $"agent> ${text}")))
+                  ($println $"agent> ${text}")))
               (fn [text]
                 (if_not (== text "")
                   (if_not (Cell/get streaming)
-                    (print "agent> ")
+                    ($print "agent> ")
                     (Cell/set streaming true))
-                  (print text)))
+                  ($print text)))
               max_tool_rounds
               emit_event!))
   (save_agent_state result_items $"Gene AI agent - model ${model}\nuser> ${task}\n" memory)
   (if (Cell/get streaming)
-    (println "")))
+    ($println "")))
 
 (fn exit_word? [line]
   (["exit" "quit"] ~ contains? line))
@@ -365,7 +365,7 @@
           (var budget (- transcript_max_bytes (byte_size marker)))
           (var start (- total budget))
           (var retained "")
-          (var sliced (cell false))
+          (var sliced ($cell false))
           (while (&& (! (sliced ~ get)) (< start total))
             (try
               (set retained (slice_bytes combined start (- total start)))
@@ -465,7 +465,7 @@
   (var histories (surface/input_histories ~ get))
   (var history (histories ~ get worker_id))
   (if_yes (== history void)
-    (set history (cell []))
+    (set history ($cell []))
     (histories ~ put! worker_id history))
   history)
 
@@ -478,7 +478,7 @@
   (var drafts (surface/drafts ~ get))
   (var draft (drafts ~ get worker_id))
   (if_yes (== draft void)
-    (set draft (cell ""))
+    (set draft ($cell ""))
     (drafts ~ put! worker_id draft))
   draft)
 
@@ -502,7 +502,7 @@
       (var history (histories ~ get worker_id))
       (if (== history void)
         (then
-          (set history (cell []))
+          (set history ($cell []))
           (histories ~ put! worker_id history)))
       # Worker history stores the semantic input after routing. Surface recall
       # must restore the escape needed to submit a literal leading slash
@@ -541,7 +541,7 @@
 (fn editor_chars [text : Str]
   # Graphemes are strings (unlike `chars`, whose Char values print as source
   # literals), and they keep combining sequences together during navigation.
-  (graphemes text))
+  ($graphemes text))
 
 (fn editor_text [values]
   (join values ""))
@@ -735,7 +735,7 @@
                 (if (|| (== ch "$") (== ch "`"))
                   (return nil)
                   (if (|| (== ch "'") (== ch "\""))
-                    (if (! (empty? token))
+                    (if (! ($empty? token))
                       (then
                         (return nil))
                       (else
@@ -755,7 +755,7 @@
       (directories ~ push! parts/%i)))
   (var last (- parts/~size 1))
   {^directory (join directories "/")
-   ^base (if (empty? parts) "" parts/%last)})
+   ^base (if ($empty? parts) "" parts/%$last)})
 
 (fn shell_completion_render [context, candidate : Str]
   (var rendered candidate)
@@ -863,7 +863,7 @@
                 (set out (workspace_path_completion_items text)))
               (if_yes (&& field (== field/name "source"))
                 (var last (- parts/~size 1))
-                (var prefix parts/%last)
+                (var prefix parts/%$last)
                 (for item in (worker_completion_items app prefix false)
                   (out ~ push!
                     (completion_item
@@ -937,7 +937,7 @@
 (fn trace_completion_items [text : Str, parts]
   (var out [])
   (var last (- parts/~size 1))
-  (var prefix parts/%last)
+  (var prefix parts/%$last)
   (for key in ["type=" "tool=" "path=" "turn=" "worker=" "agent="
                "task=" "from=" "to=" "--detail"]
     (if (starts_with? key prefix)
@@ -948,7 +948,7 @@
 (fn artifact_completion_items [text : Str, parts]
   (var out [])
   (var last (- parts/~size 1))
-  (var prefix parts/%last)
+  (var prefix parts/%$last)
   (for artifact in (agent_artifacts ~ get)
     (if (starts_with? artifact/id prefix)
       (out ~ push!
@@ -986,11 +986,11 @@
 
 (fn editor_show_completion! [editor, kind : Str]
   (var items (editor_completion_items editor))
-  (if (empty? items)
+  (if ($empty? items)
     (editor/overlay ~ set nil)
     (editor/overlay ~ set
       {^kind kind ^title (if (== kind "palette") "commands" "completion")
-       ^items items ^selected (cell 0) ^query (cell "")
+       ^items items ^selected ($cell 0) ^query ($cell "")
        ^original (editor_text (editor/values ~ get))})))
 
 (fn reverse_search_items [editor, query : Str]
@@ -1011,15 +1011,15 @@
       (var items (reverse_search_items editor ""))
       (editor/overlay ~ set
         {^kind "reverse_search" ^title "reverse history"
-         ^items items ^selected (cell (if (empty? items) 0 (- items/~size 1)))
-         ^query (cell "")
+         ^items items ^selected ($cell (if ($empty? items) 0 (- items/~size 1)))
+         ^query ($cell "")
          ^original (editor_text (editor/values ~ get))}))))
 
 (fn editor_refresh_reverse_search! [editor]
   (var overlay (editor/overlay ~ get))
   (var items (reverse_search_items editor (overlay/query ~ get)))
   (overlay ~ put! "items" items)
-  (overlay/selected ~ set (if (empty? items) 0 (- items/~size 1)))
+  (overlay/selected ~ set (if ($empty? items) 0 (- items/~size 1)))
   (overlay ~ put! "title"
     $"reverse history: ${(overlay/query ~ get)}"))
 
@@ -1037,7 +1037,7 @@
 
 (fn editor_accept_overlay! [editor] : Bool
   (var overlay (editor/overlay ~ get))
-  (if (|| (== overlay nil) (empty? overlay/items))
+  (if (|| (== overlay nil) ($empty? overlay/items))
     (then
       false)
     (else
@@ -1049,7 +1049,7 @@
 (fn editor_overlay_is_current_draft? [editor] : Bool
   (var overlay (editor/overlay ~ get))
   (if (|| (== overlay nil) (== overlay/kind "reverse_search")
-          (empty? overlay/items))
+          ($empty? overlay/items))
     (then
       false)
     (else
@@ -1285,8 +1285,8 @@
       # next_event tasks. This yields the scheduler between keystrokes, so
       # sub-agents, pane controllers, streams, and repaint callbacks continue
       # while the user is composing the next prompt.
-      (var submitted (cell nil))
-      (var done (cell false))
+      (var submitted ($cell nil))
+      (var done ($cell false))
       (var app (active_application ~ get))
       (var route_draft (surface_route_draft app))
       (var terminal_pane (focused_terminal_pane app))
@@ -1297,13 +1297,13 @@
         (if terminal_direct []
           (editor_chars (route_draft ~ get))))
       (var editor
-        {^values (cell initial_values)
-         ^cursor (cell (initial_values ~ size)) ^history (history ~ get)
-         ^history_index (cell ((history ~ get) ~ size))
-         ^draft route_draft ^paste (cell false)
+        {^values ($cell initial_values)
+         ^cursor ($cell (initial_values ~ size)) ^history (history ~ get)
+         ^history_index ($cell ((history ~ get) ~ size))
+         ^draft route_draft ^paste ($cell false)
          ^terminal_pane terminal_pane
-         ^terminal_direct (cell terminal_direct)
-         ^overlay (cell nil)
+         ^terminal_direct ($cell terminal_direct)
+         ^overlay ($cell nil)
          ^output_scroll app/local_surface/main_scroll
          ^transcript transcript})
       (active_editor ~ set editor)
@@ -1391,7 +1391,7 @@
                   (then
                     (var query_values
                       (editor_chars (overlay/query ~ get)))
-                    (if_not (empty? query_values)
+                    (if_not ($empty? query_values)
                       (var shortened [])
                       (repeat i in (- query_values/~size 1)
                         (shortened ~ push! query_values/%i))
@@ -1485,7 +1485,7 @@
       ensure
         (active_editor ~ set nil)))
     (else
-      (print "you> ")
+      ($print "you> ")
       (read_line))))
 
 (fn confirmation_answer [prompt : Str] : Bool
@@ -1503,7 +1503,7 @@
           (confirmation_active ~ set true)
           (var answer nil)
           (try
-            (set answer (read_user_input transcript (cell [])))
+            (set answer (read_user_input transcript ($cell [])))
           ensure
             (confirmation_active ~ set false))
           (if (== answer nil)
@@ -1515,7 +1515,7 @@
       # Scripted/one-shot callers have no live curses surface. Preserve the
       # ordinary stdin contract; EOF remains default deny.
       (close_user_input)
-      (print prompt)
+      ($print prompt)
       (var answer (read_line))
       (if (== answer nil)
         (then false)
@@ -1561,7 +1561,7 @@
         (dots_visible ~ get)))
     (if (stdin_tty?)
       (refresh_user_input transcript)
-      (print (if (dots_visible ~ get) "\ragent> ..." "\ragent>    ")))))
+      ($print (if (dots_visible ~ get) "\ragent> ..." "\ragent>    ")))))
 
 # Remove the currently drawn placeholder before appending output, but retain
 # the pending state: the placeholder is redrawn beneath that output until the
@@ -1573,7 +1573,7 @@
       (app/local_surface/main_pending_visible ~ set false))
     (if (stdin_tty?)
       (refresh_user_input transcript)
-      (print "\r"))))
+      ($print "\r"))))
 
 (fn stop_agent_pending [transcript pending]
   (if_yes (pending ~ get)
@@ -1583,7 +1583,7 @@
       (app/local_surface/main_pending_visible ~ set false))
     (if (stdin_tty?)
       (refresh_user_input transcript)
-      (print "\r"))))
+      ($print "\r"))))
 
 (fn output_with_pending [transcript pending dots_visible render]
   (if (stdin_tty?)
@@ -1599,13 +1599,13 @@
         (refresh_agent_pending transcript pending dots_visible)))))
 
 (fn start_agent_pending [transcript]
-  (var pending (cell true))
-  (var dots_visible (cell true))
+  (var pending ($cell true))
+  (var dots_visible ($cell true))
   (refresh_agent_pending transcript pending dots_visible)
   {^pending pending ^dots_visible dots_visible
    ^task (spawn ^lane root
      (while (pending ~ get)
-       (sleep 400)
+       ($sleep 400)
        (if_yes (pending ~ get)
          (dots_visible ~ set (! (dots_visible ~ get)))
          (refresh_agent_pending transcript pending dots_visible))))})
@@ -1645,19 +1645,19 @@
     (if_not (Cell/get streaming)
       (append_transcript transcript "agent> ")
       (if_not (stdin_tty?)
-        (print "agent> "))
+        ($print "agent> "))
       (Cell/set streaming true))
     (append_transcript transcript text)
     (if (stdin_tty?)
       (refresh_active_input)
-      (print text))))
+      ($print text))))
 
 (fn finish_agent_stream [transcript streaming]
   (if_yes (Cell/get streaming)
     (append_transcript transcript "\n")
     (if (stdin_tty?)
       (refresh_user_input transcript)
-      (println ""))
+      ($println ""))
     (Cell/set streaming false)))
 
 (fn render_agent_text [transcript streaming text]
@@ -1666,7 +1666,7 @@
     (append_transcript transcript $"agent> ${text}\n")
     (if (stdin_tty?)
       (refresh_user_input transcript)
-      (println $"agent> ${text}"))))
+      ($println $"agent> ${text}"))))
 
 # Convenience helpers over the native application registries. Creating an
 # agent and opening its pane is a surface composite; their identities and
@@ -1675,10 +1675,10 @@
   (var app (active_application ~ get))
   (if_yes app
     (var label (if (== (trim title) "") "sub-agent" (trim title)))
-    (var transcript (cell "ready\n"))
+    (var transcript ($cell "ready\n"))
     (var agent
       (application_spawn_agent app label "awaiting assignment"
-        (cell
+        ($cell
           (append (initial_items memory)
             (system_item
               $"You are ${label}, a supervised sub-agent in the same workspace. Work only on assignments delegated by the main agent or user. Report a concise result; your private tool transcript is not copied into the main context.")))
@@ -1695,8 +1695,8 @@
   (if_yes app
     (var label (if (== (trim title) "") "output" (trim title)))
     (application_open_pane app "output" nil label
-      (cell "ready\n")
-      (OutputController ^source "manual" ^following (cell [])) "detach")))
+      ($cell "ready\n")
+      (OutputController ^source "manual" ^following ($cell [])) "detach")))
 
 (fn open_stats_pane []
   (var app (active_application ~ get))
@@ -1704,7 +1704,7 @@
   (if_yes (== worker nil)
     (set worker
       (application_new_worker app "stats" "stats"
-        (cell "") (StatsController)))
+        ($cell "") (StatsController)))
     (if_yes worker
       (application_set_projection_output!
         app worker (stats_worker_text app) "stats")
@@ -1727,7 +1727,7 @@
   (var filters (parse_trace_filters filter_text))
   (var worker
     (application_new_worker app "log_tail" "event tail"
-      (cell "") (LogTailController ^filter (cell filters))))
+      ($cell "") (LogTailController ^filter ($cell filters))))
   (if_yes worker
     # Seed the local TUI projection from retained events; headless sessions
     # begin at their creation cursor and receive subsequent app events.
@@ -1759,7 +1759,7 @@
     (if_yes (exists? ReadDir path)
       (var worker
         (application_new_worker app "file_view" $"view ${path}"
-          (cell "") (FileViewController ^path path)))
+          ($cell "") (FileViewController ^path path)))
       (if_yes worker
         (application_append_projection_output!
           app worker (read_text ReadDir path) "file_view")
@@ -1788,16 +1788,16 @@
               ^scrollback_lines 2000))
           (var controller
             (TerminalController
-              ^session session ^snapshot (cell (terminal_snapshot session))
-              ^restored_text (cell "")
-              ^pump_task (cell nil)
+              ^session session ^snapshot ($cell (terminal_snapshot session))
+              ^restored_text ($cell "")
+              ^pump_task ($cell nil)
               ^controller_surface_id
-                (cell (app/local_surface/instance_id ~ get))
+                ($cell (app/local_surface/instance_id ~ get))
               ^command executable ^args child_args
               ^cwd workspace_real))
           (set worker
             (application_new_worker app "terminal" "terminal"
-              (cell "interactive terminal (local/unmediated)\n") controller))
+              ($cell "interactive terminal (local/unmediated)\n") controller))
           (if_yes worker (start_terminal_pump! app worker)))
         (if worker
           (application_attach_worker_pane app worker "user" "detach"))))))
@@ -1820,9 +1820,9 @@
         (if (== worker nil)
           (set worker
             (application_new_worker_from app "shell" "shell"
-              (cell $"cwd: ${workspace_root}\n")
-              (ShellController ^cwd (cell workspace_root)
-                               ^environment (cell {})) previous)))
+              ($cell $"cwd: ${workspace_root}\n")
+              (ShellController ^cwd ($cell workspace_root)
+                               ^environment ($cell {})) previous)))
         (application_attach_worker_pane app worker "user" "detach")))))
 
 (fn run_shell_pane_command_unchecked [pane, command : Str]
@@ -2106,7 +2106,7 @@
               (if (== operation nil) "idle" "busy"))))
         (var location
           (if (== worker/id "main") "pane=0"
-            (if (empty? pane_refs) "headless"
+            (if ($empty? pane_refs) "headless"
               (if (== pane_refs/~size 1)
                 $"pane=${pane_refs/0}" $"panes=${pane_refs}"))))
         (var last (worker/last_outcome ~ get))
@@ -2226,7 +2226,7 @@
       (then
         (var create_rest (trim (after_prefix rest "new ")))
         (var parts (split create_rest " "))
-        (var kind (if (empty? parts) "" parts/0))
+        (var kind (if ($empty? parts) "" parts/0))
         (var args (trim (after_prefix create_rest kind)))
         (match kind
           (when "agent"
@@ -2273,7 +2273,7 @@
           (then
             (var open_rest (trim (after_prefix rest "open ")))
             (var parts (split open_rest " "))
-            (var worker_id (if (empty? parts) "" parts/0))
+            (var worker_id (if ($empty? parts) "" parts/0))
             (var pane_title (trim (after_prefix open_rest worker_id)))
             (var worker (application_find_worker app worker_id))
             (if (== worker nil)
@@ -2290,7 +2290,7 @@
                     "pane limit reached")))))
           (else
             (var parts (split rest " "))
-            (var action (if (empty? parts) "" parts/0))
+            (var action (if ($empty? parts) "" parts/0))
             (var id_text (trim (after_prefix rest action)))
             (var id nil)
             # Accept both canonical action-first `/pane max 1` and natural
@@ -2366,7 +2366,7 @@
   (var app (active_application ~ get))
   (var rest (trim (after_prefix line "/worker")))
   (var parts (split rest " "))
-  (var worker_ref (if (empty? parts) "" parts/0))
+  (var worker_ref (if ($empty? parts) "" parts/0))
   (var operation_text (trim (after_prefix rest worker_ref)))
   (var worker (application_find_worker app worker_ref))
   (if (== rest "list")
@@ -2388,7 +2388,7 @@
           "this session has no local layout surface")))
     (else
       (var op_parts (split operation_text " "))
-      (var operation_name (if (empty? op_parts) "" op_parts/0))
+      (var operation_name (if ($empty? op_parts) "" op_parts/0))
       (var cli_args (trim (after_prefix operation_text operation_name)))
       (var operation (worker_operation_for worker/kind operation_name))
       (if (== operation nil)
@@ -2525,7 +2525,7 @@
   (var words [])
   (if_yes (starts_with? line "/sh -- ")
     (set words (split (trim (after_prefix line "/sh -- ")) " "))
-    (if_not (empty? words)
+    (if_not ($empty? words)
       (set command words/0)
       (repeat i in words/~size
         (if (> i 0) (args ~ push! words/%i)))))
@@ -2557,7 +2557,7 @@
 (fn run_shell_session []
   (suspend_user_input)
   (var shell (get_env Env "SHELL" "sh"))
-  (println $"Entering shell (${shell}). Ctrl-C stops the running command or clears the line; exit/quit or Ctrl-D returns.")
+  ($println $"Entering shell (${shell}). Ctrl-C stops the running command or clears the line; exit/quit or Ctrl-D returns.")
   (if (stdin_tty?)
     (then
       # Ctrl-C: the trap marks the interrupt, so a failed read reprompts
@@ -2566,20 +2566,20 @@
       (var script "intr=0; trap 'intr=1; printf \"\\n\"' INT; while true; do printf 'sh> '; intr=0; IFS= read -r line; rc=$?; if [ $rc -ne 0 ]; then if [ $intr -eq 1 ]; then continue; fi; break; fi; case \"$line\" in exit|quit) break;; *) eval \"$line\";; esac; done")
       (await (exec_stdio_async Exec ^cmd shell ^args ["-c" script]
                                ^dir workspace_root))
-      (println "")
+      ($println "")
       nil)
     (else
       # Scripted (piped) /sh: unlike the interactive TTY loop, we read each
       # line in Gene, so route it through the same catastrophe guard as
       # model-issued run_shell (§8.5) before executing.
-      (var running (cell true))
+      (var running ($cell true))
       (var line nil)
       (var r nil)
       # Hoisted: re-`var` inside a while body is a duplicate binding on the
       # second iteration, so allocate loop state once and `set` it.
       (var denial nil)
       (while (Cell/get running)
-        (print "sh> ")
+        ($print "sh> ")
         (set line (read_line))
         (if (== line nil)
           (Cell/set running false)
@@ -2588,15 +2588,15 @@
             (else
               (set denial (guard_shell line))
               (if (present? denial)
-                (then (println denial))
+                (then ($println denial))
                 (else
                   (set r (exec Exec ^cmd shell ^args ["-lc" line] ^dir workspace_root
                              ^timeout_ms 60000 ^max_bytes 400000))
-                  (print (redact r/stdout))
-                  (print (redact r/stderr))
+                  ($print (redact r/stdout))
+                  ($print (redact r/stderr))
                   (if r/timed_out
-                    (println "[timed out]"))))))))
-      (println ""))))
+                    ($println "[timed out]"))))))))
+      ($println ""))))
 
 # Stable live session object (§9.1). Projections are props holding the live
 # cells and registry; mutations go through messages so the session can keep
@@ -2647,10 +2647,10 @@
 
   (message spawn_agent [self, assignment : Str]
     (var app self/application)
-    (var child_transcript (cell "ready\n"))
+    (var child_transcript ($cell "ready\n"))
     (var agent
       (application_spawn_agent app "sub-agent" assignment
-        (cell
+        ($cell
           (append (initial_items (self/memory ~ get))
             (system_item
               $"You are a supervised sub-agent. Assignment: ${assignment}\nKeep private tool chatter out of the main context and return a concise result.")))
@@ -2709,8 +2709,8 @@
       (when "output"
         (var worker
           (application_new_worker self/application "output" title
-            (cell "ready\n")
-            (OutputController ^source "session" ^following (cell []))))
+            ($cell "ready\n")
+            (OutputController ^source "session" ^following ($cell []))))
         (if_yes worker
           (application_request_worker_attention self/application worker title)
           worker/id))
@@ -2756,7 +2756,7 @@
            ^resume_requested resume_flag ^application app
            ^main_agent app/main_agent ^agents app/agents ^workers app/workers
            ^panes (if (== app/local_surface nil)
-                    (cell []) app/local_surface/panes)))
+                    ($cell []) app/local_surface/panes)))
 
 (fn live_session_env [items, transcript, memory, resume_flag]
   (env ^bindings
@@ -2778,17 +2778,17 @@
         existing)
       (else
         (if_yes (== worker nil)
-          (var resume_flag (cell false))
+          (var resume_flag ($cell false))
           (var session
             (repl_open (live_session_env items transcript memory resume_flag)))
           (set worker
             (application_new_worker_from app "repl" "Gene REPL"
-              (cell "session is bound; type Gene forms (multi-form ok); Esc discards a pending form\n")
+              ($cell "session is bound; type Gene forms (multi-form ok); Esc discards a pending form\n")
               (ReplController ^session session ^items items
                               ^transcript transcript ^memory memory
                               ^streaming app/main_agent/streaming
                               ^resume_requested resume_flag
-                              ^pending (cell false))
+                              ^pending ($cell false))
               previous)))
         (application_attach_worker_pane app worker "user" "detach"))))
 
@@ -2802,11 +2802,11 @@
 # Returns true when the user asked to continue the turn after the REPL.
 (fn run_session_repl [items, transcript, memory]
   (close_user_input)
-  (var resume_flag (cell false))
+  (var resume_flag ($cell false))
   # classify_command is bound so the guard's classification of dangerous
   # strings can be inspected (and tested) without ever executing them.
   (var repl_env (live_session_env items transcript memory resume_flag))
-  (println "Entering Gene REPL. `session` is bound: session/items session/events session/evidence session/instructions session/changes session/current_task (session ~ diff) (session ~ undo nil) (session ~ add_tool (Tool ...)) (session ~ remember \"...\") (session ~ trace \"type=tool_call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
+  ($println "Entering Gene REPL. `session` is bound: session/items session/events session/evidence session/instructions session/changes session/current_task (session ~ diff) (session ~ undo nil) (session ~ add_tool (Tool ...)) (session ~ remember \"...\") (session ~ trace \"type=tool_call\") (session ~ cancel) (session ~ resume). Ctrl-C stops the running eval or clears the line; exit/quit or Ctrl-D returns.")
   (run_repl_session repl_env ^interactive true)
   (resume_flag ~ get))
 
@@ -2833,12 +2833,12 @@
 
 (fn editor_command_words [command : Str]
   (var words [])
-  (var current (cell ""))
+  (var current ($cell ""))
   # `quote` is a reader/compiler form name; keeping parser state under a
   # normal identifier avoids it being resolved as syntax in deferred code.
-  (var quote_char (cell ""))
-  (var escaped (cell false))
-  (for ch in (graphemes command)
+  (var quote_char ($cell ""))
+  (var escaped ($cell false))
+  (for ch in ($graphemes command)
     (if (escaped ~ get)
       (then
         (current ~ set $"${(current ~ get)}${ch}")
@@ -2875,7 +2875,7 @@
   (if (|| (== configured nil) (== (trim configured) ""))
     (set configured "vi"))
   (var words (editor_command_words configured))
-  (if (empty? words)
+  (if ($empty? words)
     (fail (OsError ^message "$VISUAL/$EDITOR resolved to an empty command")))
   (var executable words/0)
   (var args [])
@@ -3002,11 +3002,11 @@
 
 (fn surface_command_head [line : Str] : Str
   (var parts (split line " "))
-  (if (empty? parts) "" parts/0))
+  (if ($empty? parts) "" parts/0))
 
 (fn registered_surface_command? [line : Str] : Bool
   (var head (surface_command_head line))
-  (var found (cell false))
+  (var found ($cell false))
   (for spec in surface_command_specs
     (if (== spec/name head) (found ~ set true)))
   (found ~ get))
@@ -3034,7 +3034,7 @@
 
 (fn surface_command_spec [name : Str]
   (var requested (if (starts_with? name "/") name $"/${name}"))
-  (var found (cell nil))
+  (var found ($cell nil))
   (for spec in surface_command_specs
     (if (== spec/name requested) (found ~ set spec)))
   (found ~ get))
@@ -3119,8 +3119,8 @@
       (surface/help_notice ~ set text)
       (if (stdin_tty?)
         (refresh_user_input transcript)
-        (println text)))
-    (else (println text)))
+        ($println text)))
+    (else ($println text)))
   text)
 
 (fn effort_report [] : Str
@@ -3159,7 +3159,7 @@
     (elif (starts_with? rest "worker ")
       (var worker_rest (trim (after_prefix rest "worker ")))
       (var parts (split worker_rest " "))
-      (var worker_ref (if (empty? parts) "" parts/0))
+      (var worker_ref (if ($empty? parts) "" parts/0))
       (var action (trim (after_prefix worker_rest worker_ref)))
       (var worker (application_find_worker app worker_ref))
       (if (|| (== worker nil) (!= action "tail"))
@@ -3424,32 +3424,32 @@
   (init_agent_state)
   (start_workspace_heartbeat!)
   (restore_reasoning_effort!)
-  (var memory (cell (load_memory)))
+  (var memory ($cell (load_memory)))
   (var saved (load_session))
   (if saved
     (restore_events))
   (var items
-    (cell
+    ($cell
       (if (== saved nil)
         (initial_items (memory ~ get))
         (refresh_system_memory saved/items (memory ~ get)))))
   (var transcript
-    (cell
+    ($cell
       (if (== saved nil)
         $"Gene AI agent - model ${model}\n"
         saved/transcript)))
-  (var running (cell true))
+  (var running ($cell true))
   (var line nil)
   (var input_history nil)
   # Hoisted like `line`: a `var` inside the while body is a duplicate binding
   # on its second execution, so command branches `set` these instead.
   (var memory_note nil)
-  (var streaming (cell false))
+  (var streaming ($cell false))
   (var app (make_application items transcript memory emit_event!))
   (active_application ~ set app)
   (restore_dynamic_registrations! app)
   (restore_application! app)
-  (println
+  ($println
     $"Started Gene AI agent - model ${(app/main_agent/model ~ get)}.")
   (interactive_transcript ~ set transcript)
   (interactive_memory ~ set (memory ~ get))
@@ -3518,7 +3518,7 @@
                   (handle_repl_pane items transcript memory streaming))
                 (elif (== line "/memory")
                   (render_agent_text transcript streaming
-                    (if (empty? (memory ~ get))
+                    (if ($empty? (memory ~ get))
                       "memory is empty"
                       $"memory:\n${(memory_report memory)}")))
                 (elif (== line "/forget")
@@ -3579,12 +3579,12 @@
 # refresh.
 
 (fn parse_launch_options [raw : Str]
-  (var gateway (cell false))
-  (var headless (cell false))
-  (var port (cell void))
-  (var connect (cell nil))
-  (var session (cell nil))
-  (var pending_option (cell nil))
+  (var gateway ($cell false))
+  (var headless ($cell false))
+  (var port ($cell void))
+  (var connect ($cell nil))
+  (var session ($cell nil))
+  (var pending_option ($cell nil))
   (var task_parts [])
   (for token in (split (trim raw) " ")
     (if_not (== token "")
@@ -3634,7 +3634,7 @@
 
 (fn remote_confirmation_decision [event, interactive : Bool] : Str
   (if_not interactive (return "deny"))
-  (print
+  ($print
     $"confirm ${event/risk}: ${event/target}\nallow once? [y/N] ")
   (var answer (read_line))
   (if (&& answer (["y" "yes"] ~ contains? (lower (trim answer))))
@@ -3642,31 +3642,31 @@
 
 (fn run_remote_turn [client, text : Str, interactive : Bool]
   (client/send_message text)
-  (var streaming (cell false))
-  (var done (cell false))
+  (var streaming ($cell false))
+  (var done ($cell false))
   (while (! (done ~ get))
     (var batch (client/poll))
     (for event in batch/events
       (match event/type
         (when "text_delta"
           (if_not (streaming ~ get)
-            (print "agent> ")
+            ($print "agent> ")
             (streaming ~ set true))
-          (print event/text))
+          ($print event/text))
         (when "agent_text"
           (if_not (streaming ~ get)
-            (println $"agent> ${event/text}")))
+            ($println $"agent> ${event/text}")))
         (when "confirmation_requested"
           (if_yes (streaming ~ get)
-            (println "")
+            ($println "")
             (streaming ~ set false))
           (var decision
             (remote_confirmation_decision event interactive))
           (client/resolve_confirmation event/confirmation_id decision)
-          (println $"confirmation ${decision}"))
+          ($println $"confirmation ${decision}"))
         (when "turn_done"
           (if_yes (streaming ~ get)
-            (println "")
+            ($println "")
             (streaming ~ set false))
           (done ~ set true))
         (else nil)))
@@ -3692,7 +3692,7 @@
   (if (== (trim rest) "") (return {}))
   (if (starts_with? (trim rest) "{")
     (return (parse (trim rest))))
-  (var descriptor (cell nil))
+  (var descriptor ($cell nil))
   (for operation in metadata/operations
     (if (&& (== operation/name op)
             (|| (== operation/worker_kind kind)
@@ -3720,7 +3720,7 @@
 
 (fn remote_worker_kind [client, worker_ref : Str]
   (var listing (client/workers))
-  (var kind (cell nil))
+  (var kind ($cell nil))
   (for worker in listing/workers
     (if (|| (== worker/worker_id worker_ref)
             (== worker/name worker_ref))
@@ -3730,7 +3730,7 @@
 (fn remote_workers_report [client]
   (var listing (client/workers))
   (for worker in listing/workers
-    (println
+    ($println
       $"${worker/worker_id} ${worker/kind} ${worker/lifecycle} ${worker/title}")))
 
 (fn remote_model_command [client, line : Str]
@@ -3743,7 +3743,7 @@
     (if_not (== selector nil)
       (if (!= selector 0)
         (return
-          (println
+          ($println
             "the remote line client has no pane ids; use /worker <A> set_model <model>")))
       (set requested (trim (after_prefix rest first)))))
   (var main_worker nil)
@@ -3751,29 +3751,29 @@
   (for worker in listing/workers
     (if (== worker/worker_id "main") (set main_worker worker)))
   (if (== main_worker nil)
-    (return (println "remote main agent not found")))
+    (return ($println "remote main agent not found")))
   (if (== requested "")
     (then
-      (println $"main agent model: ${main_worker/model}"))
+      ($println $"main agent model: ${main_worker/model}"))
     (else
       (var response
         (client/call_worker "main" "set_model" {^model requested}))
-      (println response/result/text))))
+      ($println response/result/text))))
 
 (fn remote_worker_command [client, line : Str]
   (var rest (trim (after_prefix line "/worker")))
   (var parts (split rest " "))
   (if (< parts/~size 2)
-    (return (println "usage: /worker <id> <op> [args]")))
+    (return ($println "usage: /worker <id> <op> [args]")))
   (var worker_ref parts/0)
   (var op parts/1)
   (var arg_rest (trim (after_prefix (trim (after_prefix rest worker_ref)) op)))
   (var kind (remote_worker_kind client worker_ref))
   (if (== kind nil)
-    (return (println $"worker ${worker_ref} not found")))
+    (return ($println $"worker ${worker_ref} not found")))
   (var args (remote_operation_args (client/operations) kind op arg_rest))
   (var response (client/call_worker worker_ref op args))
-  (println (stringify response/result)))
+  ($println (stringify response/result)))
 
 (fn remote_pin_command [client, line : Str]
   (var rest (trim (after_prefix line "/pin")))
@@ -3781,24 +3781,24 @@
     (then
       (var agent_ref (trim (after_prefix rest "result")))
       (var pinned (client/pin "result" agent_ref))
-      (println $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"))
+      ($println $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"))
     (elif (starts_with? rest "worker ")
       (var worker_rest (trim (after_prefix rest "worker ")))
       (var parts (split worker_rest " "))
       (if (&& (== parts/~size 2) (== parts/1 "tail"))
         (then
           (var pinned (client/pin "tail" parts/0))
-          (println $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"))
-        (println "usage: /pin worker <id> tail")))
+          ($println $"pinned ${pinned/artifact/id} ${pinned/artifact/blob_id}"))
+        ($println "usage: /pin worker <id> tail")))
     (else
-      (println "usage: /pin result <agent_id> | /pin worker <id> tail"))))
+      ($println "usage: /pin result <agent_id> | /pin worker <id> tail"))))
 
 (fn remote_artifacts_report [client]
   (var listing (client/artifacts))
-  (if (empty? listing/artifacts)
-    (println "no artifacts")
+  (if ($empty? listing/artifacts)
+    ($println "no artifacts")
     (for artifact in listing/artifacts
-      (println
+      ($println
         $"${artifact/id} ${artifact/kind} source=${artifact/source_worker} bytes=${artifact/size} blob=${artifact/blob_id}"))))
 
 (fn run_remote_entry [launch, task : Str]
@@ -3806,17 +3806,17 @@
   (var client (remote_transport launch/connect gateway_token))
   (try
     (var attached (client/connect launch/session "gene-tui"))
-    (println
+    ($println
       $"Gene AI agent - remote session ${(client/session_id ~ get)} at ${launch/connect}")
     (if_not (blank_line? task)
-      (println $"user> ${task}")
+      ($println $"user> ${task}")
       (run_remote_turn client task false)
       (return nil))
     (var line nil)
     (var metadata nil)
     (var snapshot nil)
     (loop
-      (print "user> ")
+      ($print "user> ")
       (set line (read_line))
       (if (== line nil) (return nil))
       (set line (trim line))
@@ -3825,7 +3825,7 @@
           (when "/quit" (return nil))
           (when "/exit" (return nil))
           (when "/help"
-            (println
+            ($println
               (join
                 ["/workers                  list session workers"
                  "/model [0] [model]         show or set the main-agent model"
@@ -3840,13 +3840,13 @@
           (when "/operations"
             (set metadata (client/operations))
             (for operation in metadata/operations
-              (println
+              ($println
                 $"${operation/worker_kind}/${operation/name} - ${operation/summary}")))
           (when "/workers" (remote_workers_report client))
           (when "/artifacts" (remote_artifacts_report client))
           (when "/snapshot"
             (set snapshot (client/snapshot))
-            (println
+            ($println
               $"session ${snapshot/session_id} cursor ${snapshot/cursor} workers ${(snapshot/workers ~ size)}"))
           (else
             (if (|| (== line "/model") (starts_with? line "/model "))
@@ -3858,9 +3858,9 @@
                 (if_not (== line "")
                   (run_remote_turn client line true)))))))
       catch (ClientTransportError ^kind kind ^message message)
-        (println $"remote ${kind}: ${message}")))
+        ($println $"remote ${kind}: ${message}")))
   catch (ClientTransportError ^kind kind ^message message)
-    (println $"remote ${kind}: ${message}")
+    ($println $"remote ${kind}: ${message}")
   ensure
     (try (client/detach) catch _ nil)))
 
@@ -3895,8 +3895,8 @@
               ^approve_all (flag_enabled? approve_all)
               ^max_tool_rounds max_tool_rounds
               ^tool_count ((tool_names ~ get) ~ size)})
-  (var gateway_server (cell nil))
-  (var gateway_task (cell nil))
+  (var gateway_server ($cell nil))
+  (var gateway_task ($cell nil))
   (try
     (if launch/connect
       (run_remote_entry launch task)
@@ -3971,25 +3971,25 @@
         (escape_pressed? (user_screen ~ get)))))
 (repl_restart_factory ~ set
   (fn [app, previous]
-    (var resume_flag (cell false))
+    (var resume_flag ($cell false))
     (var session
       (repl_open
         (live_session_env app/main_agent/items
           app/main_agent/transcript interactive_memory resume_flag)))
     (application_new_worker_from app "repl" previous/title
-      (cell "session is bound; type Gene forms (multi-form ok); Esc discards a pending form\n")
+      ($cell "session is bound; type Gene forms (multi-form ok); Esc discards a pending form\n")
       (ReplController ^session session ^items app/main_agent/items
                       ^transcript app/main_agent/transcript
                       ^memory interactive_memory
                       ^streaming app/main_agent/streaming
                       ^resume_requested resume_flag
-                      ^pending (cell false))
+                      ^pending ($cell false))
       previous)))
 
 # This TUI's pane/layout state persists in its own client store (invariant
 # §0.13): a `surface_local_tui` sibling of the session store. The session
 # checkpoints never carry it.
-(var tui_surface_store (cell nil))
+(var tui_surface_store ($cell nil))
 
 (fn tui_surface_store_now []
   (if (== (tui_surface_store ~ get) nil)

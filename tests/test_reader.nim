@@ -71,7 +71,7 @@ suite "reader — char literals":
 suite "reader — sugars":
   test "pipe folding":       check_read("(a; b; c)",    "(((a) b) c)")
   test "pipe slot form":
-    check_read("(x; parse; (or _ default))", "(or ((x) parse) default)")
+    check_read("(x; $parse; (or _ default))", "(or ((x) (path gene parse)) default)")
     check_read("(x; f _ y)", "(f (x) y)")
   test "pipe with message sends":
     # Sends are preserved as read; the compiler resolves them receiver-first
@@ -111,7 +111,7 @@ suite "reader — paths":
   test "negative path segment": check_read("users/-1/name", "(path users -1 name)")
   test "path with unquote":  check_read("user/%field",  "(path user (unquote field))")
   test "qualified import path stays neutral":
-    check_read("(import net/http)", "(import (path net http))")
+    check_read("(import $net/http)", "(import (path gene net http))")
 
 suite "reader — unquote":
   test "unquote symbol":     check_read("%name",         "(unquote name)")

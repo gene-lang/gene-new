@@ -1,2 +1,2 @@
 #!/usr/bin/env gene run
-(println "Hello world!")
+($println "Hello world!")
