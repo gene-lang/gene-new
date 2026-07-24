@@ -1,5 +1,12 @@
 # Agent Operating Notes
 
+Never stop or scale down a task because you are worried about the remaining
+context budget or the size of the work. Context management is handled for you —
+long conversations are summarized and continued automatically — so a large or
+delicate change is never a reason to pause, hand off, or ask whether to
+continue. Finish the whole task. If work is genuinely large, keep going through
+it; do not offer to "do it in a fresh session" out of budget concern.
+
 Performance is a core requirement for this repository. Treat value layout,
 reader hot paths, allocation behavior, and future VM stack/dispatch code as
 performance-sensitive by default.
