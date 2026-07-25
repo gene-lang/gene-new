@@ -117,7 +117,7 @@
 (fn persist_session [id, items, events, next_v, dropped_before, app]
   (if (gw_store ~ get)
     (try
-      ((gw_store ~ get) ~ Store/put
+      ((gw_store ~ get) ~ Store:put
         id
         {^items (agent_api/redact_any (items ~ get))
          ^events (agent_api/redact_any (events ~ get))
@@ -2184,9 +2184,9 @@ document.getElementById('f').addEventListener('submit', function (e) {
 
 (fn restore_sessions []
   (var count ($cell 0))
-  (for id in ((gw_store ~ get) ~ Store/keys)
+  (for id in ((gw_store ~ get) ~ Store:keys)
     (try
-      (var saved ((gw_store ~ get) ~ Store/get id))
+      (var saved ((gw_store ~ get) ~ Store:get id))
       (var hook
         (if (starts_with? id "tg-")
           (make_telegram_sender (join (split id "tg-") ""))))
@@ -2202,7 +2202,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
 (fn finish_gateway_store [label : Str]
   (if (== gw_resume "0")
     (then
-      ((gw_store ~ get) ~ Store/clear)
+      ((gw_store ~ get) ~ Store:clear)
       (gw_notice $"Persistence enabled - ${label} (fresh start)"))
     (else
       (var n (restore_sessions))

@@ -332,6 +332,11 @@ A delimited `/` is an ordinary symbol and remains available as a normal callable
 (/ a b)
 ```
 
+A protocol message is qualified with `:` — `Proto:msg` — which is structural only
+when glued between two symbol characters, so `x : T`, `open : alias`, `{{a : 1}}`,
+and a trailing `^key:` keep their meanings. It reads as the member `msg` of
+`Proto`.
+
 Slash is also the reader spelling for qualified names in static contexts such as built-in namespace names, type names, protocol messages, and namespace members. File/string module paths are written in `from "path"` import clauses and are normalized by the module loader:
 
 ```gene
@@ -719,7 +724,7 @@ Message sends use `~`:
 
 ```gene
 (x ~ f a b)   # send message f to x; dispatches on x's runtime type
-(x ~ X/f a b) # qualified: X/f names the message identity, still dispatched on x
+(x ~ X:f a b) # qualified: X:f names the message identity, still dispatched on x
 (x ~ %m a b)  # send a held message value m (§8)
 (super ~ f a) # delegate to the implementation above this one (§10)
 (~ f a b)     # send to lexical self: (self ~ f a b)

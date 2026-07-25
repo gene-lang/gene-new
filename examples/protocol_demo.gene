@@ -13,7 +13,7 @@
 #   - structural subtyping: implementing a child protocol satisfies every
 #     ^inherit ancestor for a ^impl [...] requirement (docs/core.md §3.5)
 #   - message sends: bare (x ~ name) reaches a type-direct message; a protocol
-#     message is always qualified, (x ~ Protocol/name); (~ name) sends to self
+#     message is always qualified, (x ~ Protocol:name); (~ name) sends to self
 #     (docs/core.md §9)
 #
 # Note: message names are not lexical bindings (docs/core.md §1) and a message
@@ -63,7 +63,7 @@
       : Int
       (- self/weight other/weight))
     (message bigger [other]
-      (if (< (self ~ Comparable/compare other) 0) other self))))
+      (if (< (self ~ Comparable:compare other) 0) other self))))
 
 # -----------------------------------------------------------------------------
 # Multiple unrelated parents with a same-name message: Sized/size_of and
@@ -84,7 +84,7 @@
   (message Sized/size_of [] : Int self/weight)
   (message Scored/size_of [] : Int (* self/weight 2))
   (message blurb [] : Str
-    $"${self/name}: ${(self ~ Sized/size_of)} lbs, score ${(self ~ Scored/size_of)}"))
+    $"${self/name}: ${(self ~ Sized:size_of)} lbs, score ${(self ~ Scored:size_of)}"))
 
 # -----------------------------------------------------------------------------
 # Run it.
@@ -99,9 +99,9 @@
 
 # A protocol message is always qualified — bare `(rex ~ describe)` would look
 # for a type-direct `describe` on Dog and raise MessageError (§9.1).
-($println (rex ~ Describable/describe))   # impl found by walking Dog's ^is chain
+($println (rex ~ Describable:describe))   # impl found by walking Dog's ^is chain
 
-($println (rex ~ Comparable/compare fido)) # Ord's closure includes Comparable
-($println ((rex ~ Ord/bigger fido) ~ tag)) # send chaining
+($println (rex ~ Comparable:compare fido)) # Ord's closure includes Comparable
+($println ((rex ~ Ord:bigger fido) ~ tag)) # send chaining
 
-($println (rex ~ Summary/blurb))          # qualified same-name messages (§3.3)
+($println (rex ~ Summary:blurb))          # qualified same-name messages (§3.3)

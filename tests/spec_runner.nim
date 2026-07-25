@@ -4828,6 +4828,21 @@ suite "spec — web demo remains parseable":
     check "(path routes (unquote (path gene to_pairs_stream)))" in rendered
     check "(path req params name)" in rendered
 
+suite "spec — qualified message spelling":
+  test "Proto:msg names a protocol message":
+    check_eval("(protocol P (message m [] : Str)) (type T ^props {}) " &
+               "(impl P for T (message m [] : Str \"impl\")) " &
+               "[((T) ~ P:m) ((T) ~ P/m)]",
+               "[\"impl\" \"impl\"]")
+    check_read("A:b", "(path A b)")
+
+  test "a delimited colon keeps its existing meanings":
+    # annotation, general-map entry, and a trailing `^key:` are untouched: `:`
+    # is structural only when glued between two symbol characters.
+    check_eval("(var x : Int 5) x", "5")
+    check_read("{^a: 1}", "{^a: 1}")
+    check_eval("(fn f [n : Int] : Int n) (f 7)", "7")
+
 suite "spec — documentation contract":
   test "focused normative specification files exist":
     for path in ["docs/spec/README.md", "docs/spec/reader.md",

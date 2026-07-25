@@ -4001,7 +4001,7 @@
     (var store (tui_surface_store_now))
     (if_yes (&& (!= store nil) (checkpoint_local_application? app))
       (try
-        (store ~ Store/put "surface"
+        (store ~ Store:put "surface"
           {^schema 1 ^kind "surface" ^data (surface_snapshot app)})
       catch _ nil))))
 
@@ -4010,7 +4010,7 @@
     (var store (tui_surface_store_now))
     (if_yes (!= store nil)
       (try
-        (var record (store ~ Store/get "surface" ^default nil))
+        (var record (store ~ Store:get "surface" ^default nil))
         (if_yes (present? record)
           (if (present? record/data) (redact_any record/data)))
       catch _ nil))))

@@ -1136,6 +1136,16 @@ proc parsePropKey(r: var Reader): string =
     return internName(r.tokens[idx].lexeme)
   r.raiseReadErrorAt(r.peek(), "property key must be a symbol")
 
+proc qualifiedMessageSplit*(lexeme: string): int =
+  ## Index of a structural `:` in `lexeme`, or -1. `:` qualifies a protocol
+  ## message (`Proto:msg`, design §3) only when it is glued between two symbol
+  ## characters, so the delimited uses — `x : T`, `open : alias`, `{{a : 1}}` —
+  ## and a trailing `^key:` are untouched.
+  result = -1
+  for i in 1 ..< lexeme.len - 1:
+    if lexeme[i] == ':' and lexeme[i - 1] != ':' and lexeme[i + 1] != ':':
+      return i
+
 proc desugarPath*(lexeme: string): Value =
   if lexeme == "/": return newSym("/")
   # `//` is the remainder operator (design §7.4), not a selector: a selector
@@ -1496,6 +1506,13 @@ proc parseForm(r: var Reader, inList = false): Value =
     of "void": finish VOID
     else:
       let lex = tok.lexeme
+      let colonAt = qualifiedMessageSplit(lex)
+      if colonAt > 0 and '/' notin lex:
+        # `Proto:msg` names a protocol message; it resolves as the member `msg`
+        # of `Proto`, the same shape the older `Proto/msg` spelling produced.
+        finish newNode(newSym("path"),
+                       body = @[newSym(lex[0 ..< colonAt]),
+                                newSym(lex[colonAt + 1 .. ^1])])
       if not inList:
         if lex.endsWith("..."):
           finish newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])

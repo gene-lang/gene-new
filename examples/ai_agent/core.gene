@@ -4405,11 +4405,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (registration_restore_done ~ set false)
   (var store (agent_store ~ get))
   (if_yes store
-    (try (store ~ Store/close) catch _ nil)
+    (try (store ~ Store:close) catch _ nil)
     (agent_store ~ set nil))
   (var db (agent_state_db ~ get))
   (if_yes db
-    (try (db ~ Db/close) catch _ nil)
+    (try (db ~ Db:close) catch _ nil)
     (agent_state_db ~ set nil)))
 
 (fn open_client_store [name : Str]
@@ -4436,7 +4436,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (agent_checkpoint_last_ms ~ set 0)
       (agent_store ~ set (open_agent_store agent_state_spec))
       (if_yes (resume_enabled?)
-        (var saved_checkpoint ((agent_store ~ get) ~ Store/load_checkpoint))
+        (var saved_checkpoint ((agent_store ~ get) ~ Store:load_checkpoint))
         (if saved_checkpoint
           (then
             (agent_loaded_checkpoint ~ set saved_checkpoint)
@@ -4445,7 +4445,7 @@ State that broader behavior is unverified when no matching successful check ran.
             # Compatibility migration: stores written before generation
             # checkpoints retain their loose marker for one restore.
             (var legacy
-              ((agent_store ~ get) ~ Store/get "checkpoint" ^default nil))
+              ((agent_store ~ get) ~ Store:get "checkpoint" ^default nil))
             (if (&& legacy (present? legacy/sequence))
               (agent_checkpoint_seq ~ set legacy/sequence)))))
       (restore_artifacts!)
@@ -4526,7 +4526,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (if (!= record void)
             (set loaded (migrate_state_record key record))))
         (else
-          (set loaded ((agent_store ~ get) ~ Store/get key ^default default))))
+          (set loaded ((agent_store ~ get) ~ Store:get key ^default default))))
       (trace! state_log "state record loaded" ^payload {^record_key key})
       # Sanitize snapshots written by older versions before they can be
       # rendered, resumed, or sent back to a model.
@@ -4546,13 +4546,13 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (== (agent_store ~ get) nil)
     default
     (try
-      ((agent_store ~ get) ~ Store/get key ^default default)
+      ((agent_store ~ get) ~ Store:get key ^default default)
     catch _ default)))
 
 (fn write_workspace_heartbeat! []
   (if (&& (workspace_advisory_owned ~ get)
           (agent_store ~ get))
-    ((agent_store ~ get) ~ Store/put workspace_advisory_key
+    ((agent_store ~ get) ~ Store:put workspace_advisory_key
       {^workspace workspace_real ^process_id (process_id)
        ^heartbeat_ms (monotonic_ms)})))
 
@@ -4592,7 +4592,7 @@ State that broader behavior is unverified when no matching successful check ran.
               (agent_store ~ get))
     (var current (durable_state_get workspace_advisory_key nil))
     (if_yes (&& current (== current/process_id (process_id)))
-      ((agent_store ~ get) ~ Store/delete workspace_advisory_key)))
+      ((agent_store ~ get) ~ Store:delete workspace_advisory_key)))
   (workspace_advisory_owned ~ set false))
 
 (fn artifact_find [id : Str]
@@ -4605,7 +4605,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (agent_artifacts ~ set [])
   (next_artifact_id ~ set 1)
   (if_yes (agent_store ~ get)
-    (for key in ((agent_store ~ get) ~ Store/keys)
+    (for key in ((agent_store ~ get) ~ Store:keys)
       (if_yes (starts_with? key "artifact/")
         (var data (durable_state_get key nil))
         (if_yes (&& data (present? data/id) (present? data/blob_id)
@@ -4638,18 +4638,18 @@ State that broader behavior is unverified when no matching successful check ran.
   (var blob_key $"blob/${blob_id}")
   (if (>= ((agent_artifacts ~ get) ~ size) artifact_max_count)
     (return {^ok false ^error "artifact count limit reached; delete one first"}))
-  (if (&& (! ((agent_store ~ get) ~ Store/has? blob_key))
+  (if (&& (! ((agent_store ~ get) ~ Store:has? blob_key))
           (> (+ (artifact_total_bytes) size) artifact_max_bytes))
     (return {^ok false ^error "artifact byte limit reached; delete one first"}))
-  (if_not ((agent_store ~ get) ~ Store/has? blob_key)
-    ((agent_store ~ get) ~ Store/put blob_key content))
+  (if_not ((agent_store ~ get) ~ Store:has? blob_key)
+    ((agent_store ~ get) ~ Store:put blob_key content))
   (var id $"artifact:${(next_artifact_id ~ get)}")
   (next_artifact_id ~ set (+ (next_artifact_id ~ get) 1))
   (var artifact
     {^id id ^blob_id blob_id ^kind kind ^mime "text/plain"
      ^source_worker source_worker ^source_task source_task
      ^created_v (- (next_event_v ~ get) 1) ^size size})
-  ((agent_store ~ get) ~ Store/put $"artifact/${id}" artifact)
+  ((agent_store ~ get) ~ Store:put $"artifact/${id}" artifact)
   ((agent_artifacts ~ get) ~ push! artifact)
   (if app
     (application_emit app "artifact_pinned"
@@ -4669,9 +4669,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (if_yes (== current/blob_id artifact/blob_id)
         (set blob_referenced true))))
   (agent_artifacts ~ set retained)
-  ((agent_store ~ get) ~ Store/delete $"artifact/${id}")
+  ((agent_store ~ get) ~ Store:delete $"artifact/${id}")
   (if_not blob_referenced
-    ((agent_store ~ get) ~ Store/delete $"blob/${artifact/blob_id}"))
+    ((agent_store ~ get) ~ Store:delete $"blob/${artifact/blob_id}"))
   (if app
     (application_emit app "artifact_deleted"
       {^artifact_id id ^blob_id artifact/blob_id ^kind artifact/kind}))
@@ -5714,7 +5714,7 @@ State that broader behavior is unverified when no matching successful check ran.
           ^data {^reason reason ^turn (current_turn ~ get)
                  ^event_v (- (next_event_v ~ get) 1)}}})
     (var seq (+ (agent_checkpoint_seq ~ get) 1))
-    ((agent_store ~ get) ~ Store/checkpoint seq records)
+    ((agent_store ~ get) ~ Store:checkpoint seq records)
     (agent_checkpoint_seq ~ set seq)
     (agent_checkpoint_last_ms ~ set (monotonic_ms))
     (agent_loaded_checkpoint ~ set

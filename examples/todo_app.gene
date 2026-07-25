@@ -41,28 +41,28 @@
 # -----------------------------------------------------------------------------
 
 (var db (open "todo.db"))
-(db ~ Db/exec "create table if not exists todos (
+(db ~ Db:exec "create table if not exists todos (
   id integer primary key autoincrement,
   text text not null,
   done integer not null default 0)")
 
 (fn list_todos [] : (List Map)
-  (db ~ Db/query "select id, text, done from todos order by id"))
+  (db ~ Db:query "select id, text, done from todos order by id"))
 
 (fn add_todo [text : Str] : Nil
-  (db ~ Db/execute "insert into todos(text) values (?)" text)
+  (db ~ Db:execute "insert into todos(text) values (?)" text)
   nil)
 
 (fn toggle_todo [id : Int] : Nil
-  (db ~ Db/execute "update todos set done = 1 - done where id = ?" id)
+  (db ~ Db:execute "update todos set done = 1 - done where id = ?" id)
   nil)
 
 (fn delete_todo [id : Int] : Nil
-  (db ~ Db/execute "delete from todos where id = ?" id)
+  (db ~ Db:execute "delete from todos where id = ?" id)
   nil)
 
 (fn clear_done [] : Nil
-  (db ~ Db/execute "delete from todos where done = 1")
+  (db ~ Db:execute "delete from todos where done = 1")
   nil)
 
 (fn done? [t] : Bool
