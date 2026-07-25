@@ -357,12 +357,25 @@ const supervisorFailureRetryCapacity = 64
 
 var gScalarTypes: array[ValueKind, Value]
 
+var gBuiltinSurfaceTypes: HashSet[uint64]
+  ## Identities of every built-in surface type ever registered, across
+  ## applications. `gScalarTypes` holds only the newest application's, which is
+  ## not enough for the shadowing question below: a second application must not
+  ## make the first one's `Channel` look like a user declaration.
+
 proc scalarType*(kind: ValueKind): Value =
   ## Nominal type identity for a built-in value kind, so a scalar can be an
   ## impl receiver (design §2.1, decision 8). Literals are produced by the
   ## reader, so these types carry no constructor: `(Int 42)` is not how a 42 is
   ## made, and the schema path rejects it as it would any field-less type.
   gScalarTypes[kind]
+
+proc isBuiltinSurfaceType(v: Value): bool =
+  ## Distinguishes "the annotation named the built-in" from "a local
+  ## declaration shadows the built-in". Before the built-in surfaces became
+  ## types, a scope lookup finding a `vkType` under one of these names could
+  ## only be a user declaration; now it usually is not.
+  v.kind == vkType and gBuiltinSurfaceTypes.contains(v.bits)
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
@@ -5029,6 +5042,7 @@ proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
     table[entry[0]] = entry[1]
   result = newType(name, NIL, @[], @[], scope, messages = table)
   gScalarTypes[kind] = result
+  gBuiltinSurfaceTypes.incl result.bits
   scope.define(name, result)
 
 proc buildBuiltins(app: Application): Scope =
@@ -5101,12 +5115,12 @@ proc buildBuiltins(app: Application): Scope =
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
+  # Scalars carry no messages, but they register through the same funnel so
+  # every built-in type identity lands in `gBuiltinSurfaceTypes`.
   for spec in [(vkInt, "Int"), (vkFloat, "Float"), (vkBool, "Bool"),
                (vkString, "Str"), (vkSymbol, "Sym"), (vkChar, "Char"),
                (vkNil, "Nil"), (vkVoid, "Void")]:
-    let t = newType(spec[1], NIL, @[], @[], result)
-    gScalarTypes[spec[0]] = t
-    result.define(spec[1], t)
+    result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
                                        typeExpr: newSym("Str"), scope: result)],
@@ -5484,20 +5498,17 @@ proc buildBuiltins(app: Application): Scope =
     NIL, result)
   result.define("TryNext", tryNextType)
   result.define("channel", newNativeCallFn("channel", biChannel))
-  let channelScope = newScope(result)
-  channelScope.define("send", newNativeCallFn("Channel/send", biChannelSend,
-                                             acceptsNamed = false))
-  channelScope.define("try_send", newNativeCallFn("Channel/try_send",
-                                                 biChannelTrySend,
-                                                 acceptsNamed = false))
-  channelScope.define("recv", newNativeCallFn("Channel/recv", biChannelRecv,
-                                             acceptsNamed = false))
-  channelScope.define("try_recv", newNativeCallFn("Channel/try_recv",
-                                                 biChannelTryRecv,
-                                                 acceptsNamed = false))
-  channelScope.define("close", newNativeCallFn("Channel/close", biChannelClose,
-                                              acceptsNamed = false))
-  result.define("Channel", newNamespace("Channel", channelScope))
+  result.defineBuiltinType(vkChannel, "Channel", {
+    "send": newNativeCallFn("Channel/send", biChannelSend,
+                            acceptsNamed = false),
+    "try_send": newNativeCallFn("Channel/try_send", biChannelTrySend,
+                                acceptsNamed = false),
+    "recv": newNativeCallFn("Channel/recv", biChannelRecv,
+                            acceptsNamed = false),
+    "try_recv": newNativeCallFn("Channel/try_recv", biChannelTryRecv,
+                                acceptsNamed = false),
+    "close": newNativeCallFn("Channel/close", biChannelClose,
+                             acceptsNamed = false)})
   # A lowercase namespace holds functions; an uppercase one is a type's message
   # surface (design §3). So operations that act *on* an actor reference live on
   # `Actor` and are sent — `(a ~ send v)` — while the ones that take no receiver
@@ -7450,8 +7461,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
       m = convertMessage(scope, name,
         ["map", "filter", "take", "into", "each", "to_pairs_stream"])
     m
-  of vkChannel:
-    typeNsMessage(scope, "Channel", name)
   of vkTask:
     typeNsMessage(scope, "Task", name)
   of vkReplyTo:
@@ -14745,7 +14754,12 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
           resolved.kind in {vkType, vkProtocol}:
         if resolved.isTypeAlias:
           return expandAlias(closeTypeExpr(resolved.typeAliasExpr, scope))
-        return resolved
+        # A lookup that lands back on the built-in is not a shadow. Keep the
+        # name symbolic so the generic annotation forms still apply — closing
+        # `Channel` to its type value would make `(Channel Int)` read as a
+        # generic instantiation of a type that has no parameters.
+        if not (builtin.known and resolved.isBuiltinSurfaceType):
+          return resolved
       let segments = expr.symVal.split('/')
       if segments.len > 1 and scope.lookupOptional(segments[0], resolved):
         for i in 1 ..< segments.len:

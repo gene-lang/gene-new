@@ -2035,8 +2035,21 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer Node Map List]",
-               "[(type Cell) (type Buffer) (type Node) (type Map) (type List)]")
+    check_eval("[Cell Buffer Node Map List Channel]",
+               "[(type Cell) (type Buffer) (type Node) (type Map) " &
+               "(type List) (type Channel)]")
+    # `Channel` is one of the names a program may redeclare, so the annotation
+    # path lets a scope lookup win. Now that the built-in is itself a type,
+    # landing back on the built-in must not read as a shadow: the generic form
+    # still applies, and a real local declaration still wins.
+    check_eval("(var ch ($channel ^capacity 2)) " &
+               "[((fn [c : Channel] 1) ch) ((fn [c : (Channel Int)] 2) ch)]",
+               "[1 2]")
+    check_eval("(type Channel ^props {^a Int}) " &
+               "[((fn [c : Channel] 3) (Channel ^a 1)) " &
+               " (try ((fn [c : Channel] 3) ($channel ^capacity 1)) " &
+               "  catch (TypeError ^expected e) e)]",
+               "[3 \"Channel\"]")
     # A name that is both a bare library function and a type message names one
     # function value, not two natives that behave alike.
     check_eval("[(same? $size List/size) (same? $head Node/head) " &
