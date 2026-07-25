@@ -31,8 +31,8 @@ This draft reflects the current direction:
 
 - one node model;
 - callable-first evaluation;
-- explicit flipped calls with `~`;
-- optional lexical `self` sugar;
+- `~` message sends that dispatch and only dispatch;
+- `self` bound by the compiler in message and `ctor` bodies;
 - slash selectors as the general traversal/transformation abstraction;
 - `Stream`/generators for lazy processing;
 - stream-based parser design;
@@ -93,17 +93,16 @@ Props and body are value anatomy. Meta is worn, not grown.
 
 ### 1.2 `Node` protocol
 
-Every value implements `Node`:
+Every value exposes the four node projections. `Node` itself is a concrete type
+and a namespace, not a universal protocol — the projections are library functions
+that accept any value, and nodes additionally answer them as messages:
 
 ```gene
-(protocol Node
-  (message head  [x : Self] : Any)
-  (message props [x : Self] : PropMap)
-  (message body  [x : Self] : List)
-  (message meta  [x : Self] : PropMap))
+($head v) ($props v) ($body v) ($meta v)   # any value
+(n ~ head) (n ~ props) (n ~ body) (n ~ meta)   # node receivers
 ```
 
-This is homoiconicity as protocol, not representation. An `Int`, `Str`, `Fn`, `Stream`, module, and heap node can expose node shape without sharing memory layout.
+This is homoiconicity as projection, not representation. An `Int`, `Str`, `Fn`, `Stream`, module, and heap node can expose node shape without sharing memory layout.
 
 ### 1.3 Pure projections
 
@@ -126,10 +125,10 @@ General maps are `(Map K V)`. Literal `{^a 1}` creates a `PropMap`, not an arbit
 Scalar values are node fixpoints for `head` and have empty props/body/meta unless explicitly wrapped:
 
 ```gene
-(head 42)  # 42
-(props 42) # {}
-(body 42)  # []
-(meta 42)  # {}
+($head 42)  # 42
+($props 42) # {}
+($body 42)  # []
+($meta 42)  # {}
 ```
 
 `props`, `body`, and `meta` return detached, shallow snapshots. Mutating the
@@ -208,10 +207,10 @@ The two-absence model has first-class prelude predicates. Absence means either
 present:
 
 ```gene
-(nil? v)      # v is exactly nil
-(void? v)     # v is exactly void
-(absent? v)   # v is nil or void
-(present? v)  # v is neither nil nor void
+($nil? v)      # v is exactly nil
+($void? v)     # v is exactly void
+($absent? v)   # v is nil or void
+($present? v)  # v is neither nil nor void
 ```
 
 | `v`            | `nil?` | `void?` | `absent?` | `present?` |
@@ -284,7 +283,7 @@ $"a ${x}"    => ($ "a " x)
 (x ~ f a)    # preserved as read; resolved receiver-first at compile/dispatch
              # time (docs/core.md §9) — not a reader rewrite to (f x a)
 /user/name   => (select user name)
-x/user/name  => (x ~ (select user name))
+x/user/name  => (path x user name) # context-neutral; see §2.1
 /user/%field => (select user %field)
 #[a b]       => (immutable_list a b)
 #{^a v}      => (immutable_prop_map ^a v)
@@ -327,7 +326,7 @@ users/-1/name   # negative index segment
 user/%field     # dynamic simple segment
 ```
 
-A delimited `/` is an ordinary symbol and remains available as a normal callable, including prefix division:
+A delimited `/` is an ordinary symbol and remains available as a normal callable, including prefix division. `//` is the remainder operator (§7.4), never a path: a selector needs at least one segment, so `//` reads as the operator symbol, while an interior `//` in a path still collapses (`a//b` is `a/b`):
 
 ```gene
 (/ a b)
@@ -382,7 +381,7 @@ base name: a local binding wins over an ambient stdlib namespace, and the path
 then follows the local value. Declaration, type, protocol-message, and
 namespace-import contexts always resolve statically.
 
-The printer must preserve token boundaries so slash paths and delimited symbols round-trip exactly. The standard library may also expose `(div a b)`, but `/` remains available as a normal callable symbol when delimited.
+The printer must preserve token boundaries so slash paths and delimited symbols round-trip exactly. `/` remains available as a normal callable symbol when delimited.
 
 ### 2.2 Reader grammar sketch
 
@@ -504,6 +503,8 @@ Lexical notes:
 - `access_or_qualified_path` is intentionally context-neutral at reader time.
 - Short slash syntax permits `%name` segments only; complex stages use long `(select ... %(expr) ...)` syntax.
 - A delimited `/` token is a `symbol`, not a `path_segment` by itself.
+- `//` is the symbol for the remainder operator; `selector_literal` requires at
+  least one segment, so `//` is never an empty selector.
 - Ordinary `^key` and `@key` entries always require a following form. Only
   `^^key` and `@@key` are flag-only, and both store `true`; the same `^^key`
   rule applies in mutable and immutable prop maps.
@@ -654,7 +655,7 @@ Ordinary calls use a `Call` envelope:
   ^body  [Any...])
 
 (protocol Callable
-  (message apply [callee : Self, call : Call] : Any))
+  (message apply [call : Call] : Any))
 ```
 
 Syntax calls use a `SyntaxCall` envelope:
@@ -665,10 +666,10 @@ Syntax calls use a `SyntaxCall` envelope:
   ^body  [Node...])
 
 (protocol SyntaxCallable
-  (message apply_syntax [callee : Self, call : SyntaxCall, caller_env : CallerEnv] : Any))
+  (message apply_syntax [call : SyntaxCall, caller_env : CallerEnv] : Any))
 ```
 
-`Fn`, `Type`, `Selector`, protocol messages, native functions, and user-defined callable values implement `Callable`. `Fn!` values created by `fn!` implement `SyntaxCallable`.
+`Fn`, `Type`, `Selector`, native functions, and user-defined callable values implement `Callable`. A protocol message is a message identity, not a callable (§3). `Fn!` values created by `fn!` implement `SyntaxCallable`.
 
 To evaluate `(h ^p v c1 c2)`:
 
@@ -762,8 +763,8 @@ one an operation belongs to follows from whether it has a receiver:
 ```gene
 (a ~ send msg)              # Actor/send — acts on an actor reference
 (a ~ ask   f)               # Actor/ask, Actor/try_send, Actor/snapshot, ...
-(actor/spawn ^init i ^handle h)   # makes one — no receiver, so a function
-(actor/continue state)            # actor-body control signal — no receiver
+($actor/spawn ^init i ^handle h)   # makes one — no receiver, so a function
+($actor/continue state)            # actor-body control signal — no receiver
 ```
 
 The same split applies to `Module`, `Namespace`, `Capability`, and `Env`:
@@ -901,7 +902,7 @@ Use `%` to insert lexical values or stages:
 
 ```gene
 (select user %field)
-(select users %to_stream %(filter /adult) name)
+(select users %to_stream %($filter /adult) name)
 ```
 
 Rules:
@@ -932,23 +933,27 @@ users/%i/~to_html  # ((users/%i) ~ to_html)
 Complex selector stages must use long form:
 
 ```gene
-(select users %to_stream %(filter /adult) name)
+(select users %to_stream %($filter /adult) name)
 ```
 
 not:
 
 ```gene
-/users/%(filter /adult)/name # invalid short syntax
+/users/%($filter /adult)/name # invalid short syntax
 ```
 
-`%props`, `%body`, `%meta`, `%declarations`, `%to_stream`, and `%to_pairs_stream` are not magic selector tokens. They are ordinary functions/stages resolved lexically, usually from the standard library.
+`%props`, `%body`, `%meta`, `%declarations`, `%to_stream`, and `%to_pairs_stream`
+are not magic selector tokens. They are ordinary functions used as stages, and the
+`%` escape resolves them the way any name resolves: a standard-library stage is
+reached as `%$props`, a stage you defined yourself as `%my_stage`.
 
 ```gene
-x/props                 # static field/key named props
-x/%props                # call/use lexical function props as a selector stage
-x/%props/%to_pairs_stream
-module/%declarations
-users/%to_stream/name
+x/props                    # static field/key named props
+x/%$props                  # use the standard-library props function as a stage
+x/%$props/%$to_pairs_stream
+module/%$declarations
+users/%$to_stream/name
+users/%my_stage            # a stage from the enclosing scope
 ```
 
 A selector captures evaluated `%` stages like a closure captures lexical bindings.
@@ -966,7 +971,7 @@ Static lookup:
 Selectors do not automatically project over `List` elements. Use `%to_stream` or an explicit stream/list mapping stage for element projection:
 
 ```gene
-users/%to_stream/name # stream of names, skipping void results
+users/%$to_stream/name # stream of names, skipping void results
 users/name            # list member/key lookup; not element projection
 ```
 
@@ -975,15 +980,15 @@ If a selector stage receives a `Stream`, static lookup is mapped over each yield
 If an evaluated `%` segment is callable, it is used as a stage. If it is not callable, it is treated as a dynamic key/index. This means a callable value cannot be used as a dynamic key through bare `%x`. Use explicit map access or an explicit key wrapper if that case is needed:
 
 ```gene
-(map/get m x)          # unambiguous dynamic key lookup
-(select m %(key x))    # optional library wrapper: force key/index use
+(Map/get m x)          # unambiguous dynamic key lookup
+(select m %($key x))    # optional library wrapper: force key/index use
 ```
 
 Static symbol/string/index segments and explicit `key` wrappers are pure
 selector data. Callable stages, call-stage nodes, and `~message` path segments
 are executable/effectful. Effectful selectors are not serializable and must not
-be admitted to pure selector caches. Functional update APIs such as `assoc_in`
-and `update_in` accept only pure scalar/key segments and reject executable
+be admitted to pure selector caches. Functional update APIs such as `$assoc_in`
+and `$update_in` accept only pure scalar/key segments and reject executable
 stages before invoking them.
 
 Selector chains propagate `void`:
@@ -1031,22 +1036,22 @@ error `err`, but it does not raise `EndOfStream`.
 
 ```gene
 (protocol (Stream item err)
-  (message has_next [self] : Bool
+  (message has_next [] : Bool
     ^errors [err])
 
-  (message peek [self] : item
+  (message peek [] : item
     ^errors [EndOfStream err])
 
-  (message next [self] : item
+  (message next [] : item
     ^errors [EndOfStream err])
 
-  (message close [self] : Nil
+  (message close [] : Nil
     ^errors [err]))
 ```
 
 `Never` contributes no errors. Error rows flatten and deduplicate.
 
-`Stream/try_next` is a non-raising pull alternative: it returns a tagged
+`try_next` (on `Stream`) is a non-raising pull alternative: it returns a tagged
 `TryNext` result that distinguishes exhausted, value, and producer error
 without throwing. The `TryNext` enum follows the `TryRecv` pattern:
 
@@ -1093,11 +1098,11 @@ channel, or future — not symmetric yield.
 ```gene
 (fn prefix [s : (Stream T Never), n : Int] : (Stream T Never)
   (var taken 0)
-  (take s n))                   ; → (Stream T Never), pulls from s lazily
+  ($take s n))                   ; → (Stream T Never), pulls from s lazily
 
 (fn pump [s : (Stream T Never), out : (Channel T)]
   (for x in s                    ; one-way: pull out of s
-    (send out x)))
+    (out ~ send x)))
 ```
 
 `yield void` and an empty `return` are distinct:
@@ -1155,8 +1160,8 @@ These rules combine into a simple consumer idiom:
 
 ```gene
 (while true
-  (match (try-ok (s ~ next))
-    (when (Ok v)   (yield-handler v))
+  (match (try_ok (s ~ next))
+    (when (Ok v)   (yield_handler v))
     (when (Err e)  (if (== e (EndOfStream)) (break) (handle e)))))
 ```
 
@@ -1244,7 +1249,7 @@ A type may additionally define one constructor with `ctor`:
 Constructor invocation uses `new`:
 
 ```gene
-(var p (new Point 10.0 20.0))
+(var p ($new Point 10.0 20.0))
 ```
 
 `new` is an ordinary runtime callable and the explicit operation for running
@@ -1263,8 +1268,8 @@ evaluate the type expression to a Type
 ```
 
 There is no `init` special form. The constructor mutates the pre-created `self`
-instance using explicit mutable node/type APIs such as `Node/set_prop!`,
-`Node/set_body!`, `Node/push_body!`, or future field-specific setters. The ctor
+instance using explicit mutable node/type messages — `set_prop!`, `set_body!`, `push_body!`
+(on `Node`) — or future field-specific setters. The ctor
 body result is ignored; construction returns the validated `self` instance unless
 the ctor raises a recoverable error or panics.
 
@@ -1279,7 +1284,7 @@ A constructor uses normal function-style argument matching:
     (self ~ set_prop! `age age)
     (self ~ set_prop! `active active)))
 
-(new User "Ada" ^age 37)
+($new User "Ada" ^age 37)
 (User ^name "Ada" ^age 37 ^active true) # direct data construction
 ```
 
@@ -1295,7 +1300,7 @@ Constructors may declare checked errors:
       (self ~ set_prop! `value n)
       (fail (ValidationError ^message "invalid port")))))
 
-(new Port 8080)
+($new Port 8080)
 (Port ^value 8080) # direct data construction; no ctor code runs
 ```
 
@@ -1438,10 +1443,10 @@ language grows toward practical web, database, and application code.
 later slicing/index traversal.
 
 ```gene
-(range 0 10)      # 0, 1, ..., 9
-(range 10 0 -1)   # 10, 9, ..., 1
-(range 0 10 2)    # 0, 2, 4, 6, 8
-(range 0 4 2 true) # 0, 2, 4
+($range 0 10)      # 0, 1, ..., 9
+($range 10 0 -1)   # 10, 9, ..., 1
+($range 0 10 2)    # 0, 2, 4, 6, 8
+($range 0 4 2 true) # 0, 2, 4
 ```
 
 The default range should be half-open, `[start, stop)`, because that matches
@@ -1480,11 +1485,11 @@ the old reader. Time literals may use a bracketed name without an offset.
 Constructors are available for generated code and host APIs:
 
 ```gene
-(date 2026 7 4)
-(time 9 30 15 123456 -240 "America/New_York")
-(datetime 2026 7 4 9 30 15 123456 0 "UTC")
-(timezone "+08:00" "Asia/Shanghai")
-(duration 1500000) # microseconds
+($date 2026 7 4)
+($time 9 30 15 123456 -240 "America/New_York")
+($datetime 2026 7 4 9 30 15 123456 0 "UTC")
+($timezone "+08:00" "Asia/Shanghai")
+($duration 1500000) # microseconds
 ```
 
 Accessor messages live on the corresponding type namespaces and may be sent
@@ -1701,10 +1706,10 @@ A child type must be substitutable for its parent:
 Example:
 
 ```gene
-(fn print-name [x : Animal]
-  (print x/name))
+(fn print_name [x : Animal]
+  ($print x/name))
 
-(print-name (Dog ^name "Rex" ^breed "Lab")) # valid
+(print_name (Dog ^name "Rex" ^breed "Lab")) # valid
 ```
 
 Invalid examples:
@@ -1719,7 +1724,10 @@ Invalid examples:
 A child may add no fields. `(type Dog ^is Animal ^props {})` is valid; an
 instance of that child must still supply every inherited required field.
 
-Field narrowing, abstract parent types, final/sealed inheritance, layout inheritance, parent-constructor chaining, inherited constructors, and schema-evolution adapters are post-MVP.
+A message body may delegate to the implementation above it with `(super ~ m)`
+(§10). `super` is not available in a `ctor`: parent-constructor chaining, along
+with field narrowing, abstract parent types, final/sealed inheritance, layout
+inheritance, inherited constructors, and schema-evolution adapters, is post-MVP.
 
 ### 7.4 Numeric model
 
@@ -1779,7 +1787,7 @@ A floored variant (`mod_floor`) may be added later.
 Generic functions put type parameters on the function name:
 
 ```gene
-(fn (first item err) [s : (Stream item err)] : item
+(fn ($first item err) [s : (Stream item err)] : item
   ^errors [EndOfStream err]
   (s ~ next))
 ```
@@ -1788,7 +1796,7 @@ Call-site inference uses local unification. Given:
 
 ```gene
 (var users : (Stream User Never) ...)
-(first users)
+($first users)
 ```
 
 The compiler compares `(Stream item err)` with `(Stream User Never)` and infers `item = User`, `err = Never`.
@@ -1906,8 +1914,8 @@ Typed boundaries include:
 Example:
 
 ```gene
-(var req : Request raw-req)
-(handle raw-req) # if handle expects Request, raw-req is checked at call boundary
+(var req : Request raw_req)
+(handle raw_req) # if handle expects Request, raw_req is checked at call boundary
 ```
 
 If a value whose static type is `Any` fails a typed-boundary check, Gene raises a recoverable `TypeError` with blame information. This is the normal defensive boundary for untrusted dynamic input.
@@ -2275,7 +2283,7 @@ Full `if` form:
 Compact expression form:
 
 ```gene
-(if cond true-expr false-expr)
+(if cond true_expr false_expr)
 ```
 
 Guard forms treat their whole tail as one implicit `do` branch:
@@ -2363,6 +2371,29 @@ The `try`, `catch`, and `ensure` bodies accept multiple expressions directly;
 they do not need `do` wrappers. `catch` patterns match error nodes in order.
 `ensure` runs on success or error; its result is ignored unless it
 raises/panics. Unhandled errors propagate.
+
+Built-in error types the runtime raises:
+
+```text
+TypeError            gradual-boundary type failure
+├── CallKindError    called a non-callable, or the wrong callable kind
+└── MessageError     a ~ send resolving to no message on the receiver's type
+MatchError           pattern/destructuring failure
+└── SelectorMissing  a ^strict selector segment missed
+CompileError         compile-time failure
+├── ParseError
+└── LexError
+ChannelClosed        send/recv on a closed channel
+ActorError           actor-facing failure
+├── ActorClosed
+└── ReplyAlreadySent
+ActorFailure         child failure reported to a supervisor
+```
+
+Only `CallKindError` and `MessageError` have a parent; the other roots are
+independent types, so `catch _` is the only pattern that matches all of them.
+The `ParseError` shown above as a user declaration is an illustration — the
+built-in `ParseError` extends `CompileError`.
 
 `panic` is for violated invariants and unrecoverable bugs. It is not listed in `^errors`.
 
@@ -2478,7 +2509,7 @@ Protocol-local derive:
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to_str self/name)))))
+         ($to_str self/name)))))
 ```
 
 `derive` is a protocol-local compile-time special form. It receives the target `Type` value and the request node. It returns one or more declarations, usually an `impl`.
@@ -2519,14 +2550,13 @@ the use site. Generated implementations follow the same rules, and MVP
 rejects overlapping generic implementations that could both apply to the same
 concrete receiver type.
 
-An unqualified send resolves against a fixed compile-time candidate set — the
-protocol references (imports and lexical protocol declarations) established
-on every control-flow path reaching the send — filtered at runtime to impls
-applicable in the send's own module: a library send cannot see a scoped impl
-imported only by its caller. Within one message identity, the nearest
-applicable receiver on the `^is` chain wins; unrelated same-name identities
-that both survive make the simple name ambiguous, and qualification (`P/m`)
-always selects one identity.
+A protocol message is always sent qualified — `(x ~ P/m)` — so the send names one
+message identity and no compile-time candidate set is involved. Impl selection
+happens at dispatch time and is filtered to impls applicable in the send's own
+module: a library send cannot see a scoped impl imported only by its caller.
+Within that identity, the nearest applicable receiver on the `^is` chain wins.
+Unqualified sends never reach a protocol impl (§3), so they cannot be ambiguous
+across protocols.
 
 `eval` and Env-backed REPL impls stay in their eval overlay and are never
 promoted to the application registry implicitly; there is no public
@@ -2535,19 +2565,13 @@ activation advances an impl-registry epoch; native/direct protocol-call
 optimization must guard that epoch (and deopt/re-resolve on mismatch) before
 it may cache an impl address across activation.
 
-**Dispatch cost and the call-site cache.** An unqualified send costs more than
-a plain call, and this cost is budgeted, not incidental. A resolved send walks
-the send scope's parent chain, scanning each scope's impls for the nearest
-applicable receiver on the `^is` chain; an unqualified send additionally builds
-its compile-time candidate set and filters it per receiver identity. On the
-reference VM an unqualified send is roughly an order of magnitude slower than a
-simple call (about 10×), and a qualified send about 6× — most of that shared
-base cost is the receiver-impl walk, which both forms pay. The sanctioned
-optimization is a **per-call-site inline cache** keyed by `(receiver runtime
-type, candidate-set identity, send-scope version, activation epoch)`: a hit
+**Dispatch cost and the call-site cache.** A qualified send costs more than a
+plain call, and this cost is budgeted, not incidental: it walks the send scope's
+parent chain, scanning each scope's impls for the nearest applicable receiver on
+the `^is` chain. The sanctioned optimization is a **per-call-site inline cache**
+keyed by `(receiver runtime type, message identity, activation epoch)`: a hit
 returns the cached callee after a guard comparison; any key mismatch — a new
-receiver type, a scope whose bindings changed, or a bumped impl epoch —
-re-resolves and refills. The cache is side storage indexed by call site, never
+receiver type or a bumped impl epoch — re-resolves and refills. The cache is side storage indexed by call site, never
 a field widening the instruction stream (that layout is bench-protected). Until
 that lands, static-typed receivers and qualified sends resolve with less work,
 so hot paths that must minimize dispatch cost should type their receivers.
@@ -2683,7 +2707,7 @@ Like macros, names bound to `fn!` values should keep the `!` suffix by conventio
 For example, this durable environment contains `config` but not `secret`:
 
 ```gene
-(fn! capture-config! []
+(fn! capture_config! []
   (Env/snapshot caller_env ["config"]))
 ```
 
@@ -2772,7 +2796,7 @@ Protocol-local `derive` remains a controlled compile-time declaration generator.
   (derive [t : Type, req]
     `(impl HasLabel for %t
        (message label [self] : Str
-         (to_str self/name)))))
+         ($to_str self/name)))))
 ```
 
 `derive` is not a general fexpr. It runs in the compiler's derivation phase and is allowed to add declarations to a compiler-owned overlay. Source modules are not mutated.
@@ -2839,7 +2863,7 @@ Evaluated code does not automatically see arbitrary caller locals. Values must b
 Shared mutation is explicit. Ordinary environment bindings are read-only, but an environment may contain mutable values such as `Cell`, buffers, actors, or domain-specific state objects.
 
 ```gene
-(var counter (cell 0))
+(var counter ($cell 0))
 (var e (env ^bindings {^counter counter}))
 
 (eval
@@ -2857,7 +2881,7 @@ The core evaluation form is:
 Normal programs must supply `^in`. A REPL may use its current session environment implicitly. `eval` accepts a node, not source text. Parsing remains a separate operation:
 
 ```gene
-(var node (read_one "(+ 1 2)"))
+(var node ($read_one "(+ 1 2)"))
 (eval node ^in e)
 ```
 
@@ -2880,7 +2904,7 @@ The general result type of `eval` is `Any`. Typed callers use the ordinary gradu
 
 ```gene
 (var result : Int
-  (eval generated-node ^in e))
+  (eval generated_node ^in e))
 ```
 
 A non-`Int` result causes a recoverable boundary `TypeError` with blame information.
@@ -2925,7 +2949,7 @@ An evaluation policy may impose execution limits and privileged-feature controls
 (var e
   (env
     ^bindings {^input input}
-    ^capabilities {^fs sandbox-fs}
+    ^capabilities {^fs sandbox_fs}
     ^policy policy))
 ```
 
@@ -2958,7 +2982,7 @@ The `#` reader prefix constructs a **shallow immutable** container:
 Shallow immutability means the container's head, props, body, keys, and positions cannot be changed. Values stored inside it are not recursively frozen:
 
 ```gene
-#[(cell 1)] # immutable list containing a mutable Cell
+#[($cell 1)] # immutable list containing a mutable Cell
 ```
 
 Immutable containers support persistent functional updates with structural sharing where practical:
@@ -2967,8 +2991,8 @@ Immutable containers support persistent functional updates with structural shari
 (var xs  #[1 2 3])
 (var xs2 (xs ~ assoc 1 20))
 
-(var user2 (assoc_in user /address/city "Raleigh"))
-(var user3 (update_in user /score (fn [x] (+ x 1))))
+(var user2 ($assoc_in user /address/city "Raleigh"))
+(var user3 ($update_in user /score (fn [x] (+ x 1))))
 ```
 
 `assoc_in` and `update_in` never mutate their input. They return a new root and preserve the root's mutable/immutable class unless an API explicitly requests another representation. Missing intermediate paths are errors unless the chosen operation explicitly permits construction. Writing `void` into a prop/map removes it; writing `void` into a list/body position stores `nil`.
@@ -3016,7 +3040,7 @@ state lives *inside* the value, so idiomatic mutable state is a `let` binding of
 a mutable value:
 
 ```gene
-(let counter (cell 0))          # the binding never moves; the Cell mutates
+(let counter ($cell 0))          # the binding never moves; the Cell mutates
 (counter ~ update (fn [x] (+ x 1)))
 ```
 
@@ -3043,9 +3067,9 @@ Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
 `Cell` is a first-class mutable reference and may contain any Gene value, including immediate values:
 
 ```gene
-(var count   (cell 0))
-(var enabled (cell true))
-(var current (cell nil))
+(var count   ($cell 0))
+(var enabled ($cell true))
+(var current ($cell nil))
 
 (count ~ get)
 (count ~ set 10)
@@ -3070,7 +3094,7 @@ Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed 
 `AtomicCell` is the explicit shared-memory escape hatch:
 
 ```gene
-(var state (atomic_cell 0))
+(var state ($atomic_cell 0))
 
 (state ~ load)
 (state ~ store 1)
@@ -3091,9 +3115,9 @@ An immutable value is hashable only when every value participating in its struct
 Library operations may provide explicit conversion:
 
 ```gene
-(freeze_shallow value)
-(freeze value)       # recursive validation/freezing
-(thaw value)         # mutable copy
+($freeze_shallow value)
+($freeze value)       # recursive validation/freezing
+($thaw value)         # mutable copy
 ```
 
 Deep freezing fails when it encounters a value that cannot be safely frozen, such as a raw native handle without a defined immutable representation.
@@ -3118,8 +3142,8 @@ Structured concurrency uses three core forms:
 
 ```gene
 (scope
-  (var a (spawn (compute-a)))
-  (var b (spawn (compute-b)))
+  (var a (spawn (compute_a)))
+  (var b (spawn (compute_b)))
   (+ (await a) (await b)))
 ```
 
@@ -3138,7 +3162,7 @@ Placement-sensitive code can require the owning scheduler's root lane:
 
 ```gene
 (spawn ^lane root
-  (drive-terminal-ui))
+  (drive_terminal_ui))
 ```
 
 Use this for UI frameworks and other thread-affine native APIs. It disables
@@ -3186,7 +3210,7 @@ A channel transports values between tasks:
 Channels are bounded by default to provide backpressure:
 
 ```gene
-(var ch (channel ^capacity 64))
+(var ch ($channel ^capacity 64))
 
 (ch ~ send value)       # suspends while full
 (var value (ch ~ recv)) # suspends while empty
@@ -3239,7 +3263,7 @@ Built-in sendability rules:
 Shallow immutability alone does not imply sendability:
 
 ```gene
-#[(cell 1)] # shallow immutable, but not Send
+#[($cell 1)] # shallow immutable, but not Send
 ```
 
 A future ownership/move system may permit transferring uniquely owned mutable values. MVP avoids that complexity and requires immutable/sendable messages or explicitly thread-safe handles.
@@ -3271,10 +3295,10 @@ An actor is created with an initialization function and a handler:
 
 ```gene
 (var counter
-  (actor/spawn
+  ($actor/spawn
     ^mailbox 256
     ^init (fn [] 0)
-    ^handle counter-handler))
+    ^handle counter_handler))
 ```
 
 The initialization function runs inside the actor and creates its private state, avoiding mutable aliases held by the spawning task.
@@ -3282,20 +3306,20 @@ The initialization function runs inside the actor and creates its private state,
 A handler processes one message and returns an actor step:
 
 ```gene
-(fn counter-handler
+(fn counter_handler
   [ctx : (ActorContext (| Increment Get Stop)), state : Int, msg : (| Increment Get Stop)]
   : (ActorStep Int)
 
   (match msg
     (when (Increment ^amount n)
-      (actor/continue (+ state n)))
+      ($actor/continue (+ state n)))
 
     (when (Get ^reply reply)
       (reply ~ send state)
-      (actor/continue state))
+      ($actor/continue state))
 
     (when Stop
-      (actor/stop))))
+      ($actor/stop))))
 ```
 
 Core guarantees:
@@ -3356,9 +3380,9 @@ Actors are owned by a task scope or supervisor, not merely by the reachability o
 ```gene
 (scope
   (var worker
-    (actor/spawn
-      ^init make-state
-      ^handle worker-handler))
+    ($actor/spawn
+      ^init make_state
+      ^handle worker_handler))
   ...)
 ```
 
@@ -3371,9 +3395,9 @@ Long-lived actor trees use supervisors:
   ^strategy restart
   ^events failures
   ^dead_letter dead
-  (actor/spawn
-    ^init make-state
-    ^handle worker-handler))
+  ($actor/spawn
+    ^init make_state
+    ^handle worker_handler))
 ```
 
 MVP supervision strategies:
@@ -3433,8 +3457,8 @@ finish current message
 The experimental API exposes:
 
 ```gene
-(ref ~ upgrade new-handler
-  ^migrate migrate-state)
+(ref ~ upgrade new_handler
+  ^migrate migrate_state)
 ```
 
 The MVP may expose an explicit experimental `(ref ~ snapshot)` operation
@@ -3644,7 +3668,7 @@ metadata/provenance
 A module can be written explicitly:
 
 ```gene
-(mod web-demo
+(mod web_demo
   @doc "demo module"
   ...)
 ```
@@ -4198,10 +4222,10 @@ Every FFI call is a typed boundary.
 If an argument has type `Any`, Gene validates and marshals it according to the declared foreign parameter type before native code begins:
 
 ```gene
-(strlen dynamic-value)
+(strlen dynamic_value)
 ```
 
-If `dynamic-value` cannot be converted to `C/CStr`, the runtime raises a recoverable boundary `TypeError`. Native code is not entered.
+If `dynamic_value` cannot be converted to `C/CStr`, the runtime raises a recoverable boundary `TypeError`. Native code is not entered.
 
 Automatic marshalling is limited to conversions with clear ownership and lifetime:
 
@@ -4284,10 +4308,10 @@ FFI distinguishes three failure classes:
 The low-level FFI does not guess whether null, `-1`, a status code, or `errno` means failure. That policy belongs in a wrapper:
 
 ```gene
-(fn open-file [path : Str] : File
+(fn open_file [path : Str] : File
   ^errors [FsError]
   (var p (c_fopen path "rb"))
-  (if (null? p)
+  (if ($nil? p)
     (fail (FsError ^path path ^errno (ffi/errno)))
     (File ^handle p)))
 ```

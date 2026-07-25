@@ -550,8 +550,9 @@ over unchanged:
 - a marker protocol needs no messages: `(impl Send)` inline works.
 
 Unlike type-direct messages, inline impls **are** the protocol system —
-`(t ~ do_a)` and `(t ~ A/do_a)` dispatch through them exactly as through a
-standalone impl. The two body-item kinds compose freely in one type body:
+`(t ~ A/do_a)` dispatches through them exactly as through a standalone impl.
+Being written inside the type body does not make them reachable by a bare send:
+`(t ~ do_a)` looks only for a type-direct `do_a` (§9.1). The two body-item kinds compose freely in one type body:
 `(message …)` items are private receiver-owned behavior, `(impl P …)` items
 are public contract implementations, grouped at the declaration site.
 

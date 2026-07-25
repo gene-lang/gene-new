@@ -1,12 +1,13 @@
 # Scoped and Co-located Protocol Implementations
 
-**Status:** implemented 2026-07-21 — compiler Must/Whole/Entry candidate
-analysis, canonical/scoped/overlay classification and activation,
-`import_impl`, per-identity nearest-receiver resolution, declaration-scope
-conformance, and transactional reload live in `src/gene/compiler.nim` and
-`src/gene/vm.nim`; behavior is pinned by `tests/test_protocols.nim`,
-`tests/test_modules.nim`, and the impl-visibility suites in
-`tests/spec_runner.nim`.
+**Status:** implemented 2026-07-21, revised 2026-07-24 —
+canonical/scoped/overlay classification and activation, `import_impl`,
+per-identity nearest-receiver resolution, declaration-scope conformance, and
+transactional reload live in `src/gene/compiler.nim` and `src/gene/vm.nim`;
+behavior is pinned by `tests/test_protocols.nim`, `tests/test_modules.nim`, and
+the impl-visibility suites in `tests/spec_runner.nim`. The compile-time
+candidate-set analysis described by earlier revisions of §2 was removed when
+unqualified sends became type-direct only.
 
 **Decision:** an impl is globally visible when it is defined with its protocol
 or receiver type. Every other impl is module-local unless explicitly exported
@@ -42,105 +43,25 @@ Canonical impls provide behavior that travels with values. Scoped impls are
 explicit local policy. Overlays support eval and runtime-local declarations.
 No layer silently overrides another.
 
-## 2. Message candidates
+## 2. Message resolution
 
-### 2.1 Fixed candidate references
+An unqualified send `(x ~ m)` reaches only the receiver's type-direct messages,
+walking `^is` (`docs/design.md` §3). It never reaches a protocol impl, so a send
+site carries no protocol candidate set and simple-name ambiguity cannot arise
+from one.
 
-An unqualified send `(x ~ render)` has a compile-time set of **protocol
-references** declaring `render`. A reference is either an imported interface
-identity or an immutable lexical slot for a protocol declaration. The set of
-references never grows after the send is compiled, although a local slot may
-be initialized later and impl applicability remains dynamic.
+A protocol message is always qualified — `(x ~ P/m)` — which names exactly one
+message identity. `P` must resolve as an ordinary binding at the send site.
+Choosing the impl for that identity happens at dispatch time, against the
+receiver's runtime type and in the send's visibility scope (§4).
 
-This slot model preserves ordinary forward references. For a compiled unit
-`U`, the compiler computes:
+Because the identity is fixed where the send is written, later loading cannot
+make a send ambiguous. Activation can only change which impl is selected for an
+identity that was already named, which §4's per-identity receiver-depth rule
+governs.
 
-- `Must(U, p)`: protocol references established on every control-flow path
-  reaching point `p`;
-- `Whole(U)`: references established on every successful normal exit from
-  `U`; and
-- `Entry(U)`: references guaranteed before `U` starts.
-
-A send executed directly in `U` uses `Must(U, send)`. A nested function or
-closure declared at `d` receives:
-
-```text
-Entry(nested) = Must(U, d) + Whole(U) + interface references of nested
-```
-
-`Whole(U)` is a post-pass over the entire unit, not a declaration-point
-snapshot. Therefore these existing patterns remain valid:
-
-- a top-level function may send a message declared by a later protocol;
-- a factory may create a closure before a later protocol declaration and
-  return it after that declaration runs; and
-- a closure may exist before an impl is registered and use it afterward.
-
-Only references guaranteed on every normal exit enter `Whole(U)`. A local
-protocol slot is captured per module/eval/invocation scope, so a factory's
-runtime-created protocol identity remains specific to that invocation.
-
-If a nested callable is invoked before a forward slot is initialized, that
-reference is ineligible and a failed send names the uninitialized protocol
-candidate. Successfully returning/publishing a unit whose `Whole(U)` contains
-the slot guarantees initialization first.
-
-### 2.2 Control flow, failures, and entry state
-
-`Must` is a forward must-analysis. A join intersects predecessor sets by exact
-protocol reference. Equal-identity imports in every branch survive; an import
-in only one branch and an import in a possibly-empty loop do not survive the
-join. Inside the importing branch or loop iteration, the reference is present.
-
-The CFG includes exceptional edges. A declaration/import adds its reference
-only to its successful normal successor, after binding installation and module
-activation commit. An edge into `catch` or `ensure` carries the pre-form set.
-Thus a caught missing-module or coherence failure does not make the imported
-protocol available after the `try`. An uncaught edge that cannot reach the send
-does not participate in that send's join.
-
-Entry state is explicit:
-
-- a module starts with protocols guaranteed by its parent/prelude and imports
-  completed before body entry;
-- a nested unit uses the formula above, including protocol identities closed
-  into its parameter/return or re-exported message interface; and
-- each eval/REPL unit snapshots protocol bindings in its associated `Env` and
-  parent chain when compiled.
-
-Completed selected imports contribute their visible protocol/message
-interfaces and re-exports transitively. Wildcard and module-alias imports do
-not contribute protocols in bulk: an annotation or other interface-bearing
-form that explicitly resolves a protocol through one adds exactly that
-identity to the nested unit's Entry set. A seeded protocol's home must already
-be loaded. Merely existing in the global canonical registry does not seed a
-candidate. A later environment mutation can affect qualified lookup and later
-eval units, but never changes an already-compiled unqualified send.
-
-Conditional imports intentionally split qualified and unqualified behavior.
-After a one-arm import, the persistent module binding may make `(x ~ P/m)`
-work on executions where `P` has been initialized. A post-join `(x ~ m)` does
-not gain `P`, because `P` was not established on every path. Move the send into
-the branch or establish the same protocol on every path to use the unqualified
-form.
-
-### 2.3 Dynamic selection
-
-At runtime, initialized candidate references are filtered to protocols with an
-impl applicable to the receiver's runtime type in the send's visibility scope:
-
-- zero applicable candidates: missing implementation;
-- one: dispatch;
-- more than one: ambiguous simple message name.
-
-Qualification `(x ~ P/render)` selects the exact message identity and bypasses
-simple-name ambiguity. It still requires `P` to resolve as an ordinary binding.
-
-A closed candidate set does not imply a stable result. If a module already
-knows unrelated `A/render` and `B/render`, later activation of canonical
-`impl Q for T` where `Q ^inherit [B]` can make the existing `B/render`
-candidate applicable and turn a formerly unique send ambiguous. Loading a new
-protocol reference not already in the set cannot extend the send.
+> Superseded: earlier revisions specified a compile-time `Must`/`Whole`/`Entry`
+> candidate set for unqualified sends. Removed in `4bb95f9`.
 
 ## 3. Impl classification and activation
 
@@ -168,10 +89,10 @@ and a caught failure leaves its binding and registration unpublished. Every
 execution that attempts two incompatible activations rejects the second; an
 execution that never reaches one import need not fail.
 
-After an assembly unit publishes, every resolved candidate's defining scope is
-initialized. For module-owned protocols and receiver types, canonical impls in
-either eligible loaded home are active. During assembly, a forward candidate
-slot may still be uninitialized; no cross-module or devirtualization guarantee
+After an assembly unit publishes, every protocol it resolved has an initialized
+defining scope. For module-owned protocols and receiver types, canonical impls in
+either eligible loaded home are active. During assembly a forward protocol
+binding may still be uninitialized; no cross-module or devirtualization guarantee
 applies until the assembly boundary commits.
 
 ### 3.2 Scoped and overlay impls
@@ -201,16 +122,15 @@ library send cannot see a scoped impl imported only by its caller. Behavior
 that must cross a module boundary belongs in a canonical impl; otherwise pass
 the produced value or an explicit callback.
 
-Resolve receiver depth independently for each candidate message identity:
+Resolve receiver depth independently for each message identity:
 
 1. collect that identity's providers along the receiver's single `^is` chain;
 2. retain only its providers at the nearest applicable receiver depth; and
 3. require exactly one provider at that depth.
 
-After this per-identity resolution, an unqualified send requires exactly one
-surviving identity. Receiver depth never chooses between unrelated identities:
-if `A/render` survives at `Child` and unrelated `B/render` survives at
-`Parent`, `(child ~ render)` is ambiguous. Qualification selects one identity.
+A qualified send names its identity, so unrelated same-name identities never
+compete: `A/render` surviving at `Child` and `B/render` at `Parent` are simply two
+different sends. Receiver depth chooses only among providers of one identity.
 
 An impl of child protocol `Q ^inherit [P]` supplies inherited `P` message
 identities. `impl P for T` and `impl Q for T` therefore conflict at the same
@@ -287,9 +207,7 @@ of reload and retain the same live-overlay caveat.
 ## 7. Compilation and performance
 
 Module interfaces record protocol references, message identities, impl class,
-homes, exports, and whether a pair is unconditional. Candidate construction
-requires the `Must`/`Whole` CFG pass, including exceptional edges, plus entry
-seeding from imported interfaces and eval environments.
+homes, exports, and whether a pair is unconditional.
 
 A direct protocol call is allowed only when receiver type and winning
 unconditional canonical pair are statically known and no overlay is reachable.
@@ -313,16 +231,12 @@ Add or amend executable specs for:
   diagnostic for top-level computed operands;
 - forward references from functions and factory closures to later protocols;
 - closures created before an impl and dispatched after registration;
-- one-arm imports excluded after joins, same-identity imports in every arm
-  included, and qualified lookup following the runtime binding;
-- caught missing-module and coherence failures contributing exceptional CFG
-  edges without installing protocol candidates;
-- eval entry seeding from successful prior units but not caught failed imports;
-- transitive/re-exported protocol interfaces seeding nested units;
+- conditional imports leaving qualified lookup to follow the runtime binding;
+- caught missing-module and coherence failures leaving no impl registered;
 - same-identity ancestor/descendant impl conflicts failing at assembly;
 - marker ancestors and per-identity nearest-receiver behavior;
-- unrelated same-name protocols remaining ambiguous across different receiver
-  depths, including later applicability ambiguity;
+- unrelated same-name protocols staying distinct because each send names one
+  identity;
 - call-site module dispatch and caller-scoped impl invisibility in libraries;
 - callable, property, and `(List P)` conformance using declaration scope;
 - all three `^impl` validation barriers;
@@ -330,5 +244,5 @@ Add or amend executable specs for:
 - guarded direct-call invalidation after activation/reload; and
 - absence of individual module unload in MVP.
 
-Update `docs/design.md` §10/§10.1 and the relevant conformance and dispatch
-text in `docs/core.md` §3.5/§9 when this proposal is implemented.
+`docs/design.md` §10/§10.1 and the conformance and dispatch text in
+`docs/core.md` §3.5/§9 must stay consistent with this file.
