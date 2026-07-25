@@ -665,8 +665,9 @@ those defaults without a per-type impl:
 ```
 
 Without the attribute, even a fully-defaulted protocol requires an explicit
-impl. `Node` in `docs/design.md §1.2-1.3` is a built-in type expression and
-namespace, not a protocol and not an exception to this rule.
+impl. `Node` in `docs/design.md §1.2-1.3` is a concrete built-in *type*, not a
+protocol and not an exception to this rule — universal node anatomy is a
+statement about projections, not about protocol conformance.
 
 ### 9.3 Sends and lexical names do not interact
 
@@ -682,13 +683,13 @@ be reached through `~`.
 
 `Nil` uses the **regular impl approach — no special dispatch carve-out.**
 
-**Design intent, not yet implemented.** Checked empirically against the
-current implementation (see §11): `Nil` is not currently a resolvable
-`vkType` value (built-in type names like `Nil`/`Bool`/`Int` exist only as
-strings inside the gradual type-boundary checker), and protocol dispatch
-currently requires a `vkNode` receiver with a `vkType` head, which a bare
-scalar like `nil` doesn't have. The design below is still the right target;
-it's just a separate, larger piece of work than protocol inheritance.
+**Implemented.** Both halves of what used to block this are gone. `Nil`,
+`Bool`, `Int`, `Str`, `Sym`, `Char`, `Float`, and `Void` are bound `vkType`
+values rather than strings recognized only by the gradual type-boundary
+checker, so they resolve in impl-receiver position; and `receiverType` no
+longer requires a `vkNode` with a `vkType` head — every value has a dispatch
+face, a scalar's being its kind's type. `(impl P for Nil …)` and `(nil ~ P:m)`
+both work.
 
 `Nil` is already an ordinary nominal type under `Any` in the MVP hierarchy
 (`docs/design.md §7.2`, settled at `§21`). Message dispatch is defined on the
@@ -784,7 +785,8 @@ implemented and stable, and sit at implementation-order item 13; base
   a type-parameter list), so this is blocked on a larger generics feature,
   not just on inheritance (OQ-C)
 - §9.1's compile-time resolution for statically-known receiver types
-- §10 — checked empirically (`./bin/gene eval '(protocol P (message m [self] : Str "x")) (impl P for Nil (message m [self] : Str "n")) (m nil)'`) and it does **not** work yet: `Nil`/`Bool`/`Int`/etc. are recognized only as special-case strings inside the gradual type-boundary checker (`matchesBuiltinType` in `src/gene/vm.nim`), not as bound `vkType` values, so `Nil` isn't a resolvable symbol in impl-receiver position at all — "undefined symbol: Nil". Separately, protocol dispatch (`receiverType` in `src/gene/vm.nim`) currently requires a `vkNode` value with a `vkType` head; a bare scalar like the `nil` literal (`vkNil`) has no such head, so it couldn't dispatch through a protocol message even if `Nil` resolved to a type value. This is a larger, pre-existing gap in scalar/singleton dispatch, not specific to inheritance — out of scope for this slice.
+
+§10 was on this list and is now done — see §10.
 
 ---
 

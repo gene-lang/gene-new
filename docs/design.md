@@ -57,7 +57,7 @@ Gene has one syntactic and semantic unit: the **node**. A node can be read as da
 
 Core consequences:
 
-- every value exposes `head`, `props`, `body`, and `meta` through the `Node` protocol;
+- every value exposes `head`, `props`, `body`, and `meta` as projections (§1.2);
 - code is data;
 - types are nodes, usually instances of `Type`;
 - patterns are nodes with binders and holes;
@@ -91,16 +91,24 @@ meta   information about the node, ignored by value semantics
 
 Props and body are value anatomy. Meta is worn, not grown.
 
-### 1.2 `Node` protocol
+### 1.2 `Node` anatomy
 
-Every value exposes the four node projections. `Node` itself is a concrete type
-and a namespace, not a universal protocol — the projections are library functions
-that accept any value, and nodes additionally answer them as messages:
+Every value exposes the four node projections. That is a statement about
+**anatomy, not membership**: `Node` itself is a concrete type, not a universal
+protocol and not a supertype of everything. The projections are library
+functions that accept any value, and they are also messages on the `Node` type,
+which is how any node-shaped receiver — a data node or a typed instance —
+answers them:
 
 ```gene
 ($head v) ($props v) ($body v) ($meta v)   # any value
 (n ~ head) (n ~ props) (n ~ body) (n ~ meta)   # node receivers
 ```
+
+A data node's dispatch face is the `Node` type, so `(impl P for Node …)` applies
+to `(f 1 2)` and to quasiquoted templates. A typed instance keeps its *own* type
+as its dispatch face and reaches the projections because it is structurally a
+node — not because it is an instance of `Node`.
 
 This is homoiconicity as projection, not representation. An `Int`, `Str`, `Fn`, `Stream`, module, and heap node can expose node shape without sharing memory layout.
 

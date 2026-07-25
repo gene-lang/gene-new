@@ -5232,10 +5232,17 @@ proc buildBuiltins(app: Application): Scope =
   result.define("same?", newNativeFn("same?", biSame))
   result.define("hash", newNativeFn("hash", biHash))
   result.define("not", newNativeFn("not", biNot))
-  result.define("head", newNativeFn("head", biHead))
-  result.define("props", newNativeFn("props", biProps))
-  result.define("body", newNativeFn("body", biBody))
-  result.define("meta", newNativeFn("meta", biMeta))
+  # The four node projections are both bare wrapper functions and messages on
+  # the `Node` type. Bind one value each so `(head n)` and `(n ~ head)` name the
+  # same function rather than two natives that merely behave alike.
+  let headFn = newNativeFn("head", biHead)
+  let propsFn = newNativeFn("props", biProps)
+  let bodyFn = newNativeFn("body", biBody)
+  let metaFn = newNativeFn("meta", biMeta)
+  result.define("head", headFn)
+  result.define("props", propsFn)
+  result.define("body", bodyFn)
+  result.define("meta", metaFn)
   result.define("new", newNativeCallFn("new", biNew))
   result.define("construct_type",
                 newNativeFn("construct_type", biConstructType))
@@ -5331,12 +5338,19 @@ proc buildBuiltins(app: Application): Scope =
   mapScope.define("get", newNativeFn("Map/get", biMapGet))
   mapScope.define("put!", newNativeFn("Map/put!", biMapPutBang))
   result.define("Map", newNamespace("Map", mapScope))
-  let nodeScope = newScope(result)
-  nodeScope.define("set_prop!", newNativeFn("Node/set_prop!", biNodeSetPropBang))
-  nodeScope.define("set_body!", newNativeFn("Node/set_body!", biNodeSetBodyBang))
-  nodeScope.define("push_body!",
-                   newNativeFn("Node/push_body!", biNodePushBodyBang))
-  result.define("Node", newNamespace("Node", nodeScope))
+  # `Node` carries the mutators and the four anatomy projections. The
+  # projections are reachable on *any* node shape, including a typed instance,
+  # because a typed instance is structurally a node — that is the §1.2
+  # distinction between universal anatomy and the concrete `Node` type, and
+  # `builtinReceiverMessage` routes the instance case back to this same table.
+  result.defineBuiltinType(vkNode, "Node", {
+    "set_prop!": newNativeFn("Node/set_prop!", biNodeSetPropBang),
+    "set_body!": newNativeFn("Node/set_body!", biNodeSetBodyBang),
+    "push_body!": newNativeFn("Node/push_body!", biNodePushBodyBang),
+    "head": headFn,
+    "props": propsFn,
+    "body": bodyFn,
+    "meta": metaFn})
   result.defineBuiltinType(vkBuffer, "Buffer", {
     "len": newNativeFn("Buffer/len", biBufferLen),
     "get": newNativeFn("Buffer/get", biBufferGet),
@@ -7188,13 +7202,19 @@ proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   false
 
 proc receiverType(value: Value): Value =
-  let scalar = gScalarTypes[value.kind]
-  if scalar.kind == vkType and value.kind notin {vkNode, vkEnumVariant}:
-    return scalar
+  let builtin = gScalarTypes[value.kind]
+  if builtin.kind == vkType and value.kind notin {vkNode, vkEnumVariant}:
+    return builtin
   if value.kind == vkNode and value.head.kind == vkType:
     value.head
   elif value.kind == vkNode and value.head.kind == vkEnumVariant:
     value.head.enumVariantEnum
+  elif value.kind == vkNode:
+    # A node with neither a type nor an enum variant in its head is a data
+    # node — `(f 1 2)`, a quoted form, a selector — and its dispatch face is
+    # the concrete `Node` type. `type` holding a symbol does not make the
+    # symbol the dispatch type (design §1.2).
+    builtin
   elif value.kind == vkEnumVariant:
     value.enumVariantEnum
   else:
@@ -7408,12 +7428,11 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
       m = convertMessage(scope, name, ["to_stream", "to_pairs_stream"])
     m
   of vkNode:
-    var m = typeNsMessage(scope, "Node", name)
-    # head/props/body/meta are the Node protocol accessors (§1.2), reachable as
-    # messages on a node in addition to the `(head n)` wrapper form (§1.3).
-    if m.kind == vkNil:
-      m = convertMessage(scope, name, ["head", "props", "body", "meta"])
-    m
+    # Only a *typed* instance reaches here: a data node's dispatch face is
+    # already the `Node` type, so `receiverType` resolved it. An instance is
+    # structurally a node, so the same table answers its anatomy projections
+    # and mutators (§1.2) — one table, two receiver classes.
+    typeDirectMessage(gScalarTypes[vkNode], name)
   of vkAtomicCell:
     typeNsMessage(scope, "AtomicCell", name)
   of vkStream:

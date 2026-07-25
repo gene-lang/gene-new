@@ -2027,7 +2027,7 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer]", "[(type Cell) (type Buffer)]")
+    check_eval("[Cell Buffer Node]", "[(type Cell) (type Buffer) (type Node)]")
     check_eval("[(Cell ~ name) (Cell ~ fields)]", "[\"Cell\" []]")
     # A generic annotation on a built-in stays on the symbolic matching path,
     # so making the surface a type does not disturb `(Buffer T)`.
@@ -2047,6 +2047,31 @@ suite "spec — implicit self in message bodies from design §10":
                "[(c ~ get) (Cell/get c) c/~get " &
                " (try (c ~ nope) catch (MessageError ^receiver_type t) t)]",
                "[1 1 1 \"Cell\"]")
+
+  test "node anatomy is universal; the Node type is not":
+    # A data node's dispatch face is the concrete `Node` type, so it can carry
+    # an impl (design §1.2). A typed instance keeps its own type as its
+    # dispatch face and still answers the projections, because it is
+    # structurally a node — not because it is an instance of `Node`.
+    check_eval("(protocol Tag (message tag [] : Any)) " &
+               "(impl Tag for Node (message tag [] : Any (self ~ head))) " &
+               "((quote (f 1 2)) ~ Tag:tag)",
+               "f")
+    check_eval("(var n (quote (f 1 2))) " &
+               "[(n ~ head) (n ~ props) (n ~ body) (n ~ meta)]",
+               "[f {} [1 2] {}]")
+    check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
+               "(p ~ set_prop! \"b\" 2) " &
+               "[(p ~ head) (p ~ body) (p ~ props)]",
+               "[(type P) [] {^a 1 ^b 2}]")
+    # An impl on `Node` does not reach a typed instance: `Node` is concrete,
+    # not a supertype.
+    check_eval("(protocol Tag (message tag [] : Any)) " &
+               "(impl Tag for Node (message tag [] : Any (self ~ head))) " &
+               "(type P ^props {^a Int}) " &
+               "(try ((P ^a 1) ~ Tag:tag) " &
+               "catch (MessageError ^receiver_type t) t)",
+               "\"P\"")
 
   test "a message identity is not callable outside a send":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &
