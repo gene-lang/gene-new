@@ -2132,22 +2132,45 @@ suite "spec — implicit self in message bodies from design §10":
                "catch (MessageError ^receiver_type t) t)",
                "\"P\"")
 
-  test "a message identity is not callable outside a send":
-    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
-               "(type M ^props {^name Str} " &
-               "  (impl ToHtml (message to_html [] : Str self/name))) " &
-               "(try (ToHtml/to_html (M ^name \"x\")) " &
-               "catch (CallKindError ^actual a) a)",
-               "\"Message\"")
-    # Higher-order use is the same rejection; use a lambda instead.
-    check_eval("(protocol ToHtml (message to_html [] : Str)) " &
-               "(type M ^props {^name Str} " &
-               "  (impl ToHtml (message to_html [] : Str self/name))) " &
-               "(var items [(M ^name \"a\")]) " &
-               "[(try (($map ($to_stream items) ToHtml/to_html) ~ into []) " &
-               "  catch (CallKindError ^actual a) a) " &
-               " (($map ($to_stream items) (fn [x] (x ~ ToHtml/to_html))) ~ into [])]",
-               "[\"Message\" [\"a\"]]")
+  test "a message in head position is rejected at compile time":
+    # `:` reads as its own node, so the head-position ban no longer waits for
+    # the callee to evaluate (design §3, decision 3). It only rejects; it never
+    # picks between two meanings.
+    check_compile_error("(protocol P (message m [] : Str)) (P:m 1)",
+                        "dispatches only through ~")
+
+  test "a message in value position is a dispatching closure":
+    # Decision 2. `Proto:msg` applied dispatches on its first argument, so
+    # `(map xs P:m)` works and its signature is (receiver, ...send args).
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(type A ^props {^n Int} (impl Shown (message show [] : Str \"A\"))) " &
+               "(type B ^props {^n Int} (impl Shown (message show [] : Str \"B\"))) " &
+               "(var xs [(A ^n 1) (B ^n 2)]) " &
+               "(($map ($to_stream xs) Shown:show) ~ into [])",
+               "[\"A\" \"B\"]")
+    check_eval("(protocol Add (message plus [n : Int] : Int)) " &
+               "(type W ^props {^v Int} " &
+               "  (impl Add (message plus [n : Int] : Int (+ self/v n)))) " &
+               "(var f Add:plus) (f (W ^v 10) 5)",
+               "15")
+    # The impl resolves in the scope where the value was *written*. A lazy
+    # combinator retains only the callable and applies it with no reachable
+    # send scope, which is exactly what defeated the message-identity attempt.
+    check_eval("(protocol S (message s [] : Str)) " &
+               "(impl S for Int (message s [] : Str \"int\")) " &
+               "(var g S:s) " &
+               "(($map ($to_stream [1 2]) g) ~ into [])",
+               "[\"int\" \"int\"]")
+    # It answers as a function, which is the cost of the closure route.
+    check_eval("(protocol S (message s [] : Str)) " &
+               "[((fn [f : Callable] true) S:s) ((fn [f : Fn] true) S:s)]",
+               "[true true]")
+    # The `Callable` boundary used to accept a message and then raise on the
+    # call; the closure closes that hole.
+    check_eval("(protocol P (message m [] : Str)) " &
+               "(type T ^props {} (impl P (message m [] : Str \"ok\"))) " &
+               "(fn call_it [f : Callable] (f (T))) (call_it P:m)",
+               "\"ok\"")
 
   test "a dynamic send accepts an expression that yields a message value":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &

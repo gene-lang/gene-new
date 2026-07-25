@@ -682,7 +682,7 @@ Syntax calls use a `SyntaxCall` envelope:
   (message apply_syntax [call : SyntaxCall, caller_env : CallerEnv] : Any))
 ```
 
-`Fn`, `Type`, `Selector`, native functions, and user-defined callable values implement `Callable`. A protocol message is a message identity, not a callable (§3). `Fn!` values created by `fn!` implement `SyntaxCallable`.
+`Fn`, `Type`, `Selector`, native functions, and user-defined callable values implement `Callable`. A protocol message in value position is a dispatching closure, so it implements `Callable` too (§3). `Fn!` values created by `fn!` implement `SyntaxCallable`.
 
 To evaluate `(h ^p v c1 c2)`:
 
@@ -805,9 +805,19 @@ rejection happens before any remaining send argument is evaluated. Syntax
 callables are invoked only in ordinary call-head position; send syntax is never
 reinterpreted as a syntax call.
 
-Symmetrically, a message identity is **not callable outside `~`**: `(P/m x)` in
-head position and higher-order use such as `(map xs P/m)` both raise
-`CallKindError`. Reach for a lambda instead: `(map xs (fn [x] (x ~ P/m)))`.
+**Head position is rejected; value position dispatches.** `(P:msg x)` is a
+compile-time error — `:` reads as its own node, so the check does not wait for
+the callee to evaluate — and the diagnostic names the fix, `(x ~ P:msg)`. This
+only rejects; it never picks between two meanings.
+
+In any other position `P:msg` is a **dispatching closure**, equivalent to
+`(fn [x rest...] (x ~ P:msg rest...))`, so `(map xs P:msg)` dispatches per
+element and needs no lambda. Its signature is `(receiver, ...send args)`. The
+closure carries its defining scope, so impls resolve where the value was
+*written* — which is the send-site rule already in force, and is what makes a
+message usable inside a lazy combinator that retains only a callable and has no
+send site of its own. The cost is that such a value answers reflection,
+equality, and serialization as a function, not as a distinct message identity.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 

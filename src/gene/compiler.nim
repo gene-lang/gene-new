@@ -4293,11 +4293,32 @@ proc compilePath(c: var Compiler, node: Value) =
       discard c.emit(opApplySelectorTop)
 
 proc compileMessageValue(c: var Compiler, node: Value) =
-  ## `Proto:msg` / `T:msg` in value position (design §3). The reader gives this
-  ## its own node so `:` and `/` can compile differently; for now it resolves
-  ## exactly as the member selection did, so splitting the shape is not itself a
-  ## behavior change.
-  compilePath(c, node)
+  ## `Proto:msg` in value position (design §3, decision 2): a *dispatching
+  ## closure*, the equivalent of `(fn [x rest...] (x ~ Proto:msg rest...))`.
+  ##
+  ## Not a first-class message identity, deliberately. A message value that
+  ## escapes into a higher-order function has no send site, so it has no scope
+  ## to resolve impls against — that is what sank the previous attempt, where
+  ## `($map (xs ~ to_stream) Shown:show)` could not find an impl that was
+  ## canonical and in the same module. A closure carries its defining scope, so
+  ## the impl resolves where the value was *written*, which is the send-site
+  ## rule already in force. Nothing is bolted onto the value representation, so
+  ## the NaN-boxed layer is untouched.
+  ##
+  ## The send callee position `(x ~ Proto:msg)` never reaches here — it keeps
+  ## the message value — and head position is rejected before this, so the three
+  ## positions stay distinct.
+  ##
+  ## Parameter names are lowercase, and a qualifier is always uppercase (the
+  ## declaration case rule), so neither can shadow the qualifier the body
+  ## resolves lexically.
+  let recv = newSym("__msg_recv")
+  let rest = newSym("__msg_rest")
+  let send = newNode(recv, body = @[
+    newSym("~"), node,
+    newNode(newSym("..."), body = @[rest])])
+  compileExpr(c, newNode(newSym("fn"), body = @[
+    newList(@[recv, newSym("__msg_rest...")]), send]))
 
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind
@@ -4422,6 +4443,13 @@ proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
   if callee.kind == vkNode and callee.head.isSymbol("unquote") and
       callee.body.len == 1:
     return callee.body[0]
+  if callee.kind == vkNode and callee.head.isSymbol("msg"):
+    # Send-callee position keeps the *message value* — this is the one place a
+    # message is not a dispatching closure, because the send itself supplies the
+    # receiver and the scope. Compiling it as a member selection rather than
+    # through `compileMessageValue` is also what stops the desugaring recursing:
+    # the closure it builds contains a send whose callee is this same node.
+    return newNode(newSym("path"), body = callee.body)
   callee
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
@@ -4485,6 +4513,20 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
     c.chunk.callSites[callIndex] = node
 
 proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
+  if node.head.kind == vkNode and node.head.head.isSymbol("msg"):
+    # A message in head position (design §3, decision 3). This used to be a
+    # runtime `CallKindError` because `Proto:msg` was indistinguishable from a
+    # member path until it evaluated; now that `:` reads as its own node the
+    # check runs at compile time, where the habit is actually being redirected.
+    # It only rejects — it never picks between two meanings — so it stays on the
+    # safe side of the line the first message-model attempt crossed.
+    var parts: seq[string]
+    for segment in node.head.body:
+      parts.add (if segment.kind == vkSymbol: segment.symVal else: $segment)
+    let shown = parts.join(":")
+    raise newException(GeneError,
+      "a message dispatches only through ~: write (x ~ " & shown &
+      ") instead of (" & shown & " x)")
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       node.body[0].symVal == "~":
     # (x ~ f a) — infix message send (docs/core.md §9.1).
