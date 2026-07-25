@@ -151,7 +151,7 @@ const MaxMacroExpansionDepth = 100
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
   "let", "var", "const", "set", "~",
-  "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "ns",
+  "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
   "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
@@ -4292,6 +4292,13 @@ proc compilePath(c: var Compiler, node: Value) =
       compileSelectorParts(c, parts.toOpenArray(start, i - 1))
       discard c.emit(opApplySelectorTop)
 
+proc compileMessageValue(c: var Compiler, node: Value) =
+  ## `Proto:msg` / `T:msg` in value position (design §3). The reader gives this
+  ## its own node so `:` and `/` can compile differently; for now it resolves
+  ## exactly as the member selection did, so splitting the shape is not itself a
+  ## behavior change.
+  compilePath(c, node)
+
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind
   of vkSymbol:
@@ -4384,6 +4391,11 @@ proc sendCalleeName(callee: Value): string =
     for segment in callee.body:
       parts.add (if segment.kind == vkSymbol: segment.symVal else: $segment)
     parts.join("/")
+  elif callee.kind == vkNode and callee.head.isSymbol("msg"):
+    var parts: seq[string]
+    for segment in callee.body:
+      parts.add (if segment.kind == vkSymbol: segment.symVal else: $segment)
+    parts.join(":")
   elif callee.kind == vkNode and callee.head.isSymbol("unquote") and
       callee.body.len == 1 and callee.body[0].kind == vkSymbol:
     "%" & callee.body[0].symVal
@@ -5606,6 +5618,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "path":
       compilePath(c, node)
+      return
+    of "msg":
+      compileMessageValue(c, node)
       return
     of "ns":
       compileNs(c, node)

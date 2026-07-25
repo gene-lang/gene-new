@@ -177,6 +177,9 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["macro"], "(macro identity! [x] `%x) (identity! 1)")
     fixture(["quote", "quasiquote", "select", "path"],
       "(do (quote x) (quasiquote x) (select name) (path a b))")
+    # `msg` is what the reader gives `Proto:msg`; `/` stays `path`.
+    fixture(["msg"], "(protocol FixtureMsgProto (message m [] : Int)) " &
+                     "(fn use [x] (x ~ FixtureMsgProto:m))")
     fixture(["ns"], "(ns sample (var x 1))")
     fixture(["env"], "(env ^bindings {^x 1})")
     fixture(["eval"], "(eval (quote 1) ^in (env))")
@@ -4953,7 +4956,10 @@ suite "spec — qualified message spelling":
                "(impl P for T (message m [] : Str \"impl\")) " &
                "[((T) ~ P:m) ((T) ~ P/m)]",
                "[\"impl\" \"impl\"]")
-    check_read("A:b", "(path A b)")
+    # `:` is its own node: `/` selects a member, `:` names a message, and the
+    # two compile differently in value position.
+    check_read("A:b", "(msg A b)")
+    check_read("a/b", "(path a b)")
 
   test "a delimited colon keeps its existing meanings":
     # annotation, general-map entry, and a trailing `^key:` are untouched: `:`

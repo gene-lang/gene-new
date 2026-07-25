@@ -1508,9 +1508,11 @@ proc parseForm(r: var Reader, inList = false): Value =
       let lex = tok.lexeme
       let colonAt = qualifiedMessageSplit(lex)
       if colonAt > 0 and '/' notin lex:
-        # `Proto:msg` names a protocol message; it resolves as the member `msg`
-        # of `Proto`, the same shape the older `Proto/msg` spelling produced.
-        finish newNode(newSym("path"),
+        # `Proto:msg` names a message. This is its own node, not `(path P m)`:
+        # `/` selects a member and `:` names a message, and the two have to be
+        # told apart to give a message value in *value* position a different
+        # compilation from a member selection (design §3, decisions 2/4/5).
+        finish newNode(newSym("msg"),
                        body = @[newSym(lex[0 ..< colonAt]),
                                 newSym(lex[colonAt + 1 .. ^1])])
       if not inList:
