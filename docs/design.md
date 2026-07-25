@@ -810,6 +810,23 @@ compile-time error — `:` reads as its own node, so the check does not wait for
 the callee to evaluate — and the diagnostic names the fix, `(x ~ P:msg)`. This
 only rejects; it never picks between two meanings.
 
+**A type qualifies a message too, and `Self` is the qualifier that names no
+type.** `T:msg` and `Self:msg` are the type-direct spellings, and both
+*dispatch*: the qualifier says which table the name lives in, never which
+function to run. So on a `Pup ^is Dog` that overrides `bark`, `(p ~ Dog:bark)`,
+`(p ~ Self:bark)`, and the bare `(p ~ bark)` all give `Pup`'s. This is
+structural, not a promise — a type qualifier is never consulted for the lookup,
+only the receiver is. `Self` names no type at all, which makes it exactly the
+bare send, and it is reserved: a program may not declare it.
+
+`Self:msg` is what gives a bare message name a *value* spelling, since message
+names are not lexical bindings:
+
+```gene
+(map xs P:show)      # each element's impl of P
+(map xs Self:show)   # each element's own type-direct show
+```
+
 In any other position `P:msg` is a **dispatching closure**, equivalent to
 `(fn [x rest...] (x ~ P:msg rest...))`, so `(map xs P:msg)` dispatches per
 element and needs no lambda. Its signature is `(receiver, ...send args)`. The

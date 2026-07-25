@@ -203,7 +203,11 @@ const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 # `~` is the send operator and is reserved in executable position (design §3).
 # The reader still tokenizes it (so quoted data like `(quote (a ~ b))`
 # round-trips), but it may not be bound, set, or declared as a name.
-const reservedOperatorNames = ["~", "super"]
+# `Self` is the receiver's own type in a message qualifier (`Self:msg`, design
+# §3) and in annotation position. Like `super` it denotes rather than binds, so
+# a program may not declare it — otherwise `(type Self ...)` would make the
+# qualifier mean two things.
+const reservedOperatorNames = ["~", "super", "Self"]
 
 const bareOperatorNames* = [
   # Operators are a closed, language-defined set (design §2.2): a program is not
@@ -260,8 +264,8 @@ proc validateBindingName(name: string) =
       "reserved standard-library root cannot be bound: " & name)
   if name in reservedOperatorNames:
     raise newException(GeneError,
-      "'" & name & "' is reserved (send operator / super receiver) and " &
-      "cannot be bound (design §3/§10)")
+      "'" & name & "' is reserved (send operator / super receiver / Self) " &
+      "and cannot be bound (design §3/§10)")
 
 proc reserveLocal(c: var Compiler, name: string): int =
   validateBindingName(name)
@@ -4453,7 +4457,8 @@ proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
   callee
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
-                 sendName: string, argsStart: int, messageExpr = NIL) =
+                 sendName: string, argsStart: int, messageExpr = NIL,
+                 qualifierExpr = NIL) =
   ## Message send (docs/core.md §9.1): the name after `~` resolves
   ## receiver-first at runtime. Stack shape matches ordinary calls:
   ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
@@ -4480,6 +4485,15 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         "' is a qualified or dynamic callee, which is not yet supported")
     compileExpr(c, newSym("self"))
     discard c.emit(opSuperSend, 0, name = sendName)
+  elif qualifierExpr.kind != vkNil:
+    # `(x ~ Q:msg)` — push the *qualifier*, not a member of it. The qualifier
+    # names the message and never selects the impl (design §3, decision 5), so
+    # dispatch is on the receiver in both cases: a protocol qualifier resolves
+    # a visible impl, a type qualifier resolves the receiver's own type-direct
+    # message. The name travels in the instruction.
+    compileExpr(c, receiver)
+    compileExpr(c, qualifierExpr)
+    discard c.emit(opQualifiedSend, 0, name = sendName)
   elif messageExpr.kind != vkNil:
     compileExpr(c, receiver)
     compileExpr(c, messageExpr)
@@ -4549,6 +4563,24 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         args.add node.body[i]
       compileCall(c, newNode(node.body[1], node.props, args, node.meta),
                   allowSyntax = false)
+      return
+    # `(x ~ Q:msg)` — the qualifier names the message and never selects the
+    # impl, so dispatch is on the receiver either way (design §3, decision 5).
+    # `Self` declines to name a type at all, which makes it exactly the bare
+    # send; any other qualifier is a value whose kind decides at run time.
+    if node.body[1].kind == vkNode and node.body[1].head.isSymbol("msg") and
+        node.body[1].body.len == 2 and
+        node.body[1].body[1].kind == vkSymbol and
+        not node.props.hasKey("protocol") and
+        not node.props.hasKey("receiver") and
+        not node.props.hasKey("types"):
+      let qualifier = node.body[1].body[0]
+      let messageName = node.body[1].body[1].symVal
+      if qualifier.isSymbol("Self"):
+        compileSend(c, node, node.head, messageName, 2)
+      else:
+        compileSend(c, node, node.head, messageName, 2,
+                    qualifierExpr = qualifier)
       return
     compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
                 messageExpr = sendMessageExpr(c, node, node.body[1]))

@@ -120,6 +120,7 @@ type
     opSyntaxGuard # if the callee on top is a fn!, syntax_call the const node and jump
     opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
+    opQualifiedSend # pop receiver + qualifier (`Q` of `Q:msg`); dispatch `name` on the receiver
 
   Instruction* = object
     op*: OpCode
@@ -798,7 +799,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " target=" & $inst.intArg
   of opSyntaxCall, opRejectSyntaxSend:
     discard
-  of opResolveQualifiedMessage:
+  of opResolveQualifiedMessage, opQualifiedSend:
     result.add " name=" & inst.name
   of opSyntaxGuard:
     result.add " target=" & $inst.intArg & " const=" & $inst.depth

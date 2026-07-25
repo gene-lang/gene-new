@@ -392,6 +392,19 @@ proc main() =
   bench("vm.protocol_message.with_arg.compiled_chunk", 500_000, i):
     let v = run(sendArgChunk, protocolScope)
     checksum = checksum + v.intVal
+  # `:` is the canonical message spelling and compiles to a different opcode
+  # from `/`: it pushes the *qualifier* and dispatches the name on the receiver,
+  # rather than member-selecting a message value first. Both are measured so the
+  # pair stays honest while `/` is withdrawn. `Self:` names no type at all and
+  # lowers to the bare send, so it should sit on the type-direct line.
+  let colonProtocolChunk = compileSource("(box ~ ToInt:to_int)")
+  bench("vm.protocol_message.colon.compiled_chunk", 500_000, i):
+    let v = run(colonProtocolChunk, protocolScope)
+    checksum = checksum + v.intVal
+  let colonSelfChunk = compileSource("(box ~ Self:get)")
+  bench("vm.type_message.self_colon.compiled_chunk", 500_000, i):
+    let v = run(colonSelfChunk, protocolScope)
+    checksum = checksum + v.intVal
   # Built-in and `super` dispatch are measured separately from protocol sends.
   # The built-in send resolves through its type namespace and lands slightly
   # above the 1-arg call reference. `super` reads the parent identity stamped on

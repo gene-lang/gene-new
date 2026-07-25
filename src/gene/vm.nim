@@ -12429,6 +12429,75 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             rejectSyntaxSend(callee, scope)
           spush callee
           spush receiver
+        of opQualifiedSend:
+          # `(x ~ Q:msg)` — Q is on top, the receiver below it. The qualifier
+          # *names* the message and never selects the impl (design §3, decision
+          # 5), so dispatch is on the receiver in both cases and Q only decides
+          # which table the name is looked up in. `Self:msg` never reaches here:
+          # it declines to name a type, so it compiles to the bare send.
+          if sp < 2:
+            raise newException(GeneError,
+              "VM stack underflow resolving qualified send")
+          let qualifier = spop()
+          let receiver = spop()
+          let recvType = receiver.receiverType
+          var callee = NIL
+          var cacheable = false
+          when dispatchCacheEnabled:
+            # Guard: receiver type + qualifier identity + impl epoch. The
+            # message name is fixed per call site, so it needs no bits.
+            cacheable = recvType.kind == vkType and
+              not scope.chainHasTransientImpls()
+            if cacheable:
+              callee = chunk.dispatchCacheLookup(ip - 1, recvType,
+                                                 qualifier.bits,
+                                                 scope.application().implEpoch)
+          if callee.kind == vkNil:
+            case qualifier.kind
+            of vkProtocol:
+              # Name the message through the protocol, then resolve the impl
+              # visible from this send site — the existing qualified path.
+              var message = qualifier.protocolMessages.getOrDefault(
+                inst[].name, VOID)
+              if message.kind == vkVoid:
+                let candidates = qualifier.protocolClosureByName(inst[].name)
+                if candidates.len == 1:
+                  message = candidates[0]
+                elif candidates.len > 1:
+                  raise newException(GeneError,
+                    "ambiguous message '" & inst[].name & "' in protocol " &
+                    qualifier.protocolName &
+                    "; qualify with the defining protocol")
+              if message.kind != vkProtocolMessage:
+                raiseMessageError(inst[].name, qualifier.protocolName, scope,
+                                  protocol = qualifier.protocolName,
+                                  missingImpl = true)
+              callee = resolveProtocolMessage(scope, message, receiver)
+            of vkType:
+              # A type qualifier resolves the *receiver's* own type-direct
+              # message. The qualifier is never consulted for the lookup, which
+              # is what makes "names the message, never selects the impl"
+              # structural rather than a promise.
+              if recvType.kind == vkType:
+                callee = typeDirectMessage(recvType, inst[].name)
+              if callee.kind == vkNil:
+                callee = builtinReceiverMessage(scope, receiver, inst[].name)
+              if callee.kind == vkNil:
+                let recvTypeName =
+                  if recvType.kind == vkType: recvType.typeName
+                  else: declarationKind(receiver)
+                raiseMessageError(inst[].name, recvTypeName, scope, false)
+            else:
+              raiseCallKindError("message send", "Protocol or Type",
+                                 freezeRejectName(qualifier), qualifier, scope)
+            when dispatchCacheEnabled:
+              if cacheable and callee.kind != vkNil:
+                chunk.dispatchCacheFill(ip - 1, recvType, qualifier.bits,
+                                        scope.application().implEpoch, callee)
+          if callee.isSyntaxFn:
+            rejectSyntaxSend(callee, scope)
+          spush callee
+          spush receiver
         of opReturn:
           frameReturn(if sp > 0: spop() else: NIL)
         of opReturnBareInt:

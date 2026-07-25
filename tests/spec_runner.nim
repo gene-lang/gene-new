@@ -4984,6 +4984,46 @@ suite "spec — qualified message spelling":
     check_read("A:b", "(msg A b)")
     check_read("a/b", "(path a b)")
 
+  test "a type qualifier names the message and never selects the impl":
+    # Decision 5. `T:msg` and `Self:msg` both *dispatch* on the receiver. The
+    # qualifier only says which table the name lives in; it is never consulted
+    # to pick the function, so an override wins even when the parent is named.
+    check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
+               "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
+               "[((Pup) ~ bark) ((Pup) ~ Dog:bark) ((Pup) ~ Self:bark)]",
+               "[\"yip\" \"yip\" \"yip\"]")
+    # In value position both are dispatching closures, so a bare message name —
+    # which is not a lexical binding and has no other value spelling — becomes
+    # writable as `Self:msg`.
+    check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
+               "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
+               "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
+               "(var xs [(Dog) (Pup) (Cat)]) " &
+               "[(($map ($to_stream xs) Self:bark) ~ into []) " &
+               " (($map ($to_stream xs) Dog:bark) ~ into [])]",
+               "[[\"woof\" \"yip\" \"meow\"] [\"woof\" \"yip\" \"meow\"]]")
+    # Built-in surfaces are types, so they qualify the same way.
+    check_eval("[(($cell 7) ~ Cell:get) " &
+               " (($map ($to_stream [($cell 1) ($cell 2)]) Cell:get) ~ into [])]",
+               "[7 [1 2]]")
+    # A protocol qualifier still resolves a visible impl. The receiver is a user
+    # type, not `Int`: an impl on a *built-in* type is keyed on an identity that
+    # `gScalarTypes` hands out process-wide, so it stops resolving once a second
+    # Application rebuilds the built-ins. That is a real bug, reproduced and
+    # recorded separately; it is not what this test is about.
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(type N ^props {^v Int} (impl Shown (message show [] : Str \"n\"))) " &
+               "(var xs [(N ^v 1) (N ^v 2)]) " &
+               "[((N ^v 3) ~ Shown:show) " &
+               " (($map ($to_stream xs) Shown:show) ~ into [])]",
+               "[\"n\" [\"n\" \"n\"]]")
+
+  test "Self is reserved":
+    # `Self` denotes the receiver's type rather than binding one, so a program
+    # may not declare it — otherwise the qualifier would mean two things.
+    check_compile_error("(type Self ^props {})", "reserved")
+    check_compile_error("(var Self 1)", "reserved")
+
   test "a delimited colon keeps its existing meanings":
     # annotation, general-map entry, and a trailing `^key:` are untouched: `:`
     # is structural only when glued between two symbol characters.
