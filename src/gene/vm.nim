@@ -5328,16 +5328,27 @@ proc buildBuiltins(app: Application): Scope =
   result.define("present?", newNativeFn("present?", biIsPresent))
   result.define("first", newNativeFn("first", biListFirst))
   result.define("last", newNativeFn("last", biListLast))
+  # Shared conversion natives, bound once. They are messages on the container
+  # types *and* bare library functions, so the same value has to answer
+  # `($to_stream xs)` and `(xs ~ to_stream)`; the root definitions further down
+  # reuse these locals.
+  let toStreamFn = newNativeFn("to_stream", biToStream)
+  let toPairsStreamFn = newNativeFn("to_pairs_stream", biToPairsStream)
   let listScope = newScope(result)
   listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
   listScope.define("set!", newNativeFn("List/set!", biListSetBang))
   listScope.define("push!", newNativeFn("List/push!", biListPushBang))
   result.define("List", newNamespace("List", listScope))
-  let mapScope = newScope(result)
-  mapScope.define("assoc", newNativeFn("Map/assoc", biMapAssoc))
-  mapScope.define("get", newNativeFn("Map/get", biMapGet))
-  mapScope.define("put!", newNativeFn("Map/put!", biMapPutBang))
-  result.define("Map", newNamespace("Map", mapScope))
+  # `Map` is the message surface for both map representations. `PropMap` and
+  # `HashMap` name the representations in annotations; neither carries messages
+  # of its own, so both kinds dispatch as `Map`.
+  let mapType = result.defineBuiltinType(vkMap, "Map", {
+    "assoc": newNativeFn("Map/assoc", biMapAssoc),
+    "get": newNativeFn("Map/get", biMapGet),
+    "put!": newNativeFn("Map/put!", biMapPutBang),
+    "to_stream": toStreamFn,
+    "to_pairs_stream": toPairsStreamFn})
+  gScalarTypes[vkHashMap] = mapType
   # `Node` carries the mutators and the four anatomy projections. The
   # projections are reachable on *any* node shape, including a typed instance,
   # because a typed instance is structurally a node — that is the §1.2
@@ -5529,8 +5540,8 @@ proc buildBuiltins(app: Application): Scope =
                                             acceptsNamed = false))
   result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
-  result.define("to_stream", newNativeFn("to_stream", biToStream))
-  result.define("to_pairs_stream", newNativeFn("to_pairs_stream", biToPairsStream))
+  result.define("to_stream", toStreamFn)
+  result.define("to_pairs_stream", toPairsStreamFn)
   result.define("map", newNativeFn("map", biStreamMap))
   result.define("filter", newNativeFn("filter", biStreamFilter))
   result.define("take", newNativeFn("take", biStreamTake))
@@ -7421,11 +7432,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
   of vkRange:
     var m = typeNsMessage(scope, "Range", name)
     if m.kind == vkNil: m = convertMessage(scope, name, ["to_stream"])
-    m
-  of vkMap, vkHashMap:
-    var m = typeNsMessage(scope, "Map", name)
-    if m.kind == vkNil:
-      m = convertMessage(scope, name, ["to_stream", "to_pairs_stream"])
     m
   of vkNode:
     # Only a *typed* instance reaches here: a data node's dispatch face is

@@ -2027,7 +2027,17 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer Node]", "[(type Cell) (type Buffer) (type Node)]")
+    check_eval("[Cell Buffer Node Map]",
+               "[(type Cell) (type Buffer) (type Node) (type Map)]")
+    # Both map representations dispatch as `Map`; `PropMap`/`HashMap` name the
+    # representations in annotations and carry no messages of their own.
+    check_eval("(protocol Sz (message sz [] : Int)) " &
+               "(impl Sz for Map (message sz [] : Int 7)) " &
+               "[({^a 1} ~ Sz:sz) ({{\"a\" : 1}} ~ Sz:sz) " &
+               " ({{\"a\" : 1}} ~ get \"a\") " &
+               " ((fn [m : PropMap] 1) {^a 1}) " &
+               " ((fn [m : (Map Sym Any)] 2) {^a 1})]",
+               "[7 7 1 1 2]")
     check_eval("[(Cell ~ name) (Cell ~ fields)]", "[\"Cell\" []]")
     # A generic annotation on a built-in stays on the symbolic matching path,
     # so making the surface a type does not disturb `(Buffer T)`.
