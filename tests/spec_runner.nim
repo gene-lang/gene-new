@@ -2016,11 +2016,31 @@ suite "spec — implicit self in message bodies from design §10":
                "catch (CallKindError ^expected e) e)",
                "\"Message\"")
     # A built-in operation is type-direct, so it takes the bare form; the
-    # namespace member stays available in ordinary call position.
+    # qualified member spelling stays available in ordinary call position.
     check_eval("(var c ($cell 7)) " &
                "[(c ~ get) (Cell/get c) " &
                " (try (c ~ Cell/get) catch (CallKindError ^expected e) e)]",
                "[7 7 \"Message\"]")
+
+  test "a built-in surface is a type, so it can receive impls":
+    # `Cell` is a real type whose message table holds get/set/swap/update
+    # (design §12.2), not a namespace of natives. That is what lets a protocol
+    # name it as a receiver — the same declaration used to crash with
+    # `FieldDefect: value is not a Type`.
+    check_eval("Cell", "(type Cell)")
+    check_eval("[(Cell ~ name) (Cell ~ fields)]", "[\"Cell\" []]")
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(impl Shown for Str (message show [] : Str self)) " &
+               "(impl Shown for Cell " &
+               "  (message show [] : Str ((self ~ get) ~ Shown:show))) " &
+               "(($cell \"hi\") ~ Shown:show)",
+               "\"hi\"")
+    # All three spellings resolve through the one message table, and a name it
+    # does not hold is still a MessageError naming the type.
+    check_eval("(var c ($cell 1)) " &
+               "[(c ~ get) (Cell/get c) c/~get " &
+               " (try (c ~ nope) catch (MessageError ^receiver_type t) t)]",
+               "[1 1 1 \"Cell\"]")
 
   test "a message identity is not callable outside a send":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &

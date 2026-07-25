@@ -5012,6 +5012,25 @@ proc typeReflectionMessage(name: string): Value =
   of "name": newNativeFn("Type/name", biTypeName)
   else: NIL
 
+proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
+                       messages: openArray[(string, Value)]): Value {.discardable.} =
+  ## A built-in surface as a real type rather than a namespace of natives
+  ## (design §12). Its operations go into the type's own message table, so one
+  ## resolution path serves all three spellings: `(x ~ op)` goes through
+  ## `receiverType` → `typeDirectMessage` like any user type, `T/op` still
+  ## resolves as a member because a type exposes its messages as members, and
+  ## `(impl P for T)` works because `T` is now a receiver a protocol can name.
+  ##
+  ## `receiverType` reads `gScalarTypes`, so registering the kind here is what
+  ## replaces the `builtinReceiverMessage` arm — that arm must go in the same
+  ## change, leaving exactly one path.
+  var table = initTable[string, Value]()
+  for entry in messages:
+    table[entry[0]] = entry[1]
+  result = newType(name, NIL, @[], @[], scope, messages = table)
+  gScalarTypes[kind] = result
+  scope.define(name, result)
+
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
   ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
@@ -5368,12 +5387,11 @@ proc buildBuiltins(app: Application): Scope =
                               biNetTcpWriteTextAsync))
   result.define("Net", newNamespace("Net", netScope))
   result.define("cell", newNativeFn("cell", biCell))
-  let cellScope = newScope(result)
-  cellScope.define("get", newNativeFn("Cell/get", biCellGet))
-  cellScope.define("set", newNativeFn("Cell/set", biCellSet))
-  cellScope.define("swap", newNativeFn("Cell/swap", biCellSwap))
-  cellScope.define("update", newNativeFn("Cell/update", biCellUpdate))
-  result.define("Cell", newNamespace("Cell", cellScope))
+  result.defineBuiltinType(vkCell, "Cell", {
+    "get": newNativeFn("Cell/get", biCellGet),
+    "set": newNativeFn("Cell/set", biCellSet),
+    "swap": newNativeFn("Cell/swap", biCellSwap),
+    "update": newNativeFn("Cell/update", biCellUpdate)})
   result.define("atomic_cell", newNativeFn("atomic_cell", biAtomicCell))
   let atomicCellScope = newScope(result)
   atomicCellScope.define("load", newNativeFn("AtomicCell/load", biAtomicCellLoad))
@@ -7397,8 +7415,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     if m.kind == vkNil:
       m = convertMessage(scope, name, ["head", "props", "body", "meta"])
     m
-  of vkCell:
-    typeNsMessage(scope, "Cell", name)
   of vkAtomicCell:
     typeNsMessage(scope, "AtomicCell", name)
   of vkStream:

@@ -757,8 +757,9 @@ true of the whole operator and not just of bare names.
 Because only protocols give a message a qualified spelling, the qualifier is a
 reliable signal: **bare means type-direct, qualified means protocol.** Built-in
 operations are type-direct messages, so they take the bare form — `(c ~ get)`,
-not `(c ~ Cell/get)` — while `Cell/get` remains an ordinary member usable in
-call position, `(Cell/get c)`.
+not `(c ~ Cell/get)`. `Cell` is a real type whose messages are `get`, `set`,
+`swap`, and `update`, and a type exposes its messages as qualified members
+(§7.1), so `Cell/get` remains usable in call position, `(Cell/get c)`.
 
 **Case carries meaning in the stdlib: `Name` is a type's message surface,
 `name` is a namespace of functions.** Both live under the `gene` root, so an
@@ -3082,13 +3083,25 @@ Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
 (count ~ update (fn [x] (+ x 1)))
 ```
 
-These operations are **type-direct messages** on the receiver's built-in type
-(§3), so they take the bare form: `(count ~ get)`, `(count ~ set 10)`, and the
-path form `count/~get` all resolve the same message. A qualified send names a
-*protocol* message, so `(count ~ Cell/get)` is an error — `Cell/get` is an
-ordinary namespace member and is used in call position, `(Cell/get count)`. The
-same holds for the other built-in types — `List`, `Map`, `Node`, `Buffer`,
-`AtomicCell`, `Stream`, `Channel`, `Task`, `ReplyTo`.
+`Cell` is a **type**, not a namespace of functions, and `get`/`set`/`swap`/
+`update` are its **type-direct messages** (§3). So they take the bare form:
+`(count ~ get)`, `(count ~ set 10)`, and the path form `count/~get` all resolve
+the same message, through the same lookup that serves a user-declared type. A
+qualified send names a *protocol* message, so `(count ~ Cell/get)` is an error —
+`Cell/get` is the qualified member spelling every type gives its messages
+(§7.1), and is used in call position, `(Cell/get count)`.
+
+Being a real type is what makes `Cell` nameable as an impl receiver:
+
+```gene
+(protocol Shown (message show [] : Str))
+(impl Shown for Cell
+  (message show [] : Str ((self ~ get) ~ Shown:show)))
+```
+
+The other built-in surfaces — `List`, `Map`, `Node`, `Buffer`, `AtomicCell`,
+`Stream`, `Channel`, `Task`, `ReplyTo` — send the same way; they are being moved
+to types one at a time.
 
 Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed inside specialized typed cells, but the semantic model is a mutable reference containing a Gene value.
 
@@ -3805,8 +3818,9 @@ whatever the program binds it to, and the standard library is reached through
 
 The split is by **case**, because case already tells types from functions:
 
-- An **uppercase** name is a *type* — a type value, an error type, or a type's
-  message namespace (`Cell`, `List`, `Map`, `TypeError`, `Actor`, `C`). These
+- An **uppercase** name is a *type* — a type value (`Int`, `Str`, `Cell`), an
+  error type (`TypeError`), or a type's message namespace for the surfaces not
+  yet moved onto their type (`List`, `Map`, `Actor`, `C`). These
   stay bare, because type annotations resolve names structurally rather than as
   bindings — `[xs : List]` must keep working, and `[xs : $List]` is not how an
   annotation reads. Uppercase names are also the ones a program is least likely
