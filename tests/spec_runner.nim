@@ -1185,6 +1185,14 @@ suite "spec — numeric boundaries from design":
                "($buffer C/UInt8 [1 2]))",
                "true")
     check_eval("((fn [b : (Buffer Int)] true) ($buffer [1 2]))", "true")
+    # A Gene scalar type names an element type too, not just a C ABI type.
+    # This reaches the boundary as a resolved `vkType` value rather than a
+    # name, so it exercises the built-in arm of `isInstanceOfType`.
+    check_eval("(var b ($buffer Int [1 2 3])) [(b ~ len) (b ~ to_list)]",
+               "[3 [1 2 3]]")
+    check_eval("(var b ($buffer Str [\"a\"])) (b ~ to_list)", "[\"a\"]")
+    expect GeneError:
+      discard run(compileSource("($buffer Int [\"a\"])"), newGlobalScope())
     expect GeneError:
       discard run(compileSource("($buffer C/UInt8 [256])"),
                   newGlobalScope())

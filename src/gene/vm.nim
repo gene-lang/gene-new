@@ -14484,8 +14484,16 @@ proc isInstanceOfType(value, expected: Value): bool =
   if expected.isEnumType:
     let enumType = value.enumValueEnum
     return enumType.kind == vkType and enumType.isSubtypeOf(expected)
-  value.kind == vkNode and value.head.kind == vkType and
-    value.head.isSubtypeOf(expected)
+  if value.kind == vkNode and value.head.kind == vkType and
+      value.head.isSubtypeOf(expected):
+    return true
+  # Built-in surfaces are real types, so an annotation can arrive here as a
+  # resolved type value rather than a name — `Int` reaching a buffer's element
+  # boundary, or `[c : Cell]` once a local nominal lookup finds the built-in.
+  # A built-in type matches by value kind, which is the same answer
+  # `matchesBuiltinType` gives for the corresponding name.
+  let builtin = gScalarTypes[value.kind]
+  builtin.kind == vkType and builtin.isSubtypeOf(expected)
 
 proc intInRange(value: Value, low, high: int64): bool {.inline.} =
   value.kind == vkInt and
