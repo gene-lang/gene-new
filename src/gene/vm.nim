@@ -358,10 +358,86 @@ const supervisorFailureRetryCapacity = 64
 var gScalarTypes: array[ValueKind, Value]
 
 var gBuiltinSurfaceTypes: HashSet[uint64]
-  ## Identities of every built-in surface type ever registered, across
-  ## applications. `gScalarTypes` holds only the newest application's, which is
-  ## not enough for the shadowing question below: a second application must not
-  ## make the first one's `Channel` look like a user declaration.
+  ## Identities of every built-in surface type. Read by `isBuiltinSurfaceType`
+  ## to tell "the annotation named the built-in" from "a local declaration
+  ## shadows it".
+
+# ---------------------------------------------------------------------------
+# Built-in surface singletons
+# ---------------------------------------------------------------------------
+#
+# The built-in types and the natives they share with the lexical root are built
+# **once per process**, not once per `Application`.
+#
+# Type identity is semantic identity: an impl is keyed on the receiver's type,
+# so two `Int` objects that do not compare equal silently lose impls. That was a
+# real bug — `(impl Shown for Int …)` stopped resolving the moment a second
+# Application rebuilt the built-ins, in a scope that had been working. Making
+# the table per-application would only move that boundary; sharing one identity
+# removes the failure mode.
+#
+# It is also what multithreading wants. After construction these values are
+# immutable — no fields, no parent, no ctor, message tables fixed at
+# construction — so the read path needs no synchronization at all, and
+# `receiverType` keeps its plain array index on every send. A per-application
+# table would instead add a lookup to the hottest dispatch path, and would do it
+# most expensively on the atomicArc worker lane, which is exactly where the
+# dispatch cache is already disabled.
+#
+# Constraints this places on the values, all currently true:
+#   * nothing may mutate them after construction;
+#   * they are never freed or rebuilt, because cross-thread refcounting is
+#     atomic only under `--mm:atomicArc` (the gate the worker lane already uses);
+#   * applications are therefore *not* isolated with respect to these objects.
+#     That is sound because they carry no per-application state: impls live on
+#     scopes, never on the type.
+var gBuiltinTypeSingletons: Table[string, Value]
+var gBuiltinNativeSingletons: Table[string, Value]
+
+when compileOption("threads"):
+  var gBuiltinSurfaceLock: Lock
+  initLock(gBuiltinSurfaceLock)
+  # A distinct lock for per-application construction. `buildBuiltins` calls
+  # `defineBuiltinType`, which takes the surface lock, so guarding both with one
+  # non-reentrant lock would deadlock.
+  var gAppBuiltinsLock: Lock
+  initLock(gAppBuiltinsLock)
+
+template withAppBuiltinsLock(body: untyped) =
+  when compileOption("threads"):
+    acquire(gAppBuiltinsLock)
+    try:
+      body
+    finally:
+      release(gAppBuiltinsLock)
+  else:
+    body
+
+template withBuiltinSurfaceLock(body: untyped) =
+  ## Construction is the only mutation, and a second thread reaching a fresh
+  ## `Application` first would otherwise race it.
+  when compileOption("threads"):
+    acquire(gBuiltinSurfaceLock)
+    try:
+      body
+    finally:
+      release(gBuiltinSurfaceLock)
+  else:
+    body
+
+proc sharedBuiltinNative(key: string, fresh: Value): Value =
+  ## The process-wide instance for `key`. `fresh` is built by the caller and
+  ## kept only the first time; later applications discard theirs. That waste is
+  ## a handful of objects per application, and it buys identity: a native bound
+  ## both into the lexical root and into a type's message table has to be one
+  ## value, or `(same? $size List/size)` is false in every application but the
+  ## first.
+  withBuiltinSurfaceLock:
+    if gBuiltinNativeSingletons.hasKey(key):
+      result = gBuiltinNativeSingletons[key]
+    else:
+      gBuiltinNativeSingletons[key] = fresh
+      result = fresh
 
 proc scalarType*(kind: ValueKind): Value =
   ## Nominal type identity for a built-in value kind, so a scalar can be an
@@ -5037,12 +5113,24 @@ proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
   ## `receiverType` reads `gScalarTypes`, so registering the kind here is what
   ## replaces the `builtinReceiverMessage` arm — that arm must go in the same
   ## change, leaving exactly one path.
-  var table = initTable[string, Value]()
-  for entry in messages:
-    table[entry[0]] = entry[1]
-  result = newType(name, NIL, @[], @[], scope, messages = table)
-  gScalarTypes[kind] = result
-  gBuiltinSurfaceTypes.incl result.bits
+  withBuiltinSurfaceLock:
+    if gBuiltinTypeSingletons.hasKey(name):
+      # A later application binds the same object rather than minting a second
+      # identity for the same type. `messages` is discarded: the natives it
+      # holds are `sharedBuiltinNative`s, so the stored table already has them.
+      result = gBuiltinTypeSingletons[name]
+    else:
+      var table = initTable[string, Value]()
+      for entry in messages:
+        table[entry[0]] = entry[1]
+      # Scope is nil deliberately: a process-wide type must not retain any one
+      # application's builtins scope. Nothing reads it — these types have no
+      # fields, and `staticHomeRoot` already answered nil for the builtins
+      # scope, so impl classification is unchanged.
+      result = newType(name, NIL, @[], @[], nil, messages = table)
+      gBuiltinTypeSingletons[name] = result
+    gScalarTypes[kind] = result
+    gBuiltinSurfaceTypes.incl result.bits
   scope.define(name, result)
 
 proc buildBuiltins(app: Application): Scope =
@@ -5242,17 +5330,18 @@ proc buildBuiltins(app: Application): Scope =
   result.define(">=", app.nativeGe)
   result.define("==", newNativeFn("==", biEq))
   result.define("!=", newNativeFn("!=", biNe))
-  result.define("contains?", newNativeFn("contains?", biContains))
+  result.define("contains?",
+                sharedBuiltinNative("contains?", newNativeFn("contains?", biContains)))
   result.define("same?", newNativeFn("same?", biSame))
   result.define("hash", newNativeFn("hash", biHash))
   result.define("not", newNativeFn("not", biNot))
   # The four node projections are both bare wrapper functions and messages on
   # the `Node` type. Bind one value each so `(head n)` and `(n ~ head)` name the
   # same function rather than two natives that merely behave alike.
-  let headFn = newNativeFn("head", biHead)
-  let propsFn = newNativeFn("props", biProps)
-  let bodyFn = newNativeFn("body", biBody)
-  let metaFn = newNativeFn("meta", biMeta)
+  let headFn = sharedBuiltinNative("head", newNativeFn("head", biHead))
+  let propsFn = sharedBuiltinNative("props", newNativeFn("props", biProps))
+  let bodyFn = sharedBuiltinNative("body", newNativeFn("body", biBody))
+  let metaFn = sharedBuiltinNative("meta", newNativeFn("meta", biMeta))
   result.define("head", headFn)
   result.define("props", propsFn)
   result.define("body", bodyFn)
@@ -5338,12 +5427,13 @@ proc buildBuiltins(app: Application): Scope =
   # message on one or more container types, so `($size xs)` and `(xs ~ size)`
   # have to name the same function value rather than two natives that merely
   # behave alike. `contains?` is bound further up and captured here.
-  let sizeFn = newNativeFn("size", biListSize)
-  let emptyFn = newNativeFn("empty?", biListEmpty)
-  let firstFn = newNativeFn("first", biListFirst)
-  let lastFn = newNativeFn("last", biListLast)
-  let toStreamFn = newNativeFn("to_stream", biToStream)
-  let toPairsStreamFn = newNativeFn("to_pairs_stream", biToPairsStream)
+  let sizeFn = sharedBuiltinNative("size", newNativeFn("size", biListSize))
+  let emptyFn = sharedBuiltinNative("empty?", newNativeFn("empty?", biListEmpty))
+  let firstFn = sharedBuiltinNative("first", newNativeFn("first", biListFirst))
+  let lastFn = sharedBuiltinNative("last", newNativeFn("last", biListLast))
+  let toStreamFn = sharedBuiltinNative("to_stream", newNativeFn("to_stream", biToStream))
+  let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
+                                            newNativeFn("to_pairs_stream", biToPairsStream))
   var containsFn: Value
   discard result.lookupOptional("contains?", containsFn)
   result.define("size", sizeFn)
@@ -5557,10 +5647,10 @@ proc buildBuiltins(app: Application): Scope =
                                             acceptsNamed = false))
   result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
-  let mapFn = newNativeFn("map", biStreamMap)
-  let filterFn = newNativeFn("filter", biStreamFilter)
-  let takeFn = newNativeFn("take", biStreamTake)
-  let intoFn = newNativeFn("into", biStreamInto)
+  let mapFn = sharedBuiltinNative("map", newNativeFn("map", biStreamMap))
+  let filterFn = sharedBuiltinNative("filter", newNativeFn("filter", biStreamFilter))
+  let takeFn = sharedBuiltinNative("take", newNativeFn("take", biStreamTake))
+  let intoFn = sharedBuiltinNative("into", newNativeFn("into", biStreamInto))
   result.define("to_stream", toStreamFn)
   result.define("to_pairs_stream", toPairsStreamFn)
   result.define("map", mapFn)
@@ -5689,9 +5779,17 @@ proc application*(scope: Scope): Application =
 
 proc builtinsScope*(app: Application): Scope =
   ## The single built-ins root scope for this application. Every module/program
-  ## scope created for `app` shares these built-in protocol/type values.
+  ## scope created for `app` shares these built-in protocol/type values, and the
+  ## type identities inside it are shared process-wide (see
+  ## `gBuiltinTypeSingletons`).
+  ##
+  ## Construction is guarded: two threads reaching a fresh Application would
+  ## otherwise both build it, and the loser's scope would hold bindings nothing
+  ## else can see.
   if app.builtins == nil:
-    app.builtins = buildBuiltins(app)
+    withAppBuiltinsLock:
+      if app.builtins == nil:
+        app.builtins = buildBuiltins(app)
   app.builtins
 
 proc builtinsScope*(): Scope =

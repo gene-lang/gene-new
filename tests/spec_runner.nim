@@ -5018,6 +5018,30 @@ suite "spec — qualified message spelling":
                " (($map ($to_stream xs) Shown:show) ~ into [])]",
                "[\"n\" [\"n\" \"n\"]]")
 
+  test "built-in type identity is process-wide, not per application":
+    # An impl is keyed on the receiver's type, so two `Int` objects that do not
+    # compare equal silently lose impls. Built-in surface types and the natives
+    # they share with the lexical root are therefore built once per process.
+    let app1 = newApplication(getCurrentDir())
+    let s1 = newGlobalScope(app1)
+    discard run(compileSource(
+      "(protocol Shown (message show [] : Str)) " &
+      "(impl Shown for Int (message show [] : Str \"int\"))"), s1)
+    check run(compileSource("(5 ~ Shown:show)"), s1).print() == "\"int\""
+    # Building a second application used to overwrite the type table and break
+    # the first one's impls in a scope that had been working.
+    let s2 = newGlobalScope(newApplication(getCurrentDir()))
+    check run(compileSource("(5 ~ Shown:show)"), s1).print() == "\"int\""
+    check run(compileSource("(same? Cell Cell)"), s2).print() == "true"
+    # A native bound both into the root and into a type's message table has to
+    # be one value in *every* application, not just the first.
+    for src in ["(same? $size List/size)", "(same? $head Node/head)",
+                "(same? $to_stream List/to_stream)",
+                "(same? $stream/each Stream/each)"]:
+      check run(compileSource(src), s2).print() == "true"
+    check run(compileSource("[(($cell 7) ~ get) ([1 2 3] ~ size)]"),
+              s2).print() == "[7 3]"
+
   test "Self is reserved":
     # `Self` denotes the receiver's type rather than binding one, so a program
     # may not declare it — otherwise the qualifier would mean two things.

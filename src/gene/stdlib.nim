@@ -8067,7 +8067,11 @@ proc registerStdlibNamespaces(root: Scope) =
   stdStreamScope.define("filter", newNativeFn("filter", biStreamFilter))
   stdStreamScope.define("take", newNativeFn("take", biStreamTake))
   stdStreamScope.define("into", newNativeFn("into", biStreamInto))
-  stdStreamScope.define("each", newNativeFn("each", biStreamEach))
+  # `each` has no bare root binding, so the `Stream` type takes it from this
+  # namespace. It must be the process-wide instance or the type singleton
+  # would hold the first application's copy.
+  stdStreamScope.define("each",
+                        sharedBuiltinNative("each", newNativeFn("each", biStreamEach)))
   let stdNodeScope = newScope(root)
   stdNodeScope.define("head", newNativeFn("head", biHead))
   stdNodeScope.define("props", newNativeFn("props", biProps))
