@@ -1011,7 +1011,7 @@ suite "spec — hashable collections and bytes from design":
                "\"HashStable\"")
 
   test "general maps evaluate any hash-stable keys":
-    check_eval("(var k \"a\") [(Map/get {{k : (+ 1 2)}} \"a\") " &
+    check_eval("(var k \"a\") [({{k : (+ 1 2)}} ~ get \"a\") " &
                "{{\"x\" : 1 \"x\" : 2}}]",
                "[3 {{\"x\" : 2}}]")
     check_eval("(try {{[1] : 2}} catch (TypeError ^expected e) e)",
@@ -1024,7 +1024,7 @@ suite "spec — regular expressions from design":
 
   test "regex sends return Match values and streams":
     check_eval("(var m (#\"(?<word>\\w+)-(\\d+)\" ~ match \"ab-12 zz\")) " &
-               "[m/text m/groups (Map/get m/named \"word\") m/start m/end]",
+               "[m/text m/groups (m/named ~ get \"word\") m/start m/end]",
                "[\"ab-12\" #[\"ab\" \"12\"] \"ab\" 0 5]")
     check_eval("(var xs ($into (#\"\\d+\" ~ find_all \"a12b3\") [])) " &
                "[xs/0/text xs/1/text]",
@@ -1181,8 +1181,8 @@ suite "spec — numeric boundaries from design":
 
   test "Buffer annotations are Gene-owned typed storage":
     check_eval("(var b ($buffer C/UInt8 [1 2])) " &
-               "[(Buffer/len b) (Buffer/get b 1) " &
-               "(Buffer/set! b 0 9) (Buffer/to_list b)]",
+               "[(b ~ len) (b ~ get 1) " &
+               "(b ~ set! 0 9) (b ~ to_list)]",
                "[2 2 9 [9 2]]")
     check_eval("((fn [b : (Buffer C/UInt8)] true) " &
                "($buffer C/UInt8 [1 2]))",
@@ -1513,7 +1513,7 @@ suite "spec — generic functions from design":
                "(first (ints))",
                "7")
     check_eval("(fn (first item) [b : (Buffer item)] : item " &
-               "  (Buffer/get b 0)) " &
+               "  (b ~ get 0)) " &
                "(first ($buffer [5 6]))",
                "5")
 
@@ -1707,7 +1707,7 @@ suite "spec — pattern destructuring from design":
     check_eval("(var out [nil nil]) " &
                "(var i 0) " &
                "(for ch in \"Aé\" " &
-               "  (set out (List/assoc out i ch)) " &
+               "  (set out (out ~ assoc i ch)) " &
                "  (set i (+ i 1))) " &
                "out",
                "['A' 'é']")
@@ -4061,8 +4061,8 @@ suite "spec — stdlib namespaces from stdlib plan":
     check_eval("(import gene/stream [to_stream each]) " &
                "(var sum ($cell 0)) " &
                "(each (to_stream [1 2 3]) (fn [x] " &
-               "  (Cell/update sum (fn [s] (+ s x))))) " &
-               "(Cell/get sum)",
+               "  (sum ~ update (fn [s] (+ s x))))) " &
+               "(sum ~ get)",
                "6")
     check_eval("(import gene/node [head]) (head (quote (a 1)))", "a")
     check_eval("(import gene/parse [parse_int]) (parse_int \" 42 \")", "42")
@@ -4192,18 +4192,18 @@ suite "spec — structured logging contract":
     check_eval("(import $log [Logger LogLevel new_logger debug!]) " &
                "(var logger (new_logger \"app/spec\" ^payload {^x 1})) " &
                "(var eager ($cell false)) (var lazy ($cell false)) " &
-               "(logger ~ info (do (Cell/set eager true) \"eager\")) " &
-               "(debug! logger (do (Cell/set lazy true) \"lazy\")) " &
+               "(logger ~ info (do (eager ~ set true) \"eager\")) " &
+               "(debug! logger (do (lazy ~ set true) \"lazy\")) " &
                "(fn accepts [x : Logger] (x ~ enabled? LogLevel/warn)) " &
-               "[(Cell/get eager) (Cell/get lazy) (accepts logger)]",
+               "[(eager ~ get) (lazy ~ get) (accepts logger)]",
                "[true false true]")
 
   test "built-in namespace macros support selection aliases":
     check_eval("(import $log [new_logger debug! : diagnostic!]) " &
                "(var logger (new_logger \"app/spec\")) " &
                "(var touched ($cell false)) " &
-               "(diagnostic! logger (do (Cell/set touched true) \"x\")) " &
-               "(Cell/get touched)",
+               "(diagnostic! logger (do (touched ~ set true) \"x\")) " &
+               "(touched ~ get)",
                "false")
 
   test "a lazy logging macro carries its LogLevel dependency":
@@ -4211,8 +4211,8 @@ suite "spec — structured logging contract":
                "(var logger (new_logger \"app/spec\")) " &
                "(import $log [debug!]) " &
                "(var touched ($cell false)) " &
-               "(debug! logger (do (Cell/set touched true) \"x\")) " &
-               "(Cell/get touched)",
+               "(debug! logger (do (touched ~ set true) \"x\")) " &
+               "(touched ~ get)",
                "false")
 
   test "logging payload rejects process-bound values":

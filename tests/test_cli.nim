@@ -2329,11 +2329,11 @@ catch {^message message} (set duplicate message))
    {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
+  (hits ~ set (+ (hits ~ get) 1))
   (var chunks
-    (if (== (Cell/get hits) 1)
+    (if (== (hits ~ get) 1)
       delegate
-      (if (== (Cell/get hits) 2)
+      (if (== (hits ~ get) 2)
         (answer "extension-findings")
         (answer
           (if (contains? req/body "extension-findings")
@@ -2961,19 +2961,19 @@ catch {^message message} (set duplicate message))
         (if (&& (== m/role "assistant")
                 (== m/tool_calls/0/id "call_fake_1")
                 (== m/tool_calls/0/function/name "list_dir"))
-          (Cell/set saw-assistant-call true)
+          (saw-assistant-call ~ set true)
           nil)
         (if (&& (== m/role "tool")
                 (== m/tool_call_id "call_fake_1"))
-          (Cell/set saw-tool-reply true)
+          (saw-tool-reply ~ set true)
           nil)))
   (if (!= req/model "fake-chat")
     "roundtrip-bad: model"
     (if (!= req/tools/0/function/name "read_file")
       "roundtrip-bad: tools"
-      (if (! (Cell/get saw-assistant-call))
+      (if (! (saw-assistant-call ~ get))
         "roundtrip-bad: assistant tool_calls"
-        (if (! (Cell/get saw-tool-reply))
+        (if (! (saw-tool-reply ~ get))
           "roundtrip-bad: tool reply"
           "roundtrip-ok")))))
 
@@ -2983,8 +2983,8 @@ catch {^message message} (set duplicate message))
    {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (== (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (hits ~ set (+ (hits ~ get) 1))
+  (var chunks (if (== (hits ~ get) 1) turn1 (turn2-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -3243,8 +3243,8 @@ catch {^message message} (set duplicate message))
    {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (== (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (hits ~ set (+ (hits ~ get) 1))
+  (var chunks (if (== (hits ~ get) 1) turn1 (turn2-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -3458,10 +3458,10 @@ catch {^message message}
    {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
+  (hits ~ set (+ (hits ~ get) 1))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
-            ^body (sse-body (if (== (Cell/get hits) 1) turn1 turn2))))
+            ^body (sse-body (if (== (hits ~ get) 1) turn1 turn2))))
 
 (serve (Server ^host "127.0.0.1" ^port 8971) handle ^max_requests 2)
 """)
@@ -3539,17 +3539,17 @@ catch {^message message}
   ((to_stream req/messages)
     ~ each (fn [m]
         (if (== m/role "tool")
-          (Cell/set tool-text m/content)
+          (tool-text ~ set m/content)
           nil)))
-  (var v (if (contains? (Cell/get tool-text) "invalid result shape")
+  (var v (if (contains? (tool-text ~ get) "invalid result shape")
            "shape-error-ok"
            "shape-unhandled"))
   [{^choices [{^index 0 ^delta {^content $"verdict: ${v}"}}]}
    {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (== (Cell/get hits) 1) call-badres (verdict-chunks req/body)))
+  (hits ~ set (+ (hits ~ get) 1))
+  (var chunks (if (== (hits ~ get) 1) call-badres (verdict-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -3627,9 +3627,9 @@ catch {^message message}
   ((to_stream req/messages)
     ~ each (fn [m]
         (if (== m/role "tool")
-          (Cell/set tool-text m/content)
+          (tool-text ~ set m/content)
           nil)))
-  (if (contains? (Cell/get tool-text) "catastrophe guard")
+  (if (contains? (tool-text ~ get) "catastrophe guard")
     "guard-blocked"
     "guard-bypassed"))
 
@@ -3639,8 +3639,8 @@ catch {^message message}
    {^choices [{^index 0 ^delta {} ^finish_reason "stop"}]}])
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
-  (var chunks (if (== (Cell/get hits) 1) turn1 (turn2-chunks req/body)))
+  (hits ~ set (+ (hits ~ get) 1))
+  (var chunks (if (== (hits ~ get) 1) turn1 (turn2-chunks req/body)))
   (Response ^status 200
             ^headers {^content-type "text/event-stream"}
             ^body (sse-body chunks)))
@@ -4342,9 +4342,9 @@ catch {^message message}
   (> hit/~size 0))
 
 (fn handle [req]
-  (Cell/set hits (+ (Cell/get hits) 1))
+  (hits ~ set (+ (hits ~ get) 1))
   (var chunks
-    (if (== (Cell/get hits) 1)
+    (if (== (hits ~ get) 1)
       (plain "started")
       (plain (if (has-ping req/body) "verdict: ping-visible" "verdict: ping-missing"))))
   (Response ^status 200

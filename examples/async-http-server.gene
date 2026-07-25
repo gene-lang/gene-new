@@ -106,7 +106,7 @@
   (var done false)
   (while (not done)
     (var reg (jobs ~ load))
-    (var next (Map/assoc reg id {^id id ^state state ^ms ms}))
+    (var next (reg ~ assoc id {^id id ^state state ^ms ms}))
     (set done (jobs ~ compare_exchange reg next))))
 
 (fn parse_job_ms [req default]
@@ -184,7 +184,7 @@
   # ":id" captures the path segment into req/params/id (query keys still
   # populate req/params; a path capture wins over a same-named query key).
   @route (route ^method "GET" ^path "/job/:id")
-  (var job (Map/get (jobs ~ load) req/params/id))
+  (var job ((jobs ~ load) ~ get req/params/id))
   (if job
     (json (stringify job))
     (fail (JobNotFound ^id req/params/id))))

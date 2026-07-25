@@ -1027,7 +1027,7 @@ If a selector stage receives a `Stream`, static lookup is mapped over each yield
 If an evaluated `%` segment is callable, it is used as a stage. If it is not callable, it is treated as a dynamic key/index. This means a callable value cannot be used as a dynamic key through bare `%x`. Use explicit map access or an explicit key wrapper if that case is needed:
 
 ```gene
-(Map/get m x)          # unambiguous dynamic key lookup
+(m ~ get x)            # unambiguous dynamic key lookup
 (select m %($key x))    # optional library wrapper: force key/index use
 ```
 

@@ -644,7 +644,7 @@ suite "vm — literals and self-evaluation":
   test "map evaluates its values":
     ck "{^a (+ 1 1) ^b 3}", "{^a 2 ^b 3}"
   test "general map evaluates keys and values":
-    ck "(var k \"a\") (Map/get {{k : (+ 1 2)}} \"a\")", "3"
+    ck "(var k \"a\") ({{k : (+ 1 2)}} ~ get \"a\")", "3"
     ck "{{\"a\" : 1 \"a\" : 2}}", "{{\"a\" : 2}}"
     ck "{{\"a\" : 1 \"a\" : void}}", "{{}}"
     expect GeneError:
@@ -664,7 +664,7 @@ suite "vm — literals and self-evaluation":
     ck "((fn [r : Regex] true) #\"x\")", "true"
   test "regex match returns a typed Match node":
     ck "(var m (#\"(?<word>\\w+)-(\\d+)\" ~ match \"ab-12 zz\")) " &
-       "[m/text m/groups (Map/get m/named \"word\") m/start m/end]",
+       "[m/text m/groups (m/named ~ get \"word\") m/start m/end]",
        "[\"ab-12\" #[\"ab\" \"12\"] \"ab\" 0 5]"
     ck "(#\"z+\" ~ match \"abc\")", "void"
   test "regex find_all returns a stream":
@@ -1319,12 +1319,12 @@ suite "vm — container update built-ins":
     ck "(var m #{^a 1}) (var n (m ~ assoc \"b\" 2)) [m n]",
        "[#{^a 1} #{^a 1 ^b 2}]"
     ck "({^a 1} ~ assoc \"a\" void)", "{}"
-    expect GeneError: discard runStr("(Map/assoc [1] \"a\" 2)")
+    expect GeneError: discard runStr("([1] ~ assoc \"a\" 2)")
   test "Map/get reads entries without selector staging":
     ck "(var m {^a 1}) [(m ~ get \"a\") (m ~ get \"missing\")]",
        "[1 void]"
     ck "(var m {^a 1}) (m ~ get (quote a))", "1"
-    expect GeneError: discard runStr("(Map/get [1] \"a\")")
+    expect GeneError: discard runStr("([1] ~ get \"a\")")
 
   test "Node/set_prop! mutates mutable node props":
     ck "(var n (quote (user ^name \"Ada\"))) " &
@@ -1533,8 +1533,8 @@ suite "vm — cells":
        "5"
 
   test "cell operations require cells":
-    expect GeneError: discard runStr("(Cell/get 1)")
-    expect GeneError: discard runStr("(Cell/set ($cell 1))")
+    expect GeneError: discard runStr("(1 ~ get)")
+    expect GeneError: discard runStr("(($cell 1) ~ set)")
 
 suite "vm — atomic cells":
   test "atomic cell values are opaque display values":
@@ -1687,8 +1687,8 @@ suite "vm — channels":
 
   test "channel operations require channels":
     expect GeneError: discard runStr("($channel ^capacity 0)")
-    expect GeneError: discard runStr("(Channel/send 1 2)")
-    expect GeneError: discard runStr("(Channel/recv 1)")
+    expect GeneError: discard runStr("(1 ~ send 2)")
+    expect GeneError: discard runStr("(1 ~ recv)")
 
 suite "vm — cooperative scheduler":
   test "a task blocked on recv is woken by a sender task":
@@ -2954,7 +2954,7 @@ suite "vm — streams":
       discard runStr("(fn first [s : Stream] s) (first [1])")
 
   test "stream operations require streams":
-    expect GeneError: discard runStr("(Stream/next [1])")
+    expect GeneError: discard runStr("([1] ~ next)")
     expect GeneError: discard runStr("($to_stream {^a 1})")
     expect GeneError: discard runStr("($to_pairs_stream [1])")
     expect GeneError: discard runStr("($map [1] (fn [x] x))")

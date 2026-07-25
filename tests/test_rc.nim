@@ -288,14 +288,14 @@ when defined(geneRcStats):
     const N = 30000
 
     test "control: acyclic cell mutation does not grow the heap":
-      check heapGrowth("(var c (cell 0)) (Cell/set c 5)", N) < 100_000
+      check heapGrowth("(var c (cell 0)) (c ~ set 5)", N) < 100_000
 
     test "a self-referential cell is reclaimed":
-      check heapGrowth("(var c (cell 0)) (Cell/set c c)", N) < 100_000
+      check heapGrowth("(var c (cell 0)) (c ~ set c)", N) < 100_000
 
     test "a two-cell cycle is reclaimed":
       check heapGrowth(
-        "(var a (cell 0)) (var b (cell 0)) (Cell/set a b) (Cell/set b a)",
+        "(var a (cell 0)) (var b (cell 0)) (a ~ set b) (b ~ set a)",
         N) < 100_000
 
     test "an Env binding closure cycle is reclaimed":

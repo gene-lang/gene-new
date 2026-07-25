@@ -398,11 +398,11 @@
         (var tok (trim raw))
         (if_not (== tok "")
           (if (protected_target? tok)
-            (Cell/set worst "catastrophic")
+            (worst ~ set "catastrophic")
             (if (&& (starts_with? tok "/")
                     (<= ((split tok "/") ~ size) 2))
-              (Cell/set worst "catastrophic"))))))
-  (Cell/get worst))
+              (worst ~ set "catastrophic"))))))
+  (worst ~ get))
 
 # Split a command line on `&&`, `;`, and `|` so command-name patterns anchor at
 # the start of each simple command instead of matching anywhere (a `grep
@@ -416,7 +416,7 @@
               ((to_stream (split b "|"))
                 ~ each (fn [c]
                     ((segs ~ get) ~ push! (trim c))))))))
-  (Cell/get segs))
+  (segs ~ get))
 
 # The workspace lease can cover only subprocesses whose lifetime the
 # application can observe. Reject high-confidence shell syntax which is meant
@@ -496,8 +496,8 @@
   (var s (lower seg))
   (var hit ($cell false))
   ((to_stream catastrophic_command_starts)
-    ~ each (fn [p] (if (starts_with? s p) (Cell/set hit true))))
-  (|| (Cell/get hit)
+    ~ each (fn [p] (if (starts_with? s p) (hit ~ set true))))
+  (|| (hit ~ get)
       (contains? s ":(){")
       (contains? s " of=/dev/")
       (contains? s "drop database")))
@@ -527,16 +527,16 @@
   (var worst ($cell "normal"))
   (fn bump [level : Str]
     (if (== level "catastrophic")
-      (Cell/set worst "catastrophic")
-      (if (&& (== level "destructive") (!= (Cell/get worst) "catastrophic"))
-        (Cell/set worst "destructive"))))
+      (worst ~ set "catastrophic")
+      (if (&& (== level "destructive") (!= (worst ~ get) "catastrophic"))
+        (worst ~ set "destructive"))))
   (if (rm_recursive? cmd) (bump (classify_rm cmd)))
   ((to_stream (command_segments cmd))
     ~ each (fn [seg]
         (if (segment_catastrophic? seg)
           (bump "catastrophic")
           (if (segment_destructive? seg) (bump "destructive")))))
-  (Cell/get worst))
+  (worst ~ get))
 
 (fn approve? [tool : Str, detail : Str]
   (if (flag_enabled? approve_all)
@@ -2215,8 +2215,8 @@
 (fn subscribed? [type : Str]
   (var hit ($cell false))
   ((to_stream (event_subscriptions ~ get))
-    ~ each (fn [t] (if (== t type) (Cell/set hit true))))
-  (Cell/get hit))
+    ~ each (fn [t] (if (== t type) (hit ~ set true))))
+  (hit ~ get))
 
 (fn echo_subscribed [e]
   (if_yes (&& (present? (event_echo ~ get)) (subscribed? e/type))
@@ -2514,30 +2514,30 @@
 (fn event_matches? [e, f]
   (var ok ($cell true))
   (if (present? f/type)
-    (if_not (== e/type f/type) (Cell/set ok false)))
+    (if_not (== e/type f/type) (ok ~ set false)))
   (if (present? f/tool)
-    (if_not (== e/name f/tool) (Cell/set ok false)))
+    (if_not (== e/name f/tool) (ok ~ set false)))
   (if_yes (present? f/turn)
     (var expected_turn
       (if (== f/turn "current") $"${(current_turn ~ get)}" f/turn))
-    (if_not (== $"${e/turn}" expected_turn) (Cell/set ok false)))
+    (if_not (== $"${e/turn}" expected_turn) (ok ~ set false)))
   (if (present? f/worker)
-    (if_not (== $"${e/worker_id}" f/worker) (Cell/set ok false)))
+    (if_not (== $"${e/worker_id}" f/worker) (ok ~ set false)))
   (if (present? f/agent)
-    (if_not (== $"${e/agent_id}" f/agent) (Cell/set ok false)))
+    (if_not (== $"${e/agent_id}" f/agent) (ok ~ set false)))
   (if (present? f/task)
-    (if_not (== $"${e/task_id}" f/task) (Cell/set ok false)))
+    (if_not (== $"${e/task_id}" f/task) (ok ~ set false)))
   (if (present? f/from)
-    (if_not (>= e/v (parse_int f/from)) (Cell/set ok false)))
+    (if_not (>= e/v (parse_int f/from)) (ok ~ set false)))
   (if (present? f/to)
-    (if_not (<= e/v (parse_int f/to)) (Cell/set ok false)))
+    (if_not (<= e/v (parse_int f/to)) (ok ~ set false)))
   (if_yes (present? f/path)
     (var p ($cell ""))
-    (if (present? e/path) (Cell/set p e/path))
+    (if (present? e/path) (p ~ set e/path))
     (if (present? e/args)
-      (if (present? e/args/path) (Cell/set p e/args/path)))
-    (if_not (contains? (Cell/get p) f/path) (Cell/set ok false)))
-  (Cell/get ok))
+      (if (present? e/args/path) (p ~ set e/args/path)))
+    (if_not (contains? (p ~ get) f/path) (ok ~ set false)))
+  (ok ~ get))
 
 (fn parse_trace_filters [rest : Str]
   (var f {})
@@ -3441,8 +3441,8 @@ State that broader behavior is unverified when no matching successful check ran.
   ((to_stream item/content)
     ~ each (fn [part]
         (if (== (response_content_kind part) ResponseContentKind/output_text)
-          (Cell/set acc $"${(Cell/get acc)}${part/text}"))))
-  (Cell/get acc))
+          (acc ~ set $"${(acc ~ get)}${part/text}"))))
+  (acc ~ get))
 
 (fn response_text [resp] : Str
   (if (!= resp/output_text void)
@@ -3452,8 +3452,8 @@ State that broader behavior is unverified when no matching successful check ran.
       ((to_stream (response_output_items resp))
         ~ each (fn [item]
             (if (== (response_item_kind item) ResponseItemKind/assistant_message)
-              (Cell/set acc $"${(Cell/get acc)}${(message_item_text item)}"))))
-      (Cell/get acc))))
+              (acc ~ set $"${(acc ~ get)}${(message_item_text item)}"))))
+      (acc ~ get))))
 
 # function_call items the model emitted this turn.
 (fn response_calls [resp]
@@ -3762,24 +3762,24 @@ State that broader behavior is unverified when no matching successful check ran.
     (var acc ($cell ""))
     ((to_stream parts)
       ~ each (fn [p]
-          (var n (Cell/get i))
-          (Cell/set i (+ n 1))
+          (var n (i ~ get))
+          (i ~ set (+ n 1))
           (if_not (== n 0)
             (if (== n 1)
-              (Cell/set acc p)
-              (Cell/set acc $"${(Cell/get acc)}data: ${p}")))))
-    (Cell/get acc)))
+              (acc ~ set p)
+              (acc ~ set $"${(acc ~ get)}data: ${p}")))))
+    (acc ~ get)))
 
 (fn ignore_stream_delta [text]
   nil)
 
 (fn sse_build_response [output, output_text, final]
-  (if (== (Cell/get final) nil)
-    (then {^output (Cell/get output) ^output_text (Cell/get output_text)})
+  (if (== (final ~ get) nil)
+    (then {^output (output ~ get) ^output_text (output_text ~ get)})
     (else
-      ((Cell/get final) ~ put! "output" (Cell/get output))
-      ((Cell/get final) ~ put! "output_text" (Cell/get output_text))
-      (Cell/get final))))
+      ((final ~ get) ~ put! "output" (output ~ get))
+      ((final ~ get) ~ put! "output_text" (output_text ~ get))
+      (final ~ get))))
 
 (fn sse_handle_payload [payload : Str, output, output_text, final, render_stream]
   (if_not (== payload "[DONE]")
@@ -3788,18 +3788,18 @@ State that broader behavior is unverified when no matching successful check ran.
       (match (sse_event_kind event)
         (when SseEventKind/output_text_delta
           (render_stream (redact event/delta))
-          (Cell/set output_text $"${(Cell/get output_text)}${event/delta}"))
+          (output_text ~ set $"${(output_text ~ get)}${event/delta}"))
         (when SseEventKind/output_item_done
-          ((Cell/get output) ~ push! event/item)
+          ((output ~ get) ~ push! event/item)
           nil)
         (when SseEventKind/output_text_done
-          (Cell/set output_text event/text))
+          (output_text ~ set event/text))
         (when SseEventKind/completed
-          (Cell/set final event/response))
+          (final ~ set event/response))
         (when SseEventKind/failed
-          (Cell/set final event/response))
+          (final ~ set event/response))
         (when SseEventKind/incomplete
-          (Cell/set final event/response))
+          (final ~ set event/response))
         (when SseEventKind/other_event
           nil))
     catch (JsonError ^message _) nil)))
@@ -3844,7 +3844,7 @@ State that broader behavior is unverified when no matching successful check ran.
                (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
-                   (Cell/set saw_sse true))
+                   (saw_sse ~ set true))
                  (sse_handle_line line output output_text final render_stream))))
   (if (!= r/status 0)
     (then {^agent_error (redact $"HTTP transport failed (${r/status}): ${r/stderr}")})
@@ -3854,7 +3854,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (then {^agent_error http_error})
         (else
           (var resp
-            (if (Cell/get saw_sse)
+            (if (saw_sse ~ get)
               (sse_build_response output output_text final)
               (try
                 (parse r/stdout)
@@ -3887,35 +3887,35 @@ State that broader behavior is unverified when no matching successful check ran.
   (var pending_text ($cell nil))
   (var pending_calls ($cell []))
   (fn flush_assistant []
-    (if_yes (|| (present? (Cell/get pending_text))
-                (! ($empty? (Cell/get pending_calls))))
-        (var m {^role "assistant" ^content (Cell/get pending_text)})
-        (if_not ($empty? (Cell/get pending_calls))
-          (m ~ put! "tool_calls" (Cell/get pending_calls)))
-        ((Cell/get msgs) ~ push! m)
-        (Cell/set pending_text nil)
-        (Cell/set pending_calls [])))
+    (if_yes (|| (present? (pending_text ~ get))
+                (! ($empty? (pending_calls ~ get))))
+        (var m {^role "assistant" ^content (pending_text ~ get)})
+        (if_not ($empty? (pending_calls ~ get))
+          (m ~ put! "tool_calls" (pending_calls ~ get)))
+        ((msgs ~ get) ~ push! m)
+        (pending_text ~ set nil)
+        (pending_calls ~ set [])))
   (for item in items
     (if (== item/type void)
       (then
         (flush_assistant)
-        ((Cell/get msgs) ~ push! item))
+        ((msgs ~ get) ~ push! item))
       (else
         (match item/type
         (when "message"
-          (var sofar (if (present? (Cell/get pending_text)) (Cell/get pending_text) ""))
-          (Cell/set pending_text $"${sofar}${(message_item_text item)}"))
+          (var sofar (if (present? (pending_text ~ get)) (pending_text ~ get) ""))
+          (pending_text ~ set $"${sofar}${(message_item_text item)}"))
         (when "function_call"
-          ((Cell/get pending_calls) ~ push!
+          ((pending_calls ~ get) ~ push!
             {^id item/call_id ^type "function"
              ^function {^name item/name ^arguments item/arguments}}))
         (when "function_call_output"
           (flush_assistant)
-          ((Cell/get msgs) ~ push!
+          ((msgs ~ get) ~ push!
             {^role "tool" ^tool_call_id item/call_id ^content item/output}))
         (else nil)))))
   (flush_assistant)
-  (Cell/get msgs))
+  (msgs ~ get))
 
 (fn chat_api_error [resp]
   (if (present? resp/error)
@@ -3934,8 +3934,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (if_yes (== entry void)
     (set entry {^id "" ^name "" ^arguments ""})
     (calls_map ~ put! key entry)
-    (if (< (Cell/get max_cell) (+ idx 1))
-      (Cell/set max_cell (+ idx 1))))
+    (if (< (max_cell ~ get) (+ idx 1))
+      (max_cell ~ set (+ idx 1))))
   (if (present? frag/id)
     (entry ~ put! "id" frag/id))
   (if (present? frag/function/name)
@@ -3946,22 +3946,21 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn chat_call_items [calls_map, max_cell]
   (var items ($cell []))
   (var entry nil)
-  (repeat i in (Cell/get max_cell)
+  (repeat i in (max_cell ~ get)
     (set entry (calls_map ~ get $"${i}"))
     (if_not (== entry void)
-      ((Cell/get items) ~ push!
+      ((items ~ get) ~ push!
         {^type "function_call" ^name entry/name
          ^call_id entry/id ^arguments entry/arguments})))
-  (Cell/get items))
+  (items ~ get))
 
 (fn chat_build_response [text_cell, calls_map, max_cell]
   (var items ($cell (chat_call_items calls_map max_cell)))
-  (if_not (== (Cell/get text_cell) "")
-    (Cell/set items
-      ((to_stream (Cell/get items))
+  (if_not (== (text_cell ~ get) "")
+    (items ~ set ((to_stream (items ~ get))
         ~ into [{^type "message" ^role "assistant"
-                 ^content [{^type "output_text" ^text (Cell/get text_cell)}]}])))
-  {^output (Cell/get items) ^output_text (Cell/get text_cell)})
+                 ^content [{^type "output_text" ^text (text_cell ~ get)}]}])))
+  {^output (items ~ get) ^output_text (text_cell ~ get)})
 
 (fn chat_handle_payload [payload : Str, text_cell, calls_map, max_cell, err_cell, render_stream]
   (if_not (== payload "[DONE]")
@@ -3969,12 +3968,12 @@ State that broader behavior is unverified when no matching successful check ran.
       (var chunk (parse payload))
       (var errtext (chat_api_error chunk))
       (if (present? errtext)
-        (then (Cell/set err_cell errtext))
+        (then (err_cell ~ set errtext))
         (else
           (var delta chunk/choices/0/delta)
           (if_yes (present? delta/content)
             (render_stream (redact delta/content))
-            (Cell/set text_cell $"${(Cell/get text_cell)}${delta/content}"))
+            (text_cell ~ set $"${(text_cell ~ get)}${delta/content}"))
           (if (present? delta/tool_calls)
             ((to_stream delta/tool_calls)
               ~ each (fn [frag] (chat_note_call_frag calls_map max_cell frag))))))
@@ -3990,16 +3989,16 @@ State that broader behavior is unverified when no matching successful check ran.
       (var text (if (present? message/content) message/content ""))
       (var items ($cell []))
       (if_not (== text "")
-        ((Cell/get items) ~ push!
+        ((items ~ get) ~ push!
           {^type "message" ^role "assistant"
            ^content [{^type "output_text" ^text text}]}))
       (if (present? message/tool_calls)
         ((to_stream message/tool_calls)
           ~ each (fn [tc]
-              ((Cell/get items) ~ push!
+              ((items ~ get) ~ push!
                 {^type "function_call" ^name tc/function/name
                  ^call_id tc/id ^arguments tc/function/arguments}))))
-      {^output (Cell/get items) ^output_text text})))
+      {^output (items ~ get) ^output_text text})))
 
 (fn chat_live_transport [body : Str, render_stream]
   (var text ($cell ""))
@@ -4022,7 +4021,7 @@ State that broader behavior is unverified when no matching successful check ran.
                (fn [line]
                  (if (|| (starts_with? line "event:")
                          (starts_with? line "data:"))
-                   (Cell/set saw_sse true))
+                   (saw_sse ~ set true))
                  (var payload (sse_data_payload line))
                  (if payload
                    (chat_handle_payload payload text calls callmax err render_stream)))))
@@ -4032,9 +4031,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (var http_error (http_status_error_text r))
       (if (present? http_error)
         {^agent_error http_error}
-        (if (present? (Cell/get err))
-          {^agent_error (redact (Cell/get err))}
-          (if (Cell/get saw_sse)
+        (if (present? (err ~ get))
+          {^agent_error (redact (err ~ get))}
+          (if (saw_sse ~ get)
             (chat_build_response text calls callmax)
             (try
               (chat_response_from_json (parse r/stdout))
@@ -4146,7 +4145,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var streamed ($cell false))
   (var resp (call_model transport request_items
               (fn [text]
-                (Cell/set streamed true)
+                (streamed ~ set true)
                 # Redact at this choke point (transports also redact — belt
                 # and braces for any future transport) and emit the delta
                 # through the sink so /trace and subscriptions see text_delta
@@ -4171,11 +4170,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (debug! turn_log "model round completed"
         ^payload {^budget_remaining budget ^tool_calls (calls ~ size)
                   ^response_items ((response_output_items resp) ~ size)
-                  ^streamed (Cell/get streamed)})
+                  ^streamed (streamed ~ get)})
       (if ($empty? calls)
         (then
           (emit "agent_text" {^text (response_text resp)})
-          (if (Cell/get streamed)
+          (if (streamed ~ get)
             (render "")
             (render (redact (response_text resp))))
           (emit "turn_done" {^text (response_text resp)})
@@ -5816,8 +5815,8 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn demo_transport_for []
   (var calls ($cell 0))
   (fn [body, render_stream]
-    (Cell/set calls (+ (Cell/get calls) 1))
-    (if (== (Cell/get calls) 1)
+    (calls ~ set (+ (calls ~ get) 1))
+    (if (== (calls ~ get) 1)
       {^output [{^type "function_call" ^name "list_dir"
                  ^call_id "call_1" ^arguments "{\"path\":\".\"}"}]}
       {^output [{^type "message" ^role "assistant"

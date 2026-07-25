@@ -210,7 +210,7 @@ suite "loops — for":
   test "for over a string yields chars":
     ck "(var out [nil nil]) (var i 0) " &
        "(for ch in \"Aé\" " &
-       "  (set out (List/assoc out i ch)) " &
+       "  (set out (out ~ assoc i ch)) " &
        "  (set i (+ i 1))) " &
        "out",
        "['A' 'é']"

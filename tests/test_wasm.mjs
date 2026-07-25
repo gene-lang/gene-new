@@ -42,8 +42,8 @@ const cases = [
   ['(import $log [new_logger debug!]) ' +
    '(var logger (new_logger "app/wasm")) ' +
    '(var touched ($cell false)) ' +
-   '(debug! logger (do (Cell/set touched true) "hidden")) ' +
-   '(Cell/get touched)', 0, "false", ""],
+   '(debug! logger (do (touched ~ set true) "hidden")) ' +
+   '(touched ~ get)', 0, "false", ""],
   ["($json/stringify {^a 1 ^b [true nil]})", 0, '"{\\"a\\":1,\\"b\\":[true,null]}"', ""],
   ["(foo-undefined)", 1, "undefined symbol: foo-undefined", ""],
   ["(((", 3,

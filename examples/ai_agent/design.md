@@ -2106,7 +2106,7 @@ pseudocode.
   (var resp
     (call_model transport input_items
       (fn [text]
-        (Cell/set streamed true)
+        (streamed ~ set true)
         (emit "text_delta" {^text (redact text)})
         (render_stream (redact text)))))
   (if (!= resp/agent_error void)
@@ -2122,7 +2122,7 @@ pseudocode.
       (if (empty? calls)
         (then
           (emit "agent_text" {^text (response_text resp)})
-          (if (Cell/get streamed)
+          (if (streamed ~ get)
             (render "")
             (render (redact (response_text resp))))
           (emit "turn_done" {^text (response_text resp)})

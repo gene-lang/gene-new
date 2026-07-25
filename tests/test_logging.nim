@@ -182,10 +182,10 @@ suite "structured logging":
 (var logger (new_logger "app/test" ^payload {^service "spec"}))
 (var eager ($cell false))
 (var lazy ($cell false))
-(logger ~ info (do (Cell/set eager true) "eager"))
-(debug! logger (do (Cell/set lazy true) "lazy"))
+(logger ~ info (do (eager ~ set true) "eager"))
+(debug! logger (do (lazy ~ set true) "lazy"))
 (logger ~ warn "warning" ^payload {^token "hidden"})
-[(Cell/get eager) (Cell/get lazy) (logger ~ enabled? LogLevel/warn)]
+[(eager ~ get) (lazy ~ get) (logger ~ enabled? LogLevel/warn)]
 """)
     check result.print == "[true false true]"
     check loggingCaptured.len == 1
@@ -203,8 +203,8 @@ suite "structured logging":
 (import $log [new_logger error!])
 (var logger (new_logger "app/off"))
 (var touched ($cell false))
-(error! logger (do (Cell/set touched true) "suppressed"))
-(Cell/get touched)
+(error! logger (do (touched ~ set true) "suppressed"))
+(touched ~ get)
 """)
     check result == FALSE
     check loggingCaptured.len == 0

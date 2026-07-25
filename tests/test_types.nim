@@ -1941,7 +1941,7 @@ suite "types — function boundaries":
        "4"
 
   test "generic functions infer buffer element types":
-    ck "(fn (first item) [b : (Buffer item)] : item (Buffer/get b 0)) " &
+    ck "(fn (first item) [b : (Buffer item)] : item (b ~ get 0)) " &
        "(first ($buffer [4 5]))",
        "4"
     ck "(try (fn (choose item) [b : (Buffer item) fallback : item] fallback) " &
@@ -1997,9 +1997,9 @@ suite "types — function boundaries":
        "catch (TypeError ^expected e) e)", "\"(Map Sym Int)\""
     ck "(try (fn value [m : (Map Int Str)] m) (value {^a \"ok\"}) " &
        "catch (TypeError ^expected e) e)", "\"(Map Int Str)\""
-    ck "(fn value [m : (HashMap Str Int)] (Map/get m \"a\")) " &
+    ck "(fn value [m : (HashMap Str Int)] (m ~ get \"a\")) " &
        "(value {{\"a\" : 3}})", "3"
-    ck "(fn value [m : (Map Str Int)] (Map/get m \"a\")) " &
+    ck "(fn value [m : (Map Str Int)] (m ~ get \"a\")) " &
        "(value {{\"a\" : 3}})", "3"
     ck "(try (fn value [m : (HashMap Str Int)] m) (value {{1 : 2}}) " &
        "catch (TypeError ^expected e) e)", "\"(HashMap Str Int)\""
@@ -2118,18 +2118,18 @@ suite "types — function boundaries":
 
   test "Buffer annotations check Gene-owned typed storage":
     ck "(var b ($buffer [1 2 3])) " &
-       "[(Buffer/len b) (Buffer/get b 0) (Buffer/get b -1) " &
-       "(Buffer/to_list b) (Buffer/elem_type b)]",
+       "[(b ~ len) (b ~ get 0) (b ~ get -1) " &
+       "(b ~ to_list) (b ~ elem_type)]",
        "[3 1 3 [1 2 3] Int]"
     ck "(var b ($buffer C/UInt8 [1 2])) " &
-       "[(Buffer/set! b 1 255) (Buffer/to_list b) " &
+       "[(b ~ set! 1 255) (b ~ to_list) " &
        "((fn [x : (Buffer C/UInt8)] true) b)]",
        "[255 [1 255] true]"
     ck "((fn [b : (Buffer Int)] true) ($buffer [1 2]))", "true"
     ck "(try ($buffer C/UInt8 [1 256]) " &
        "catch (TypeError ^expected e) e)", "\"C/UInt8\""
     expect GeneError:
-      discard runStr("(var b ($buffer C/UInt8 [1])) (Buffer/set! b 0 256)")
+      discard runStr("(var b ($buffer C/UInt8 [1])) (b ~ set! 0 256)")
     expect GeneError:
       discard runStr("((fn [b : (Buffer C/UInt8)] b) ($buffer C/Int32 [1]))")
     expect GeneError:
@@ -6669,7 +6669,7 @@ suite "types — function boundaries":
                 scope).print() == "3"
       check run(compileSource("(buffer-first-byte byte-buffer)"),
                 scope).print() == "65"
-      check run(compileSource("(buffer-fill byte-buffer) (Buffer/to_list byte-buffer)"),
+      check run(compileSource("(buffer-fill byte-buffer) (byte-buffer ~ to_list)"),
                 scope).print() == "[90 91 92]"
       check run(compileSource("(buffer-len-i32 byte-buffer)"),
                 scope).print() == "8"

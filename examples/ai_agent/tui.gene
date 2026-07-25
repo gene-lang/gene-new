@@ -329,21 +329,21 @@
     (run_turn_tracked transport
               (append (initial_items memory) (user_item task))
               (fn [text]
-                (if_yes (Cell/get streaming)
+                (if_yes (streaming ~ get)
                   ($println "")
-                  (Cell/set streaming false))
+                  (streaming ~ set false))
                 (if_not (== text "")
                   ($println $"agent> ${text}")))
               (fn [text]
                 (if_not (== text "")
-                  (if_not (Cell/get streaming)
+                  (if_not (streaming ~ get)
                     ($print "agent> ")
-                    (Cell/set streaming true))
+                    (streaming ~ set true))
                   ($print text)))
               max_tool_rounds
               emit_event!))
   (save_agent_state result_items $"Gene AI agent - model ${model}\nuser> ${task}\n" memory)
-  (if (Cell/get streaming)
+  (if (streaming ~ get)
     ($println "")))
 
 (fn exit_word? [line]
@@ -356,10 +356,10 @@
     # Offline/demo callers without an application still stay bounded; shared
     # application snapshots always take the exact branch above.
     (else
-      (var combined (join [(Cell/get transcript) text] ""))
+      (var combined (join [(transcript ~ get) text] ""))
       (var total (byte_size combined))
       (if (<= total transcript_max_bytes)
-        (then (Cell/set transcript combined))
+        (then (transcript ~ set combined))
         (else
           (var marker "[older transcript rows were dropped]\n")
           (var budget (- transcript_max_bytes (byte_size marker)))
@@ -371,7 +371,7 @@
               (set retained (slice_bytes combined start (- total start)))
               (sliced ~ set true)
             catch _ (set start (+ start 1))))
-          (Cell/set transcript $"${marker}${retained}"))))))
+          (transcript ~ set $"${marker}${retained}"))))))
 
 (fn input_route_label []
   (var app (active_application ~ get))
@@ -1642,23 +1642,23 @@
 
 (fn render_agent_delta [transcript streaming text]
   (if_not (== text "")
-    (if_not (Cell/get streaming)
+    (if_not (streaming ~ get)
       (append_transcript transcript "agent> ")
       (if_not (stdin_tty?)
         ($print "agent> "))
-      (Cell/set streaming true))
+      (streaming ~ set true))
     (append_transcript transcript text)
     (if (stdin_tty?)
       (refresh_active_input)
       ($print text))))
 
 (fn finish_agent_stream [transcript streaming]
-  (if_yes (Cell/get streaming)
+  (if_yes (streaming ~ get)
     (append_transcript transcript "\n")
     (if (stdin_tty?)
       (refresh_user_input transcript)
       ($println ""))
-    (Cell/set streaming false)))
+    (streaming ~ set false)))
 
 (fn render_agent_text [transcript streaming text]
   (finish_agent_stream transcript streaming)
@@ -2578,13 +2578,13 @@
       # Hoisted: re-`var` inside a while body is a duplicate binding on the
       # second iteration, so allocate loop state once and `set` it.
       (var denial nil)
-      (while (Cell/get running)
+      (while (running ~ get)
         ($print "sh> ")
         (set line (read_line))
         (if (== line nil)
-          (Cell/set running false)
+          (running ~ set false)
           (if (exit_word? line)
-            (then (Cell/set running false))
+            (then (running ~ set false))
             (else
               (set denial (guard_shell line))
               (if (present? denial)
@@ -2820,13 +2820,12 @@
       (worker_history_push! app/main_agent input "local_tui"
         (if app/local_surface
           (app/local_surface/instance_id ~ get)))
-      (Cell/set streaming false)
+      (streaming ~ set false)
       (begin_turn!)
       (application_emit app "user_input"
         {^worker_id app/main_agent/id ^agent_id app/main_agent/id ^text input})
-      (Cell/set items
-        (run_interactive_turn transcript streaming (interactive_transport)
-          (append (Cell/get items) (user_item input))))
+      (items ~ set (run_interactive_turn transcript streaming (interactive_transport)
+          (append (items ~ get) (user_item input))))
       (save_agent_state (items ~ get)
                         (transcript ~ get)
                         (memory ~ get)))))
@@ -3459,7 +3458,7 @@
   (if_yes saved
     (append_transcript transcript $"[restored session from ${(state_display)}]\n")
     (refresh_user_input transcript))
-  (while (Cell/get running)
+  (while (running ~ get)
     (interactive_memory ~ set (memory ~ get))
     (set input_history (surface_route_history app))
     (set line (read_user_input transcript input_history))
@@ -3470,7 +3469,7 @@
                           (transcript ~ get)
                           (memory ~ get))
         (interactive_transcript ~ set nil)
-        (Cell/set running false))
+        (running ~ set false))
       (else
         (if_not (blank_line? line)
           (if_not (help_command? line)
@@ -3501,7 +3500,7 @@
                                     (transcript ~ get)
                                     (memory ~ get))
                   (interactive_transcript ~ set nil)
-                  (Cell/set running false))
+                  (running ~ set false))
                 (elif (== line "/agents")
                   (render_agent_text transcript streaming (agents_report)))
                 (elif (|| (== line "/agent") (starts_with? line "/agent "))
