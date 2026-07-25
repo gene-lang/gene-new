@@ -357,7 +357,7 @@ const supervisorFailureRetryCapacity = 64
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
-                        scope: Scope)
+                        scope: Scope, hint = "")
 proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
                        missingImpl = false) {.noreturn.}
@@ -1058,10 +1058,15 @@ proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
 
 proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
   ## `~` is the only way to invoke a message (design §3): a message identity is
-  ## not callable in head position, so `(P/m x)` is a CallKindError. Qualified
+  ## not callable in head position, so `(P:m x)` is a CallKindError. Qualified
   ## sends resolve the impl through `opResolveQualifiedMessage`, so an ordinary
-  ## call never legitimately holds a message value here.
-  raiseCallKindError("call", "Callable", "Message", callee, scope)
+  ## call never legitimately holds a message value here. The diagnostic names
+  ## the fix, because the head-position spelling is the habit being redirected.
+  let name = callee.protocolMessageName
+  let shown = if name.len > 0: name else: "m"
+  raiseCallKindError("call", "Callable", "Message", callee, scope,
+                     hint = "a message dispatches only through ~; write " &
+                            "(x ~ P:" & shown & ")")
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
@@ -14359,8 +14364,10 @@ proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
   raise e
 
 proc raiseCallKindError(where, expected, actual: string, value: Value,
-                        scope: Scope) =
-  let message = where & " expected " & expected & ", got " & actual
+                        scope: Scope, hint = "") =
+  var message = where & " expected " & expected & ", got " & actual
+  if hint.len > 0:
+    message = message & "; " & hint
   var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr(where)
