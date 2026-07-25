@@ -2027,8 +2027,18 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer Node Map]",
-               "[(type Cell) (type Buffer) (type Node) (type Map)]")
+    check_eval("[Cell Buffer Node Map List]",
+               "[(type Cell) (type Buffer) (type Node) (type Map) (type List)]")
+    # A name that is both a bare library function and a type message names one
+    # function value, not two natives that behave alike.
+    check_eval("[(same? $size List/size) (same? $head Node/head) " &
+               " (same? $to_stream List/to_stream)]",
+               "[true true true]")
+    # Kinds that are still namespace-backed keep reaching the same natives.
+    check_eval("(var s ($Set 1 2)) (var r ($range 0 3)) " &
+               "[(s ~ contains? 1) ((s ~ to_stream) ~ into []) " &
+               " ((r ~ to_stream) ~ into [])]",
+               "[true [1 2] [0 1 2]]")
     # Both map representations dispatch as `Map`; `PropMap`/`HashMap` name the
     # representations in annotations and carry no messages of their own.
     check_eval("(protocol Sz (message sz [] : Int)) " &

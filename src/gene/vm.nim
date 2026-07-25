@@ -5320,25 +5320,36 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Set", newNativeFn("Set", biSet))
   result.define("set_has?", newNativeFn("set_has?", biSetHas))
   result.define("set_size", newNativeFn("set_size", biSetSize))
-  result.define("size", newNativeFn("size", biListSize))
-  result.define("empty?", newNativeFn("empty?", biListEmpty))
+  # Shared natives, bound once. Each is both a bare library function and a
+  # message on one or more container types, so `($size xs)` and `(xs ~ size)`
+  # have to name the same function value rather than two natives that merely
+  # behave alike. `contains?` is bound further up and captured here.
+  let sizeFn = newNativeFn("size", biListSize)
+  let emptyFn = newNativeFn("empty?", biListEmpty)
+  let firstFn = newNativeFn("first", biListFirst)
+  let lastFn = newNativeFn("last", biListLast)
+  let toStreamFn = newNativeFn("to_stream", biToStream)
+  let toPairsStreamFn = newNativeFn("to_pairs_stream", biToPairsStream)
+  var containsFn: Value
+  discard result.lookupOptional("contains?", containsFn)
+  result.define("size", sizeFn)
+  result.define("empty?", emptyFn)
   result.define("nil?", newNativeFn("nil?", biIsNil))
   result.define("void?", newNativeFn("void?", biIsVoid))
   result.define("absent?", newNativeFn("absent?", biIsAbsent))
   result.define("present?", newNativeFn("present?", biIsPresent))
-  result.define("first", newNativeFn("first", biListFirst))
-  result.define("last", newNativeFn("last", biListLast))
-  # Shared conversion natives, bound once. They are messages on the container
-  # types *and* bare library functions, so the same value has to answer
-  # `($to_stream xs)` and `(xs ~ to_stream)`; the root definitions further down
-  # reuse these locals.
-  let toStreamFn = newNativeFn("to_stream", biToStream)
-  let toPairsStreamFn = newNativeFn("to_pairs_stream", biToPairsStream)
-  let listScope = newScope(result)
-  listScope.define("assoc", newNativeFn("List/assoc", biListAssoc))
-  listScope.define("set!", newNativeFn("List/set!", biListSetBang))
-  listScope.define("push!", newNativeFn("List/push!", biListPushBang))
-  result.define("List", newNamespace("List", listScope))
+  result.define("first", firstFn)
+  result.define("last", lastFn)
+  result.defineBuiltinType(vkList, "List", {
+    "assoc": newNativeFn("List/assoc", biListAssoc),
+    "set!": newNativeFn("List/set!", biListSetBang),
+    "push!": newNativeFn("List/push!", biListPushBang),
+    "size": sizeFn,
+    "empty?": emptyFn,
+    "first": firstFn,
+    "last": lastFn,
+    "contains?": containsFn,
+    "to_stream": toStreamFn})
   # `Map` is the message surface for both map representations. `PropMap` and
   # `HashMap` name the representations in annotations; neither carries messages
   # of its own, so both kinds dispatch as `Map`.
@@ -7415,14 +7426,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     else:
       discard
   case receiver.kind
-  of vkList:
-    case name
-    of "size", "empty?", "first", "last", "contains?":
-      builtinBinding(scope, name)
-    else:
-      var m = typeNsMessage(scope, "List", name)
-      if m.kind == vkNil: m = convertMessage(scope, name, ["to_stream"])
-      m
   of vkSet:
     case name
     of "contains?":
