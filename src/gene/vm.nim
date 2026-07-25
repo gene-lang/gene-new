@@ -355,6 +355,15 @@ type
 const schedulerSharedQueueInitialCap = 65536
 const supervisorFailureRetryCapacity = 64
 
+var gScalarTypes: array[ValueKind, Value]
+
+proc scalarType*(kind: ValueKind): Value =
+  ## Nominal type identity for a built-in value kind, so a scalar can be an
+  ## impl receiver (design §2.1, decision 8). Literals are produced by the
+  ## reader, so these types carry no constructor: `(Int 42)` is not how a 42 is
+  ## made, and the schema path rejects it as it would any field-less type.
+  gScalarTypes[kind]
+
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope, hint = "")
@@ -5073,6 +5082,12 @@ proc buildBuiltins(app: Application): Scope =
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
+  for spec in [(vkInt, "Int"), (vkFloat, "Float"), (vkBool, "Bool"),
+               (vkString, "Str"), (vkSymbol, "Sym"), (vkChar, "Char"),
+               (vkNil, "Nil"), (vkVoid, "Void")]:
+    let t = newType(spec[1], NIL, @[], @[], result)
+    gScalarTypes[spec[0]] = t
+    result.define(spec[1], t)
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
                                        typeExpr: newSym("Str"), scope: result)],
@@ -7156,6 +7171,9 @@ proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   false
 
 proc receiverType(value: Value): Value =
+  let scalar = gScalarTypes[value.kind]
+  if scalar.kind == vkType and value.kind notin {vkNode, vkEnumVariant}:
+    return scalar
   if value.kind == vkNode and value.head.kind == vkType:
     value.head
   elif value.kind == vkNode and value.head.kind == vkEnumVariant:
