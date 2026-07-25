@@ -4858,6 +4858,92 @@ suite "spec — documentation contract":
           check fileExists(referenced)
         at = max(stop, at + 1)
 
+  test "documented examples never call a pruned stdlib name bare":
+    # The standard library moved under the `gene` root (design §2.1), so a bare
+    # `(println …)` in a ```gene block no longer resolves. Catch that
+    # mechanically: a lowercase call head that is not a special form, not kept
+    # bare by `staysBare`, and not declared somewhere in the same file must not
+    # also name a `gene` member — if it does, the example needs `$`.
+    let geneNs = newGlobalScope().lookup("gene")
+    check geneNs.kind == vkNamespace
+    let stdlib = geneNs.nsScope
+    let forms = toHashSet(@CoreSpecialFormNames) +
+      toHashSet(@["then", "elif", "else", "when", "catch", "ensure", "ctor",
+                  "message", "in", "for", "from"])
+    var offenders: seq[string]
+    for path in walkDirRec("docs"):
+      if not path.endsWith(".md"):
+        continue
+      let lines = readFile(path).splitLines()
+      var blocks: seq[seq[string]]
+      var cur: seq[string]
+      var inBlock = false
+      for line in lines:
+        if line.startsWith("```gene"):
+          inBlock = true
+          cur = @[]
+        elif line.startsWith("```"):
+          if inBlock and cur.len > 0:
+            blocks.add cur
+          inBlock = false
+        elif inBlock:
+          cur.add line
+      var declared: HashSet[string]
+      for blk in blocks:
+        for line in blk:
+          for kw in ["(fn ", "(fn! ", "(var ", "(let ", "(const ", "(macro ",
+                     "(type ", "(enum ", "(protocol ", "(ns ", "(alias "]:
+            var at = line.find(kw)
+            while at >= 0:
+              var i = at + kw.len
+              var name = ""
+              while i < line.len and line[i] notin {' ', ')', '\t', ']'}:
+                name.add line[i]
+                inc i
+              if name.len > 0:
+                declared.incl name
+              at = line.find(kw, at + 1)
+          # `(import ns [a b : alias c])` binds those names locally too.
+          if "(import " in line or "(import_impl " in line:
+            let lb = line.find('[')
+            if lb >= 0:
+              var word = ""
+              for ch in line[lb + 1 .. ^1]:
+                if ch in {'a'..'z', 'A'..'Z', '0'..'9', '_', '?', '!'}:
+                  word.add ch
+                else:
+                  if word.len > 0:
+                    declared.incl word
+                  word = ""
+              if word.len > 0:
+                declared.incl word
+      for blk in blocks:
+        # A block containing a template builds data nodes, whose heads are tags
+        # (`(html (body …))`), not calls. Skip it rather than flag the tags.
+        var isTemplate = false
+        for line in blk:
+          if '`' in line:
+            isTemplate = true
+        if isTemplate:
+          continue
+        for line in blk:
+          var i = 0
+          while i < line.len:
+            if line[i] == '(' and i + 1 < line.len and
+                line[i + 1] in {'a'..'z', '_'}:
+              var j = i + 1
+              var head = ""
+              while j < line.len and line[j] notin {' ', ')', '\t'}:
+                head.add line[j]
+                inc j
+              if head.len > 0 and head notin forms and head notin declared and
+                  not staysBare(head) and stdlib.vars.hasKey(head):
+                offenders.add path & ": (" & head & " …) -> ($" & head & " …)"
+            inc i
+    if offenders.len > 0:
+      checkpoint offenders.join("\n")
+    check offenders.len == 0
+
 suite "spec — naming convention":
   test "registered names use underscores, never hyphens":
     # The stdlib naming convention is snake_case. Walk every binding reachable

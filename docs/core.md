@@ -213,7 +213,7 @@ on the simple name.
 ### 3.5 Subtyping is structural from the impl
 
 ```gene
-(fn print_a [x : A] (println (x ~ A/do_a)))
+(fn print_a [x : A] ($println (x ~ A/do_a)))
 (print_a t)   # t : T, and T implements C, which inherits A
 ```
 
@@ -660,7 +660,7 @@ those defaults without a per-type impl:
 
 ```gene
 (protocol Inspectable ^universal true
-  (message inspect [self] : Str (to_str self)))
+  (message inspect [self] : Str ($to_str self)))
 ```
 
 Without the attribute, even a fully-defaulted protocol requires an explicit

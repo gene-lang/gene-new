@@ -536,7 +536,7 @@ Usage:
 
 ```gene
 (when! (> x 0)
-  (println "positive")
+  ($println "positive")
   x)
 ```
 

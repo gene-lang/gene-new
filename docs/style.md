@@ -35,7 +35,7 @@ Declarations use one indentation level for a wrapped value:
   (build_result input options))
 
 (fn render [value : Any] : Str
-  (to_str value))
+  ($to_str value))
 ```
 
 Do not double-indent the value:

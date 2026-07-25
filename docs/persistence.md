@@ -238,10 +238,10 @@ an "unprocessed input" marker, so a stop between accepting input and finishing
 its turn reloads sensibly:
 
 ```gene
-(s ~ put (str "pending:" id) input)        ; 1. record the accepted input
+(s ~ put ($ "pending:" id) input)        ; 1. record the accepted input
 ;; ... process the turn ...
-(s ~ put (str "session:" id) new_state)    ; 2. record the result
-(s ~ delete (str "pending:" id))           ; 3. clear the marker
+(s ~ put ($ "session:" id) new_state)    ; 2. record the result
+(s ~ delete ($ "pending:" id))           ; 3. clear the marker
 ```
 
 On reload: a `pending:*` with no matching completed state means a stop
