@@ -5562,20 +5562,16 @@ proc buildBuiltins(app: Application): Scope =
                                             acceptsNamed = false))
   result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
+  let mapFn = newNativeFn("map", biStreamMap)
+  let filterFn = newNativeFn("filter", biStreamFilter)
+  let takeFn = newNativeFn("take", biStreamTake)
+  let intoFn = newNativeFn("into", biStreamInto)
   result.define("to_stream", toStreamFn)
   result.define("to_pairs_stream", toPairsStreamFn)
-  result.define("map", newNativeFn("map", biStreamMap))
-  result.define("filter", newNativeFn("filter", biStreamFilter))
-  result.define("take", newNativeFn("take", biStreamTake))
-  result.define("into", newNativeFn("into", biStreamInto))
-  let streamScope = newScope(result)
-  streamScope.define("has_next", newNativeFn("Stream/has_next", biStreamHasNext))
-  streamScope.define("peek", newNativeFn("Stream/peek", biStreamPeek))
-  streamScope.define("next", newNativeFn("Stream/next", biStreamNext))
-  streamScope.define("try_next", newNativeCallFn("Stream/try_next", biStreamTryNext,
-                                                 acceptsNamed = false))
-  streamScope.define("close", newNativeFn("Stream/close", biStreamClose))
-  result.define("Stream", newNamespace("Stream", streamScope))
+  result.define("map", mapFn)
+  result.define("filter", filterFn)
+  result.define("take", takeFn)
+  result.define("into", intoFn)
   result.define("assoc_in", newNativeFn("assoc_in", biAssocIn))
   result.define("update_in", newNativeFn("update_in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
@@ -5583,6 +5579,25 @@ proc buildBuiltins(app: Application): Scope =
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
   registerStdlibNamespaces(result)
+  # `Stream` registers after the stdlib namespaces because `each` is the one
+  # pipeline op with no bare root binding — it lives only in the `stream`
+  # namespace — and the type's table should hold that same value rather than a
+  # second native that behaves alike.
+  var streamNs: Value
+  discard result.lookupOptional("stream", streamNs)
+  result.defineBuiltinType(vkStream, "Stream", {
+    "has_next": newNativeFn("Stream/has_next", biStreamHasNext),
+    "peek": newNativeFn("Stream/peek", biStreamPeek),
+    "next": newNativeFn("Stream/next", biStreamNext),
+    "try_next": newNativeCallFn("Stream/try_next", biStreamTryNext,
+                                acceptsNamed = false),
+    "close": newNativeFn("Stream/close", biStreamClose),
+    "map": mapFn,
+    "filter": filterFn,
+    "take": takeFn,
+    "into": intoFn,
+    "each": exportedBinding(streamNs, "each"),
+    "to_pairs_stream": toPairsStreamFn})
   # The standard library lives under the unshadowable `gene` root and is reached
   # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
   # bare name means whatever the program binds it to, so reading a name tells
@@ -7455,12 +7470,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     typeDirectMessage(gScalarTypes[vkNode], name)
   of vkAtomicCell:
     typeNsMessage(scope, "AtomicCell", name)
-  of vkStream:
-    var m = typeNsMessage(scope, "Stream", name)
-    if m.kind == vkNil:
-      m = convertMessage(scope, name,
-        ["map", "filter", "take", "into", "each", "to_pairs_stream"])
-    m
   of vkTask:
     typeNsMessage(scope, "Task", name)
   of vkReplyTo:

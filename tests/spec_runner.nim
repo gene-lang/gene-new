@@ -2035,9 +2035,19 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer Node Map List Channel]",
+    check_eval("[Cell Buffer Node Map List Channel Stream]",
                "[(type Cell) (type Buffer) (type Node) (type Map) " &
-               "(type List) (type Channel)]")
+               "(type List) (type Channel) (type Stream)]")
+    # `each` has no bare root binding — it lives only in the `stream`
+    # namespace — so the type's table has to hold that same value.
+    check_eval("[(same? $map Stream/map) (same? $into Stream/into) " &
+               " (same? $stream/each Stream/each)]",
+               "[true true true]")
+    check_eval("(var c ($cell 0)) " &
+               "((([1 2 3 4] ~ to_stream) ~ filter (fn [x] (> x 2))) " &
+               "  ~ each (fn [x] (c ~ set (+ (c ~ get) x)))) " &
+               "(c ~ get)",
+               "7")
     # `Channel` is one of the names a program may redeclare, so the annotation
     # path lets a scope lookup win. Now that the built-in is itself a type,
     # landing back on the built-in must not read as a shadow: the generic form
