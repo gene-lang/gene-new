@@ -2238,8 +2238,8 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(fn f [] 1) (set f 2)", "cannot set 'f'")
     check_compile_error("(type T ^props {}) (set T 2)",
                         "cannot set 'T'")
-    check_compile_error("(ns N (let x 1)) (set N 2)",
-                        "cannot set 'N'")
+    check_compile_error("(ns n (let x 1)) (set n 2)",
+                        "cannot set 'n'")
     check_compile_error("(protocol P) (set P 2)",
                         "cannot set 'P'")
     check_compile_error("(enum E a b) (set E 2)",
@@ -3059,7 +3059,7 @@ suite "spec — actors from design":
     # needs a real module and is covered in tests/test_modules.nim.
     check_eval("(import $net/http_client [Http]) (Http ~ name)",
                "\"Net/Http\"")
-    check_eval("(ns N (var x 1)) ((N ~ bindings) ~ get \"x\")", "1")
+    check_eval("(ns n (var x 1)) ((n ~ bindings) ~ get \"x\")", "1")
 
   test "actor send processes messages sequentially":
     check_eval("(var out ($cell 0)) " &
@@ -4842,6 +4842,14 @@ suite "spec — qualified message spelling":
     check_eval("(var x : Int 5) x", "5")
     check_read("{^a: 1}", "{^a: 1}")
     check_eval("(fn f [n : Int] : Int n) (f 7)", "7")
+
+suite "spec — declaration case":
+  test "types and protocols are uppercase, namespaces lowercase":
+    check_eval("(ns util (var x 1)) (type T ^props {}) (protocol P) 1", "1")
+    check_compile_error("(ns Util (var x 1))", "must start lowercase")
+    check_compile_error("(type thing ^props {})", "must start uppercase")
+    check_compile_error("(protocol shown)", "must start uppercase")
+    check_compile_error("(enum colour red)", "must start uppercase")
 
 suite "spec — documentation contract":
   test "focused normative specification files exist":

@@ -237,6 +237,23 @@ proc staysBare*(name: string): bool =
   name in bareOperatorNames or name in bareCoreNames or
     name in reservedStdlibRoots
 
+proc validateDeclarationCase(kind, name: string) =
+  ## Case marks the kind (design §2.1): a type, protocol, or enum is uppercase;
+  ## a namespace is lowercase. Enforced on user declarations so the rule the
+  ## standard library follows is the rule the language states.
+  if name.len == 0 or name[0] == '_':
+    return
+  let upper = name[0] in {'A'..'Z'}
+  if kind == "ns":
+    if upper:
+      raise newException(GeneError,
+        "namespace '" & name & "' must start lowercase; uppercase names are " &
+        "types and protocols (design §2.1)")
+  elif not upper:
+    raise newException(GeneError,
+      kind & " '" & name & "' must start uppercase; lowercase names are " &
+      "namespaces and functions (design §2.1)")
+
 proc validateBindingName(name: string) =
   if name in reservedStdlibRoots:
     raise newException(GeneError,
@@ -4019,6 +4036,7 @@ proc compileNs(c: var Compiler, node: Value) =
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "ns requires a name")
   let name = body[0].symVal
+  validateDeclarationCase("ns", name)
   var nsCompiler = c.childCompiler()
   nsCompiler.enableLocalSlots()
   nsCompiler.parentSlots = c.parentFrames()
@@ -5106,6 +5124,7 @@ proc compileType(c: var Compiler, node: Value) =
     raise newException(GeneError, "type requires a name")
   rejectUnknownTypeProps(node)
   let name = body[0].symVal
+  validateDeclarationCase("type", name)
   var messageNodes: seq[Value]
   var implNodes: seq[Value]
   var ctorNode = NIL
@@ -5250,6 +5269,7 @@ proc compileEnum(c: var Compiler, node: Value) =
     if key != "backing":
       raise newException(GeneError, "unknown enum prop: ^" & key)
   let name = body[0].symVal
+  validateDeclarationCase("enum", name)
   var typeParams: seq[string]
   var start = 1
   if start < body.len and body[start].kind == vkList:
@@ -5369,6 +5389,7 @@ proc compileProtocol(c: var Compiler, node: Value) =
   if body.len == 0 or body[0].kind != vkSymbol:
     raise newException(GeneError, "protocol requires a name")
   let name = body[0].symVal
+  validateDeclarationCase("protocol", name)
   for key in node.props.keys:
     if key notin ["inherit", "universal", "private"]:
       raise newException(GeneError,
