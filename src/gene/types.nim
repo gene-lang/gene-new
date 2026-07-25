@@ -361,9 +361,6 @@ type
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
     moduleStatic*: bool     # unconditional module/namespace declaration scope
-    entryProtocols*: seq[Value] # exact protocol identities frozen at unit entry
-    entryProtocolsFrozen*: bool
-    entrySnapshotSig*: int      # binding-count signature at last entry snapshot
     borrowedCallerEnv*: bool # scope or ancestor is inside a live syntax call
     requiredImplTypes*: seq[Value]
     evalBudget*: EvalBudget
@@ -415,7 +412,6 @@ type
     syntaxFn: bool           # fn! syntax callable / fexpr (design §3/§11.1)
     capturesCallerEnv: bool  # closure was created under a borrowed caller view
     errorTypes: seq[Value]
-    protocolEntries: seq[Value] # immutable protocol identities at unit entry
 
   GeneNativeFn = object
     refCount: int
@@ -1799,8 +1795,6 @@ proc markSharedBits(bits: uint64, seen: var HashSet[uint64]) =
     markManualShared(p)
     for item in p.errorTypes:
       markSharedBits(item.bits, seen)
-    for item in p.protocolEntries:
-      markSharedBits(item.bits, seen)
   of NATIVE_FN_TAG:
     markManualShared(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG, OBJECT_TAG:
@@ -2389,10 +2383,6 @@ proc fnErrorTypes*(v: Value): lent seq[Value] =
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).errorTypes
 
-proc fnProtocolEntries*(v: Value): lent seq[Value] =
-  if v.tagOf != FUNCTION_TAG:
-    raise newException(FieldDefect, "value is not a Function")
-  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).protocolEntries
 
 proc nativeFnName*(v: Value): lent string {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
@@ -4276,8 +4266,6 @@ proc newFunction*(name: string, params: sink seq[string],
   p.syntaxFn = syntaxFn
   p.capturesCallerEnv = scope != nil and scope.borrowedCallerEnv
   p.errorTypes = errorTypes
-  if scope != nil:
-    p.protocolEntries = scope.entryProtocols
   boxPtr(FUNCTION_TAG, p)
 
 proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
@@ -4295,7 +4283,6 @@ proc cloneFunctionCapture(v: Value, scope: Scope, weak: bool): Value =
   p.syntaxFn = src.syntaxFn
   p.capturesCallerEnv = src.capturesCallerEnv
   p.errorTypes = src.errorTypes
-  p.protocolEntries = src.protocolEntries
   boxPtr(FUNCTION_TAG, p)
 
 proc functionForScopeStorage*(v: Value, owner: Scope): Value =

@@ -365,7 +365,6 @@ proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc closeTypeExpr(expr: Value, scope: Scope): Value
-proc snapshotProtocolBindings(scope: Scope): seq[Value]
 proc commonRuntimeTypeExpr(values: openArray[Value]): Value
 proc matchesBufferType(args: openArray[Value], value: Value,
                        scope: Scope): bool
@@ -700,29 +699,11 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotMirror = mirror
 
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
-  if not scope.entryProtocolsFrozen:
-    if scope.moduleRoot or scope.implOverlayRoot:
-      scope.entryProtocols = snapshotProtocolBindings(scope.parent)
-    elif scope.parent != nil:
-      scope.entryProtocols = scope.parent.entryProtocols
-    scope.entryProtocolsFrozen = true
   if scope.slots.len == 0 and chunk.localNames.len > 0:
     scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
   for name in chunk.exportExcludedNames:
     scope.exportExcludedNames.incl name
 
-proc protocolBindingSig(scope: Scope): int =
-  ## Cheap O(chain-depth) signature of how many bindings could contribute
-  ## protocol identities. Only the count changes when a binding is added, so
-  ## an unchanged count lets refreshCompiledUnitEntry reuse the prior snapshot
-  ## instead of re-walking every binding (the reused-scope hot path). This is
-  ## sound only because module/REPL root scopes are append-only within a
-  ## session: a binding is never deleted or rebound, so equal counts imply an
-  ## unchanged binding set. A future unbind would have to invalidate the sig.
-  var current = scope
-  while current != nil:
-    result += current.slotNames.len + current.vars.len
-    current = current.parent
 
 proc refreshCompiledUnitEntry(scope: Scope) =
   ## File/program roots normally execute once; eval/REPL roots execute many
@@ -730,13 +711,7 @@ proc refreshCompiledUnitEntry(scope: Scope) =
   ## this scope before each such unit, without changing older function values.
   ## Repeated runs of one compiled chunk on the same scope (no new bindings)
   ## reuse the frozen snapshot rather than re-walking the whole scope chain.
-  if scope.moduleRoot or scope.implOverlayRoot:
-    let sig = scope.protocolBindingSig()
-    if scope.entryProtocolsFrozen and scope.entrySnapshotSig == sig:
-      return
-    scope.entryProtocols = snapshotProtocolBindings(scope)
-    scope.entryProtocolsFrozen = true
-    scope.entrySnapshotSig = sig
+  discard
 
 proc checkSlot(scope: Scope, index: int, name: string) =
   if index < 0 or index >= scope.slots.len:
@@ -6359,9 +6334,6 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
   ## Candidate entry identities belong to the compiled function value, not to
   ## its mutable module/REPL scope. Candidate-bearing functions are compiled
   ## with needsCallScope, so this never has to mutate the lexical parent.
-  if scope != nil and callee.kind == vkFunction and scope != callee.fnScope:
-    scope.entryProtocols = callee.fnProtocolEntries
-    scope.entryProtocolsFrozen = true
   scope.varsDirty = false
 
 proc resetCallScope(scope, parent: Scope, names: seq[string]) =
@@ -6379,8 +6351,6 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
   scope.moduleStatic = false
-  scope.entryProtocols.setLen(0)
-  scope.entryProtocolsFrozen = false
   scope.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   scope.requiredImplTypes.setLen(0)
   scope.evalBudget =
@@ -6704,8 +6674,6 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.borrowedCallerEnv = false
     scope.moduleRoot = false
     scope.moduleStatic = false
-    scope.entryProtocols.setLen(0)
-    scope.entryProtocolsFrozen = false
     if scope.wildcardFallbacks.len != 0:
       scope.wildcardFallbacks.clear()
     if scope.exportExcludedNames.len != 0:
@@ -6738,9 +6706,6 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
   scope.moduleStatic = false
-  if scope.entryProtocols.len != 0:
-    scope.entryProtocols.setLen(0)
-  scope.entryProtocolsFrozen = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
   if scope.ownsTasks:
@@ -7927,8 +7892,6 @@ proc snapshotScopeChain(source: Scope,
   result = newScope(parent, application = source.application)
   result.moduleRoot = source.moduleRoot
   result.moduleStatic = source.moduleStatic
-  result.entryProtocols = source.entryProtocols
-  result.entryProtocolsFrozen = source.entryProtocolsFrozen
   result.forceOverlayImpls = source.forceOverlayImpls
   scopeMap[key] = result
   if source.slots.len > 0:
@@ -8780,52 +8743,7 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
     raiseMessageError(message.protocolMessageName, recvType.typeName, scope,
                       protocol = protocol.protocolName, missingImpl = true)
 
-proc addProtocolCandidate(candidates: var seq[Value], value: Value) =
-  if value.kind != vkProtocol:
-    return
-  for existing in candidates:
-    if same(existing, value):
-      return
-  candidates.add value
 
-proc addInterfaceProtocolCandidates(candidates: var seq[Value], value: Value,
-                                    seen: var seq[uint64]) =
-  if value.kind == vkProtocol:
-    candidates.addProtocolCandidate(value)
-    return
-  if value.kind notin {vkModule, vkNamespace}:
-    return
-  for bits in seen:
-    if bits == value.bits:
-      return
-  seen.add value.bits
-  let namespace =
-    if value.kind == vkModule: value.moduleRootNamespace
-    else: value
-  let bindingScope = namespace.nsScope
-  bindingScope.materializeMirroredVars()
-  for index, name in bindingScope.slotNames:
-    if name.len > 0 and index < bindingScope.slots.len and
-        bindingScope.slotDefined(index):
-      candidates.addInterfaceProtocolCandidates(bindingScope.slots[index], seen)
-  for name, binding in bindingScope.vars:
-    if name != "this_mod":
-      candidates.addInterfaceProtocolCandidates(binding, seen)
-
-proc snapshotProtocolBindings(scope: Scope): seq[Value] =
-  ## Freeze protocol identities from ordinary lexical bindings, never from
-  ## the canonical impl registry. Callers retain the resulting Values.
-  var current = scope
-  var seenInterfaces: seq[uint64]
-  while current != nil:
-    for index, _ in current.slotNames:
-      if index < current.slots.len and current.slotDefined(index):
-        result.addInterfaceProtocolCandidates(current.slots[index],
-                                              seenInterfaces)
-    current.materializeMirroredVars()
-    for _, value in current.vars:
-      result.addInterfaceProtocolCandidates(value, seenInterfaces)
-    current = current.parent
 
 # --------------------------------------------------------------------------
 # Protocol-message dispatch inline cache (design §10)
@@ -9978,8 +9896,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
     let callScope = acquireSimpleCallScope(gVmPools, scope.parent, proto.localNames,
       keepSlotNames = false, resetSlots = false)
-    callScope.entryProtocols = scope.entryProtocols
-    callScope.entryProtocolsFrozen = true
     let slot = proto.positionalSlots[0]
     callScope.slots[slot] = arg
     callScope.slotDefinedBits = 1'u64 shl slot
