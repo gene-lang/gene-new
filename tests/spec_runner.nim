@@ -2035,9 +2035,14 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("[Cell Buffer Node Map List Channel Stream]",
+    check_eval("[Cell Buffer Node Map List Channel Stream Actor]",
                "[(type Cell) (type Buffer) (type Node) (type Map) " &
-               "(type List) (type Channel) (type Stream)]")
+               "(type List) (type Channel) (type Stream) (type Actor)]")
+    # Surfaces outside the decision-7 list still send identically through the
+    # built-in fallback, and are still namespaces.
+    check_eval("[AtomicCell Task ReplyTo] ",
+               "[(ns AtomicCell) (ns Task) (ns ReplyTo)]")
+    check_eval("(var ac ($atomic_cell 1)) (ac ~ store 5) (ac ~ load)", "5")
     # `each` has no bare root binding — it lives only in the `stream`
     # namespace — so the type's table has to hold that same value.
     check_eval("[(same? $map Stream/map) (same? $into Stream/into) " &
@@ -3139,21 +3144,33 @@ suite "spec — bounded channels from design":
                "\"Send\"")
 
 suite "spec — actors from design":
-  test "Actor is the type message surface; actor is the function namespace":
-    # Case carries meaning: operations with a receiver are messages on `Actor`,
-    # while the ones without stay functions under `actor` (design §3).
+  test "Actor is the type; actor is the function namespace":
+    # Case carries meaning: operations with a receiver are messages on the
+    # `Actor` type, while the ones without stay functions under `actor`
+    # (design §3). `Actor` names the type of an actor reference, so it works
+    # in annotation position too — `ActorRef` remains the redeclarable spelling.
     check_eval("(fn handle [ctx, state, msg] ($actor/continue (+ state msg))) " &
                "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "(a ~ send 4) " &
                "[(same? gene/Actor Actor) (same? gene/actor $actor) " &
                " ((a ~ snapshot) ~ /state)]",
                "[true true 4]")
-    # The namespace member stays callable, like (Cell/get c).
+    # The qualified member stays callable, like (Cell/get c).
     check_eval("(fn handle [ctx, state, msg] ($actor/continue (+ state msg))) " &
                "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "(Actor/send a 6) " &
                "((a ~ snapshot) ~ /state)",
                "6")
+    check_eval("(fn handle [ctx, state, msg] ($actor/continue state)) " &
+               "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
+               "[((fn [x : Actor] 1) a) ((fn [x : ActorRef] 2) a) " &
+               " (try ((fn [x : Actor] 1) 5) " &
+               "  catch (TypeError ^expected e) e)]",
+               "[1 2 \"Actor\"]")
+    # A program may still redeclare `ActorRef` as its own nominal type.
+    check_eval("(type ActorRef ^props {^a Int}) " &
+               "((fn [x : ActorRef] 3) (ActorRef ^a 1))",
+               "3")
 
   test "namespaces and capabilities receive messages":
     # Module/Namespace/Capability/Env are uppercase namespaces whose operations

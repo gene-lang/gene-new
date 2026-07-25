@@ -5514,18 +5514,13 @@ proc buildBuiltins(app: Application): Scope =
   # `Actor` and are sent — `(a ~ send v)` — while the ones that take no receiver
   # stay functions under `actor`: `spawn` creates a reference, and `stop` /
   # `continue` are actor-body control signals.
-  let actorTypeScope = newScope(result)
-  actorTypeScope.define("send", newNativeCallFn("Actor/send", biActorSend,
-                                                acceptsNamed = false))
-  actorTypeScope.define("try_send", newNativeCallFn("Actor/try_send",
-                                                    biActorTrySend,
-                                                    acceptsNamed = false))
-  actorTypeScope.define("ask", newNativeCallFn("Actor/ask", biActorAsk))
-  actorTypeScope.define("snapshot", newNativeFn("Actor/snapshot",
-                                                biActorSnapshot))
-  actorTypeScope.define("upgrade", newNativeCallFn("Actor/upgrade",
-                                                   biActorUpgrade))
-  result.define("Actor", newNamespace("Actor", actorTypeScope))
+  result.defineBuiltinType(vkActorRef, "Actor", {
+    "send": newNativeCallFn("Actor/send", biActorSend, acceptsNamed = false),
+    "try_send": newNativeCallFn("Actor/try_send", biActorTrySend,
+                                acceptsNamed = false),
+    "ask": newNativeCallFn("Actor/ask", biActorAsk),
+    "snapshot": newNativeFn("Actor/snapshot", biActorSnapshot),
+    "upgrade": newNativeCallFn("Actor/upgrade", biActorUpgrade)})
   let actorScope = newScope(result)
   actorScope.define("spawn", newNativeCallFn("actor/spawn", biActorSpawn))
   actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
@@ -7474,8 +7469,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     typeNsMessage(scope, "Task", name)
   of vkReplyTo:
     typeNsMessage(scope, "ReplyTo", name)
-  of vkActorRef:
-    typeNsMessage(scope, "Actor", name)
   of vkModule:
     typeNsMessage(scope, "Module", name)
   of vkNamespace:

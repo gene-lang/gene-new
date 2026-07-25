@@ -769,10 +769,10 @@ not `(c ~ Cell/get)`. `Cell` is a real type whose messages are `get`, `set`,
 `swap`, and `update`, and a type exposes its messages as qualified members
 (§7.1), so `Cell/get` remains usable in call position, `(Cell/get c)`.
 
-**Case carries meaning in the stdlib: `Name` is a type's message surface,
-`name` is a namespace of functions.** Both live under the `gene` root, so an
-actor reference is `gene/Actor` and the actor functions are `gene/actor`. Which
-one an operation belongs to follows from whether it has a receiver:
+**Case carries meaning in the stdlib: `Name` is a type, `name` is a namespace
+of functions.** Both live under the `gene` root, so the type of an actor
+reference is `gene/Actor` and the actor functions are `gene/actor`. Which one
+an operation belongs to follows from whether it has a receiver:
 
 ```gene
 (a ~ send msg)              # Actor/send — acts on an actor reference
@@ -782,9 +782,15 @@ one an operation belongs to follows from whether it has a receiver:
 ```
 
 The same split applies to `Module`, `Namespace`, `Capability`, and `Env`:
-`(this_mod ~ path)`, `(ns ~ lookup "x")`, `(cap ~ name)`. A namespace member
+`(this_mod ~ path)`, `(ns ~ lookup "x")`, `(cap ~ name)`. The qualified member
 stays callable — `(Actor/send a msg)` works like `(Cell/get c)` — but the send
 is the idiomatic form, because the receiver is what the operation is about.
+
+`List`, `Map`, `Node`, `Cell`, `Channel`, `Stream`, `Actor`, and `Buffer` are
+real types; the remaining uppercase surfaces (`AtomicCell`, `Task`, `ReplyTo`,
+`Module`, `Namespace`, `Capability`, `Env`, `Date`, `Time`, …) are still
+namespaces of natives and send through a built-in fallback. The spelling is
+the same either way; only `(impl P for T)` tells them apart.
 
 Not every `Name/op` pair splits this way: `Env/snapshot` takes a `CallerEnv`
 rather than an `Env`, so it stays a function. The rule is the receiver, not the
@@ -3107,9 +3113,9 @@ Being a real type is what makes `Cell` nameable as an impl receiver:
   (message show [] : Str ((self ~ get) ~ Shown:show)))
 ```
 
-The other built-in surfaces — `List`, `Map`, `Node`, `Buffer`, `AtomicCell`,
-`Stream`, `Channel`, `Task`, `ReplyTo` — send the same way; they are being moved
-to types one at a time.
+`List`, `Map`, `Node`, `Buffer`, `Stream`, `Channel`, and `Actor` are types on
+the same footing. `AtomicCell`, `Task`, and `ReplyTo` send identically but are
+still namespaces of natives, so they cannot yet be named as impl receivers.
 
 Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed inside specialized typed cells, but the semantic model is a mutable reference containing a Gene value.
 
@@ -3826,9 +3832,10 @@ whatever the program binds it to, and the standard library is reached through
 
 The split is by **case**, because case already tells types from functions:
 
-- An **uppercase** name is a *type* — a type value (`Int`, `Str`, `Cell`), an
-  error type (`TypeError`), or a type's message namespace for the surfaces not
-  yet moved onto their type (`List`, `Map`, `Actor`, `C`). These
+- An **uppercase** name is a *type* — a type value (`Int`, `Str`, `Cell`,
+  `List`, `Map`, `Actor`), an error type (`TypeError`), or a message namespace
+  for the surfaces not yet moved onto their type (`AtomicCell`, `Task`, `C`).
+  These
   stay bare, because type annotations resolve names structurally rather than as
   bindings — `[xs : List]` must keep working, and `[xs : $List]` is not how an
   annotation reads. Uppercase names are also the ones a program is least likely
