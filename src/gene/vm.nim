@@ -5337,14 +5337,13 @@ proc buildBuiltins(app: Application): Scope =
   nodeScope.define("push_body!",
                    newNativeFn("Node/push_body!", biNodePushBodyBang))
   result.define("Node", newNamespace("Node", nodeScope))
-  let bufferScope = newScope(result)
-  bufferScope.define("len", newNativeFn("Buffer/len", biBufferLen))
-  bufferScope.define("get", newNativeFn("Buffer/get", biBufferGet))
-  bufferScope.define("set!", newNativeCallFn("Buffer/set!", biBufferSetBang,
-                                             acceptsNamed = false))
-  bufferScope.define("to_list", newNativeFn("Buffer/to_list", biBufferToList))
-  bufferScope.define("elem_type", newNativeFn("Buffer/elem_type", biBufferElemType))
-  result.define("Buffer", newNamespace("Buffer", bufferScope))
+  result.defineBuiltinType(vkBuffer, "Buffer", {
+    "len": newNativeFn("Buffer/len", biBufferLen),
+    "get": newNativeFn("Buffer/get", biBufferGet),
+    "set!": newNativeCallFn("Buffer/set!", biBufferSetBang,
+                            acceptsNamed = false),
+    "to_list": newNativeFn("Buffer/to_list", biBufferToList),
+    "elem_type": newNativeFn("Buffer/elem_type", biBufferElemType)})
   let deviceScope = newScope(result)
   deviceScope.define("Compute", newCapability("Device/Compute"))
   deviceScope.define("buffer", newNativeCallFn("Device/buffer", biDeviceBuffer,
@@ -7429,8 +7428,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     typeNsMessage(scope, "Task", name)
   of vkReplyTo:
     typeNsMessage(scope, "ReplyTo", name)
-  of vkBuffer:
-    typeNsMessage(scope, "Buffer", name)
   of vkActorRef:
     typeNsMessage(scope, "Actor", name)
   of vkModule:

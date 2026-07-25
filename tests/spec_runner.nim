@@ -2027,8 +2027,14 @@ suite "spec — implicit self in message bodies from design §10":
     # (design §12.2), not a namespace of natives. That is what lets a protocol
     # name it as a receiver — the same declaration used to crash with
     # `FieldDefect: value is not a Type`.
-    check_eval("Cell", "(type Cell)")
+    check_eval("[Cell Buffer]", "[(type Cell) (type Buffer)]")
     check_eval("[(Cell ~ name) (Cell ~ fields)]", "[\"Cell\" []]")
+    # A generic annotation on a built-in stays on the symbolic matching path,
+    # so making the surface a type does not disturb `(Buffer T)`.
+    check_eval("(var b ($buffer [1 2 3])) " &
+               "[((fn [x : (Buffer Int)] (x ~ len)) b) (Buffer/len b) " &
+               " ((fn [x : Buffer] (x ~ get 0)) b)]",
+               "[3 3 1]")
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(impl Shown for Str (message show [] : Str self)) " &
                "(impl Shown for Cell " &
