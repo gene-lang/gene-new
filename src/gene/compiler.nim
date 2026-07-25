@@ -4,27 +4,6 @@ import std/[algorithm, os, sets, strutils, tables]
 import ./[equality, gir, reader, types]
 
 type
-  # Interned string ids for protocol-flow references. The must-analysis threads
-  # and copies flow-ref sets through every node; string fields made each copy a
-  # per-element allocation and dominated compile time on large modules. Integer
-  # ids make ProtocolFlowRef a POD so a set copy is a plain memcpy. The
-  # interner is bounded to one compile (shared across child compilers), so it
-  # does not accumulate across a long-running REPL/eval session.
-  FlowInterner = ref object
-    keyIds: Table[string, uint32]
-    keys: seq[string]
-    nameIds: Table[string, uint32]
-    names: seq[string]
-
-  ProtocolFlowRef = object
-    key: uint32
-    name: uint32
-
-  ProtocolFlowResult = object
-    normal: bool
-    state: seq[ProtocolFlowRef]
-    returns: seq[seq[ProtocolFlowRef]]
-
   KnownFunctionSig = object
     arity: int
     returnType: Value
@@ -131,11 +110,6 @@ type
     # Exact impl-form nodes that are unconditional static module/namespace
     # declarations. Nested control-flow and callable bodies are absent.
     staticTopLevelImpls: HashSet[uint64]
-    flowInterner: FlowInterner
-    protocolFlowAt: ref Table[uint64, seq[ProtocolFlowRef]]
-    protocolEntry: seq[ProtocolFlowRef]
-    protocolWhole: seq[ProtocolFlowRef]
-    currentProtocolFlow: seq[ProtocolFlowRef]
 
   ParamSpecs = object
     positional: seq[string]
@@ -471,9 +445,6 @@ proc importedPathEntry(c: Compiler, value: Value):
     tuple[found: bool, candidate: StaticWildcardCandidate]
 proc importedNameError(name: string,
                        candidates: openArray[StaticWildcardCandidate]): ref GeneError
-proc annotationProtocolRefs(c: var Compiler,
-                            value: Value): seq[ProtocolFlowRef]
-
 proc calleeKnownOrdinary(c: Compiler, callee: Value): bool =
   case callee.kind
   of vkSymbol:
@@ -663,9 +634,7 @@ proc isPath(v: Value, segments: openArray[string]): bool =
   true
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
-proc unionFlow(a, b: openArray[ProtocolFlowRef]): seq[ProtocolFlowRef]
-proc prepareProtocolFlow(c: var Compiler, forms: openArray[Value],
-                         entry: seq[ProtocolFlowRef])
+proc reserveProtocolBindingsFor(c: var Compiler, forms: openArray[Value])
 proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
 proc builtinNamespaceMacros(segments: openArray[string]):
     Table[string, MacroDef]
@@ -700,12 +669,7 @@ proc childCompiler(c: Compiler): Compiler =
            namespacePath: c.namespacePath,
            moduleMacroExports: c.moduleMacroExports,
            moduleSyntaxFnExports: c.moduleSyntaxFnExports,
-           staticTopLevelImpls: c.staticTopLevelImpls,
-           flowInterner: c.flowInterner,
-           protocolFlowAt: c.protocolFlowAt,
-           protocolEntry: c.protocolEntry,
-           protocolWhole: c.protocolWhole,
-           currentProtocolFlow: c.currentProtocolFlow)
+           staticTopLevelImpls: c.staticTopLevelImpls)
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   inc c.gensym
@@ -951,8 +915,7 @@ proc symbolText(v: Value): string =
 proc compileDefaultExpr(c: Compiler, node: Value): Chunk =
   var child = c.childCompiler()
   child.prepareStaticImports(@[node])
-  child.prepareProtocolFlow(@[node],
-    unionFlow(c.currentProtocolFlow, c.protocolWhole))
+  child.reserveProtocolBindingsFor(@[node])
   compileExpr(child, node)
   discard child.emit(opReturn)
   child.chunk
@@ -1271,12 +1234,8 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
         child.selfAvailable = true
   elif patternBindsSelf(pattern):
     child.selfAvailable = true
-  var entry = c.currentProtocolFlow
-  if forms.len > 0 and forms[0].kind == vkNode and c.protocolFlowAt != nil and
-      c.protocolFlowAt[].hasKey(forms[0].bits):
-    entry = c.protocolFlowAt[][forms[0].bits]
   child.prepareStaticImports(forms)
-  child.prepareProtocolFlow(forms, entry)
+  child.reserveProtocolBindingsFor(forms)
   compileBody(child, forms)            # empty -> nil
   discard child.emit(opReturn)
   c.sawYield = c.sawYield or child.sawYield
@@ -2458,16 +2417,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     for i in start .. body.high:
       flowForms.add body[i]
   fnCompiler.prepareStaticImports(flowForms)
-  var protocolEntry = unionFlow(c.currentProtocolFlow, c.protocolWhole)
-  for annotation in specs.positionalTypes:
-    protocolEntry = unionFlow(protocolEntry,
-                              fnCompiler.annotationProtocolRefs(annotation))
-  for param in specs.named:
-    protocolEntry = unionFlow(protocolEntry,
-                              fnCompiler.annotationProtocolRefs(param.typeExpr))
-  protocolEntry = unionFlow(protocolEntry,
-                            fnCompiler.annotationProtocolRefs(returnType))
-  fnCompiler.prepareProtocolFlow(flowForms, protocolEntry)
+  fnCompiler.reserveProtocolBindingsFor(flowForms)
   compileBodyFrom(fnCompiler, body, start)
   if fnCompiler.sawYield and fnCompiler.sawNonVoidReturn:
     raise newException(GeneError,
@@ -3422,160 +3372,16 @@ proc importedSyntaxHead(c: Compiler, value: Value): bool =
     raise importedNameError(name, candidates)
   candidates.len == 1 and candidates[0].category == cbcSyntaxFn
 
-proc flowNodeStoresState(value: Value): bool =
-  ## Whether a node's flow state is later read: message sends consume it as a
-  ## candidate set (compileSend), and nested-unit declarations seed their
-  ## Entry set from currentProtocolFlow at the declaration point. Every other
-  ## node never reads it, so its flow state need not be stored.
-  if value.kind != vkNode:
-    return false
-  if value.head.kind == vkSymbol and value.head.symVal == "~":
-    return true  # (~ m ...) leading-self send
-  if value.body.len > 1 and value.body[0].kind == vkSymbol and
-      value.body[0].symVal == "~" and value.body[1].kind == vkSymbol:
-    return true  # (x ~ m ...) infix send
-  if value.head.kind == vkSymbol:
-    case value.head.symVal
-    of "fn", "fn!", "macro", "type", "enum", "protocol", "impl",
-       "import_impl", "ns", "for", "scope", "spawn", "supervisor", "derive":
-      return true
-    else: discard
-  false
 
-proc ensureFlowInterner(c: var Compiler): FlowInterner =
-  if c.flowInterner == nil:
-    c.flowInterner = FlowInterner()
-  c.flowInterner
 
-proc internFlowKey(c: var Compiler, s: string): uint32 =
-  let interner = c.ensureFlowInterner()
-  interner.keyIds.withValue(s, existing):
-    return existing[]
-  do:
-    result = uint32(interner.keys.len)
-    interner.keys.add s
-    interner.keyIds[s] = result
 
-proc internFlowName(c: var Compiler, s: string): uint32 =
-  let interner = c.ensureFlowInterner()
-  interner.nameIds.withValue(s, existing):
-    return existing[]
-  do:
-    result = uint32(interner.names.len)
-    interner.names.add s
-    interner.nameIds[s] = result
 
-proc flowKeyStr(c: Compiler, id: uint32): string =
-  c.flowInterner.keys[int(id)]
 
-proc flowNameStr(c: Compiler, id: uint32): string =
-  c.flowInterner.names[int(id)]
-
-proc addFlowRef(state: var seq[ProtocolFlowRef], item: ProtocolFlowRef) =
-  for existing in state:
-    if existing.key == item.key:
-      return
-  state.add item
-
-proc unionFlow(a, b: openArray[ProtocolFlowRef]): seq[ProtocolFlowRef] =
-  for item in a:
-    result.addFlowRef(item)
-  for item in b:
-    result.addFlowRef(item)
-
-proc collectAnnotationProtocolRefs(c: var Compiler, value: Value,
-                                   refs: var seq[ProtocolFlowRef]) =
-  case value.kind
-  of vkSymbol:
-    let imported = c.importedPathEntry(value)
-    if imported.found:
-      if imported.candidate.category == cbcProtocol:
-        refs.addFlowRef ProtocolFlowRef(
-          key: c.internFlowKey(
-            "interface:" & imported.candidate.modulePath & ":" &
-            imported.candidate.exportPath.join("/")),
-          name: c.internFlowName(value.symVal))
-      return
-    let candidates = c.importedCandidates(value.symVal)
-    if candidates.len > 1:
-      raise importedNameError(value.symVal, candidates)
-    if candidates.len == 1 and candidates[0].category == cbcProtocol:
-      let candidate = candidates[0]
-      refs.addFlowRef ProtocolFlowRef(
-        key: c.internFlowKey("interface:" & candidate.modulePath & ":" &
-                             candidate.exportPath.join("/")),
-        name: c.internFlowName(value.symVal))
-  of vkNode:
-    let imported = c.importedPathEntry(value)
-    if imported.found:
-      if imported.candidate.category == cbcProtocol:
-        let spelling = value.pathSymbolSegments.join("/")
-        refs.addFlowRef ProtocolFlowRef(
-          key: c.internFlowKey(
-            "interface:" & imported.candidate.modulePath & ":" &
-            imported.candidate.exportPath.join("/")),
-          name: c.internFlowName(spelling))
-      return
-    collectAnnotationProtocolRefs(c, value.head, refs)
-    for _, item in value.props:
-      collectAnnotationProtocolRefs(c, item, refs)
-    for item in value.body:
-      collectAnnotationProtocolRefs(c, item, refs)
-    for _, item in value.meta:
-      collectAnnotationProtocolRefs(c, item, refs)
-  of vkList:
-    for item in value.listItems:
-      collectAnnotationProtocolRefs(c, item, refs)
-  of vkMap:
-    for _, item in value.mapEntries:
-      collectAnnotationProtocolRefs(c, item, refs)
-  of vkHashMap:
-    for entry in value.hashMapEntries:
-      collectAnnotationProtocolRefs(c, entry.key, refs)
-      collectAnnotationProtocolRefs(c, entry.val, refs)
-  else:
-    discard
-
-proc annotationProtocolRefs(c: var Compiler,
-                            value: Value): seq[ProtocolFlowRef] =
-  ## Wildcard and aliased module imports seed nothing by themselves. An exact
-  ## protocol named by a callable interface contributes only that identity to
-  ## the callable's Entry set.
-  if value.kind != vkNil:
-    collectAnnotationProtocolRefs(c, value, result)
-
-proc intersectFlow(a, b: openArray[ProtocolFlowRef]): seq[ProtocolFlowRef] =
-  for item in a:
-    for other in b:
-      if item.key == other.key:
-        result.add item
-        break
-
-proc intersectFlowStates(states: openArray[seq[ProtocolFlowRef]],
-                         fallback: seq[ProtocolFlowRef]): seq[ProtocolFlowRef] =
-  if states.len == 0:
-    return fallback
-  result = states[0]
-  for i in 1 ..< states.len:
-    result = intersectFlow(result, states[i])
-
-proc appendReturns(target: var seq[seq[ProtocolFlowRef]],
-                   source: openArray[seq[ProtocolFlowRef]]) =
-  for item in source:
-    target.add item
-
-proc flowImportRefs(c: var Compiler, node: Value): seq[ProtocolFlowRef] =
-  let spec = parseImportSpec(node)
-  let sourceKey =
-    if spec.fromModule: "module:" & spec.modulePath
-    else: "namespace:" & spec.nsSegments.join("/")
-  # Wildcards and module/namespace aliases never bulk-seed protocol
-  # candidates. An exact protocol resolved through an annotation is closed
-  # into that annotation-bearing unit separately.
-  for selection in spec.selections:
-    result.add ProtocolFlowRef(
-      key: c.internFlowKey(sourceKey & ":" & selection.name),
-      name: c.internFlowName(selection.local))
+proc importLocalNames(node: Value): seq[string] =
+  ## Local names an import binds. Wildcards and module/namespace aliases bind
+  ## no individual name, so they contribute nothing to hoist.
+  for selection in parseImportSpec(node).selections:
+    result.add selection.local
 
 proc reserveProtocolBindings(c: var Compiler, forms: openArray[Value])
 
@@ -3608,8 +3414,7 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
       discard c.reserveLocal(value.body[0].symVal)
   of "import":
     let macroLocals = c.importMacroLocals(value)
-    for item in c.flowImportRefs(value):
-      let itemName = c.flowNameStr(item.name)
+    for itemName in importLocalNames(value):
       if itemName notin macroLocals:
         discard c.reserveLocal(itemName)
   of "do", "if", "if_yes", "if_not", "&&", "||", "??", "while", "loop",
@@ -3644,360 +3449,11 @@ proc reserveProtocolBindings(c: var Compiler, forms: openArray[Value]) =
   for form in forms:
     c.reserveProtocolBinding(form)
 
-proc flowExpr(c: var Compiler, value: Value,
-              input: seq[ProtocolFlowRef]): ProtocolFlowResult
-
-proc flowSequence(c: var Compiler, forms: openArray[Value], first: int,
-                  input: seq[ProtocolFlowRef]): ProtocolFlowResult =
-  result.normal = true
-  result.state = input
-  if first > forms.high:
-    return
-  for i in first .. forms.high:
-    if not result.normal:
-      break
-    let next = c.flowExpr(forms[i], result.state)
-    result.returns.appendReturns(next.returns)
-    result.normal = next.normal
-    result.state = next.state
-
-proc flowBranches(c: var Compiler,
-                  branches: openArray[seq[Value]],
-                  input: seq[ProtocolFlowRef]): ProtocolFlowResult =
-  var normalStates: seq[seq[ProtocolFlowRef]]
-  for branch in branches:
-    let outcome = c.flowSequence(branch, 0, input)
-    result.returns.appendReturns(outcome.returns)
-    if outcome.normal:
-      normalStates.add outcome.state
-  result.normal = normalStates.len > 0
-  result.state = intersectFlowStates(normalStates, input)
-
-proc flowIf(c: var Compiler, node: Value,
-            input: seq[ProtocolFlowRef]): ProtocolFlowResult =
-  if node.body.len == 0:
-    return ProtocolFlowResult(normal: true, state: input)
-  let condition = c.flowExpr(node.body[0], input)
-  result.returns.appendReturns(condition.returns)
-  if not condition.normal:
-    return
-  var branches: seq[seq[Value]]
-  if node.head.isSymbol("if_yes") or node.head.isSymbol("if_not"):
-    var branch: seq[Value]
-    for i in 1 ..< node.body.len:
-      branch.add node.body[i]
-    branches.add branch
-    branches.add @[]
-  elif node.body.len >= 2 and node.body[1].kind == vkNode and
-      node.body[1].head.isSymbol("then"):
-    var normalStates: seq[seq[ProtocolFlowRef]]
-    let first = c.flowSequence(node.body[1].body, 0, condition.state)
-    result.returns.appendReturns(first.returns)
-    if first.normal:
-      normalStates.add first.state
-    var fallthrough = condition.state
-    var fallthroughNormal = true
-    var hasElse = false
-    for i in 2 ..< node.body.len:
-      let clause = node.body[i]
-      if clause.kind != vkNode or clause.head.kind != vkSymbol:
-        continue
-      if clause.head.isSymbol("elif"):
-        if clause.body.len == 0:
-          continue
-        let elifCondition = c.flowExpr(clause.body[0], fallthrough)
-        result.returns.appendReturns(elifCondition.returns)
-        if not elifCondition.normal:
-          fallthroughNormal = false
-          break
-        let elifBody = c.flowSequence(clause.body, 1, elifCondition.state)
-        result.returns.appendReturns(elifBody.returns)
-        if elifBody.normal:
-          normalStates.add elifBody.state
-        # A successful condition expression establishes the same must-set on
-        # both its true and false successors.
-        fallthrough = elifCondition.state
-      elif clause.head.isSymbol("else"):
-        if fallthroughNormal:
-          let finalBranch = c.flowSequence(clause.body, 0, fallthrough)
-          result.returns.appendReturns(finalBranch.returns)
-          if finalBranch.normal:
-            normalStates.add finalBranch.state
-        hasElse = true
-    if not hasElse and fallthroughNormal:
-      normalStates.add fallthrough
-    result.normal = normalStates.len > 0
-    result.state = intersectFlowStates(normalStates, condition.state)
-    return
-  else:
-    if node.body.len >= 2:
-      branches.add @[node.body[1]]
-    else:
-      branches.add @[]
-    if node.body.len >= 3:
-      branches.add @[node.body[2]]
-    else:
-      branches.add @[]
-  let branchResult = c.flowBranches(branches, condition.state)
-  result.returns.appendReturns(branchResult.returns)
-  result.normal = branchResult.normal
-  result.state = branchResult.state
-
-proc flowTry(c: var Compiler, node: Value,
-             input: seq[ProtocolFlowRef]): ProtocolFlowResult =
-  var i = 0
-  var attempt: seq[Value]
-  while i < node.body.len and not
-      (node.body[i].isSymbol("catch") or node.body[i].isSymbol("ensure")):
-    attempt.add node.body[i]
-    inc i
-  var normalStates: seq[seq[ProtocolFlowRef]]
-  let attempted = c.flowSequence(attempt, 0, input)
-  result.returns.appendReturns(attempted.returns)
-  if attempted.normal:
-    normalStates.add attempted.state
-  while i < node.body.len and node.body[i].isSymbol("catch"):
-    i += 2 # catch plus pattern
-    var recovery: seq[Value]
-    while i < node.body.len and not
-        (node.body[i].isSymbol("catch") or node.body[i].isSymbol("ensure")):
-      recovery.add node.body[i]
-      inc i
-    let recovered = c.flowSequence(recovery, 0, input)
-    result.returns.appendReturns(recovered.returns)
-    if recovered.normal:
-      normalStates.add recovered.state
-  var joined = intersectFlowStates(normalStates, input)
-  result.normal = normalStates.len > 0
-  if i < node.body.len and node.body[i].isSymbol("ensure"):
-    inc i
-    var cleanup: seq[Value]
-    while i < node.body.len:
-      cleanup.add node.body[i]
-      inc i
-    # Exceptional predecessors enter ensure with the pre-try set. This is
-    # deliberately conservative even when the normal body established more.
-    let ensured = c.flowSequence(cleanup, 0, intersectFlow(joined, input))
-    result.returns.appendReturns(ensured.returns)
-    result.normal = result.normal and ensured.normal
-    result.state = ensured.state
-  else:
-    result.state = joined
-
-proc flowExpr(c: var Compiler, value: Value,
-              input: seq[ProtocolFlowRef]): ProtocolFlowResult =
-  result = ProtocolFlowResult(normal: true, state: input)
-  case value.kind
-  of vkList:
-    return c.flowSequence(value.listItems, 0, input)
-  of vkMap:
-    for _, item in value.mapEntries:
-      if result.normal:
-        let next = c.flowExpr(item, result.state)
-        result.returns.appendReturns(next.returns)
-        result.normal = next.normal
-        result.state = next.state
-    return
-  of vkHashMap:
-    for entry in value.hashMapEntries:
-      if result.normal:
-        let key = c.flowExpr(entry.key, result.state)
-        result.returns.appendReturns(key.returns)
-        result.normal = key.normal
-        result.state = key.state
-      if result.normal:
-        let item = c.flowExpr(entry.val, result.state)
-        result.returns.appendReturns(item.returns)
-        result.normal = item.normal
-        result.state = item.state
-    return
-  of vkNode:
-    discard
-  else:
-    return
-  if c.protocolFlowAt == nil:
-    new(c.protocolFlowAt)
-    c.protocolFlowAt[] = initTable[uint64, seq[ProtocolFlowRef]]()
-  # Only message-send nodes (which build a candidate set) and nested-unit
-  # declaration nodes (whose sub-compiler seeds Entry from currentProtocolFlow)
-  # ever read the stored flow state. Storing it at every node is the dominant
-  # compile cost on large modules, so restrict storage to those consumers.
-  if flowNodeStoresState(value):
-    c.protocolFlowAt[][value.bits] = input
-  if value.head.kind != vkSymbol:
-    return c.flowSequence(value.body, 0, input)
-  case value.head.symVal
-  of "protocol":
-    if value.body.len > 0 and value.body[0].kind == vkSymbol:
-      result.state.addFlowRef ProtocolFlowRef(
-        key: c.internFlowKey("protocol:" & $value.bits),
-        name: c.internFlowName(value.body[0].symVal))
-  of "import":
-    # Imported macros are compile-time definitions, never protocol references;
-    # excluding them keeps a later message send from treating an uninitialized
-    # macro name as a protocol candidate (there is no runtime slot for it).
-    let macroLocals = c.importMacroLocals(value)
-    for item in c.flowImportRefs(value):
-      if c.flowNameStr(item.name) notin macroLocals:
-        result.state.addFlowRef(item)
-  of "do":
-    result = c.flowSequence(value.body, 0, input)
-  of "if", "if_yes", "if_not":
-    result = c.flowIf(value, input)
-  of "&&", "||", "??":
-    if value.body.len == 0:
-      return
-    result = c.flowExpr(value.body[0], input)
-    for i in 1 ..< value.body.len:
-      if not result.normal:
-        break
-      let conditional = c.flowExpr(value.body[i], result.state)
-      result.returns.appendReturns(conditional.returns)
-      if conditional.normal:
-        result.state = intersectFlow(result.state, conditional.state)
-  of "while":
-    if value.body.len > 0:
-      let condition = c.flowExpr(value.body[0], input)
-      result.returns.appendReturns(condition.returns)
-      result.normal = condition.normal
-      result.state = condition.state
-      if condition.normal:
-        let body = c.flowSequence(value.body, 1, condition.state)
-        result.returns.appendReturns(body.returns)
-  of "loop":
-    let body = c.flowSequence(value.body, 0, input)
-    result.returns.appendReturns(body.returns)
-    result.state = input
-  of "repeat":
-    if value.body.len > 0:
-      let countIndex = if value.body.len >= 2 and value.body[1].isSymbol("in"): 2 else: 0
-      let count = c.flowExpr(value.body[countIndex], input)
-      result.returns.appendReturns(count.returns)
-      result.normal = count.normal
-      result.state = count.state
-      let bodyStart = if countIndex == 2: 3 else: 1
-      if count.normal:
-        let body = c.flowSequence(value.body, bodyStart, count.state)
-        result.returns.appendReturns(body.returns)
-  of "for":
-    if value.body.len >= 3:
-      let iterable = c.flowExpr(value.body[2], input)
-      result.returns.appendReturns(iterable.returns)
-      result.normal = iterable.normal
-      result.state = iterable.state
-      if iterable.normal:
-        let body = c.flowSequence(value.body, 3, iterable.state)
-        result.returns.appendReturns(body.returns)
-  of "try":
-    result = c.flowTry(value, input)
-  of "match":
-    if value.body.len == 0:
-      return
-    let target = c.flowExpr(value.body[0], input)
-    result.returns.appendReturns(target.returns)
-    if not target.normal:
-      result.normal = false
-      return
-    var branches: seq[seq[Value]]
-    var hasElse = false
-    for i in 1 ..< value.body.len:
-      let clause = value.body[i]
-      if clause.kind == vkNode and clause.head.isSymbol("when"):
-        var body: seq[Value]
-        for j in 1 ..< clause.body.len:
-          body.add clause.body[j]
-        branches.add body
-      elif clause.kind == vkNode and clause.head.isSymbol("else"):
-        branches.add clause.body
-        hasElse = true
-    if not hasElse:
-      branches.add @[]
-    let branchResult = c.flowBranches(branches, target.state)
-    result.returns.appendReturns(branchResult.returns)
-    result.normal = branchResult.normal
-    result.state = branchResult.state
-  of "return":
-    let returned = c.flowSequence(value.body, 0, input)
-    result.returns.appendReturns(returned.returns)
-    if returned.normal:
-      result.returns.add returned.state
-    result.normal = false
-    result.state = returned.state
-  of "fail", "panic", "break", "continue":
-    let evaluated = c.flowSequence(value.body, 0, input)
-    result.returns.appendReturns(evaluated.returns)
-    result.normal = false
-    result.state = evaluated.state
-  of "ns":
-    if value.body.len > 0 and value.body[0].kind == vkSymbol:
-      let nested = c.flowSequence(value.body, 1, input)
-      result.returns.appendReturns(nested.returns)
-      if nested.normal:
-        for item in nested.state:
-          var inherited = false
-          for original in input:
-            if original.key == item.key:
-              inherited = true
-              break
-          if not inherited:
-            result.state.addFlowRef ProtocolFlowRef(
-              key: c.internFlowKey(
-                "namespace:" & $value.bits & ":" & c.flowKeyStr(item.key)),
-              name: c.internFlowName(
-                value.body[0].symVal & "/" & c.flowNameStr(item.name)))
-  of "fn", "fn!", "macro", "quote", "quasiquote":
-    discard
-  of "scope", "supervisor", "spawn":
-    # The body has its own lexical scope and cannot establish candidates in
-    # this continuation, but sends inside it still get a must-set.
-    discard c.flowSequence(value.body, 0, input)
-  of "impl", "import_impl":
-    if value.body.len > 0:
-      result = c.flowExpr(value.body[0], input)
-    if result.normal and value.body.len > 2:
-      let receiver = c.flowExpr(value.body[2], result.state)
-      result.returns.appendReturns(receiver.returns)
-      result.normal = receiver.normal
-      result.state = receiver.state
-  of "type", "enum":
-    # Declaration annotations are evaluated, but their message/ctor bodies are
-    # nested callables handled when their FunctionProto is built.
-    for _, prop in value.props:
-      if result.normal:
-        let next = c.flowExpr(prop, result.state)
-        result.returns.appendReturns(next.returns)
-        result.normal = next.normal
-        result.state = next.state
-  else:
-    let headResult = c.flowExpr(value.head, input)
-    result = headResult
-    if result.normal:
-      for _, prop in value.props:
-        let next = c.flowExpr(prop, result.state)
-        result.returns.appendReturns(next.returns)
-        result.normal = next.normal
-        result.state = next.state
-        if not result.normal:
-          break
-    if result.normal:
-      let bodyResult = c.flowSequence(value.body, 0, result.state)
-      result.returns.appendReturns(bodyResult.returns)
-      result.normal = bodyResult.normal
-      result.state = bodyResult.state
-
-proc prepareProtocolFlow(c: var Compiler, forms: openArray[Value],
-                         entry: seq[ProtocolFlowRef]) =
-  if c.protocolFlowAt == nil:
-    new(c.protocolFlowAt)
-    c.protocolFlowAt[] = initTable[uint64, seq[ProtocolFlowRef]]()
-  c.protocolEntry = entry
+proc reserveProtocolBindingsFor(c: var Compiler, forms: openArray[Value]) =
+  ## Hoist protocol and import bindings so a forward reference in the same unit
+  ## resolves. This is all that survives of the candidate-set pass: unqualified
+  ## sends are type-direct only, so no flow analysis is needed (design §3).
   c.reserveProtocolBindings(forms)
-  let outcome = c.flowSequence(forms, 0, entry)
-  var exits = outcome.returns
-  if outcome.normal:
-    exits.add outcome.state
-  c.protocolWhole = intersectFlowStates(exits, entry)
-  c.currentProtocolFlow = entry
 
 proc literalName(v: Value, context: string): string =
   case v.kind
@@ -4572,7 +4028,7 @@ proc compileNs(c: var Compiler, node: Value) =
     nsForms.add body[i]
   nsCompiler.namespacePath = c.namespacePath & @[name]
   nsCompiler.prepareStaticImports(nsForms)
-  nsCompiler.prepareProtocolFlow(nsForms, c.currentProtocolFlow)
+  nsCompiler.reserveProtocolBindingsFor(nsForms)
   compileBodyFrom(nsCompiler, body, 1)
   discard nsCompiler.emit(opReturn)
   nsCompiler.chunk.localNames = nsCompiler.localNames
@@ -5385,12 +4841,8 @@ proc compileFor(c: var Compiler, node: Value) =
   var forForms: seq[Value]
   for i in 3 ..< body.len:
     forForms.add body[i]
-  var forEntry = c.currentProtocolFlow
-  if forForms.len > 0 and forForms[0].kind == vkNode and
-      c.protocolFlowAt != nil and c.protocolFlowAt[].hasKey(forForms[0].bits):
-    forEntry = c.protocolFlowAt[][forForms[0].bits]
   bodyCompiler.prepareStaticImports(forForms)
-  bodyCompiler.prepareProtocolFlow(forForms, forEntry)
+  bodyCompiler.reserveProtocolBindingsFor(forForms)
   compileBodyFrom(bodyCompiler, body, 3)
   discard bodyCompiler.emit(opReturn)
   bodyCompiler.chunk.localNames = bodyCompiler.localNames
@@ -6238,16 +5690,11 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   let savedLoc = c.currentLoc
-  let savedProtocolFlow = c.currentProtocolFlow
   let exprLoc = c.sourceLocFor(node)
   if exprLoc.hasSourceLoc:
     c.currentLoc = exprLoc
-  if node.kind == vkNode and c.protocolFlowAt != nil and
-      c.protocolFlowAt[].hasKey(node.bits):
-    c.currentProtocolFlow = c.protocolFlowAt[][node.bits]
   defer:
     c.currentLoc = savedLoc
-    c.currentProtocolFlow = savedProtocolFlow
   case node.kind
   of vkSymbol:
     c.emitLoadBinding(node.symVal)
@@ -6327,7 +5774,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
     c.enableLocalSlots()
   c.markStaticImplForms(forms)
   c.prepareStaticImports(forms)
-  c.prepareProtocolFlow(forms, @[])
+  c.reserveProtocolBindingsFor(forms)
   if forms.len == 0:
     c.emitConst NIL
   else:
