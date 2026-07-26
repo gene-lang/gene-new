@@ -5422,29 +5422,6 @@ proc internName*(v: string): string =
     release(internLock)
 
 # ---------------------------------------------------------------------------
-# Node projections (design Section 1.2 / 1.3). Scalars are fixpoints.
-# ---------------------------------------------------------------------------
-
-proc headOf*(v: Value): Value =
-  if v.kind == vkNode: v.head else: v
-
-proc propsOf*(v: Value): PropTable =
-  case v.kind
-  of vkNode: v.props
-  of vkMap: v.mapEntries
-  else: initPropTable()
-
-proc bodyOf*(v: Value): seq[Value] =
-  case v.kind
-  of vkNode: v.body
-  of vkList: v.listItems
-  else: @[]
-
-proc metaOf*(v: Value): PropTable =
-  if v.kind == vkNode: v.meta
-  else: initPropTable()
-
-# ---------------------------------------------------------------------------
 # Truthiness (design Section 1.6): false, nil, void are falsy.
 # ---------------------------------------------------------------------------
 

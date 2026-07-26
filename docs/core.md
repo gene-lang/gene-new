@@ -695,10 +695,8 @@ both work.
 
 `Nil` is already an ordinary nominal type under `Any` in the MVP hierarchy
 (`docs/design.md §7.2`, settled at `§21`). Message dispatch is defined on the
-receiver's *runtime type*, and scalar-like values already dispatch this way
-rather than by literal node head (`docs/design.md §1.1`: "scalars expose
-type information through the runtime even though their node head is the
-scalar itself"). So:
+receiver's *runtime type*, and a scalar's runtime type is what its node head
+now projects (`docs/design.md §1.3`: `($head 42)` is `Int`). So:
 
 ```gene
 (impl ToHtml for Nil

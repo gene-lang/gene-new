@@ -1531,21 +1531,68 @@ proc requireStr(name: string, value: Value) =
   if value.kind != vkString:
     raise newException(GeneError, name & " expects a Str")
 
+# ---------------------------------------------------------------------------
+# Node projections (design §1.2 / §1.3)
+# ---------------------------------------------------------------------------
+#
+# Every shape the reader produces projects as a node, and `head` is its type:
+# `42` reads as `(Int 42)`, `[1 2]` as `(List 1 2)`, `{^a 1}` as `(Map ^a 1)`.
+# A data node already holds its tag in `head` and a typed instance its type, so
+# the literals are joining the slot's existing meaning rather than overloading
+# it. Under this rule a literal's `body` is the literal itself, which is why
+# `leaf?` exists: a walk descending through `body` no longer gets a free base
+# case.
+#
+# These live here rather than in `types.nim` because `head` needs the built-in
+# type identities, and `gScalarTypes` is what holds them.
+const NodeShapedKinds = LeafValueKinds + {vkList, vkMap, vkHashMap}
+  ## The kinds with a source form. Cells, channels, streams, and functions are
+  ## values a program makes, not shapes it writes, so they have no node reading
+  ## and stay their own `head`.
+
+proc projectHead(v: Value): Value =
+  if v.kind == vkNode:
+    return v.head
+  if v.kind in NodeShapedKinds:
+    # NIL until `buildBuiltins` has registered the identities; falling through
+    # keeps the projection total either way.
+    let typ = gScalarTypes[v.kind]
+    if typ.kind == vkType:
+      return typ
+  v
+
+proc projectProps(v: Value): PropTable =
+  case v.kind
+  of vkNode: v.props
+  of vkMap: v.mapEntries
+  else: initPropTable()
+
+proc projectBody(v: Value): seq[Value] =
+  case v.kind
+  of vkNode: v.body
+  of vkList: v.listItems
+  of LeafValueKinds: @[v]
+  else: @[]
+
+proc projectMeta(v: Value): PropTable =
+  if v.kind == vkNode: v.meta
+  else: initPropTable()
+
 proc biHead(args: openArray[Value]): Value {.nimcall.} =
   requireOne("head", args)
-  headOf(args[0])
+  projectHead(args[0])
 
 proc biProps(args: openArray[Value]): Value {.nimcall.} =
   requireOne("props", args)
-  newMap(propsOf(args[0]))
+  newMap(projectProps(args[0]))
 
 proc biBody(args: openArray[Value]): Value {.nimcall.} =
   requireOne("body", args)
-  newList(bodyOf(args[0]))
+  newList(projectBody(args[0]))
 
 proc biMeta(args: openArray[Value]): Value {.nimcall.} =
   requireOne("meta", args)
-  newMap(metaOf(args[0]))
+  newMap(projectMeta(args[0]))
 
 proc requireCell(name: string, value: Value) =
   if value.kind != vkCell:

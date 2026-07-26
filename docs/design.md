@@ -78,7 +78,7 @@ Core consequences:
 (Task ^id 1 ^done false "write retro")                  # constructed typed value
 ```
 
-A lowercase symbolic head such as `task` is ordinary data. A constructed typed value uses the type value as its head, such as `Task`. Message dispatch is usually based on the receiver's runtime type; for constructed instances the head is the type value, while scalars expose type information through the runtime even though their node head is the scalar itself.
+A lowercase symbolic head such as `task` is ordinary data. A constructed typed value uses the type value as its head, such as `Task`, and so does a literal: `42` projects `Int` as its head (§1.3). Message dispatch is on the receiver's runtime type, which for every shape except a symbol-tagged data node is exactly what `head` holds; a data node dispatches as the concrete `Node` type, not as its tag (§1.2).
 
 A node has four slots:
 
@@ -130,14 +130,40 @@ This is homoiconicity as projection, not representation. An `Int`, `Str`, `Fn`, 
 
 General maps are `(Map K V)`. Literal `{^a 1}` creates a `PropMap`, not an arbitrary-key map.
 
-Scalar values are node fixpoints for `head` and have empty props/body/meta unless explicitly wrapped:
+Every shape the reader produces projects as a node, and its `head` is its type:
+`42` reads as `(Int 42)`, `[1 2]` as `(List 1 2)`, `{^a 1}` as `(Map ^a 1)`.
+That is the same slot a data node fills with its tag and a typed instance with
+its type, so `head` means one thing across every shape.
 
 ```gene
-($head 42)  # 42
-($props 42) # {}
-($body 42)  # []
-($meta 42)  # {}
+($head 42)   # Int
+($props 42)  # {}
+($body 42)   # [42]
+($meta 42)   # {}
+
+($head [1 2])   # List
+($body [1 2])   # [1 2]
+
+($head {^a 1})  # Map
+($props {^a 1}) # {^a 1}
+($body {^a 1})  # []
 ```
+
+A literal is a fixpoint of `body`, not of `head`: `($body 42)` is `[42]`. A walk
+that descends through `body` therefore needs an explicit base case, and `leaf?`
+is how a program names it without enumerating kinds:
+
+```gene
+($leaf? 42)     # true
+($leaf? [1 2])  # false
+
+(fn walk [n]
+  (if_not ($leaf? n)
+    ((($body n) ~ to_stream) ~ each walk)))
+```
+
+Values with no source form — cells, channels, streams, functions — are not
+node-shaped. They stay their own `head` and project empty props/body/meta.
 
 `props`, `body`, and `meta` return detached, shallow snapshots. Mutating the
 returned map/list never changes the projected node, but values inside the

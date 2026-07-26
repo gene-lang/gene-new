@@ -1213,11 +1213,15 @@ suite "vm — dynamic selectors":
 
 suite "vm — node projection built-ins":
   test "projection built-ins expose value anatomy":
-    ck "($head 42)", "42"
+    ck "($head 42)", "(type Int)"
+    ck "($head [1 2])", "(type List)"
+    ck "($head {^a 1})", "(type Map)"
     ck "($head (quote (user ^name \"Ada\" 10 20)))", "user"
     ck "($props {^name \"Ada\"})", "{^name \"Ada\"}"
     ck "($props (quote (user ^name \"Ada\" 10 20)))", "{^name \"Ada\"}"
+    ck "($body 42)", "[42]"
     ck "($body [10 20])", "[10 20]"
+    ck "($body {^a 1})", "[]"
     ck "($body (quote (user ^name \"Ada\" 10 20)))", "[10 20]"
     ck "($meta (quote (user @line 7 ^name \"Ada\")))", "{^line 7}"
   test "projection built-ins work as dynamic selector stages":

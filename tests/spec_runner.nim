@@ -2129,14 +2129,43 @@ suite "spec — implicit self in message bodies from design §10":
                " (try (c ~ nope) catch (MessageError ^receiver_type t) t)]",
                "[1 1 1 \"Cell\"]")
 
+  test "every reader-produced shape projects as a node":
+    # design §1.3: `42` reads as `(Int 42)`, `[1 2]` as `(List 1 2)`, and
+    # `{^a 1}` as `(Map ^a 1)`. So `head` is uniformly the type — the same slot
+    # a data node fills with its tag and a typed instance with its type — and a
+    # literal's `body` is the literal itself.
+    check_eval("[(== ($head 42) Int) (== ($head 1.5) Float) " &
+               " (== ($head \"s\") Str) (== ($head (quote a)) Sym) " &
+               " (== ($head true) Bool) (== ($head nil) Nil) " &
+               " (== ($head void) Void) (== ($head 'c') Char)]",
+               "[true true true true true true true true]")
+    check_eval("[(== ($head [1 2]) List) (== ($head {^a 1}) Map) " &
+               " (== ($head {{\"a\" : 1}}) Map)]",
+               "[true true true]")
+    check_eval("[($body 42) ($body \"s\") ($body nil) ($body [1 2]) " &
+               " ($body {^a 1})]",
+               "[[42] [\"s\"] [nil] [1 2] []]")
+    # Props and meta do not move: only `head` and a literal's `body` change.
+    check_eval("[($props 42) ($meta 42) ($props {^a 1}) ($body {^a 1})]",
+               "[{} {} {^a 1} []]")
+    # A data node keeps its tag and a typed instance keeps its type — both
+    # already sat in `head`, which is what the literals now join.
+    check_eval("(type P ^props {^a Int}) " &
+               "[($head (quote (f 1 2))) (== ($head (P ^a 1)) P)]",
+               "[f true]")
+    # Values with no source form are not node-shaped, so they stay their own
+    # head rather than projecting a type they could not be written as.
+    check_eval("(var c ($cell 1)) [(same? ($head c) c) ($body c)]",
+               "[true []]")
+
   test "leaf? names the base case for a generic walk":
     # A literal has no interior node structure. Under the projection model its
-    # `body` will be itself, so a walk that descends through `body` needs an
+    # `body` is itself, so a walk that descends through `body` needs an
     # explicit base case; `leaf?` is how a program says so without enumerating
     # kinds. The set is exactly the kinds that carry scalar type identities.
     check_eval("[($leaf? 42) ($leaf? 1.5) ($leaf? \"s\") ($leaf? (quote a)) " &
-               " ($leaf? true) ($leaf? nil) ($leaf? (\"x\" ~ /0))]",
-               "[true true true true true true true]")
+               " ($leaf? true) ($leaf? nil) ($leaf? void) ($leaf? 'c')]",
+               "[true true true true true true true true]")
     check_eval("[($leaf? [1 2]) ($leaf? {^a 1}) ($leaf? (quote (f 1))) " &
                " ($leaf? ($cell 1))]",
                "[false false false false]")
