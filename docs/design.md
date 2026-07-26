@@ -814,12 +814,19 @@ only rejects; it never picks between two meanings.
 
 **A type qualifies a message too, and `Self` is the qualifier that names no
 type.** `T:msg` and `Self:msg` are the type-direct spellings, and both
-*dispatch*: the qualifier says which table the name lives in, never which
-function to run. So on a `Pup ^is Dog` that overrides `bark`, `(p ~ Dog:bark)`,
-`(p ~ Self:bark)`, and the bare `(p ~ bark)` all give `Pup`'s. This is
-structural, not a promise — a type qualifier is never consulted for the lookup,
-only the receiver is. `Self` names no type at all, which makes it exactly the
-bare send, and it is reserved: a program may not declare it.
+*dispatch*.
+
+A qualifier **constrains, but never selects**. `T:msg` names the message as
+declared on `T`, so the receiver must be a `T`: `(cat ~ Dog:bark)` is a
+`TypeError` even when `Cat` has an unrelated `bark` of its own. This matches the
+protocol side, where a receiver with no visible impl of `P` is already a
+`MessageError`. What the qualifier does *not* do is pick the function — on a
+`Pup ^is Dog` that overrides `bark`, `(p ~ Dog:bark)`, `(p ~ Self:bark)`, and
+the bare `(p ~ bark)` all give `Pup`'s. That is structural rather than a
+promise: the lookup goes through the receiver's type, never the qualifier's.
+
+`Self` names no type at all, so it constrains nothing and is exactly the bare
+send. It is reserved: a program may not declare it.
 
 `Self:msg` is what gives a bare message name a *value* spelling, since message
 names are not lexical bindings:

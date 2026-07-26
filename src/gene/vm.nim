@@ -12572,10 +12572,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                   missingImpl = true)
               callee = resolveProtocolMessage(scope, message, receiver)
             of vkType:
-              # A type qualifier resolves the *receiver's* own type-direct
-              # message. The qualifier is never consulted for the lookup, which
-              # is what makes "names the message, never selects the impl"
-              # structural rather than a promise.
+              # `T:msg` names the message *as declared on T*, so the receiver
+              # has to be a `T`. The qualifier constrains; it does not select —
+              # a `Pup` receiver still runs `Pup`'s override under `Dog:bark`,
+              # but a `Cat` receiver is rejected outright rather than quietly
+              # running its own unrelated `bark`. This mirrors the protocol
+              # branch, where a missing impl is already an error.
+              if not recvType.isSubtypeOf(qualifier):
+                raiseTypeError("message send " & qualifier.typeName & ":" &
+                               inst[].name, qualifier.typeName, receiver, scope)
+              # The lookup itself still goes through the *receiver's* type, so
+              # "names the message, never selects the impl" stays structural.
               if recvType.kind == vkType:
                 callee = typeDirectMessage(recvType, inst[].name)
               if callee.kind == vkNil:

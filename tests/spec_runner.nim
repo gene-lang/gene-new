@@ -5008,10 +5008,11 @@ suite "spec — qualified message spelling":
     check_read("A:b", "(msg A b)")
     check_read("a/b", "(path a b)")
 
-  test "a type qualifier names the message and never selects the impl":
+  test "a type qualifier constrains the receiver but never selects the impl":
     # Decision 5. `T:msg` and `Self:msg` both *dispatch* on the receiver. The
-    # qualifier only says which table the name lives in; it is never consulted
-    # to pick the function, so an override wins even when the parent is named.
+    # qualifier constrains — the receiver has to be a `T` — but it is never
+    # consulted to pick the function, so an override wins even when the parent
+    # is named.
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
                "[((Pup) ~ bark) ((Pup) ~ Dog:bark) ((Pup) ~ Self:bark)]",
@@ -5019,13 +5020,21 @@ suite "spec — qualified message spelling":
     # In value position both are dispatching closures, so a bare message name —
     # which is not a lexical binding and has no other value spelling — becomes
     # writable as `Self:msg`.
+    # An unrelated receiver is rejected, not quietly run against its own
+    # same-named message.
+    check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
+               "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
+               "(try ((Cat) ~ Dog:bark) catch (TypeError ^expected e) e)",
+               "\"Dog\"")
+    # `Self:` names no type, so it constrains nothing and reaches every
+    # receiver that has the message.
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
                "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
                "(var xs [(Dog) (Pup) (Cat)]) " &
                "[(($map ($to_stream xs) Self:bark) ~ into []) " &
-               " (($map ($to_stream xs) Dog:bark) ~ into [])]",
-               "[[\"woof\" \"yip\" \"meow\"] [\"woof\" \"yip\" \"meow\"]]")
+               " (($map ($to_stream [(Dog) (Pup)]) Dog:bark) ~ into [])]",
+               "[[\"woof\" \"yip\" \"meow\"] [\"woof\" \"yip\"]]")
     # Built-in surfaces are types, so they qualify the same way.
     check_eval("[(($cell 7) ~ Cell:get) " &
                " (($map ($to_stream [($cell 1) ($cell 2)]) Cell:get) ~ into [])]",
