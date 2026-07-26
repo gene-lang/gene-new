@@ -6267,6 +6267,38 @@ proc matchSequence(pats, items: seq[Value], scope: Scope,
       return false
   true
 
+proc matchProjectedNode(pat, target: Value, scope: Scope,
+                        binds: var Table[string, Value]): bool =
+  ## A node-shape pattern against a target that is not a `vkNode`, read through
+  ## the target's node projection (design §1.3): `(Int n)` destructures `42`,
+  ## `(List a b)` destructures `[1 2]`, `(Map ^a x)` destructures `{^a 1}` —
+  ## the same shape `(P ^a x)` already had against a typed instance.
+  ##
+  ## Kept out of `tryMatch`'s `vkNode` arm so the node case keeps reading
+  ## `target.props`/`target.body` directly; projecting them would copy on the
+  ## hot path for no gain.
+  # Kind tests first, and without materializing a `Value`. A failed arm is the
+  # common case — every arm before the matching one lands here — and calling
+  # `projectHead` up front returns a *managed* `Value` whose refcount traffic
+  # alone cost 27% on `vm.match_fallthrough`. Only shapes with a source form
+  # project a type, so this test is also what stops a cell or a function from
+  # quietly matching a node pattern.
+  if target.kind notin NodeShapedKinds or pat.head.kind != vkSymbol:
+    return false
+  var resolved: Value
+  if not scope.lookupOptional(pat.head.symVal, resolved):
+    return false
+  if resolved.kind != vkType or not projectHead(target).isSubtypeOf(resolved):
+    return false
+  if pat.props.len > 0:
+    let props = projectProps(target)
+    for key, vpat in pat.props:
+      if not props.hasKey(key): return false
+      if not tryMatch(vpat, props[key], scope, binds): return false
+  # A literal's body is the literal itself, so `(Int n)` binds `n` and a
+  # body-less `(Int)` does not match — the arity rule every node pattern has.
+  matchSequence(pat.body, projectBody(target), scope, binds)
+
 proc tryMatch(pat, target: Value, scope: Scope,
               binds: var Table[string, Value]): bool =
   case pat.kind
@@ -6363,7 +6395,8 @@ proc tryMatch(pat, target: Value, scope: Scope,
       return matchSequence(pat.body, items, scope, binds)
     # General node-shape pattern `(Head ^k kp body...)`: head matched literally,
     # props open (mentioned keys required), body matched positionally.
-    if target.kind != vkNode: return false
+    if target.kind != vkNode:
+      return matchProjectedNode(pat, target, scope, binds)
     var headOk = equal(pat.head, target.head)
     if not headOk and pat.head.kind == vkSymbol and target.head.kind == vkType:
       # `(Task ^id id)` against a Task instance: resolve the pattern head to a type

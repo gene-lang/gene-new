@@ -2161,6 +2161,24 @@ positions left-to-right; payload arity must match the variant declaration.
 
 Patterns are open over props by default: unmentioned props are allowed. A prop pattern fails if the prop is missing/`void`; it matches if the prop is present with `nil`. Meta is ignored unless a pattern explicitly uses the `(@ meta-pattern value-pattern)` form.
 
+A node-shape pattern reads the target's **projection** (§1.3), not its
+representation, so one pattern shape reaches every value:
+
+```gene
+(match v
+  (when (Int n) n)        # 42 -> binds n
+  (when (Str s) s)        # "hi" -> binds s
+  (when (List a b) [a b]) # [1 2] -> binds a and b
+  (when (Map ^a x) x)     # {^a 1} -> binds x
+  (when (Task ^id id) id))
+```
+
+The head must still match, so arms stay discriminating: `(Str s)` does not
+match `42`. Body arity is the ordinary node rule applied to a body that now
+holds the literal — `(Int n)` matches `42` and bare `(Int)` does not, because
+`42` projects one body item. Values with no source form — cells, channels,
+streams, functions — are not node-shaped and match no node pattern.
+
 Alternation patterns must bind the same set of names with compatible types in every branch. Negative patterns must not introduce new bindings.
 
 `match` performs structural selection only, and deliberately has no per-arm

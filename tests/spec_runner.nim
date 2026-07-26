@@ -2158,6 +2158,39 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(var c ($cell 1)) [(same? ($head c) c) ($body c)]",
                "[true []]")
 
+  test "a node-shape pattern destructures through the projection":
+    # `(P ^a x)` already read a typed instance's head/props/body. Now that a
+    # literal projects the same anatomy (design §1.3), the same pattern shape
+    # reaches every value: `(Int n)` binds `n`, so `(when (Int n) …)` and
+    # `(when (Str s) …)` are uniform arms rather than a scalars-only carve-out.
+    check_eval("[(match 42 (when (Int n) n) (else \"no\")) " &
+               " (match \"hi\" (when (Str s) s) (else \"no\")) " &
+               " (match 1.5 (when (Float f) f) (else \"no\")) " &
+               " (match true (when (Bool b) b) (else \"no\")) " &
+               " (match nil (when (Nil n) \"nil\") (else \"no\"))]",
+               "[42 \"hi\" 1.5 true \"nil\"]")
+    # Lists and maps destructure through the same one rule.
+    check_eval("[(match [1 2] (when (List a b) [a b]) (else \"no\")) " &
+               " (match {^a 1} (when (Map ^a x) x) (else \"no\"))]",
+               "[[1 2] 1]")
+    # The head still has to match, so arms stay discriminating.
+    check_eval("[(match 42 (when (Str s) s) (else \"no\")) " &
+               " (match [1 2] (when (Map ^a x) x) (else \"no\")) " &
+               " (match \"hi\" (when (Int n) n) (else \"no\"))]",
+               "[\"no\" \"no\" \"no\"]")
+    # Body arity is the ordinary node-pattern rule, applied to a body that now
+    # holds the literal: `(Int)` has no slot for the 42 and does not match.
+    check_eval("[(match 42 (when (Int) \"none\") (else \"no\")) " &
+               " (match 42 (when (Int _) \"wild\") (else \"no\"))]",
+               "[\"no\" \"wild\"]")
+    # Values with no source form are not node-shaped, so nothing starts
+    # matching one by accident.
+    check_eval("(match ($cell 1) (when (Cell c) c) (else \"no\"))", "\"no\"")
+    # A typed instance is unchanged — it was always read this way.
+    check_eval("(type P ^props {^a Int}) " &
+               "(match (P ^a 7) (when (P ^a x) x) (else \"no\"))",
+               "7")
+
   test "leaf? names the base case for a generic walk":
     # A literal has no interior node structure. Under the projection model its
     # `body` is itself, so a walk that descends through `body` needs an

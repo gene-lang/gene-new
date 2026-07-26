@@ -459,6 +459,36 @@ proc main() =
     let v = run(assocChunk, assocScope)
     checksum = checksum + v.mapEntries["age"].intVal
 
+  # `match` arm selection. The four targets cover both matcher paths — a typed
+  # instance reads node fields directly, the literal/list/map cases read the
+  # node projection — and every arm but the last is a *failed* head comparison,
+  # which is the cost an added arm actually imposes.
+  let matchScope = newGlobalScope()
+  discard run(compileSource(
+    "(type Task ^props {^id Int}) " &
+    "(fn pick [v] " &
+    "  (match v " &
+    "    (when (Task ^id id) id) " &
+    "    (when (Int n) n) " &
+    "    (when (List a b) a) " &
+    "    (when (Map ^k x) x) " &
+    "    (else 0)))"), matchScope)
+  let matchChunk = compileSource(
+    "(+ (pick (Task ^id 1)) (pick 2) (pick [3 9]) (pick {^k 4}))")
+  bench("vm.match_arms.compiled_chunk", 100_000, i):
+    let v = run(matchChunk, matchScope)
+    checksum = checksum + v.intVal
+
+  # What an added arm costs when it does *not* fire. A cell matches no node
+  # pattern, so every arm is a failed head comparison and the arm count is the
+  # only variable — this is the half of `match` that stays behaviour-identical
+  # across changes to what the arms accept, and so the half a before/after
+  # comparison can actually read.
+  let matchMissChunk = compileSource("(pick ($cell 1))")
+  bench("vm.match_fallthrough.compiled_chunk", 200_000, i):
+    let v = run(matchMissChunk, matchScope)
+    checksum = checksum + v.intVal + 1
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):
