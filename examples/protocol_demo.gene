@@ -81,8 +81,8 @@
   (message blurb [] : Str))
 
 (impl Summary for Dog
-  (message Sized/size_of [] : Int self/weight)
-  (message Scored/size_of [] : Int (* self/weight 2))
+  (message Sized:size_of [] : Int self/weight)
+  (message Scored:size_of [] : Int (* self/weight 2))
   (message blurb [] : Str
     $"${self/name}: ${(self ~ Sized:size_of)} lbs, score ${(self ~ Scored:size_of)}"))
 

@@ -313,7 +313,7 @@ suite "modules — file imports":
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(impl ToJson for User (message to_json [self] : Str self/name)) " &
-      "(fn local_json [user] (user ~ ToJson/to_json))")
+      "(fn local_json [user] (user ~ ToJson:to_json))")
     check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(import [local_json] from \"./json_ext\") " &
@@ -322,7 +322,7 @@ suite "modules — file imports":
       discard runProgram("(import [ToJson] from \"./json\") " &
         "(import [User] from \"./model\") " &
         "(import * : ext from \"./json_ext\") " &
-        "((User ^name \"Ada\") ~ ToJson/to_json)")
+        "((User ^name \"Ada\") ~ ToJson:to_json)")
 
   test "import_impl imports one exported scoped pair idempotently":
     writeModule("json.gene",
@@ -338,7 +338,7 @@ suite "modules — file imports":
       "(import [User] from \"./model\") " &
       "(import_impl ToJson for User from \"./json_ext\") " &
       "(import_impl ToJson for User from \"./json_ext\") " &
-      "((User ^name \"Ada\") ~ ToJson/to_json)").print() == "\"Ada\""
+      "((User ^name \"Ada\") ~ ToJson:to_json)").print() == "\"Ada\""
 
   test "only exported scoped impls are importable":
     writeModule("export_base.gene",
@@ -425,7 +425,7 @@ suite "modules — file imports":
     discard run(compileSource(
       "(import [Render Item] from \"./reload_base\") " &
       "(import_impl Render for Item from \"./reload_ext\")"), scope)
-    check run(compileSource("((Item) ~ Render/render)"), scope).print() == "\"one\""
+    check run(compileSource("((Item) ~ Render:render)"), scope).print() == "\"one\""
     let before = app.implActivationEpoch
     writeModule("reload_ext.gene",
       "(import [Render Item] from \"./reload_base\") " &
@@ -433,7 +433,7 @@ suite "modules — file imports":
       "  (message render [self] : Str \"two\"))")
     discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == before + 1
-    check run(compileSource("((Item) ~ Render/render)"), scope).print() == "\"two\""
+    check run(compileSource("((Item) ~ Render:render)"), scope).print() == "\"two\""
 
     let stableEpoch = app.implActivationEpoch
     writeModule("reload_ext.gene",
@@ -441,7 +441,7 @@ suite "modules — file imports":
     expect GeneError:
       discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == stableEpoch
-    check run(compileSource("((Item) ~ Render/render)"), scope).print() == "\"two\""
+    check run(compileSource("((Item) ~ Render:render)"), scope).print() == "\"two\""
 
   test "reload rejects compile-interface changes":
     writeModule("reload_interface.gene", "(var value 1)")
@@ -473,8 +473,8 @@ suite "modules — file imports":
     expect GeneError:
       discard run(compileSource("(import * : bad from \"./ext_bad\")"), scope)
     expect GeneError:
-      discard run(compileSource("((A) ~ P/value)"), scope)
-    check run(compileSource("((B) ~ P/value)"), scope).print() ==
+      discard run(compileSource("((A) ~ P:value)"), scope)
+    check run(compileSource("((B) ~ P:value)"), scope).print() ==
       "\"existing\""
 
   test "package-root-relative paths (/x and bare x)":
@@ -515,9 +515,9 @@ suite "modules — file imports":
     writeModule("interface_mid.gene",
       "(import [Render T] from \"./interface_base\" ^export true)")
     check runProgram("(import * : base from \"./interface_base\") " &
-      "((base/T) ~ base/Render/render)").print() == "\"interface\""
+      "((base/T) ~ base/Render:render)").print() == "\"interface\""
     check runProgram("(import [Render T] from \"./interface_mid\") " &
-      "((T) ~ Render/render)").print() == "\"interface\""
+      "((T) ~ Render:render)").print() == "\"interface\""
 
   test "caught import failures do not establish protocol candidates":
     writeModule("candidate_type.gene", "(type T ^props {})")
@@ -615,7 +615,7 @@ suite "modules — namespace-path imports and mod":
       "(protocol Show (message show [self] : Str)) " &
       "(type T ^props {}) " &
       "(ns ext (impl Show for T (message show [self] : Str \"ok\"))) " &
-      "((T) ~ Show/show)"),
+      "((T) ~ Show:show)"),
       newGlobalScope()).print() == "\"ok\""
 
   test "mod header runs its body":
@@ -657,7 +657,7 @@ suite "modules — Env imports":
       "(type T ^props {}) " &
       "(impl Show for T (message show [self] : Str \"ok\"))")
     check runProgram("(var e (env ^imports [\"./showlib\"])) " &
-      "(eval (quote ((T) ~ Show/show)) ^in e)").print() == "\"ok\""
+      "(eval (quote ((T) ~ Show:show)) ^in e)").print() == "\"ok\""
 
 suite "modules — impl activation across module paths":
   setup:
@@ -681,11 +681,11 @@ suite "modules — impl activation across module paths":
     # shared-first, then the local module that also imports it
     check runProgram("(import [Show T] from \"./shared\") " &
       "(import [marker] from \"./uses_shared\") " &
-      "[((T) ~ Show/show) (marker)]").print() == "[\"shared\" 1]"
+      "[((T) ~ Show:show) (marker)]").print() == "[\"shared\" 1]"
     # local-module-first (the previously working order must stay working)
     check runProgram("(import [marker] from \"./uses_shared\") " &
       "(import [Show T] from \"./shared\") " &
-      "[((T) ~ Show/show) (marker)]").print() == "[\"shared\" 1]"
+      "[((T) ~ Show:show) (marker)]").print() == "[\"shared\" 1]"
 
   test "conflicting impls for one protocol and receiver still raise":
     writeModule("conflict_shared.gene",

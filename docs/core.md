@@ -32,7 +32,7 @@ as follow-on patches.
   identity — this already holds for scalars (`docs/design.md §1.1`) and
   extends unchanged to inheritance and `Nil` below.
 - Messages are ordinary callable values. A protocol message is always sent
-  qualified — `(item ~ ToHtml/to_html)` — which is unambiguous by construction.
+  qualified — `(item ~ ToHtml:to_html)` — which is unambiguous by construction.
   A bare `(item ~ m)` reaches only a **type-direct** message on the receiver's
   type; it never resolves to a protocol impl (§9).
 - **Message names are not bound in the enclosing lexical scope.** Declaring
@@ -100,7 +100,7 @@ the `^is` chain — because they supply the *same* message identity at different
 receiver depths, and single inheritance totally orders that chain, so this axis
 is never ambiguous (see `tests/test_protocols.nim`, "nearest receiver wins
 within one message identity"). Protocol messages are always sent qualified
-(`(x ~ P/render)`), so two protocols that both declare `render` never collide
+(`(x ~ P:render)`), so two protocols that both declare `render` never collide
 at a send site — the qualifier names the identity. Overlapping impls
 of a protocol and one of its `^inherit` ancestors for the *same* receiver are
 rejected where visibility is assembled — a descendant impl already supplies
@@ -180,8 +180,8 @@ The collision is resolved by qualified message identity:
 ```gene
 (type T ^derive [Z] ...)
 
-(t ~ X/clash ...)
-(t ~ Y/clash ...)
+(t ~ X:clash ...)
+(t ~ Y:clash ...)
 ```
 
 Bare `(t ~ clash ...)` reaches only a type-direct `clash` message; it never
@@ -213,7 +213,7 @@ on the simple name.
 ### 3.5 Subtyping is structural from the impl
 
 ```gene
-(fn print_a [x : A] ($println (x ~ A/do_a)))
+(fn print_a [x : A] ($println (x ~ A:do_a)))
 (print_a t)   # t : T, and T implements C, which inherits A
 ```
 
@@ -266,8 +266,8 @@ name, an `impl` body must qualify those message definitions:
 (protocol C ^inherit [A B])
 
 (impl C for T
-  (message A/do_x [self] "A behavior")
-  (message B/do_x [self] "B behavior"))
+  (message A:do_x [self] "A behavior")
+  (message B:do_x [self] "B behavior"))
 ```
 
 For a message name that is unique in the target protocol's closure,
@@ -447,7 +447,7 @@ simple name creates another qualified message, not an override:
 ```
 
 An implementation of `B` must account for both `A/render` and `B/render`.
-Callers choose with `(x ~ A/render)` or `(x ~ B/render)`. Type inheritance
+Callers choose with `(x ~ A:render)` or `(x ~ B:render)`. Type inheritance
 has its own different rule for type-direct messages — most-derived `^is`
 ancestor wins — per §2.1 and §8.
 
@@ -550,7 +550,7 @@ over unchanged:
 - a marker protocol needs no messages: `(impl Send)` inline works.
 
 Unlike type-direct messages, inline impls **are** the protocol system —
-`(t ~ A/do_a)` dispatches through them exactly as through a standalone impl.
+`(t ~ A:do_a)` dispatches through them exactly as through a standalone impl.
 Being written inside the type body does not make them reachable by a bare send:
 `(t ~ do_a)` looks only for a type-direct `do_a` (§9.1). The two body-item kinds compose freely in one type body:
 `(message …)` items are private receiver-owned behavior, `(impl P …)` items
@@ -596,13 +596,13 @@ receiver's context** — this is what distinguishes a send from an ordinary call
 A bare call `(f x)` resolves `f` lexically, like any call head; a send `(x ~ f)`
 resolves `f` against `x` first. An **unqualified** name reaches type-direct
 messages only; protocol messages are reached by their qualified name
-`(x ~ P/m)`.
+`(x ~ P:m)`.
 
 ### 9.1 The send forms
 
 ```gene
 (x ~ name ...)       # send message `name` to x
-(x ~ X/name ...)     # qualified: the message `name` of protocol X
+(x ~ X:name ...)     # qualified: the message `name` of protocol X
 (x ~ %m ...)         # send a held message value m
 (~ name ...)         # send to self: (self ~ name ...)
 (super ~ name ...)   # delegate to the implementation above (§8, design §10)
@@ -616,20 +616,20 @@ call `(f x)` never share a resolution path.
 The **unqualified send** `(x ~ name ...)` resolves `name` against the receiver's
 **type-direct** messages only (§8), walking the `^is` chain. Protocol messages
 are always qualified, so a bare name never reaches a protocol impl — write
-`(x ~ P/m)` for a protocol message. If the receiver's type declares no such
+`(x ~ P:m)` for a protocol message. If the receiver's type declares no such
 message, the send raises a recoverable **`MessageError`** (a `TypeError`
 subtype) — at compile time when the receiver's static type is known, otherwise
 at the send. When the failed name also names a lexical callable, the diagnostic
 points at the call form (`did you mean to call it, not send it?`), and when it
 names a protocol message it hints to qualify.
 
-The **qualified send** `(x ~ X/name ...)` names the protocol message `X/name`
+The **qualified send** `(x ~ X:name ...)` names the protocol message `X/name`
 and dispatches it on `x`. `X/name` is a message identity, not a callable:
 `(X/name x)` and higher-order use `(map xs X/name)` both raise `CallKindError`.
 Only a protocol gives a message a qualified spelling, so the qualifier is a
 reliable signal — **bare means type-direct, qualified means protocol.** The
 built-in type operations are type-direct, hence bare: `(c ~ get)`, never
-`(c ~ Cell/get)`. `Cell` is a real type and `get` is one of its type-direct
+`(c ~ Cell:get)`. `Cell` is a real type and `get` is one of its type-direct
 messages, so `Cell/get` is the same qualified-member spelling any type gives its
 messages (§8). It is not a callable path — `(Cell/get c)` is an error, because
 static impl selection is `super` only (§10) — so it is used in a send,
@@ -738,7 +738,7 @@ implemented and stable, and sit at implementation-order item 13; base
 - §3.1–§3.5, §3.6.1, §3.7 — the qualified-message-identity model:
   `ProtocolData` stores an identity-deduped transitive closure;
   `ProtocolImpl` entries are keyed by message value, not name; impl bodies
-  accept `(message A/do_x ...)` qualification with unique-simple-name
+  accept `(message A:do_x ...)` qualification with unique-simple-name
   shorthand; same-name messages across parents coexist; redeclaring an
   inherited simple name creates a distinct message; circular inheritance is
   impossible by evaluation order
@@ -803,9 +803,9 @@ implemented and stable, and sit at implementation-order item 13; base
 | OQ-E | Defaults (§5) and derive (§6) both feed the impl-completeness checker at compile time. Should they be one compiler pass or two? | Keep them as two separate, ordered passes: resolve default-fallback dispatch entries as a dispatch-table concern (§4/§5), and run derive expansion as a separate codegen concern, with completeness-checking happening only after both have run. A single merged pass makes it harder to tell whether a missing-message error came from a broken default or a broken derive. |
 | OQ-F | Under receiver-first resolution (§9.1), a type message silently shadows a same-named lexical binding at `~` send sites. Error, lint, or silence? | **Moot.** The lexical fallback was removed; `~` and lexical names never share a resolution path (§9.3), so there is nothing to shadow. |
 | OQ-G | Should the lexical fallback exist at all, or should `~` be receiver-only? | **Resolved — receiver-only.** The fallback is removed. A bare name that resolves to no message is a `MessageError` (§9.1). The pipeline ops (`map`/`filter`/`take`/`into`/`each`, `to_stream`) are now type-direct messages on their receivers. |
-| OQ-H | Should bare `(x ~ name)` ever resolve a protocol message? | **Resolved — no.** An unqualified send reaches type-direct messages only, walking `^is`; protocol messages are always qualified (`x ~ P/m`). The earlier rule ("resolves iff exactly one applicable protocol message has that simple name") is superseded: it made adding a same-named protocol message silently redirect existing sends, and the compile-time candidate set it required is gone (§9.1). |
+| OQ-H | Should bare `(x ~ name)` ever resolve a protocol message? | **Resolved — no.** An unqualified send reaches type-direct messages only, walking `^is`; protocol messages are always qualified (`x ~ P:m`). The earlier rule ("resolves iff exactly one applicable protocol message has that simple name") is superseded: it made adding a same-named protocol message silently redirect existing sends, and the compile-time candidate set it required is gone (§9.1). |
 | OQ-I | Should protocol declarations also bind message simple names in the enclosing scope (enabling bare calls like `(to_name x)`)? | **Settled — no, for now.** Messages are reachable via qualified access and sends only (§1). Scope binding can be added later as an additive feature; adding it would require an ambiguity-marker binding design for same-named messages across protocols in one scope. |
-| OQ-J | Does Gene need a `super` / `call-next-method` to invoke an overridden implementation from within an override? | **Resolved — implemented for type-direct messages.** `(super ~ m ...)` delegates to the implementation above the enclosing type on the `^is` chain, called with `self`, resolved statically and relative to the enclosing type (so `C ^is B ^is A` steps one level per body). `(super ~ Proto/m)` for protocol-impl delegation stays deferred: overlapping `impl P A` + `impl P B` (`B ^is A`) is an ambiguity error today, so protocols need a precedence rule first. |
+| OQ-J | Does Gene need a `super` / `call-next-method` to invoke an overridden implementation from within an override? | **Resolved — implemented for type-direct messages.** `(super ~ m ...)` delegates to the implementation above the enclosing type on the `^is` chain, called with `self`, resolved statically and relative to the enclosing type (so `C ^is B ^is A` steps one level per body). `(super ~ Proto:m)` for protocol-impl delegation stays deferred: overlapping `impl P A` + `impl P B` (`B ^is A`) is an ambiguity error today, so protocols need a precedence rule first. |
 
 ---
 

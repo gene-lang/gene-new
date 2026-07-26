@@ -50,7 +50,7 @@ walking `^is` (`docs/design.md` §3). It never reaches a protocol impl, so a sen
 site carries no protocol candidate set and simple-name ambiguity cannot arise
 from one.
 
-A protocol message is always qualified — `(x ~ P/m)` — which names exactly one
+A protocol message is always qualified — `(x ~ P:m)` — which names exactly one
 message identity. `P` must resolve as an ordinary binding at the send site.
 Choosing the impl for that identity happens at dispatch time, against the
 receiver's runtime type and in the send's visibility scope (§4).

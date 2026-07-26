@@ -121,6 +121,7 @@ type
     opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
     opQualifiedSend # pop receiver + qualifier (`Q` of `Q:msg`); dispatch `name` on the receiver
+    opBindMessage # pop qualifier; push a message value bound to the current scope
 
   Instruction* = object
     op*: OpCode
@@ -799,7 +800,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " target=" & $inst.intArg
   of opSyntaxCall, opRejectSyntaxSend:
     discard
-  of opResolveQualifiedMessage, opQualifiedSend:
+  of opResolveQualifiedMessage, opQualifiedSend, opBindMessage:
     result.add " name=" & inst.name
   of opSyntaxGuard:
     result.add " target=" & $inst.intArg & " const=" & $inst.depth

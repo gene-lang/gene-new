@@ -8898,6 +8898,56 @@ proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
     return message.protocolMessageDefaultFn
   NIL
 
+proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
+                          receiver: Value): Value =
+  ## Resolve `Q:name` on `receiver`. Shared by the send opcode and by applying a
+  ## bound message value, so both obey one rule: the qualifier *constrains*, the
+  ## receiver *selects*.
+  let recvType = receiver.receiverType
+  case qualifier.kind
+  of vkProtocol:
+    var message = qualifier.protocolMessages.getOrDefault(name, VOID)
+    if message.kind == vkVoid:
+      let candidates = qualifier.protocolClosureByName(name)
+      if candidates.len == 1:
+        message = candidates[0]
+      elif candidates.len > 1:
+        raise newException(GeneError,
+          "ambiguous message '" & name & "' in protocol " &
+          qualifier.protocolName & "; qualify with the defining protocol")
+    if message.kind != vkProtocolMessage:
+      raiseMessageError(name, qualifier.protocolName, scope,
+                        protocol = qualifier.protocolName, missingImpl = true)
+    result = resolveProtocolMessage(scope, message, receiver)
+  of vkType:
+    # `T:name` names the message as declared on T, so the receiver must be a T.
+    if not recvType.isSubtypeOf(qualifier):
+      raiseTypeError("message send " & qualifier.typeName & ":" & name,
+                     qualifier.typeName, receiver, scope)
+    if recvType.kind == vkType:
+      result = typeDirectMessage(recvType, name)
+    if result.kind == vkNil:
+      result = builtinReceiverMessage(scope, receiver, name)
+    if result.kind == vkNil:
+      let recvTypeName =
+        if recvType.kind == vkType: recvType.typeName
+        else: declarationKind(receiver)
+      raiseMessageError(name, recvTypeName, scope, false)
+  of vkNil:
+    # `Self:name` names no qualifier: the bare type-direct send.
+    if recvType.kind == vkType:
+      result = typeDirectMessage(recvType, name)
+    if result.kind == vkNil:
+      result = builtinReceiverMessage(scope, receiver, name)
+    if result.kind == vkNil:
+      let recvTypeName =
+        if recvType.kind == vkType: recvType.typeName
+        else: declarationKind(receiver)
+      raiseMessageError(name, recvTypeName, scope, false)
+  else:
+    raiseCallKindError("message send", "Protocol or Type",
+                       freezeRejectName(qualifier), qualifier, scope)
+
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
   if scope == nil:
     raise newException(GeneError,
@@ -10914,7 +10964,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 outer.slots[slot]
               else:
                 scope.loadSlotAt(inst[].depth, slot, inst[].name)
-          if callee.kind == vkProtocolMessage:
+          if callee.kind == vkProtocolMessage and
+              not callee.protocolMessageIsBound:
+            # A *bound* message is applicable — that is decision 2. An unbound
+            # one is a declaration-site identity with no scope to resolve in,
+            # so it stays rejected.
             rejectMessageCall(callee, scope)
           if callee.kind == vkFunction:
             let code = callee.fnCode
@@ -11339,7 +11393,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # A message identity is not callable in head position (design §3):
           # qualified sends resolve their impl in opResolveQualifiedMessage, so a
           # message value reaching an ordinary call is source like `(P/m x)`.
-          if callee.kind == vkProtocolMessage:
+          if callee.kind == vkProtocolMessage and
+              not callee.protocolMessageIsBound:
+            # A *bound* message is applicable — that is decision 2. An unbound
+            # one is a declaration-site identity with no scope to resolve in,
+            # so it stays rejected.
             rejectMessageCall(callee, scope)
           # Frame-push paths: route Gene function calls onto the explicit frame stack
           # instead of recursing through Nim. ^errors functions push a frame too and
@@ -11545,7 +11603,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             else:
               args.add part
           # A message identity is not callable in head position (see opCall).
-          if callee.kind == vkProtocolMessage:
+          if callee.kind == vkProtocolMessage and
+              not callee.protocolMessageIsBound:
+            # A *bound* message is applicable — that is decision 2. An unbound
+            # one is a declaration-site identity with no scope to resolve in,
+            # so it stays rejected.
             rejectMessageCall(callee, scope)
           # Frame-push paths mirror opCall: spread calls to Gene functions go onto the
           # frame stack (^errors included; only generators fall through to applyCall).
@@ -12509,6 +12571,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raiseCallKindError("message send", "Message",
                                freezeRejectName(message), message, scope)
           var callee = NIL
+          if message.protocolMessageIsBound:
+            # A *bound* message (`P:m` in value position) is a fresh object, so
+            # it does not match the declaration-site identity the impl registry
+            # keys on. Resolve it by qualifier and name instead — and from this
+            # send's scope, because a held send does have a send site.
+            let qualifier =
+              if message.protocolMessageQualifier.kind != vkNil:
+                message.protocolMessageQualifier
+              else: message.protocolMessageProtocol
+            callee = resolveQualifiedSend(scope, qualifier,
+                                          message.protocolMessageName, receiver)
+            if callee.isSyntaxFn:
+              rejectSyntaxSend(callee, scope)
+            spush callee
+            spush receiver
+            continue
           when dispatchCacheEnabled:
             # A message value is first-class, so one site can see several; its
             # identity joins the guard (msgBits), as in the opCall path.
@@ -12528,11 +12606,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush callee
           spush receiver
         of opQualifiedSend:
-          # `(x ~ Q:msg)` — Q is on top, the receiver below it. The qualifier
-          # *names* the message and never selects the impl (design §3, decision
-          # 5), so dispatch is on the receiver in both cases and Q only decides
-          # which table the name is looked up in. `Self:msg` never reaches here:
-          # it declines to name a type, so it compiles to the bare send.
+          # `(x ~ Q:msg)` — Q on top, receiver below. The qualifier constrains
+          # and the receiver selects; `Self:msg` never reaches here because it
+          # names no qualifier and compiles to the bare send.
           if sp < 2:
             raise newException(GeneError,
               "VM stack underflow resolving qualified send")
@@ -12551,50 +12627,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                  qualifier.bits,
                                                  scope.application().implEpoch)
           if callee.kind == vkNil:
-            case qualifier.kind
-            of vkProtocol:
-              # Name the message through the protocol, then resolve the impl
-              # visible from this send site — the existing qualified path.
-              var message = qualifier.protocolMessages.getOrDefault(
-                inst[].name, VOID)
-              if message.kind == vkVoid:
-                let candidates = qualifier.protocolClosureByName(inst[].name)
-                if candidates.len == 1:
-                  message = candidates[0]
-                elif candidates.len > 1:
-                  raise newException(GeneError,
-                    "ambiguous message '" & inst[].name & "' in protocol " &
-                    qualifier.protocolName &
-                    "; qualify with the defining protocol")
-              if message.kind != vkProtocolMessage:
-                raiseMessageError(inst[].name, qualifier.protocolName, scope,
-                                  protocol = qualifier.protocolName,
-                                  missingImpl = true)
-              callee = resolveProtocolMessage(scope, message, receiver)
-            of vkType:
-              # `T:msg` names the message *as declared on T*, so the receiver
-              # has to be a `T`. The qualifier constrains; it does not select —
-              # a `Pup` receiver still runs `Pup`'s override under `Dog:bark`,
-              # but a `Cat` receiver is rejected outright rather than quietly
-              # running its own unrelated `bark`. This mirrors the protocol
-              # branch, where a missing impl is already an error.
-              if not recvType.isSubtypeOf(qualifier):
-                raiseTypeError("message send " & qualifier.typeName & ":" &
-                               inst[].name, qualifier.typeName, receiver, scope)
-              # The lookup itself still goes through the *receiver's* type, so
-              # "names the message, never selects the impl" stays structural.
-              if recvType.kind == vkType:
-                callee = typeDirectMessage(recvType, inst[].name)
-              if callee.kind == vkNil:
-                callee = builtinReceiverMessage(scope, receiver, inst[].name)
-              if callee.kind == vkNil:
-                let recvTypeName =
-                  if recvType.kind == vkType: recvType.typeName
-                  else: declarationKind(receiver)
-                raiseMessageError(inst[].name, recvTypeName, scope, false)
-            else:
-              raiseCallKindError("message send", "Protocol or Type",
-                                 freezeRejectName(qualifier), qualifier, scope)
+            callee = resolveQualifiedSend(scope, qualifier, inst[].name,
+                                          receiver)
             when dispatchCacheEnabled:
               if cacheable and callee.kind != vkNil:
                 chunk.dispatchCacheFill(ip - 1, recvType, qualifier.bits,
@@ -12603,6 +12637,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             rejectSyntaxSend(callee, scope)
           spush callee
           spush receiver
+        of opBindMessage:
+          # `Q:msg` in value position: a *message* value carrying the scope it
+          # was written in. Applying it has no send site, so that scope is where
+          # its impls resolve — the send-site rule, evaluated where the value
+          # was authored rather than where it happens to be applied.
+          if sp < 1:
+            raise newException(GeneError, "VM stack underflow binding message")
+          let qualifier = spop()
+          var protocolBits = 0'u64
+          if qualifier.kind == vkProtocol:
+            protocolBits = qualifier.bits
+          spush newBoundMessage(qualifier, inst[].name, protocolBits, scope)
         of opReturn:
           frameReturn(if sp > 0: spop() else: NIL)
         of opReturnBareInt:
@@ -15625,21 +15671,27 @@ proc staticLookup(target, segment: Value): Value =
     of vkModule:
       target.moduleRootNamespace.exportedBinding(key)
     of vkProtocol:
-      # Own message first; otherwise a unique closure match lets an inherited
-      # message be spelled through the child protocol (docs/core.md §3.2).
-      let own = target.protocolMessages.getOrDefault(key, VOID)
-      if own.kind != vkVoid:
-        own
-      else:
+      # `P/m` is not a message spelling. `/` selects a member and `:` names a
+      # message, and a protocol's messages are reached only through `:` — so
+      # `(x ~ P/m)` and `P/m` in value position are both errors that name the
+      # replacement. A protocol has no other members, so a name it does not
+      # declare stays VOID rather than becoming a second diagnostic.
+      var found = target.protocolMessages.getOrDefault(key, VOID)
+      if found.kind == vkVoid:
         let candidates = target.protocolClosureByName(key)
         if candidates.len == 1:
-          candidates[0]
+          found = candidates[0]
         elif candidates.len > 1:
           raise newException(GeneError,
             "ambiguous message '" & key & "' in protocol " &
             target.protocolName & "; qualify with the defining protocol")
-        else:
-          VOID
+      if found.kind == vkVoid:
+        VOID
+      else:
+        raise newException(GeneError,
+          "'" & target.protocolName & "/" & key &
+          "' is not a message: `/` selects a member, `:` names a message — " &
+          "write " & target.protocolName & ":" & key & " (design §3)")
     of vkType:
       if target.isEnumType:
         let variant = target.enumVariantDescriptor(key)
@@ -20899,6 +20951,23 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value =
+  if callee.kind == vkProtocolMessage and callee.protocolMessageIsBound:
+    # Applying a message dispatches on its first argument (design §3, decision
+    # 2): `(map xs P:m)` works, and the signature is (receiver, …send args).
+    # Impls resolve in the scope the value was *written* in, which the value
+    # carries — there is no send site here to resolve against.
+    if args.len == 0:
+      raise newException(GeneError,
+        "applying message '" & callee.protocolMessageName &
+        "' needs a receiver as its first argument")
+    let bound = callee.protocolMessageScope
+    let qualifier =
+      if callee.protocolMessageQualifier.kind != vkNil:
+        callee.protocolMessageQualifier
+      else: callee.protocolMessageProtocol
+    let target = resolveQualifiedSend(bound, qualifier,
+                                      callee.protocolMessageName, args[0])
+    return applyCall(target, args, named, bound, site, loc)
   case callee.kind
   of vkNativeFn:
     if named.len == 0 and args.len == 2:

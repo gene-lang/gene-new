@@ -1507,13 +1507,16 @@ proc parseForm(r: var Reader, inList = false): Value =
     else:
       let lex = tok.lexeme
       let colonAt = qualifiedMessageSplit(lex)
-      if colonAt > 0 and '/' notin lex:
+      if colonAt > 0 and '/' notin lex[colonAt + 1 .. ^1]:
         # `Proto:msg` names a message. This is its own node, not `(path P m)`:
         # `/` selects a member and `:` names a message, and the two have to be
         # told apart to give a message value in *value* position a different
         # compilation from a member selection (design §3, decisions 2/4/5).
+        # The qualifier may itself be a path: `ns/Proto:msg` names the message
+        # `msg` of the protocol reached at `ns/Proto`. Only the last segment is
+        # the message name, so `:` still splits exactly once.
         finish newNode(newSym("msg"),
-                       body = @[newSym(lex[0 ..< colonAt]),
+                       body = @[desugarPath(lex[0 ..< colonAt]),
                                 newSym(lex[colonAt + 1 .. ^1])])
       if not inList:
         if lex.endsWith("..."):

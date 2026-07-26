@@ -309,13 +309,13 @@ suite "spec — enums from design":
                "  (impl Label " &
                "    (message label [self] : Str " &
                "      (if (== self Light/on) \"on\" \"off\")))) " &
-               "(Light/on ~ Label/label)",
+               "(Light/on ~ Label:label)",
                "\"on\"")
     check_eval("(protocol Code (message code [self] : Int)) " &
                "(enum Status active closed) " &
                "(impl Code for Status " &
                "  (message code [self] : Int (self ~ ordinal))) " &
-               "(Status/closed ~ Code/code)",
+               "(Status/closed ~ Code:code)",
                "1")
 
 suite "spec — templates from design":
@@ -2022,7 +2022,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &
                "(type M ^props {^name Str} " &
                "  (impl ToHtml (message to_html [] : Str self/name))) " &
-               "(var m ToHtml/to_html) " &
+               "(var m ToHtml:to_html) " &
                "(var items [(M ^name \"a\") (M ^name \"b\")]) " &
                "(($map ($to_stream items) (fn [x] (x ~ %m))) ~ into [])",
                "[\"a\" \"b\"]")
@@ -2161,8 +2161,10 @@ suite "spec — implicit self in message bodies from design §10":
     check_compile_error("(protocol P (message m [] : Str)) (P:m 1)",
                         "dispatches only through ~")
 
-  test "a message in value position is a dispatching closure":
-    # Decision 2. `Proto:msg` applied dispatches on its first argument, so
+  test "a message in value position is a dispatching message value":
+    # Decision 2. `Proto:msg` is a *message*, not a function: it prints as one,
+    # is accepted as a held send callee, and satisfies `Callable` without
+    # satisfying `Fn`. Applied, it dispatches on its first argument, so
     # `(map xs P:m)` works and its signature is (receiver, ...send args).
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(type A ^props {^n Int} (impl Shown (message show [] : Str \"A\"))) " &
@@ -2183,10 +2185,17 @@ suite "spec — implicit self in message bodies from design §10":
                "(var g S:s) " &
                "(($map ($to_stream [1 2]) g) ~ into [])",
                "[\"int\" \"int\"]")
-    # It answers as a function, which is the cost of the closure route.
+    # It answers as a message: Callable, but not a Fn, and it prints as one.
     check_eval("(protocol S (message s [] : Str)) " &
-               "[((fn [f : Callable] true) S:s) ((fn [f : Fn] true) S:s)]",
-               "[true true]")
+               "[((fn [f : Callable] true) S:s) " &
+               " (try ((fn [f : Fn] true) S:s) catch (TypeError ^expected e) e)]",
+               "[true \"Fn\"]")
+    check_eval("(protocol S (message s [] : Str)) S:s", "(message s)")
+    # A held message value still reaches `(x ~ %m)`, which a function cannot.
+    check_eval("(protocol S (message s [] : Str)) " &
+               "(impl S for Int (message s [] : Str \"int\")) " &
+               "(var m S:s) (5 ~ %m)",
+               "\"int\"")
     # The `Callable` boundary used to accept a message and then raise on the
     # call; the closure closes that hole.
     check_eval("(protocol P (message m [] : Str)) " &
@@ -2198,7 +2207,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &
                "(type M ^props {^name Str} " &
                "  (impl ToHtml (message to_html [] : Str self/name))) " &
-               "(var m ToHtml/to_html) " &
+               "(var m ToHtml:to_html) " &
                "((M ^name \"z\") ~ (do m))",
                "\"z\"")
 
@@ -2207,8 +2216,8 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol ToHtml (message to_html [] : Str)) " &
                "(type M ^props {^name Str} " &
                "  (impl ToHtml (message to_html [] : Str self/name)) " &
-               "  (message held [] (var m ToHtml/to_html) (~ %m)) " &
-               "  (message qual [] (~ ToHtml/to_html)) " &
+               "  (message held [] (var m ToHtml:to_html) (~ %m)) " &
+               "  (message qual [] (~ ToHtml:to_html)) " &
                "  (message sel  [] (~ /name))) " &
                "(var x (M ^name \"n\")) " &
                "[(x ~ held) (x ~ qual) (x ~ sel)]",
@@ -2218,7 +2227,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol Greet (message hi [] : Str)) " &
                "(type P ^props {^name Str} " &
                "  (impl Greet (message hi [] : Str $\"hi ${self/name}\"))) " &
-               "((P ^name \"Ada\") ~ Greet/hi)",
+               "((P ^name \"Ada\") ~ Greet:hi)",
                "\"hi Ada\"")
 
   test "enum messages bind self implicitly":
@@ -2265,7 +2274,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_compile_error(
       "(protocol P (message m [] : Str)) " &
       "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
-      "(type B ^is A ^props {} (message go [] : Str (super ~ P/m)))",
+      "(type B ^is A ^props {} (message go [] : Str (super ~ P:m)))",
       "super delegates to a type-direct message only")
     check_compile_error(
       "(protocol P (message m [] : Str)) " &
@@ -2316,12 +2325,12 @@ suite "spec — implicit self in message bodies from design §10":
 
   test "a qualified send with no visible impl raises a catchable MessageError":
     check_eval("(protocol P (message m [] : Int)) (type T ^props {}) " &
-               "(try ((T) ~ P/m) catch (MessageError ^protocol pr) pr)",
+               "(try ((T) ~ P:m) catch (MessageError ^protocol pr) pr)",
                "\"P\"")
 
   test "a receiver with no nominal type still raises a catchable MessageError":
     check_eval("(protocol P (message m [] : Int)) " &
-               "(try (nil ~ P/m) catch (MessageError ^protocol pr) pr)",
+               "(try (nil ~ P:m) catch (MessageError ^protocol pr) pr)",
                "\"P\"")
 
 suite "spec — protocol derive from design":
@@ -2332,7 +2341,7 @@ suite "spec — protocol derive from design":
                "    `(impl HasLabel for %t " &
                "       (message label [self] : Str self/name)))) " &
                "(type MenuItem ^props {^name Str} ^derive [HasLabel]) " &
-               "((MenuItem ^name \"Soup\") ~ HasLabel/label)",
+               "((MenuItem ^name \"Soup\") ~ HasLabel:label)",
                "\"Soup\"")
 
   test "derive may target another protocol but only the deriving type":
@@ -4040,11 +4049,11 @@ suite "spec — impl visibility across modules (design §10)":
   test "a co-located canonical impl dispatches when its protocol is in scope":
     # The impl is co-located with Greet and Cat in ilib, so it is canonical
     # and globally active. A qualified send names the protocol, so `use`
-    # imports Greet to make Greet/greet resolvable at the call site.
+    # imports Greet to make Greet:greet resolvable at the call site.
     let dir = implModuleDir()
     writeFile(dir / "use.gene",
       "(import [Cat Greet] from \"./ilib\")\n" &
-      "(var r ((Cat ^name \"Tom\") ~ Greet/greet))\n")
+      "(var r ((Cat ^name \"Tom\") ~ Greet:greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Tom\""
 
@@ -4057,7 +4066,7 @@ suite "spec — impl visibility across modules (design §10)":
     writeFile(dir / "use.gene",
       "(import [make_cat] from \"./mid\")\n" &
       "(import [Greet] from \"./ilib\")\n" &
-      "(var r ((make_cat \"Felix\") ~ Greet/greet))\n")
+      "(var r ((make_cat \"Felix\") ~ Greet:greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Felix\""
 
@@ -4069,7 +4078,7 @@ suite "spec — impl visibility across modules (design §10)":
     writeFile(dir / "other.gene",
       "(mod other)\n" &
       "(import [Greet] from \"./ilib\")\n" &
-      "(fn use_cat [c] (c ~ Greet/greet))\n")
+      "(fn use_cat [c] (c ~ Greet:greet))\n")
     writeFile(dir / "use.gene",
       "(import [Cat] from \"./ilib\")\n" &
       "(import [use_cat] from \"./other\")\n" &
@@ -4254,37 +4263,37 @@ suite "spec — structured logging contract":
 suite "spec — db protocol from stdlib plan":
   test "sqlite backend covers CRUD, typed params, and typed rows":
     check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
-               "(c ~ Db/exec \"create table t (id integer primary key, x text, f float, b integer)\") " &
-               "(c ~ Db/execute \"insert into t(x, f, b) values (?, ?, ?)\" \"a\" 1.5 true) " &
-               "(c ~ Db/query \"select * from t\")",
+               "(c ~ Db:exec \"create table t (id integer primary key, x text, f float, b integer)\") " &
+               "(c ~ Db:execute \"insert into t(x, f, b) values (?, ?, ?)\" \"a\" 1.5 true) " &
+               "(c ~ Db:query \"select * from t\")",
                "[{^id 1 ^x \"a\" ^f 1.5 ^b 1}]")
     check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
-               "(c ~ Db/exec \"create table t (x text)\") " &
-               "(c ~ Db/query_one \"select * from t where x = ?\" \"missing\")",
+               "(c ~ Db:exec \"create table t (x text)\") " &
+               "(c ~ Db:query_one \"select * from t where x = ?\" \"missing\")",
                "nil")
     check_eval("(import $db/sqlite [open Db DbError]) " &
                "(var c (open \":memory:\")) " &
-               "(try (c ~ Db/query \"select * from missing\") " &
+               "(try (c ~ Db:query \"select * from missing\") " &
                "catch (DbError ^message _) \"caught\")",
                "\"caught\"")
 
   test "sqlite transactions roll back on recoverable failure":
     check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
-               "(c ~ Db/exec \"create table t (x text)\") " &
-               "(try (c ~ Db/transaction (fn [d] " &
-               "  (d ~ Db/execute \"insert into t(x) values (?)\" \"doomed\") " &
+               "(c ~ Db:exec \"create table t (x text)\") " &
+               "(try (c ~ Db:transaction (fn [d] " &
+               "  (d ~ Db:execute \"insert into t(x) values (?)\" \"doomed\") " &
                "  (fail \"abort\"))) catch _ nil) " &
-               "(c ~ Db/transaction (fn [d] " &
-               "  (d ~ Db/execute \"insert into t(x) values (?)\" \"kept\"))) " &
-               "(c ~ Db/query \"select x from t\")",
+               "(c ~ Db:transaction (fn [d] " &
+               "  (d ~ Db:execute \"insert into t(x) values (?)\" \"kept\"))) " &
+               "(c ~ Db:query \"select x from t\")",
                "[{^x \"kept\"}]")
 
   test "connections close explicitly and reject further use":
     check_eval("(import $db/sqlite [open Db DbError]) " &
                "(var c (open \":memory:\")) " &
-               "(var before (c ~ Db/closed?)) (c ~ Db/close) " &
-               "[before (c ~ Db/closed?) " &
-               " (try (c ~ Db/query \"select 1\") " &
+               "(var before (c ~ Db:closed?)) (c ~ Db:close) " &
+               "[before (c ~ Db:closed?) " &
+               " (try (c ~ Db:query \"select 1\") " &
                " catch (DbError ^message _) \"rejected\")]",
                "[false true \"rejected\"]")
 
@@ -4319,14 +4328,14 @@ suite "spec — store persistence protocol":
                "(import $store/sqlite [open : store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
-               "(s ~ Store/put \"a\" {^x 1}) " &
-               "(s ~ Store/put \"void\" void) " &
-               "[(s ~ Store/get \"a\") " &
-               " (s ~ Store/get \"void\") " &
-               " (s ~ Store/has? \"a\") " &
-               " (s ~ Store/has? \"missing\") " &
-               " (s ~ Store/get \"missing\" ^default \"fallback\") " &
-               " (try (s ~ Store/get \"missing\") catch (StoreError ^kind k) k)]",
+               "(s ~ Store:put \"a\" {^x 1}) " &
+               "(s ~ Store:put \"void\" void) " &
+               "[(s ~ Store:get \"a\") " &
+               " (s ~ Store:get \"void\") " &
+               " (s ~ Store:has? \"a\") " &
+               " (s ~ Store:has? \"missing\") " &
+               " (s ~ Store:get \"missing\" ^default \"fallback\") " &
+               " (try (s ~ Store:get \"missing\") catch (StoreError ^kind k) k)]",
                "[{^x 1} void true false \"fallback\" missing]")
 
   test "sqlite store supports full mode refs, keys, delete, clear, and close":
@@ -4334,17 +4343,17 @@ suite "spec — store persistence protocol":
                "(import $store/sqlite [open : store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
-               "(s ~ Store/put \"fn\" gene/str/join ^mode \"full\") " &
-               "(s ~ Store/put \"n\" 1) " &
-               "(var got (s ~ Store/get \"fn\" ^mode \"full\")) " &
-               "(var before (s ~ Store/keys)) " &
-               "(s ~ Store/delete \"n\") " &
-               "(var after-delete [(s ~ Store/has? \"n\") (s ~ Store/keys)]) " &
-               "(s ~ Store/clear) " &
-               "(var after-clear (s ~ Store/keys)) " &
-               "(s ~ Store/close) " &
+               "(s ~ Store:put \"fn\" gene/str/join ^mode \"full\") " &
+               "(s ~ Store:put \"n\" 1) " &
+               "(var got (s ~ Store:get \"fn\" ^mode \"full\")) " &
+               "(var before (s ~ Store:keys)) " &
+               "(s ~ Store:delete \"n\") " &
+               "(var after-delete [(s ~ Store:has? \"n\") (s ~ Store:keys)]) " &
+               "(s ~ Store:clear) " &
+               "(var after-clear (s ~ Store:keys)) " &
+               "(s ~ Store:close) " &
                "[(same? got gene/str/join) before after-delete after-clear " &
-               " (try (s ~ Store/keys) catch (StoreError ^kind k) k)]",
+               " (try (s ~ Store:keys) catch (StoreError ^kind k) k)]",
                "[true [\"fn\" \"n\"] [false [\"fn\"]] [] closed]")
 
   test "filesystem store uses encoded keys and ignores junk files":
@@ -4356,10 +4365,10 @@ suite "spec — store persistence protocol":
     check_eval("(import $store/fs [open : store-open Store StoreError]) " &
                "(import Fs [ReadWriteDir]) " &
                "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
-               "(s ~ Store/put \"session:tg/42\" {^x 1}) " &
-               "[(s ~ Store/get \"session:tg/42\") " &
-               " (s ~ Store/keys) " &
-               " (try (s ~ Store/put \"\" 1) catch (StoreError ^kind k) k)]",
+               "(s ~ Store:put \"session:tg/42\" {^x 1}) " &
+               "[(s ~ Store:get \"session:tg/42\") " &
+               " (s ~ Store:keys) " &
+               " (try (s ~ Store:put \"\" 1) catch (StoreError ^kind k) k)]",
                "[{^x 1} [\"session:tg/42\"] invalid_key]")
 
   test "sqlite checkpoints publish one hash-validated generation atomically":
@@ -4367,10 +4376,10 @@ suite "spec — store persistence protocol":
                "(import $store/sqlite [open : store-open Store]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
-               "(s ~ Store/checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
-               "(s ~ Store/checkpoint 2 {^session {^schema 1 ^data {^x 2}} " &
+               "(s ~ Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+               "(s ~ Store:checkpoint 2 {^session {^schema 1 ^data {^x 2}} " &
                "                   ^events {^schema 1 ^data [\"ok\"]}}) " &
-               "(var loaded (s ~ Store/load_checkpoint)) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
                "[loaded/generation loaded/schema " &
                " loaded/records/session/data/x loaded/records/events/data]",
                "[2 1 2 [\"ok\"]]")
@@ -4384,8 +4393,8 @@ suite "spec — store persistence protocol":
                  "(import $store/sqlite [open : store-open Store]) " &
                  "(var db (open " & geneString(path) & ")) " &
                  "(var s (store-open db)) " &
-                 "(s ~ Store/checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
-                 "(s ~ Store/close) (db ~ Db/close) true",
+                 "(s ~ Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+                 "(s ~ Store:close) (db ~ Db:close) true",
                  "true")
       check getFilePermissions(path) == {fpUserRead, fpUserWrite}
 
@@ -4397,9 +4406,9 @@ suite "spec — store persistence protocol":
     check_eval("(import $store/fs [open : store-open Store]) " &
                "(import Fs [ReadWriteDir]) " &
                "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
-               "(s ~ Store/checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
-               "(s ~ Store/checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
-               "(var loaded (s ~ Store/load_checkpoint)) " &
+               "(s ~ Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
+               "(s ~ Store:checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
                "[2 2]")
     let newest = dir / "generations" / "00000000000000000002" /
@@ -4408,7 +4417,7 @@ suite "spec — store persistence protocol":
     check_eval("(import $store/fs [open : store-open Store]) " &
                "(import Fs [ReadWriteDir]) " &
                "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
-               "(var loaded (s ~ Store/load_checkpoint)) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
                "[1 1]")
     when defined(posix):
@@ -5001,7 +5010,7 @@ suite "spec — qualified message spelling":
   test "Proto:msg names a protocol message":
     check_eval("(protocol P (message m [] : Str)) (type T ^props {}) " &
                "(impl P for T (message m [] : Str \"impl\")) " &
-               "[((T) ~ P:m) ((T) ~ P/m)]",
+               "[((T) ~ P:m) ((T) ~ P:m)]",
                "[\"impl\" \"impl\"]")
     # `:` is its own node: `/` selects a member, `:` names a message, and the
     # two compile differently in value position.

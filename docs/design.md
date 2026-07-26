@@ -377,7 +377,7 @@ mechanism.
 
 Resolving a path is separate from invoking the result. A function member is
 applied in call-head position, `(ns/f x)`; a protocol-message member is invoked
-with `~`, `(x ~ P/m)`, which dispatches on the receiver's type (§3, §10). `P/m`
+with `~`, `(x ~ P:m)`, which dispatches on the receiver's type (§3, §10). `P/m`
 on its own is the first-class message value.
 
 Where the selection is resolved — compile time or runtime — is an implementation
@@ -746,7 +746,7 @@ mechanisms never mix.
 
 An unqualified send resolves `f` against the receiver's **type-direct** messages
 only, walking the `^is` chain. Protocol messages are **always qualified** —
-`(x ~ P/m)` — so a protocol impl is never reached by a bare name. If the
+`(x ~ P:m)` — so a protocol impl is never reached by a bare name. If the
 receiver's type declares no such message, the send raises a recoverable
 **`MessageError`** (a subtype of `TypeError`) carrying `^where`,
 `^receiver_type`, and `^message`; when the failed name also names a lexical
@@ -755,7 +755,7 @@ not send it?"), and when it names a protocol message it hints to qualify. Full
 resolution rules: `docs/core.md §9`.
 
 **Every non-bare callee must be a message value.** A qualified path
-(`x ~ P/m`), a held value (`x ~ %m`), and a parenthesized expression all resolve
+(`x ~ P:m`), a held value (`x ~ %m`), and a parenthesized expression all resolve
 to a value that has to be a message identity; the impl is then dispatched on
 `x`. A plain function, a namespace member, or a held `Fn!` is **rejected, not
 invoked** — so `(xs ~ str/join "-")` and `(x ~ %some_fn)` are errors rather than
@@ -765,7 +765,7 @@ true of the whole operator and not just of bare names.
 Because only protocols give a message a qualified spelling, the qualifier is a
 reliable signal: **bare means type-direct, qualified means protocol.** Built-in
 operations are type-direct messages, so they take the bare form — `(c ~ get)`,
-not `(c ~ Cell/get)`. `Cell` is a real type whose messages are `get`, `set`,
+not `(c ~ Cell:get)`. `Cell` is a real type whose messages are `get`, `set`,
 `swap`, and `update`, and a type exposes its messages as qualified members
 (§7.1). `Cell/get` is *not* a callable path: `(Cell/get c)` was static
 binding, which decision 4 withdraws in favour of `super` alone. Write the
@@ -836,14 +836,21 @@ names are not lexical bindings:
 (map xs Self:show)   # each element's own type-direct show
 ```
 
-In any other position `P:msg` is a **dispatching closure**, equivalent to
-`(fn [x rest...] (x ~ P:msg rest...))`, so `(map xs P:msg)` dispatches per
-element and needs no lambda. Its signature is `(receiver, ...send args)`. The
-closure carries its defining scope, so impls resolve where the value was
-*written* — which is the send-site rule already in force, and is what makes a
-message usable inside a lazy combinator that retains only a callable and has no
-send site of its own. The cost is that such a value answers reflection,
-equality, and serialization as a function, not as a distinct message identity.
+In any other position `P:msg` is a **message value**, and it is a message rather
+than a function: it prints as `(message msg)`, satisfies `Callable` but *not*
+`Fn`, and is accepted as a held send callee `(x ~ %m)` — which a function is
+not. Applying one dispatches on its first argument, so `(map xs P:msg)`
+dispatches per element and needs no lambda; the signature is
+`(receiver, ...send args)`.
+
+The value carries the scope it was **written** in. Applying a message has no
+send site, so there is no reaching scope to resolve impls against — resolving
+where the value was authored is the send-site rule, evaluated one step earlier.
+That is what lets a message be used inside a lazy combinator, which retains only
+the callable and has no send site of its own.
+
+`/` never spells a message. `P/m` and `T/m` are both errors that name the
+replacement: `/` selects a member, `:` names a message.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
@@ -2500,7 +2507,7 @@ reserved and cannot be bound. Using it outside a type message body with an `^is`
 parent is a compile error.
 
 Two forms remain unsupported, pending the protocol-impl precedence rule:
-`(super ~ Proto/m)` for protocol-impl delegation, and the dynamic
+`(super ~ Proto:m)` for protocol-impl delegation, and the dynamic
 `(super ~ %m)`. Both are diagnosed rather than silently mis-dispatched.
 
 **Static impl selection is `super` only.** `T/m` is not a callable path:
@@ -2520,8 +2527,8 @@ Message dispatch is on the first argument's head/type. Messages are ordinary cal
 
 ```gene
 (item ~ to_html)          # send: to_html resolves in item's context
-(item ~ ToHtml/to_html)   # qualified send: always unambiguous
-(ToHtml/to_html item)     # qualified call through the protocol value
+(item ~ ToHtml:to_html)   # qualified send: always unambiguous
+(ToHtml:to_html item)     # qualified call through the protocol value
 ```
 
 A type can require manual implementations:
@@ -2613,7 +2620,7 @@ the use site. Generated implementations follow the same rules, and MVP
 rejects overlapping generic implementations that could both apply to the same
 concrete receiver type.
 
-A protocol message is always sent qualified — `(x ~ P/m)` — so the send names one
+A protocol message is always sent qualified — `(x ~ P:m)` — so the send names one
 message identity and no compile-time candidate set is involved. Impl selection
 happens at dispatch time and is filtered to impls applicable in the send's own
 module: a library send cannot see a scoped impl imported only by its caller.
@@ -2707,7 +2714,7 @@ Manual delegation is just an ordinary `impl`:
 
 (impl Query for LoggedDb
   (message query [self sql]
-    (self/log ~ Logger/info $"query: ${sql}")
+    (self/log ~ Logger:info $"query: ${sql}")
     (self/inner ~ query sql)))
 ```
 
@@ -3144,7 +3151,7 @@ Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
 `update` are its **type-direct messages** (§3). So they take the bare form:
 `(count ~ get)`, `(count ~ set 10)`, and the path form `count/~get` all resolve
 the same message, through the same lookup that serves a user-declared type. A
-qualified send names a *protocol* message, so `(count ~ Cell/get)` is an error —
+qualified send names a *protocol* message, so `(count ~ Cell:get)` is an error —
 `Cell/get` is the qualified member spelling every type gives its messages
 (§7.1), and is used in a send: `(count ~ get)` or `(count ~ Cell:get)`.
 
@@ -4774,7 +4781,7 @@ Deferred until after the first implementation slice:
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ X/f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
+- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ X:f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
 - `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `Env/snapshot`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.

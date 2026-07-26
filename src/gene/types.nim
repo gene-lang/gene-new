@@ -784,6 +784,14 @@ type
     protocolBits: uint64  # non-owning backreference to the owning Protocol
     signatureFn: Value    # non-callable-by-contract function carrying the shape
     hasDefault: bool      # signatureFn is also the shared default closure
+    # A *bound* message — what `Proto:msg` / `T:msg` / `Self:msg` yields in
+    # value position. `qualifier` is the Type for a type-direct message and NIL
+    # for a protocol one (`protocolBits` names that) or for `Self:msg`, which
+    # names no qualifier at all. `boundScope` is the scope the value was
+    # *written* in: applying a message has no send site, so this is where its
+    # impls resolve. A declaration-site message leaves both empty.
+    qualifier: Value
+    boundScope: Scope
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -1445,6 +1453,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
   of okProtocolMessage:
     let d = ProtocolMessageData(data)
     emit(d.signatureFn)
+    emit(d.qualifier)
   of okEnumVariant:
     let d = EnumVariantData(data)
     for val in d.payloadTypes:
@@ -1604,6 +1613,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     let d = ProtocolMessageData(data)
     d.protocolBits = 0
     clearValueSlot(d.signatureFn)
+    clearValueSlot(d.qualifier)
+    d.boundScope = nil
     d.hasDefault = false
   of okEnumVariant:
     let d = EnumVariantData(data)
@@ -5265,6 +5276,33 @@ proc newProtocolMessage*(protocol: Value, name: string,
                                 protocolBits: protocol.bits,
                                 signatureFn: signatureFn,
                                 hasDefault: hasDefault))
+
+proc newBoundMessage*(qualifier: Value, name: string, protocolBits: uint64,
+                      scope: Scope): Value =
+  ## A message value carrying where it was written. This is a *message*, not a
+  ## function: it prints as one, satisfies `Callable`, and is accepted as a held
+  ## send callee `(x ~ %m)` — which a closure cannot be.
+  boxObject(ProtocolMessageData(objKind: okProtocolMessage,
+                                name: name,
+                                protocolBits: protocolBits,
+                                signatureFn: NIL,
+                                hasDefault: false,
+                                qualifier: qualifier,
+                                boundScope: scope))
+
+proc protocolMessageQualifier*(v: Value): Value =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+    raise newException(FieldDefect, "value is not a ProtocolMessage")
+  ProtocolMessageData(objData(v)).qualifier
+
+proc protocolMessageScope*(v: Value): Scope =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+    raise newException(FieldDefect, "value is not a ProtocolMessage")
+  ProtocolMessageData(objData(v)).boundScope
+
+proc protocolMessageIsBound*(v: Value): bool =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okProtocolMessage and
+    ProtocolMessageData(objData(v)).boundScope != nil
 
 proc newProtocol*(name: string, messageNames: openArray[string],
                   deriveFn: Value = NIL, parents: sink seq[Value] = @[],

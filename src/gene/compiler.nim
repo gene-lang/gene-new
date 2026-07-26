@@ -3029,7 +3029,8 @@ proc protocolInterfaceMessages(form: Value): seq[string] =
     let name = item.body[0]
     if name.kind == vkSymbol:
       result.add name.symVal
-    elif name.kind == vkNode and name.head.isSymbol("path") and
+    elif name.kind == vkNode and
+        (name.head.isSymbol("path") or name.head.isSymbol("msg")) and
         name.body.len > 0 and name.body[^1].kind == vkSymbol:
       result.add name.body[^1].symVal
 
@@ -4297,32 +4298,27 @@ proc compilePath(c: var Compiler, node: Value) =
       discard c.emit(opApplySelectorTop)
 
 proc compileMessageValue(c: var Compiler, node: Value) =
-  ## `Proto:msg` in value position (design §3, decision 2): a *dispatching
-  ## closure*, the equivalent of `(fn [x rest...] (x ~ Proto:msg rest...))`.
+  ## `Proto:msg` / `T:msg` / `Self:msg` in value position (design §3,
+  ## decisions 2 and 5): a **message value**, not a function and not a closure.
   ##
-  ## Not a first-class message identity, deliberately. A message value that
-  ## escapes into a higher-order function has no send site, so it has no scope
-  ## to resolve impls against — that is what sank the previous attempt, where
-  ## `($map (xs ~ to_stream) Shown:show)` could not find an impl that was
-  ## canonical and in the same module. A closure carries its defining scope, so
-  ## the impl resolves where the value was *written*, which is the send-site
-  ## rule already in force. Nothing is bolted onto the value representation, so
-  ## the NaN-boxed layer is untouched.
+  ## It carries the scope it was written in. That is what makes a message usable
+  ## in a higher-order position at all: applying one has no send site, so there
+  ## is no reaching scope to resolve impls against — which is exactly why the
+  ## first attempt at this failed. Resolving in the scope where the value was
+  ## *authored* is the send-site rule, evaluated one step earlier.
   ##
-  ## The send callee position `(x ~ Proto:msg)` never reaches here — it keeps
-  ## the message value — and head position is rejected before this, so the three
-  ## positions stay distinct.
-  ##
-  ## Parameter names are lowercase, and a qualifier is always uppercase (the
-  ## declaration case rule), so neither can shadow the qualifier the body
-  ## resolves lexically.
-  let recv = newSym("__msg_recv")
-  let rest = newSym("__msg_rest")
-  let send = newNode(recv, body = @[
-    newSym("~"), node,
-    newNode(newSym("..."), body = @[rest])])
-  compileExpr(c, newNode(newSym("fn"), body = @[
-    newList(@[recv, newSym("__msg_rest...")]), send]))
+  ## `Self:msg` names no qualifier, so it binds NIL and dispatches bare.
+  if node.body.len == 2 and node.body[0].isSymbol("Self"):
+    c.emitConst NIL
+  else:
+    compileExpr(c, node.body[0])
+  let name =
+    if node.body.len == 2 and node.body[1].kind == vkSymbol:
+      node.body[1].symVal
+    else: ""
+  if name.len == 0:
+    raise newException(GeneError, "a message name must be a symbol")
+  discard c.emit(opBindMessage, 0, name = name)
 
 proc valueSpreadExpr(value: Value): tuple[spread: bool, expr: Value] =
   case value.kind
@@ -4443,17 +4439,12 @@ proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
       messageName: callee.symVal,
       protocolExpr: node.props["protocol"],
       receiverExpr: node.props["receiver"]))
-    return newNode(newSym("path"), body = @[node.props["protocol"], callee])
+    # `^protocol`/`^receiver` names the message through its protocol; that is a
+    # qualifier plus a name, which is what `msg` carries.
+    return newNode(newSym("msg"), body = @[node.props["protocol"], callee])
   if callee.kind == vkNode and callee.head.isSymbol("unquote") and
       callee.body.len == 1:
     return callee.body[0]
-  if callee.kind == vkNode and callee.head.isSymbol("msg"):
-    # Send-callee position keeps the *message value* — this is the one place a
-    # message is not a dispatching closure, because the send itself supplies the
-    # receiver and the scope. Compiling it as a member selection rather than
-    # through `compileMessageValue` is also what stops the desugaring recursing:
-    # the closure it builds contains a send whose callee is this same node.
-    return newNode(newSym("path"), body = callee.body)
   callee
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
@@ -4576,14 +4567,30 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         not node.props.hasKey("types"):
       let qualifier = node.body[1].body[0]
       let messageName = node.body[1].body[1].symVal
+      if node.head.kind == vkSymbol and node.head.symVal == "super":
+        # `super` delegates to a type-direct message only; a qualified callee
+        # needs the protocol-impl precedence rule that does not exist yet. The
+        # `/` spelling was already rejected here — without this the `:` spelling
+        # would silently drop the qualifier and delegate the bare name instead.
+        raise newException(GeneError,
+          "super delegates to a type-direct message only: '" &
+          (if qualifier.kind == vkSymbol: qualifier.symVal else: $qualifier) &
+          ":" & messageName &
+          "' is a qualified callee, which is not yet supported")
       if qualifier.isSymbol("Self"):
         compileSend(c, node, node.head, messageName, 2)
       else:
         compileSend(c, node, node.head, messageName, 2,
                     qualifierExpr = qualifier)
       return
-    compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
-                messageExpr = sendMessageExpr(c, node, node.body[1]))
+    let resolved = sendMessageExpr(c, node, node.body[1])
+    if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
+        resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
+      compileSend(c, node, node.head, resolved.body[1].symVal, 2,
+                  qualifierExpr = resolved.body[0])
+    else:
+      compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
+                  messageExpr = resolved)
     return
   let localSyntaxHead = c.syntaxFnNames.len > 0 and
     node.head.kind == vkSymbol and c.syntaxFnNames.hasKey(node.head.symVal) and
@@ -4751,8 +4758,18 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
     compileCall(c, newNode(node.body[0], node.props, args, node.meta),
                 allowSyntax = false)
     return
-  compileSend(c, node, newSym("self"), sendCalleeName(node.body[0]), 1,
-              messageExpr = sendMessageExpr(c, node, node.body[0]))
+  let resolved = sendMessageExpr(c, node, node.body[0])
+  if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
+      resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
+    # `(~ P:m)` is `(self ~ P:m)`: same qualifier path as an explicit receiver.
+    if resolved.body[0].isSymbol("Self"):
+      compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1)
+    else:
+      compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1,
+                  qualifierExpr = resolved.body[0])
+  else:
+    compileSend(c, node, newSym("self"), sendCalleeName(node.body[0]), 1,
+                messageExpr = resolved)
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body
@@ -5126,14 +5143,26 @@ proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: strin
   let nameForm = node.body[0]
   if nameForm.kind == vkSymbol:
     return (@[], nameForm.symVal)
-  if nameForm.kind == vkNode and nameForm.head.isSymbol("path") and
+  # `Protocol:name` is the message spelling; `path` is still accepted for a
+  # namespace-qualified owner, where the leading segments are a namespace path
+  # and only the last two are `Protocol`/`name`.
+  if nameForm.kind == vkNode and
+      (nameForm.head.isSymbol("path") or nameForm.head.isSymbol("msg")) and
       nameForm.body.len >= 2:
     var segments: seq[string]
     for segment in nameForm.body:
-      if segment.kind != vkSymbol:
+      if segment.kind == vkSymbol:
+        segments.add segment.symVal
+      elif segment.kind == vkNode and segment.head.isSymbol("path"):
+        # `ns/Proto:name` puts the namespace path in the qualifier slot.
+        for part in segment.body:
+          if part.kind != vkSymbol:
+            raise newException(GeneError,
+              "message requires a name and parameter vector")
+          segments.add part.symVal
+      else:
         raise newException(GeneError,
           "message requires a name and parameter vector")
-      segments.add segment.symVal
     return (segments[0 ..^ 2], segments[^1])
   raise newException(GeneError, "message requires a name and parameter vector")
 

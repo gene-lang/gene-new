@@ -559,7 +559,7 @@ Usage:
       (try
         (eval `(do (var %name %value) %body...) ^in caller_env)
       ensure
-        (value ~ Closeable/close)))))
+        (value ~ Closeable:close)))))
 ```
 
 ### 8.4 Template macro `unless!`

@@ -1494,13 +1494,13 @@ suite "vm — env and eval":
       "(var f (eval " &
       "  (quote (do " &
       "    (impl P for T (message value [self] : Str \"local\")) " &
-      "    (fn [] ((T) ~ P/value)))) " &
+      "    (fn [] ((T) ~ P:value)))) " &
       "  ^in e)) " &
       "(f)"), scope).print() == "\"local\""
     # The function retains the eval scope and its impl. The sibling program
     # scope sees the same explicit P/T values but not the overlay registration.
     expect GeneError:
-      discard run(compileSource("((T) ~ P/value)"), scope)
+      discard run(compileSource("((T) ~ P:value)"), scope)
 
 suite "vm — cells":
   test "cell values are opaque display values":
