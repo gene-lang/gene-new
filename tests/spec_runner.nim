@@ -2129,6 +2129,23 @@ suite "spec — implicit self in message bodies from design §10":
                " (try (c ~ nope) catch (MessageError ^receiver_type t) t)]",
                "[1 1 1 \"Cell\"]")
 
+  test "leaf? names the base case for a generic walk":
+    # A literal has no interior node structure. Under the projection model its
+    # `body` will be itself, so a walk that descends through `body` needs an
+    # explicit base case; `leaf?` is how a program says so without enumerating
+    # kinds. The set is exactly the kinds that carry scalar type identities.
+    check_eval("[($leaf? 42) ($leaf? 1.5) ($leaf? \"s\") ($leaf? (quote a)) " &
+               " ($leaf? true) ($leaf? nil) ($leaf? (\"x\" ~ /0))]",
+               "[true true true true true true true]")
+    check_eval("[($leaf? [1 2]) ($leaf? {^a 1}) ($leaf? (quote (f 1))) " &
+               " ($leaf? ($cell 1))]",
+               "[false false false false]")
+    # The guarded idiom terminates on every shape.
+    check_eval("(fn walk [n] " &
+               "  (if ($leaf? n) 1 (do ((($body n) ~ to_stream) ~ each walk) 1))) " &
+               "[(walk 42) (walk (quote (f 1 2))) (walk [1 [2 3]])]",
+               "[1 1 1]")
+
   test "node anatomy is universal; the Node type is not":
     # A data node's dispatch face is the concrete `Node` type, so it can carry
     # an impl (design §1.2). A typed instance keeps its own type as its

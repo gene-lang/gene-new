@@ -1491,6 +1491,26 @@ proc requireOne(name: string, args: openArray[Value]) =
 # Absence vocabulary (design §1.6). `nil?`/`void?` test the exact singleton;
 # `absent?` is either absence form; `present?` is neither. `false`/`0`/`""`
 # are present — this is the distinction `||`-as-default blurs and `??` respects.
+const LeafValueKinds* = {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
+                         vkSymbol, vkChar}
+  ## Literals: values the reader produces with no interior node structure. This
+  ## is exactly the set `buildBuiltins` gives scalar type identities to, and the
+  ## two must not drift — a leaf is precisely a value whose node projection is
+  ## terminal.
+  ##
+  ## The base case a generic walk needs. Under the projection model a literal's
+  ## `body` is itself (`($body 42)` → `[42]`, design §1.3), so
+  ## `(fn walk [n] (($body n) ~ each walk))` does not terminate on its own:
+  ## recursion stops at leaves, and `leaf?` is how a program says so without
+  ## enumerating kinds.
+
+proc isLeafValue*(v: Value): bool {.inline.} =
+  v.kind in LeafValueKinds
+
+proc biIsLeaf(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("leaf?", args)
+  newBool(args[0].isLeafValue)
+
 proc biIsNil(args: openArray[Value]): Value {.nimcall.} =
   requireOne("nil?", args)
   newBool(args[0].kind == vkNil)
@@ -5204,10 +5224,12 @@ proc buildBuiltins(app: Application): Scope =
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
   # Scalars carry no messages, but they register through the same funnel so
-  # every built-in type identity lands in `gBuiltinSurfaceTypes`.
+  # every built-in type identity lands in `gBuiltinSurfaceTypes`. These kinds
+  # are exactly `LeafValueKinds`; the two definitions are one rule.
   for spec in [(vkInt, "Int"), (vkFloat, "Float"), (vkBool, "Bool"),
                (vkString, "Str"), (vkSymbol, "Sym"), (vkChar, "Char"),
                (vkNil, "Nil"), (vkVoid, "Void")]:
+    assert spec[0] in LeafValueKinds
     result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
   let matchError = newType("MatchError", NIL,
                            @[TypeField(name: "message", optional: false,
@@ -5438,6 +5460,7 @@ proc buildBuiltins(app: Application): Scope =
   discard result.lookupOptional("contains?", containsFn)
   result.define("size", sizeFn)
   result.define("empty?", emptyFn)
+  result.define("leaf?", newNativeFn("leaf?", biIsLeaf))
   result.define("nil?", newNativeFn("nil?", biIsNil))
   result.define("void?", newNativeFn("void?", biIsVoid))
   result.define("absent?", newNativeFn("absent?", biIsAbsent))
