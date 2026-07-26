@@ -115,10 +115,13 @@ accepts a data node and rejects a typed instance, an enum value, and a scalar.
 **`Any` is the root type** — it is what accepts every value. Node shape for a
 non-node is a *conversion*, not a subtyping relation:
 
-```gene
-((fn [n : Node] 1) (quote (f 1 2)))  # 1
-((fn [n : Node] 1) (Task ^id 1))     # TypeError, expected Node
-((fn [x : Any]  1) (Task ^id 1))     # 1
+```gene runnable
+(type Task ^props {^id Int})
+
+((fn [n : Node] 1) (quote (f 1 2)))   # 1
+((fn [x : Any] 1) (Task ^id 1))       # 1
+(try ((fn [n : Node] 1) (Task ^id 1))
+  catch (TypeError ^expected e) e)    # "Node" — a Task is not a Node
 ```
 
 An uppercase head does not make a node typed: `(quote (Declaration ^name "h"))`
@@ -150,7 +153,7 @@ Every shape the reader produces projects as a node, and its `head` is its type:
 That is the same slot a data node fills with its tag and a typed instance with
 its type, so `head` means one thing across every shape.
 
-```gene
+```gene runnable
 ($head 42)   # Int
 ($props 42)  # {}
 ($body 42)   # [42]
@@ -168,7 +171,7 @@ A literal is a fixpoint of `body`, not of `head`: `($body 42)` is `[42]`. A walk
 that descends through `body` therefore needs an explicit base case, and `leaf?`
 is how a program names it without enumerating kinds:
 
-```gene
+```gene runnable
 ($leaf? 42)     # true
 ($leaf? [1 2])  # false
 
@@ -1165,9 +1168,9 @@ without throwing. The `TryNext` enum follows the `TryRecv` pattern:
 
 ```gene
 (match (s ~ try_next)
-  (when TryNext/exhausted # ...)
-  (when (TryNext/value v) # ...)
-  (when (TryNext/error e) # ...))
+  (when TryNext/exhausted void)
+  (when (TryNext/value v) v)
+  (when (TryNext/error e) (raise e)))
 ```
 
 A function containing `yield` is a generator and returns a `Stream`.
@@ -2216,7 +2219,7 @@ as a `Cat` for the arm. This is Gene's narrowing idiom — the bound name carrie
 the refined type — so a separate flow-sensitive `if` narrowing is unnecessary
 in the MVP:
 
-```gene
+```gene runnable
 (fn describe [x : (| Cat Dog)] : Str
   (match x
     (when (c : Cat) (c ~ say))
@@ -2549,7 +2552,7 @@ declaring another `self` are compile errors, and it cannot be shadowed, so
 `(super ~ m args…)` invokes the implementation of `m` **above the enclosing
 type** on the `^is` chain, called with `self`:
 
-```gene
+```gene runnable
 (type Animal ^props {} (message speak [] : Str "…"))
 (type Dog ^is Animal ^props {}
   (message speak [] : Str ($ "woof; " (super ~ speak))))
@@ -2583,14 +2586,18 @@ positions. It is resolved against the receiver at the boundary, not against the
 enclosing declaration, which is what lets it work inside a protocol's default
 body where there is no enclosing type to name:
 
-```gene
+```gene runnable
 (protocol Eq (message eq [other : Self] : Bool))
 (type Dog ^props {^name Str})
 (type Pup ^is Dog ^props {})
 (impl Eq for Dog (message eq [other : Self] : Bool (== self/name other/name)))
 
-(dog ~ Eq:eq pup)   # ok — Self is Dog, and a Pup is a Dog
-(pup ~ Eq:eq dog)   # TypeError — Self is Pup, and a Dog is not a Pup
+(var dog (Dog ^name "rex"))
+(var pup (Pup ^name "rex"))
+
+(dog ~ Eq:eq pup)   # true — Self is Dog, and a Pup is a Dog
+(try (pup ~ Eq:eq dog)
+  catch (TypeError ^expected e) e)   # "Self" — a Dog is not a Pup
 ```
 
 That asymmetry is the point of a self type: the constraint follows the receiver

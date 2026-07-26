@@ -276,11 +276,11 @@ Example conceptual form:
   ^targets []
   ^module-graph-hash "sha256:..."
   ^lock-hash nil
-  ^modules {...}
-  ^resources {...}
-  ^dependencies [...]
-  ^native {...}
-  ^signatures {...})
+  ^modules {}
+  ^resources {}
+  ^dependencies []
+  ^native {}
+  ^signatures {})
 ```
 
 The manifest should include:

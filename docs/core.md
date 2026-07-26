@@ -526,16 +526,16 @@ contracts, type messages are receiver-owned nominal behavior.
 A type body may also carry `impl` blocks with the receiver implied — the
 enclosing type:
 
-```gene
+```gene runnable
 (protocol A (message do_a [] : Any))
 
-(type T ^props {...}
+(type T ^props {^name Str}
   (impl A
-    (message do_a [self] ...)))
+    (message do_a [] : Any self/name)))
 ```
 
 This is pure placement sugar: it is semantically identical to writing
-`(impl A for T (message do_a [self] ...))` immediately after the type
+`(impl A for T (message do_a [] : Any self/name))` immediately after the type
 declaration, in the same scope. Everything about standalone impls carries
 over unchanged:
 

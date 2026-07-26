@@ -5307,6 +5307,35 @@ suite "spec — declaration case":
     check_compile_error("(protocol shown)", "must start uppercase")
     check_compile_error("(enum colour red)", "must start uppercase")
 
+type DocBlock = object
+  ## One ` ```gene ` fence in a Markdown file. `line` is the fence's own
+  ## 1-based line, so a failure points at the block rather than the file.
+  line: int
+  src: string
+  runnable: bool  ## fence spelled ` ```gene runnable `
+
+iterator geneBlocks(path: string): DocBlock =
+  ## The one definition of "a documented Gene example", shared by every check
+  ## below so they cannot disagree about which blocks exist.
+  var cur: seq[string]
+  var start = 0
+  var inBlock = false
+  var runnable = false
+  var lineNo = 0
+  for line in readFile(path).splitLines():
+    inc lineNo
+    if not inBlock and line.startsWith("```gene"):
+      inBlock = true
+      runnable = "runnable" in line
+      cur = @[]
+      start = lineNo
+    elif inBlock and line.startsWith("```"):
+      if cur.len > 0:
+        yield DocBlock(line: start, src: cur.join("\n"), runnable: runnable)
+      inBlock = false
+    elif inBlock:
+      cur.add line
+
 suite "spec — documentation contract":
   test "focused normative specification files exist":
     for path in ["docs/spec/README.md", "docs/spec/reader.md",
@@ -5422,6 +5451,50 @@ suite "spec — documentation contract":
     if offenders.len > 0:
       checkpoint offenders.join("\n")
     check offenders.len == 0
+
+  test "every documented gene block parses":
+    # design.md is unverified prose, and the two ways it rots are syntax and
+    # semantics. Syntax is checkable over *all* blocks with no marking, because
+    # a fragment still has to read: `{...}` is not a prop map, and `# ...`
+    # comments to end of line, so `(when X # ...)` ate its own closing paren
+    # and nothing noticed. Evaluation is opt-in below, because most blocks are
+    # deliberately fragments.
+    var offenders: seq[string]
+    for path in walkDirRec("docs"):
+      if not path.endsWith(".md"):
+        continue
+      for blk in geneBlocks(path):
+        try:
+          discard readAll(blk.src)
+        except CatchableError as e:
+          offenders.add path & ":" & $blk.line & "  " & e.msg.splitLines()[0]
+    if offenders.len > 0:
+      checkpoint offenders.join("\n")
+    check offenders.len == 0
+
+  test "documented gene blocks marked runnable actually run":
+    # ```gene runnable is the opt-in: a block spelled that way is a claim that
+    # it executes, and this is what makes the claim true. `Self` stayed broken
+    # across a whole release because design.md §10's own normative example was
+    # never run — marking an example is how a doc stops being prose.
+    var offenders: seq[string]
+    var ran = 0
+    for path in walkDirRec("docs"):
+      if not path.endsWith(".md"):
+        continue
+      for blk in geneBlocks(path):
+        if not blk.runnable:
+          continue
+        inc ran
+        try:
+          discard run(compileSource(blk.src), newGlobalScope())
+        except CatchableError as e:
+          offenders.add path & ":" & $blk.line & "  " & e.msg.splitLines()[0]
+    if offenders.len > 0:
+      checkpoint offenders.join("\n")
+    check offenders.len == 0
+    # A marker that stops matching any block would make this vacuously green.
+    check ran > 0
 
 suite "spec — naming convention":
   test "registered names use underscores, never hyphens":
